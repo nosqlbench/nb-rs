@@ -592,7 +592,7 @@ No side-channel text substitution. All values flow through GK.
   `final` variables from outer scopes cannot be modified by loops.
 - **Scope modes** (`loop_scope`/`iter_scope`): Apply to `for_each`.
   `do_while`/`do_until` always inherit from the enclosing scope.
-- **Diagnostics** (`dryrun=phase,gk`): `for_each` shows all
+- **Diagnostics** (`dryrun=op,wiring`): `for_each` shows all
   iterations. `do_while`/`do_until` show one iteration (the first).
 - **Metrics**: Each loop iteration's ops contribute to the same
   activity's metrics (same cycle). The counter variable can be

@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cassandra_cpp as cass;
 use cass::LendingIterator;
 
+mod binder_meta;
 mod op_modifier;
 mod tracing;
 use tracing::{TraceLog, TraceRecord};
@@ -319,18 +320,33 @@ where
             i = after;
             continue;
         }
+        // Strip a lvalue-spec suffix (`:*` or `:<polydat-type>`)
+        // from the body BEFORE deciding qualifier vs bare-name.
+        // The suffix is metadata for the binder verifier, not
+        // part of the wire name; treating it as part of the body
+        // would either misclassify as qualifier-prefixed (wrong)
+        // or leave the suffix in the prepared statement text
+        // (also wrong — the cluster would reject it). The bare
+        // name carries through; the spec is recovered separately
+        // at binder-construction time via `extract_bind_points`.
+        let (body_bare, _spec) = nbrs_workload::bindpoints::split_lvalue_spec(body);
         // Qualifier-prefixed (`{bind:name}`, etc.) and non-bare
         // identifiers pass through verbatim — same discipline as
         // `nbrs_activity::wires::substitute_via_wires`.
-        if body.contains(':') || !body.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            || !body.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        if body_bare.contains(':') || !body_bare.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            || !body_bare.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         {
             out.push('{');
-            out.push_str(body);
+            out.push_str(body_bare);
             out.push('}');
             i = after;
             continue;
         }
+        // Re-bind `body` to the bare form for the lookup/marker
+        // logic below — the original `body` variable shadowed
+        // here so the rest of the function works on the stripped
+        // name uniformly.
+        let body = body_bare;
         // Bare identifier — try construction-time lookup. Some →
         // structural inline; None → per-cycle `?` marker.
         match lookup(body) {
@@ -693,11 +709,12 @@ impl DriverAdapter for CqlAdapter {
             .controls().declare(trace_control);
     }
 
-    fn map_op(
-        &self,
-        template: &ParsedOp,
+    fn map_op<'a>(
+        &'a self,
+        template: &'a ParsedOp,
         parent: std::sync::Arc<polydat::kernel::GkKernel>,
-    ) -> Result<Box<dyn OpDispenser>, String> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+        Box::pin(async move {
         // Find the statement text and determine execution mode from the field name.
         let (stmt_text, mode) = STMT_FIELD_NAMES.iter()
             .find_map(|key| -> Option<(String, &str)> {
@@ -734,6 +751,36 @@ impl DriverAdapter for CqlAdapter {
             &stmt_text,
             |name| parent_for_lookup.lookup(name),
         );
+        // Workload-author lvalue assertions per per-cycle bind
+        // point: a `{name:*}` or `{name:<polydat-type>}` suffix
+        // in the original statement text overrides the cluster-
+        // side parameter type for binder verification. Indices
+        // here line up with `bind_names` — both walk the same
+        // statement text in the same per-cycle-bind order, so
+        // the i-th element of each list refers to the same `?`
+        // position. Bind points that the structural resolver
+        // inlined (workload-param substitutions like {keyspace}
+        // / {table}) drop out of both lists symmetrically.
+        let lvalue_specs: Vec<Option<nbrs_workload::bindpoints::LvalueSpec>> = {
+            use nbrs_workload::bindpoints::{extract_bind_points, BindPoint};
+            extract_bind_points(&stmt_text).into_iter()
+                .filter_map(|bp| match bp {
+                    BindPoint::Reference { ref name, ref lvalue_spec, .. } => {
+                        // Keep only points that are also in
+                        // `bind_names` (the per-cycle survivors).
+                        // Use position to align: a kernel-resolved
+                        // name won't appear in bind_names so its
+                        // spec must be filtered out too.
+                        if bind_names.iter().any(|bn| bn == name) {
+                            Some(lvalue_spec.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    BindPoint::InlineDefinition(_) => None,
+                })
+                .collect()
+        };
 
         let session = SessionHandle(&self.session as *const cass::Session);
         let consistency = self.consistency;
@@ -781,7 +828,7 @@ impl DriverAdapter for CqlAdapter {
                     trace_rate_bits: self.trace_rate_bits.clone(),
                     trace_log: self.trace_log.clone(),
                     modifiers,
-                }))
+                }) as Box<dyn OpDispenser>)
             }
             "simple" => {
                 Ok(Box::new(CqlRawDispenser {
@@ -791,31 +838,12 @@ impl DriverAdapter for CqlAdapter {
                     trace_rate_bits: self.trace_rate_bits.clone(),
                     trace_log: self.trace_log.clone(),
                     modifiers,
-                }))
+                }) as Box<dyn OpDispenser>)
             }
             _ => {
-                if has_batch {
-                    // Batch dispenser created (type logged via observer)
-                    Ok(Box::new(CqlBatchDispenser {
-                        session,
-                        consistency,
-                        stmt_text: prepared_text.clone(),
-                        stmt_field: "stmt".to_string(),
-                        bind_names,
-                        canonical_kernel,
-                        batch_size: if batch_size == 0 { 1 } else { batch_size },
-                        prepared: std::sync::OnceLock::new(),
-                        batch_type,
-                        rows_timer: nbrs_metrics::instruments::timer::Timer::new(
-                            nbrs_metrics::labels::Labels::of("name", "rows_inserted"),
-                        ),
-                        rows_total: std::sync::atomic::AtomicU64::new(0),
-                        trace_rate_bits: self.trace_rate_bits.clone(),
-                        trace_log: self.trace_log.clone(),
-                        modifiers,
-                    }))
-                } else if bind_names.is_empty() {
-                    // No bind points — execute as raw (DDL, simple queries)
+                if bind_names.is_empty() && !has_batch {
+                    // No bind points — execute as raw (DDL, simple queries).
+                    // No prepare needed; nothing to verify.
                     Ok(Box::new(CqlRawDispenser {
                         session,
                         stmt_template: stmt_text.clone(),
@@ -823,23 +851,203 @@ impl DriverAdapter for CqlAdapter {
                         trace_rate_bits: self.trace_rate_bits.clone(),
                         trace_log: self.trace_log.clone(),
                         modifiers,
-                    }))
+                    }) as Box<dyn OpDispenser>)
                 } else {
-                    Ok(Box::new(CqlPreparedDispenser {
-                        session,
-                        consistency,
-                        stmt_text: prepared_text,
-                        bind_names,
-                        canonical_kernel,
-                        prepared: std::sync::OnceLock::new(),
-                        binders: std::sync::OnceLock::new(),
-                        trace_rate_bits: self.trace_rate_bits.clone(),
-                        trace_log: self.trace_log.clone(),
-                        modifiers,
-                    }))
+                    // Prepare against the cluster and verify the
+                    // typed binder against the dispenser's parent
+                    // kernel — the per-op dispenser-init
+                    // compulsion. Both prepared-mode and batch-mode
+                    // use the same inner prepared statement.
+                    let prepared_raw = self.session.prepare(&prepared_text).await
+                        .map_err(|e| format!(
+                            "cassandra-cpp prepare '{}': {e}",
+                            prepared_text,
+                        ))?;
+                    let prepared_arc = Arc::new(prepared_raw);
+
+                    // Build per-position binder functions from
+                    // prepared statement metadata. For CUSTOM
+                    // (vector) columns we additionally extract the
+                    // class name so make_binder can specialise per
+                    // VectorType element (FloatType / IntType /
+                    // DoubleType / LongType / ShortType / Float16Type)
+                    // and dispatch native typed-vector inputs directly
+                    // without round-tripping through to_display_string.
+                    let binders: Vec<BinderFn> = (0..bind_names.len())
+                        .map(|i| {
+                            let dt = prepared_arc.parameter_data_type(i);
+                            let vt = get_const_data_type_value_type(&dt);
+                            let class_name = if vt == cass::ValueType::CUSTOM {
+                                get_const_data_type_class_name(&dt)
+                            } else {
+                                None
+                            };
+                            make_binder(vt, class_name.as_deref())
+                        })
+                        .collect();
+
+                    // Build the polydat typed binder from the same
+                    // metadata, with per-bindpoint workload-author
+                    // lvalue assertions (`{name:*}` / `{name:<type>}`)
+                    // overriding the cluster-side type when present.
+                    // See the scylla driver's `map_op` for the
+                    // matching surface; the diagnostics here mirror
+                    // those exactly.
+                    let mut slot_build_err: Option<String> = None;
+                    let slots: Vec<polydat::binder::BinderSlot> = (0..bind_names.len())
+                        .map(|i| {
+                            use nbrs_workload::bindpoints::LvalueSpec;
+                            let name = &bind_names[i];
+                            // Cluster-side polydat type for this `?`
+                            // position — always computed (used in all
+                            // arms below as the honest lvalue type).
+                            // For CUSTOM, also extract the class
+                            // name so cass_to_polydat can detect
+                            // VectorType (and any future precise
+                            // CUSTOM mappings) directly.
+                            let dt = prepared_arc.parameter_data_type(i);
+                            let vt = get_const_data_type_value_type(&dt);
+                            let class_name = if vt == cass::ValueType::CUSTOM {
+                                get_const_data_type_class_name(&dt)
+                            } else {
+                                None
+                            };
+                            let (cluster_lvalue, fallback) =
+                                binder_meta::cass_to_polydat(vt, class_name.as_deref());
+                            let (lvalue_type, allow_fusion) =
+                                match lvalue_specs.get(i).and_then(|s| s.as_ref()) {
+                                    Some(LvalueSpec::Wildcard) => {
+                                        nbrs_activity::diag!(
+                                            nbrs_activity::observer::LogLevel::Info,
+                                            "cassandra-cpp op '{op}' field 'prepared' slot [{i}] \
+                                             wire `{name}`: `:*` wildcard opt-in seen on this \
+                                             bind-point — polydat binder slot keeps cluster-\
+                                             reported lvalue type `{cluster_lvalue}` with \
+                                             allow_fusion=true; verifier skips the strict \
+                                             rvalue→lvalue rule for this slot.",
+                                            op = template.name,
+                                        );
+                                        (cluster_lvalue, true)
+                                    }
+                                    Some(LvalueSpec::Explicit(type_name)) => {
+                                        match polydat::ast::PortType::from_workload_name(type_name) {
+                                            Some(pt) => {
+                                                nbrs_activity::diag!(
+                                                    nbrs_activity::observer::LogLevel::Info,
+                                                    "cassandra-cpp op '{op}' field 'prepared' slot [{i}] \
+                                                     wire `{name}`: `:{type_name}` lvalue assertion \
+                                                     seen on this bind-point — using workload-\
+                                                     asserted polydat type `{type_name}` (cluster \
+                                                     reports `{cluster_lvalue}`).",
+                                                    op = template.name,
+                                                );
+                                                (pt, false)
+                                            }
+                                            None => {
+                                                slot_build_err = Some(format!(
+                                                    "cassandra-cpp op '{op}' field 'prepared' slot [{i}] \
+                                                     wire `{name}`: unknown polydat type name \
+                                                     `{type_name}` in lvalue spec `:{type_name}`. \
+                                                     Accepted names: u64, f64, u32, i32, i64, f32, \
+                                                     bool, str, bytes, json, vec_f32, vec_i32.",
+                                                    op = template.name,
+                                                ));
+                                                (cluster_lvalue, false)
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        if let Some(cql_label) = fallback {
+                                            let class_hint = match class_name.as_deref() {
+                                                Some(cn) if !cn.is_empty() =>
+                                                    format!(" (class_name=`{cn}`)"),
+                                                _ => String::new(),
+                                            };
+                                            nbrs_activity::diag!(
+                                                nbrs_activity::observer::LogLevel::Warn,
+                                                "cassandra-cpp op '{op}' field 'prepared' slot [{i}] \
+                                                 wire `{name}`: CQL type {cql_label}{class_hint} has \
+                                                 no precise polydat mapping yet — falling back to \
+                                                 Str-lvalue, which permits any rvalue and \
+                                                 effectively bypasses typed verification for this \
+                                                 slot. Add a precise arm to \
+                                                 adapters/cql/src/cassandra_cpp/binder_meta.rs::cass_to_polydat \
+                                                 when this type becomes a verification bottleneck, \
+                                                 or silence this warning intentionally by spelling \
+                                                 the bind-point with the `:*` wildcard suffix (i.e. \
+                                                 write `{{{name}:*}}` in place of `{{{name}}}` in \
+                                                 the workload template).",
+                                                op = template.name,
+                                            );
+                                        }
+                                        // Non-strict default: auto-permit fusion for
+                                        // text-natural lvalues. See the scylla
+                                        // sibling for the full rationale.
+                                        let allow_fusion = matches!(
+                                            cluster_lvalue, polydat::ast::PortType::Str);
+                                        (cluster_lvalue, allow_fusion)
+                                    }
+                                };
+                            polydat::binder::BinderSlot {
+                                wire: name.clone(),
+                                lvalue_type,
+                                allow_fusion,
+                            }
+                        })
+                        .collect();
+                    if let Some(msg) = slot_build_err {
+                        return Err(msg);
+                    }
+                    if !slots.is_empty() {
+                        let binder = polydat::binder::Binder::Positional {
+                            field: "prepared".to_string(),
+                            slots,
+                        };
+                        polydat::binder::verify_against_kernel(&[binder], &canonical_kernel)
+                            .map_err(|violations| violations.into_iter()
+                                .map(|v| v.message)
+                                .collect::<Vec<_>>()
+                                .join("; "))?;
+                    }
+
+                    if has_batch {
+                        Ok(Box::new(CqlBatchDispenser {
+                            session,
+                            consistency,
+                            stmt_text: prepared_text.clone(),
+                            stmt_field: "stmt".to_string(),
+                            bind_names,
+                            canonical_kernel,
+                            batch_size: if batch_size == 0 { 1 } else { batch_size },
+                            prepared: prepared_arc,
+                            binders,
+                            batch_type,
+                            rows_timer: nbrs_metrics::instruments::timer::Timer::new(
+                                nbrs_metrics::labels::Labels::of("name", "rows_inserted"),
+                            ),
+                            rows_total: std::sync::atomic::AtomicU64::new(0),
+                            trace_rate_bits: self.trace_rate_bits.clone(),
+                            trace_log: self.trace_log.clone(),
+                            modifiers,
+                        }) as Box<dyn OpDispenser>)
+                    } else {
+                        Ok(Box::new(CqlPreparedDispenser {
+                            session,
+                            consistency,
+                            stmt_text: prepared_text,
+                            bind_names,
+                            canonical_kernel,
+                            prepared: prepared_arc,
+                            binders,
+                            trace_rate_bits: self.trace_rate_bits.clone(),
+                            trace_log: self.trace_log.clone(),
+                            modifiers,
+                        }) as Box<dyn OpDispenser>)
+                    }
                 }
             }
         }
+        })
     }
 
     fn known_op_params(&self) -> &'static [&'static str] {
@@ -1122,6 +1330,9 @@ impl OpDispenser for CqlRawDispenser {
 struct CqlPreparedDispenser {
     session: SessionHandle,
     consistency: cass::Consistency,
+    /// Statement text — retained for error diagnostics and the
+    /// `describe_resolved` walk only; not used on the execute
+    /// hot path.
     stmt_text: String,
     /// Names of bind point fields to extract from ResolvedFields.
     bind_names: Vec<String>,
@@ -1129,10 +1340,13 @@ struct CqlPreparedDispenser {
     /// See `CqlRawDispenser::canonical_kernel`.
     #[allow(dead_code)]
     canonical_kernel: std::sync::Arc<polydat::kernel::GkKernel>,
-    /// Prepared once on first execute, then lock-free reads thereafter.
-    prepared: std::sync::OnceLock<Arc<cass::PreparedStatement>>,
-    /// Type-aware binders built once from prepared statement metadata.
-    binders: std::sync::OnceLock<Vec<BinderFn>>,
+    /// Pre-prepared statement. Constructed at `map_op` time as part
+    /// of the dispenser-init stack frame so the per-cycle path has
+    /// no preparation latency.
+    prepared: Arc<cass::PreparedStatement>,
+    /// Type-aware per-position binders built at `map_op` from
+    /// prepared statement metadata. One per `?` placeholder.
+    binders: Vec<BinderFn>,
     /// Live tracing probability (f64 bits). Loaded per execute;
     /// `cql_trace_rate` control writes here.
     trace_rate_bits: Arc<AtomicU64>,
@@ -1146,23 +1360,6 @@ struct CqlPreparedDispenser {
     /// execute after the session-level consistency is set.
     /// Empty chain is a hot-path no-op.
     modifiers: nbrs_activity::op_modifier::ModifierChain<cass::Statement>,
-}
-
-impl CqlPreparedDispenser {
-    async fn get_prepared(&self) -> Result<Arc<cass::PreparedStatement>, ExecutionError> {
-        if let Some(p) = self.prepared.get() {
-            return Ok(p.clone());
-        }
-        let prepared = self.session.get().prepare(&self.stmt_text).await
-            .map_err(|e| ExecutionError::Op(AdapterError {
-                error_name: "prepare_error".into(),
-                message: format!("prepare '{}': {e}", self.stmt_text),
-                retryable: false,
-            }))?;
-        let arc = Arc::new(prepared);
-        let _ = self.prepared.set(arc.clone());
-        Ok(self.prepared.get().unwrap().clone())
-    }
 }
 
 impl OpDispenser for CqlPreparedDispenser {
@@ -1214,21 +1411,9 @@ impl OpDispenser for CqlPreparedDispenser {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
         Box::pin(async move {
-            let prepared = self.get_prepared().await?;
-
-            // Build type-aware binders once from prepared statement metadata.
-            // Cached in OnceLock — lock-free after first execute.
-            let binders = self.binders.get_or_init(|| {
-                (0..self.bind_names.len())
-                    .map(|i| {
-                        let dt = prepared.parameter_data_type(i);
-                        let vt = get_const_data_type_value_type(&dt);
-                        make_binder(vt)
-                    })
-                    .collect()
-            });
-
-            let mut stmt = prepared.bind();
+            // `self.prepared` and `self.binders` are both fully
+            // constructed at `map_op` time — no per-cycle init.
+            let mut stmt = self.prepared.bind();
             let _ = stmt.set_consistency(self.consistency)
                 .map_err(|e| ExecutionError::Op(AdapterError {
                     error_name: "bind_error".into(),
@@ -1248,7 +1433,7 @@ impl OpDispenser for CqlPreparedDispenser {
             // uses, no adapter-specific fields path.
             for (bind_idx, name) in self.bind_names.iter().enumerate() {
                 if let Some(value) = wires.get(name) {
-                    binders[bind_idx](&mut stmt, bind_idx, &value)
+                    self.binders[bind_idx](&mut stmt, bind_idx, &value)
                         .map_err(|e| ExecutionError::Op(AdapterError {
                             error_name: "bind_error".into(),
                             message: format!("bind position {bind_idx} ('{name}'): {e}"),
@@ -1382,6 +1567,8 @@ impl OpDispenser for CqlPreparedDispenser {
 struct CqlBatchDispenser {
     session: SessionHandle,
     consistency: cass::Consistency,
+    /// Statement text — retained for error diagnostics and the
+    /// `describe_resolved` walk only.
     stmt_text: String,
     /// The op field name carrying the statement (for finding it in resolved fields).
     #[allow(dead_code)]
@@ -1397,8 +1584,11 @@ struct CqlBatchDispenser {
     /// kernel coord N times per fiber-cycle, calling
     /// `wires.get(bind_name)` for each row's typed values.
     batch_size: usize,
-    /// Prepared once on first execute, then lock-free reads thereafter.
-    prepared: std::sync::OnceLock<Arc<cass::PreparedStatement>>,
+    /// Pre-prepared statement (constructed at `map_op` time).
+    prepared: Arc<cass::PreparedStatement>,
+    /// Per-position type-aware binders built at `map_op` time
+    /// from the prepared statement's metadata. One per `?`.
+    binders: Vec<BinderFn>,
     batch_type: cass::BatchType,
     /// Per-row timer: records amortized latency (batch_nanos / row_count)
     /// for each row in the batch. Enables rows/s throughput in the summary.
@@ -1421,27 +1611,6 @@ struct CqlBatchDispenser {
     modifiers: nbrs_activity::op_modifier::ModifierChain<cass::Statement>,
 }
 
-impl CqlBatchDispenser {
-    /// Get or prepare the statement. Lock-free after first call.
-    /// Multiple fibers may race to prepare on first execute — the
-    /// OnceLock ensures only one result is stored; the CQL driver
-    /// handles duplicate prepares gracefully.
-    async fn get_prepared(&self) -> Result<Arc<cass::PreparedStatement>, ExecutionError> {
-        if let Some(p) = self.prepared.get() {
-            return Ok(p.clone());
-        }
-        let prepared = self.session.get().prepare(&self.stmt_text).await
-            .map_err(|e| ExecutionError::Op(AdapterError {
-                error_name: "prepare_error".into(),
-                message: format!("prepare '{}': {e}", self.stmt_text),
-                retryable: false,
-            }))?;
-        let arc = Arc::new(prepared);
-        // First to finish wins; others' results are harmlessly dropped.
-        let _ = self.prepared.set(arc.clone());
-        Ok(self.prepared.get().unwrap().clone())
-    }
-}
 
 impl OpDispenser for CqlBatchDispenser {
     fn describe(&self) -> Option<String> {
@@ -1525,7 +1694,8 @@ impl OpDispenser for CqlBatchDispenser {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
         Box::pin(async move {
-            let prepared = self.get_prepared().await?;
+            // `self.prepared` and `self.binders` are built at
+            // `map_op` time — no per-cycle init.
             let mut batch = self.session.get().batch(self.batch_type);
 
             // Sparse-tracing decision once for the whole batch
@@ -1535,18 +1705,6 @@ impl OpDispenser for CqlBatchDispenser {
             let trace_rate = f64::from_bits(self.trace_rate_bits.load(Ordering::Acquire));
             let trace_this = trace_rate > 0.0
                 && rand::random::<f64>() < trace_rate;
-
-            // Per-position type-aware binders, built once from
-            // prepared statement metadata. Each binder coerces
-            // a GK `Value` to the CQL column type for its `?`
-            // position.
-            let binders: Vec<Box<dyn Fn(&mut cass::Statement, usize, &polydat::ast::Value)
-                -> Result<(), cass::Error> + Send + Sync>> =
-                (0..self.bind_names.len()).map(|i| {
-                    let dt = prepared.parameter_data_type(i);
-                    let vt = get_const_data_type_value_type(&dt);
-                    make_binder(vt)
-                }).collect();
 
             // SRD-68 Push 5b' batch contract: "each iteration of
             // the batch is considered another pull, just as if
@@ -1562,7 +1720,7 @@ impl OpDispenser for CqlBatchDispenser {
             for row_idx in 0..self.batch_size {
                 let row_coord = cycle + row_idx as u64;
                 wires.advance(row_coord);
-                let mut stmt = prepared.bind();
+                let mut stmt = self.prepared.bind();
                 let _ = stmt.set_consistency(self.consistency)
                     .map_err(|e| ExecutionError::Op(AdapterError {
                         error_name: "bind_error".into(),
@@ -1578,7 +1736,7 @@ impl OpDispenser for CqlBatchDispenser {
                 }
                 for (idx, name) in self.bind_names.iter().enumerate() {
                     if let Some(value) = wires.get(name) {
-                        binders[idx](&mut stmt, idx, &value)
+                        self.binders[idx](&mut stmt, idx, &value)
                             .map_err(|e| ExecutionError::Op(AdapterError {
                                 error_name: "bind_error".into(),
                                 message: format!(
@@ -1780,6 +1938,51 @@ fn get_const_data_type_value_type<T>(dt: &T) -> cass::ValueType {
     cass_value_type_from_raw(cass_vt)
 }
 
+/// Read the class name of a CUSTOM-typed CassDataType, if present.
+///
+/// Calls the C FFI `cass_data_type_class_name` directly because
+/// the safe Rust wrapper takes ownership of a `DataType` for
+/// this accessor, which we can't do — we're inspecting a
+/// `ConstDataType` borrowed from the live `PreparedStatement`.
+///
+/// For non-CUSTOM types the class name is empty/null; we return
+/// `None` in that case. For vector columns the class name is the
+/// fully-qualified Java type expression the cluster uses
+/// internally (e.g. `org.apache.cassandra.db.marshal.VectorType`
+/// with element type / dimensions encoded in the parameter
+/// list). Capturing this verbatim in the binder-fallback
+/// diagnostic gives us the evidence we need to add precise
+/// VECTOR detection to `binder_meta::cass_to_polydat` without
+/// guessing the format.
+fn get_const_data_type_class_name<T>(dt: &T) -> Option<String> {
+    use std::os::raw::c_char;
+    let raw: *const cassandra_cpp_sys::CassDataType_ = unsafe {
+        *(dt as *const _ as *const *const cassandra_cpp_sys::CassDataType_)
+    };
+    // `cass_data_type_class_name(dt, &out_ptr, &out_len)` writes
+    // a borrowed UTF-8 slice on success (pointer + length). The
+    // slice's lifetime is tied to the data type — we copy it out
+    // into an owned String so the result is independent of the
+    // CassDataType's lifetime.
+    let mut name_ptr: *const c_char = std::ptr::null();
+    let mut name_len: usize = 0;
+    let err = unsafe {
+        cassandra_cpp_sys::cass_data_type_class_name(raw, &mut name_ptr, &mut name_len)
+    };
+    if err != cassandra_cpp_sys::CassError_::CASS_OK
+        || name_ptr.is_null()
+        || name_len == 0
+    {
+        return None;
+    }
+    // Safety: the C API returns a valid byte slice on success;
+    // we trust the cassandra-cpp driver's class-name strings to
+    // be UTF-8 (they're Java fully-qualified names — ASCII in
+    // practice).
+    let bytes = unsafe { std::slice::from_raw_parts(name_ptr as *const u8, name_len) };
+    Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
 /// Convert a raw CassValueType_ C enum to cass::ValueType.
 fn cass_value_type_from_raw(raw: cassandra_cpp_sys::CassValueType_) -> cass::ValueType {
     use cassandra_cpp_sys::CassValueType_::*;
@@ -1843,15 +2046,326 @@ fn le_to_be_f32_bytes(le: &[u8]) -> Vec<u8> {
     be
 }
 
+/// Encode a typed `f32` slice as a contiguous BE `[u8]` buffer in
+/// the CQL vector wire format. One pre-sized allocation; no
+/// intermediate string round-trip.
+fn vec_f32_to_be_bytes(slice: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(slice.len() * 4);
+    for v in slice {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
+/// Encode a typed `i32` slice as a contiguous BE `[u8]` buffer.
+fn vec_i32_to_be_bytes(slice: &[i32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(slice.len() * 4);
+    for v in slice {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
+/// Encode a typed `f64` slice as a contiguous BE `[u8]` buffer.
+fn vec_f64_to_be_bytes(slice: &[f64]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(slice.len() * 8);
+    for v in slice {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
+/// Encode a typed `i64` slice as a contiguous BE `[u8]` buffer.
+fn vec_i64_to_be_bytes(slice: &[i64]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(slice.len() * 8);
+    for v in slice {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
+/// Encode a typed half-precision-float slice as a contiguous BE
+/// `[u8]` buffer (2 bytes per element).
+fn vec_f16_to_be_bytes(slice: &[half::f16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(slice.len() * 2);
+    for v in slice {
+        out.extend_from_slice(&v.to_bits().to_be_bytes());
+    }
+    out
+}
+
+/// Encode a typed `i16` slice as a contiguous BE `[u8]` buffer.
+fn vec_i16_to_be_bytes(slice: &[i16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(slice.len() * 2);
+    for v in slice {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
 type BinderFn = Box<dyn Fn(&mut cass::Statement, usize, &polydat::ast::Value)
     -> cass::Result<()> + Send + Sync>;
 
-fn make_binder(cql_type: cass::ValueType) -> BinderFn {
+/// Bind a CQL `vector<float, N>` (CUSTOM column with FloatType
+/// element) from any polydat value variant the runtime might
+/// supply. The native paths (`VecF32`, `Bytes`) avoid any
+/// `to_display_string` round-trip; widening / narrowing arms
+/// cover the cross-precision cases.
+fn bind_vector_float(
+    stmt: &mut cass::Statement,
+    idx: usize,
+    value: &polydat::ast::Value,
+) -> cass::Result<()> {
+    match value {
+        polydat::ast::Value::VecF32(arc) => {
+            stmt.bind_bytes(idx, vec_f32_to_be_bytes(arc))?;
+        }
+        polydat::ast::Value::VecF64(arc) => {
+            let narrowed: Vec<f32> = arc.iter().map(|v| *v as f32).collect();
+            stmt.bind_bytes(idx, vec_f32_to_be_bytes(&narrowed))?;
+        }
+        polydat::ast::Value::VecF16(arc) => {
+            let widened: Vec<f32> = arc.iter().map(|v| v.to_f32()).collect();
+            stmt.bind_bytes(idx, vec_f32_to_be_bytes(&widened))?;
+        }
+        polydat::ast::Value::Bytes(le_bytes) => {
+            stmt.bind_bytes(idx, le_to_be_f32_bytes(le_bytes))?;
+        }
+        other => {
+            // Fallback (e.g. Str holding a `[…]` literal). Keep the
+            // legacy parse path so workloads that build the literal
+            // by hand still work, but at the cost of allocation +
+            // parse — the warning surface lives in `map_op`.
+            let s = other.to_display_string();
+            let bytes = parse_vector_to_bytes(&s);
+            if bytes.is_empty() {
+                stmt.bind_string(idx, &s)?;
+            } else {
+                stmt.bind_bytes(idx, bytes)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Bind a CQL `vector<int, N>` (CUSTOM column with IntType element).
+fn bind_vector_int(
+    stmt: &mut cass::Statement,
+    idx: usize,
+    value: &polydat::ast::Value,
+) -> cass::Result<()> {
+    match value {
+        polydat::ast::Value::VecI32(arc) => {
+            stmt.bind_bytes(idx, vec_i32_to_be_bytes(arc))?;
+        }
+        polydat::ast::Value::VecI64(arc) => {
+            let narrowed: Vec<i32> = arc.iter().map(|v| *v as i32).collect();
+            stmt.bind_bytes(idx, vec_i32_to_be_bytes(&narrowed))?;
+        }
+        polydat::ast::Value::VecI16(arc) => {
+            let widened: Vec<i32> = arc.iter().map(|v| *v as i32).collect();
+            stmt.bind_bytes(idx, vec_i32_to_be_bytes(&widened))?;
+        }
+        polydat::ast::Value::Bytes(le_bytes) => {
+            // GK byte buffers for i32 vectors land LE; CQL wants BE.
+            let mut be = Vec::with_capacity(le_bytes.len());
+            for chunk in le_bytes.chunks(4) {
+                if chunk.len() == 4 {
+                    be.extend_from_slice(&[chunk[3], chunk[2], chunk[1], chunk[0]]);
+                } else {
+                    be.extend_from_slice(chunk);
+                }
+            }
+            stmt.bind_bytes(idx, be)?;
+        }
+        other => {
+            stmt.bind_string(idx, &other.to_display_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Bind a CQL `vector<double, N>` (CUSTOM column with DoubleType element).
+fn bind_vector_double(
+    stmt: &mut cass::Statement,
+    idx: usize,
+    value: &polydat::ast::Value,
+) -> cass::Result<()> {
+    match value {
+        polydat::ast::Value::VecF64(arc) => {
+            stmt.bind_bytes(idx, vec_f64_to_be_bytes(arc))?;
+        }
+        polydat::ast::Value::VecF32(arc) => {
+            let widened: Vec<f64> = arc.iter().map(|v| *v as f64).collect();
+            stmt.bind_bytes(idx, vec_f64_to_be_bytes(&widened))?;
+        }
+        polydat::ast::Value::VecF16(arc) => {
+            let widened: Vec<f64> = arc.iter().map(|v| v.to_f32() as f64).collect();
+            stmt.bind_bytes(idx, vec_f64_to_be_bytes(&widened))?;
+        }
+        polydat::ast::Value::Bytes(le_bytes) => {
+            let mut be = Vec::with_capacity(le_bytes.len());
+            for chunk in le_bytes.chunks(8) {
+                if chunk.len() == 8 {
+                    be.extend_from_slice(&[
+                        chunk[7], chunk[6], chunk[5], chunk[4],
+                        chunk[3], chunk[2], chunk[1], chunk[0],
+                    ]);
+                } else {
+                    be.extend_from_slice(chunk);
+                }
+            }
+            stmt.bind_bytes(idx, be)?;
+        }
+        other => {
+            stmt.bind_string(idx, &other.to_display_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Bind a CQL `vector<bigint, N>` (CUSTOM column with LongType element).
+fn bind_vector_long(
+    stmt: &mut cass::Statement,
+    idx: usize,
+    value: &polydat::ast::Value,
+) -> cass::Result<()> {
+    match value {
+        polydat::ast::Value::VecI64(arc) => {
+            stmt.bind_bytes(idx, vec_i64_to_be_bytes(arc))?;
+        }
+        polydat::ast::Value::VecI32(arc) => {
+            let widened: Vec<i64> = arc.iter().map(|v| *v as i64).collect();
+            stmt.bind_bytes(idx, vec_i64_to_be_bytes(&widened))?;
+        }
+        polydat::ast::Value::VecI16(arc) => {
+            let widened: Vec<i64> = arc.iter().map(|v| *v as i64).collect();
+            stmt.bind_bytes(idx, vec_i64_to_be_bytes(&widened))?;
+        }
+        polydat::ast::Value::Bytes(le_bytes) => {
+            let mut be = Vec::with_capacity(le_bytes.len());
+            for chunk in le_bytes.chunks(8) {
+                if chunk.len() == 8 {
+                    be.extend_from_slice(&[
+                        chunk[7], chunk[6], chunk[5], chunk[4],
+                        chunk[3], chunk[2], chunk[1], chunk[0],
+                    ]);
+                } else {
+                    be.extend_from_slice(chunk);
+                }
+            }
+            stmt.bind_bytes(idx, be)?;
+        }
+        other => {
+            stmt.bind_string(idx, &other.to_display_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Bind a CQL `vector<smallint, N>` (CUSTOM column with ShortType element).
+fn bind_vector_short(
+    stmt: &mut cass::Statement,
+    idx: usize,
+    value: &polydat::ast::Value,
+) -> cass::Result<()> {
+    match value {
+        polydat::ast::Value::VecI16(arc) => {
+            stmt.bind_bytes(idx, vec_i16_to_be_bytes(arc))?;
+        }
+        polydat::ast::Value::VecI32(arc) => {
+            let narrowed: Vec<i16> = arc.iter().map(|v| *v as i16).collect();
+            stmt.bind_bytes(idx, vec_i16_to_be_bytes(&narrowed))?;
+        }
+        polydat::ast::Value::VecI64(arc) => {
+            let narrowed: Vec<i16> = arc.iter().map(|v| *v as i16).collect();
+            stmt.bind_bytes(idx, vec_i16_to_be_bytes(&narrowed))?;
+        }
+        polydat::ast::Value::Bytes(le_bytes) => {
+            let mut be = Vec::with_capacity(le_bytes.len());
+            for chunk in le_bytes.chunks(2) {
+                if chunk.len() == 2 {
+                    be.extend_from_slice(&[chunk[1], chunk[0]]);
+                } else {
+                    be.extend_from_slice(chunk);
+                }
+            }
+            stmt.bind_bytes(idx, be)?;
+        }
+        other => {
+            stmt.bind_string(idx, &other.to_display_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Bind a CQL `vector<half_float, N>` (CUSTOM column with
+/// HalfFloatType / Float16Type element).
+fn bind_vector_half(
+    stmt: &mut cass::Statement,
+    idx: usize,
+    value: &polydat::ast::Value,
+) -> cass::Result<()> {
+    match value {
+        polydat::ast::Value::VecF16(arc) => {
+            stmt.bind_bytes(idx, vec_f16_to_be_bytes(arc))?;
+        }
+        polydat::ast::Value::VecF32(arc) => {
+            let narrowed: Vec<half::f16> = arc.iter()
+                .map(|v| half::f16::from_f32(*v)).collect();
+            stmt.bind_bytes(idx, vec_f16_to_be_bytes(&narrowed))?;
+        }
+        polydat::ast::Value::VecF64(arc) => {
+            let narrowed: Vec<half::f16> = arc.iter()
+                .map(|v| half::f16::from_f64(*v)).collect();
+            stmt.bind_bytes(idx, vec_f16_to_be_bytes(&narrowed))?;
+        }
+        polydat::ast::Value::Bytes(le_bytes) => {
+            let mut be = Vec::with_capacity(le_bytes.len());
+            for chunk in le_bytes.chunks(2) {
+                if chunk.len() == 2 {
+                    be.extend_from_slice(&[chunk[1], chunk[0]]);
+                } else {
+                    be.extend_from_slice(chunk);
+                }
+            }
+            stmt.bind_bytes(idx, be)?;
+        }
+        other => {
+            stmt.bind_string(idx, &other.to_display_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Per-column-type binder factory.
+///
+/// `class_name` is only meaningful for `CUSTOM` columns — it
+/// carries the Cassandra Java FQN (`...VectorType(FloatType, N)`)
+/// that disambiguates the vector element type. For non-CUSTOM
+/// columns it's ignored.
+///
+/// The CUSTOM arm specialises per vector element type so a value
+/// arriving as `Value::VecF32` / `VecI32` / `VecF64` / `VecI64` /
+/// `VecF16` / `VecI16` binds native — pre-sized BE encode, single
+/// `bind_bytes` call, no `to_display_string` allocation, no
+/// parse-the-string-back round trip.
+fn make_binder(cql_type: cass::ValueType, class_name: Option<&str>) -> BinderFn {
     match cql_type {
-        // String types
+        // String types — fast-path Value::Str so a wire carrying
+        // an already-owned Arc<str> binds without allocating a
+        // fresh String through to_display_string().
         cass::ValueType::ASCII | cass::ValueType::TEXT | cass::ValueType::VARCHAR => {
             Box::new(|stmt, idx, value| {
-                stmt.bind_string(idx, &value.to_display_string())?; Ok(())
+                match value {
+                    polydat::ast::Value::Str(arc) => {
+                        stmt.bind_string(idx, arc)?;
+                    }
+                    other => {
+                        stmt.bind_string(idx, &other.to_display_string())?;
+                    }
+                }
+                Ok(())
             })
         }
         // 32-bit integer types
@@ -1914,31 +2428,54 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
                 stmt.bind_bool(idx, b)?; Ok(())
             })
         }
-        // CUSTOM type includes CQL vectors. Two paths:
-        // 1. Value::Bytes — direct bind (optimal: no string round-trip).
-        //    GK `_bytes` nodes produce LE f32; CQL vectors are BE f32.
-        //    Swap each 4-byte group from LE to BE before binding.
-        // 2. Value::Str — parse `[0.1, 0.2, ...]` into BE f32 bytes.
+        // CUSTOM type — predominantly CQL vectors. The element type
+        // comes from the parsed class name. Each branch builds a
+        // closure specialised to the cluster-reported element so
+        // matching typed-vec inputs take the zero-copy native path.
         cass::ValueType::CUSTOM => {
-            Box::new(|stmt, idx, value| {
-                match value {
-                    polydat::ast::Value::Bytes(le_bytes) => {
-                        // LE f32 from GK → BE f32 for CQL
-                        let be_bytes = le_to_be_f32_bytes(le_bytes);
-                        stmt.bind_bytes(idx, be_bytes)?;
-                    }
-                    _ => {
-                        let s = value.to_display_string();
-                        let bytes = parse_vector_to_bytes(&s);
-                        if bytes.is_empty() {
-                            stmt.bind_string(idx, &s)?;
-                        } else {
-                            stmt.bind_bytes(idx, bytes)?;
+            let element = class_name.and_then(binder_meta::parse_vector_element);
+            match element {
+                Some(binder_meta::VectorElement::Float) => Box::new(|stmt, idx, value| {
+                    bind_vector_float(stmt, idx, value)
+                }),
+                Some(binder_meta::VectorElement::Int) => Box::new(|stmt, idx, value| {
+                    bind_vector_int(stmt, idx, value)
+                }),
+                Some(binder_meta::VectorElement::Double) => Box::new(|stmt, idx, value| {
+                    bind_vector_double(stmt, idx, value)
+                }),
+                Some(binder_meta::VectorElement::Long) => Box::new(|stmt, idx, value| {
+                    bind_vector_long(stmt, idx, value)
+                }),
+                Some(binder_meta::VectorElement::Short) => Box::new(|stmt, idx, value| {
+                    bind_vector_short(stmt, idx, value)
+                }),
+                Some(binder_meta::VectorElement::Half) => Box::new(|stmt, idx, value| {
+                    bind_vector_half(stmt, idx, value)
+                }),
+                // Unknown / Other / no class name — keep the legacy
+                // Bytes-or-string round-trip behaviour. Logs from
+                // map_op already WARN about the missing typed
+                // mapping, so this is the safety-net path.
+                _ => Box::new(|stmt, idx, value| {
+                    match value {
+                        polydat::ast::Value::Bytes(le_bytes) => {
+                            let be_bytes = le_to_be_f32_bytes(le_bytes);
+                            stmt.bind_bytes(idx, be_bytes)?;
+                        }
+                        _ => {
+                            let s = value.to_display_string();
+                            let bytes = parse_vector_to_bytes(&s);
+                            if bytes.is_empty() {
+                                stmt.bind_string(idx, &s)?;
+                            } else {
+                                stmt.bind_bytes(idx, bytes)?;
+                            }
                         }
                     }
-                }
-                Ok(())
-            })
+                    Ok(())
+                }),
+            }
         }
         // BLOB: raw bytes binding
         cass::ValueType::BLOB => {

@@ -347,21 +347,24 @@ impl PlotterAdapter {
 
 impl DriverAdapter for PlotterAdapter {
     fn name(&self) -> &str { "plotter" }
-    fn map_op(
-        &self,
-        template: &ParsedOp,
+
+    fn map_op<'a>(
+        &'a self,
+        template: &'a ParsedOp,
         parent: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
-    ) -> Result<Box<dyn OpDispenser>, String> {
-        // SRD-68 Push 5: snapshot the op-field templates at map_op.
-        // Each entry is resolved through `wires` per cycle.
-        let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        Ok(Box::new(PlotterDispenser {
-            data: self.data.clone(),
-            canonical_kernel: parent,
-            op_fields,
-        }))
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            // SRD-68 Push 5: snapshot the op-field templates at map_op.
+            // Each entry is resolved through `wires` per cycle.
+            let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(Box::new(PlotterDispenser {
+                data: self.data.clone(),
+                canonical_kernel: parent,
+                op_fields,
+            }) as Box<dyn OpDispenser>)
+        })
     }
     fn display_preference(&self) -> nbrs_activity::adapter::DisplayPreference {
         nbrs_activity::adapter::DisplayPreference::Off

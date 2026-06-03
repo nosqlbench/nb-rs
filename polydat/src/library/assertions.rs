@@ -65,6 +65,10 @@ impl AssertType {
             PortType::Handle => "assert_handle",
             PortType::VecF32 => "assert_vec_f32",
             PortType::VecI32 => "assert_vec_i32",
+            PortType::VecF64 => "assert_vec_f64",
+            PortType::VecI64 => "assert_vec_i64",
+            PortType::VecF16 => "assert_vec_f16",
+            PortType::VecI16 => "assert_vec_i16",
         };
         Self {
             meta: NodeMeta {

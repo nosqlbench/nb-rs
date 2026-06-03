@@ -5,12 +5,24 @@
 //! P1 engine types — GkState (dependent-list), RawState (no provenance),
 //! and ProvScanState (provenance-scan).
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ast::Value;
 use super::WireSource;
 use super::program::GkProgram;
+
+/// Cached lookup of the `NBRS_DIRTY_DEBUG` env var. Called from
+/// the per-cycle hot path (`GkState::set_input`); reading the
+/// real `std::env::var` on every cycle costs ~30% of CPU on
+/// single-fiber dryrun benches (it walks the libc env table and
+/// formats a fresh CString each call). The OnceLock evaluates
+/// once on first touch and every subsequent call is one atomic
+/// load.
+fn nbrs_dirty_debug_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("NBRS_DIRTY_DEBUG").is_ok())
+}
 
 /// A cross-kernel mutable cell for a `shared`-modifier wire.
 ///
@@ -771,7 +783,7 @@ impl GkState {
         // owner asked for a re-evaluation" signal that
         // downstream side-effecting nodes (`log_*`, audit
         // emitters, time-stamped observers) MUST honour.
-        let dirty_debug = std::env::var("NBRS_DIRTY_DEBUG").is_ok();
+        let dirty_debug = nbrs_dirty_debug_enabled();
         if idx < self.input_dependents.len() {
             if dirty_debug {
                 eprintln!(

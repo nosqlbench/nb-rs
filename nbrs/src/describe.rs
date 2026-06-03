@@ -83,7 +83,7 @@ pub fn describe_command(args: &[String]) {
             eprintln!("  wrappers           List the registered op-template wrappers");
             eprintln!("  op <wkl> <op>      Show the resolved wrapper stack for one op");
             eprintln!();
-            eprintln!("For workload analysis, use: nbrs run workload=file.yaml dryrun=phase,gk");
+            eprintln!("For workload analysis, use: nbrs run workload=file.yaml dryrun=op,wiring");
         }
     }
 }

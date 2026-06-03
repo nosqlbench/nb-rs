@@ -352,24 +352,17 @@ impl GkNode for JsonField {
 
 fn value_to_json(v: &Value) -> serde_json::Value {
     match v {
-        Value::U64(n) => json!(*n),
-        Value::F64(n) => json!(*n),
-        Value::Bool(b) => json!(*b),
-        Value::Str(s) => json!(&**s),
+        // Bytes uses base64 here (JSON-payload convention) instead of
+        // the hex form `Value::to_json_value` returns, so the Bytes
+        // arm stays local. Everything else delegates to the
+        // canonical typed-to-JSON projection on Value itself —
+        // adding a new Value variant doesn't require a parallel
+        // arm here anymore.
         Value::Bytes(b) => {
             use base64::Engine;
             json!(base64::engine::general_purpose::STANDARD.encode(b))
         }
-        Value::Json(j) => (**j).clone(),
-        Value::Ext(v) => v.to_json_value(),
-        Value::Handle(_) => serde_json::Value::Null,
-        Value::VecF32(arc) => serde_json::Value::Array(
-            arc.iter().map(|f| json!(*f)).collect()
-        ),
-        Value::VecI32(arc) => serde_json::Value::Array(
-            arc.iter().map(|i| serde_json::Value::from(*i)).collect()
-        ),
-        Value::None => serde_json::Value::Null,
+        other => other.to_json_value(),
     }
 }
 

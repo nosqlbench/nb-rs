@@ -18,16 +18,19 @@
 use std::sync::Arc;
 
 use nbrs_activity::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
-use nbrs_activity::op_modifier::ModifierChain;
 use polydat::ast::Value;
 use scylla::client::session::Session;
 use scylla::statement::{Consistency, batch::{Batch, BatchType}, prepared::PreparedStatement};
 
-use super::{ScyllaResultBody, binders, format_cql_error, op_error, truncate_stmt};
+use super::{ScyllaResultBody, binders, format_cql_error, op_error};
 
 pub(super) struct ScyllaBatchDispenser {
     session: Arc<Session>,
-    consistency: Consistency,
+    /// Pre-prepared inner statement (consistency + modifiers
+    /// already applied at `map_op` time). Same dispenser-init
+    /// contract as [`super::prepared::ScyllaPreparedDispenser`].
+    prepared: Arc<PreparedStatement>,
+    /// Statement text — retained for error diagnostics only.
     stmt_text: String,
     /// Bind-point names in `?` order. Each row's values come from
     /// `wires.get(name)` after `wires.advance(coord)` per row
@@ -38,53 +41,33 @@ pub(super) struct ScyllaBatchDispenser {
     /// cassandra-cpp adapter: 0 → single-row fallback.
     batch_size: usize,
     batch_type: BatchType,
-    prepared: std::sync::OnceLock<Arc<PreparedStatement>>,
-    /// SRD 73 universal per-op field overrides applied to the
-    /// inner prepared statement at prepare time. Note: scylla's
-    /// `Batch` type itself lacks `set_page_size`, so the chain
-    /// targets `PreparedStatement` only; batch-level fields like
-    /// per-batch timeouts are a future follow-up.
-    modifiers: ModifierChain<PreparedStatement>,
+    /// Batch-level consistency — applied to the [`Batch`] itself
+    /// per execute. Distinct from the consistency baked into the
+    /// inner prepared statement: scylla's batch wrapper has its
+    /// own consistency setter that overrides the per-statement
+    /// value when both are present.
+    consistency: Consistency,
 }
 
 impl ScyllaBatchDispenser {
     pub fn new(
         session: Arc<Session>,
-        consistency: Consistency,
+        prepared: Arc<PreparedStatement>,
         stmt_text: String,
         bind_names: Vec<String>,
         batch_size: usize,
         batch_type: BatchType,
-        modifiers: ModifierChain<PreparedStatement>,
+        consistency: Consistency,
     ) -> Self {
         Self {
             session,
-            consistency,
+            prepared,
             stmt_text,
             bind_names,
             batch_size: if batch_size == 0 { 1 } else { batch_size },
             batch_type,
-            prepared: std::sync::OnceLock::new(),
-            modifiers,
+            consistency,
         }
-    }
-
-    async fn get_prepared(&self) -> Result<Arc<PreparedStatement>, ExecutionError> {
-        if let Some(p) = self.prepared.get() {
-            return Ok(p.clone());
-        }
-        let mut prep = self.session.prepare(self.stmt_text.clone()).await
-            .map_err(|e| op_error(
-                "prepare_error",
-                format!("prepare '{}': {e}", truncate_stmt(&self.stmt_text)),
-                false,
-            ))?;
-        prep.set_consistency(self.consistency);
-        // SRD 73: layer per-op universal-field overrides.
-        self.modifiers.apply(&mut prep);
-        let arc = Arc::new(prep);
-        let _ = self.prepared.set(arc.clone());
-        Ok(self.prepared.get().unwrap().clone())
     }
 }
 
@@ -96,8 +79,7 @@ impl OpDispenser for ScyllaBatchDispenser {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
         Box::pin(async move {
-            let prepared = self.get_prepared().await?;
-            let col_specs = prepared.get_variable_col_specs();
+            let col_specs = self.prepared.get_variable_col_specs();
 
             // SRD-68 batch contract: each iteration of the batch is
             // another pull. Advance the per-fiber wire coord and
@@ -125,7 +107,7 @@ impl OpDispenser for ScyllaBatchDispenser {
             let mut batch = Batch::new(self.batch_type);
             batch.set_consistency(self.consistency);
             for _ in 0..row_count {
-                batch.append_statement((*prepared).clone());
+                batch.append_statement((*self.prepared).clone());
             }
 
             let result = self.session.batch(&batch, rows).await

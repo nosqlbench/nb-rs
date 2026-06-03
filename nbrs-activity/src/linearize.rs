@@ -60,7 +60,7 @@ pub fn analyze_dependencies(templates: &[ParsedOp]) -> Vec<DepGroup> {
                 // that might resolve to a capture
                 let bps = bindpoints::extract_bind_points(s);
                 for bp in &bps {
-                    if let bindpoints::BindPoint::Reference { name, qualifier } = bp {
+                    if let bindpoints::BindPoint::Reference { name, qualifier, .. } = bp {
                         match qualifier {
                             bindpoints::BindQualifier::Capture => {
                                 cons.insert(name.clone());

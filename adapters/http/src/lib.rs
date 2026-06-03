@@ -110,6 +110,7 @@ fn classify_reqwest_error(e: &reqwest::Error) -> String {
 impl DriverAdapter for HttpAdapter {
     fn name(&self) -> &str { "http" }
 
+
     /// HTTP adapter reads a closed vocabulary of op fields:
     /// request-shape (`method`, `uri` / `url`), body framing
     /// (`content_type`, `body`), and header overrides
@@ -136,11 +137,12 @@ impl DriverAdapter for HttpAdapter {
                "request_timeout_ms", "on_timeout"])
     }
 
-    fn map_op(
-        &self,
-        template: &ParsedOp,
+    fn map_op<'a>(
+        &'a self,
+        template: &'a ParsedOp,
         parent: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
-    ) -> Result<Box<dyn OpDispenser>, String> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+        Box::pin(async move {
         // Extract static method from template (default GET)
         let method = template.op.get("method")
             .and_then(|v: &serde_json::Value| v.as_str())
@@ -210,7 +212,8 @@ impl DriverAdapter for HttpAdapter {
             headers_template,
             per_op_timeout_ms,
             on_timeout_accept,
-        }))
+        }) as Box<dyn OpDispenser>)
+        })
     }
 }
 
@@ -349,6 +352,7 @@ impl OpDispenser for HttpDispenser {
                 builder = builder.body(body_str);
             }
 
+            let request_start = std::time::Instant::now();
             let response = match builder.send().await {
                 Ok(r) => r,
                 Err(e) => {
@@ -364,6 +368,33 @@ impl OpDispenser for HttpDispenser {
                     // synchronously, and the polling layer is the
                     // canonical waiter / observer.
                     if e.is_timeout() && self.on_timeout_accept {
+                        // Diagnostic: this branch is the ONLY way
+                        // the HTTP adapter returns `body: None`.
+                        // Without this log, a downstream
+                        // `validation_failed` with
+                        // `<no body returned by op>` is opaque
+                        // because the verify clause can't tell
+                        // why the body is missing. Surfacing the
+                        // accept here makes the chain obvious in
+                        // session.log without changing the
+                        // success-shape semantics.
+                        let elapsed_ms = request_start.elapsed().as_millis();
+                        let configured_ms = self.per_op_timeout_ms
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "client-default".to_string());
+                        nbrs_activity::observer::log(
+                            nbrs_activity::observer::LogLevel::Warn,
+                            &format!(
+                                "http: `on_timeout: accept` swallowed a \
+                                 request timeout after {elapsed_ms}ms \
+                                 (configured per_op_timeout_ms={configured_ms}) \
+                                 → returning Ok(body=None). \
+                                 URL={full_url}. \
+                                 If a downstream verify clause expected a \
+                                 body, the field assertion will fail with \
+                                 `<no body returned by op>`."
+                            ),
+                        );
                         return Ok(OpResult { body: None, skipped: false });
                     }
                     let retryable = e.is_timeout() || e.is_connect();
@@ -591,6 +622,68 @@ mod tests {
                 "expected error_name='Timeout', got: {ad:?}"),
             other => panic!("expected ExecutionError::Op(Timeout), got {other:?}"),
         }
+    }
+
+    /// Happy-path regression test: when the server returns a
+    /// well-formed JSON body, the adapter's `OpResult.body` is
+    /// `Some(JsonBody(...))` — not `None`. This pins the
+    /// invariant that the HTTP adapter never returns
+    /// `body: None` for a successful request (the only None
+    /// path is the timeout-accept branch tested elsewhere). A
+    /// regression here would surface as
+    /// `<no body returned by op>` in validation diagnostics
+    /// even though the server replied normally.
+    #[tokio::test]
+    async fn successful_json_response_populates_body() {
+        // Spin up a one-shot HTTP server that replies with a
+        // Jolokia-shaped JSON body.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
+            .expect("bind 127.0.0.1:0");
+        let port = listener.local_addr().expect("local_addr").port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { break };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let body = r#"{"status":200,"value":null,"request":{"type":"exec"}}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body,
+                    );
+                    let _ = sock.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+
+        let adapter = HttpAdapter::new();
+        let template = http_op(
+            "POST",
+            &format!("http://127.0.0.1:{port}/jolokia/"),
+            None,    // no per-op timeout
+            None,    // no on_timeout
+        );
+        let dispenser = adapter.map_op(&template, test_kernel())
+            .expect("map_op");
+
+        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let cw = nbrs_activity::wires::CycleWires::new(&mut k);
+        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
+        let empty = nbrs_activity::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+
+        let result = dispenser.execute(0, &ctx).await
+            .expect("successful HTTP request should return Ok");
+        let body = result.body.as_ref()
+            .expect("successful response with body must populate result.body — \
+                     no body indicates an adapter regression (the only legit \
+                     body=None path is timeout-accept, which this test doesn't \
+                     exercise)");
+        let json = body.to_json();
+        assert_eq!(json.get("status").and_then(|v| v.as_u64()), Some(200),
+            "body should preserve the server's `status` field; got: {json}");
     }
 }
 

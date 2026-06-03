@@ -89,6 +89,21 @@ pub struct ActivityConfig {
     pub snapshot_writer: Option<
         Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
     >,
+    /// Session-level dryrun mode (`silent` / `emit` / `json`),
+    /// or `None` for a normal run.
+    ///
+    /// `dryrun=cycle` means **full construction of an executable
+    /// cycle path** — real adapter, real cluster connection, real
+    /// prepared statements, real metadata — and then suppression
+    /// of only the outbound `execute()` at cycle time via the
+    /// outermost `DryRunWrapper`. The wrapper is triggered by an
+    /// injected `dryrun:` op-template parameter, and this field is
+    /// the signal that drives that injection. There is no
+    /// substitution of the adapter itself; the adapter lifecycle
+    /// runs end-to-end, so the typed lvalue contract the adapter
+    /// reifies at `map_op` time (CQL: prepare + metadata) is
+    /// available under dryrun exactly as it is under a real run.
+    pub dry_run_mode: Option<String>,
 }
 
 impl Default for ActivityConfig {
@@ -110,6 +125,7 @@ impl Default for ActivityConfig {
             readouts: nbrs_workload::model::ReadoutsBindings::default(),
             cli_readout_override: None,
             snapshot_writer: None,
+            dry_run_mode: None,
         }
     }
 }
@@ -914,8 +930,44 @@ impl Activity {
         let program = op_builder.program();
 
         // Init time: map each template to a dispenser from its adapter,
-        // then wrap with result traverser for consumption/capture
-        let templates = activity.op_sequence.templates();
+        // then wrap with result traverser for consumption/capture.
+        //
+        // Dryrun injection: when the session is in dryrun mode
+        // (`config.dry_run_mode` is `Some(mode)`), inject a logical
+        // `dryrun: <mode>` parameter into every op template's
+        // `params` map BEFORE the wrapping cascade sees them. This
+        // triggers the outermost `DryRunWrapper` to install for
+        // every op; the wrapper short-circuits at cycle time and
+        // suppresses only the outbound `execute()`.
+        //
+        // The real adapter's full lifecycle still runs (connect,
+        // prepare, metadata) — `dryrun=cycle` means "construct a
+        // fully-executable cycle path, then suppress only the
+        // outbound call." So `dry_run_mode` is sourced from the
+        // session config, NOT from any adapter substitution.
+        let dryrun_mode: Option<String> = activity.config.dry_run_mode.clone();
+        let templates_owned: Vec<nbrs_workload::model::ParsedOp>;
+        let templates: &[nbrs_workload::model::ParsedOp] = if let Some(mode) = dryrun_mode.as_deref() {
+            templates_owned = activity.op_sequence.templates().iter()
+                .map(|t| {
+                    let mut clone = t.clone();
+                    clone.params.insert(
+                        "dryrun".into(),
+                        serde_json::Value::String(mode.to_string()),
+                    );
+                    clone
+                })
+                .collect();
+            crate::diag!(crate::observer::LogLevel::Info,
+                "dryrun: injected `dryrun: {}` marker into {} op template(s); \
+                 DRYRUN wrapper will install outermost and short-circuit \
+                 every op (inner adapter, verify, metrics, poll, etc. will \
+                 not fire).",
+                mode, templates_owned.len());
+            &templates_owned[..]
+        } else {
+            activity.op_sequence.templates()
+        };
 
         // Validate all bind points are resolvable before execution
         if let Err(e) = crate::synthesis::validate_bind_points(templates, &program) {
@@ -1146,7 +1198,16 @@ impl Activity {
                 }
             }
 
-            match adapter.map_op(template, op_builder.canonical_kernel_for_op(&template.name)) {
+            // Per-op dispenser-init contract: `map_op` owns the
+            // typed-binder verification for ITS op as part of
+            // completing the currying stack — it constructs any
+            // binders from the adapter's protocol-side metadata,
+            // verifies them against `parent` via
+            // `polydat::binder::verify_against_kernel`, and
+            // surfaces any violation as `Err`. No
+            // outside-the-dispenser-init phase for binders; the
+            // map_op return signals the result.
+            match adapter.map_op(template, op_builder.canonical_kernel_for_op(&template.name)).await {
                 Ok(d) => {
                     let raw = Arc::from(d);
 
@@ -1245,9 +1306,9 @@ impl Activity {
                     // Apply each remaining wrapper in plan order.
                     // Skip `traverse`; it's already constructed.
                     for reg in plan.iter_innermost_first() {
-                        if reg.name == crate::wrapper_registrations::TRAVERSE { continue; }
+                        if reg.name == crate::wrappers::traversing::NAME { continue; }
                         let stop = match reg.name {
-                            crate::wrapper_registrations::THROTTLE => {
+                            crate::wrappers::throttle::NAME => {
                                 let raw_name = template.delay.as_deref()
                                     .expect("throttle triggered → delay set");
                                 let name = raw_name.trim()
@@ -1263,7 +1324,7 @@ impl Activity {
                                     }
                                 }
                             }
-                            crate::wrapper_registrations::VALIDATE => {
+                            crate::validation::WRAPPER_NAME => {
                                 match crate::validation::ValidatingDispenser::wrap(
                                     current.clone(), template, &activity.labels, Some(&program), &mut fx,
                                 ) {
@@ -1279,7 +1340,7 @@ impl Activity {
                                     }
                                 }
                             }
-                            crate::wrapper_registrations::POLL => {
+                            crate::wrappers::polling::NAME => {
                                 // Poll config reader: `poll:` is either
                                 // a string (mode only, all-defaults) or
                                 // a map (`{mode, interval_ms, timeout_ms,
@@ -1347,7 +1408,7 @@ impl Activity {
                                 current = d;
                                 false
                             }
-                            crate::wrapper_registrations::IF_COND => {
+                            crate::wrappers::conditional::NAME => {
                                 // `if:` short-circuits before the
                                 // inner cascade — load-bearing for
                                 // the recent fix that pulls polling
@@ -1370,11 +1431,11 @@ impl Activity {
                                     }
                                 }
                             }
-                            crate::wrapper_registrations::EMIT => {
+                            crate::wrappers::emit::NAME => {
                                 current = crate::wrappers::EmitDispenser::wrap(current.clone(), &template.name);
                                 false
                             }
-                            crate::wrapper_registrations::RESULT => {
+                            crate::wrappers::result::NAME => {
                                 // SRD-40b §5: result-as-GK adapter —
                                 // exposes captured result fields to
                                 // the op's GK scope via
@@ -1386,7 +1447,7 @@ impl Activity {
                                 current = crate::wrappers::ResultDispenser::wrap(current.clone(), template.result.as_ref());
                                 false
                             }
-                            crate::wrapper_registrations::METRICS => {
+                            crate::wrappers::metrics::NAME => {
                                 // SRD-40b §6/§7 — one `Component`
                                 // per dispenser carrying
                                 // `op=<template.name>` so the
@@ -1432,7 +1493,35 @@ impl Activity {
                                     }
                                 }
                             }
-                            crate::wrapper_registrations::MEMO => {
+                            crate::wrappers::dry_run::NAME => {
+                                // Outermost short-circuit. Activated
+                                // by the injected `dryrun:` template
+                                // parameter (per
+                                // `run_with_adapters`'s session-
+                                // startup injection step). The
+                                // trigger fires only when the
+                                // template carries the marker, so
+                                // we know we're in dryrun mode just
+                                // by being here.
+                                //
+                                // Architectural invariant: by sitting
+                                // outermost in the cascade, the
+                                // short-circuit returns BEFORE any
+                                // inner wrapper (verify / metrics /
+                                // poll / etc.) can observe the
+                                // empty body the dryrun stand-in
+                                // produces. The `forbids_outer` set
+                                // on the DRYRUN registration pins
+                                // this position structurally.
+                                // DryRunWrapper has one job: short-circuit
+                                // the outbound op. No display modes, no
+                                // op-field snapshot, no extra work — the
+                                // wrapper is supposed to do NOTHING MORE
+                                // than wrap the op and not call it.
+                                current = crate::wrappers::DryRunWrapper::wrap(current.clone());
+                                false
+                            }
+                            crate::wrappers::memo::NAME => {
                                 // Memo wrapper: parse `memo:` (string
                                 // shorthand or `{before, after}` map),
                                 // wrap with cloned ArcSwap handle.
@@ -1480,6 +1569,19 @@ impl Activity {
                         if stop { return true; }
                     }
 
+                    // Dryrun short-circuit: when the session is in
+                    // dryrun mode (`config.dry_run_mode` set), the
+                    // dryrun template-parameter injection above put
+                    // a `dryrun:` field on every op template; the
+                    // wrapper resolver picks up that field and adds
+                    // `DryRunWrapper` as the OUTERMOST layer. The
+                    // wrapper never calls its inner — verify /
+                    // metrics / poll / etc. observers don't fire,
+                    // and the real adapter's `execute()` is
+                    // suppressed. The real adapter itself still
+                    // constructs in full (connect, prepare, gather
+                    // metadata); only the per-cycle outbound call
+                    // is short-circuited.
                     dispensers.push(current);
 
                     // Seal the per-template fixture. The PullPlan
@@ -2777,12 +2879,14 @@ mod tests {
 
     impl DriverAdapter for CountingDriverAdapter {
         fn name(&self) -> &str { "counting" }
-        fn map_op(
-            &self,
-            _template: &nbrs_workload::model::ParsedOp,
+        fn map_op<'a>(
+            &'a self,
+            _template: &'a nbrs_workload::model::ParsedOp,
             _parent: std::sync::Arc<polydat::kernel::GkKernel>,
-        ) -> Result<Box<dyn OpDispenser>, String> {
-            Ok(Box::new(CountingDispenser { count: self.count.clone() }))
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+            Box::pin(async move {
+                Ok(Box::new(CountingDispenser { count: self.count.clone() }) as Box<dyn OpDispenser>)
+            })
         }
     }
 
@@ -2816,15 +2920,17 @@ mod tests {
 
     impl DriverAdapter for FailThenSucceedDriverAdapter {
         fn name(&self) -> &str { "fail-then-succeed" }
-        fn map_op(
-            &self,
-            _template: &nbrs_workload::model::ParsedOp,
+        fn map_op<'a>(
+            &'a self,
+            _template: &'a nbrs_workload::model::ParsedOp,
             _parent: std::sync::Arc<polydat::kernel::GkKernel>,
-        ) -> Result<Box<dyn OpDispenser>, String> {
-            Ok(Box::new(FailThenSucceedDispenser {
-                fails_remaining: self.fails_remaining.clone(),
-                total_calls: self.total_calls.clone(),
-            }))
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+            Box::pin(async move {
+                Ok(Box::new(FailThenSucceedDispenser {
+                    fails_remaining: self.fails_remaining.clone(),
+                    total_calls: self.total_calls.clone(),
+                }) as Box<dyn OpDispenser>)
+            })
         }
     }
 

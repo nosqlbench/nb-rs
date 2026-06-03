@@ -15,6 +15,7 @@
 //! is never an adapter name on its own.
 
 mod batch;
+mod binder_meta;
 mod binders;
 mod op_modifier;
 mod prepared;
@@ -101,11 +102,12 @@ impl DriverAdapter for ScyllaCqlAdapter {
         crate::common::default_status_metrics()
     }
 
-    fn map_op(
-        &self,
-        template: &ParsedOp,
+    fn map_op<'a>(
+        &'a self,
+        template: &'a ParsedOp,
         parent: std::sync::Arc<polydat::kernel::GkKernel>,
-    ) -> Result<Box<dyn OpDispenser>, String> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+        Box::pin(async move {
         let (stmt_text, stmt_field) = STMT_FIELD_NAMES.iter()
             .find_map(|key| -> Option<(String, &'static str)> {
                 let v = template.op.get(*key)?;
@@ -124,6 +126,22 @@ impl DriverAdapter for ScyllaCqlAdapter {
         // statement text.
         let bind_names = nbrs_workload::bindpoints::referenced_bindings(&stmt_text);
         let prepared_text = nbrs_workload::bindpoints::replace_bind_points_with_markers(&stmt_text);
+        // Workload-author lvalue assertions per bind-point: a
+        // `{name:*}` or `{name:<polydat-type>}` suffix in the
+        // statement text overrides the cluster-side parameter
+        // type for binder verification (and only for verification;
+        // the bind path still uses cluster metadata). Indices
+        // line up with `bind_names` because both come from
+        // walking the same statement text in the same order.
+        let lvalue_specs: Vec<Option<nbrs_workload::bindpoints::LvalueSpec>> = {
+            use nbrs_workload::bindpoints::{extract_bind_points, BindPoint};
+            extract_bind_points(&stmt_text).into_iter()
+                .filter_map(|bp| match bp {
+                    BindPoint::Reference { lvalue_spec, .. } => Some(lvalue_spec),
+                    BindPoint::InlineDefinition(_) => None,
+                })
+                .collect()
+        };
 
         let has_batch = template.params.contains_key("batch");
         let mode = OpMode::from_stmt_field(stmt_field, has_batch);
@@ -151,40 +169,204 @@ impl DriverAdapter for ScyllaCqlAdapter {
                 self.consistency,
                 stmt_text,
                 modifiers_for_raw,
-            ))),
-            OpMode::Prepared => Ok(Box::new(prepared::ScyllaPreparedDispenser::new(
-                self.session.clone(),
-                self.consistency,
-                prepared_text,
-                bind_names,
-                modifiers_for_prepared,
-            ))),
-            OpMode::Batch => {
-                let batch_type = template.params.get("batchtype")
-                    .and_then(|v| v.as_str())
-                    .map(|s| match s.to_lowercase().as_str() {
-                        "logged"  => scylla::statement::batch::BatchType::Logged,
-                        "counter" => scylla::statement::batch::BatchType::Counter,
-                        _         => scylla::statement::batch::BatchType::Unlogged,
+            )) as Box<dyn OpDispenser>),
+            OpMode::Prepared | OpMode::Batch => {
+                // Prepare against the cluster and verify the binder
+                // against the dispenser's parent kernel — the per-op
+                // dispenser-init compulsion. Both prepared-mode and
+                // batch-mode use the same inner prepared statement,
+                // so they share this preparation step.
+                let mut prep = self.session.prepare(prepared_text.clone()).await
+                    .map_err(|e| format!(
+                        "scylla prepare '{}': {e}",
+                        truncate_stmt(&prepared_text),
+                    ))?;
+                prep.set_consistency(self.consistency);
+                // SRD 73: layer the per-op universal-field overrides
+                // before Arc-wrapping (PreparedStatement mutation is
+                // single-owner before sharing).
+                modifiers_for_prepared.apply(&mut prep);
+
+                // Build the typed binder from the prepared statement's
+                // variable col-specs. Wire references come from the
+                // `bind_names` list (one per `?` placeholder, in order).
+                //
+                // Any slot whose CQL type doesn't have a precise
+                // polydat mapping yet falls back to `Str` and gets
+                // a WARN so the operator can see exactly which
+                // positions lost typed verification — surfacing
+                // the long-tail CQL types that need a precise
+                // mapping added in `binder_meta::cql_to_polydat`.
+                // Build the binder slots. For each `?`-position:
+                //
+                //   1. Resolve the workload-author lvalue
+                //      assertion (`{name:*}` / `{name:<type>}`)
+                //      from the parsed bind-points. If present,
+                //      it overrides the cluster-side type for
+                //      verification — this is the per-bindpoint
+                //      opt-in for type fusion (`:*` → Str-lvalue,
+                //      anything goes; `:<type>` → asserted type
+                //      from `PortType::from_workload_name`).
+                //   2. Otherwise fall back to the cluster-side
+                //      type via `binder_meta::cql_to_polydat`. Any
+                //      cluster type lacking a precise polydat
+                //      mapping warns (per-slot) so the operator
+                //      can see which slots are un-typed.
+                let col_specs = prep.get_variable_col_specs();
+                let mut slot_build_err: Option<String> = None;
+                let slots: Vec<polydat::binder::BinderSlot> = col_specs.iter()
+                    .zip(bind_names.iter())
+                    .enumerate()
+                    .map(|(idx, (cluster_spec, name))| {
+                        use nbrs_workload::bindpoints::LvalueSpec;
+                        // Compute the cluster-side (precise or
+                        // Str-fallback) polydat type — used in all
+                        // arms below as the slot's truthful lvalue
+                        // type, whether or not the workload's
+                        // opt-in overrides it.
+                        let (cluster_lvalue, fallback) =
+                            binder_meta::cql_to_polydat(cluster_spec.typ());
+                        let (lvalue_type, allow_fusion) =
+                            match lvalue_specs.get(idx).and_then(|s| s.as_ref()) {
+                                Some(LvalueSpec::Wildcard) => {
+                                    nbrs_activity::diag!(
+                                        nbrs_activity::observer::LogLevel::Info,
+                                        "scylla op '{op}' field '{field}' slot [{idx}] wire `{name}`: \
+                                         `:*` wildcard opt-in seen on this bind-point — polydat \
+                                         binder slot keeps cluster-reported lvalue type \
+                                         `{cluster_lvalue}` with allow_fusion=true; verifier \
+                                         skips the strict rvalue→lvalue rule for this slot.",
+                                        op = template.name,
+                                        field = stmt_field,
+                                    );
+                                    (cluster_lvalue, true)
+                                }
+                                Some(LvalueSpec::Explicit(type_name)) => {
+                                    match polydat::ast::PortType::from_workload_name(type_name) {
+                                        Some(pt) => {
+                                            nbrs_activity::diag!(
+                                                nbrs_activity::observer::LogLevel::Info,
+                                                "scylla op '{op}' field '{field}' slot [{idx}] wire `{name}`: \
+                                                 `:{type_name}` lvalue assertion seen on this bind-point \
+                                                 — using workload-asserted polydat type `{type_name}` \
+                                                 (cluster reports `{cluster_lvalue}`).",
+                                                op = template.name,
+                                                field = stmt_field,
+                                            );
+                                            (pt, false)
+                                        }
+                                        None => {
+                                            slot_build_err = Some(format!(
+                                                "scylla op '{op}' field '{field}' slot [{idx}] wire `{name}`: \
+                                                 unknown polydat type name `{type_name}` in lvalue spec \
+                                                 `:{type_name}`. Accepted names: u64, f64, u32, i32, \
+                                                 i64, f32, bool, str, bytes, json, vec_f32, vec_i32.",
+                                                op = template.name,
+                                                field = stmt_field,
+                                            ));
+                                            (cluster_lvalue, false)
+                                        }
+                                    }
+                                }
+                                None => {
+                                    if let Some(cql_label) = fallback {
+                                        nbrs_activity::diag!(
+                                            nbrs_activity::observer::LogLevel::Warn,
+                                            "scylla op '{op}' field '{field}' slot [{idx}] wire `{name}`: \
+                                             CQL type {cql_label} has no precise polydat mapping yet — \
+                                             falling back to Str-lvalue, which permits any rvalue and \
+                                             effectively bypasses typed verification for this slot. \
+                                             Add a precise arm to \
+                                             adapters/cql/src/scylla/binder_meta.rs::cql_to_polydat \
+                                             when this type becomes a verification bottleneck, or \
+                                             silence this warning intentionally by spelling the \
+                                             bind-point with the `:*` wildcard suffix (i.e. write \
+                                             `{{{name}:*}}` in place of `{{{name}}}` in the \
+                                             workload template).",
+                                            op = template.name,
+                                            field = stmt_field,
+                                        );
+                                    }
+                                    // Non-strict default: auto-permit fusion for
+                                    // text-natural lvalues. The CQL text/varchar/ascii
+                                    // protocol slot will text-coerce any rvalue at
+                                    // bind time, so polydat doesn't need to enforce a
+                                    // strict rvalue→Str match. Adapter signals this
+                                    // explicitly via `allow_fusion: true` (was an
+                                    // implicit `is_text_natural` rule in polydat
+                                    // before; the signal is now on the slot).
+                                    //
+                                    // The CUSTOM-fallback case (above) already
+                                    // mapped to Str; this arm picks up both that
+                                    // case and the precisely-mapped Text/Ascii/Varchar
+                                    // columns. A future `strict=true` adapter param
+                                    // would skip this auto-permit.
+                                    let allow_fusion = matches!(
+                                        cluster_lvalue, polydat::ast::PortType::Str);
+                                    (cluster_lvalue, allow_fusion)
+                                }
+                            };
+                        polydat::binder::BinderSlot {
+                            wire: name.clone(),
+                            lvalue_type,
+                            allow_fusion,
+                        }
                     })
-                    .unwrap_or(scylla::statement::batch::BatchType::Unlogged);
-                // `batch: <N>` op param is the row count; fall back
-                // to `batch-size:` for parity with the older docs.
-                let batch_size: usize = template.params.get("batch")
-                    .or_else(|| template.params.get("batch-size"))
-                    .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
-                    .unwrap_or(1) as usize;
-                Ok(Box::new(batch::ScyllaBatchDispenser::new(
-                    self.session.clone(),
-                    self.consistency,
-                    prepared_text,
-                    bind_names,
-                    batch_size,
-                    batch_type,
-                    modifiers_for_prepared,
-                )))
+                    .collect();
+                if let Some(msg) = slot_build_err {
+                    return Err(msg);
+                }
+                if !slots.is_empty() {
+                    let binder = polydat::binder::Binder::Positional {
+                        field: stmt_field.to_string(),
+                        slots,
+                    };
+                    polydat::binder::verify_against_kernel(&[binder], &parent)
+                        .map_err(|violations| violations.into_iter()
+                            .map(|v| v.message)
+                            .collect::<Vec<_>>()
+                            .join("; "))?;
+                }
+                let prepared_arc = std::sync::Arc::new(prep);
+
+                match mode {
+                    OpMode::Prepared => Ok(Box::new(prepared::ScyllaPreparedDispenser::new(
+                        self.session.clone(),
+                        prepared_arc,
+                        prepared_text,
+                        bind_names,
+                    )) as Box<dyn OpDispenser>),
+                    OpMode::Batch => {
+                        let batch_type = template.params.get("batchtype")
+                            .and_then(|v| v.as_str())
+                            .map(|s| match s.to_lowercase().as_str() {
+                                "logged"  => scylla::statement::batch::BatchType::Logged,
+                                "counter" => scylla::statement::batch::BatchType::Counter,
+                                _         => scylla::statement::batch::BatchType::Unlogged,
+                            })
+                            .unwrap_or(scylla::statement::batch::BatchType::Unlogged);
+                        let batch_size: usize = template.params.get("batch")
+                            .or_else(|| template.params.get("batch-size"))
+                            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
+                            .unwrap_or(1) as usize;
+                        Ok(Box::new(batch::ScyllaBatchDispenser::new(
+                            self.session.clone(),
+                            prepared_arc,
+                            prepared_text,
+                            bind_names,
+                            batch_size,
+                            batch_type,
+                            self.consistency,
+                        )) as Box<dyn OpDispenser>)
+                    }
+                    OpMode::Raw => unreachable!(
+                        "Raw arm handled above; the prepare/batch combined arm \
+                         is reached only when mode is Prepared or Batch."
+                    ),
+                }
             }
         }
+        })
     }
 
     fn known_op_params(&self) -> &'static [&'static str] {

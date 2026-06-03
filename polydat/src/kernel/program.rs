@@ -802,6 +802,19 @@ impl GkProgram {
         self.output_list.iter().position(|(n, _, _)| n == name)
     }
 
+    /// Look up an output's [`crate::ast::PortType`] by name.
+    ///
+    /// Returns `None` for names not declared as outputs of this
+    /// program. Used by the binder verification path
+    /// (`polydat::binder::verify_against_kernel`) to type-check
+    /// adapter binding shapes against the actual kernel wire
+    /// types — symmetric counterpart to `input_port_type`.
+    pub fn output_port_type(&self, name: &str) -> Option<crate::ast::PortType> {
+        let (node_idx, port_idx) = self.resolve_output(name)?;
+        let meta = self.node_meta(node_idx);
+        meta.outs.get(port_idx).map(|out| out.typ)
+    }
+
     /// Get the provenance bitmask for a node by index.
     pub fn input_provenance_for(&self, node_idx: usize) -> u64 {
         self.input_provenance.get(node_idx).copied().unwrap_or(0)

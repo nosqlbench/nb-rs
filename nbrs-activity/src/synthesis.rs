@@ -15,12 +15,21 @@
 //! See `docs/sysref/68_dispenser_owned_gk_context.md` for the
 //! resolution model.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use polydat::kernel::{GkKernel, GkProgram, GkState};
 use polydat::ast::Value;
 use nbrs_workload::model::ParsedOp;
 use nbrs_workload::bindpoints::{self, BindPoint, BindQualifier};
+
+/// Cached `NBRS_DIRTY_DEBUG` flag — per-cycle `std::env::var`
+/// reads measured at ~30% of single-fiber CPU; the OnceLock
+/// makes the gate a single atomic load on the hot path. See
+/// the matching helpers in `wires.rs` / polydat's `engines.rs`.
+fn nbrs_dirty_debug_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("NBRS_DIRTY_DEBUG").is_ok())
+}
 
 /// Shared op builder that distributes per-fiber builders.
 ///
@@ -191,17 +200,23 @@ impl OpBuilder {
         // the fiber observes the same cell handles as the
         // workload-root through the chain.
         let mut fb = FiberBuilder::new(&self.source_kernel);
-        fb.scope_values = self.scope_values.clone();
-        // Apply scope values by NAME — each kernel resolves the
-        // name to its own input slot. Cross-kernel-safe by
-        // construction (see `OpBuilder::scope_values` doc).
-        // Per S4: go through the typed Dataflow surface so
-        // type-mismatched scope values fail loud rather than
-        // silently corrupting downstream reads.
+        // Install scope_values + precompute each value's input
+        // index against `main_kernel`. The cached indices feed
+        // the per-cycle `reset_captures` path (replacing the
+        // linear `find_input` scan that used to dominate the
+        // single-fiber dryrun=cycle profile at ~11% self time).
+        fb.set_scope_values(self.scope_values.clone());
+        // Apply scope values to the main kernel through the
+        // typed Dataflow surface so type-mismatched scope values
+        // fail loud rather than silently corrupting downstream
+        // reads. Walks the pre-resolved index list — no second
+        // `find_input` call.
         use polydat::kernel::Dataflow;
-        for (name, value) in &self.scope_values {
-            if let Some(idx) = fb.main_kernel.program().find_input(name) {
-                fb.main_kernel.set_wire_idx(idx, value.clone())
+        for ((name, value), idx_opt) in fb.scope_values.iter()
+            .zip(fb.scope_value_main_idx.iter())
+        {
+            if let Some(idx) = idx_opt {
+                fb.main_kernel.set_wire_idx(*idx, value.clone())
                     .unwrap_or_else(|e| panic!(
                         "scope value '{name}' failed typed write at scope-init: {e}"
                     ));
@@ -277,6 +292,27 @@ pub struct FiberBuilder {
     /// before any cycles run; read at cycle dispatch to populate
     /// `ExecCtx::wires` for the firing dispenser.
     per_op_kernels: Vec<Option<GkKernel>>,
+    /// Pre-resolved input indices for each entry in
+    /// [`Self::scope_values`] against [`Self::main_kernel`].
+    /// `None` slots are scope values the main program doesn't
+    /// declare (silently skipped at write time — matches the
+    /// historical name-based-skip semantics).
+    ///
+    /// Eliminates the `GkProgram::find_input` linear scan that
+    /// fired per scope-value per cycle in `reset_captures`.
+    /// Populated once at [`Self::new`] (initially empty since
+    /// scope_values is empty) and refreshed by
+    /// [`Self::set_scope_values`] when the OpBuilder seeds them.
+    scope_value_main_idx: Vec<Option<usize>>,
+    /// Per-op-kernel mirror of [`Self::scope_value_main_idx`].
+    /// Outer Vec parallels [`Self::per_op_kernels`]; inner Vec
+    /// parallels [`Self::scope_values`]. `None` outer slots
+    /// match per_op_kernels' `None` entries (no canonical kernel
+    /// for that dispenser). Built inside
+    /// [`Self::attach_dispenser_kernels`] after each subscope is
+    /// constructed so the per-cycle reset path becomes pure
+    /// indexed `set_input`.
+    scope_value_per_op_idx: Vec<Option<Vec<Option<usize>>>>,
 }
 
 /// Validate that all bind points in op templates can be resolved.
@@ -314,7 +350,7 @@ pub fn validate_bind_points(
             if let serde_json::Value::String(s) = value {
                 let bps = bindpoints::extract_bind_points(s);
                 for bp in &bps {
-                    if let BindPoint::Reference { name, qualifier } = bp {
+                    if let BindPoint::Reference { name, qualifier, .. } = bp {
                         let resolvable = match qualifier {
                             BindQualifier::Bind => program.resolve_output(name).is_some(),
                             BindQualifier::Capture => capture_names.contains(name),
@@ -365,7 +401,27 @@ impl FiberBuilder {
             main_kernel,
             scope_values: Vec::new(),
             per_op_kernels: Vec::new(),
+            scope_value_main_idx: Vec::new(),
+            scope_value_per_op_idx: Vec::new(),
         }
+    }
+
+    /// Install the scope-value list and precompute each value's
+    /// input index against `main_kernel`. Indices are reused on
+    /// the per-cycle [`Self::reset_captures`] path so the
+    /// historical per-scope-value `find_input` linear scan is
+    /// retired.
+    ///
+    /// Called once by [`OpBuilder::create_fiber_builder`] right
+    /// after the fiber's main kernel is built — `scope_values`
+    /// is otherwise immutable for the fiber lifetime.
+    fn set_scope_values(&mut self, scope_values: Vec<(String, Value)>) {
+        let program = self.main_kernel.program();
+        self.scope_value_main_idx = scope_values
+            .iter()
+            .map(|(name, _)| program.find_input(name))
+            .collect();
+        self.scope_values = scope_values;
     }
 
     /// SRD-68 Push 3 — populate this fiber's per-op kernel slots
@@ -413,35 +469,60 @@ impl FiberBuilder {
             dispensers.iter()
                 .map(|d| d.canonical_kernel().map(|k| k.program().clone()))
                 .collect();
-        self.per_op_kernels = dispenser_programs.into_iter()
-            .map(|maybe_program| maybe_program.map(|program| {
-                let mut op_kernel = self.main_kernel.build_subscope(
-                    polydat::kernel::subcontext::GkMatter::builder()
-                        .program(program)
-                        .build()
-                        .expect("program-form matter is infallible"),
-                ).expect("program-form subscope from fiber.main_kernel is infallible");
-                {
-                    use polydat::kernel::Dataflow;
-                    for (name, value) in &scope_values {
-                        if let Some(idx) = op_kernel.program().find_input(name) {
-                            op_kernel.set_wire_idx(idx, value.clone())
-                                .unwrap_or_else(|e| panic!(
-                                    "scope value '{name}' failed typed write at op-template init: {e}"
-                                ));
+        // Build both the per-op kernels AND the parallel index
+        // cache in one walk. The per-op index cache feeds
+        // `reset_captures` so the per-cycle stanza-boundary
+        // restore is pure indexed `set_input` — no per-call
+        // `find_input` linear scan, no name hashing.
+        let mut per_op_kernels: Vec<Option<GkKernel>> =
+            Vec::with_capacity(dispenser_programs.len());
+        let mut per_op_idx: Vec<Option<Vec<Option<usize>>>> =
+            Vec::with_capacity(dispenser_programs.len());
+        for maybe_program in dispenser_programs {
+            match maybe_program {
+                None => {
+                    per_op_kernels.push(None);
+                    per_op_idx.push(None);
+                }
+                Some(program) => {
+                    let mut op_kernel = self.main_kernel.build_subscope(
+                        polydat::kernel::subcontext::GkMatter::builder()
+                            .program(program)
+                            .build()
+                            .expect("program-form matter is infallible"),
+                    ).expect("program-form subscope from fiber.main_kernel is infallible");
+                    // Pre-resolve every scope value's input index
+                    // against this op-template kernel's program.
+                    let idx_vec: Vec<Option<usize>> = scope_values.iter()
+                        .map(|(name, _)| op_kernel.program().find_input(name))
+                        .collect();
+                    {
+                        use polydat::kernel::Dataflow;
+                        for ((name, value), idx_opt) in scope_values.iter()
+                            .zip(idx_vec.iter())
+                        {
+                            if let Some(idx) = idx_opt {
+                                op_kernel.set_wire_idx(*idx, value.clone())
+                                    .unwrap_or_else(|e| panic!(
+                                        "scope value '{name}' failed typed write at op-template init: {e}"
+                                    ));
+                            }
                         }
                     }
+                    let const_outputs: Vec<String> = op_kernel.program()
+                        .const_outputs().iter().map(|s| s.to_string()).collect();
+                    for init_name in &const_outputs {
+                        let _ = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| { op_kernel.pull(init_name); })
+                        );
+                    }
+                    per_op_kernels.push(Some(op_kernel));
+                    per_op_idx.push(Some(idx_vec));
                 }
-                let const_outputs: Vec<String> = op_kernel.program()
-                    .const_outputs().iter().map(|s| s.to_string()).collect();
-                for init_name in &const_outputs {
-                    let _ = std::panic::catch_unwind(
-                        std::panic::AssertUnwindSafe(|| { op_kernel.pull(init_name); })
-                    );
-                }
-                op_kernel
-            }))
-            .collect();
+            }
+        }
+        self.per_op_kernels = per_op_kernels;
+        self.scope_value_per_op_idx = per_op_idx;
     }
 
     /// Get the per-fiber kernel for the firing dispenser at
@@ -611,22 +692,32 @@ impl FiberBuilder {
     pub fn reset_captures(&mut self) {
         let coord_count = self.main_kernel.program().coord_count();
         self.main_kernel.state().reset_inputs_from(coord_count);
-        // Re-apply scope values by name so iteration-bound
-        // externs survive the stanza-boundary reset.
-        for (name, value) in &self.scope_values {
-            if let Some(idx) = self.main_kernel.program().find_input(name) {
-                self.main_kernel.state().set_input(idx, value.clone());
+        // Re-apply scope values via cached indices — the per-cycle
+        // hot path was previously dominated by `find_input`
+        // linear scans here. Indices were resolved once at
+        // `set_scope_values` time.
+        for ((_name, value), idx_opt) in self.scope_values.iter()
+            .zip(self.scope_value_main_idx.iter())
+        {
+            if let Some(idx) = idx_opt {
+                self.main_kernel.state().set_input(*idx, value.clone());
             }
         }
         // SRD-68 per-fiber kernels: each one's coord count comes
-        // from its own program. Same name-keyed reapply rule.
-        for slot in self.per_op_kernels.iter_mut() {
-            if let Some(kernel) = slot {
+        // from its own program. Re-apply scope values via the
+        // pre-resolved per-op index cache populated at
+        // `attach_dispenser_kernels` time.
+        for (slot, idx_slot) in self.per_op_kernels.iter_mut()
+            .zip(self.scope_value_per_op_idx.iter())
+        {
+            if let (Some(kernel), Some(idx_vec)) = (slot, idx_slot) {
                 let n = kernel.program().coord_count();
                 kernel.state().reset_inputs_from(n);
-                for (name, value) in &self.scope_values {
-                    if let Some(idx) = kernel.program().find_input(name) {
-                        kernel.state().set_input(idx, value.clone());
+                for ((_name, value), idx_opt) in self.scope_values.iter()
+                    .zip(idx_vec.iter())
+                {
+                    if let Some(idx) = idx_opt {
+                        kernel.state().set_input(*idx, value.clone());
                     }
                 }
             }
@@ -683,13 +774,13 @@ impl FiberBuilder {
         value: Value,
     ) -> bool {
         let Some(kernel) = self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) else {
-            if std::env::var("NBRS_DIRTY_DEBUG").is_ok() && name == "body" {
+            if nbrs_dirty_debug_enabled() && name == "body" {
                 eprintln!("DIRTY: write body template={template_idx} NO_KERNEL");
             }
             return false;
         };
         let Some(idx) = kernel.program().find_input(name) else {
-            if std::env::var("NBRS_DIRTY_DEBUG").is_ok() && name == "body" {
+            if nbrs_dirty_debug_enabled() && name == "body" {
                 let inputs = kernel.program().input_names();
                 eprintln!(
                     "DIRTY: write body template={template_idx} NO_SLOT in_count={} names={:?}",
@@ -698,7 +789,7 @@ impl FiberBuilder {
             }
             return false;
         };
-        if std::env::var("NBRS_DIRTY_DEBUG").is_ok() && name == "body" {
+        if nbrs_dirty_debug_enabled() && name == "body" {
             let input_count = kernel.program().input_names().len();
             let display = value.to_display_string();
             let head: String = display.chars().take(48).collect();

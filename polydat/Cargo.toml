@@ -57,6 +57,11 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # (and the IndexMap usage in nbrs-activity for the same
 # reason). See `kernel::scope_coords` doc.
 indexmap = "2"
+# IEEE 754 half-precision float (`f16`). Used by the
+# `Value::VecF16` / `PortType::VecF16` carrier so embeddings
+# stored as half-precision flow through the kernel without
+# widening to f32 at the boundary.
+half = "2"
 
 [features]
 default = ["jit", "vectordata"]

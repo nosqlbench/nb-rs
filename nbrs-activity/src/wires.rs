@@ -24,8 +24,19 @@
 //!
 //! See `docs/sysref/68_dispenser_owned_gk_context.md`.
 
+use std::sync::OnceLock;
+
 use polydat::kernel::GkKernel;
-use polydat::ast::Value;
+use polydat::ast::{PortType, Value};
+
+/// Cached `NBRS_DIRTY_DEBUG` flag. Per-cycle env reads cost ~30%
+/// of CPU on single-fiber benches; the OnceLock makes the gate
+/// a single atomic load. See the matching helper in
+/// `polydat::kernel::engines` for the same rationale.
+fn nbrs_dirty_debug_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("NBRS_DIRTY_DEBUG").is_ok())
+}
 
 /// Result of a [`WireSource::write`] call.
 ///
@@ -217,7 +228,7 @@ impl<'a> WireSource for CycleWires<'a> {
         // (SRD-13f).
         if k.program().resolve_output(name).is_some() {
             let v = k.pull(name).clone();
-            if std::env::var("NBRS_DIRTY_DEBUG").is_ok() && name == "query" {
+            if nbrs_dirty_debug_enabled() && name == "query" {
                 let s = v.to_display_string();
                 let head: String = s.chars().take(64).collect();
                 eprintln!("DIRTY: wires.get(query) OUTPUT head=\"{head}\"");
@@ -225,7 +236,7 @@ impl<'a> WireSource for CycleWires<'a> {
             return Some(v);
         }
         let v = k.lookup(name);
-        if std::env::var("NBRS_DIRTY_DEBUG").is_ok() && name == "query" {
+        if nbrs_dirty_debug_enabled() && name == "query" {
             let head = v.as_ref()
                 .map(|x| x.to_display_string().chars().take(64).collect::<String>())
                 .unwrap_or_else(|| "<none>".into());
@@ -431,20 +442,52 @@ pub fn substitute_via_wires(
         // diagnostic contexts where empty is acceptable; render
         // sites use the strict form.
         match wires.get(body) {
-            Some(v) => match v.to_display_strict() {
-                Some(s) => out.push_str(&s),
-                None => {
+            Some(v) => {
+                // Binary-natural type guard. A wire holding VecF32 /
+                // VecI32 / Handle / Bytes has no meaningful
+                // text-spliced form for a wire-protocol field —
+                // decimal-stringifying a 128-element f32 vector to
+                // embed in a CQL INSERT is always the wrong path
+                // (it forces format-then-reparse on every cycle and
+                // bypasses the adapter's typed-binding API). Detect
+                // here so the cost — and the design violation — are
+                // surfaced as a clear error instead of silently
+                // burned on every cycle.
+                //
+                // The escape hatch for typed values that genuinely
+                // belong in a field is the "pure-token" form (case 2
+                // in `resolve_op_fields_via_wires`): the entire
+                // field value is exactly `{wire_name}` with no
+                // surrounding text, and the typed `Value` is handed
+                // to the adapter intact.
+                if is_binary_natural(v.port_type()) {
                     return Err(format!(
-                        "unresolved bind point `{{{body}}}`: wire \
-                         `{body}` resolved to `Value::None` (no value \
-                         bound in the dispenser's GK context chain). \
-                         Set a workload-param default for `{body}`, \
-                         bind it via `bindings:` / `set:`, or mark \
-                         the bind-point as optional once SRD-74 \
-                         Rule 2 syntax lands."
-                    ));
+                        "wire `{body}` holds {} which has no text-spliced \
+                         representation suitable for a wire-protocol field. \
+                         Either use the pure-token form (the entire field \
+                         value is exactly `{{{body}}}` with no surrounding \
+                         text) so the adapter binds the typed value via \
+                         its parameter API, or split the field so the \
+                         wire is bound as a typed parameter alongside a \
+                         text template containing placeholders (e.g. CQL \
+                         `?`).",
+                        v.port_type()));
                 }
-            },
+                match v.to_display_strict() {
+                    Some(s) => out.push_str(&s),
+                    None => {
+                        return Err(format!(
+                            "unresolved bind point `{{{body}}}`: wire \
+                             `{body}` resolved to `Value::None` (no value \
+                             bound in the dispenser's GK context chain). \
+                             Set a workload-param default for `{body}`, \
+                             bind it via `bindings:` / `set:`, or mark \
+                             the bind-point as optional once SRD-74 \
+                             Rule 2 syntax lands."
+                        ));
+                    }
+                }
+            }
             None => {
                 return Err(format!(
                     "unresolved bind point `{{{body}}}`: no wire named \
@@ -545,6 +588,30 @@ pub fn resolve_op_fields_via_wires(
         values.push(Value::Str(rendered.into()));
     }
     Ok(crate::adapter::ResolvedFields::new(names, values))
+}
+
+/// Wire types that have no meaningful text-spliced representation
+/// in a wire-protocol field. Embedding `{wire}` for one of these
+/// inside a larger string template (CQL prepared text, HTTP body,
+/// etc.) is always a workload-shape bug: the typed value should
+/// flow through the adapter's typed-binding API, not be
+/// decimal-stringified into the SQL/JSON/body text and reparsed
+/// downstream.
+///
+/// Used by [`substitute_via_wires`] to refuse the splice and by
+/// the future op-template construction-time guard (init-time
+/// shape check) to reject equivalent misuse before any cycle runs.
+fn is_binary_natural(t: PortType) -> bool {
+    matches!(t,
+        PortType::VecF32
+        | PortType::VecI32
+        | PortType::VecF64
+        | PortType::VecI64
+        | PortType::VecF16
+        | PortType::VecI16
+        | PortType::Handle
+        | PortType::Bytes
+    )
 }
 
 /// Same identifier discipline as the core `resolve_placeholders_in_string`
@@ -722,6 +789,77 @@ mod tests {
             resolved,
             "CREATE KEYSPACE baselines WITH replication = {'class': 'SimpleStrategy'}",
         );
+    }
+
+    /// Binary-natural type guard. A wire holding `VecF32` (or any
+    /// other type with no meaningful text-spliced form) must not be
+    /// silently decimal-stringified into the field text — that's a
+    /// workload-shape bug (the value belongs in a typed-binding
+    /// path, not the text template). The substitution layer
+    /// rejects with a clear diagnostic pointing at the wire and
+    /// suggesting both fixes (pure-token form / bindvars split).
+    ///
+    /// Regression guard: dropping this check would silently burn
+    /// per-element Grisu float formatting (≈55% of cycle CPU on
+    /// the fknn_rampup_data shape) on every cycle.
+    #[test]
+    fn substitute_via_wires_rejects_vec_f32_in_text_template() {
+        use polydat::ast::SliceArc;
+        struct VecWire;
+        impl WireSource for VecWire {
+            fn get(&self, name: &str) -> Option<Value> {
+                match name {
+                    "id" => Some(Value::U64(7)),
+                    "vec" => Some(Value::VecF32(
+                        SliceArc::from_vec(vec![0.1_f32, 0.2, 0.3])
+                    )),
+                    _ => None,
+                }
+            }
+            fn names(&self) -> Box<dyn Iterator<Item = String> + '_> {
+                Box::new(["id", "vec"].iter().map(|s| s.to_string()))
+            }
+        }
+        let err = substitute_via_wires(
+            "INSERT ... VALUES ('{id}', {vec})",
+            &VecWire,
+        ).expect_err("VecF32 splice into text template must error");
+        assert!(err.contains("vec"),
+            "diagnostic should name the offending wire: {err}");
+        assert!(err.contains("vec_f32") || err.contains("VecF32"),
+            "diagnostic should name the offending type: {err}");
+        assert!(err.contains("pure-token") || err.contains("typed"),
+            "diagnostic should point at the fix: {err}");
+    }
+
+    /// The escape hatch: a field whose entire value is a pure
+    /// token `{wire}` (no surrounding text) routes through case 2
+    /// in `resolve_op_fields_via_wires` — typed Value preserved,
+    /// no substitution. `substitute_via_wires` itself is only
+    /// invoked on text-template fields, so the rejection above
+    /// fires only when the binary-natural wire is genuinely being
+    /// spliced into surrounding text. Pin that: a VecI32 wire
+    /// triggers the same rejection (catches the broader contract,
+    /// not a VecF32-only special case).
+    #[test]
+    fn substitute_via_wires_rejects_vec_i32_in_text_template() {
+        use polydat::ast::SliceArc;
+        struct VecI32Wire;
+        impl WireSource for VecI32Wire {
+            fn get(&self, name: &str) -> Option<Value> {
+                if name == "vec" {
+                    Some(Value::VecI32(
+                        SliceArc::from_vec(vec![1_i32, 2, 3])
+                    ))
+                } else { None }
+            }
+            fn names(&self) -> Box<dyn Iterator<Item = String> + '_> {
+                Box::new(std::iter::once("vec".to_string()))
+            }
+        }
+        let err = substitute_via_wires("x = {vec}", &VecI32Wire).unwrap_err();
+        assert!(err.contains("vec_i32") || err.contains("VecI32"),
+            "VecI32 should also be rejected: {err}");
     }
 
     #[test]

@@ -43,6 +43,11 @@ impl Metadata for GkKernel {
     fn input_port_type_by_idx(&self, idx: usize) -> Option<PortType> {
         self.program().input_port_type_by_idx(idx)
     }
+
+    #[inline]
+    fn output_port_type(&self, name: &str) -> Option<PortType> {
+        self.program().output_port_type(name)
+    }
 }
 
 impl Dataflow for GkKernel {
@@ -77,8 +82,15 @@ impl Dataflow for GkKernel {
         let adapted = crate::kernel::state::adapt_boundary_value(&slot_name, slot_type, value);
         // `Value::None` is the absent sentinel — always permitted
         // regardless of slot type (per none_semantics.md / SRD-74
-        // Rule 1).
-        if !matches!(adapted, Value::None) && adapted.port_type() != slot_type {
+        // Rule 1). For non-None values, the residual check uses
+        // the bit-stuffing equivalence helper
+        // (`Value::satisfies_slot`) so a narrowing adapter that
+        // outputs `Value::U64` for a U32 slot — the runtime
+        // bit-stuffed form per type_system.md §1 — passes
+        // validation. The pre-adapter check in
+        // `adapt_boundary_value` remains strict, so an unadapted
+        // Value::U64 cannot silently truncate into a U32 slot.
+        if !adapted.satisfies_slot(slot_type) {
             return Err(WriteError::TypeMismatch {
                 slot: slot_name,
                 expected: slot_type,
@@ -200,24 +212,46 @@ mod tests {
     }
 
     /// S4 type-check: writing the wrong Value variant to a typed
-    /// slot returns Err(TypeMismatch) when no auto-adapter can
-    /// heal the mismatch.
+    /// slot returns Err(TypeMismatch) when no boundary adapter
+    /// can heal the mismatch.
+    ///
+    /// `VecF32 → U64` is intentionally absent from the polyfill
+    /// matrix (type_system.md §3 — collection → scalar requires
+    /// explicit choice), so it is a stable "no adapter exists"
+    /// pair for testing the diagnostic.
     #[test]
     fn dataflow_type_mismatch_rejected() {
         let mut k = compile_gk(
             "input cycle: u64\nextern n: u64\n"
         ).unwrap();
-        // Writing a Bytes value to a u64 slot has no boundary
-        // adapter; the typed-write API should reject it cleanly.
-        let err = k.set_wire("n", Value::Bytes(vec![1u8, 2, 3].into())).unwrap_err();
+        let err = k.set_wire(
+            "n",
+            Value::VecF32(crate::ast::SliceArc::from_vec(vec![1.0_f32, 2.0])),
+        ).unwrap_err();
         match err {
             crate::kernel::api::WriteError::TypeMismatch { slot, expected, got } => {
                 assert_eq!(slot, "n");
                 assert_eq!(expected, PortType::U64);
-                assert_eq!(got, PortType::Bytes);
+                assert_eq!(got, PortType::VecF32);
             }
             other => panic!("expected TypeMismatch, got {other:?}"),
         }
+    }
+
+    /// The `WriteError::TypeMismatch` Display impl includes a
+    /// vec → scalar hint pointing at the explicit helpers when
+    /// the rejected `got` is a Vec type and the `expected` is
+    /// not a collection-compatible type.
+    #[test]
+    fn vec_to_scalar_diagnostic_mentions_explicit_helpers() {
+        let err = crate::kernel::api::WriteError::TypeMismatch {
+            slot: "score".into(),
+            expected: PortType::F64,
+            got: PortType::VecF32,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("vec_len"), "missing vec_len hint: {msg}");
+        assert!(msg.contains("vec_first"), "missing vec_first hint: {msg}");
     }
 
     /// S4 type-adapt: a healable mismatch (u64 → f64) routes

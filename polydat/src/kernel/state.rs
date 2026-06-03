@@ -67,7 +67,7 @@ pub(crate) fn adapt_boundary_value(slot_name: &str, slot_type: crate::ast::PortT
     if matches!(value, Value::None) {
         return value;
     }
-    match crate::compile::assembly::auto_adapter(value_type, slot_type) {
+    match crate::compile::assembly::boundary_adapter(value_type, slot_type) {
         Some(adapter) => {
             // Adapter::eval reads inputs[0..N], writes outputs[0..M].
             // For the boundary case, every adapter is 1→1.

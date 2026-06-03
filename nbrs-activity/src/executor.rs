@@ -2374,14 +2374,14 @@ async fn run_phase(
         stanzas * stanza_len
     };
 
-    // Diagnostic output
-    if ctx.diag.explain_gk {
+    // Diagnostic output — value-provenance / wiring view.
+    if ctx.diag.show_wiring {
         let note = if is_iter {
             let pairs: Vec<String> = iter_var_values.iter()
                 .map(|(k, v)| format!("{k}={v}")).collect();
             format!(" ({})", pairs.join(", "))
         } else { String::new() };
-        crate::describe::print_kernel_analysis(phase_name, &note, &iter_op_builder.program());
+        crate::describe::print_wiring_analysis(phase_name, &note, &iter_op_builder.program());
     }
     // NOTE: the depth==Phase early-return used to live here, but
     // it short-circuited *before* component attach + control
@@ -2753,6 +2753,13 @@ async fn run_phase(
         readouts: ctx.workload_readouts.clone(),
         cli_readout_override: ctx.cli_readout_override.clone(),
         snapshot_writer: Some(ctx.sqlite_reporter.clone()),
+        // Session-level dryrun mode (`silent`/`emit`/`json`)
+        // drives the dryrun template-parameter injection inside
+        // `run_with_adapters`. There is no adapter substitution
+        // anymore; the real adapter constructs in full and only
+        // the outbound `execute()` is suppressed by the outermost
+        // `DryRunWrapper`.
+        dry_run_mode: ctx.dry_run.map(String::from),
     };
 
     let phase_driver_owned = phase.adapter.clone().unwrap_or_else(|| ctx.driver.clone());
@@ -2829,7 +2836,7 @@ async fn run_phase(
                 key,
                 move || async move {
                     crate::runner::create_adapter(
-                        &aname_for_factory, &merged_params, dry_run,
+                        &aname_for_factory, &merged_params,
                     ).await
                 },
             ).await?
@@ -2843,20 +2850,17 @@ async fn run_phase(
                 &[("__phase", phase_name), ("__phase_seq", phase_seq_label.as_str())],
                 move || async move {
                     crate::runner::create_adapter(
-                        &aname_for_factory, &merged_params, dry_run,
+                        &aname_for_factory, &merged_params,
                     ).await
                 },
             ).await?
         };
-        // Insert under the REQUESTED adapter name (what the
-        // op asked for via `adapter:` or workload default),
-        // not the adapter's self-reported name. They normally
-        // match, but a DryRunAdapter intercepts every driver
-        // and reports its own name ("dry-run") regardless of
-        // what was requested — without this aliasing the
-        // dryrun adapter would land in the map as "dry-run"
-        // while ops still look up "stdout" / "cql" / etc. and
-        // fail the dispatch.
+        // Insert under the REQUESTED adapter name (what the op
+        // asked for via `adapter:` or workload default). Today
+        // the adapter's self-reported name matches the requested
+        // name; the alias-by-request pattern is retained
+        // defensively in case a future adapter renames itself
+        // through some transform.
         adapters.insert(aname_owned.clone(), adapter);
         attach_guards.push(guard);
     }

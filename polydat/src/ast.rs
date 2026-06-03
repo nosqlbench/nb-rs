@@ -237,6 +237,21 @@ pub enum Value {
     /// Typed `i32` vector carrier (e.g. neighbor indices). Same
     /// shape as VecF32 — typed slice on the wire.
     VecI32(SliceArc<i32>),
+    /// Typed `f64` vector carrier (`Arc<[f64]>`). Same shape as
+    /// VecF32. Used for double-precision embeddings / dense
+    /// numeric features bound to CQL `vector<double, N>` etc.
+    VecF64(SliceArc<f64>),
+    /// Typed `i64` vector carrier (`Arc<[i64]>`). 64-bit integer
+    /// vectors for CQL `vector<bigint, N>`.
+    VecI64(SliceArc<i64>),
+    /// Typed half-precision float vector (`Arc<[half::f16]>`).
+    /// 16-bit float carrier — stays at f16 on the wire so
+    /// embeddings stored as half-precision aren't widened on the
+    /// kernel side.
+    VecF16(SliceArc<half::f16>),
+    /// Typed `i16` vector carrier (`Arc<[i16]>`). 16-bit signed
+    /// integer vectors for CQL `vector<smallint, N>`.
+    VecI16(SliceArc<i16>),
     /// Sentinel for uninitialized buffer slots. Never appears in
     /// wiring — only in freshly allocated state buffers before
     /// first evaluation.
@@ -259,6 +274,10 @@ impl PartialEq for Value {
             (Value::Handle(a), Value::Handle(b)) => Arc::ptr_eq(a, b),
             (Value::VecF32(a), Value::VecF32(b)) => a == b,
             (Value::VecI32(a), Value::VecI32(b)) => a == b,
+            (Value::VecF64(a), Value::VecF64(b)) => a == b,
+            (Value::VecI64(a), Value::VecI64(b)) => a == b,
+            (Value::VecF16(a), Value::VecF16(b)) => a == b,
+            (Value::VecI16(a), Value::VecI16(b)) => a == b,
             _ => false,
         }
     }
@@ -385,6 +404,10 @@ impl Value {
             Value::Handle(_) => PortType::Handle,
             Value::VecF32(_) => PortType::VecF32,
             Value::VecI32(_) => PortType::VecI32,
+            Value::VecF64(_) => PortType::VecF64,
+            Value::VecI64(_) => PortType::VecI64,
+            Value::VecF16(_) => PortType::VecF16,
+            Value::VecI16(_) => PortType::VecI16,
             Value::None => PortType::U64, // placeholder
         }
     }
@@ -397,11 +420,83 @@ impl Value {
         }
     }
 
+    /// Test whether this value's runtime variant is acceptable
+    /// to a slot declaring `slot_type`. `port_type() == slot_type`
+    /// is the strict case; this method also accepts the
+    /// **bit-stuffing equivalences** documented in
+    /// `polydat/docs/design/type_system.md` §1:
+    ///
+    /// - `Value::U64` is the runtime storage for `PortType` `U64`,
+    ///   `U32`, `I64`, and `I32` (narrow integers carry their
+    ///   bits in the low part of the u64; sign-extension for
+    ///   `I32` is part of the producer convention).
+    /// - `Value::F64` is the runtime storage for `PortType` `F64`
+    ///   and `F32` (`F32` carries its bits in the low 32 via
+    ///   `f32::to_bits() as u64`-style stuffing — but float
+    ///   stuffing uses `Value::F64` for the materialised float
+    ///   value, not the bit pattern).
+    /// - `Value::None` is acceptable for every slot type
+    ///   (SRD-74 absent sentinel).
+    ///
+    /// Used at the typed-write residual check
+    /// (`Dataflow::set_wire_idx`) AFTER the boundary adapter has
+    /// already converted/validated the value — see
+    /// `polydat/src/kernel/api_impl.rs`. The pre-adapter check in
+    /// `adapt_boundary_value` stays strict (`port_type ==
+    /// slot_type`) so an unadapted Value::U64 can never silently
+    /// truncate into a narrower slot.
+    pub fn satisfies_slot(&self, slot_type: PortType) -> bool {
+        if matches!(self, Value::None) {
+            return true;
+        }
+        let value_type = self.port_type();
+        if value_type == slot_type {
+            return true;
+        }
+        matches!(
+            (value_type, slot_type),
+            (PortType::U64, PortType::U32 | PortType::I64 | PortType::I32)
+                | (PortType::F64, PortType::F32)
+        )
+    }
+
     /// Borrow a `VecI32` value as `&[i32]`. Panics on type mismatch.
     pub fn as_vec_i32(&self) -> &[i32] {
         match self {
             Value::VecI32(arc) => arc,
             _ => panic!("expected VecI32, got {:?}", self.port_type()),
+        }
+    }
+
+    /// Borrow a `VecF64` value as `&[f64]`. Panics on type mismatch.
+    pub fn as_vec_f64(&self) -> &[f64] {
+        match self {
+            Value::VecF64(arc) => arc,
+            _ => panic!("expected VecF64, got {:?}", self.port_type()),
+        }
+    }
+
+    /// Borrow a `VecI64` value as `&[i64]`. Panics on type mismatch.
+    pub fn as_vec_i64(&self) -> &[i64] {
+        match self {
+            Value::VecI64(arc) => arc,
+            _ => panic!("expected VecI64, got {:?}", self.port_type()),
+        }
+    }
+
+    /// Borrow a `VecF16` value as `&[half::f16]`. Panics on type mismatch.
+    pub fn as_vec_f16(&self) -> &[half::f16] {
+        match self {
+            Value::VecF16(arc) => arc,
+            _ => panic!("expected VecF16, got {:?}", self.port_type()),
+        }
+    }
+
+    /// Borrow a `VecI16` value as `&[i16]`. Panics on type mismatch.
+    pub fn as_vec_i16(&self) -> &[i16] {
+        match self {
+            Value::VecI16(arc) => arc,
+            _ => panic!("expected VecI16, got {:?}", self.port_type()),
         }
     }
 
@@ -485,6 +580,63 @@ impl Value {
                 s.push(']');
                 s
             }
+            Value::VecF64(arc) => {
+                let mut s = String::with_capacity(arc.len() * 8 + 2);
+                s.push('[');
+                let mut first = true;
+                for v in arc.iter() {
+                    if !first { s.push(','); }
+                    first = false;
+                    use std::fmt::Write;
+                    let _ = write!(&mut s, "{v:?}");
+                }
+                s.push(']');
+                s
+            }
+            Value::VecI64(arc) => {
+                let mut s = String::with_capacity(arc.len() * 4 + 2);
+                s.push('[');
+                let mut first = true;
+                for v in arc.iter() {
+                    if !first { s.push(','); }
+                    first = false;
+                    use std::fmt::Write;
+                    let _ = write!(&mut s, "{v}");
+                }
+                s.push(']');
+                s
+            }
+            Value::VecF16(arc) => {
+                let mut s = String::with_capacity(arc.len() * 6 + 2);
+                s.push('[');
+                let mut first = true;
+                for v in arc.iter() {
+                    if !first { s.push(','); }
+                    first = false;
+                    use std::fmt::Write;
+                    // Render as the f32 widening so the JSON form
+                    // is the standard "1.0" / "1.5" surface — f16
+                    // Display has its own form but it isn't valid
+                    // JSON, so widening makes the array shape
+                    // parseable downstream.
+                    let _ = write!(&mut s, "{:?}", v.to_f32());
+                }
+                s.push(']');
+                s
+            }
+            Value::VecI16(arc) => {
+                let mut s = String::with_capacity(arc.len() * 4 + 2);
+                s.push('[');
+                let mut first = true;
+                for v in arc.iter() {
+                    if !first { s.push(','); }
+                    first = false;
+                    use std::fmt::Write;
+                    let _ = write!(&mut s, "{v}");
+                }
+                s.push(']');
+                s
+            }
             Value::None => String::new(),
         }
     }
@@ -526,6 +678,18 @@ impl Value {
             ),
             Value::VecI32(arc) => serde_json::Value::Array(
                 arc.iter().map(|i| serde_json::Value::from(*i)).collect()
+            ),
+            Value::VecF64(arc) => serde_json::Value::Array(
+                arc.iter().map(|f| serde_json::json!(*f)).collect()
+            ),
+            Value::VecI64(arc) => serde_json::Value::Array(
+                arc.iter().map(|i| serde_json::Value::from(*i)).collect()
+            ),
+            Value::VecF16(arc) => serde_json::Value::Array(
+                arc.iter().map(|f| serde_json::json!(f.to_f32())).collect()
+            ),
+            Value::VecI16(arc) => serde_json::Value::Array(
+                arc.iter().map(|i| serde_json::Value::from(*i as i32)).collect()
             ),
             Value::None => serde_json::Value::Null,
         }
@@ -598,6 +762,20 @@ pub enum PortType {
     VecF32,
     /// Typed `i32` vector slice (`Arc<[i32]>`).
     VecI32,
+    /// Typed `f64` vector slice (`Arc<[f64]>`). Bound natively
+    /// for CQL `vector<double, N>`.
+    VecF64,
+    /// Typed `i64` vector slice (`Arc<[i64]>`). Bound natively
+    /// for CQL `vector<bigint, N>`.
+    VecI64,
+    /// Typed half-precision float vector (`Arc<[half::f16]>`).
+    /// Bound natively for CQL `vector<half_float, N>`-style
+    /// columns; stays at f16 on the wire so embeddings stored
+    /// as 16-bit floats don't widen to f32 at the boundary.
+    VecF16,
+    /// Typed `i16` vector slice (`Arc<[i16]>`). Bound natively
+    /// for CQL `vector<smallint, N>`.
+    VecI16,
 }
 
 impl fmt::Display for PortType {
@@ -617,6 +795,49 @@ impl fmt::Display for PortType {
             PortType::Handle => write!(f, "handle"),
             PortType::VecF32 => write!(f, "vec_f32"),
             PortType::VecI32 => write!(f, "vec_i32"),
+            PortType::VecF64 => write!(f, "vec_f64"),
+            PortType::VecI64 => write!(f, "vec_i64"),
+            PortType::VecF16 => write!(f, "vec_f16"),
+            PortType::VecI16 => write!(f, "vec_i16"),
+        }
+    }
+}
+
+impl PortType {
+    /// Parse a workload-facing type name (lower-snake-case) into
+    /// a [`PortType`]. Used by the op-template lvalue-spec
+    /// surface (`{name:<type>}` in bind-point templates) — the
+    /// adapter reads the spec and asks polydat to map the name
+    /// to a typed enum variant.
+    ///
+    /// Accepts the user-facing variants only (`u64`, `f64`,
+    /// `u32`, `i32`, `i64`, `f32`, `bool`, `str`, `bytes`,
+    /// `json`, `vec_f32`, `vec_i32`, `vec_f64`, `vec_i64`,
+    /// `vec_f16`, `vec_i16`). `handle`, `ext`, and `none` are
+    /// intentionally rejected — they're internal-only types that
+    /// a workload author should never assert.
+    ///
+    /// Returns `None` for any unknown name; the caller surfaces
+    /// the unknown spec as a workload-shape diagnostic.
+    pub fn from_workload_name(name: &str) -> Option<Self> {
+        match name {
+            "u64"     => Some(Self::U64),
+            "f64"     => Some(Self::F64),
+            "u32"     => Some(Self::U32),
+            "i32"     => Some(Self::I32),
+            "i64"     => Some(Self::I64),
+            "f32"     => Some(Self::F32),
+            "bool"    => Some(Self::Bool),
+            "str"     => Some(Self::Str),
+            "bytes"   => Some(Self::Bytes),
+            "json"    => Some(Self::Json),
+            "vec_f32" => Some(Self::VecF32),
+            "vec_i32" => Some(Self::VecI32),
+            "vec_f64" => Some(Self::VecF64),
+            "vec_i64" => Some(Self::VecI64),
+            "vec_f16" => Some(Self::VecF16),
+            "vec_i16" => Some(Self::VecI16),
+            _ => None,
         }
     }
 }

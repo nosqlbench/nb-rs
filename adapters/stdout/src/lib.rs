@@ -340,46 +340,48 @@ impl StdoutAdapter {
 impl DriverAdapter for StdoutAdapter {
     fn name(&self) -> &str { "stdout" }
 
-    fn map_op(
-        &self,
-        template: &ParsedOp,
+    fn map_op<'a>(
+        &'a self,
+        template: &'a ParsedOp,
         parent: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
-    ) -> Result<Box<dyn OpDispenser>, String> {
-        // SRD-40b §9: per-op-template channel routing. The
-        // op-template parameter `stdout: <channel>` selects where
-        // rendered output goes for this template. Absent → terminal.
-        let channel = match template.params.get("stdout") {
-            None => StdoutChannel::Terminal,
-            Some(serde_json::Value::String(s)) => StdoutChannel::parse(s)
-                .map_err(|e| format!("op '{}' params.stdout: {e}", template.name))?,
-            Some(other) => return Err(format!(
-                "op '{}' params.stdout must be a string (one of terminal/eventlog/silent), got {other}",
-                template.name
-            )),
-        };
-        // SRD-68 Push 5: snapshot the op-field templates at
-        // construction. At cycle time the dispenser walks this list
-        // and resolves each field's `{name}` references through the
-        // generic GK wires API (`wires.get` for pure-token positions,
-        // `substitute_via_wires` for embedded references). No
-        // synthesis-layer ResolvedFields needed — wires answers
-        // every name directly.
-        let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        Ok(Box::new(StdoutDispenser {
-            writer: self.writer.clone(),
-            format: self.format,
-            newline: self.newline,
-            fields_filter: self.config_fields_filter.clone(),
-            separator: self.separator.clone(),
-            header: self.header,
-            header_emitted: self.header_emitted.clone(),
-            color: self.color,
-            channel,
-            canonical_kernel: parent,
-            op_fields,
-        }))
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            // SRD-40b §9: per-op-template channel routing. The
+            // op-template parameter `stdout: <channel>` selects where
+            // rendered output goes for this template. Absent → terminal.
+            let channel = match template.params.get("stdout") {
+                None => StdoutChannel::Terminal,
+                Some(serde_json::Value::String(s)) => StdoutChannel::parse(s)
+                    .map_err(|e| format!("op '{}' params.stdout: {e}", template.name))?,
+                Some(other) => return Err(format!(
+                    "op '{}' params.stdout must be a string (one of terminal/eventlog/silent), got {other}",
+                    template.name
+                )),
+            };
+            // SRD-68 Push 5: snapshot the op-field templates at
+            // construction. At cycle time the dispenser walks this list
+            // and resolves each field's `{name}` references through the
+            // generic GK wires API (`wires.get` for pure-token positions,
+            // `substitute_via_wires` for embedded references). No
+            // synthesis-layer ResolvedFields needed — wires answers
+            // every name directly.
+            let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(Box::new(StdoutDispenser {
+                writer: self.writer.clone(),
+                format: self.format,
+                newline: self.newline,
+                fields_filter: self.config_fields_filter.clone(),
+                separator: self.separator.clone(),
+                header: self.header,
+                header_emitted: self.header_emitted.clone(),
+                color: self.color,
+                channel,
+                canonical_kernel: parent,
+                op_fields,
+            }) as Box<dyn OpDispenser>)
+        })
     }
 
     // stdout is intentionally permissive: it renders whatever

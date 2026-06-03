@@ -134,8 +134,12 @@ pub enum ExecDepth {
 pub struct DiagnosticConfig {
     /// How far to execute.
     pub depth: ExecDepth,
-    /// Emit GK provenance and data flow analysis.
-    pub explain_gk: bool,
+    /// Emit value-provenance / wiring view: how each named wire
+    /// was computed and where its inputs originated. Surfaced by
+    /// `dryrun=wiring`. (Was previously `dryrun=gk` — the rename
+    /// keeps the polydat runtime an internal concept; the user-
+    /// facing concept is "wiring" between named values.)
+    pub show_wiring: bool,
     /// Emit dimensional labels for all phases.
     pub show_labels: bool,
     /// Walk the post-construction component tree, render every
@@ -149,13 +153,13 @@ impl DiagnosticConfig {
     pub fn normal() -> Self {
         Self {
             depth: ExecDepth::Full,
-            explain_gk: false,
+            show_wiring: false,
             show_labels: false,
             list_controls: false,
         }
     }
 
-    /// Parse from `dryrun=` value (e.g., "phase,gk" or "cycle").
+    /// Parse from `dryrun=` value (e.g., "phase,wiring" or "cycle").
     /// If no depth flag (phase/cycle/full) is given, defaults to `Phase`.
     pub fn parse(spec: &str) -> Self {
         let mut config = Self::normal();
@@ -166,7 +170,17 @@ impl DiagnosticConfig {
                 "op" => { config.depth = ExecDepth::Op; depth_set = true; }
                 "cycle" => { config.depth = ExecDepth::Cycle; depth_set = true; }
                 "full" => { config.depth = ExecDepth::Full; depth_set = true; }
-                "gk" => config.explain_gk = true,
+                "wiring" => {
+                    // Value-provenance view. Needs depth >= Op for
+                    // kernels to exist; bump depth so a bare
+                    // `dryrun=wiring` produces output instead of
+                    // silently doing nothing.
+                    config.show_wiring = true;
+                    if !depth_set {
+                        config.depth = ExecDepth::Op;
+                        depth_set = true;
+                    }
+                }
                 "labels" => config.show_labels = true,
                 "controls" => {
                     // Implies an early exit before any phase
@@ -176,14 +190,16 @@ impl DiagnosticConfig {
                     config.depth = ExecDepth::Phase;
                     depth_set = true;
                 }
-                // `emit` / `silent` / `json` are adapter-substitution
-                // dryrun modes (see `create_adapter` and
-                // `DryRunAdapter`); the runner reads them via a
-                // separate `params.get("dryrun")` lookup below and
-                // bumps depth to Cycle so ops actually fire. The
-                // depth-config parser tolerates these tokens
-                // silently so an operator passing `dryrun=emit`
-                // doesn't see a misleading "unknown flag" warning.
+                // `emit` / `silent` / `json` are the dryrun output
+                // modes — they live on `ActivityConfig::dry_run_mode`
+                // and drive the dryrun template-parameter injection
+                // that the outermost `DryRunWrapper` keys off. The
+                // runner reads them via a separate
+                // `params.get("dryrun")` lookup below and bumps
+                // depth to Cycle so the cycle path runs. The depth-
+                // config parser tolerates these tokens silently so
+                // an operator passing `dryrun=emit` doesn't see a
+                // misleading "unknown flag" warning.
                 "emit" | "silent" | "json" => {}
                 _ => crate::diag!(crate::observer::LogLevel::Warn, "warning: unknown dryrun flag '{flag}'"),
             }
@@ -2619,15 +2635,17 @@ fn refresh_latest_file_links(session: &crate::session::Session) {
 }
 
 /// Create an adapter from inventory registrations.
-/// Create an adapter, respecting dry-run mode.
+///
+/// `dryrun=cycle` does NOT substitute the adapter here — it means
+/// "construct a fully-executable cycle path, then suppress only
+/// the outbound `execute()` at cycle time." The real adapter is
+/// always created (connecting, preparing statements, gathering
+/// metadata); the outermost `DryRunWrapper` handles the runtime
+/// short-circuit. See `nbrs_activity::wrappers::DryRunWrapper`.
 pub async fn create_adapter(
     driver: &str,
     params: &HashMap<String, String>,
-    dry_run: Option<&str>,
 ) -> Result<Arc<dyn crate::adapter::DriverAdapter>, String> {
-    if let Some(mode) = dry_run {
-        return Ok(Arc::new(DryRunAdapter { mode: mode.to_string() }));
-    }
     let reg = find_adapter_registration(driver)
         .ok_or_else(|| {
             let available = registered_driver_names();
@@ -2686,82 +2704,6 @@ impl Reporter for BoxedReporter {
     }
 }
 
-
-/// Dry-run adapter: emit ops to stdout or silently discard.
-struct DryRunAdapter {
-    mode: String,
-}
-
-impl crate::adapter::DriverAdapter for DryRunAdapter {
-    fn name(&self) -> &str { "dry-run" }
-
-    fn map_op(
-        &self,
-        template: &nbrs_workload::model::ParsedOp,
-        parent: std::sync::Arc<polydat::kernel::GkKernel>,
-    ) -> Result<Box<dyn crate::adapter::OpDispenser>, String>
-    {
-        let mode = self.mode.clone();
-        let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        Ok(Box::new(DryRunDispenser { mode, op_fields, canonical_kernel: parent }))
-    }
-}
-
-struct DryRunDispenser {
-    mode: String,
-    /// Op-field templates snapshotted at `map_op`, resolved per
-    /// cycle through the generic GK wires API.
-    op_fields: Vec<(String, serde_json::Value)>,
-    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
-    canonical_kernel: std::sync::Arc<polydat::kernel::GkKernel>,
-}
-
-impl crate::adapter::OpDispenser for DryRunDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<polydat::kernel::GkKernel>> {
-        Some(&self.canonical_kernel)
-    }
-
-    fn execute<'a>(&'a self, _cycle: u64, ctx: &'a crate::fixture::ExecCtx<'a>)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::adapter::OpResult, crate::adapter::ExecutionError>> + Send + 'a>>
-    {
-        let mode = &self.mode;
-        let wires = ctx.wires;
-        Box::pin(async move {
-            let resolved = match crate::wires::resolve_op_fields_via_wires(&self.op_fields, wires) {
-                Ok(r) => r,
-                Err(msg) => {
-                    return Err(crate::adapter::ExecutionError::Op(crate::adapter::AdapterError {
-                        error_name: "BindError".into(),
-                        message: msg,
-                        retryable: false,
-                    }));
-                }
-            };
-            match mode.as_str() {
-                "emit" => {
-                    if let Some(stmt) = resolved.get_str("stmt")
-                        .or_else(|| resolved.get_str("raw"))
-                        .or_else(|| resolved.get_str("prepared"))
-                    {
-                        println!("{stmt}");
-                    } else {
-                        println!("{}", resolved.strings().join("\n"));
-                    }
-                }
-                "json" => {
-                    println!("{}", resolved.to_json());
-                }
-                _ => {} // silent
-            }
-            Ok(crate::adapter::OpResult {
-                body: None,
-                skipped: false,
-            })
-        })
-    }
-}
 
 // =========================================================================
 // Helpers
@@ -4030,7 +3972,7 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
         // after the `=` split — handles `key='value'` and
         // `key="value"`.
         let unquoted = elide_outer_quotes(arg.as_str());
-        // Strip leading dashes: --dryrun=phase,gk → dryrun=phase,gk
+        // Strip leading dashes: --dryrun=phase,wiring → dryrun=phase,wiring
         let stripped = unquoted.trim_start_matches('-');
         if let Some(eq_pos) = stripped.find('=') {
             let key = stripped[..eq_pos].to_string();
@@ -4417,10 +4359,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_dryrun_op_combines_with_gk_flag() {
-        let cfg = DiagnosticConfig::parse("op,gk");
+    fn parse_dryrun_op_combines_with_wiring_flag() {
+        let cfg = DiagnosticConfig::parse("op,wiring");
         assert_eq!(cfg.depth, ExecDepth::Op);
-        assert!(cfg.explain_gk);
+        assert!(cfg.show_wiring);
+    }
+
+    #[test]
+    fn parse_dryrun_wiring_alone_bumps_depth_to_op() {
+        // `wiring` needs depth >= Op for kernels to exist; a bare
+        // `dryrun=wiring` must auto-bump so it produces output
+        // instead of silently doing nothing at depth=Phase.
+        let cfg = DiagnosticConfig::parse("wiring");
+        assert_eq!(cfg.depth, ExecDepth::Op);
+        assert!(cfg.show_wiring);
+    }
+
+    #[test]
+    fn parse_dryrun_wiring_does_not_override_explicit_depth() {
+        // Explicit phase depth wins; `wiring` is then a no-op
+        // (no kernels to render at phase depth) — the user gets
+        // what they asked for rather than a silent bump.
+        let cfg = DiagnosticConfig::parse("phase,wiring");
+        assert_eq!(cfg.depth, ExecDepth::Phase);
+        assert!(cfg.show_wiring);
     }
 
     #[test]

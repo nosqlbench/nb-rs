@@ -1350,6 +1350,12 @@ fn assertion_skip_reason(
 /// extend it to. Returns `None` for type pairs the catalog
 /// doesn't cover — callers must surface a typed
 /// `TypeMismatch` error in that case.
+/// Intra-graph wire adapter catalog. Consulted by the assembler
+/// during construction to heal mismatched producer/consumer
+/// `PortType` pairs. Strict: only adapters whose `eval` is
+/// total over the input domain (never panics on any valid
+/// runtime value of `from`). Lossy or parseable adapters
+/// belong in [`boundary_adapter`] only.
 pub fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn GkNode>> {
     use crate::library::convert::{
         BoolToStr, BoolToU64,
@@ -1358,34 +1364,176 @@ pub fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn GkNode>> {
         I64ToF64, I64ToString,
         F32ToF64, F32ToString,
     };
+    use crate::library::polyfill as P;
     match (from, to) {
-        // Widening: safe, no precision loss
+        // ── Numeric widening (lossless) ─────────────────────────
         (PortType::U64, PortType::F64) => Some(Box::new(U64ToF64::new())),
-        // Widening: unsigned integers
         (PortType::U32, PortType::U64) => Some(Box::new(U32ToU64::new())),
         (PortType::U32, PortType::F64) => Some(Box::new(U32ToF64::new())),
-        // Widening: signed integers
         (PortType::I32, PortType::I64) => Some(Box::new(I32ToI64::new())),
         (PortType::I32, PortType::F64) => Some(Box::new(I32ToF64::new())),
         (PortType::I64, PortType::F64) => Some(Box::new(I64ToF64::new())),
-        // Widening: floats
         (PortType::F32, PortType::F64) => Some(Box::new(F32ToF64::new())),
-        // To-string: all types render as strings
-        (PortType::U64, PortType::Str) => Some(Box::new(U64ToString::new())),
-        (PortType::F64, PortType::Str) => Some(Box::new(F64ToString::new())),
+
+        // ── X → Str (every type renders as a string) ────────────
+        (PortType::U64, PortType::Str)  => Some(Box::new(U64ToString::new())),
+        (PortType::F64, PortType::Str)  => Some(Box::new(F64ToString::new())),
         (PortType::Bool, PortType::Str) => Some(Box::new(BoolToStr::new())),
         (PortType::Json, PortType::Str) => Some(Box::new(JsonToStr::new())),
-        (PortType::U32, PortType::Str) => Some(Box::new(U32ToString::new())),
-        (PortType::I32, PortType::Str) => Some(Box::new(I32ToString::new())),
-        (PortType::I64, PortType::Str) => Some(Box::new(I64ToString::new())),
-        (PortType::F32, PortType::Str) => Some(Box::new(F32ToString::new())),
-        // Bool to numeric
+        (PortType::U32, PortType::Str)  => Some(Box::new(U32ToString::new())),
+        (PortType::I32, PortType::Str)  => Some(Box::new(I32ToString::new())),
+        (PortType::I64, PortType::Str)  => Some(Box::new(I64ToString::new())),
+        (PortType::F32, PortType::Str)  => Some(Box::new(F32ToString::new())),
+
+        // ── Bool ↔ numeric (always-defined; 1/0 mapping) ────────
         (PortType::Bool, PortType::U64) => Some(Box::new(BoolToU64::new())),
-        // U64 to Bool (nonzero → true). Added for γ-6 return-path
-        // adapters and for general predicate-style expression
-        // results where polydat's BinOps yield U64 (0 or 1) but
-        // the host wants `bool`.
+        (PortType::Bool, PortType::U32) => Some(Box::new(P::BoolToU32::new())),
+        (PortType::Bool, PortType::I64) => Some(Box::new(P::BoolToI64::new())),
+        (PortType::Bool, PortType::I32) => Some(Box::new(P::BoolToI32::new())),
+        (PortType::Bool, PortType::F64) => Some(Box::new(P::BoolToF64::new())),
+        (PortType::Bool, PortType::F32) => Some(Box::new(P::BoolToF32::new())),
         (PortType::U64, PortType::Bool) => Some(Box::new(crate::library::convert::U64ToBool::new())),
+        (PortType::U32, PortType::Bool) => Some(Box::new(P::U32ToBool::new())),
+        (PortType::I64, PortType::Bool) => Some(Box::new(P::I64ToBool::new())),
+        (PortType::I32, PortType::Bool) => Some(Box::new(P::I32ToBool::new())),
+        (PortType::F64, PortType::Bool) => Some(Box::new(P::F64ToBool::new())),
+        (PortType::F32, PortType::Bool) => Some(Box::new(P::F32ToBool::new())),
+
+        // ── X → Bytes (little-endian serialize, always-defined) ─
+        (PortType::U64, PortType::Bytes)  => Some(Box::new(P::U64ToBytes::new())),
+        (PortType::U32, PortType::Bytes)  => Some(Box::new(P::U32ToBytes::new())),
+        (PortType::I64, PortType::Bytes)  => Some(Box::new(P::I64ToBytes::new())),
+        (PortType::I32, PortType::Bytes)  => Some(Box::new(P::I32ToBytes::new())),
+        (PortType::F64, PortType::Bytes)  => Some(Box::new(P::F64ToBytes::new())),
+        (PortType::F32, PortType::Bytes)  => Some(Box::new(P::F32ToBytes::new())),
+        (PortType::Bool, PortType::Bytes) => Some(Box::new(P::BoolToBytes::new())),
+        (PortType::VecF32, PortType::Bytes) => Some(Box::new(P::VecF32ToBytes::new())),
+        (PortType::VecI32, PortType::Bytes) => Some(Box::new(P::VecI32ToBytes::new())),
+
+        // ── X → Json (integer / bool wraps; F* and VecF32 are
+        //              boundary-only because non-finite floats
+        //              aren't representable in JSON) ────────────
+        (PortType::U64, PortType::Json)  => Some(Box::new(P::U64ToJson::new())),
+        (PortType::U32, PortType::Json)  => Some(Box::new(P::U32ToJson::new())),
+        (PortType::I64, PortType::Json)  => Some(Box::new(P::I64ToJson::new())),
+        (PortType::I32, PortType::Json)  => Some(Box::new(P::I32ToJson::new())),
+        (PortType::Bool, PortType::Json) => Some(Box::new(P::BoolToJson::new())),
+        (PortType::VecI32, PortType::Json) => Some(Box::new(P::VecI32ToJson::new())),
+
+        // ── Vec ↔ Vec (VecI32 → VecF32 is lossless) ─────────────
+        (PortType::VecI32, PortType::VecF32) => Some(Box::new(P::VecI32ToVecF32::new())),
+
+        _ => None,
+    }
+}
+
+/// Boundary adapter catalog. Consulted by
+/// `adapt_boundary_value` when a host-injected scope value
+/// crosses into a typed slot. Strictly a superset of
+/// [`auto_adapter`]: every intra-graph adapter is also a
+/// boundary adapter, plus all the lossy / parseable / shape-
+/// checking adapters that can panic on input the assembler
+/// can't statically verify.
+///
+/// Boundary-only adapters fall into four classes:
+///
+/// - **Numeric narrowings** — `U64→{U32, I64, I32, F32}`,
+///   `F64→{U64, U32, I64, I32, F32}`, etc. Range-checked,
+///   panic on out-of-range.
+/// - **Str → X parsers** — workload-param flow (YAML string
+///   interpolations, comma-split iter-values). Panic on
+///   unparseable input.
+/// - **Bytes → X parsers** — wrong-length panics. Numeric
+///   reads expect exactly sizeof(N) bytes; Vec reads expect
+///   a multiple of sizeof(element).
+/// - **Json → X extractors** — shape mismatch panics
+///   (`Json::Array` expected for Vec; `Json::Number` for
+///   numerics; etc.).
+///
+/// Plus a small set of "almost-auto" adapters that the
+/// assembler can't promote because they panic on non-finite
+/// floats: `F64→Json`, `F32→Json`, `VecF32→Json`,
+/// `VecF32→Str`.
+///
+/// See `polydat/docs/design/type_system.md`.
+pub fn boundary_adapter(from: PortType, to: PortType) -> Option<Box<dyn GkNode>> {
+    if let Some(adapter) = auto_adapter(from, to) {
+        return Some(adapter);
+    }
+    use crate::library::convert::{StrToBool, StrToU64, StrToF64};
+    use crate::library::polyfill as P;
+    match (from, to) {
+        // ── Numeric narrowings + non-widening casts ─────────────
+        (PortType::U64, PortType::U32) => Some(Box::new(P::U64ToU32::new())),
+        (PortType::U64, PortType::I64) => Some(Box::new(P::U64ToI64::new())),
+        (PortType::U64, PortType::I32) => Some(Box::new(P::U64ToI32::new())),
+        (PortType::U64, PortType::F32) => Some(Box::new(P::U64ToF32::new())),
+        (PortType::U32, PortType::I32) => Some(Box::new(P::U32ToI32::new())),
+        (PortType::U32, PortType::F32) => Some(Box::new(P::U32ToF32::new())),
+        (PortType::I64, PortType::U64) => Some(Box::new(P::I64ToU64::new())),
+        (PortType::I64, PortType::U32) => Some(Box::new(P::I64ToU32::new())),
+        (PortType::I64, PortType::I32) => Some(Box::new(P::I64ToI32::new())),
+        (PortType::I64, PortType::F32) => Some(Box::new(P::I64ToF32::new())),
+        (PortType::I32, PortType::U64) => Some(Box::new(P::I32ToU64::new())),
+        (PortType::I32, PortType::U32) => Some(Box::new(P::I32ToU32::new())),
+        (PortType::I32, PortType::F32) => Some(Box::new(P::I32ToF32::new())),
+        (PortType::F64, PortType::U64) => Some(Box::new(P::F64ToU64::new())),
+        (PortType::F64, PortType::U32) => Some(Box::new(P::F64ToU32::new())),
+        (PortType::F64, PortType::I64) => Some(Box::new(P::F64ToI64::new())),
+        (PortType::F64, PortType::I32) => Some(Box::new(P::F64ToI32::new())),
+        (PortType::F64, PortType::F32) => Some(Box::new(P::F64ToF32::new())),
+        (PortType::F32, PortType::U64) => Some(Box::new(P::F32ToU64::new())),
+        (PortType::F32, PortType::U32) => Some(Box::new(P::F32ToU32::new())),
+        (PortType::F32, PortType::I64) => Some(Box::new(P::F32ToI64::new())),
+        (PortType::F32, PortType::I32) => Some(Box::new(P::F32ToI32::new())),
+
+        // ── Str → X parsers (boundary-only: panic on unparseable)
+        (PortType::Str, PortType::Bool)   => Some(Box::new(StrToBool::new())),
+        (PortType::Str, PortType::U64)    => Some(Box::new(StrToU64::new())),
+        (PortType::Str, PortType::F64)    => Some(Box::new(StrToF64::new())),
+        (PortType::Str, PortType::U32)    => Some(Box::new(P::StrToU32::new())),
+        (PortType::Str, PortType::I64)    => Some(Box::new(P::StrToI64::new())),
+        (PortType::Str, PortType::I32)    => Some(Box::new(P::StrToI32::new())),
+        (PortType::Str, PortType::F32)    => Some(Box::new(P::StrToF32::new())),
+        (PortType::Str, PortType::Bytes)  => Some(Box::new(P::StrToBytes::new())),
+        (PortType::Str, PortType::Json)   => Some(Box::new(P::StrToJson::new())),
+        (PortType::Str, PortType::VecF32) => Some(Box::new(P::StrToVecF32::new())),
+        (PortType::Str, PortType::VecI32) => Some(Box::new(P::StrToVecI32::new())),
+
+        // ── Bytes → X (length-checked, little-endian) ───────────
+        (PortType::Bytes, PortType::U64)    => Some(Box::new(P::BytesToU64::new())),
+        (PortType::Bytes, PortType::U32)    => Some(Box::new(P::BytesToU32::new())),
+        (PortType::Bytes, PortType::I64)    => Some(Box::new(P::BytesToI64::new())),
+        (PortType::Bytes, PortType::I32)    => Some(Box::new(P::BytesToI32::new())),
+        (PortType::Bytes, PortType::F64)    => Some(Box::new(P::BytesToF64::new())),
+        (PortType::Bytes, PortType::F32)    => Some(Box::new(P::BytesToF32::new())),
+        (PortType::Bytes, PortType::Bool)   => Some(Box::new(P::BytesToBool::new())),
+        (PortType::Bytes, PortType::Str)    => Some(Box::new(P::BytesToStr::new())),
+        (PortType::Bytes, PortType::Json)   => Some(Box::new(P::BytesToJson::new())),
+        (PortType::Bytes, PortType::VecF32) => Some(Box::new(P::BytesToVecF32::new())),
+        (PortType::Bytes, PortType::VecI32) => Some(Box::new(P::BytesToVecI32::new())),
+
+        // ── Json → X (shape-checked) ────────────────────────────
+        (PortType::Json, PortType::U64)    => Some(Box::new(P::JsonToU64::new())),
+        (PortType::Json, PortType::U32)    => Some(Box::new(P::JsonToU32::new())),
+        (PortType::Json, PortType::I64)    => Some(Box::new(P::JsonToI64::new())),
+        (PortType::Json, PortType::I32)    => Some(Box::new(P::JsonToI32::new())),
+        (PortType::Json, PortType::F64)    => Some(Box::new(P::JsonToF64::new())),
+        (PortType::Json, PortType::F32)    => Some(Box::new(P::JsonToF32::new())),
+        (PortType::Json, PortType::Bool)   => Some(Box::new(P::JsonToBool::new())),
+        (PortType::Json, PortType::Bytes)  => Some(Box::new(P::JsonToBytes::new())),
+        (PortType::Json, PortType::VecF32) => Some(Box::new(P::JsonToVecF32::new())),
+        (PortType::Json, PortType::VecI32) => Some(Box::new(P::JsonToVecI32::new())),
+
+        // ── Almost-auto (panic on non-finite floats) ────────────
+        (PortType::F64, PortType::Json) => Some(Box::new(P::F64ToJson::new())),
+        (PortType::F32, PortType::Json) => Some(Box::new(P::F32ToJson::new())),
+        (PortType::VecF32, PortType::Json) => Some(Box::new(P::VecF32ToJson::new())),
+        (PortType::VecF32, PortType::Str)  => Some(Box::new(P::VecF32ToStr::new())),
+
+        // ── Vec ↔ Vec (lossy round) ─────────────────────────────
+        (PortType::VecF32, PortType::VecI32) => Some(Box::new(P::VecF32ToVecI32::new())),
+
         _ => None,
     }
 }

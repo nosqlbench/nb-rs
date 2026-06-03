@@ -73,7 +73,26 @@ impl std::fmt::Display for WriteError {
                 write!(
                     f,
                     "type mismatch writing to slot '{slot}': expected {expected:?}, got {got:?} (no auto-adapter available)"
-                )
+                )?;
+                // Vec → scalar is intentionally excluded from the
+                // polyfill matrix (type_system.md §3) — there is
+                // no single natural collection-to-scalar
+                // convention. Point the author at the explicit
+                // helpers rather than leaving them to guess.
+                if matches!(got, PortType::VecF32 | PortType::VecI32)
+                    && !matches!(expected, PortType::VecF32 | PortType::VecI32
+                        | PortType::Str | PortType::Bytes | PortType::Json)
+                {
+                    write!(
+                        f,
+                        " — collection → scalar requires an explicit \
+                         choice; use `vec_len(v)` for the element \
+                         count, `vec_first(v)` / `vec_last(v)` for an \
+                         element, `vec_sum(v)` / `vec_mean(v)` for an \
+                         aggregate"
+                    )?;
+                }
+                Ok(())
             }
         }
     }
@@ -175,6 +194,13 @@ pub trait Metadata {
     /// can look up the slot's expected type without first
     /// reverse-resolving an index to a name.
     fn input_port_type_by_idx(&self, idx: usize) -> Option<PortType>;
+
+    /// Declared port type of an output wire, if present.
+    /// Symmetric counterpart to [`input_port_type`]. Used by
+    /// the binder verification path
+    /// (`crate::binder::verify_against_kernel`) to look up wire
+    /// types for type-checking adapter binding shapes.
+    fn output_port_type(&self, name: &str) -> Option<PortType>;
 }
 
 /// Data interface to a GK context: write inputs, read wires.

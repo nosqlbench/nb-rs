@@ -190,41 +190,43 @@ impl ModelAdapter {
 impl DriverAdapter for ModelAdapter {
     fn name(&self) -> &str { "testkit" }
 
-    fn map_op(
-        &self,
-        template: &ParsedOp,
+    fn map_op<'a>(
+        &'a self,
+        template: &'a ParsedOp,
         parent: std::sync::Arc<polydat::kernel::GkKernel>,
-    ) -> Result<Box<dyn OpDispenser>, String> {
-        // The yaml parser routes unknown top-level op keys into
-        // `template.op`, while a nested `params:` block lands in
-        // `template.params`. Both are valid ways to declare
-        // `result-*` fields, so merge them — `params` wins on
-        // collision because an explicit `params:` block is the
-        // stronger user intent.
-        let mut merged = template.op.clone();
-        for (k, v) in &template.params {
-            merged.insert(k.clone(), v.clone());
-        }
-        let model_params = extract_model_params(&merged);
-        // Per-op semaphore: independent ops simulate independent
-        // backends, each with their own capacity ceiling.
-        let semaphore = model_params.capacity.map(|n| Arc::new(Semaphore::new(n)));
-        // SRD-68 Push 5: snapshot op-field templates for cycle-time
-        // resolution through the generic wires API.
-        let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        Ok(Box::new(ModelDispenser {
-            writer: self.writer.clone(),
-            format: self.format,
-            newline: self.newline,
-            diagnose: self.diagnose,
-            model_params,
-            semaphore,
-            in_flight: Arc::new(AtomicUsize::new(0)),
-            canonical_kernel: parent,
-            op_fields,
-        }))
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            // The yaml parser routes unknown top-level op keys into
+            // `template.op`, while a nested `params:` block lands in
+            // `template.params`. Both are valid ways to declare
+            // `result-*` fields, so merge them — `params` wins on
+            // collision because an explicit `params:` block is the
+            // stronger user intent.
+            let mut merged = template.op.clone();
+            for (k, v) in &template.params {
+                merged.insert(k.clone(), v.clone());
+            }
+            let model_params = extract_model_params(&merged);
+            // Per-op semaphore: independent ops simulate independent
+            // backends, each with their own capacity ceiling.
+            let semaphore = model_params.capacity.map(|n| Arc::new(Semaphore::new(n)));
+            // SRD-68 Push 5: snapshot op-field templates for cycle-time
+            // resolution through the generic wires API.
+            let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(Box::new(ModelDispenser {
+                writer: self.writer.clone(),
+                format: self.format,
+                newline: self.newline,
+                diagnose: self.diagnose,
+                model_params,
+                semaphore,
+                in_flight: Arc::new(AtomicUsize::new(0)),
+                canonical_kernel: parent,
+                op_fields,
+            }) as Box<dyn OpDispenser>)
+        })
     }
 }
 

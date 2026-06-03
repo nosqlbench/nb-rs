@@ -21,11 +21,48 @@ pub enum BindQualifier {
     Capture,
 }
 
+/// Workload-author lvalue assertion attached to a [`BindPoint::Reference`].
+///
+/// Spelled as a `:<spec>` suffix inside the brace pair:
+///
+/// - `{meta}` — no marker; strict match. The adapter consults
+///   cluster-side metadata and the binder verifies the wire's
+///   rvalue type matches that.
+/// - `{meta:*}` — wildcard. Polydat is licensed to fuse / coerce;
+///   the binder treats the slot as `Str`-lvalue (which permits any
+///   rvalue per the load-bearing rule).
+/// - `{meta:<type>}` — explicit polydat `PortType` assertion. The
+///   binder uses the asserted type as the lvalue for verification,
+///   overriding what cluster-side metadata would say. The type
+///   name is the lower-snake-case form (`u64`, `i32`, `f64`,
+///   `vec_f32`, `str`, `bytes`, etc.) — matches `PortType`'s
+///   `Display` form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LvalueSpec {
+    /// `:*` — workload-author opt-in to type fusion.
+    Wildcard,
+    /// `:<typename>` — workload-author asserts a polydat
+    /// `PortType` by name. The string is preserved verbatim;
+    /// adapters parse it to `PortType` at construction time and
+    /// error on unknown names.
+    Explicit(String),
+}
+
 /// A detected bind point in an op template field.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BindPoint {
-    /// `{name}` or `{qualifier:name}` — references a named value.
-    Reference { name: String, qualifier: BindQualifier },
+    /// `{name}`, `{qualifier:name}`, `{name:*}`, or `{name:<type>}` —
+    /// references a named value with an optional lvalue assertion.
+    ///
+    /// `lvalue_spec` is the workload-author opt-in for the
+    /// construction-time binder check. `None` (the default) means
+    /// strict matching against cluster-side metadata. See
+    /// [`LvalueSpec`] for the two relaxation forms.
+    Reference {
+        name: String,
+        qualifier: BindQualifier,
+        lvalue_spec: Option<LvalueSpec>,
+    },
     /// `{{expr}}` — inline binding definition.
     InlineDefinition(String),
 }
@@ -118,6 +155,19 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                         let expr = expr.strip_suffix(":=").unwrap_or(expr).trim();
                         points.push(BindPoint::InlineDefinition(expr.to_string()));
                         i += 1;
+                    } else if let Some((name_part, spec)) = extract_lvalue_spec(raw) {
+                        // Lvalue-asserted reference: `{name:*}` (wildcard)
+                        // or `{name:<typename>}` (explicit polydat type).
+                        // Detected BEFORE `is_expression` so the `:*` /
+                        // `:type` suffix doesn't get misclassified as
+                        // an operator. The body still routes through
+                        // `parse_qualified_ref` for completeness, though
+                        // qualifier+spec composition is not currently
+                        // supported (the lvalue-spec detector only
+                        // matches when `name_part` is a bare identifier).
+                        let (qualifier, name) = parse_qualified_ref(name_part);
+                        points.push(BindPoint::Reference { name, qualifier, lvalue_spec: Some(spec) });
+                        i += 1;
                     } else if is_expression(raw) {
                         // Content has operators/parens — treat as inline expression
                         points.push(BindPoint::InlineDefinition(raw.to_string()));
@@ -125,7 +175,7 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                     } else {
                         // Simple identifier — reference bind point
                         let (qualifier, name) = parse_qualified_ref(raw);
-                        points.push(BindPoint::Reference { name, qualifier });
+                        points.push(BindPoint::Reference { name, qualifier, lvalue_spec: None });
                         i += 1;
                     }
                 }
@@ -144,6 +194,117 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
 /// or other syntax that can't be a plain identifier.
 pub fn is_expression_public(s: &str) -> bool {
     is_expression(s)
+}
+
+/// Public form of [`extract_lvalue_spec`] for adapters that need
+/// to interleave bind-point processing with text generation
+/// (e.g., the cassandra-cpp `resolve_structural_and_mark_remaining`
+/// walker, which scans the statement text char-by-char and must
+/// strip a lvalue-spec suffix from a bind-point body before
+/// deciding whether to inline-resolve or `?`-mark the position).
+///
+/// Returns `(bare_name, Some(spec))` when the body carries a
+/// lvalue-spec suffix; `(body, None)` otherwise. The first half
+/// of the tuple is always the body with any `:*` or `:<type>`
+/// suffix stripped.
+pub fn split_lvalue_spec(body: &str) -> (&str, Option<LvalueSpec>) {
+    match extract_lvalue_spec(body) {
+        Some((name_part, spec)) => (name_part, Some(spec)),
+        None => (body, None),
+    }
+}
+
+/// Detect the `:<spec>` lvalue-assertion suffix on a bind-point
+/// body. Returns `Some((name_part, spec))` when the body is the
+/// shape `<bare-identifier>:<*-or-bare-identifier>`; otherwise
+/// `None`.
+///
+/// Matched explicitly (not as part of `is_expression` or the
+/// general qualifier-parse path) because:
+///
+/// - `:*` would otherwise trip the `*` arm of `is_expression` and
+///   get treated as multiplication.
+/// - `:<typename>` would otherwise get treated as
+///   `<qualifier>:<name>` and the `name` could collide with a
+///   real workload-named wire if both parts looked like
+///   identifiers (e.g. `{input:cycle}` — qualifier `input`, name
+///   `cycle` — must continue to parse as qualifier+name, not as
+///   `name=input, lvalue=cycle`).
+///
+/// Both parts of the split are required to be bare identifiers
+/// for the suffix detection to fire. That's how `{input:cycle}`
+/// (qualifier path) is distinguished from `{meta:i32}` (lvalue-
+/// spec path): the name part `meta` is a bare identifier, the
+/// spec part `i32` is a bare identifier — but the LEFT side of
+/// `input:cycle` matches a known qualifier word, so the existing
+/// qualifier parser claims it first (in the outer dispatch this
+/// helper runs from). Within this helper we don't even check
+/// qualifier-ness — we just require both halves to be bare
+/// identifier shape.
+fn extract_lvalue_spec(raw: &str) -> Option<(&str, LvalueSpec)> {
+    let (name_part, spec_part) = raw.rsplit_once(':')?;
+    let name_part = name_part.trim();
+    let spec_part = spec_part.trim();
+    if !is_bare_identifier(name_part) {
+        return None;
+    }
+    // If the left side is a known qualifier (`input`, `bind`,
+    // `capture`, `coord`, `coordinate`), let the existing
+    // qualifier path claim this binding instead — don't shadow it
+    // here. Composition (`{capture:meta:type}`) is not currently
+    // supported; punt on it cleanly by declining.
+    let lower = name_part.to_lowercase();
+    if matches!(lower.as_str(),
+        "input" | "coord" | "coordinate" | "bind" | "capture")
+    {
+        return None;
+    }
+    if spec_part == "*" {
+        Some((name_part, LvalueSpec::Wildcard))
+    } else if is_polydat_type_name(spec_part) {
+        Some((name_part, LvalueSpec::Explicit(spec_part.to_string())))
+    } else {
+        // Suffix isn't `*` or a known polydat type name; this is
+        // not a lvalue-spec binding. Fall through so the outer
+        // dispatch lets the unqualified-name path claim it (as
+        // `{port:auth_token}` does — `auth_token` isn't a polydat
+        // type so the whole body becomes the bare name).
+        None
+    }
+}
+
+/// Names that may appear as the `<type>` part of a
+/// `{name:<type>}` lvalue-spec binding. Matches the lower-snake-
+/// case `Display` form of `polydat::ast::PortType` for the
+/// variants that are user-facing as op-template lvalue
+/// assertions. `handle` and `none` are intentionally excluded —
+/// they're internal-only types that a workload author should
+/// never assert.
+///
+/// Hard-coded here (rather than reaching into polydat) so this
+/// crate stays free of a polydat dependency. Drift between this
+/// list and `PortType` becomes a test-time mismatch in
+/// `polydat::ast::PortType::from_str`, which the workload-side
+/// adapter `map_op` calls when it encounters an `Explicit` spec.
+fn is_polydat_type_name(s: &str) -> bool {
+    matches!(s,
+        "u64" | "f64" | "u32" | "i32" | "i64" | "f32"
+        | "bool" | "str" | "bytes" | "json"
+        | "vec_f32" | "vec_i32"
+    )
+}
+
+/// Bare-identifier shape: ASCII alpha or underscore start; rest
+/// alphanumeric / underscore. Used by [`extract_lvalue_spec`] to
+/// gate the suffix detection on shapes that look like names /
+/// type-words and nothing else.
+fn is_bare_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn is_expression(s: &str) -> bool {
@@ -496,8 +657,8 @@ mod tests {
         match ft {
             FieldType::Template(points) => {
                 assert_eq!(points.len(), 2);
-                assert_eq!(points[0], BindPoint::Reference { name: "id".into(), qualifier: BindQualifier::None });
-                assert_eq!(points[1], BindPoint::Reference { name: "name".into(), qualifier: BindQualifier::None });
+                assert_eq!(points[0], BindPoint::Reference { name: "id".into(), qualifier: BindQualifier::None, lvalue_spec: None });
+                assert_eq!(points[1], BindPoint::Reference { name: "name".into(), qualifier: BindQualifier::None, lvalue_spec: None });
             }
             _ => panic!("expected Template"),
         }
@@ -541,6 +702,7 @@ mod tests {
         assert_eq!(points[0], BindPoint::Reference {
             name: "cycle".into(),
             qualifier: BindQualifier::Input,
+            lvalue_spec: None,
         });
     }
 
@@ -551,6 +713,7 @@ mod tests {
         assert_eq!(points[0], BindPoint::Reference {
             name: "balance".into(),
             qualifier: BindQualifier::Capture,
+            lvalue_spec: None,
         });
     }
 
@@ -561,6 +724,7 @@ mod tests {
         assert_eq!(points[0], BindPoint::Reference {
             name: "user_id".into(),
             qualifier: BindQualifier::Bind,
+            lvalue_spec: None,
         });
     }
 
@@ -572,6 +736,7 @@ mod tests {
         assert_eq!(points[0], BindPoint::Reference {
             name: "port:auth_token".into(),
             qualifier: BindQualifier::None,
+            lvalue_spec: None,
         });
     }
 
@@ -581,6 +746,7 @@ mod tests {
         assert_eq!(points[0], BindPoint::Reference {
             name: "user_id".into(),
             qualifier: BindQualifier::None,
+            lvalue_spec: None,
         });
     }
 
@@ -596,6 +762,7 @@ mod tests {
         assert_eq!(points[0], BindPoint::Reference {
             name: "row".into(),
             qualifier: BindQualifier::Input,
+            lvalue_spec: None,
         });
     }
 

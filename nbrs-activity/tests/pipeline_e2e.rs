@@ -46,21 +46,26 @@ impl RecordingAdapter {
 impl DriverAdapter for RecordingAdapter {
     fn name(&self) -> &str { &self.name }
 
-    fn map_op(
-        &self,
-        template: &nbrs_workload::model::ParsedOp,
+    fn map_op<'a>(
+        &'a self,
+        template: &'a nbrs_workload::model::ParsedOp,
         _parent: std::sync::Arc<polydat::kernel::GkKernel>,
-    ) -> Result<Box<dyn OpDispenser>, String>
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>
     {
         let stmt_template = template.op.get("stmt")
             .and_then(|v| v.as_str())
             .map(String::from);
-        Ok(Box::new(RecordingDispenser {
-            adapter_name: self.name.clone(),
-            log: self.log.clone(),
-            call_count: self.call_count.clone(),
-            stmt_template,
-        }))
+        let adapter_name = self.name.clone();
+        let log = self.log.clone();
+        let call_count = self.call_count.clone();
+        Box::pin(async move {
+            Ok(Box::new(RecordingDispenser {
+                adapter_name,
+                log,
+                call_count,
+                stmt_template,
+            }) as Box<dyn OpDispenser>)
+        })
     }
 }
 

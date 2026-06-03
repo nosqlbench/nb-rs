@@ -64,8 +64,20 @@ fn expected_adapt(src: PortType, dst: PortType) -> Adapt {
         // Any of these render to Str.
         | (U64, Str) | (F64, Str) | (Bool, Str) | (Json, Str)
         | (U32, Str) | (I32, Str) | (I64, Str) | (F32, Str)
-        // Bool lifts to U64 as 0/1.
-        | (Bool, U64) => Adapt::Inserted,
+        // Bool ↔ numeric (1/0 mapping; nonzero test). Always-defined.
+        | (Bool, U64) | (Bool, U32) | (Bool, I64)
+        | (Bool, I32) | (Bool, F64) | (Bool, F32)
+        | (U64, Bool) | (U32, Bool) | (I64, Bool)
+        | (I32, Bool) | (F64, Bool) | (F32, Bool)
+        // X → Bytes (little-endian serialize, always-defined).
+        | (U64, Bytes) | (U32, Bytes) | (I64, Bytes) | (I32, Bytes)
+        | (F64, Bytes) | (F32, Bytes) | (Bool, Bytes)
+        | (VecF32, Bytes) | (VecI32, Bytes)
+        // Integer / Bool → Json (always-representable).
+        | (U64, Json) | (U32, Json) | (I64, Json) | (I32, Json)
+        | (Bool, Json) | (VecI32, Json)
+        // VecI32 → VecF32 (lossless cast).
+        | (VecI32, VecF32) => Adapt::Inserted,
         _ => Adapt::None,
     }
 }
@@ -430,12 +442,29 @@ fn random_dags_compile_or_fail_cleanly() {
 /// `assembly.rs` — mirror its accepted set here.
 fn adapter_label_is_known(label: &str) -> bool {
     // PortType's Debug impl yields "U64", "F64", etc. — match those.
+    // Mirror the assembler's auto_adapter table (intra-graph only;
+    // boundary-only parsers + lossy narrowings are NOT here).
     let known = [
+        // Numeric widening
         "U64→F64", "U32→U64", "U32→F64", "I32→I64", "I32→F64",
         "I64→F64", "F32→F64",
+        // X → Str
         "U64→Str", "F64→Str", "Bool→Str", "Json→Str",
         "U32→Str", "I32→Str", "I64→Str", "F32→Str",
-        "Bool→U64",
+        // Bool ↔ numeric
+        "Bool→U64", "Bool→U32", "Bool→I64", "Bool→I32",
+        "Bool→F64", "Bool→F32",
+        "U64→Bool", "U32→Bool", "I64→Bool", "I32→Bool",
+        "F64→Bool", "F32→Bool",
+        // X → Bytes
+        "U64→Bytes", "U32→Bytes", "I64→Bytes", "I32→Bytes",
+        "F64→Bytes", "F32→Bytes", "Bool→Bytes",
+        "VecF32→Bytes", "VecI32→Bytes",
+        // X → Json (integers + Bool + VecI32)
+        "U64→Json", "U32→Json", "I64→Json", "I32→Json",
+        "Bool→Json", "VecI32→Json",
+        // Vec ↔ Vec
+        "VecI32→VecF32",
     ];
     known.iter().any(|&k| k == label)
 }

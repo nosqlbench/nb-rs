@@ -27,7 +27,9 @@
 //! nbrs run adapter=cql cqldriver=cassandra-cpp   # force cassandra-cpp
 //! ```
 
-use nbrs_activity::adapter::{AdapterRegistration, DisplayPreference, instantiate_with_driver};
+use nbrs_activity::adapter::{
+    AdapterRegistration, DisplayPreference, instantiate_with_driver,
+};
 
 /// The workload-param name a user sets to pick a specific CQL
 /// driver, overriding the rank-derived default. Single value

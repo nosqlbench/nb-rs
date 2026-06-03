@@ -46,7 +46,35 @@ pub async fn run_command(args: &[String]) {
         .collect();
     let params = nbrs_activity::runner::parse_params(&param_args);
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
-    let has_dryrun = params.contains_key("dryrun");
+    // Every `dryrun=...` value is a first-class dryrun. They split
+    // into two operational shapes that ask different things of the
+    // surface:
+    //
+    //   - **cycle-running**: `cycle`, `full`, and the adapter-
+    //     substitution modes `emit` / `silent` / `json`. The walker
+    //     runs the full per-cycle pipeline (bind-point eval, kernel
+    //     pulls, dataset reads, wrapper stack) and short-circuits
+    //     only the outbound adapter call. These runs *need* the
+    //     LogOnlySink so the inline `phase_status` line ticks and
+    //     the operator can see preparation work happening.
+    //
+    //   - **early-exit display modes**: `phase`, `op`, `controls`.
+    //     The walker exits before running any cycles, dumps a
+    //     one-shot structural report to stdout, and is done. The
+    //     LogOnlySink's managed bottom region would only interleave
+    //     with that dump and break piping (`| less`, redirect into
+    //     another tool).
+    //
+    // `dryrun=labels` and `dryrun=wiring` are *output filter*
+    // sub-flags that ride on whichever execution depth was selected;
+    // they don't drive this decision themselves.
+    let dryrun_runs_cycles = params.get("dryrun")
+        .map(|s| {
+            let cfg = nbrs_activity::runner::DiagnosticConfig::parse(s);
+            cfg.depth >= nbrs_activity::runner::ExecDepth::Cycle
+        })
+        .unwrap_or(false);
+    let dryrun_is_early_exit = params.contains_key("dryrun") && !dryrun_runs_cycles;
 
     // Adapters that need raw terminal output (e.g. plotter)
     // override TUI detection — checked at startup before any
@@ -80,7 +108,12 @@ pub async fn run_command(args: &[String]) {
         "off"
     } else if let Some(req) = user_tui {
         req
-    } else if is_tty && !has_dryrun {
+    } else if is_tty && !dryrun_is_early_exit {
+        // Cycle-running dryruns (`cycle`, `full`, `emit`,
+        // `silent`, `json`) take this branch — they need the
+        // LogOnlySink so the inline `phase_status` line is
+        // actually rendered. Early-exit display dryruns
+        // (`phase`, `op`, `controls`) fall through to `off`.
         "terminal"
     } else {
         "off"

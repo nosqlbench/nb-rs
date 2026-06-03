@@ -4,74 +4,50 @@
 //! Prepared-statement dispenser.
 //!
 //! Used for `prepared:` / `stmt:` op fields without a `batch:`
-//! param. The statement is prepared once on first execute and
-//! cached in a `OnceLock<Arc<PreparedStatement>>`. Each
-//! subsequent execute binds the resolved fields against the
-//! cached prepared statement and runs `execute_unpaged`.
+//! param. The statement is prepared in `map_op` (the
+//! dispenser-init stack frame — see
+//! `nbrs_activity::adapter::DriverAdapter::map_op` docs) and
+//! handed in already prepared so per-cycle execute has no
+//! init work left to do.
 
 use std::sync::Arc;
 
 use nbrs_activity::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
-use nbrs_activity::op_modifier::ModifierChain;
 use polydat::ast::Value;
 use scylla::client::session::Session;
-use scylla::statement::{Consistency, prepared::PreparedStatement};
+use scylla::statement::prepared::PreparedStatement;
 
-use super::{ScyllaResultBody, binders, format_cql_error, op_error, truncate_stmt};
+use super::{ScyllaResultBody, binders, format_cql_error, op_error};
 
 pub(super) struct ScyllaPreparedDispenser {
     session: Arc<Session>,
-    consistency: Consistency,
+    /// Pre-prepared statement (consistency + per-op modifiers
+    /// already applied at `map_op` time). Wrapped in `Arc` so
+    /// the per-fiber dispatch can share the prep result without
+    /// re-preparing.
+    prepared: Arc<PreparedStatement>,
+    /// Statement text — retained for error diagnostics only;
+    /// not used on the hot path.
     stmt_text: String,
     /// Bind-point names in `?` order, captured from the statement
-    /// text at map-op time. `ResolvedFields` carries every op
-    /// field (including the stmt text itself); we look up each
-    /// bind position by name so non-bind fields stay off the wire.
+    /// text at map-op time. Each cycle, we look up the value at
+    /// each bind position by name through `wires`.
     bind_names: Vec<String>,
-    prepared: std::sync::OnceLock<Arc<PreparedStatement>>,
-    /// SRD 73 universal per-op field overrides. Built once at
-    /// `map_op` time from the GK scope and applied to the prepared
-    /// statement immediately after it's prepared. Hot-path no-op
-    /// when the user didn't bind any per-op field.
-    modifiers: ModifierChain<PreparedStatement>,
 }
 
 impl ScyllaPreparedDispenser {
     pub fn new(
         session: Arc<Session>,
-        consistency: Consistency,
+        prepared: Arc<PreparedStatement>,
         stmt_text: String,
         bind_names: Vec<String>,
-        modifiers: ModifierChain<PreparedStatement>,
     ) -> Self {
         Self {
             session,
-            consistency,
+            prepared,
             stmt_text,
             bind_names,
-            prepared: std::sync::OnceLock::new(),
-            modifiers,
         }
-    }
-
-    async fn get_prepared(&self) -> Result<Arc<PreparedStatement>, ExecutionError> {
-        if let Some(p) = self.prepared.get() {
-            return Ok(p.clone());
-        }
-        let mut prep = self.session.prepare(self.stmt_text.clone()).await
-            .map_err(|e| op_error(
-                "prepare_error",
-                format!("prepare '{}': {e}", truncate_stmt(&self.stmt_text)),
-                false,
-            ))?;
-        prep.set_consistency(self.consistency);
-        // SRD 73: layer per-op universal-field overrides on top of
-        // the session-level consistency. The chain is empty when the
-        // user didn't bind any per-op field.
-        self.modifiers.apply(&mut prep);
-        let arc = Arc::new(prep);
-        let _ = self.prepared.set(arc.clone());
-        Ok(self.prepared.get().unwrap().clone())
     }
 }
 
@@ -83,8 +59,6 @@ impl OpDispenser for ScyllaPreparedDispenser {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
         Box::pin(async move {
-            let prepared = self.get_prepared().await?;
-
             // SRD-68 Push 5: pull values by bind-point name in `?`
             // order through the generic wires API. Empty string is
             // the legacy fallback for an unresolved bind name; the
@@ -93,11 +67,11 @@ impl OpDispenser for ScyllaPreparedDispenser {
             let bind_values: Vec<Value> = self.bind_names.iter()
                 .map(|name| wires.get(name).unwrap_or(Value::Str(String::new().into())))
                 .collect();
-            let col_specs = prepared.get_variable_col_specs();
+            let col_specs = self.prepared.get_variable_col_specs();
             let row = binders::build_row(col_specs, &bind_values)
                 .map_err(|e| op_error("bind_error", e, false))?;
 
-            let result = self.session.execute_unpaged(&prepared, row).await
+            let result = self.session.execute_unpaged(&self.prepared, row).await
                 .map_err(|e| op_error(
                     "cql_error",
                     format_cql_error(&e.to_string(), &self.stmt_text),

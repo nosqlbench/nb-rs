@@ -107,6 +107,7 @@
 //! - [`viz`]: DAG visualization (DOT, Mermaid)
 
 pub mod ast;
+pub mod binder;
 pub mod kernel;
 pub mod iteration;
 pub mod compile;

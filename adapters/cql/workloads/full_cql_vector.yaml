@@ -748,9 +748,9 @@ phases:
         max_batch_size: 64KB
         batchtype: unlogged
         prepared: |
-          INSERT INTO {keyspace}.{table} 
-          (  key,    value,          metadata) VALUES 
-          (  '{id}', {train_vector}, {meta})
+          INSERT INTO {keyspace}.{table}
+          (  key,    value,          metadata) VALUES
+          (  '{id}', {train_vector}, {meta:*})
 
   # ── Search (parameterized by {table}, {dataset}:{profile}, {k}) ────────────
 

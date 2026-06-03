@@ -210,7 +210,9 @@ handle) that the executor needs to retain.
 | `if` | `if` | `if:` set | — | — | — |
 | `emit` | `emit` | `emit: true` | — | — | — |
 | `result` | (none — reads `result:` wires) | template has `result:` wires | `traverse` | — | — |
-| `metrics` | (none) | always | — | (everything) | — |
+| `metrics` | (none) | always | — | (everything else) | — |
+| `memo` | `memo` | `memo:` set | `traverse` | — | — |
+| `dryrun` | `dryrun` | `dryrun:` set (injected by session, see §"Session-injected template parameters") | — | (everything else) | — |
 
 Read the table relationally:
 
@@ -246,6 +248,16 @@ Read the table relationally:
   on anyone being inside me"; the topological resolver
   combined with the session-level default order places
   `if` outside `poll` by default.
+- **`dryrun`** activates on the injected `dryrun:` op-
+  template parameter (per §"Session-injected template
+  parameters" below). The trigger is the standard
+  `fn(&ParsedOp) -> bool` reading `template.params`
+  exactly like every other wrapper — no session context
+  enters the wrapping subsystem. `forbids_outer: <every
+  other wrapper>` pins it as the absolute outermost so
+  its short-circuit fires before any inner wrapper
+  (verify / metrics / poll / etc.) can observe the
+  dryrun stand-in's empty body.
 
 Adding a new wrapper is a single `inventory::submit!` block:
 declare the name, the owned fields, the trigger, and the
@@ -429,8 +441,16 @@ leave a choice. The runtime ships a built-in default that
 matches today's behaviour:
 
 ```
-[traverse, throttle, validate, poll, if, emit, result, metrics]
+[traverse, throttle, validate, poll, if, emit, result, metrics, memo, dryrun]
 ```
+
+`dryrun` is the absolute outermost so its short-circuit
+fires before any inner wrapper observes the dryrun
+stand-in's empty body. Its `forbids_outer` set
+(every other wrapper) pins the position structurally;
+the explicit slot here is the resolver's tiebreaker for
+any future wrapper that `dryrun` hasn't yet been
+updated to forbid.
 
 This list is loaded onto the session component at startup
 under the same path that holds dynamic controls and
@@ -659,6 +679,161 @@ extension declare `requires_inner` on the producer and
 agree on the typed extension type. The constraint graph
 is the load-bearing presence/order guarantee; the typed
 extension is the data contract that rides on top.
+
+---
+
+## Composition-time vs runtime invariants
+
+The wrapping subsystem has a hard split between the
+**composition** phase (one shot, at phase init) and the
+**runtime** phase (per cycle, hot loop). The contract on
+that boundary is the load-bearing invariant that lets
+operators reason about the dispenser chain as a fixed,
+audited structure for the lifetime of a phase.
+
+### Composition phase (phase init, one shot per op-template)
+
+Everything that decides *what wrappers are in the chain*
+and *how they are wired* happens here:
+
+- `WrapperResolver::resolve(template, registry)` calls
+  each registration's `triggers(&ParsedOp) -> bool` and
+  computes the activated set, the transitive closure
+  over `requires_inner`, the topological order with
+  default-order tiebreaker, and the constraint
+  validation (`forbids_outer`,
+  `mutually_exclusive_with`).
+- The cascade walks `plan.iter_innermost_first()` and
+  dispatches to each wrapper's match arm. The arm reads
+  whatever assembly-time context it needs — the parsed
+  template, the `ScopeFixture`, the driver `Adapter`,
+  the activity labels — and produces the
+  `Arc<dyn OpDispenser>` for that layer (or declines to
+  install; see "Plan-vs-chain bookkeeping" below).
+- After the cascade completes, the dispenser chain is
+  **frozen**. Stored in
+  `Activity::dispensers: Vec<Arc<dyn OpDispenser>>`.
+  Used as-is for every cycle in the phase.
+
+### Runtime phase (per cycle, per fiber)
+
+The executor calls `dispenser.execute(cycle, &ExecCtx)`
+on the outermost wrapper. Per cycle, EVERY wrapper:
+
+- Reads its OWN captured state (set at composition time:
+  parsed config, registered `PullHandle`s, `ScopeFixture`
+  side-products, etc.) plus the per-cycle `ExecCtx`.
+- Either short-circuits (`if` on false condition,
+  `dryrun` on adapter substitution) or delegates inward.
+- Returns `Result<OpResult, ExecutionError>` per the
+  `OpDispenser` contract.
+
+**No wrapper consults `triggers`, the registry, the
+`WrapperPlan`, the constraint graph, or the
+`Adapter`'s composition-time metadata at execute time.**
+Composition is the sole site for those consultations.
+Each layer is a black-box `OpDispenser` from the
+executor's perspective.
+
+### Invariants
+
+These follow from the split above:
+
+1. **Triggers fire once per op-template per phase init,
+   never at runtime.** The resolver's `resolve()` call
+   memoizes the activated set into a `WrapperPlan`; the
+   per-cycle path does not re-trigger.
+2. **Wrap factories run once per op-template per phase
+   init, never at runtime.** Each wrapper layer is
+   constructed once, with all its decisions encoded into
+   the captured state of the resulting
+   `Arc<dyn OpDispenser>`.
+3. **Each shell layer fully encapsulates its
+   requirements.** A wrapper's `execute` reads only
+   `self.*` and the `ExecCtx` argument. It does not name
+   any peer wrapper directly, does not consult the
+   registry, and does not branch on adapter type or
+   session config.
+4. **The runtime call surface is uniform.** Every layer
+   is invoked through the same `OpDispenser::execute`
+   signature. The executor has no per-wrapper special
+   cases at runtime; the cascade did all the
+   specialisation at build time and walked away.
+5. **Session-level activations integrate via template
+   injection, not new callback shapes.** When a
+   wrapper's presence depends on session config (e.g.
+   `dryrun`), the session mutates op templates at
+   startup to carry a logical marker parameter (see
+   §"Session-injected template parameters"). The
+   trigger remains the standard
+   `fn(&ParsedOp) -> bool` reading `template.params`;
+   the resolver remains session-agnostic; the cascade
+   arm has nothing to decide beyond constructing the
+   wrapper. Adding a new `fn(...)` signature shape to
+   triggers, the registry, or the executor's per-cycle
+   path is forbidden — it would invite runtime
+   consultation back in.
+
+### Session-injected template parameters
+
+Some wrappers need to activate based on session-level
+state rather than workload-author-declared op fields.
+`dryrun` is the canonical example: it should be in the
+plan when the runner has `dryrun=` set and absent
+otherwise. The wrapping subsystem has no concept of
+"session" — its only input is the parsed op template.
+
+The pattern that reconciles this without polluting the
+subsystem: **the session, at startup, mutates parsed
+op templates to carry a logical marker parameter
+before the op mapping phase begins.** From the wrapping
+subsystem's perspective the marker is indistinguishable
+from any author-declared field — the trigger reads
+`template.params.get("dryrun")`, the `owned_fields`
+list participates in the misplaced-field guard, the
+plan accurately reflects the chain, the resolver
+needs no session awareness.
+
+Implementation lives in
+`nbrs-activity/src/activity.rs::run_with_adapters`: at
+session startup, if any adapter has been substituted
+with the dryrun stand-in (signalled via
+`DriverAdapter::dry_run_mode`), every op template's
+`params` map gets a `dryrun: <mode>` entry inserted.
+The DryRunAdapter substitution at `create_adapter`
+remains an independent concern (it ensures real
+adapters that can't construct without a live target
+still produce a working dispenser chain); the
+injection here is what the wrapping subsystem keys
+off.
+
+**Plan and chain are identical under this design.**
+A wrapper is in the plan iff its trigger fires on the
+parsed template (now including session-injected
+markers); a wrapper is in the chain iff its cascade
+arm installs. With session decisions absorbed into the
+template at session startup, the trigger and the
+cascade arm see the same input and produce the same
+outcome. No bookkeeping divergence to defend.
+
+Conversely: if a wrapper's `triggers` fires but its
+cascade arm declines to install on the same template,
+that is a design bug. The cascade arm exists to
+*construct* the wrapper, not to *re-decide* its
+applicability. Existing precedent that violated this
+(`ThrottleDispenser::wrap` returning `Err` on
+binding-resolution failure, treated as a stop signal
+in the cascade) is an error path, not a routine
+decline; the cascade arm should always either install
+the wrapper or fail the phase.
+
+Future session-conditional wrappers follow the same
+pattern: declare an `owned_fields: &["<marker>"]` and
+a trigger checking the marker; add the corresponding
+injection step in `run_with_adapters` at session
+startup. Workload authors never write the marker by
+hand; the parse-time misplaced-field guard catches
+the mistake if they try.
 
 ---
 

@@ -84,7 +84,8 @@ Controls what explanations are emitted during execution.
 
 | Flag | Output |
 |------|--------|
-| `gk` | GK kernel analysis: inputs, outputs, provenance, const-folding, scope composition, modifiers |
+| `wiring` | Value-provenance / wiring view: how each named wire was computed, what inputs it depends on, where those inputs came from (const-folding, scope composition, modifiers). Needs depth ≥ Op — a bare `dryrun=wiring` auto-bumps depth to `Op` so kernels exist to render. |
+| `labels` | Dimensional labels for all phases — the coordinate-tuple labelling that scope-tree nodes carry. |
 
 Future flags may include `ops` (resolved op templates),
 `adapters` (adapter mapping), `metrics` (live metric names).
@@ -94,33 +95,27 @@ Future flags may include `ops` (resolved op templates),
 ## CLI Syntax
 
 ```
-# Compile and explain GK data flow, stop before cycles
-nbrs run workload=file.yaml dryrun=phase,gk
+# Compile and dump the wiring view, stop before cycles
+nbrs run workload=file.yaml dryrun=op,wiring
 
-# Compile and explain, with dry-run cycle execution
-nbrs run workload=file.yaml dryrun=cycle,gk
+# Compile and dump wiring, with dry-run cycle execution
+nbrs run workload=file.yaml dryrun=cycle,wiring
 
-# Just compile validation, no output
+# Plan dump only (phase structure, no kernels)
 nbrs run workload=file.yaml dryrun=phase
 
-# Normal execution with GK explanations interleaved
-nbrs run workload=file.yaml dryrun=gk
+# Bare wiring — auto-bumps depth to Op so kernels exist
+nbrs run workload=file.yaml dryrun=wiring
 ```
 
 The `dryrun` parameter is a comma-separated list of flags.
-Execution depth flags (`phase`, `cycle`) are mutually
-exclusive — last one wins. Diagnostic output flags (`gk`)
-are additive.
+Execution depth flags (`phase`, `op`, `cycle`, `full`) are
+mutually exclusive — last one wins. Output-filter flags
+(`wiring`, `labels`) are additive.
 
-When no execution depth is specified, `full` is assumed
-(normal execution with diagnostic output interleaved).
-
-The `describe` subcommand is shorthand for `dryrun=phase,gk`:
-```
-nbrs describe workload=file.yaml
-# equivalent to:
-nbrs run workload=file.yaml dryrun=phase,gk
-```
+When no execution depth is specified, `phase` is assumed
+(plan dump). The `wiring` flag is special-cased: if no depth
+is set, it bumps to `Op` so kernels exist to render.
 
 ---
 
@@ -130,20 +125,28 @@ The runner parses `dryrun` into a `DiagnosticConfig`:
 
 ```rust
 struct DiagnosticConfig {
-    /// How far to execute: Phase, Cycle, or Full.
+    /// How far to execute: Phase, Op, Cycle, or Full.
     depth: ExecDepth,
-    /// Whether to emit GK provenance analysis.
-    explain_gk: bool,
+    /// Emit value-provenance / wiring view.
+    show_wiring: bool,
+    /// Emit dimensional labels for all phases.
+    show_labels: bool,
+    /// Walk the post-construction component tree, dump every
+    /// declared dynamic control, exit.
+    list_controls: bool,
 }
 ```
 
 The config is threaded through the runner. At the activity
 boundary (after kernel compilation, before cycle dispatch):
 
-- If `explain_gk`: call `describe::print_kernel_analysis()`
-  with the compiled program.
+- If `show_wiring`: call `describe::print_wiring_analysis()`
+  with the compiled program (requires depth ≥ Op).
 - If `depth == Phase`: skip activity creation and cycle
   dispatch. Continue to next phase/iteration.
+- If `depth == Op`: run op-template kernel synthesis +
+  `map_op` + metric registration; dump scope-flattening
+  summary; exit before cycles.
 - If `depth == Cycle`: create activity with dry-run adapter.
 - If `depth == Full`: create activity with real adapter.
 
@@ -152,7 +155,7 @@ No performance impact on normal execution.
 
 ---
 
-## What GK Explain Shows
+## What Wiring Shows
 
 For each scope (workload, phase, for_each iteration):
 

@@ -3998,7 +3998,7 @@ extern keyspace: String
         //      with phase_scope as classifier_kernel — this is
         //      what executor.rs:1429 does at run_phase time.
         //   3. compile_from_scope(scope, ...) — produces the
-        //      iter_op_builder kernel that dryrun=gk dumps.
+        //      iter_op_builder kernel that dryrun=wiring dumps.
         //
         // The integration test
         // `shared_bool_through_for_each_into_consumer_phase_bindings`
@@ -4254,7 +4254,7 @@ extern keyspace: String
         ).unwrap_or_else(|e| panic!(
             "exec compile failed: {e}\nexec source:\n{exec_source}"));
 
-        // The final kernel — what the dryrun=gk dumps — must
+        // The final kernel — what the dryrun=wiring dumps — must
         // have has_a as Bool/non-Coordinate.
         if let Some(idx) = exec_kernel.program().find_input("has_a") {
             let typ = exec_kernel.program().input_port_type("has_a");
@@ -4292,7 +4292,7 @@ extern keyspace: String
         //
         // SRD-13c §"Shared Mutable" requires has_a to be ExternalWrite
         // kind, Bool type on the workload-root program. The
-        // dryrun=gk output of the failing integration test shows
+        // dryrun=wiring output of the failing integration test shows
         // the downstream phase has has_a as Coordinate U64, so
         // either the workload-root or a downstream synthesizer
         // emits the wrong source for it.

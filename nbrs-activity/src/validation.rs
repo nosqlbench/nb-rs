@@ -21,6 +21,57 @@ use crate::adapter::{
     ExecutionError, OpDispenser, OpResult, WrappingDispenser,
 };
 use crate::relevancy::{self, RelevancyFn};
+use crate::wrapper_registry::{WrapperName, WrapperRegistration};
+
+/// SRD-32a wrapper name for the validation layer. Exposed at
+/// the module level so other wrappers' `forbids_outer` /
+/// `requires_inner` slices can reference it without depending
+/// on `wrapper_registrations` for the constant.
+pub const WRAPPER_NAME: WrapperName = WrapperName::new("validate");
+
+/// Trigger: op carries `verify:` or `relevancy:`.
+fn wrapper_triggers(template: &nbrs_workload::model::ParsedOp) -> bool {
+    template.params.contains_key("verify")
+        || template.params.contains_key("relevancy")
+}
+
+fn wrapper_describe_assignment(
+    template: &nbrs_workload::model::ParsedOp,
+) -> Option<String> {
+    let strict = template
+        .params
+        .get("strict")
+        .and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s == "true")))
+        .unwrap_or(false);
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(v) = template.params.get("verify") {
+        parts.push(format!("verify={}", crate::wrapper_registrations::short_value(v)));
+    }
+    if let Some(v) = template.params.get("relevancy") {
+        parts.push(format!("relevancy={}", crate::wrapper_registrations::short_value(v)));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let body = parts.join(", ");
+    Some(if strict {
+        format!("validate: {body} (strict)")
+    } else {
+        format!("validate: {body}")
+    })
+}
+
+inventory::submit! {
+    WrapperRegistration {
+        name: WRAPPER_NAME,
+        owned_fields: &["verify", "relevancy", "strict"],
+        triggers: wrapper_triggers,
+        requires_inner: &[crate::wrappers::traversing::NAME],
+        forbids_outer: &[],
+        mutually_exclusive_with: &[],
+        describe_assignment: wrapper_describe_assignment,
+    }
+}
 
 // =========================================================================
 // Validation configuration (parsed from workload YAML at init time)
@@ -654,9 +705,16 @@ impl OpDispenser for ValidatingDispenser {
 /// resolved), AND the body excerpt — without all three the
 /// operator has to manually re-run with logging cranked up
 /// just to figure out what came back.
+///
+/// The body excerpt is suppressed when the body is `None` —
+/// observed_field_repr's "<no body returned by op>" already
+/// communicates that case, and a trailing `; body: <no body>`
+/// duplicates the same signal.
 fn describe_assertion_failure(assertion: &AssertionSpec, result: &OpResult) -> String {
-    let body_repr = body_excerpt(result);
-    let body_tail = format!("; body: {body_repr}");
+    let body_tail = match &result.body {
+        Some(_) => format!("; body: {}", body_excerpt(result)),
+        None => String::new(),
+    };
     let observed_repr = observed_field_repr(&assertion.field, result);
     match &assertion.predicate {
         AssertionPredicate::MinRows(n) => {
@@ -699,15 +757,34 @@ fn describe_assertion_failure(assertion: &AssertionSpec, result: &OpResult) -> S
 }
 
 /// Best-effort description of the observed value of a field.
-/// Falls back to `<absent>` when the body is JSON-shaped but
-/// lacks an addressable field of that name, `<not-json>` when
-/// the body parses to a scalar (no fields can be addressed —
-/// e.g. an HTML error page or a plain-text response), `<no
-/// body>` when the op returned nothing, and a short JSON repr
-/// otherwise (truncated for log readability).
+/// Returns the JSON-extracted value (string-quoted if it is a
+/// JSON string) when the field is addressable; otherwise a
+/// diagnostic that surfaces *why* the field couldn't be read,
+/// so the operator can tell whether to fix the field name or
+/// the upstream response shape:
+///
+/// - `<no body returned by op — verify clause cannot read
+///   fields>` when the op produced no body at all. Often a
+///   sign the verify clause is structurally wrong for this
+///   op kind (DDL, flush, anything that doesn't return rows).
+/// - `<field absent; body keys: [a, b, c]>` when the body is
+///   a JSON object but doesn't contain the requested field —
+///   shows what IS there so the author can pick a real name.
+/// - `<field absent; body is a JSON array of N elements>`
+///   when the body is an array (`field:` addresses the first
+///   element by convention; if the array is empty there's
+///   nothing to address).
+/// - `<not-json: {short repr}>` when the body parses to a
+///   scalar or non-addressable JSON value (e.g. an HTML error
+///   page or a plain-text response). Shows the first chars
+///   so the operator can recognise the upstream's actual
+///   payload.
+/// - The extracted value otherwise, truncated for log
+///   readability.
 fn observed_field_repr(field: &str, result: &OpResult) -> String {
     let Some(body) = &result.body else {
-        return "<no body>".to_string();
+        return "<no body returned by op — verify clause cannot read fields>"
+            .to_string();
     };
     let json = body.to_json();
     if let Some(v) = extract_field_from_json(&json, field) {
@@ -717,20 +794,40 @@ fn observed_field_repr(field: &str, result: &OpResult) -> String {
         };
         return truncate_for_message(&repr, 160);
     }
-    // Field couldn't be resolved. Distinguish the two reasons
-    // so the operator knows whether to fix the field name or
-    // fix the upstream response shape.
+    // Field couldn't be resolved. The "why" guides the fix —
+    // either the field name is wrong (the body has different
+    // keys) or the response shape is wrong (not a structured
+    // JSON object at all).
     match &json {
-        serde_json::Value::Object(_) | serde_json::Value::Array(_) =>
-            "<absent>".to_string(),
-        _ => "<not-json>".to_string(),
+        serde_json::Value::Object(map) => {
+            let keys: Vec<&str> = map.keys().map(|s| s.as_str()).collect();
+            if keys.is_empty() {
+                "<field absent; body is an empty JSON object>".to_string()
+            } else {
+                format!("<field absent; body keys: {keys:?}>")
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            format!(
+                "<field absent; body is a JSON array of {} element{}>",
+                arr.len(),
+                if arr.len() == 1 { "" } else { "s" },
+            )
+        }
+        serde_json::Value::Null =>
+            "<field absent; body is JSON null>".to_string(),
+        other => {
+            let short = truncate_for_message(&other.to_string(), 80);
+            format!("<not-json: {short}>")
+        }
     }
 }
 
-/// A short excerpt of the response body, embedded in every
-/// strict-mode assertion failure so the operator can see what
-/// actually came back. `<no body>` when absent, otherwise the
-/// body's text form truncated to keep error lines readable.
+/// A short excerpt of the response body, embedded in
+/// assertion-failure messages so the operator can see what
+/// actually came back. Caller is responsible for skipping the
+/// excerpt when `result.body` is `None` — see
+/// `describe_assertion_failure`.
 fn body_excerpt(result: &OpResult) -> String {
     let Some(body) = &result.body else {
         return "<no body>".to_string();
@@ -1373,8 +1470,9 @@ mod tests {
     #[test]
     fn eq_failure_includes_body_and_distinguishes_absent_vs_not_json() {
         // JSON body that has fields but lacks the one we asked
-        // for: observed reads `<absent>` and the response shape
-        // is echoed in the error so the operator can see why.
+        // for: observed reads `<field absent; …>` and lists the
+        // keys that ARE present so the operator can pick a real
+        // field name without re-running the workload.
         let result = OpResult {
             body: Some(Box::new(JsonBody(serde_json::json!({
                 "value": null, "request": {"type": "exec"}
@@ -1386,16 +1484,20 @@ mod tests {
             predicate: AssertionPredicate::Eq("200".into()),
         };
         let msg = describe_assertion_failure(&spec, &result);
-        assert!(msg.contains("<absent>"),
-            "json-without-field should read <absent>, got: {msg}");
+        assert!(msg.contains("field absent"),
+            "json-without-field should mark observed as absent, got: {msg}");
+        assert!(msg.contains("body keys"),
+            "absent message should enumerate present keys, got: {msg}");
+        assert!(msg.contains("\"value\"") && msg.contains("\"request\""),
+            "key list should include both present keys, got: {msg}");
         assert!(msg.contains("body: "),
             "body excerpt missing: {msg}");
         assert!(msg.contains("\"request\""),
             "body excerpt should echo the actual JSON: {msg}");
 
-        // Plain-text body: observed reads `<not-json>` so the
-        // operator knows the upstream didn't return JSON at
-        // all — different fix than "field name wrong."
+        // Plain-text body: observed reads `<not-json: …>` with a
+        // short preview so the operator can recognise the actual
+        // payload (HTML error page, plain-text response, etc.).
         #[derive(Debug)]
         struct PlainBody(String);
         impl ResultBody for PlainBody {
@@ -1411,10 +1513,28 @@ mod tests {
             skipped: false,
         };
         let msg2 = describe_assertion_failure(&spec, &text_result);
-        assert!(msg2.contains("<not-json>"),
-            "text body should read <not-json>, got: {msg2}");
+        assert!(msg2.contains("not-json"),
+            "text body should mark observed as not-json, got: {msg2}");
         assert!(msg2.contains("404 Not Found"),
             "body excerpt should include the text: {msg2}");
+    }
+
+    /// When the op produced no body at all, the message must
+    /// communicate that clearly (not just '<no body>' twice),
+    /// AND must NOT duplicate the same '<no body>' phrase in
+    /// both the observed-field slot and the body excerpt.
+    #[test]
+    fn eq_failure_with_no_body_explains_situation() {
+        let result = OpResult { body: None, skipped: false };
+        let spec = AssertionSpec {
+            field: "status".into(),
+            predicate: AssertionPredicate::Eq("200".into()),
+        };
+        let msg = describe_assertion_failure(&spec, &result);
+        assert!(msg.contains("no body returned by op"),
+            "no-body case should explain why the field can't be read, got: {msg}");
+        assert!(!msg.contains("body: "),
+            "no-body case should suppress the redundant body excerpt, got: {msg}");
     }
 
     #[test]

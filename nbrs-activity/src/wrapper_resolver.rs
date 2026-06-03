@@ -195,6 +195,24 @@ pub const DEFAULT_ORDER: &[&str] = &[
     "emit",
     "result",
     "metrics",
+    // `memo` must appear before `dryrun` here so the topo-
+    // sort tiebreak places it INSIDE dryrun. Wrappers absent
+    // from this list get `order_index = usize::MAX` and
+    // therefore lose every tiebreak — which puts them at the
+    // outermost position. That's harmless when no wrapper
+    // forbids them being outside, but dryrun's
+    // `forbids_outer` set lists memo (dryrun must be the
+    // absolute outermost short-circuit), so memo missing
+    // from default order would surface as a
+    // `ForbiddenOuter` resolve error.
+    "memo",
+    // `dryrun` last so its short-circuit happens before any
+    // inner wrapper observes the dryrun stand-in's empty
+    // body. The DRYRUN registration's `forbids_outer = [every
+    // other wrapper]` pins this position structurally; the
+    // explicit slot here is the resolver's tiebreaker for any
+    // future wrapper that DRYRUN doesn't yet forbid.
+    "dryrun",
 ];
 
 /// Resolves a [`WrapperPlan`] for a parsed op template.

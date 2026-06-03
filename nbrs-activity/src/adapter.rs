@@ -21,6 +21,14 @@ pub use crate::fixture::ExecCtx;
 // surface" pins this as the canonical import path for adapters.
 pub use polydat::kernel::GkKernel;
 
+// Re-export the binder API so `binders_for` impls in adapter
+// crates can name `Binder` / `BinderSlot` / `PortType` through
+// the existing `nbrs_activity::adapter` import path, no direct
+// polydat dependency required. Same reason as the GkKernel
+// re-export above.
+pub use polydat::binder::{Binder, BinderSlot};
+pub use polydat::ast::PortType;
+
 /// Trait for adapter-specific result bodies.
 ///
 /// The adapter defines its own concrete result type and implements
@@ -220,11 +228,51 @@ pub trait DriverAdapter: Send + Sync + 'static {
     /// dispenser own a long-lived reference to the canonical
     /// kernel without re-cloning state. See SRD-68 §"Adapter API
     /// surface".
-    fn map_op(
-        &self,
-        template: &nbrs_workload::model::ParsedOp,
+    /// Construct an [`OpDispenser`] for one op template — the
+    /// per-op dispenser-initialization stack frame.
+    ///
+    /// This is where the currying stack completes: prepare any
+    /// protocol-level handles (CQL: prepare statement, read
+    /// parameter metadata), build the per-cycle data pullers,
+    /// fold everything into the dispenser the runtime will then
+    /// call repeatedly with `execute(cycle, ctx)`. Nothing about
+    /// init-time state needs to outlive this call — once `map_op`
+    /// returns, the dispenser holds whatever it needs and the
+    /// rest is dropped.
+    ///
+    /// ## Per-op binder verification (the typed-lvalue contract)
+    ///
+    /// Per-op compulsion: for any op-template field this
+    /// dispenser will bind through a typed-parameter API
+    /// (anything beyond pure text concatenation into a `Str`
+    /// lvalue), the implementor MUST construct the appropriate
+    /// [`Binder`] shape from its protocol-side metadata
+    /// (positional / named / single — see [`polydat::binder`])
+    /// and verify it against `parent` via
+    /// [`polydat::binder::verify_against_kernel`] before
+    /// returning the dispenser. A verification failure surfaces
+    /// as a `map_op` `Err`; construction stops before any cycle
+    /// runs and the operator sees the rvalue→lvalue mismatch
+    /// (one violation per slot, no silent passthrough).
+    ///
+    /// This is stack-local work: the binder is constructed,
+    /// verified, used to wire up the typed binding path in the
+    /// dispenser, and dropped. It is NOT cached on the adapter,
+    /// returned as a sidecar, or otherwise persisted past the
+    /// `map_op` return. Per-op-template, not adapter-wide.
+    ///
+    /// Adapters whose every op-template field is a text template
+    /// (stdout, http body templates, testkit captures) can skip
+    /// the verify step — every wire reference's lvalue is `Str`
+    /// and the rvalue→lvalue rule permits any rvalue into a `Str`
+    /// lvalue, so verification is always a no-op for them. The
+    /// runtime guard in `wires::substitute_via_wires` remains the
+    /// catch-all safety net for that path.
+    fn map_op<'a>(
+        &'a self,
+        template: &'a nbrs_workload::model::ParsedOp,
         parent: std::sync::Arc<GkKernel>,
-    ) -> Result<Box<dyn OpDispenser>, String>;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>;
 
     /// Default metric names to display on the status line for this adapter.
     ///

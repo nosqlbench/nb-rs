@@ -185,7 +185,7 @@ any future scope refactor.
 
 ## Diagnostic procedure for cascade-related symptoms
 
-1. Reproduce with `dryrun=phase,gk` (no live driver needed).
+1. Reproduce with `dryrun=op,wiring` (no live driver needed).
    The phase headers list every name in `iter_var_values`
    (left side of `=`). The kernel dump lists every input
    (`extern`) and output of the synthesized program. If a

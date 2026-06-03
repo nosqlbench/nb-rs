@@ -698,12 +698,47 @@ against `ctx.pulls`, and forwards `ctx` unchanged inward.
 
 ## Dry-Run Mode
 
-When `dry_run=true`, the traversing wrapper is replaced with a
-no-op wrapper that skips adapter execution entirely. Fields are
-still resolved (GK runs), but no protocol call is made.
+`dryrun=cycle` / `dryrun=emit` / `dryrun=json` activates two
+independent mechanisms working in tandem:
 
-Useful for validating workload syntax, GK bindings, and field
-resolution without a live target.
+1. **Adapter substitution.** `create_adapter` returns a
+   `DryRunAdapter` stand-in instead of the requested driver.
+   This is what lets the workload construct successfully
+   without a live target — the CQL adapter can't open a
+   cluster connection in dryrun, the HTTP adapter can't
+   reach an unreachable server, etc. The stand-in's
+   `dry_run_mode()` returns `Some(mode)` so the session-
+   startup injection step (below) can detect the
+   substitution.
+
+2. **Logical template parameter injection.** At session
+   startup, `activity.rs::run_with_adapters` detects the
+   dryrun substitution and mutates every parsed op
+   template to carry a `dryrun: <mode>` entry in its
+   `params` map. From this point onward the wrapping
+   subsystem sees the marker as an ordinary op-template
+   field. The `dryrun` wrapper (registered in
+   [SRD-32a](32a_wrapper_registry.md) §"Default registry
+   contents") triggers on the marker, sits outermost per
+   its `forbids_outer` set, and short-circuits at
+   `execute` (runs mode-specific emit/json/silent
+   printing from the op-field snapshot, returns
+   `Ok(body: None, skipped: true)`) WITHOUT calling its
+   inner. The verify / metrics / poll / etc. wrappers
+   sit inside the short-circuit and never observe the
+   dryrun stand-in's empty body.
+
+The injection design (rather than a session-aware
+trigger or wrap factory) is what keeps the wrapping
+subsystem purely template-driven: triggers stay
+`fn(&ParsedOp) -> bool`, the resolver needs no session
+context, and the plan exactly reflects the chain.
+
+Useful for validating workload syntax, GK bindings, field
+resolution, and the full op-template composition without a
+live target. Verify clauses, metrics declarations, and
+polling loops do not fire in dryrun mode (their wrappers
+sit inside the `dryrun` short-circuit).
 
 ### Diagnostic Visibility Levels
 

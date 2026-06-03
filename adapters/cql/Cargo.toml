@@ -38,6 +38,10 @@ all-engines = ["engine-scylla", "engine-cassandra-cpp"]
 nbrs-activity = { path = "../../nbrs-activity", version = "0.1.1", default-features = false }
 nbrs-metrics = { path = "../../nbrs-metrics", version = "0.1.1" }
 polydat = { path = "../../polydat", version = "0.1.0" }
+# IEEE 754 half-precision floats — used by the cassandra-cpp
+# CUSTOM (vector) binder's `Float16Type` / `HalfFloatType` path
+# so a `Value::VecF16` slice binds natively without widening.
+half = "2"
 nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt"] }

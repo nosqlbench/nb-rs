@@ -107,6 +107,46 @@ impl GkNode for ExactlyOneValue {
                 }
                 Value::U64(arc[0] as u64)
             }
+            Value::VecF64(arc) => {
+                if arc.len() != 1 {
+                    panic!(
+                        "exactly_one_value: expected unary structure \
+                         (1 row × 1 column), found vec_f64 of length {}",
+                        arc.len()
+                    );
+                }
+                Value::F64(arc[0])
+            }
+            Value::VecI64(arc) => {
+                if arc.len() != 1 {
+                    panic!(
+                        "exactly_one_value: expected unary structure \
+                         (1 row × 1 column), found vec_i64 of length {}",
+                        arc.len()
+                    );
+                }
+                Value::U64(arc[0] as u64)
+            }
+            Value::VecF16(arc) => {
+                if arc.len() != 1 {
+                    panic!(
+                        "exactly_one_value: expected unary structure \
+                         (1 row × 1 column), found vec_f16 of length {}",
+                        arc.len()
+                    );
+                }
+                Value::F64(arc[0].to_f32() as f64)
+            }
+            Value::VecI16(arc) => {
+                if arc.len() != 1 {
+                    panic!(
+                        "exactly_one_value: expected unary structure \
+                         (1 row × 1 column), found vec_i16 of length {}",
+                        arc.len()
+                    );
+                }
+                Value::U64(arc[0] as u64)
+            }
 
             Value::None => panic!(
                 "exactly_one_value: empty body (Value::None); the upstream \

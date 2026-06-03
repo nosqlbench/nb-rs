@@ -579,6 +579,166 @@ impl GkNode for U32ToString {
 }
 
 // =================================================================
+// String parse adapters (Str→X) — workload-param polyfill
+// =================================================================
+//
+// Workload params arrive as strings (YAML string interpolation,
+// comma-split iter-values from `for X in {X_values}`, host-
+// supplied scope values via `set:`). These edge adapters heal
+// the Str → typed-slot boundary writes so the substrate's
+// `adapt_boundary_value` boundary check finds a catalog entry
+// instead of surfacing `WriteError::TypeMismatch`.
+//
+// Three adapters cover the workload-param flow (Bool, U64, F64
+// targets). Narrow-numeric parses (U32/I32/I64/F32) are
+// deferred — see polydat/docs/design/type_system.md §4.
+//
+// Each parser trims whitespace, then calls the standard library
+// `from_str` (or for Bool, recognises "true"/"false" case-
+// insensitive and "1"/"0"). Unparseable input panics with the
+// adapter name and the offending value; eval_node's
+// catch_unwind enrichment surfaces the panic with the node,
+// inputs, and source context.
+
+/// Convert string to bool.
+///
+/// Signature: `__str_to_bool(input: str) -> (bool)`
+///
+/// Edge adapter auto-inserted when a str port feeds a bool port.
+/// Recognises (case-insensitive) `true` / `false` / `1` / `0`
+/// after trimming surrounding whitespace. Any other input
+/// panics with a diagnostic.
+///
+/// JIT level: P1 (Str input; no compiled_u64 path).
+pub struct StrToBool {
+    meta: NodeMeta,
+}
+
+impl Default for StrToBool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StrToBool {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__str_to_bool".into(),
+                outs: vec![Port::bool("output")],
+                ins: vec![Slot::Wire(Port::str("input"))],
+            },
+        }
+    }
+}
+
+impl GkNode for StrToBool {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let raw = inputs[0].as_str().trim();
+        let b = match raw.to_ascii_lowercase().as_str() {
+            "true" | "1" => true,
+            "false" | "0" => false,
+            _ => panic!(
+                "__str_to_bool: cannot parse {raw:?} as bool \
+                 (expected case-insensitive 'true'/'false' or '1'/'0')"
+            ),
+        };
+        outputs[0] = Value::Bool(b);
+    }
+}
+
+/// Convert string to u64.
+///
+/// Signature: `__str_to_u64(input: str) -> (u64)`
+///
+/// Edge adapter auto-inserted when a str port feeds a u64 port.
+/// Trims whitespace, then parses via `u64::from_str` (base 10
+/// only, no sign, no underscores). Unparseable input panics
+/// with a diagnostic carrying the offending value and the
+/// underlying parse error.
+///
+/// JIT level: P1 (Str input; no compiled_u64 path).
+pub struct StrToU64 {
+    meta: NodeMeta,
+}
+
+impl Default for StrToU64 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StrToU64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__str_to_u64".into(),
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::str("input"))],
+            },
+        }
+    }
+}
+
+impl GkNode for StrToU64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let raw = inputs[0].as_str().trim();
+        let v = raw.parse::<u64>().unwrap_or_else(|e| {
+            panic!("__str_to_u64: cannot parse {raw:?} as u64: {e}")
+        });
+        outputs[0] = Value::U64(v);
+    }
+}
+
+/// Convert string to f64.
+///
+/// Signature: `__str_to_f64(input: str) -> (f64)`
+///
+/// Edge adapter auto-inserted when a str port feeds an f64 port.
+/// Trims whitespace, then parses via `f64::from_str` (handles
+/// scientific notation, leading sign, `NaN`, `inf`). Unparseable
+/// input panics with a diagnostic.
+///
+/// JIT level: P1 (Str input; no compiled_u64 path).
+pub struct StrToF64 {
+    meta: NodeMeta,
+}
+
+impl Default for StrToF64 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StrToF64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__str_to_f64".into(),
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::str("input"))],
+            },
+        }
+    }
+}
+
+impl GkNode for StrToF64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let raw = inputs[0].as_str().trim();
+        let v = raw.parse::<f64>().unwrap_or_else(|e| {
+            panic!("__str_to_f64: cannot parse {raw:?} as f64: {e}")
+        });
+        outputs[0] = Value::F64(v);
+    }
+}
+
+// =================================================================
 // Explicit conversions (user-placed, deliberate intent)
 // =================================================================
 
@@ -1419,5 +1579,108 @@ mod tests {
         let mut out = [Value::None];
         node.eval(&[Value::U64(12345)], &mut out);
         assert_eq!(out[0].as_str(), "12345");
+    }
+
+    // -----------------------------------------------------------
+    // Str→X parse adapters (type_system.md §4)
+    // -----------------------------------------------------------
+
+    #[test]
+    fn str_to_bool_canonical_forms() {
+        let node = StrToBool::new();
+        let mut out = [Value::None];
+        for (input, expected) in [
+            ("true", true), ("false", false),
+            ("True", true), ("False", false),
+            ("TRUE", true), ("FALSE", false),
+            ("1", true), ("0", false),
+        ] {
+            node.eval(&[Value::Str(input.into())], &mut out);
+            assert_eq!(out[0].as_bool(), expected, "input={input:?}");
+        }
+    }
+
+    #[test]
+    fn str_to_bool_trims_whitespace() {
+        let node = StrToBool::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("  true  ".into())], &mut out);
+        assert_eq!(out[0].as_bool(), true);
+        node.eval(&[Value::Str("\tfalse\n".into())], &mut out);
+        assert_eq!(out[0].as_bool(), false);
+    }
+
+    #[test]
+    #[should_panic(expected = "__str_to_bool")]
+    fn str_to_bool_panics_on_unparseable() {
+        let node = StrToBool::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("yes".into())], &mut out);
+    }
+
+    #[test]
+    fn str_to_u64_basic() {
+        let node = StrToU64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("0".into())], &mut out);
+        assert_eq!(out[0].as_u64(), 0);
+        node.eval(&[Value::Str("42".into())], &mut out);
+        assert_eq!(out[0].as_u64(), 42);
+        node.eval(&[Value::Str("18446744073709551615".into())], &mut out);
+        assert_eq!(out[0].as_u64(), u64::MAX);
+    }
+
+    #[test]
+    fn str_to_u64_trims_whitespace() {
+        let node = StrToU64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("  42  ".into())], &mut out);
+        assert_eq!(out[0].as_u64(), 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "__str_to_u64")]
+    fn str_to_u64_panics_on_negative() {
+        let node = StrToU64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("-1".into())], &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "__str_to_u64")]
+    fn str_to_u64_panics_on_garbage() {
+        let node = StrToU64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("abc".into())], &mut out);
+    }
+
+    #[test]
+    fn str_to_f64_basic() {
+        let node = StrToF64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("0.0".into())], &mut out);
+        assert_eq!(out[0].as_f64(), 0.0);
+        node.eval(&[Value::Str("3.14".into())], &mut out);
+        assert!((out[0].as_f64() - 3.14).abs() < 1e-12);
+        node.eval(&[Value::Str("-2.5e3".into())], &mut out);
+        assert_eq!(out[0].as_f64(), -2500.0);
+        node.eval(&[Value::Str("inf".into())], &mut out);
+        assert!(out[0].as_f64().is_infinite());
+    }
+
+    #[test]
+    fn str_to_f64_trims_whitespace() {
+        let node = StrToF64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("  1.5  ".into())], &mut out);
+        assert_eq!(out[0].as_f64(), 1.5);
+    }
+
+    #[test]
+    #[should_panic(expected = "__str_to_f64")]
+    fn str_to_f64_panics_on_garbage() {
+        let node = StrToF64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("not-a-number".into())], &mut out);
     }
 }

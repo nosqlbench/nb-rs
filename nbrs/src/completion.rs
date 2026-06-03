@@ -702,7 +702,12 @@ fn static_tui(partial: &str, _ctx: &[&str]) -> Vec<String> {
 }
 
 fn static_dryrun(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    filter_prefix(&["phase", "cycle", "full", "gk", "labels"], partial)
+    filter_prefix(
+        &["phase", "op", "cycle", "full",
+          "controls", "wiring", "labels",
+          "silent", "emit", "json"],
+        partial,
+    )
 }
 
 /// Inspector socket discovery — same logic as the legacy

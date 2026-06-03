@@ -1,21 +1,25 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! GK kernel analysis output for diagnostic modes.
+//! Wiring / value-provenance analysis output for diagnostic modes.
 //!
-//! Called by the runner when `dryrun=gk` is active. Renders
-//! provenance, data flow, and scope composition from a compiled
-//! GkProgram's introspection APIs.
+//! Called by the runner when `dryrun=wiring` is active. Renders
+//! the variable connections between named wires at each kernel
+//! scope: how each output was computed, what inputs it depends
+//! on, and where those inputs came from. The polydat runtime
+//! kernel is the source of this data, but the user-facing
+//! concept is "wiring" between named values, not the kernel
+//! representation.
 
 use std::sync::Arc;
 use polydat::kernel::GkProgram;
 
-/// Print kernel analysis for a phase/iteration scope.
+/// Print wiring analysis for a phase/iteration scope.
 ///
 /// Called by the runner at the point where it would normally
 /// dispatch cycles. The kernel has already been compiled through
 /// the exact same pipeline as execution.
-pub fn print_kernel_analysis(
+pub fn print_wiring_analysis(
     phase_name: &str,
     iter_note: &str,
     program: &Arc<GkProgram>,

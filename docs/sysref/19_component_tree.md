@@ -198,10 +198,11 @@ declared: `do_until: "empty" counter: attempt` pushes
 `attempt="{i}"` per iteration. Without a counter, the loop
 contributes no label (iterations are anonymous).
 
-### Diagnostic (dryrun=gk)
+### Diagnostic (dryrun=wiring)
 
-The GK analysis output includes the full label stack context
-for each phase, showing where in the tree the analysis applies.
+The wiring/value-provenance output includes the full label stack
+context for each phase, showing where in the tree the analysis
+applies.
 
 ---
 
