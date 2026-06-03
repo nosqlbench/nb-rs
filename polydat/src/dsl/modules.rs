@@ -1,20 +1,20 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Module resolution subsystem for the GK DSL compiler.
+//! Module resolution subsystem for the Polydat DSL compiler.
 //!
-//! Handles locating, parsing, and caching `.gk` module files so the
+//! Handles locating, parsing, and caching `.polydat` module files so the
 //! compiler can inline them at call sites.  Resolution order:
 //!
 //! 1. In-process cache (already-resolved modules)
-//! 2. `<name>.gk` in the workload-local `source_dir`
-//! 3. Any `.gk` file in `source_dir` that exports a binding named `<name>`
-//! 4. The same two searches repeated for each `--gk-lib` path
+//! 2. `<name>.polydat` in the workload-local `source_dir`
+//! 3. Any `.polydat` file in `source_dir` that exports a binding named `<name>`
+//! 4. The same two searches repeated for each `--polydat-lib` path
 //! 5. The embedded standard library
 
 use std::collections::HashSet;
 
-use crate::compile::assembly::{GkAssembler, WireRef};
+use crate::compile::assembly::{PolydatAssembler, WireRef};
 use crate::dsl::ast::*;
 use crate::dsl::lexer;
 use crate::dsl::parser;
@@ -22,7 +22,7 @@ use crate::dsl::validate::collect_references;
 
 use super::compile::{Compiler, STDLIB_MODULES};
 
-/// A resolved GK module ready for inlining.
+/// A resolved Polydat module ready for inlining.
 pub(super) struct ResolvedModule {
     /// Input parameter names (from formal signature or inferred).
     pub(super) inputs: Vec<String>,
@@ -77,9 +77,9 @@ impl Compiler {
     /// `default_resolver`, or the node has no Handle inputs.
     pub(super) fn auto_promote_handle_inputs(
         &mut self,
-        asm: &mut crate::compile::assembly::GkAssembler,
+        asm: &mut crate::compile::assembly::PolydatAssembler,
         func_name: &str,
-        node: &Box<dyn crate::ast::GkNode>,
+        node: &Box<dyn crate::ast::PolydatNode>,
         wire_refs: &mut Vec<crate::compile::assembly::WireRef>,
     ) -> Result<(), String> {
         use crate::dsl::registry::{registry, DefaultResolver};
@@ -124,7 +124,7 @@ impl Compiler {
                                 Box::new(ConstStr::new(facet.to_string())),
                                 vec![],
                             );
-                            let resolver_node: Box<dyn crate::ast::GkNode> =
+                            let resolver_node: Box<dyn crate::ast::PolydatNode> =
                                 Box::new(crate::library::vectors::DatasetOpen::new());
                             asm.add_node(
                                 &resolver_name,
@@ -133,7 +133,7 @@ impl Compiler {
                             );
                         }
                         DefaultResolver::Group => {
-                            let resolver_node: Box<dyn crate::ast::GkNode> =
+                            let resolver_node: Box<dyn crate::ast::PolydatNode> =
                                 Box::new(crate::library::vectors::DatasetGroupOpen::new());
                             asm.add_node(
                                 &resolver_name,
@@ -150,13 +150,13 @@ impl Compiler {
         Ok(())
     }
 
-    /// Try to resolve a function call as a GK module and inline it.
+    /// Try to resolve a function call as a Polydat module and inline it.
     ///
     /// Returns `Ok(true)` if the module was found and inlined, `Ok(false)`
     /// if no module was found, or `Err` on resolution/inlining failure.
     pub(super) fn try_inline_module(
         &mut self,
-        asm: &mut GkAssembler,
+        asm: &mut PolydatAssembler,
         func_name: &str,
         caller_args: &[Arg],
         targets: &[String],
@@ -343,7 +343,7 @@ impl Compiler {
     }
 
     /// Query the output type of a named node in the assembler.
-    fn output_type_of(&self, asm: &GkAssembler, name: &str) -> crate::ast::PortType {
+    fn output_type_of(&self, asm: &PolydatAssembler, name: &str) -> crate::ast::PortType {
         asm.node_output_type(name)
     }
 
@@ -425,9 +425,9 @@ impl Compiler {
     ///
     /// Resolution order:
     /// 1. Cache (already resolved)
-    /// 2. `<name>.gk` in `source_dir` (workload-local)
-    /// 3. Any `.gk` in `source_dir` containing a matching binding
-    /// 4. Same two searches for each `--gk-lib` path
+    /// 2. `<name>.polydat` in `source_dir` (workload-local)
+    /// 3. Any `.polydat` in `source_dir` containing a matching binding
+    /// 4. Same two searches for each `--polydat-lib` path
     /// 5. Embedded stdlib
     pub(super) fn resolve_module(&mut self, name: &str) -> Result<Option<&ResolvedModule>, String> {
         if self.module_cache.contains_key(name) {
@@ -438,8 +438,8 @@ impl Compiler {
         if let Some(source_dir) = &self.source_dir {
             let source_dir = source_dir.clone();
 
-            // 1. Look for <name>.gk in source_dir
-            let module_path = source_dir.join(format!("{name}.gk"));
+            // 1. Look for <name>.polydat in source_dir
+            let module_path = source_dir.join(format!("{name}.polydat"));
             if module_path.exists() {
                 let source = std::fs::read_to_string(&module_path)
                     .map_err(|e| format!("failed to read module '{}': {e}", module_path.display()))?;
@@ -448,7 +448,7 @@ impl Compiler {
                 return Ok(self.module_cache.get(name));
             }
 
-            // 2. Scan all .gk files in source_dir for a matching export
+            // 2. Scan all .polydat files in source_dir for a matching export
             if let Ok(entries) = std::fs::read_dir(&source_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
@@ -466,11 +466,11 @@ impl Compiler {
             }
         }
 
-        // Strategy 3: search --gk-lib directories
-        let lib_paths = self.gk_lib_paths.clone();
+        // Strategy 3: search --polydat-lib directories
+        let lib_paths = self.polydat_lib_paths.clone();
         for lib_dir in &lib_paths {
-            // 3a. Look for <name>.gk in lib_dir
-            let module_path = lib_dir.join(format!("{name}.gk"));
+            // 3a. Look for <name>.polydat in lib_dir
+            let module_path = lib_dir.join(format!("{name}.polydat"));
             if module_path.exists() {
                 let source = std::fs::read_to_string(&module_path)
                     .map_err(|e| format!("failed to read module '{}': {e}", module_path.display()))?;
@@ -479,11 +479,11 @@ impl Compiler {
                 return Ok(self.module_cache.get(name));
             }
 
-            // 3b. Scan all .gk files in lib_dir for a matching export
+            // 3b. Scan all .polydat files in lib_dir for a matching export
             if let Ok(entries) = std::fs::read_dir(lib_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("gk") {
+                    if path.extension().and_then(|e| e.to_str()) == Some("polydat") {
                         let source = match std::fs::read_to_string(&path) {
                             Ok(s) => s,
                             Err(_) => continue,
@@ -516,7 +516,7 @@ impl Compiler {
         Ok(None)
     }
 
-    /// Parse a `.gk` source and extract a module by name.
+    /// Parse a `.polydat` source and extract a module by name.
     ///
     /// First checks for a formal `ModuleDef` statement matching the name.
     /// If found, uses its typed signature and body directly.

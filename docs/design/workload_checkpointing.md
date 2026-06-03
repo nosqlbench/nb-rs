@@ -89,7 +89,7 @@ running phase. Resume picks up at `cycle = saved_high_water + 1`.
   checkpointer needs a stable read that's "every cycle <
   HW has finished". `ops_finished` is monotonic but only
   describes successes; failures complicate.
-- Capturing per-fiber GK state. The op pipeline's
+- Capturing per-fiber Polydat state. The op pipeline's
   `ResolvedPulls` are per-cycle, so they don't need persisting,
   but **`shared`-cell mutations** between fibers (rare) would
   need to be serialised.
@@ -399,7 +399,7 @@ than the forward window. The serial order rules it out.
 
 Not everything goes in the checkpoint:
 
-- **Per-fiber GK state** — re-derived from the kernel + cycle
+- **Per-fiber Polydat state** — re-derived from the kernel + cycle
   number on every cycle. Stateless.
 - **Metrics deltas / aggregates** — already in `metrics.db`
   via the existing 30s writer. The checkpoint doesn't
@@ -638,7 +638,7 @@ Collision detection within a single pre-map walk is impossible
 by construction — comprehensions enumerate distinct tuples and
 DFS is deterministic. If the resume planner ever sees two
 checkpoint entries with the same `(yaml_path, coords)`, that's
-a GK / pre-map bug, not a workload bug. Hard error at
+a Polydat / pre-map bug, not a workload bug. Hard error at
 checkpoint load.
 
 ## Out of scope for this design

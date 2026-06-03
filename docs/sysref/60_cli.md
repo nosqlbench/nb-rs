@@ -1,6 +1,6 @@
 # 60: CLI Structure
 
-The nb-rs CLI provides workload execution, GK benchmarking,
+The nb-rs CLI provides workload execution, Polydat benchmarking,
 diagnostic tools, and shell completions.
 
 ---
@@ -14,10 +14,10 @@ nbrs
 │   tags=<filter> rate=N format=<type>
 │   op="<inline statement>"
 │
-├── bench         GK kernel micro-benchmark
-│   <expr>        GK expression to benchmark
+├── bench         Polydat kernel micro-benchmark
+│   <expr>        Polydat expression to benchmark
 │   cycles=N concurrency=N --explain
-│   <file.gk>    Benchmark a GK module file
+│   <file.polydat>    Benchmark a Polydat module file
 │
 ├── web           Start/stop web UI
 │   --daemon --stop --restart
@@ -25,10 +25,10 @@ nbrs
 │
 ├── describe      Inspect workload/GK structure
 │   workload <file.yaml>
-│   gk stdlib
+│   Polydat stdlib
 │
-├── plot          Evaluate and render GK outputs to terminal
-│   gk <expr|file.gk> [cycles=N] [--width=N] [--height=N]
+├── plot          Evaluate and render Polydat outputs to terminal
+│   Polydat <expr|file.polydat> [cycles=N] [--width=N] [--height=N]
 │                 [--mode=plot|histogram] [--no-color]
 │                 [--xscale=N] [--yscale=N] [--max-labels=N]
 │
@@ -111,11 +111,11 @@ Workload params are discoverable: when the user has specified
 
 ### Plot Command
 
-    nbrs plot gk <expr|file.gk> [cycles=N] [--width=N] [--height=N]
+    nbrs plot Polydat <expr|file.polydat> [cycles=N] [--width=N] [--height=N]
                                  [--mode=plot|histogram] [--no-color]
                                  [--xscale=N] [--yscale=N] [--max-labels=N]
 
-Evaluate a GK expression and render outputs to the terminal:
+Evaluate a Polydat expression and render outputs to the terminal:
 - Numeric outputs → braille scatter plot (default) or histogram
 - String outputs → discrete value histogram
 - 24-bit truecolor, auto-detected terminal size
@@ -129,12 +129,12 @@ Evaluate a GK expression and render outputs to the terminal:
     nbrs run op='id={{mod(hash(cycle), 1000)}} name={{number_to_words(cycle)}}'
 
 The `op=` parameter synthesizes a complete workload from a single
-template string. `{{expr}}` are inline GK expressions compiled
+template string. `{{expr}}` are inline Polydat expressions compiled
 into the kernel. `{name}` are bind point references. Semicolons
 separate multiple ops with optional ratio prefixes: `3:read;1:write`.
 
 Single-brace expressions are also supported when the content is
-auto-detected as a GK expression: `{hashed_uuid(hash(cycle))}`,
+auto-detected as a Polydat expression: `{hashed_uuid(hash(cycle))}`,
 `{:=expr}`, `{:=expr:=}`.
 
 `op=` and `workload=` are mutually exclusive; `op=` takes precedence.
@@ -144,7 +144,7 @@ Default adapter is `stdout` when `adapter=` is omitted.
 
 ## --explain Mode
 
-On the `bench` command, `--explain` dumps the GK compiler event
+On the `bench` command, `--explain` dumps the Polydat compiler event
 stream showing each compilation step:
 
 ```

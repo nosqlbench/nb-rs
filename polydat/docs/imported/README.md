@@ -10,7 +10,7 @@ reconciled** with the axiom-level polydat design docs in
 ## Why this directory exists
 
 The polydat crate owns the definitive design for the
-variates + GK substrate. As polydat's own design docs
+variates + Polydat substrate. As polydat's own design docs
 matured (composition_substrate, grammar, graph_compiler,
 runtime_model, expression_engine, comprehension_forms),
 substantial overlap accumulated with older nbrs SRDs that

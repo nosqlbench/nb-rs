@@ -3,12 +3,12 @@
 Wrappers are composable decorators around `OpDispenser`. They add
 cross-cutting behavior without modifying adapter code.
 
-Each wrapper that reads GK values dynamically (per cycle, in the
+Each wrapper that reads Polydat values dynamically (per cycle, in the
 op-pipeline pull path) is responsible for its own scope-init
-scoping against the GK context — see
+scoping against the Polydat context — see
 §"Init-Time Fixture and Consumer Self-Registration" below.
 ("Init-time" here is shorthand for "scope-init" per
-[SRD 11](11_gk_evaluation.md): the fixture is sealed once per
+[SRD 11](11_polydat_evaluation.md): the fixture is sealed once per
 phase activation, before the first dynamic pull.)
 
 ---
@@ -17,16 +17,16 @@ phase activation, before the first dynamic pull.)
 
 ### Principle
 
-The GK kernel is the single canonical state holder for scope, binding,
+The Polydat kernel is the single canonical state holder for scope, binding,
 and name resolution (SRD 13c §"Architectural rules"). Wrappers must
-not gain access to GK values via a side channel — no top-level
+not gain access to Polydat values via a side channel — no top-level
 coordinator may "manually notate" name dependencies on a wrapper's
 behalf, and no wrapper may shop for values through `ResolvedFields`
 that were placed there for a different consumer.
 
 Instead, **each wrapper self-registers its name dependencies into a
 shared `ScopeFixture` at init time.** The fixture's accumulated set
-of registered names *is* the runtime view of the GK context for the
+of registered names *is* the runtime view of the Polydat context for the
 op template — the net product of all consumers doing their own
 scoping. There is no other source.
 
@@ -56,7 +56,7 @@ impl ScopeFixture {
     /// (extern slots, capture inputs, coordinates). Returns a
     /// memoized handle. The program must already know the name —
     /// bind-point scanning over the *whole* op template (op fields
-    /// + params) is the GK compiler's responsibility (SRD 13c
+    /// + params) is the Polydat compiler's responsibility (SRD 13c
     /// §"Auto-Extern Generation"; SRD 31 §"Init-Time Pipeline").
     /// An unknown name here means the consumer is reading something
     /// the compiler has not provisioned — that is a workload bug,
@@ -106,7 +106,7 @@ impl PullPlan {
 }
 ```
 
-`PullPlan::resolve` takes only the per-fiber `GkState`; the
+`PullPlan::resolve` takes only the per-fiber `PolydatState`; the
 program reference comes from the plan itself. `FiberBuilder` exposes
 a thin convenience wrapper, `fiber.resolve_pulls(plan)`, used at
 the executor's per-cycle dispatch site.
@@ -138,7 +138,7 @@ pub trait OpConsumer: Sized {
 ```
 
 The trait is the single contract between the activity construction
-loop and every cross-cutting concern that wants GK values at cycle
+loop and every cross-cutting concern that wants Polydat values at cycle
 time. Strict parsing of each consumer's slice of `op.params` lives
 inside `fixture` — no late-binding kernel pulls, no silent defaults,
 no extras side channel.
@@ -152,7 +152,7 @@ of a bare `ResolvedFields`:
 pub struct ExecCtx<'a> {
     /// Op-field substitution view for the inner adapter.
     pub fields: &'a ResolvedFields,
-    /// Wrapper-facing handle-indexed view of GK values.
+    /// Wrapper-facing handle-indexed view of Polydat values.
     pub pulls:  &'a ResolvedPulls,
 }
 
@@ -190,7 +190,7 @@ pub struct TraversingDispenser {
 ```
 
 `fixture()` parses `[name]` capture points from the template's op
-fields and pre-registers nothing — captures *write* into GK ports;
+fields and pre-registers nothing — captures *write* into Polydat ports;
 they don't *read* from the kernel.
 
 ### Capture Extraction
@@ -252,7 +252,7 @@ pub struct ValidatingDispenser {
 vocabulary, required `actual`/`expected`/`k`, `r >= k`, valid
 function names) and registers `expected` against the kernel.
 The kernel must already know the name — bind-point scanning over
-`op.params` happens at GK compile time; the consumer's call to
+`op.params` happens at Polydat compile time; the consumer's call to
 `register_pull` is a *resolution* against an already-provisioned
 output, not a discovery step. An unknown name here is an error.
 
@@ -286,7 +286,7 @@ Assertion failures increment `validations_failed`. With
 ```yaml
 relevancy:
   actual: key              # column to extract from result
-  expected: "{ground_truth}" # GK binding for ground truth
+  expected: "{ground_truth}" # Polydat binding for ground truth
   k: 100
   functions:
     - recall
@@ -679,7 +679,7 @@ executor calls →
   ConditionalDispenser.execute(cycle, &ctx)        ← reads `if` via handle
     → ValidatingDispenser.execute(cycle, &ctx)     ← reads ground truth via handle
       → ThrottleDispenser.execute(cycle, &ctx)     ← reads delay via handle
-        → TraversingDispenser.execute(cycle, &ctx) ← no GK reads (writes captures)
+        → TraversingDispenser.execute(cycle, &ctx) ← no Polydat reads (writes captures)
           → adapter OpDispenser.execute(cycle, &ctx.fields)
           ← OpResult (body + captures)
         ← element/byte counting, capture extraction done
@@ -691,7 +691,7 @@ executor calls →
 
 The innermost (adapter) dispenser executes first and sees only
 `ctx.fields` — never `ctx.pulls`. Each wrapper above the adapter
-reads any GK values it needs through its stored `PullHandle`s
+reads any Polydat values it needs through its stored `PullHandle`s
 against `ctx.pulls`, and forwards `ctx` unchanged inward.
 
 ---
@@ -734,7 +734,7 @@ subsystem purely template-driven: triggers stay
 `fn(&ParsedOp) -> bool`, the resolver needs no session
 context, and the plan exactly reflects the chain.
 
-Useful for validating workload syntax, GK bindings, field
+Useful for validating workload syntax, Polydat bindings, field
 resolution, and the full op-template composition without a
 live target. Verify clauses, metrics declarations, and
 polling loops do not fire in dryrun mode (their wrappers

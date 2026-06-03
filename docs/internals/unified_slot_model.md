@@ -1,4 +1,4 @@
-# Memo 01: Unified Parameter Model for GK Nodes
+# Memo 01: Unified Parameter Model for Polydat Nodes
 
 Describes the refactoring of node metadata and function signatures
 from a split wire/constant model to a unified slot-based model.
@@ -7,7 +7,7 @@ from a split wire/constant model to a unified slot-based model.
 
 ## Problem
 
-The GK node system had a split personality: wire inputs were first-class
+The Polydat node system had a split personality: wire inputs were first-class
 in metadata (named, typed, validated), but constants were invisible.
 They lived as opaque struct fields on individual nodes, surfaced only
 through `jit_constants() -> Vec<u64>` — an untyped bag of bits with
@@ -280,7 +280,7 @@ variadic names (`x_0`, `x_1`, ...) from `FusionPattern::VariadicNode`.
 
 | File | Nature of Change |
 |------|-----------------|
-| `polydat/src/node.rs` | `SlotType`, `ConstValue`, `Slot` (with convenience ctors), `Commutativity`; `NodeMeta` reduced to 3 fields; `GkNode` gains `commutativity()` |
+| `polydat/src/node.rs` | `SlotType`, `ConstValue`, `Slot` (with convenience ctors), `Commutativity`; `NodeMeta` reduced to 3 fields; `PolydatNode` gains `commutativity()` |
 | `polydat/src/dsl/registry.rs` | `ParamSpec` uses `SlotType`; `Arity` (was `SigArity`); `FuncSig` gains `commutativity`, loses old fields |
 | `polydat/src/dsl/compile.rs` | `sig.is_variadic()` |
 | `polydat/src/fusion.rs` | `node.commutativity()`, typed constants, `VariadicNode` pattern |

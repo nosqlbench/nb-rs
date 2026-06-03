@@ -1,12 +1,12 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! SRD-67 — parent-gated GK sub-context construction (Phase 1 surface).
+//! SRD-67 — parent-gated Polydat sub-context construction (Phase 1 surface).
 //!
 //! This module is the **additive** typed entry point for constructing
-//! a GK child kernel as a function of a parent kernel. It implements
+//! a Polydat child kernel as a function of a parent kernel. It implements
 //! the protocol from
-//! [`docs/sysref/67_gk_subcontext_construction.md`](../../../../docs/sysref/67_gk_subcontext_construction.md):
+//! [`docs/sysref/67_polydat_subcontext_construction.md`](../../../../docs/sysref/67_polydat_subcontext_construction.md):
 //!
 //! 1. Parent yields a builder via [`ScopeKernel::subcontext_builder`].
 //! 2. Builder accumulates module matter (imports, exports, body
@@ -20,7 +20,7 @@
 //! ## Phase scope
 //!
 //! Phase 1 (shipped) is **additive** — it coexists with the
-//! existing `materialize_wiring_from_outer` / `from_program` / `compile_gk`
+//! existing `materialize_wiring_from_outer` / `from_program` / `compile_polydat`
 //! machinery. Phase 2 (this push) lands Rule 2 (write-through
 //! rewrite for shared exports) end-to-end and migrates the
 //! do-loop synthesiser to the builder protocol; the other
@@ -59,8 +59,8 @@
 //! ## Walled-off invariant (SRD-67 Phase 4)
 //!
 //! Per SRD-67 §"Walled-off invariant", the legacy
-//! cross-binding primitives `GkKernel::materialize_wiring_from_outer` and
-//! `GkKernel::from_program` are `pub(crate)` after Phase 4.
+//! cross-binding primitives `PolydatKernel::materialize_wiring_from_outer` and
+//! `PolydatKernel::from_program` are `pub(crate)` after Phase 4.
 //! External consumers must go through the typed surface:
 //! [`SubcontextBuilder`] / [`ScopeKernel::spawn`] for child
 //! construction, [`instance_program`] for parentless re-instancing
@@ -74,19 +74,19 @@
 //! `materialize_wiring_from_outer` is not public:
 //!
 //! ```compile_fail
-//! use polydat::dsl::compile::compile_gk;
-//! let mut inner = compile_gk("input cycle: u64\n").unwrap();
-//! let outer = compile_gk("input cycle: u64\n").unwrap();
+//! use polydat::dsl::compile::compile_polydat;
+//! let mut inner = compile_polydat("input cycle: u64\n").unwrap();
+//! let outer = compile_polydat("input cycle: u64\n").unwrap();
 //! inner.materialize_wiring_from_outer(&outer); // pub(crate) — must not compile
 //! ```
 //!
-//! `GkKernel::from_program` is not public:
+//! `PolydatKernel::from_program` is not public:
 //!
 //! ```compile_fail
-//! use polydat::dsl::compile::compile_gk;
-//! use polydat::kernel::GkKernel;
-//! let kernel = compile_gk("input cycle: u64\n").unwrap();
-//! let _ = GkKernel::from_program(kernel.program().clone()); // pub(crate)
+//! use polydat::dsl::compile::compile_polydat;
+//! use polydat::kernel::PolydatKernel;
+//! let kernel = compile_polydat("input cycle: u64\n").unwrap();
+//! let _ = PolydatKernel::from_program(kernel.program().clone()); // pub(crate)
 //! ```
 
 mod builder;
@@ -103,9 +103,9 @@ mod tests;
 pub use builder::{CompileOptions, SubcontextBuilder};
 pub use error::{ContractViolation, SourceContext};
 pub use kernel::{
-    Child, GkMatter, GkMatterBuilder, RootMarker,
+    Child, PolydatMatter, PolydatMatterBuilder, RootMarker,
 };
-pub(crate) use kernel::GkMatterInner;
+pub(crate) use kernel::PolydatMatterInner;
 pub use kernel::{
     ScopeKernel, SharedCellInScope,
 };

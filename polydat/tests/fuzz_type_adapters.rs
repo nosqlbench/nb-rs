@@ -4,7 +4,7 @@
 //! Type-adapter-transform fuzz tests.
 //!
 //! Two test strategies share the same goal: surface cases where the
-//! GK compiler's auto-inserted edge adapters are wrong, missing, or
+//! Polydat compiler's auto-inserted edge adapters are wrong, missing, or
 //! silently lossy.
 //!
 //! 1. **Adapter-table sweep** ([`adapter_table_is_consistent`]).
@@ -20,14 +20,14 @@
 //! 2. **Random-DAG fuzz** ([`random_dags_compile_or_fail_cleanly`]).
 //!    A tiny deterministic RNG picks native registry entries and
 //!    wires their outputs together irrespective of type compatibility.
-//!    Each generated module is fed to `compile_gk_with_log`; the
+//!    Each generated module is fed to `compile_polydat_with_log`; the
 //!    compile must never panic, every error string must be non-empty
 //!    and free of panic-style wording, and every Ok result whose
 //!    event log mentions a `TypeAdapterInserted` must refer to a
 //!    pair we also consider legal. The FUZZ_SEED env var seeds the
 //!    RNG; FUZZ_ITERATIONS controls iteration count.
 
-use polydat::dsl::compile::{compile_gk, compile_gk_with_log};
+use polydat::dsl::compile::{compile_polydat, compile_polydat_with_log};
 use polydat::dsl::events::{CompileEvent, CompileEventLog};
 use polydat::dsl::registry::{self, FuncSig};
 use polydat::ast::{PortType, SlotType};
@@ -86,19 +86,19 @@ fn expected_adapt(src: PortType, dst: PortType) -> Adapt {
 //
 // Producers emit a specific [`PortType`] from the cycle input.
 // Consumers read a specific wire type and produce any output. Each
-// recipe is a pair of GK snippets chained via the `source` and
+// recipe is a pair of Polydat snippets chained via the `source` and
 // `sink` bindings; the test assembles them with the cycle coordinate
 // and compiles.
 
 struct TypeRecipe {
-    /// GK expression that produces [`src`] from scratch (may reference
+    /// Polydat expression that produces [`src`] from scratch (may reference
     /// `cycle`).
     produce: &'static str,
     src: PortType,
 }
 
 struct SinkRecipe {
-    /// GK expression template where `{}` is substituted with the
+    /// Polydat expression template where `{}` is substituted with the
     /// source binding name. Produces some output (thrown away); its
     /// *wire-input* type is [`dst`].
     consume_tmpl: &'static str,
@@ -143,7 +143,7 @@ fn adapter_table_is_consistent() {
             );
             let expected = expected_adapt(p.src, c.dst);
             let mut log = CompileEventLog::new();
-            let result = compile_gk_with_log(&source, &mut log);
+            let result = compile_polydat_with_log(&source, &mut log);
             let observed = classify_result(&result, &log);
             if !adapt_agrees(expected, observed) {
                 mismatches.push(format!(
@@ -365,7 +365,7 @@ fn random_dags_compile_or_fail_cleanly() {
 
         let mut log = CompileEventLog::new();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            compile_gk_with_log(&source, &mut log)
+            compile_polydat_with_log(&source, &mut log)
         }));
 
         // Invariant 1: compiler never panics on any input. A panic
@@ -488,7 +488,7 @@ fn strict_values_inserts_nonzero_assertion_on_mod_wire() {
         b := mod_wire(cycle, d)\n\
     ";
     let mut log = CompileEventLog::new();
-    let result = compile_gk_with_log(strict_source, &mut log);
+    let result = compile_polydat_with_log(strict_source, &mut log);
     assert!(result.is_ok(), "compile failed: {:?}", result.err());
     let assertion_inserts: Vec<&CompileEvent> = log.events().iter()
         .filter(|e| matches!(e, CompileEvent::AssertionInserted { .. }))
@@ -505,7 +505,7 @@ fn strict_values_inserts_nonzero_assertion_on_mod_wire() {
         b := mod_wire(cycle, d)\n\
     ";
     let mut lax_log = CompileEventLog::new();
-    let lax_result = compile_gk_with_log(lax_source, &mut lax_log);
+    let lax_result = compile_polydat_with_log(lax_source, &mut lax_log);
     assert!(lax_result.is_ok(), "compile failed: {:?}", lax_result.err());
     let lax_inserts: Vec<&CompileEvent> = lax_log.events().iter()
         .filter(|e| matches!(e, CompileEvent::AssertionInserted { .. }))
@@ -527,7 +527,7 @@ fn strict_values_skips_assertion_when_source_is_constant() {
         b := mod_wire(cycle, 7)\n\
     ";
     let mut log = CompileEventLog::new();
-    let result = compile_gk_with_log(source, &mut log);
+    let result = compile_polydat_with_log(source, &mut log);
     assert!(result.is_ok(), "compile failed: {:?}", result.err());
     let inserts: Vec<&CompileEvent> = log.events().iter()
         .filter(|e| matches!(e, CompileEvent::AssertionInserted { .. }))
@@ -562,7 +562,7 @@ fn pragmas_round_trip_through_compile() {
         id := mod(hash(cycle), 1000)\n\
     ";
     let mut log = CompileEventLog::new();
-    let result = compile_gk_with_log(source, &mut log);
+    let result = compile_polydat_with_log(source, &mut log);
     assert!(result.is_ok(), "compile failed: {:?}", result.err());
     let acknowledged: Vec<&str> = log.events().iter()
         .filter_map(|e| match e {
@@ -590,7 +590,7 @@ fn sanity_same_type_chain_has_no_adapters() {
         b := add(a, 2)\n\
     ";
     let mut log = CompileEventLog::new();
-    let result = compile_gk_with_log(source, &mut log);
+    let result = compile_polydat_with_log(source, &mut log);
     assert!(result.is_ok(), "simple chain should compile: {:?}", result.err());
     for e in log.events() {
         if let CompileEvent::TypeAdapterInserted { .. } = e {
@@ -606,7 +606,7 @@ fn sanity_u64_to_f64_widens_via_adapter() {
         a := clamp_f64(cycle, 0.0, 1.0)\n\
     ";
     let mut log = CompileEventLog::new();
-    let result = compile_gk_with_log(source, &mut log);
+    let result = compile_polydat_with_log(source, &mut log);
     assert!(result.is_ok(), "u64→f64 widening should auto-adapt: {:?}", result.err());
     let has_adapter = log.events().iter().any(|e|
         matches!(e, CompileEvent::TypeAdapterInserted { adapter, .. } if adapter == "U64→F64"));
@@ -623,7 +623,7 @@ fn sanity_f64_to_u64_rejects_without_cast() {
         x := to_f64(cycle)\n\
         y := add(x, 1)\n\
     ";
-    let err = compile_gk(source).expect_err("narrowing f64→u64 must not compile");
+    let err = compile_polydat(source).expect_err("narrowing f64→u64 must not compile");
     assert!(err.contains("type mismatch"),
         "expected a type-mismatch error for narrowing, got: {err}");
 }

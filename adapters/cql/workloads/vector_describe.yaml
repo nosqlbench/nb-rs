@@ -2,7 +2,7 @@
 # vector dataset and each of its profiles.
 #
 # Walks the vectordata catalog for `{dataset}` and prints every
-# metadata field the vectordata GK nodes expose:
+# metadata field the vectordata Polydat nodes expose:
 #   - dataset-level: profile count, profile list
 #   - per-profile:   dimensionality, distance function, base/query
 #                    /neighbor cardinalities, facets, metadata

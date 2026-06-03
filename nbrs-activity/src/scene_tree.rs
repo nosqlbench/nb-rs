@@ -194,7 +194,23 @@ pub struct SceneNode {
     /// consumers should read from here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<crate::phase_outcome::PhaseOutcome>,
+    /// Whether this node is active for execution under the
+    /// session's `phases=<pattern>` filter (default true). Set
+    /// by the planning walker before any phase runs:
+    /// - Phase nodes get `active = pattern.is_match(name)` (or
+    ///   `true` when no pattern is set).
+    /// - Scope nodes are `active` iff any descendant phase is
+    ///   active; otherwise they're elided from the execution
+    ///   walk along with their subtree.
+    /// Inactive nodes are still in the tree (so coordinate
+    /// chains, scope-init kernels, and parent context stay
+    /// intact for active siblings under the same scope) but
+    /// the executor skips their phase activation.
+    #[serde(default = "default_active")]
+    pub active: bool,
 }
+
+fn default_active() -> bool { true }
 
 /// The scene tree itself. `nodes[0]` is always the synthetic root.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -226,6 +242,7 @@ impl SceneTree {
             seq: None,
             yaml_path: Vec::new(),
             outcome: None,
+            active: true,
         });
         t
     }
@@ -296,6 +313,7 @@ impl SceneTree {
             seq,
             yaml_path: Vec::new(),
             outcome: None,
+            active: true,
         });
         self.nodes[parent].children.push(id);
         id
@@ -324,6 +342,71 @@ impl SceneTree {
         self.nodes.iter().filter(|n| n.kind == NodeKind::Phase).count()
     }
 
+    /// Apply a phase-name filter to the tree. Phase nodes whose
+    /// `name` does not match `pattern` are marked `active=false`;
+    /// Scope nodes inherit `active=false` iff every phase
+    /// descendant under them was filtered out. The synthetic
+    /// root is always active. When `pattern` is `None`, every
+    /// node stays active.
+    ///
+    /// Inactive subtrees stay in the tree so the executor's
+    /// planning walk still constructs the scope-init kernels
+    /// the active branches inherit from — only execution is
+    /// skipped at the leaves.
+    pub fn apply_phase_filter(
+        &mut self,
+        pattern: Option<&crate::phase_filter::PhasePattern>,
+    ) -> PhaseFilterStats {
+        let mut stats = PhaseFilterStats::default();
+        if pattern.is_none() {
+            stats.matched = self.total_phases();
+            return stats;
+        }
+        let pat = pattern.unwrap();
+        // Pass 1: phases get their own match decision.
+        for n in self.nodes.iter_mut() {
+            if n.kind == NodeKind::Phase {
+                n.active = pat.is_match(&n.name);
+                stats.total += 1;
+                if n.active { stats.matched += 1; }
+            }
+        }
+        // Pass 2: scope nodes (and the root) are active iff any
+        // descendant phase is active. Walk bottom-up by
+        // processing nodes in reverse-id order — children
+        // always have higher ids than parents (the tree's
+        // append-only construction guarantees this).
+        let n = self.nodes.len();
+        for i in (0..n).rev() {
+            if matches!(self.nodes[i].kind, NodeKind::Phase) { continue; }
+            let kids = self.nodes[i].children.clone();
+            let any_active = kids.iter().any(|c| self.nodes[*c].active);
+            self.nodes[i].active = any_active;
+        }
+        // Root stays active when at least one phase matched
+        // — but if zero matched we leave it inactive so the
+        // executor short-circuits cleanly with no work done.
+        stats
+    }
+
+    /// Whether the phase node at `id` should be executed under
+    /// the active phase filter. Convenience for the executor's
+    /// per-phase dispatch site.
+    pub fn is_phase_active(&self, id: SceneNodeId) -> bool {
+        self.nodes.get(id).map(|n| n.active).unwrap_or(false)
+    }
+}
+
+/// Counters returned by [`SceneTree::apply_phase_filter`] so the
+/// runner can log how many phases the filter selected vs the
+/// total available.
+#[derive(Default, Debug, Clone, Copy)]
+pub struct PhaseFilterStats {
+    pub matched: usize,
+    pub total: usize,
+}
+
+impl SceneTree {
     /// Set the op-template names for a phase node. Called at
     /// pre-map time once the workload model has been resolved so
     /// the TUI can drill into a phase and show its stanza

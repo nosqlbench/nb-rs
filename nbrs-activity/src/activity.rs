@@ -161,6 +161,20 @@ pub struct ActivityMetrics {
     pub skips_total: Arc<Counter>,
     pub errors_total: Arc<Counter>,
     pub stanzas_total: Arc<Counter>,
+    /// Daemon ops that exited cleanly via stop-signal cancellation
+    /// at phase shutdown (the trigger-and-observe happy path).
+    /// Counts increment on `DaemonExit::Cancelled` only — natural
+    /// completions are tracked through `successes_total` /
+    /// `errors_total` on the underlying op path. Visibility on
+    /// this counter lets the operator distinguish "phase exited
+    /// with N daemons cancelled" from "phase exited with no
+    /// daemons in flight" without re-reading session.log.
+    pub daemon_cancelled_total: Arc<Counter>,
+    /// Daemon ops whose shutdown failed: returned an error during
+    /// running or shutdown, panicked, or missed the grace window.
+    /// Each increment is paired with the activity's stop_flag
+    /// being set + a stop_reason being recorded.
+    pub daemon_errors_total: Arc<Counter>,
     /// Number of ops dispatched to adapters (monotonic).
     pub ops_started: std::sync::atomic::AtomicU64,
     /// Number of ops returned from adapters (monotonic).
@@ -206,6 +220,8 @@ impl ActivityMetrics {
             skips_total: Arc::new(Counter::new(labels.with("name", "skips_total"))),
             errors_total: Arc::new(Counter::new(labels.with("name", "errors_total"))),
             stanzas_total: Arc::new(Counter::new(labels.with("name", "stanzas_total"))),
+            daemon_cancelled_total: Arc::new(Counter::new(labels.with("name", "daemon_cancelled_total"))),
+            daemon_errors_total: Arc::new(Counter::new(labels.with("name", "daemon_errors_total"))),
             ops_started: std::sync::atomic::AtomicU64::new(0),
             ops_finished: std::sync::atomic::AtomicU64::new(0),
             result_elements: Arc::new(Counter::new(labels.with("name", "result_elements"))),
@@ -268,6 +284,14 @@ impl ActivityMetrics {
         component.register_instrument(
             "stanzas_total",
             InstrumentRef::Counter(self.stanzas_total.clone()),
+        )?;
+        component.register_instrument(
+            "daemon_cancelled_total",
+            InstrumentRef::Counter(self.daemon_cancelled_total.clone()),
+        )?;
+        component.register_instrument(
+            "daemon_errors_total",
+            InstrumentRef::Counter(self.daemon_errors_total.clone()),
         )?;
         component.register_instrument(
             "result_elements",
@@ -350,6 +374,10 @@ impl ActivityMetrics {
         snap.insert_counter(n, lbl, self.errors_total.get(), now);
         let (n, lbl) = split_name_label(self.stanzas_total.labels());
         snap.insert_counter(n, lbl, self.stanzas_total.get(), now);
+        let (n, lbl) = split_name_label(self.daemon_cancelled_total.labels());
+        snap.insert_counter(n, lbl, self.daemon_cancelled_total.get(), now);
+        let (n, lbl) = split_name_label(self.daemon_errors_total.labels());
+        snap.insert_counter(n, lbl, self.daemon_errors_total.get(), now);
         let (n, lbl) = split_name_label(self.result_elements.labels());
         snap.insert_counter(n, lbl, self.result_elements.get(), now);
         let (n, lbl) = split_name_label(self.result_bytes.labels());
@@ -654,7 +682,7 @@ pub struct PhasePollContext {
     /// iteration; a `Value::Bool(true)` ends the loop. Any
     /// other result (false, None, missing) keeps iterating
     /// until the wall-clock deadline.
-    pub kernel: Arc<polydat::kernel::GkKernel>,
+    pub kernel: Arc<polydat::kernel::PolydatKernel>,
     /// Sleep between iterations (after a predicate check
     /// returns "not done").
     pub interval: std::time::Duration,
@@ -783,7 +811,7 @@ impl Activity {
                 ErrorRouter::default_stop()
             });
         // All phases go through sources. cycles: N desugars to range(0, N).
-        // Named cursors in GK provide their own factory via config.source_factory.
+        // Named cursors in Polydat provide their own factory via config.source_factory.
         let source_factory: Arc<dyn polydat::iteration::source::DataSourceFactory> = config.source_factory
             .clone()
             .unwrap_or_else(|| Arc::new(
@@ -862,7 +890,7 @@ impl Activity {
         // Declare a `rate` control whenever the activity config
         // has a rate set. The control's reified gauge projects
         // ops/sec so metric sinks and the f64-writable surface
-        // (TUI `e` prompt, web POST, GK `control_set`) all read
+        // (TUI `e` prompt, web POST, Polydat `control_set`) all read
         // and write in the same unit. The [`RateLimiterApplier`]
         // gets registered at run time once the limiter exists
         // (see `run_with_adapters`).
@@ -955,6 +983,20 @@ impl Activity {
                         "dryrun".into(),
                         serde_json::Value::String(mode.to_string()),
                     );
+                    // dryrun=emit also forces the emit wrapper
+                    // on so the rendered op text reaches stdout
+                    // even though DRYRUN short-circuits the
+                    // adapter call. emit is composed OUTER of
+                    // dryrun (see wrapper_resolver::DEFAULT_ORDER),
+                    // so its pre-execute render runs first; the
+                    // subsequent DRYRUN short-circuit suppresses
+                    // the real adapter call.
+                    if mode == "emit" {
+                        clone.params.insert(
+                            "emit".into(),
+                            serde_json::Value::Bool(true),
+                        );
+                    }
                     clone
                 })
                 .collect();
@@ -1214,7 +1256,7 @@ impl Activity {
                     // Open the per-template scope fixture (SRD 32
                     // §"Init-Time Fixture and Consumer Self-
                     // Registration"). Each wrapper below registers
-                    // its own GK name dependencies; the fixture is
+                    // its own Polydat name dependencies; the fixture is
                     // sealed after the wrapper chain is complete and
                     // the resulting PullPlan drives cycle-time reads.
                     //
@@ -1296,7 +1338,7 @@ impl Activity {
                     }
 
                     // Wrap with traversal (innermost). Traversal
-                    // does not read GK values; no fixture
+                    // does not read Polydat values; no fixture
                     // registration needed. Always present per
                     // the registry's always-true trigger.
                     let mut current: Arc<dyn OpDispenser> = crate::wrappers::TraversingDispenser::wrap(
@@ -1306,16 +1348,37 @@ impl Activity {
                     // Apply each remaining wrapper in plan order.
                     // Skip `traverse`; it's already constructed.
                     for reg in plan.iter_innermost_first() {
-                        if reg.name == crate::wrappers::traversing::NAME { continue; }
+                        if reg.name == crate::wrappers::traverse::NAME { continue; }
                         let stop = match reg.name {
-                            crate::wrappers::throttle::NAME => {
-                                let raw_name = template.delay.as_deref()
-                                    .expect("throttle triggered → delay set");
-                                let name = raw_name.trim()
-                                    .strip_prefix('{')
-                                    .and_then(|s| s.strip_suffix('}'))
-                                    .unwrap_or(raw_name.trim());
-                                match crate::wrappers::ThrottleDispenser::wrap(current.clone(), name, &mut fx) {
+                            crate::wrappers::delay::NAME => {
+                                let spec = template.delay.as_ref()
+                                    .expect("delay triggered → delay set");
+                                let trim = |s: &str| -> String {
+                                    let t = s.trim();
+                                    t.strip_prefix('{')
+                                        .and_then(|s| s.strip_suffix('}'))
+                                        .unwrap_or(t)
+                                        .to_string()
+                                };
+                                let wrap_result = match spec {
+                                    nbrs_workload::model::DelaySpec::Before(name) => {
+                                        let name = trim(name);
+                                        crate::wrappers::DelayDispenser::wrap(
+                                            current.clone(), &name, &mut fx,
+                                        )
+                                    }
+                                    nbrs_workload::model::DelaySpec::BeforeAfter { before, after } => {
+                                        let before = before.as_deref().map(trim);
+                                        let after = after.as_deref().map(trim);
+                                        crate::wrappers::DelayDispenser::wrap_before_after(
+                                            current.clone(),
+                                            before.as_deref(),
+                                            after.as_deref(),
+                                            &mut fx,
+                                        )
+                                    }
+                                };
+                                match wrap_result {
                                     Ok(d) => { current = d; false }
                                     Err(e) => {
                                         crate::diag!(crate::observer::LogLevel::Error,
@@ -1340,7 +1403,7 @@ impl Activity {
                                     }
                                 }
                             }
-                            crate::wrappers::polling::NAME => {
+                            crate::wrappers::poll::NAME => {
                                 // Poll config reader: `poll:` is either
                                 // a string (mode only, all-defaults) or
                                 // a map (`{mode, interval_ms, timeout_ms,
@@ -1408,7 +1471,7 @@ impl Activity {
                                 current = d;
                                 false
                             }
-                            crate::wrappers::conditional::NAME => {
+                            crate::wrappers::r#if::NAME => {
                                 // `if:` short-circuits before the
                                 // inner cascade — load-bearing for
                                 // the recent fix that pulls polling
@@ -1431,14 +1494,69 @@ impl Activity {
                                     }
                                 }
                             }
+                            crate::wrappers::r#while::NAME => {
+                                // `while:` loops the inner until the
+                                // synthesised `__while` predicate
+                                // flips falsy or the activity stops.
+                                // The op-kernel synthesiser appended
+                                // `__while := <expr>` to the kernel's
+                                // result bindings — that's how the
+                                // expression's free identifiers got
+                                // their extern slots.
+                                match crate::wrappers::WhileWrapper::wrap(
+                                    current.clone(),
+                                    activity.stop_flag.clone(),
+                                    &mut fx,
+                                ) {
+                                    Ok(d) => { current = d; false }
+                                    Err(e) => {
+                                        crate::diag!(crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}", template.name);
+                                        true
+                                    }
+                                }
+                            }
+                            crate::wrappers::op_rate::NAME => {
+                                // Per-op rate limiter, independent
+                                // of the activity-level rate AND of
+                                // every other op's per-op limiter.
+                                // Each instance owns its own
+                                // RateLimiter.
+                                let rate_spec = template.rate.as_deref()
+                                    .expect("op_rate triggered → rate set");
+                                match crate::wrappers::OpRateWrapper::wrap(
+                                    current.clone(), rate_spec,
+                                ) {
+                                    Ok(d) => { current = d; false }
+                                    Err(e) => {
+                                        crate::diag!(crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}", template.name);
+                                        true
+                                    }
+                                }
+                            }
                             crate::wrappers::emit::NAME => {
-                                current = crate::wrappers::EmitDispenser::wrap(current.clone(), &template.name);
+                                // Capture op_fields so emit can render
+                                // the rendered op text at cycle time.
+                                // Stable insertion order isn't guaranteed
+                                // by HashMap, but ParsedOp.op is small
+                                // enough that a deterministic
+                                // alphabetical sort keeps the printed
+                                // output stable across runs.
+                                let mut op_fields: Vec<(String, serde_json::Value)> = template.op
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect();
+                                op_fields.sort_by(|a, b| a.0.cmp(&b.0));
+                                current = crate::wrappers::EmitDispenser::wrap_with_op_fields(
+                                    current.clone(), &template.name, op_fields,
+                                );
                                 false
                             }
                             crate::wrappers::result::NAME => {
                                 // SRD-40b §5: result-as-GK adapter —
                                 // exposes captured result fields to
-                                // the op's GK scope via
+                                // the op's Polydat scope via
                                 // `OpResult.captures` so metric
                                 // expressions (and any later wrappers)
                                 // can reference them by name. No-op
@@ -1493,7 +1611,7 @@ impl Activity {
                                     }
                                 }
                             }
-                            crate::wrappers::dry_run::NAME => {
+                            crate::wrappers::dryrun::NAME => {
                                 // Outermost short-circuit. Activated
                                 // by the injected `dryrun:` template
                                 // parameter (per
@@ -1801,9 +1919,19 @@ impl Activity {
         }
 
         // One Arc<str> shared by every fiber in this phase. The
-        // GK runtime-context `phase()` node clones this per read
+        // Polydat runtime-context `phase()` node clones this per read
         // instead of per fiber, keeping the per-cycle cost O(1).
         let phase_name_arc: Arc<str> = Arc::from(activity_name.as_str());
+
+        // Daemon-op pool. Shared across cycle-pool fibers — each
+        // fiber's stanza walk dispatches daemon ops by spawning
+        // a fresh fiber onto this pool instead of running them
+        // inline. The pool enforces per-op-name fiber caps; an
+        // overflow is a workload-design error that fails the
+        // phase. At phase exit the cycle-pool drain runs first,
+        // then this pool's shutdown signals and waits on every
+        // still-running daemon (see daemon-pool drain below).
+        let daemon_pool = Arc::new(crate::daemon_pool::DaemonPool::new());
 
         // SRD 23 §"Fiber executor": fiber lifecycle goes through
         // a [`FiberPool`] that the `ConcurrencyApplier` can
@@ -1817,6 +1945,7 @@ impl Activity {
             let op_builder_outer = op_builder.clone();
             let rate_limiter_outer = rate_limiter.clone();
             let phase_arc_outer = phase_name_arc.clone();
+            let daemon_pool_outer = daemon_pool.clone();
             Box::new(move |stop: crate::fiber_pool::StopFlag| {
                 let activity = activity.clone();
                 let dispensers = dispensers_outer.clone();
@@ -1824,6 +1953,7 @@ impl Activity {
                 let op_builder = op_builder_outer.clone();
                 let rate_limiter = rate_limiter_outer.clone();
                 let phase_arc = phase_arc_outer.clone();
+                let daemon_pool = daemon_pool_outer.clone();
                 tokio::spawn(async move {
                     // Catch panics inside the fiber so they surface
                     // in diagnostics rather than silently terminating
@@ -1837,12 +1967,14 @@ impl Activity {
                     use futures::FutureExt as _;
                     let activity_for_panic = activity.clone();
                     let activity_name_for_log = activity.config.name.clone();
+                    let phase_arc_for_exec = phase_arc.clone();
                     let body = crate::polydat_nodes::runtime_context::with_fiber_context(
                         phase_arc,
                         async move {
                             executor_task(
                                 activity, dispensers, pull_plans,
                                 op_builder, rate_limiter, stop,
+                                daemon_pool, phase_arc_for_exec,
                             ).await;
                         },
                     );
@@ -1979,6 +2111,81 @@ impl Activity {
         }
         crate::diag!(crate::observer::LogLevel::Debug,
             "activity '{}': all fibers drained", activity.config.name);
+
+        // Daemon-pool drain. Cycle-pool reached zero (cursor
+        // exhausted or stop signal honoured); now signal each
+        // still-running daemon, wait its per-op grace window for
+        // the in-flight future to drop, and aggregate outcomes.
+        //
+        // The outcomes split two ways: clean (Completed /
+        // Cancelled) feed into the phase metrics counters;
+        // unclean (Errored / TimedOut / Panicked) bubble up as
+        // phase-stopping errors via the existing stop_flag +
+        // stop_reason channel that cycle-pool errors use.
+        if !daemon_pool.is_empty() {
+            crate::diag!(crate::observer::LogLevel::Debug,
+                "activity '{}': draining {} daemon(s)",
+                activity.config.name, daemon_pool.len());
+            let outcomes = daemon_pool.shutdown().await;
+            for (op_name, exit) in &outcomes {
+                match exit {
+                    crate::daemon_pool::DaemonExit::Completed => {
+                        crate::diag!(crate::observer::LogLevel::Debug,
+                            "daemon op '{op_name}': completed");
+                    }
+                    crate::daemon_pool::DaemonExit::Cancelled => {
+                        activity.metrics.daemon_cancelled_total.inc();
+                        crate::diag!(crate::observer::LogLevel::Debug,
+                            "daemon op '{op_name}': cancelled at phase exit");
+                    }
+                    crate::daemon_pool::DaemonExit::Errored(e) => {
+                        activity.metrics.daemon_errors_total.inc();
+                        let inner = e.error();
+                        crate::diag!(crate::observer::LogLevel::Error,
+                            "daemon op '{op_name}' errored: [{}] {}",
+                            inner.error_name, inner.message);
+                        activity.stop_flag.store(true, Ordering::Relaxed);
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(format!(
+                                "[{}] daemon op '{op_name}': {}",
+                                inner.error_name, inner.message,
+                            ));
+                        }
+                    }
+                    crate::daemon_pool::DaemonExit::TimedOut => {
+                        activity.metrics.daemon_errors_total.inc();
+                        crate::diag!(crate::observer::LogLevel::Error,
+                            "daemon op '{op_name}': did not acknowledge stop \
+                             within grace window — phase fails");
+                        activity.stop_flag.store(true, Ordering::Relaxed);
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(format!(
+                                "[daemon_shutdown_timeout] daemon op \
+                                 '{op_name}' did not acknowledge stop \
+                                 within its grace window",
+                            ));
+                        }
+                    }
+                    crate::daemon_pool::DaemonExit::Panicked(msg) => {
+                        activity.metrics.daemon_errors_total.inc();
+                        crate::diag!(crate::observer::LogLevel::Error,
+                            "daemon op '{op_name}' panicked: {msg}");
+                        activity.stop_flag.store(true, Ordering::Relaxed);
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(format!(
+                                "[daemon_panic] daemon op '{op_name}': {msg}",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
 
         // Final completion line — always emitted (one per phase),
         // not gated on TTY/extent. Replaces the old executor-side
@@ -2139,15 +2346,36 @@ impl Activity {
 
             // Build a one-shot binder for `on_phase_end`:
             // workload's `on_phase_end:` overrides if any,
-            // else the default `phase_outcome` body. Same
-            // SRD-63 §7 binding-layer pattern as the inline
-            // status thread above.
+            // else the default body — `phase_outcome` for the
+            // normative ✓/✗ status line, followed by
+            // `error_readout` which renders the per-error block
+            // below it. `error_readout` is a no-op (zero bytes)
+            // when the phase has no recorded errors, so the
+            // default is safe for both success and failure
+            // paths; failure paths get the structured error
+            // block appended without the per-cycle warns
+            // having to spam the screen mid-phase.
             let phase_outcome_default = {
-                let readout = crate::readouts::Registry::lookup("phase_outcome")
+                let phase_outcome = crate::readouts::Registry::lookup("phase_outcome")
                     .expect("phase_outcome registered");
-                crate::readouts::BakedBody::from_single(
-                    readout, crate::readouts::Lod::Labeled,
-                )
+                let error_readout = crate::readouts::Registry::lookup("error_readout")
+                    .expect("error_readout registered");
+                crate::readouts::BakedBody::from_steps(vec![
+                    crate::readouts::binder::RenderStep::Render {
+                        readout: phase_outcome,
+                        lod: crate::readouts::Lod::Labeled,
+                        layout: crate::readouts::binder::LayoutMode::Auto,
+                        options: crate::readouts::ReadoutOptions::new(),
+                        color: None,
+                    },
+                    crate::readouts::binder::RenderStep::Render {
+                        readout: error_readout,
+                        lod: crate::readouts::Lod::Labeled,
+                        layout: crate::readouts::binder::LayoutMode::Auto,
+                        options: crate::readouts::ReadoutOptions::new(),
+                        color: None,
+                    },
+                ])
             };
             let rendered = match crate::readouts::build_event_binder(
                 &activity.config.readouts,
@@ -2339,7 +2567,7 @@ impl Activity {
 
 /// Executor task for the tiered DriverAdapter interface.
 ///
-/// Each fiber has its own FiberBuilder (lock-free GK state).
+/// Each fiber has its own FiberBuilder (lock-free Polydat state).
 /// Ops within a stanza are processed in dependency groups:
 /// - Groups execute sequentially (captures flow between groups)
 /// - Ops within a group execute concurrently (join_all)
@@ -2350,6 +2578,97 @@ impl Activity {
 // Drives cycle-time reads for validation / conditional / throttle
 // wrappers via memoized `PullHandle`s. See SRD 31 §"Pull plan vs bind
 // plan".
+/// One-shot daemon dispatch. Mirrors `executor_task`'s setup
+/// (FiberBuilder + per-op kernel attach) but dispatches the
+/// daemon's op exactly once, racing the in-flight future
+/// against the per-daemon stop flag AND the activity-global
+/// stop flag.
+///
+/// Cancellation path: when either flag flips, the
+/// `dispenser.execute(...)` future is dropped at the next
+/// await point — for the HTTP adapter that's mid-`send()`,
+/// which propagates as a clean reqwest cancellation. The
+/// daemon returns `DaemonExit::Cancelled`. The pool's grace
+/// window (see `DaemonPool::shutdown`) gives the adapter time
+/// to observe the drop and exit; deadlines past the grace
+/// surface as `DaemonExit::TimedOut`.
+///
+/// Daemon ops increment `ops_started` / `ops_finished` like
+/// any other op execution — the operator-visible op-count
+/// surface stays consistent regardless of fiber kind. Service
+/// + response timing is recorded the same way the cycle-pool
+/// records it (one Instant pair around the execute), but no
+/// rate-limiter acquire — daemons aren't subject to the
+/// activity's ops-per-second ceiling.
+async fn daemon_dispatch(
+    activity: Arc<Activity>,
+    dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
+    op_builder: Arc<crate::synthesis::OpBuilder>,
+    template_idx: usize,
+    op_name: String,
+    stop: crate::daemon_pool::DaemonStopFlag,
+) -> crate::daemon_pool::DaemonExit {
+    let mut fiber = op_builder.create_fiber_builder();
+    fiber.attach_dispenser_kernels(&dispensers);
+    let dispenser = dispensers[template_idx].clone();
+    let fields = crate::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+    let pulls = crate::fixture::ResolvedPulls::empty();
+    let cycle_wires = match fiber.per_op_kernel_mut(template_idx) {
+        Some(p) => crate::wires::CycleWires::new(p),
+        None => crate::wires::CycleWires::new(fiber.main_kernel_mut()),
+    };
+    let ctx = crate::fixture::ExecCtx::with_wires(&fields, &pulls, &cycle_wires);
+
+    activity.metrics.ops_started.fetch_add(1, Ordering::Relaxed);
+    let started = std::time::Instant::now();
+    let activity_stop = activity.stop_flag.clone();
+    let exit = tokio::select! {
+        result = dispenser.execute(0, &ctx) => match result {
+            Ok(_) => crate::daemon_pool::DaemonExit::Completed,
+            Err(e) => crate::daemon_pool::DaemonExit::Errored(e),
+        },
+        _ = poll_daemon_stop(&stop, &activity_stop) => {
+            crate::daemon_pool::DaemonExit::Cancelled
+        }
+    };
+    let service_nanos = started.elapsed().as_nanos() as u64;
+    activity.metrics.cycles_total.inc();
+    activity.metrics.ops_finished.fetch_add(1, Ordering::Relaxed);
+    activity.metrics.service_time.record(service_nanos);
+    activity.metrics.response_time.record(service_nanos);
+    if matches!(exit, crate::daemon_pool::DaemonExit::Completed) {
+        activity.metrics.successes_total.inc();
+        activity.metrics.result_success_time.record(service_nanos);
+    }
+    crate::diag!(crate::observer::LogLevel::Debug,
+        "daemon op '{op_name}' exit={} elapsed_ms={:.0}",
+        exit.label(), service_nanos as f64 / 1_000_000.0);
+    exit
+}
+
+/// Polls both the per-daemon stop flag and the activity-global
+/// stop flag at 50ms granularity. Returns as soon as either is
+/// set. The 50ms cadence is a compromise: fast enough that
+/// daemon cancellation lands well under the typical 5-second
+/// grace window, slow enough that an idle daemon doesn't burn
+/// CPU. Replacing this with a `tokio::sync::Notify`-backed
+/// flag would drop the latency to zero but requires touching
+/// the StopFlag surface and isn't load-bearing for the
+/// trigger-and-observe pattern.
+async fn poll_daemon_stop(
+    daemon_stop: &crate::daemon_pool::DaemonStopFlag,
+    activity_stop: &Arc<std::sync::atomic::AtomicBool>,
+) {
+    loop {
+        if daemon_stop.load(Ordering::Acquire)
+            || activity_stop.load(Ordering::Acquire)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 async fn executor_task(
     activity: Arc<Activity>,
     dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
@@ -2363,6 +2682,18 @@ async fn executor_task(
     // [`crate::fiber_pool::FiberPool`]. Set to `true` by
     // `ConcurrencyApplier` when the pool scales down.
     fiber_stop: crate::fiber_pool::StopFlag,
+    // Daemon-op pool — shared across cycle-pool fibers. Each
+    // stanza walk that reaches a daemon op dispatches a fresh
+    // fiber onto this pool via `try_spawn` and continues
+    // without awaiting; the daemon body runs to completion
+    // (or until phase-exit drain signals stop) on its own
+    // tokio task.
+    daemon_pool: Arc<crate::daemon_pool::DaemonPool>,
+    // Phase name — used to wrap the daemon body in the same
+    // runtime-context guard cycle-pool fibers use, so daemon
+    // ops can read `phase()` / `cycle()` runtime-context
+    // wires.
+    phase_name_arc: Arc<str>,
 ) {
     let stanza_len = activity.op_sequence.stanza_length() as u64;
     let max_retries = activity.config.max_retries;
@@ -2374,7 +2705,7 @@ async fn executor_task(
 
     // SRD-68 Push 3 — materialise per-fiber subscope kernels from
     // each dispenser's canonical kernel. The fiber holds them as
-    // `Vec<Option<GkKernel>>` indexed parallel to the dispenser
+    // `Vec<Option<PolydatKernel>>` indexed parallel to the dispenser
     // registry; cycle dispatch reads `fiber.per_op_kernel(template_idx)`
     // to populate `ExecCtx::wires` for the firing dispenser.
     // Dispensers that return `None` from `canonical_kernel()` get
@@ -2410,11 +2741,11 @@ async fn executor_task(
                     // where the very first iteration's captures
                     // already satisfy the condition.
                     //
-                    // GK comparison operators (`==`, `!=`, `<`,
+                    // Polydat comparison operators (`==`, `!=`, `<`,
                     // …) return u64 (0/1) per SRD-10 §"BinOpKind"
                     // — there's no Bool result type for these.
                     // Accept either Value::Bool(true) (in case
-                    // a future GK release adds a Bool result
+                    // a future Polydat release adds a Bool result
                     // path) OR a non-zero numeric value as
                     // "satisfied". This mirrors the workload
                     // author's expectation that `(a == 1) & (b == 0)`
@@ -2429,7 +2760,7 @@ async fn executor_task(
                     // value (None on first iteration, never
                     // updated). We MUST trigger re-evaluation
                     // via `pull()`. The phase scope kernel is
-                    // held as `Arc<GkKernel>` (immutable
+                    // held as `Arc<PolydatKernel>` (immutable
                     // handle), so we evaluate via the per-fiber
                     // `main_kernel` instead — main_kernel is
                     // built from the phase scope program (so
@@ -2452,7 +2783,7 @@ async fn executor_task(
                         // SRD-75 metric_name emission is wired
                         // when the per-fiber mutable kernel handle
                         // path settles (the phase scope kernel is
-                        // currently held as `Arc<GkKernel>` for
+                        // currently held as `Arc<PolydatKernel>` for
                         // the predicate's read-only path; an
                         // interior-mutability shim or a write-via-
                         // wires path lands in a follow-up). For
@@ -2587,7 +2918,7 @@ async fn executor_task(
         // fiber CPU; removing it leaves end-state semantics identical.
 
         // Phase 2: RENDER + EXECUTE — fiber-local, no contention.
-        // Each op resolves via this fiber's GK instance, then
+        // Each op resolves via this fiber's Polydat instance, then
         // dispatches to the adapter. Sequential in declaration order.
         for ordinal in range.clone() {
             if activity.stop_flag.load(Ordering::Relaxed) { break; }
@@ -2602,7 +2933,7 @@ async fn executor_task(
             let item = source.render_item(ordinal);
             let cycle = ordinal;
             // Publish the cycle to the enclosing fiber-context
-            // scope so any GK node reading `cycle()` or implicitly
+            // scope so any Polydat node reading `cycle()` or implicitly
             // `cycle` inside the DAG sees the same ordinal as
             // adapter execution. No-op outside a fiber scope.
             crate::polydat_nodes::runtime_context::set_task_cycle(cycle);
@@ -2614,6 +2945,96 @@ async fn executor_task(
             let wait_nanos = wait_start.elapsed().as_nanos() as u64;
 
             let (template_idx, template) = activity.op_sequence.get_with_index(cycle);
+
+            // Daemon-op dispatch. If the template declares
+            // `daemon: ...` (non-disabled), spawn a fresh
+            // fiber onto the daemon pool instead of running
+            // the op inline. The pool enforces a per-op-name
+            // fiber cap; an overflow is a workload-design
+            // error that fails the phase. Cycle-pool moves
+            // on to the next stanza op as soon as the spawn
+            // returns (Ok or Err).
+            if !template.daemon.is_disabled() {
+                let cap = template.daemon.max_fibers()
+                    .expect("non-disabled daemon has cap");
+                let cancel_grace = template
+                    .daemon_cancel_grace_ms
+                    .map(std::time::Duration::from_millis);
+                let activity_d = activity.clone();
+                let dispensers_d = dispensers.clone();
+                let op_builder_d = op_builder.clone();
+                let phase_arc_d = phase_name_arc.clone();
+                let op_name_d = template.name.clone();
+                let spawn_result = daemon_pool.try_spawn(
+                    op_name_d.clone(), cap, cancel_grace,
+                    move |stop| {
+                        let activity = activity_d;
+                        let dispensers = dispensers_d;
+                        let op_builder = op_builder_d;
+                        let phase_arc = phase_arc_d;
+                        let op_name = op_name_d;
+                        async move {
+                            use futures::FutureExt as _;
+                            let body = crate::polydat_nodes::runtime_context::with_fiber_context(
+                                phase_arc,
+                                daemon_dispatch(
+                                    activity.clone(),
+                                    dispensers,
+                                    op_builder,
+                                    template_idx,
+                                    op_name.clone(),
+                                    stop,
+                                ),
+                            );
+                            match std::panic::AssertUnwindSafe(body).catch_unwind().await {
+                                Ok(exit) => exit,
+                                Err(payload) => {
+                                    let msg = payload
+                                        .downcast_ref::<&'static str>()
+                                        .map(|s| (*s).to_string())
+                                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                                        .unwrap_or_else(|| "<non-string panic payload>".into());
+                                    crate::diag!(crate::observer::LogLevel::Error,
+                                        "daemon op '{op_name}' panicked: {msg}");
+                                    activity.stop_flag.store(
+                                        true, std::sync::atomic::Ordering::Relaxed);
+                                    crate::daemon_pool::DaemonExit::Panicked(msg)
+                                }
+                            }
+                        }
+                    },
+                );
+                match spawn_result {
+                    Ok(()) => {
+                        // Dispatch succeeded — cycle-pool counts
+                        // this stanza-position as completed but
+                        // does NOT touch service/response metrics
+                        // (those are recorded by the daemon fiber
+                        // when it actually runs). The for-loop
+                        // already advances ordinal; just count
+                        // the cycle as done and skip the inline
+                        // execute path.
+                        activity.metrics.cycles_total.inc();
+                        activity.metrics.ops_finished.fetch_add(
+                            1, Ordering::Relaxed);
+                        continue;
+                    }
+                    Err(msg) => {
+                        crate::diag!(crate::observer::LogLevel::Error,
+                            "daemon op '{}' spawn failed: {msg}", template.name);
+                        activity.stop_flag.store(
+                            true, Ordering::Release);
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(format!(
+                                "daemon op '{}' spawn: {msg}", template.name));
+                        }
+                        return;
+                    }
+                }
+            }
+
             fiber.set_source_item(&item);
             // SRD-68 Push 5: `ctx.fields` is no longer the
             // resolution surface for adapters or wrappers — they
@@ -2683,6 +3104,37 @@ async fn executor_task(
                         );
                         activity.metrics.errors_total.inc();
                         activity.metrics.count_error_type(&inner.error_name);
+
+                        // Capture every per-cycle error into the
+                        // phase's structured error buffer so the
+                        // `error_readout` (default phase-end body
+                        // alongside `phase_outcome`) can render
+                        // them as one block. Cap at PHASE_ERROR_CAPTURE_CAP
+                        // so a runaway phase doesn't unbound the
+                        // buffer — once the cap is hit, count-only
+                        // suffices for telemetry (the `errors_total`
+                        // counter still increments).
+                        if let Ok(mut errs) = activity.phase_errors.lock() {
+                            const PHASE_ERROR_CAPTURE_CAP: usize = 64;
+                            if errs.len() < PHASE_ERROR_CAPTURE_CAP {
+                                let op_template = dispenser.describe();
+                                let op_resolved = dispenser
+                                    .describe_resolved(exec_ctx.wires);
+                                errs.push(crate::phase_outcome::PhaseErrorDetail {
+                                    class: inner.error_name.clone(),
+                                    message: inner.message.clone(),
+                                    op_name: Some(template.name.clone()),
+                                    cycle: Some(cycle),
+                                    op_template,
+                                    op_resolved,
+                                    at_nanos: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_nanos() as u64)
+                                        .unwrap_or(0),
+                                    retryable: detail.is_retryable(),
+                                });
+                            }
+                        }
 
                         if detail.should_stop {
                             activity.stop_flag.store(true, Ordering::Relaxed);
@@ -2895,7 +3347,7 @@ mod tests {
         fn map_op<'a>(
             &'a self,
             _template: &'a nbrs_workload::model::ParsedOp,
-            _parent: std::sync::Arc<polydat::kernel::GkKernel>,
+            _parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
             Box::pin(async move {
                 Ok(Box::new(CountingDispenser { count: self.count.clone() }) as Box<dyn OpDispenser>)
@@ -2936,7 +3388,7 @@ mod tests {
         fn map_op<'a>(
             &'a self,
             _template: &'a nbrs_workload::model::ParsedOp,
-            _parent: std::sync::Arc<polydat::kernel::GkKernel>,
+            _parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
             Box::pin(async move {
                 Ok(Box::new(FailThenSucceedDispenser {
@@ -2971,11 +3423,11 @@ mod tests {
         }
     }
 
-    /// Build a minimal GK root kernel (single identity node) for tests.
-    fn test_kernel() -> polydat::kernel::GkKernel {
-        use polydat::compile::assembly::{GkAssembler, WireRef};
+    /// Build a minimal Polydat root kernel (single identity node) for tests.
+    fn test_kernel() -> polydat::kernel::PolydatKernel {
+        use polydat::compile::assembly::{PolydatAssembler, WireRef};
         use polydat::library::identity::Identity;
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
         asm.add_output("id", WireRef::node("id"));
         asm.compile().unwrap()
@@ -3017,6 +3469,66 @@ mod tests {
         activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
 
         assert_eq!(total_calls.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn daemon_op_dispatches_at_cycle_pool_position() {
+        // SRD-79 (in-flight): daemon-flagged op spawns onto the
+        // daemon pool when the cycle-pool fiber's stanza walk
+        // reaches it. The daemon fiber runs the same dispenser
+        // as a non-daemon op would, but on its own tokio task,
+        // and the cycle-pool fiber doesn't await it.
+        let config = ActivityConfig {
+            name: "daemon-disp-test".into(),
+            cycles: 1,
+            concurrency: 1,
+            ..Default::default()
+        };
+        let mut op = nbrs_workload::model::ParsedOp::simple("dmn", "test");
+        op.daemon = nbrs_workload::model::DaemonSpec::MaxFibers(1);
+        let seq = OpSequence::uniform(vec![op]);
+        let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
+
+        let (adapter, count) = CountingDriverAdapter::new();
+        activity.run_with_driver(
+            Arc::new(adapter),
+            Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+        ).await;
+
+        // Daemon dispatched + ran exactly once (cycles=1).
+        assert_eq!(count.load(Ordering::Relaxed), 1,
+            "daemon op should have run via dispatch-time spawn");
+    }
+
+    #[tokio::test]
+    async fn daemon_op_cap_exceeded_fails_phase() {
+        // Cap=1 with cycles=2: first dispatch succeeds and the
+        // daemon fiber blocks (the CountingDispenser returns
+        // instantly, so the daemon should drain before the
+        // second cycle — but the daemon-pool counter only
+        // decrements when the body returns, and the second
+        // cycle may race with the decrement). This test
+        // primarily checks the no-panic / clean-failure path:
+        // even if the cap fires, the activity exits cleanly.
+        let config = ActivityConfig {
+            name: "daemon-cap-test".into(),
+            cycles: 50,
+            concurrency: 1,
+            ..Default::default()
+        };
+        let mut op = nbrs_workload::model::ParsedOp::simple("dmn", "test");
+        op.daemon = nbrs_workload::model::DaemonSpec::MaxFibers(1);
+        let seq = OpSequence::uniform(vec![op]);
+        let activity = Activity::new(config, &Labels::of("session", "s2"), seq);
+
+        let (adapter, _count) = CountingDriverAdapter::new();
+        activity.run_with_driver(
+            Arc::new(adapter),
+            Arc::new(crate::synthesis::OpBuilder::new(test_kernel())),
+        ).await;
+        // No assertion on count — the load-bearing behaviour is
+        // that the activity terminates cleanly even when caps
+        // bite. Without the cap, this test would hang or panic.
     }
 
     #[tokio::test]

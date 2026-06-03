@@ -782,7 +782,7 @@ fn standard_run_flags() -> Vec<Flag> {
             repeatable: false,
         },
         Flag {
-            long: "--gk-lib", short: None, aliases: &[],
+            long: "--polydat-lib", short: None, aliases: &[],
             arity: Arity::Value, value: ValueProvider::Path,
             help: "GK library path override.",
             repeatable: false,

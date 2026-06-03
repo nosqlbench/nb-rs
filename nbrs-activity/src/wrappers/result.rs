@@ -4,7 +4,7 @@
 //! Result-as-GK adapter (SRD-40b §5). After the inner adapter
 //! returns its `OpResult`, this wrapper exposes declared
 //! op-result fields plus the magic externs (`body`, `count`,
-//! `ok`) as GK named wires on the per-fiber op-template kernel
+//! `ok`) as Polydat named wires on the per-fiber op-template kernel
 //! via `ctx.wires.write`. Sits between the inner adapter and
 //! the metrics layer in the wrapper stack.
 
@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
-use super::traversing::json_to_value;
+use super::traverse::json_to_value;
 use crate::wrapper_registry::{WrapperName, WrapperRegistration};
 use nbrs_workload::model::ParsedOp;
 
@@ -59,7 +59,7 @@ inventory::submit! {
         // empty).
         owned_fields: &[],
         triggers,
-        requires_inner: &[super::traversing::NAME],
+        requires_inner: &[super::traverse::NAME],
         forbids_outer: &[],
         mutually_exclusive_with: &[],
         describe_assignment,
@@ -67,7 +67,7 @@ inventory::submit! {
 }
 
 /// Wraps an inner OpDispenser to expose declared op-result fields
-/// as GK named wires (SRD-40b §5).
+/// as Polydat named wires (SRD-40b §5).
 ///
 /// Per cycle, after the inner adapter returns its `OpResult`, this
 /// wrapper walks the op template's `result: HashMap<String,
@@ -90,14 +90,14 @@ inventory::submit! {
 /// - `<path-expr>` — JSON-pointer-style lookup into the result
 ///   body. Supports bare names (`field`), dotted paths
 ///   (`rows.0.field`), and bracketed indices (`rows[0].field`).
-/// - `<gk-call>` — DEFERRED. Recognized as anything containing a
+/// - `<polydat-call>` — DEFERRED. Recognized as anything containing a
 ///   `(` token; currently logged once and skipped. Phase E or a
 ///   follow-up adds the GK-eval-against-result-context path.
 pub struct ResultDispenser {
     inner: Arc<dyn OpDispenser>,
     /// Map-shape `count` / `ok` / path-expr declarations that
     /// stay on the dispenser's evaluator (SRD-40b §5.1
-    /// backwards compat). SRD-66 string-shape and gk-call
+    /// backwards compat). SRD-66 string-shape and polydat-call
     /// entries are NOT here — they're compiled into the
     /// op-template kernel's body via SRD-67 Phase 5
     /// `add_result_bindings` and evaluated by GK; the dispenser
@@ -105,7 +105,7 @@ pub struct ResultDispenser {
     /// `populate_kernel_inputs` flag.
     specs: Vec<ResultSlot>,
     /// SRD-67 Phase 5 — when the op's `result:` source contains
-    /// any string-shape or gk-call entries, the dispenser writes
+    /// any string-shape or polydat-call entries, the dispenser writes
     /// the magic pre-bound inputs (`body` / `count` / `ok`)
     /// through `ctx.wires.write` onto the op-template kernel's
     /// input slots before result-binding expressions evaluate.
@@ -124,7 +124,7 @@ struct ResultSlot {
     wire: String,
     /// Decoded source grammar.
     source: ResultSource,
-    /// Optional default rendered as a GK Value (string fallback)
+    /// Optional default rendered as a Polydat Value (string fallback)
     /// when the source resolves to nothing.
     default: Option<polydat::ast::Value>,
 }
@@ -138,10 +138,10 @@ enum ResultSource {
     /// `<path-expr>` — JSON path into the result body, pre-parsed
     /// into segments.
     Path(Vec<PathSeg>),
-    /// `<gk-call>` — deferred. Carries the raw source for the
+    /// `<polydat-call>` — deferred. Carries the raw source for the
     /// follow-up implementation.
     #[allow(dead_code)]
-    GkCall(String),
+    PolydatCall(String),
 }
 
 /// One segment of a parsed path expression.
@@ -259,7 +259,7 @@ fn decode_slot(
              evaluated end-to-end — slot will resolve to its default. \
              SRD-66 Push 2 follow-up wires the kernel-driven path.",
         );
-        ResultSource::GkCall(raw.to_string())
+        ResultSource::PolydatCall(raw.to_string())
     } else {
         // Path expression. Parse failures degrade to skip.
         match parse_path_expr(raw) {
@@ -295,7 +295,7 @@ impl ResultDispenser {
     /// The optional `result_spec` adds *additional* dispenser-side
     /// dispatch slots (legacy SRD-40b §5.1 path-expr / `count` /
     /// `ok` map-shape forms). Kernel-driven entries (string-shape
-    /// source blocks, gk-call entries) need no per-cycle code
+    /// source blocks, polydat-call entries) need no per-cycle code
     /// here — `add_result_bindings` compiled them into the
     /// op-template kernel; the magic-extern population this
     /// wrapper always performs is what makes them resolve.
@@ -320,7 +320,7 @@ impl ResultDispenser {
                             specs.push(slot);
                         }
                     }
-                    // gk-call entries (raw.contains('(')) are
+                    // polydat-call entries (raw.contains('(')) are
                     // kernel-driven; nothing per-cycle to do here.
                 }
                 nbrs_workload::model::ResultFragment::Source(_source) => {
@@ -344,7 +344,7 @@ impl ResultDispenser {
         })
     }
 
-    /// Compute the GK value for one slot from the cycle's result.
+    /// Compute the Polydat value for one slot from the cycle's result.
     /// Returns `None` when the slot resolves to nothing and has no
     /// default — caller logs at debug and moves on.
     fn evaluate(
@@ -369,7 +369,7 @@ impl ResultDispenser {
                 resolve_path(&json, segs).map(json_to_value)
                     .or_else(|| slot.default.clone())
             }
-            ResultSource::GkCall(_) => slot.default.clone(),
+            ResultSource::PolydatCall(_) => slot.default.clone(),
         }
     }
 }
@@ -377,7 +377,6 @@ impl ResultDispenser {
 impl WrappingDispenser for ResultDispenser {}
 
 impl OpDispenser for ResultDispenser {
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
     fn execute<'a>(
         &'a self,
         cycle: u64,
@@ -410,7 +409,7 @@ impl OpDispenser for ResultDispenser {
 
             // SRD-67 Phase 5 — magic-extern population. When the
             // op declares any kernel-driven result-bindings
-            // (string-shape OR map-shape gk-call), inject the
+            // (string-shape OR map-shape polydat-call), inject the
             // standard `body` / `count` / `ok` inputs through
             // ctx.wires so the op-template kernel's input slots
             // are populated before any wrapper above this one in
@@ -445,6 +444,7 @@ impl OpDispenser for ResultDispenser {
             Ok(result)
         })
     }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
 }
 
 #[cfg(test)]
@@ -500,20 +500,20 @@ mod tests {
         (fields, pulls)
     }
 
-    fn kernel_with_extern_inputs(names: &[(&str, &str)]) -> polydat::kernel::GkKernel {
-        use polydat::dsl::compile::compile_gk;
+    fn kernel_with_extern_inputs(names: &[(&str, &str)]) -> polydat::kernel::PolydatKernel {
+        use polydat::dsl::compile::compile_polydat;
         let mut src = String::from("input cycle: u64\n");
         for (n, ty) in names {
             src.push_str(&format!("extern {n}: {ty}\n"));
         }
-        let mut k = compile_gk(&src).expect("kernel_with_extern_inputs compile");
+        let mut k = compile_polydat(&src).expect("kernel_with_extern_inputs compile");
         k.set_inputs(&[0]);
         k
     }
 
     fn run_with_wires(
         dispenser: Arc<dyn OpDispenser>,
-        kernel: &mut polydat::kernel::GkKernel,
+        kernel: &mut polydat::kernel::PolydatKernel,
     ) -> Result<OpResult, ExecutionError> {
         let fields = crate::adapter::ResolvedFields::new(vec![], vec![]);
         let pulls = ResolvedPulls::empty();

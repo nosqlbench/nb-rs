@@ -4,7 +4,7 @@
 //! Model adapter: simulates operation execution for workload prototyping.
 //!
 //! Extends the stdout adapter with:
-//! - Simulated results via the `result` op field (static map or GK kernel)
+//! - Simulated results via the `result` op field (static map or Polydat Kernel)
 //! - Latency simulation via `result-latency`
 //! - Deterministic error injection via `result-error-rate`
 //! - Backend saturation simulation via `result-capacity` / `result-overload`
@@ -37,7 +37,7 @@
 //!
 //! Both are per-op: different ops simulate independent backends.
 
-pub mod gk_fixtures;
+pub mod polydat_fixtures;
 
 use std::collections::HashMap;
 use std::io::{self, Write, BufWriter};
@@ -193,7 +193,7 @@ impl DriverAdapter for ModelAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<polydat::kernel::GkKernel>,
+        parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
         Box::pin(async move {
             // The yaml parser routes unknown top-level op keys into
@@ -246,8 +246,8 @@ struct ModelDispenser {
     /// before latency-sleep completion). Used for the overload check
     /// and diagnostic output.
     in_flight: Arc<AtomicUsize>,
-    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
-    canonical_kernel: std::sync::Arc<polydat::kernel::GkKernel>,
+    /// SRD-68 invariant I-3: dispenser-owned canonical Polydat Kernel.
+    canonical_kernel: std::sync::Arc<polydat::kernel::PolydatKernel>,
     /// Op-field templates snapshotted at `map_op`. Resolved per
     /// cycle via the generic `wires` API; the rendered text feeds
     /// the trace writer and the OpResult body.
@@ -266,7 +266,7 @@ impl Drop for InFlightGuard {
 }
 
 impl OpDispenser for ModelDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<polydat::kernel::GkKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<polydat::kernel::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
@@ -509,10 +509,10 @@ mod tests {
     use nbrs_activity::adapter::ResolvedFields;
 
     /// Minimal kernel used as the `parent` argument to `map_op`
-    /// in tests that don't need a richer GK context (SRD-68 Push 2).
-    fn test_kernel() -> std::sync::Arc<polydat::kernel::GkKernel> {
+    /// in tests that don't need a richer Polydat context (SRD-68 Push 2).
+    fn test_kernel() -> std::sync::Arc<polydat::kernel::PolydatKernel> {
         std::sync::Arc::new(
-            polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap()
+            polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap()
         )
     }
 
@@ -593,7 +593,7 @@ mod tests {
         op.params.insert("result-capacity".into(), serde_json::Value::from(1));
         op.params.insert("result-overload".into(), serde_json::Value::from(2));
 
-        let dispenser: Arc<dyn OpDispenser> = Arc::from(adapter.map_op(&op, test_kernel()).unwrap());
+        let dispenser: Arc<dyn OpDispenser> = Arc::from(adapter.map_op(&op, test_kernel()).await.unwrap());
         let fields = Arc::new(ResolvedFields::new(
             vec!["stmt".into()],
             vec![polydat::ast::Value::Str("SELECT 1;".into())],
@@ -625,7 +625,7 @@ mod tests {
     async fn model_dispenser_basic() {
         let adapter = ModelAdapter::new();
         let template = nbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
-        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
+        let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
         let fields = ResolvedFields::new(
             vec!["stmt".into()],
             vec![polydat::ast::Value::Str("SELECT 1;".into())],
@@ -667,7 +667,7 @@ mod tests {
         let adapter = ModelAdapter::new();
         let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
         template.params = params;
-        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
+        let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
 
         let fields = ResolvedFields::new(
             vec!["stmt".into()],

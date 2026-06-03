@@ -201,7 +201,7 @@ series profile=hnsw line=dashed marker=triangle
 ```
 
 The brace form is required to be **strict JSON**. This hooks
-into the existing rule: GK parameter syntax `{...}` is by
+into the existing rule: Polydat parameter syntax `{...}` is by
 definition not valid JSON, so anything `{...}` that *does*
 parse as JSON is unambiguously not GK. The report parser
 tries JSON first; failure is a parse error pointing at the
@@ -408,7 +408,7 @@ Always-error, strict-independent:
 | `nbrs report figure <N>` | Render by global index. |
 | `nbrs report plot <glob>` | Kind-filtered name lookup. |
 | `nbrs report table <glob>` | Kind-filtered name lookup. |
-| `nbrs gk visualize <expr\|file.gk>` | GK expression visualizer. Sibling of `gk functions` / `gk dag`. Unrelated to `report`. |
+| `nbrs Polydat visualize <expr\|file.polydat>` | Polydat expression visualizer. Sibling of `polydat functions` / `polydat dag`. Unrelated to `report`. |
 
 All forms accept `workload=<file>` positionally or fall back
 to `logs/latest/metrics.db`'s persisted items when no source
@@ -436,7 +436,7 @@ Not in `--help`, not in top-level command tab-completion:
 ### Removed
 
 - `nbrs summary` — gone. No alias.
-- `nbrs plot gk` — gone. Renamed to `nbrs gk visualize`.
+- `nbrs plot polydat` — gone. Renamed to `nbrs Polydat visualize`.
 
 ### Tab completion
 
@@ -654,7 +654,7 @@ migrated to the new shape.
 **What's left:**
 
 - Migrate the back-compat workloads — `examples/workloads/
-  summary.yaml`, `examples/workloads/summary_gk_context.yaml`,
+  summary.yaml`, `examples/workloads/summary_polydat_context.yaml`,
   `examples/workloads/summary_aggregates.yaml`,
   `examples/workloads/report_text_file_demo.yaml`,
   `adapters/cql/workloads/backup.yaml` — off the legacy DSL.
@@ -712,7 +712,7 @@ stays live until the last back-compat workload migrates.
 
 - **Cross-session subsetting** — already specified in
   §"Cross-session subsetting" above; v2 doesn't change it.
-- **Vector visualization** (`gk visualize`) — unrelated path.
+- **Vector visualization** (`polydat visualize`) — unrelated path.
 - **Persisted-report rehydration** — the
   `session_metadata` `report.*` rows continue to store the
   body string; only the body's grammar changes.

@@ -1,22 +1,22 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! GK runtime kernel: compiled DAG with pull-through evaluation.
+//! Polydat runtime kernel: compiled DAG with pull-through evaluation.
 //!
 //! ## Architecture
 //!
 //! ```text
-//! GkProgram (Arc, immutable, shared across all fibers)
+//! PolydatProgram (Arc, immutable, shared across all fibers)
 //! ┌──────────────────────────────────────────────────────────────┐
-//! │  nodes[]         — Box<dyn GkNode> in topological order     │
+//! │  nodes[]         — Box<dyn PolydatNode> in topological order     │
 //! │  wiring[]        — per-node input source tables              │
 //! │  input_names[]   — graph input dimension names ("cycle")     │
 //! │  output_map      — name → (node_idx, port_idx)               │
-//! │  (workload params injected as GK constant bindings)          │
+//! │  (workload params injected as Polydat constant bindings)          │
 //! │  ports           — external port definitions (captures)      │
 //! └──────────────────────────────────────────────────────────────┘
 //!
-//! GkState (per-fiber, mutable, private — never shared)
+//! PolydatState (per-fiber, mutable, private — never shared)
 //! ┌──────────────────────────────────────────────────────────────┐
 //! │  inputs[]            — current input values (e.g., [cycle])  │
 //! │  generation          — advances on set_inputs(), used for    │
@@ -44,10 +44,10 @@
 //! Workload params:
 //!   Numeric and string workload params are injected into the GK
 //!   source as constant bindings before compilation. They resolve
-//!   as normal GK outputs — no separate globals mechanism needed.
+//!   as normal Polydat outputs — no separate globals mechanism needed.
 //! ```
 //!
-//! Buffer layout in GkState:
+//! Buffer layout in PolydatState:
 //! ```text
 //! coords[0..C) | ports[0..P) | node_buffers[...]
 //! ```
@@ -85,7 +85,7 @@ pub enum WireSource {
 
 /// Classification of a named input by its evaluation lifecycle.
 ///
-/// See [SRD 11 §"Three Evaluation Lifecycles"](../../../docs/sysref/11_gk_evaluation.md).
+/// See [SRD 11 §"Three Evaluation Lifecycles"](../../../docs/sysref/11_polydat_evaluation.md).
 /// The init-binding contract uses this to decide whether a wire
 /// to an `Input(idx)` is effectively-const at scope-init time:
 /// `IterationExtern` slots count as effectively-const (rebound
@@ -107,7 +107,7 @@ pub enum InputKind {
     ExternalWrite,
 }
 
-/// Definition of a named input to the GK graph.
+/// Definition of a named input to the Polydat graph.
 ///
 /// All inputs — coordinates, iteration externs, and external-write ports
 /// — are defined uniformly. Coordinates default to `Value::U64(0)`,
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn capture_inputs_persist_across_set_inputs() {
         // Program with 1 coordinate (cycle) + 2 capture inputs
-        let program = Arc::new(GkProgram::with_inputs(
+        let program = Arc::new(PolydatProgram::with_inputs(
             vec![], vec![],
             vec![
                 InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::ast::PortType::U64, kind: InputKind::Coordinate },
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn reset_inputs_restores_capture_defaults() {
-        let program = Arc::new(GkProgram::with_inputs(
+        let program = Arc::new(PolydatProgram::with_inputs(
             vec![], vec![],
             vec![
                 InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::ast::PortType::U64, kind: InputKind::Coordinate },
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn invalidate_all_resets_everything() {
-        let program = Arc::new(GkProgram::with_inputs(
+        let program = Arc::new(PolydatProgram::with_inputs(
             vec![], vec![],
             vec![
                 InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::ast::PortType::U64, kind: InputKind::Coordinate },
@@ -222,8 +222,8 @@ mod tests {
     fn fold_init_constants_basic() {
         // base=42, seed=hash(base) should both be folded
         // user_id=hash(cycle) should NOT be folded (depends on coordinate)
-        use crate::dsl::compile::compile_gk;
-        let mut k = compile_gk("input cycle: u64\nbase := 42\nseed := hash(base)\nuser_id := hash(cycle)").unwrap();
+        use crate::dsl::compile::compile_polydat;
+        let mut k = compile_polydat("input cycle: u64\nbase := 42\nseed := hash(base)\nuser_id := hash(cycle)").unwrap();
 
         // seed should be constant across cycles
         k.set_inputs(&[0]);
@@ -242,8 +242,8 @@ mod tests {
 
     #[test]
     fn fold_does_not_touch_cycle_dependent() {
-        use crate::dsl::compile::compile_gk;
-        let mut k = compile_gk("input cycle: u64\nout := hash(cycle)").unwrap();
+        use crate::dsl::compile::compile_polydat;
+        let mut k = compile_polydat("input cycle: u64\nout := hash(cycle)").unwrap();
         k.set_inputs(&[42]);
         let v1 = k.pull("out").as_u64();
         k.set_inputs(&[43]);
@@ -278,7 +278,7 @@ mod tests {
         }
     }
 
-    impl crate::ast::GkNode for ConfigWireTestNode {
+    impl crate::ast::PolydatNode for ConfigWireTestNode {
         fn meta(&self) -> &crate::ast::NodeMeta { &self.meta }
         fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
             let config = inputs[0].as_u64();
@@ -292,12 +292,12 @@ mod tests {
         // DAG: constant(42) → config_test.config_param
         //      cycle → hash → config_test.data_input
         // Config wire fed by init-time constant → no warning
-        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::compile::assembly::{PolydatAssembler, WireRef};
         use crate::library::identity::ConstU64;
         use crate::library::hash::Hash64;
         use crate::dsl::events::CompileEventLog;
 
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("config_val", Box::new(ConstU64::new(42)), vec![]);
         asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
         asm.add_node("test_node", Box::new(ConfigWireTestNode::new()), vec![
@@ -322,11 +322,11 @@ mod tests {
         // DAG: cycle → hash → config_test.config_param  (BAD: config from cycle)
         //      cycle → config_test.data_input
         // Config wire fed by cycle-time node → should warn
-        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::compile::assembly::{PolydatAssembler, WireRef};
         use crate::library::hash::Hash64;
         use crate::dsl::events::CompileEventLog;
 
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
         asm.add_node("test_node", Box::new(ConfigWireTestNode::new()), vec![
             WireRef::node("hashed"),   // config_param ← cycle-time!
@@ -347,10 +347,10 @@ mod tests {
     fn wire_cost_warning_when_config_is_coordinate_direct() {
         // DAG: cycle → config_test.config_param  (BAD: coordinate direct to config)
         //      cycle → config_test.data_input
-        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::compile::assembly::{PolydatAssembler, WireRef};
         use crate::dsl::events::CompileEventLog;
 
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("test_node", Box::new(ConfigWireTestNode::new()), vec![
             WireRef::input("cycle"),   // config_param ← coordinate!
             WireRef::input("cycle"),   // data_input ← cycle
@@ -371,11 +371,11 @@ mod tests {
         // DAG: constant(10) → config_test.config_param (init-time, ok)
         //      cycle → config_test.data_input           (cycle-time, ok for Data wire)
         // Only the data wire is cycle-time → no warning
-        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::compile::assembly::{PolydatAssembler, WireRef};
         use crate::library::identity::ConstU64;
         use crate::dsl::events::CompileEventLog;
 
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("config_val", Box::new(ConstU64::new(10)), vec![]);
         asm.add_node("test_node", Box::new(ConfigWireTestNode::new()), vec![
             WireRef::node("config_val"),  // config_param ← constant
@@ -399,12 +399,12 @@ mod tests {
         //   constant(3) → inner.data_input    ─┤→ inner.output → outer.config_param
         //   cycle → hash → outer.data_input
         // inner is fully init-time → its output feeds outer's config wire → no warning
-        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::compile::assembly::{PolydatAssembler, WireRef};
         use crate::library::identity::ConstU64;
         use crate::library::hash::Hash64;
         use crate::dsl::events::CompileEventLog;
 
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("a", Box::new(ConstU64::new(5)), vec![]);
         asm.add_node("b", Box::new(ConstU64::new(3)), vec![]);
         asm.add_node("inner", Box::new(ConfigWireTestNode::new()), vec![
@@ -435,11 +435,11 @@ mod tests {
         //   cycle → mixer.data_input          ─┤→ mixer.output → outer.config_param
         //   cycle → outer.data_input
         // mixer depends on cycle → its output is cycle-time → outer's config wire warns
-        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::compile::assembly::{PolydatAssembler, WireRef};
         use crate::library::identity::ConstU64;
         use crate::dsl::events::CompileEventLog;
 
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("five", Box::new(ConstU64::new(5)), vec![]);
         asm.add_node("mixer", Box::new(ConfigWireTestNode::new()), vec![
             WireRef::node("five"),     // config_param ← init
@@ -464,10 +464,10 @@ mod tests {
 
     #[test]
     fn implicit_u64_to_f64_adapter_does_not_crash() {
-        use crate::dsl::compile::compile_gk;
+        use crate::dsl::compile::compile_polydat;
         // sin() expects f64, cycle is u64. The compiler should auto-insert
         // a __u64_to_f64 adapter. This must not panic.
-        let mut k = compile_gk("input cycle: u64\nout := sin(cycle)").unwrap();
+        let mut k = compile_polydat("input cycle: u64\nout := sin(cycle)").unwrap();
         k.set_inputs(&[1]);
         let v = k.pull("out");
         // sin(1.0) ≈ 0.8414709848078965

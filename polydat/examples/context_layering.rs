@@ -5,7 +5,7 @@
 //! kernel as a sub-DAG, with each invocation getting its own
 //! context (its own inputs, its own output bindings).
 //!
-//! The library file `library_kernel.gk` declares a single function
+//! The library file `library_kernel.polydat` declares a single function
 //! with a typed signature `(entity: u64) -> (entity_h, entity_code,
 //! entity_bucket)`. The outer kernel here calls it TWICE in the same
 //! scope — once for `tenant` and once for `device` — and each call
@@ -21,15 +21,15 @@
 
 fn main() {
     let lib_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("stdlib").join("identity.gk");
+        .join("stdlib").join("identity.polydat");
 
-    let mut kernel = polydat::dsl::compile_gk_with_libs(
+    let mut kernel = polydat::dsl::compile_polydat_with_libs(
         r#"
             input cycle: u64
             (tenant, device) := mixed_radix(cycle, 100, 0)
 
             // `hashed_id` is a stdlib library function loaded from
-            // identity.gk. The two calls below layer the SAME compiled
+            // identity.polydat. The two calls below layer the SAME compiled
             // function over two different contexts: each call site
             // gets its own input (tenant vs device) and emits an
             // independent sub-DAG into the parent graph.

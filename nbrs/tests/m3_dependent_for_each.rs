@@ -3,7 +3,7 @@
 
 //! Integration tests for SRD-18b §"Iteration variables as scope
 //! outputs" — M3.3 dependent-tuple iteration through per-scope
-//! GK kernels.
+//! Polydat Kernels.
 //!
 //! These tests exercise the full pipeline (YAML → ScopeTree
 //! synthesis → kernel install → dispatcher → stdout adapter)
@@ -91,7 +91,7 @@ fn dependent_tuple_with_dynamic_name_composition() {
     // and therefore inheritable by the for_each scope's
     // synthesized kernel via standard bind_outer_scope. This is
     // what M3.3 exercises: the dependent-tuple dispatcher
-    // resolving placeholders through GK's name space.
+    // resolving placeholders through Polydat's name space.
     // M3.3 routes for_each spec interpolation through the
     // installed scope kernel; workload params get injected as
     // `const` bindings on the synthesized kernel directly

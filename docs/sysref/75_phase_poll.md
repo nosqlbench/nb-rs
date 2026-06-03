@@ -2,8 +2,8 @@
 
 **Status:** DRAFT — design for Option A in
 `docs/design/phase_poll_design.md`'s "build a synchronizer
-without violating GK invariants" line. No code lands until
-this SRD is reviewed against the GK invariants listed in
+without violating Polydat invariants" line. No code lands until
+this SRD is reviewed against the Polydat invariants listed in
 §"Load-bearing invariants this SRD honours."
 
 **Owner:** nbrs-workload (model), nbrs-activity (synthesis,
@@ -11,9 +11,9 @@ runner / executor), workloads (consumers under
 `adapters/cql/workloads/`).
 
 **Cross-refs:**
-- [SRD-11](11_gk_evaluation.md) §"Two Evaluation
+- [SRD-11](11_polydat_evaluation.md) §"Two Evaluation
   Lifecycles" (the predicate is dynamic).
-- [SRD-13c](13c_gk_scope_model.md) §"Mutability Rules:
+- [SRD-13c](13c_polydat_scope_model.md) §"Mutability Rules:
   Shared Mutable" + §"Implementation: SharedCell-backed
   input slots" (captures land in shared cells on the phase
   kernel).
@@ -26,10 +26,10 @@ runner / executor), workloads (consumers under
 - [SRD-32](32_wrappers.md) (wrapper cascade; the existing
   per-op `PollingDispenser` is the model for the new
   phase-level controller).
-- [SRD-67](67_gk_subcontext_construction.md) §"Cross-binding
+- [SRD-67](67_polydat_subcontext_construction.md) §"Cross-binding
   rules" Rules 1–3 (capture cells are spawn-time wirings of
   the phase scope's `shared` exports).
-- [SRD-68](68_dispenser_owned_gk_context.md) (captures flow
+- [SRD-68](68_dispenser_owned_polydat_context.md) (captures flow
   through `WireSource`; no parallel resolution path).
 - [SRD-69](69_capture_semantics.md) (parked; this SRD picks
   the narrowest workable shape — declarative `capture:` map
@@ -108,7 +108,7 @@ phases:
 
 | Field | Required | Default | Meaning |
 |---|---|---|---|
-| `until` | yes | — | GK expression returning a boolean. Compiles into the phase scope kernel as `__poll_until := <until>`. Re-evaluated after each iteration. |
+| `until` | yes | — | Polydat expression returning a boolean. Compiles into the phase scope kernel as `__poll_until := <until>`. Re-evaluated after each iteration. |
 | `interval_ms` | no | `1000` | Sleep between iterations, milliseconds. |
 | `timeout_ms` | no | `300000` (5 min) | Overall wall-clock cap. Loop returns `poll_timeout` error if exceeded. |
 | `max_error_retries` | no | `0` (strict) | Cap on consecutive retryable inner-op errors before propagation. Mirrors per-op `PollingDispenser` semantics. |
@@ -138,7 +138,7 @@ Every clause below was checked against the referenced SRD
 before drafting. A change that violates one of these is
 wrong, not the rule.
 
-1. **GK kernels are the canonical state holder**
+1. **Polydat kernels are the canonical state holder**
    (SRD-13c, SRD-18b). No sidecar `HashMap<String,
    Value>` for capture storage. Captures land on the
    phase scope kernel as `shared` wires; the same kernel

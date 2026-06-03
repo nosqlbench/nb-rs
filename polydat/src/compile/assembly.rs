@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Programmatic assembly API for building GK kernels.
+//! Programmatic assembly API for building Polydat Kernels.
 //!
 //! The assembler validates wiring and types, auto-inserts edge adapters,
 //! topologically sorts nodes, and produces either a Phase 1 runtime
@@ -11,8 +11,8 @@ use std::collections::HashMap;
 
 use crate::compile::closures::{CompiledKernelRaw, CompiledKernelPush, CompiledKernelPull, CompiledKernelPushPull};
 use crate::compile::select::{self, GraphAnalysis, ProvMode, P2Engine};
-use crate::kernel::{GkKernel, GkProgram, WireSource};
-use crate::ast::{GkNode, PortType};
+use crate::kernel::{PolydatKernel, PolydatProgram, WireSource};
+use crate::ast::{PolydatNode, PortType};
 use crate::library::convert::{F64ToString, U64ToF64, U64ToString};
 use crate::library::json::JsonToStr;
 
@@ -45,7 +45,7 @@ impl WireRef {
 
 struct PendingNode {
     name: String,
-    node: Box<dyn GkNode>,
+    node: Box<dyn PolydatNode>,
     inputs: Vec<WireRef>,
 }
 
@@ -111,7 +111,7 @@ impl std::fmt::Display for AssemblyError {
             }
             AssemblyError::CycleDetected => {
                 write!(f, "cycle detected in DAG\n\n")?;
-                writeln!(f, "  The graph contains a loop. GK graphs must be acyclic")?;
+                writeln!(f, "  The graph contains a loop. Polydat graphs must be acyclic")?;
                 write!(f, "  (data flows in one direction only).")
             }
             AssemblyError::ArityMismatch { node_name, expected, got } => {
@@ -133,7 +133,7 @@ impl std::error::Error for AssemblyError {}
 /// Validated, topologically sorted intermediate form.
 struct ResolvedDag {
     /// Nodes in topological order.
-    nodes: Vec<Box<dyn GkNode>>,
+    nodes: Vec<Box<dyn PolydatNode>>,
     /// Per-node wiring (in topological order).
     wiring: Vec<Vec<WireSource>>,
     /// All input definitions (coordinates + captures).
@@ -162,8 +162,8 @@ impl ResolvedDag {
     }
 }
 
-/// Builder for assembling a GK kernel programmatically.
-pub struct GkAssembler {
+/// Builder for assembling a Polydat Kernel programmatically.
+pub struct PolydatAssembler {
     /// All input definitions. Coordinates come first (indices 0..coord_count).
     input_defs: Vec<crate::kernel::InputDef>,
     /// How many of the inputs are coordinates.
@@ -196,7 +196,7 @@ pub struct GkAssembler {
     pub(crate) strict_types: bool,
 }
 
-impl GkAssembler {
+impl PolydatAssembler {
     /// Create a new assembler with the given coordinate names.
     pub fn new(input_names: Vec<String>) -> Self {
         let coord_count = input_names.len();
@@ -232,7 +232,7 @@ impl GkAssembler {
     }
 
     /// Set the source text and diagnostic context for this assembler.
-    /// Called by the DSL compiler to attach the original GK source.
+    /// Called by the DSL compiler to attach the original Polydat source.
     pub fn set_context(&mut self, source: &str, context: &str) {
         self.source = source.to_string();
         self.context = context.to_string();
@@ -242,7 +242,7 @@ impl GkAssembler {
     pub fn add_node(
         &mut self,
         name: impl Into<String>,
-        node: Box<dyn GkNode>,
+        node: Box<dyn PolydatNode>,
         inputs: Vec<WireRef>,
     ) -> &mut Self {
         self.nodes.push(PendingNode {
@@ -283,7 +283,7 @@ impl GkAssembler {
     /// Added after coordinate inputs. Nodes wire to it via
     /// `WireRef::input(name)` — same as coordinate inputs.
     /// `kind` controls the lifecycle classification used by the
-    /// init-binding contract (see [SRD 11](../../../docs/sysref/11_gk_evaluation.md)
+    /// init-binding contract (see [SRD 11](../../../docs/sysref/11_polydat_evaluation.md)
     /// §"Effectively-Const Nodes"): `IterationExtern` for slots
     /// populated by `materialize_wiring_from_outer`, `ExternalWrite` for slots
     /// written by capture extraction.
@@ -349,16 +349,16 @@ impl GkAssembler {
     }
 
     /// Validate, resolve, and produce a Phase 1 runtime kernel.
-    pub fn compile(self) -> Result<GkKernel, AssemblyError> {
+    pub fn compile(self) -> Result<PolydatKernel, AssemblyError> {
         self.compile_with_log(None)
     }
 
     /// Compile with diagnostic event logging.
-    pub fn compile_with_log(self, mut log: Option<&mut crate::dsl::events::CompileEventLog>) -> Result<GkKernel, AssemblyError> {
+    pub fn compile_with_log(self, mut log: Option<&mut crate::dsl::events::CompileEventLog>) -> Result<PolydatKernel, AssemblyError> {
         let resolved = self.resolve_with_log(log.as_deref_mut())?;
         let _coord_names = resolved.input_names();
         let modifiers = resolved.output_modifiers.clone();
-        let kernel = GkKernel::new_with_inputs(
+        let kernel = PolydatKernel::new_with_inputs(
             resolved.nodes,
             resolved.wiring,
             resolved.input_defs,
@@ -376,7 +376,7 @@ impl GkAssembler {
 
     /// Compile with strict mode: config wire violations are errors,
     /// implicit type coercions are rejected, unused bindings flagged.
-    pub fn compile_strict(self, strict: bool) -> Result<GkKernel, AssemblyError> {
+    pub fn compile_strict(self, strict: bool) -> Result<PolydatKernel, AssemblyError> {
         if !strict {
             return self.compile();
         }
@@ -400,7 +400,7 @@ impl GkAssembler {
         }
 
         let modifiers = resolved.output_modifiers.clone();
-        let kernel = GkKernel::new_strict_with_inputs(
+        let kernel = PolydatKernel::new_strict_with_inputs(
             resolved.nodes,
             resolved.wiring,
             resolved.input_defs,
@@ -419,9 +419,9 @@ impl GkAssembler {
     /// Validate, resolve, and attempt Phase 2 compilation.
     ///
     /// Returns `Ok(CompiledKernelPushPull)` if all nodes are u64-only and provide
-    /// `compiled_u64()`. Falls back to `Err(GkKernel)` (a working Phase 1
+    /// `compiled_u64()`. Falls back to `Err(PolydatKernel)` (a working Phase 1
     /// kernel) if any node cannot be compiled.
-    pub fn try_compile(self) -> Result<CompiledKernelPushPull, GkKernel> {
+    pub fn try_compile(self) -> Result<CompiledKernelPushPull, PolydatKernel> {
         let resolved = self.resolve().expect("assembly validation failed");
         let _coord_names = resolved.input_names();
         let coord_names = resolved.input_names();
@@ -441,7 +441,7 @@ impl GkAssembler {
 
         if !all_compilable {
             // Fall back to Phase 1
-            return Err(GkKernel::new(
+            return Err(PolydatKernel::new(
                 resolved.nodes,
                 resolved.wiring,
                 coord_names,
@@ -494,18 +494,18 @@ impl GkAssembler {
 
         Ok(CompiledKernelPushPull::new(
             coord_count, total_slots, steps, output_map,
-            GkProgram::compute_dependents(
-                &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
+            PolydatProgram::compute_dependents(
+                &PolydatProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
                 coord_count,
             ),
         ))
     }
 
     /// Phase 2 compilation without provenance caching.
-    pub fn try_compile_raw(self) -> Result<CompiledKernelRaw, GkKernel> {
+    pub fn try_compile_raw(self) -> Result<CompiledKernelRaw, PolydatKernel> {
         let resolved = match self.resolve() {
             Ok(r) => r,
-            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
+            Err(_) => return Err(PolydatKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
         };
         let coord_names = resolved.input_names();
         let coord_count = coord_names.len();
@@ -527,7 +527,7 @@ impl GkAssembler {
             }
         }
         if !all_compilable {
-            return Err(GkKernel::new(
+            return Err(PolydatKernel::new(
                 resolved.nodes, resolved.wiring, coord_names.clone(), resolved.output_map,
                 &resolved.source, &resolved.context,
             ));
@@ -551,42 +551,42 @@ impl GkAssembler {
     }
 
     /// Phase 2 compilation with push-side provenance only (no cone guard).
-    pub fn try_compile_push(self) -> Result<CompiledKernelPush, GkKernel> {
+    pub fn try_compile_push(self) -> Result<CompiledKernelPush, PolydatKernel> {
         let resolved = match self.resolve() {
             Ok(r) => r,
-            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
+            Err(_) => return Err(PolydatKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
         };
         let coord_names = resolved.input_names();
         let (coord_count, total_slots, steps, output_map) =
             match Self::build_p2_layout(&resolved) {
                 Some(r) => r,
-                None => return Err(GkKernel::new(
+                None => return Err(PolydatKernel::new(
                     resolved.nodes, resolved.wiring, coord_names, resolved.output_map,
                     &resolved.source, &resolved.context)),
             };
-        let dependents = GkProgram::compute_dependents(
-            &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
+        let dependents = PolydatProgram::compute_dependents(
+            &PolydatProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
             coord_count,
         );
         Ok(CompiledKernelPush::new(coord_count, total_slots, steps, output_map, dependents))
     }
 
     /// Phase 2 compilation with pull-side cone guard only (no per-node skip).
-    pub fn try_compile_pull(self) -> Result<CompiledKernelPull, GkKernel> {
+    pub fn try_compile_pull(self) -> Result<CompiledKernelPull, PolydatKernel> {
         let resolved = match self.resolve() {
             Ok(r) => r,
-            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
+            Err(_) => return Err(PolydatKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
         };
         let coord_names = resolved.input_names();
         let (coord_count, total_slots, steps, output_map) =
             match Self::build_p2_layout(&resolved) {
                 Some(r) => r,
-                None => return Err(GkKernel::new(
+                None => return Err(PolydatKernel::new(
                     resolved.nodes, resolved.wiring, coord_names, resolved.output_map,
                     &resolved.source, &resolved.context)),
             };
-        let dependents = GkProgram::compute_dependents(
-            &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
+        let dependents = PolydatProgram::compute_dependents(
+            &PolydatProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
             coord_count,
         );
         Ok(CompiledKernelPull::new(coord_count, total_slots, steps, output_map, &dependents))
@@ -668,8 +668,8 @@ impl GkAssembler {
         let resolved = self.resolve().map_err(|e| format!("{e}"))?;
         let _coord_names = resolved.input_names();
         let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
-        let deps = GkProgram::compute_dependents(
-            &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+        let deps = PolydatProgram::compute_dependents(
+            &PolydatProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
         crate::compile::jit::compile_jit_push_pull(coord_count, total_slots, jit_steps, output_map, resolved.nodes, deps)
     }
 
@@ -688,8 +688,8 @@ impl GkAssembler {
         let resolved = self.resolve().map_err(|e| format!("{e}"))?;
         let _coord_names = resolved.input_names();
         let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
-        let deps = GkProgram::compute_dependents(
-            &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+        let deps = PolydatProgram::compute_dependents(
+            &PolydatProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
         crate::compile::jit::compile_jit_push(coord_count, total_slots, jit_steps, output_map, resolved.nodes, deps)
     }
 
@@ -699,8 +699,8 @@ impl GkAssembler {
         let resolved = self.resolve().map_err(|e| format!("{e}"))?;
         let _coord_names = resolved.input_names();
         let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
-        let deps = GkProgram::compute_dependents(
-            &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+        let deps = PolydatProgram::compute_dependents(
+            &PolydatProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
         crate::compile::jit::compile_jit_pull(coord_count, total_slots, jit_steps, output_map, resolved.nodes, &deps)
     }
 
@@ -725,13 +725,13 @@ impl GkAssembler {
                 P2Engine::Raw(CompiledKernelRaw::new(coord_count, total_slots, steps, output_map))
             }
             ProvMode::Pull => {
-                let deps = GkProgram::compute_dependents(
-                    &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+                let deps = PolydatProgram::compute_dependents(
+                    &PolydatProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
                 P2Engine::Pull(CompiledKernelPull::new(coord_count, total_slots, steps, output_map, &deps))
             }
             ProvMode::PushPull => {
-                let deps = GkProgram::compute_dependents(
-                    &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+                let deps = PolydatProgram::compute_dependents(
+                    &PolydatProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
                 P2Engine::PushPull(CompiledKernelPushPull::new(coord_count, total_slots, steps, output_map, deps))
             }
         };
@@ -755,14 +755,14 @@ impl GkAssembler {
                 select::P3Engine::Raw(k)
             }
             ProvMode::Pull => {
-                let deps = GkProgram::compute_dependents(
-                    &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+                let deps = PolydatProgram::compute_dependents(
+                    &PolydatProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
                 let k = crate::compile::jit::compile_jit_pull(coord_count, total_slots, jit_steps, output_map, resolved.nodes, &deps)?;
                 select::P3Engine::Pull(k)
             }
             ProvMode::PushPull => {
-                let deps = GkProgram::compute_dependents(
-                    &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+                let deps = PolydatProgram::compute_dependents(
+                    &PolydatProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
                 let k = crate::compile::jit::compile_jit_push_pull(coord_count, total_slots, jit_steps, output_map, resolved.nodes, deps)?;
                 select::P3Engine::PushPull(k)
             }
@@ -1087,8 +1087,8 @@ impl GkAssembler {
                         }
                 }
 
-                // Convert to Option<Box<dyn GkNode>> for the fusion pass.
-                let mut opt_nodes: Vec<Option<Box<dyn GkNode>>> = all_nodes
+                // Convert to Option<Box<dyn PolydatNode>> for the fusion pass.
+                let mut opt_nodes: Vec<Option<Box<dyn PolydatNode>>> = all_nodes
                     .into_iter()
                     .map(|pn| Some(pn.node))
                     .collect();
@@ -1211,12 +1211,12 @@ impl GkAssembler {
             old_to_new[old_idx] = new_idx;
         }
 
-        let mut sorted_nodes: Vec<Option<Box<dyn GkNode>>> = all_nodes
+        let mut sorted_nodes: Vec<Option<Box<dyn PolydatNode>>> = all_nodes
             .into_iter()
             .map(|pn| Some(pn.node))
             .collect();
 
-        let final_nodes: Vec<Box<dyn GkNode>> = sorted_order
+        let final_nodes: Vec<Box<dyn PolydatNode>> = sorted_order
             .iter()
             .map(|&old_idx| sorted_nodes[old_idx].take().unwrap())
             .collect();
@@ -1356,7 +1356,7 @@ fn assertion_skip_reason(
 /// total over the input domain (never panics on any valid
 /// runtime value of `from`). Lossy or parseable adapters
 /// belong in [`boundary_adapter`] only.
-pub fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn GkNode>> {
+pub fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn PolydatNode>> {
     use crate::library::convert::{
         BoolToStr, BoolToU64,
         U32ToU64, U32ToF64, U32ToString,
@@ -1456,7 +1456,7 @@ pub fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn GkNode>> {
 /// `VecF32→Str`.
 ///
 /// See `polydat/docs/design/type_system.md`.
-pub fn boundary_adapter(from: PortType, to: PortType) -> Option<Box<dyn GkNode>> {
+pub fn boundary_adapter(from: PortType, to: PortType) -> Option<Box<dyn PolydatNode>> {
     if let Some(adapter) = auto_adapter(from, to) {
         return Some(adapter);
     }

@@ -293,7 +293,7 @@ where the predicate fails to evaluate (missing name, type error,
 etc.) are runtime errors per SRD-18e §"`where` predicate
 semantics".
 
-- Predicate is a GK boolean expression; names referenced must be
+- Predicate is a Polydat boolean expression; names referenced must be
   in the comprehension's tuple shape or inherited from the
   enclosing parent scope.
 - Predicate evaluates **per-tuple**, not per-batch — `filter` is
@@ -962,7 +962,7 @@ one algebraic constructor (or a small fixed chain).
 
 ### 8.1 The single `for` keyword
 
-GK expression form uses one keyword: `for`. The RHS shape
+Polydat expression form uses one keyword: `for`. The RHS shape
 disambiguates which constructor:
 
 ```text
@@ -1955,7 +1955,7 @@ metadata field is read.
 #### 10.7.5 Non-goals (what stays OUT of metadata)
 
 - **Predicate shape.** Whether `{a} == K` factorizes is a
-  property of a GK expression, not of the comprehension AST.
+  property of a Polydat expression, not of the comprehension AST.
   Predicate analysis lives in a separate analyzer (§10.9) and
   is consumed by R5; its results are never stored in node
   metadata.
@@ -2142,11 +2142,11 @@ the planner didn't know yet.
 ### 10.9 Predicate analyzer
 
 R5 (per-axis filter pushdown) and any future rule that depends
-on predicate shape need a structured view of the GK expression
+on predicate shape need a structured view of the Polydat expression
 that `filter`'s predicate carries. The **predicate analyzer**
 is the single component that provides that view. It is
 specified separately from the metadata algebra (§10.7) because
-predicates are GK expressions, not comprehension AST nodes —
+predicates are Polydat expressions, not comprehension AST nodes —
 they live in a different value space and deserve their own
 analysis surface.
 
@@ -2166,17 +2166,17 @@ here is the planned design; the analyzer ships alongside R5.
 
 **In scope:**
 
-- GK boolean expressions used as `filter` predicates.
+- Polydat boolean expressions used as `filter` predicates.
 - Coordinate references `{name}` where `name` is a coordinate
   produced by the wrapped comprehension's tuple shape.
-- Constants, named GK kernel inputs (bound at scope-init),
+- Constants, named Polydat kernel inputs (bound at scope-init),
   arithmetic and comparison operators, boolean combinators
-  (`&&`, `||`, `!`), and the small fixed set of GK builtins
+  (`&&`, `||`, `!`), and the small fixed set of Polydat builtins
   that produce deterministic scalar values.
 
 **Out of scope:**
 
-- Non-deterministic GK expressions (e.g. PRNG draws inside the
+- Non-deterministic Polydat expressions (e.g. PRNG draws inside the
   predicate). Detected by inspecting the expression's GK
   kernel for `requires_seed` flags; if present, the analyzer
   returns `Opaque` and no R-rule that needs structured info
@@ -2240,7 +2240,7 @@ enum OpaqueReason {
   UnknownPattern,                    // shape not in §10.9.5 recognizer catalog
   NonDeterministic,                  // requires_seed flag, PRNG draws, etc.
   CrossTupleState,                   // depends on previously-emitted tuples
-  SideEffecting,                     // side-effecting GK expression
+  SideEffecting,                     // side-effecting Polydat expression
   Continuous,                        // predicate references continuous-cardinality coord(s)
 }
 
@@ -2265,7 +2265,7 @@ enum Determinism {
 The five properties are independent assertions — a predicate
 may have `PerAxis` factorization but no monotonicity, or have
 strong monotonicity on each axis but be `Opaque` overall (e.g.
-`{a} < f({b})` where `f` is a non-trivial GK kernel call).
+`{a} < f({b})` where `f` is a non-trivial Polydat kernel call).
 
 #### 10.9.4 Goals and correctness contract
 
@@ -2284,7 +2284,7 @@ with these properties:
    factorizable but uses an expression the analyzer doesn't
    recognize may return `Opaque`. Missing an optimization is
    acceptable; asserting a false property is not.
-3. **Total.** Every well-formed GK boolean expression produces
+3. **Total.** Every well-formed Polydat boolean expression produces
    a `PredicateInfo`. The trivial bundle (everything `None` /
    `Opaque`) is the worst case but never a failure.
 4. **Deterministic.** Same `(predicate, coords)` always
@@ -2328,7 +2328,7 @@ shape pressure drives which patterns get added.
 
 Patterns NOT in the initial set return `Opaque` (or partial
 factorization where safe). Examples: predicates that call
-user-defined GK kernels, predicates over computed coordinates
+user-defined Polydat kernels, predicates over computed coordinates
 that haven't been simplified, predicates with `if(...)`
 branches.
 
@@ -2402,7 +2402,7 @@ already shaped to carry the assertions they need.
   patterns. Workloads needing that complexity should restate
   the comprehension explicitly (split into per-sub-space
   unions).
-- **Not a constant folder.** GK's expression layer already
+- **Not a constant folder.** Polydat's expression layer already
   folds constant subexpressions before the analyzer sees the
   predicate. The analyzer assumes folded input.
 - **Not coupled to the comprehension AST** at the per-
@@ -2457,7 +2457,7 @@ analyze_reducibility(c: &Ast, m: &Metadata) -> ReducibilityFinding
 - `m`: the metadata bundle for `c` propagated per §10.7. The
   analyzer reads `m` exhaustively but **never reads `c`
   beyond what metadata surfaces** — that is, no peeking into
-  GK expression internals, source-expression internals, or
+  Polydat expression internals, source-expression internals, or
   any field of `c` that §10.7's propagation rules did not
   publish into metadata. For predicate-shape facts the
   analyzer consults the predicate analyzer (§10.9) and treats
@@ -3286,7 +3286,7 @@ R5's guard depends on the predicate analyzer recognizing
 factorization. §10.9.5's initial recognizer catalog covers
 simple patterns (`{a} OP K`, conjunction with coord-disjointness,
 range constraints, discrete-set membership). Deeper patterns
-(polynomial factorization, conditional expressions, GK kernel
+(polynomial factorization, conditional expressions, Polydat kernel
 calls with known semantics) are not in the initial catalog.
 
 **Rationale for deferral:** Recognizer development is
@@ -3393,7 +3393,7 @@ names each SRD's role relative to this document.
   comprehension scope synthesis as one of the subcontext-
   construction paths, via polydat's public synthesis surface.
 
-- **SRD-68 (Dispenser-Owned GK Context)** — mentions
+- **SRD-68 (Dispenser-Owned Polydat Context)** — mentions
   `for_each` comprehensions positionally in the scope-tree
   ownership model; integration-level only.
 

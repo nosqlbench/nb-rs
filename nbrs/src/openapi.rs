@@ -10,7 +10,7 @@
 //! - `nbrs describe-openapi spec=<file>` — spec inspection
 //!   (operations, tag summary).
 //! - `nbrs run-openapi spec=<file> [base_url=...] [adapter=...]
-//!   [...]` — synthesizes ops + GK bindings from the spec and
+//!   [...]` — synthesizes ops + Polydat bindings from the spec and
 //!   runs them against the chosen adapter (default: `http`).
 //!
 //! Pairs with [`nbrs_adapter_openapi`], which carries the spec
@@ -132,7 +132,7 @@ pub async fn run_command(args: &[String]) {
     }
 
     if !bindings_source.is_empty() {
-        eprintln!("openapi: GK bindings:\n{bindings_source}");
+        eprintln!("openapi: Polydat bindings:\n{bindings_source}");
     }
 
     let kernel = match compile_bindings(&parsed_ops) {

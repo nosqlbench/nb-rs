@@ -5,7 +5,7 @@
 //!
 //! Walks `ScenarioNode` trees dynamically at runtime. All control
 //! flow constructs (`for_each`, `do_while`, `do_until`) are evaluated
-//! uniformly — no pre-flattening. GK scope composition handles
+//! uniformly — no pre-flattening. Polydat scope composition handles
 //! variable scoping at every nesting level.
 
 use std::collections::HashMap;
@@ -65,13 +65,20 @@ pub struct ExecCtx {
     /// wrappers); this only changes the tiebreaker the
     /// resolver uses when constraints leave order ambiguous.
     pub wrap_default_order: Option<Vec<String>>,
-    pub program: Arc<polydat::kernel::GkProgram>,
-    pub gk_lib_paths: Vec<PathBuf>,
+    pub program: Arc<polydat::kernel::PolydatProgram>,
+    pub polydat_lib_paths: Vec<PathBuf>,
     pub workload_dir: Option<PathBuf>,
     pub strict: bool,
     pub driver: String,
     pub merged_params: HashMap<String, String>,
     pub dry_run: Option<&'static str>,
+    /// Compiled `phases=<pattern>` filter. When `Some`, the
+    /// scenario walker skips phase activations whose name does
+    /// not match, and elides any scope subtree whose descendant
+    /// phases all fail to match. When `None`, every phase runs.
+    /// See [`crate::phase_filter::PhasePattern`] for the dialect
+    /// rules (bareword / glob / regex).
+    pub phase_filter: Option<Arc<crate::phase_filter::PhasePattern>>,
     pub diag: crate::runner::DiagnosticConfig,
     pub openmetrics_url: Option<String>,
     pub seq_type: SequencerType,
@@ -123,17 +130,17 @@ pub struct ExecCtx {
     pub schedule_spec: Arc<crate::scheduler::ScheduleSpec>,
     /// M3.4 — current immediate-parent scope kernel for the
     /// leaf phase compile. Set by the dependent-tuple
-    /// dispatcher to the per-branch `GkKernel` it owns; cleared
+    /// dispatcher to the per-branch `PolydatKernel` it owns; cleared
     /// (or restored) when the dispatcher unwinds. When `Some`,
     /// the leaf-phase compile path uses this kernel's manifest
     /// for auto-extern wiring and calls `materialize_wiring_from_outer`
     /// against it directly — iteration vars and inherited
-    /// values both flow through the standard GK chain. When
+    /// values both flow through the standard Polydat chain. When
     /// `None`, the leaf phase falls back to the workload-level
     /// `outer_manifest` / `outer_scope_values` (the legacy flat
     /// data flow that M3.4 retires for kernel-routed scopes).
     pub current_parent_kernel:
-        Option<Arc<polydat::kernel::GkKernel>>,
+        Option<Arc<polydat::kernel::PolydatKernel>>,
     /// Workload source text + path, kept for error diagnostics.
     /// Errors at the dispatch layer (for_each / do_while spec
     /// evaluation, interpolation failures) include the YAML
@@ -533,7 +540,7 @@ fn format_iter_label(bindings: &[(String, polydat::ast::Value)]) -> String {
 }
 
 /// Format the canonical phase label from a root-first coord chain.
-/// Reverses to leaf-first and runs the GK-side formatter — same
+/// Reverses to leaf-first and runs the Polydat-side formatter — same
 /// string the runtime's `phase_labels` produces, so scene-tree
 /// `find_phase` matches at execution time.
 fn canonical_phase_label(parent_coords: &[ScopeCoord]) -> String {
@@ -585,7 +592,7 @@ fn do_loop_own_names(
 fn effective_parent_kernel(
     ctx: &ExecCtx,
     scope_idx: usize,
-) -> Option<std::sync::Arc<polydat::kernel::GkKernel>> {
+) -> Option<std::sync::Arc<polydat::kernel::PolydatKernel>> {
     ctx.current_parent_kernel.clone()
         .or_else(|| ctx.scope_tree.nearest_installed_ancestor_kernel(scope_idx))
 }
@@ -595,6 +602,33 @@ fn effective_parent_kernel(
 /// phase-level for_each, DoWhile, DoUntil) also treat their
 /// iteration instances as siblings at `depth + 1` and honor the
 /// concurrency limit at that depth.
+/// Whether `node` contains at least one phase that matches the
+/// supplied phase-name pattern. Used by [`execute_node`] to
+/// elide scope subtrees with no active leaves (per the user's
+/// "any branch with no active leaf nodes should be disabled"
+/// rule). Walks the workload-model scenario tree directly —
+/// no scene-tree dependency, so it's safe to consult before
+/// `push_scope_scene_node` would fire.
+fn subtree_has_active_phase(
+    node: &ScenarioNode,
+    pattern: &crate::phase_filter::PhasePattern,
+) -> bool {
+    match node {
+        ScenarioNode::Phase(name) => pattern.is_match(name),
+        ScenarioNode::Comprehension { children, .. }
+        | ScenarioNode::DoWhile { children, .. }
+        | ScenarioNode::DoUntil { children, .. }
+        | ScenarioNode::IncludedScenario { children, .. } => {
+            children.iter().any(|c| subtree_has_active_phase(c, pattern))
+        }
+        // Non-phase, non-scope nodes (Bindings, etc.) carry no
+        // phases themselves — treat as inactive so a branch
+        // containing only them gets pruned. Sibling branches
+        // are evaluated independently.
+        _ => false,
+    }
+}
+
 fn execute_node<'a>(
     ctx: &'a mut ExecCtx,
     node: &'a ScenarioNode,
@@ -602,6 +636,21 @@ fn execute_node<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
         use crate::checkpoint::PathSegment;
+        // Scope-elision gate: if a phases= filter is set and
+        // NO descendant phase in this subtree matches, skip the
+        // whole node. Phase-arm leaf nodes still go through the
+        // arm-local active gate below so the scene tree push
+        // happens; scope nodes can be skipped entirely here
+        // because their only purpose is to wrap descendant
+        // phases.
+        if let Some(pat) = ctx.phase_filter.clone() {
+            let is_scope = !matches!(node, ScenarioNode::Phase(_));
+            if is_scope && !subtree_has_active_phase(node, &pat) {
+                crate::diag!(crate::observer::LogLevel::Debug,
+                    "phases=<filter>: eliding scope (no descendant phase matches)");
+                return Ok(());
+            }
+        }
         match node {
             ScenarioNode::Phase(name) => {
                 let phase_fe = ctx.phases.get(name.as_str())
@@ -705,7 +754,18 @@ fn execute_node<'a>(
                     // run_phase only runs at depth >= Op. run_phase's
                     // internal short-circuit then handles
                     // Op-vs-Cycle-vs-Full at the cycle boundary.
-                    if ctx.diag.depth >= crate::runner::ExecDepth::Op {
+                    // phases=<pattern> gate: skip execution when
+                    // the pattern was set and this phase's name
+                    // doesn't match. The structural push above
+                    // still ran so the tree / TUI / coords stay
+                    // intact; only the per-cycle work is elided.
+                    let active = ctx.phase_filter.as_ref()
+                        .map(|pat| pat.is_match(name))
+                        .unwrap_or(true);
+                    if !active {
+                        crate::diag!(crate::observer::LogLevel::Debug,
+                            "phases=<filter>: skipping phase '{name}' (does not match)");
+                    } else if ctx.diag.depth >= crate::runner::ExecDepth::Op {
                         run_phase(ctx, name).await?;
                     }
                 }
@@ -917,7 +977,7 @@ fn execute_node<'a>(
                         children.len());
                 }
                 // Per-iter compile from the program preserves the
-                // cached parse + wiring (same Arc<GkProgram>) while
+                // cached parse + wiring (same Arc<PolydatProgram>) while
                 // giving us a fresh state that re-runs the const
                 // materialisation (step 3 of
                 // `materialize_wiring_from_outer`) against the
@@ -931,7 +991,7 @@ fn execute_node<'a>(
                 // first iter's value.
                 let chained = match ctx.current_parent_kernel.as_ref() {
                     Some(parent) => {
-                        let matter = polydat::kernel::subcontext::GkMatter::builder()
+                        let matter = polydat::kernel::subcontext::PolydatMatter::builder()
                             .program(installed.program().clone())
                             .build()
                             .map_err(|e| format!(
@@ -992,7 +1052,7 @@ fn execute_node<'a>(
 // via the [`Comprehension`] strategy trait, which produces
 // successive iteration bindings; the dispatcher's single
 // per-branch loop applies those bindings to a fresh per-branch
-// kernel (`GkKernel::from_program` from the scope's installed
+// kernel (`PolydatKernel::from_program` from the scope's installed
 // canonical) and runs the children under it. No duplicated
 // recursion logic per iteration kind.
 // =====================================================================
@@ -1026,7 +1086,7 @@ pub struct IterationStep {
     /// this as their effective parent kernel — both for
     /// nested comprehension interpolation (`vec_{profile}`)
     /// and for runtime phase dispatch.
-    pub bound_kernel: std::sync::Arc<polydat::kernel::GkKernel>,
+    pub bound_kernel: std::sync::Arc<polydat::kernel::PolydatKernel>,
     /// Root-first scope-coordinate chain ending at this
     /// iteration. Pass through
     /// `polydat::kernel::format_scope_coordinate_path` (after
@@ -1049,13 +1109,13 @@ pub struct IterationStep {
 /// reading.
 fn runtime_iterate(
     ctx: &ExecCtx,
-    canonical: &std::sync::Arc<polydat::kernel::GkKernel>,
-    parent: &std::sync::Arc<polydat::kernel::GkKernel>,
+    canonical: &std::sync::Arc<polydat::kernel::PolydatKernel>,
+    parent: &std::sync::Arc<polydat::kernel::PolydatKernel>,
     parent_coords: &[ScopeCoord],
     comprehension: &polydat::iteration::comprehension::Comprehension,
 ) -> Result<Vec<IterationStep>, String> {
     use polydat::iteration::comprehension::runtime::{evaluate_for_iteration, EmptyClause};
-    use polydat::kernel::{GkKernel, ScopeCoord};
+    use polydat::kernel::{PolydatKernel, ScopeCoord};
 
     let strict = ctx.strict;
     let quiet = ctx.quiet();
@@ -1078,14 +1138,14 @@ fn runtime_iterate(
     .map_err(|e| e.to_string())?;
 
     // Materialise each tuple into an IterationStep: per-iter
-    // kernel via GkKernel::for_iteration, coord path extended
+    // kernel via PolydatKernel::for_iteration, coord path extended
     // from parent_coords. The runtime evaluator already gives
     // us polydat-Value tuples (RuntimeTuple), so no conversion
     // is needed — Ext-typed Partition values pass through
     // intact for the executor's Ext-slot binding.
     let mut steps = Vec::with_capacity(tuples.len());
     for tuple in tuples {
-        let bound_kernel = GkKernel::for_iteration(canonical, parent, &tuple);
+        let bound_kernel = PolydatKernel::for_iteration(canonical, parent, &tuple);
         let mut coord_path = parent_coords.to_vec();
         coord_path.push(ScopeCoord::from(tuple.iter().cloned()));
         steps.push(IterationStep {
@@ -1101,7 +1161,7 @@ fn runtime_iterate(
 // dependent-tuple walk + per-iteration kernel binding is now
 // owned by `polydat::iteration::comprehension::iterate_scope` and the
 // types it returns. Both runtime (`runtime_iterate`) and pre-map
-// (`premap_iterate`) call into the same GK primitive.
+// (`premap_iterate`) call into the same Polydat primitive.
 //
 // Do-loops (`do_while` / `do_until`) bypass this path — they
 // need a persistent kernel across iterations (counter
@@ -1145,12 +1205,12 @@ impl OwnedTerminal {
 /// `concurrency_limit`. `Bounded(1)` is the sequential case (one
 /// permit at a time → spawn order = drain order). Each iteration:
 ///
-/// 1. Builds a fresh per-branch `GkKernel` via `from_program`.
+/// 1. Builds a fresh per-branch `PolydatKernel` via `from_program`.
 /// 2. `materialize_wiring_from_outer(parent_kernel)` for inheritance.
 /// 3. `set_input` for each iteration-variable value.
 /// 4. Pushes itself as `ctx.current_parent_kernel` so leaf
 ///    phases (and any nested comprehensions) inherit through
-///    standard GK chain.
+///    standard Polydat chain.
 /// 5. Pushes labels for the iteration's variables.
 /// 6. Runs the [`TerminalAction`] — either descend into
 ///    children via `execute_tree_at` or `run_phase` for
@@ -1183,7 +1243,7 @@ fn dispatch_comprehension<'a>(
     use crate::scheduler::ConcurrencyLimit;
     Box::pin(async move {
         if steps.is_empty() {
-            // GK-side `iterate_scope` already routed any clause-
+            // Polydat-side `iterate_scope` already routed any clause-
             // level diagnostic through the strict-vs-warn callback;
             // an empty step list here is the success-with-zero-
             // iterations case (filter eliminated everything, or a
@@ -1414,7 +1474,7 @@ async fn run_do_loop(
     // typed bridge so the rebind primitive sits behind a single
     // entry point.
     let mut loop_kernel = parent.build_subscope(
-        polydat::kernel::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
+        polydat::kernel::subcontext::PolydatMatter::builder().program(canonical.program().clone()).build().unwrap(),
     ).expect("subscope from program is infallible");
 
     let mut counter_value: u64 = 0;
@@ -1460,7 +1520,7 @@ async fn run_do_loop(
             // via the typed subscope path against the canonical;
             // shares cells but is otherwise throwaway.
             canonical.build_subscope(
-                polydat::kernel::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
+                polydat::kernel::subcontext::PolydatMatter::builder().program(canonical.program().clone()).build().unwrap(),
             ).expect("program-form subscope is infallible"),
         ));
         ctx.current_parent_kernel = Some(arc_loop.clone());
@@ -1523,11 +1583,11 @@ async fn run_do_loop(
 /// labels for diagnostics, then descend through the terminal
 /// action.
 ///
-/// The bound kernel comes from the GK-side
+/// The bound kernel comes from the Polydat-side
 /// [`IterationStep`] — same
 /// kernel both pre-map and runtime see for the same iteration
 /// position. No `from_program`/`materialize_wiring_from_outer`/`set_input`
-/// dance here; that recipe is owned by `GkKernel::for_iteration`
+/// dance here; that recipe is owned by `PolydatKernel::for_iteration`
 /// and reached via `iterate_scope`.
 async fn run_one_iteration(
     ctx: &mut ExecCtx,
@@ -1692,7 +1752,7 @@ static EMPTY_BINDINGS: std::sync::LazyLock<HashMap<String, String>> =
 
 /// Execute one phase. Iteration-variable values come from the
 /// `current_parent_kernel` manifest — every name visible at this
-/// phase's enclosing scope is reachable via the standard GK API
+/// phase's enclosing scope is reachable via the standard Polydat API
 /// on that one kernel. The legacy `bindings: HashMap` parameter
 /// is gone (M3.4b).
 async fn run_phase(
@@ -1718,7 +1778,7 @@ async fn run_phase(
     // own outputs (folded constants from `const` bindings) plus
     // inherited extern inputs (populated by `materialize_wiring_from_outer`
     // chain or per-iteration `set_input` from the dispatcher)
-    // — flow through a single `GkKernel::lookup` call per name,
+    // — flow through a single `PolydatKernel::lookup` call per name,
     // which is the canonical scope-aware reader (SRD-16
     // §"Visibility Rules: Shadowing"): folded outputs first,
     // then cell-aware input read, then `None`. Switching off
@@ -1737,7 +1797,7 @@ async fn run_phase(
     // `program.own_output_names()` / `is_inherited`.
     //
     // IndexMap (insertion-ordered) so `phase_labels`,
-    // `gk_context`, and `activity_name` reflect scenario-tree
+    // `polydat_context`, and `activity_name` reflect scenario-tree
     // declaration order — `output_names()` / `input_names()`
     // already return Vecs in that order. A plain HashMap here
     // randomises iteration per process and produced visibly
@@ -1889,8 +1949,15 @@ async fn run_phase(
         // so the scope can register the corresponding bindings.
         crate::scope::rewrite_inline_exprs(&mut ops);
 
-        // Strip adapter/driver (resolved per-phase, not from params)
-        for op in &mut ops { op.params.remove("adapter"); op.params.remove("driver"); }
+        // Note: per-op `adapter:` / `driver:` overrides are read
+        // by the activity-layer dispenser-construction loop
+        // (see `Activity::run_with_adapters` at the
+        // `template.params.get("adapter")` site) and by the
+        // executor's adapter-name collection (the
+        // `for t in op_sequence.templates()` loop below). They
+        // MUST survive into `op.params` for both paths to see
+        // them — the previous strip here pre-dated per-op
+        // adapter selection and silently dropped the field.
 
         // M3.4a: when the dependent-tuple dispatcher (or any
         // future kernel-routed enclosing scope) has installed a
@@ -1926,7 +1993,7 @@ async fn run_phase(
         // was installed; otherwise the immediate runtime parent
         // (current_parent_kernel) is the right resolver. Same
         // lookup pattern as the placeholder validator above.
-        let classifier_kernel: &polydat::kernel::GkKernel = ctx.scope_tree
+        let classifier_kernel: &polydat::kernel::PolydatKernel = ctx.scope_tree
             .phase_node_by_name(phase_name)
             .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get())
             .map(|k| k.as_ref())
@@ -1952,7 +2019,7 @@ async fn run_phase(
         )?;
 
         // Validate scope rules (shadow detection, final checks)
-        let gk_context = if iter_var_values.is_empty() {
+        let polydat_context = if iter_var_values.is_empty() {
             format!("phase '{phase_name}'")
         } else {
             let vars: Vec<String> = iter_var_values.iter()
@@ -1960,18 +2027,18 @@ async fn run_phase(
                 .collect();
             format!("phase '{phase_name}' ({})", vars.join(", "))
         };
-        scope.validate().map_err(|e| format!("{gk_context}: {e}"))?;
+        scope.validate().map_err(|e| format!("{polydat_context}: {e}"))?;
 
         // Compile-and-cache or rebind path (SRD 18b §"Cache-and-
         // rebind contract").
         //
-        // The phase scope's `Arc<GkProgram>` lives in a
+        // The phase scope's `Arc<PolydatProgram>` lives in a
         // `OnceLock` on its scope-tree node. First call compiles
         // (using the chain-walked pragmas), inserts; subsequent
-        // calls retrieve and build a fresh `GkKernel` from the
+        // calls retrieve and build a fresh `PolydatKernel` from the
         // cached program with a freshly-created `GkState`. Each
         // call ends up with the same shape — a populated
-        // `GkKernel` ready for outer-scope and iteration-variable
+        // `PolydatKernel` ready for outer-scope and iteration-variable
         // extern injection — but only the first call pays the
         // compile cost.
         let cursor_limit: Option<u64> = ctx.merged_params.get("limit")
@@ -2003,12 +2070,12 @@ async fn run_phase(
                 let compiled = crate::bindings::compile_from_scope(
                     &scope,
                     ctx.workload_dir.as_deref(),
-                    ctx.gk_lib_paths.clone(),
+                    ctx.polydat_lib_paths.clone(),
                     ctx.strict,
-                    &gk_context,
+                    &polydat_context,
                     cursor_limit,
                     &phase_pragmas,
-                ).map_err(|e| format!("{gk_context}: {e}"))?;
+                ).map_err(|e| format!("{polydat_context}: {e}"))?;
                 let prog = compiled.program().clone();
                 let _ = node.cached_kernel.set(std::sync::Arc::new(compiled));
                 prog
@@ -2020,12 +2087,12 @@ async fn run_phase(
             crate::bindings::compile_from_scope(
                 &scope,
                 ctx.workload_dir.as_deref(),
-                ctx.gk_lib_paths.clone(),
+                ctx.polydat_lib_paths.clone(),
                 ctx.strict,
-                &gk_context,
+                &polydat_context,
                 cursor_limit,
                 &phase_pragmas,
-            ).map_err(|e| format!("{gk_context}: {e}"))?
+            ).map_err(|e| format!("{polydat_context}: {e}"))?
             .program()
             .clone()
         };
@@ -2035,7 +2102,7 @@ async fn run_phase(
         // chain composition. Single call, single source of
         // values — SRD-16 §"Visibility Rules".
         let mut kernel = parent_kernel.build_subscope(
-            polydat::kernel::subcontext::GkMatter::builder().program(phase_program).build().unwrap(),
+            polydat::kernel::subcontext::PolydatMatter::builder().program(phase_program).build().unwrap(),
         ).expect("program-form subscope is infallible");
 
         // ─── Plan B: Init-Binding Contract (scope-activation) ─────
@@ -2068,7 +2135,7 @@ async fn run_phase(
                 Ok(v) if !matches!(v, polydat::ast::Value::None) => {}
                 Ok(_) => {
                     return Err(format!(
-                        "{gk_context}: init binding '{init_name}' violates the init contract: \
+                        "{polydat_context}: init binding '{init_name}' violates the init contract: \
                          scope-init eval returned Value::None (per SRD 11 §\"Init Binding Contract\" \
                          Plan B). The eval function signaled failure or returned no value."
                     ));
@@ -2076,7 +2143,7 @@ async fn run_phase(
                 Err(payload) => {
                     let msg = panic_message(&payload);
                     return Err(format!(
-                        "{gk_context}: init binding '{init_name}' violates the init contract: \
+                        "{polydat_context}: init binding '{init_name}' violates the init contract: \
                          scope-init eval panicked: {msg} (per SRD 11 §\"Init Binding Contract\" \
                          Plan B)."
                     ));
@@ -2126,7 +2193,7 @@ async fn run_phase(
                 Ok(v) if !matches!(v, polydat::ast::Value::None) => {}
                 Ok(_) => {
                     return Err(format!(
-                        "{gk_context}: final binding '{final_name}' could not be \
+                        "{polydat_context}: final binding '{final_name}' could not be \
                          materialised at scope activation: eval returned Value::None. \
                          If the RHS depends on a wire that's only available per cycle, \
                          use a non-modifier cycle binding (`{final_name} := …`) instead \
@@ -2136,7 +2203,7 @@ async fn run_phase(
                 Err(payload) => {
                     let msg = panic_message(&payload);
                     return Err(format!(
-                        "{gk_context}: final binding '{final_name}' eval panicked at \
+                        "{polydat_context}: final binding '{final_name}' eval panicked at \
                          scope activation: {msg}"
                     ));
                 }
@@ -2276,7 +2343,7 @@ async fn run_phase(
         // for this phase from the scope tree (set by the runner's
         // install loop for materialised op-templates) and install
         // them on the OpBuilder. Each fiber instances one
-        // GkKernel per program at fiber creation time, bound to
+        // PolydatKernel per program at fiber creation time, bound to
         // the main kernel via the canonical
         // `from_program + materialize_wiring_from_outer` recipe (SRD-13c
         // §"Per-Scope Canonical Kernel Cache"). Flattened
@@ -2305,7 +2372,7 @@ async fn run_phase(
         let parent = ctx.current_parent_kernel.as_ref()
             .expect("workload-kernel fallback requires an installed parent kernel");
         let workload_subscope = parent.build_subscope(
-            polydat::kernel::subcontext::GkMatter::builder().program(ctx.program.clone()).build().unwrap(),
+            polydat::kernel::subcontext::PolydatMatter::builder().program(ctx.program.clone()).build().unwrap(),
         ).expect("program-form subscope is infallible");
         let mut b = OpBuilder::new(workload_subscope);
         if let Some(phase_idx) = ctx.scope_tree.phase_node_by_name(phase_name) {
@@ -2340,7 +2407,7 @@ async fn run_phase(
         // iterations total) survives without re-interpreting
         // every phased workload's `cycles:` field. The
         // payload is the resolved op count, parsed as either
-        // a plain integer or a `{gk_expr}` const expression.
+        // a plain integer or a `{polydat_expr}` const expression.
         let mut expanded = rest.to_string();
         for (v, val) in &iter_var_values { expanded = expanded.replace(&format!("{{{v}}}"), val); }
         expanded = crate::runner::expand_workload_params(&expanded, &ctx.workload_params);
@@ -2678,7 +2745,7 @@ async fn run_phase(
                 let ancestors = ctx.scope_tree.ancestor_kernels(idx);
                 if ancestors.is_empty() { return None; }
                 let head = ancestors[0].program();
-                let tail: Vec<&polydat::kernel::GkProgram> = ancestors[1..]
+                let tail: Vec<&polydat::kernel::PolydatProgram> = ancestors[1..]
                     .iter().map(|k| k.program().as_ref()).collect();
                 Some(head.instance_hash(&tail))
             })
@@ -3429,7 +3496,7 @@ fn phase_identity_for(phase_name: &str, phase_labels: &str) -> crate::checkpoint
 
 /// Format bindings as a sorted labels string for stable matching.
 ///
-// `format_scope_coordinate_path` lives on the GK side — see
+// `format_scope_coordinate_path` lives on the Polydat side — see
 // `polydat::kernel::format_scope_coordinate_path`. Re-exporting
 // the path here would just be alias chrome; consumers in this crate
 // import it directly from `polydat::kernel`.

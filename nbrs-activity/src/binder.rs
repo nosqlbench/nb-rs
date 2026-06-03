@@ -89,7 +89,7 @@ impl fmt::Display for BindError {
             BindError::Unresolved(name) => write!(
                 f,
                 "unresolved bind point `{{{name}}}`: no wire named \
-                 `{name}` in the binder's GK context"
+                 `{name}` in the binder's Polydat context"
             ),
             BindError::UnsupportedQualifier(body) => write!(
                 f,
@@ -258,7 +258,7 @@ impl CurriedBinder {
 mod tests {
     use super::*;
     use crate::wires::CycleWires;
-    use polydat::dsl::compile::compile_gk;
+    use polydat::dsl::compile::compile_polydat;
 
     #[test]
     fn bindnames_parse_extracts_in_declaration_order() {
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn bindnames_pull_resolves_via_wires() {
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"t\"\n",
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn bindnames_pull_errors_with_failing_name() {
-        let mut k = compile_gk("input cycle: u64\nx := \"a\"\n").unwrap();
+        let mut k = compile_polydat("input cycle: u64\nx := \"a\"\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let names = BindNames::from_template("hi {nope}");
         let err = names.pull(&cw).unwrap_err();
@@ -296,7 +296,7 @@ mod tests {
     fn curry_static_partitions_names() {
         // Three names: two structural (resolved at curry time),
         // one per-cycle (deferred to pull time).
-        let mut canonical = compile_gk(
+        let mut canonical = compile_polydat(
             "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"t\"\n",
@@ -319,7 +319,7 @@ mod tests {
         // Curry against canonical (structural names baked in),
         // then pull against per-fiber wires (id resolves to the
         // formatted cycle).
-        let canonical = compile_gk(
+        let canonical = compile_polydat(
             "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"t\"\n",
@@ -333,7 +333,7 @@ mod tests {
         let curried = names.curry_static(canonical_lookup);
 
         // Per-fiber wires has `id` as an output binding.
-        let mut fiber = compile_gk(
+        let mut fiber = compile_polydat(
             "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"t\"\n\
@@ -354,7 +354,7 @@ mod tests {
         // CQL prepared adapter use: structural names already
         // inlined into the SQL text at curry time; only the
         // per-cycle `?` positions need values.
-        let canonical = compile_gk(
+        let canonical = compile_polydat(
             "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"t\"\n",
@@ -362,7 +362,7 @@ mod tests {
         let names = BindNames::from_names(vec!["keyspace".into(), "id".into()]);
         let curried = names.curry_static(|n| canonical.lookup(n));
 
-        let mut fiber = compile_gk(
+        let mut fiber = compile_polydat(
             "input cycle: u64\n\
              id := format_u64(cycle, 10)\n",
         ).unwrap();

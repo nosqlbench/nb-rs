@@ -7,7 +7,7 @@ current coordinates and any upstream node outputs. Determinism is the
 contract: the same inputs always produce the same output, with no
 shared mutable state.
 
-Workload authors rarely reach for nodes by name. The GK DSL and the
+Workload authors rarely reach for nodes by name. The Polydat DSL and the
 op-template binding cascade compose them on the author's behalf — you
 write `mod(hash(cycle), 1000)` and the resolver wires `hash` and `mod`
 nodes into the graph. The catalog below is the menu the resolver picks
@@ -160,7 +160,7 @@ hash-derived.
 `counter`, `current_epoch_millis`, `session_start_millis`,
 `elapsed_millis`, `thread_id`, `tmp_dir`, `env`, `env_or`, `limit`.
 
-### `runtime_context` — declared controls + GK runtime axes
+### `runtime_context` — declared controls + Polydat runtime axes
 `cycle`, `phase`, `rate`, `concurrency`, `control`, `control_u64`,
 `control_str`, `control_bool`, `control_set`. The `control` family
 reads dynamic controls (SRD-23) declared on the active component.

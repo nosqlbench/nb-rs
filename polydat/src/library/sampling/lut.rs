@@ -12,7 +12,7 @@
 //! runtime, querying is a single array index + lerp — no branching on
 //! distribution type, no function pointer call per sample.
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// A pre-computed interpolating lookup table mapping [0, 1] → f64.
 ///
@@ -103,10 +103,10 @@ impl LutF64 {
 }
 
 // -----------------------------------------------------------------
-// GK node: LutSample (f64 → f64)
+// Polydat node: LutSample (f64 → f64)
 // -----------------------------------------------------------------
 
-/// GK node that performs interpolating lookup in a precomputed table.
+/// Polydat node that performs interpolating lookup in a precomputed table.
 ///
 /// Signature: `lut_sample(input: f64) -> (f64)`
 ///
@@ -141,7 +141,7 @@ impl LutSample {
     }
 }
 
-impl GkNode for LutSample {
+impl PolydatNode for LutSample {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -153,7 +153,7 @@ impl GkNode for LutSample {
     fn compiled_u64(&self) -> Option<CompiledU64Op> {
         // Capture the pointer as usize to satisfy Send+Sync.
         // Safety: the LUT is immutable after construction and outlives
-        // the closure (both are owned by the same GkNode).
+        // the closure (both are owned by the same PolydatNode).
         let lut_addr = self.table.lut.as_ptr() as usize;
         let lut_len = self.table.lut.len();
         Some(Box::new(move |inputs, outputs| {
@@ -177,7 +177,7 @@ impl GkNode for LutSample {
     }
 }
 
-/// GK node that samples from an empirical distribution.
+/// Polydat node that samples from an empirical distribution.
 ///
 /// The data points define the distribution's inverse CDF directly:
 /// sorted values become the LUT entries, and linear interpolation
@@ -213,7 +213,7 @@ impl EmpiricalSample {
     }
 }
 
-impl GkNode for EmpiricalSample {
+impl PolydatNode for EmpiricalSample {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {

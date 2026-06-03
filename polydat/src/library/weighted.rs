@@ -7,7 +7,7 @@
 //! value lookup in one step. They parse an inline spec string at init
 //! time and perform weighted selection at cycle time.
 
-use crate::ast::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{Commutativity, CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use crate::library::sampling::alias::AliasTableU64;
 use crate::compile::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
 
@@ -69,7 +69,7 @@ impl WeightedStrings {
     }
 }
 
-impl GkNode for WeightedStrings {
+impl PolydatNode for WeightedStrings {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = self.table.sample(inputs[0].as_u64()) as usize;
@@ -104,7 +104,7 @@ impl WeightedU64 {
     }
 }
 
-impl GkNode for WeightedU64 {
+impl PolydatNode for WeightedU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = self.table.sample(inputs[0].as_u64()) as usize;
@@ -166,7 +166,7 @@ impl WeightedPick {
     }
 }
 
-impl GkNode for WeightedPick {
+impl PolydatNode for WeightedPick {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     /// Commutativity: the weight/value pairs are interchangeable with
@@ -221,7 +221,7 @@ impl GkNode for WeightedPick {
     fn jit_constants(&self) -> Vec<u64> {
         // Expose array pointers and length for JIT extern call.
         // Safety: these pointers are into self.values and self.table,
-        // which live in GkProgram behind Arc — never moved or freed
+        // which live in PolydatProgram behind Arc — never moved or freed
         // during the JIT kernel's lifetime.
         vec![
             self.values.as_ptr() as u64,
@@ -308,7 +308,7 @@ impl DynamicWeightedSelect {
     }
 }
 
-impl GkNode for DynamicWeightedSelect {
+impl PolydatNode for DynamicWeightedSelect {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let selector = inputs[0].as_u64();
@@ -327,8 +327,8 @@ impl GkNode for DynamicWeightedSelect {
 
 // Safety: DynamicWeightedSelect uses RefCell internally but is only
 // accessed from a single fiber's eval path (no concurrent access).
-// GkNode requires Send + Sync for the program Arc, but evaluation
-// is always single-threaded per GkState.
+// PolydatNode requires Send + Sync for the program Arc, but evaluation
+// is always single-threaded per PolydatState.
 unsafe impl Send for DynamicWeightedSelect {}
 unsafe impl Sync for DynamicWeightedSelect {}
 
@@ -417,7 +417,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a weighted-selection node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "weighted_strings" => Some(Ok(Box::new(WeightedStrings::new(
             consts.first().map(|c| c.as_str()).unwrap_or(""),
@@ -740,7 +740,7 @@ mod tests {
             result := dynamic_weighted_select(hash(cycle), spec)
         "#;
         let mut log = CompileEventLog::new();
-        let _k = crate::dsl::compile::compile_gk_with_log(source, &mut log).unwrap();
+        let _k = crate::dsl::compile::compile_polydat_with_log(source, &mut log).unwrap();
 
         let warnings: Vec<_> = log.events().iter().filter(|e|
             matches!(e, crate::dsl::events::CompileEvent::ConfigWireCycleWarning { .. })
@@ -760,7 +760,7 @@ mod tests {
             result := dynamic_weighted_select(hash(cycle), spec)
         "#;
         let mut log = CompileEventLog::new();
-        let _k = crate::dsl::compile::compile_gk_with_log(source, &mut log).unwrap();
+        let _k = crate::dsl::compile::compile_polydat_with_log(source, &mut log).unwrap();
 
         let warnings: Vec<_> = log.events().iter().filter(|e|
             matches!(e, crate::dsl::events::CompileEvent::ConfigWireCycleWarning { .. })
@@ -771,12 +771,12 @@ mod tests {
     #[test]
     fn dynamic_weighted_select_strict_rejects_cycle_config() {
         // In strict mode, Config wire from cycle source is a hard error.
-        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::compile::assembly::{PolydatAssembler, WireRef};
         use crate::library::hash::Hash64;
         use crate::library::convert::U64ToString;
         use crate::dsl::events::CompileEventLog;
 
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
         asm.add_node("spec", Box::new(U64ToString::default()), vec![WireRef::node("hashed")]);
         asm.add_node("dws", Box::new(DynamicWeightedSelect::new()), vec![
@@ -794,7 +794,7 @@ mod tests {
         assert_eq!(warnings.len(), 1, "should warn in non-strict");
 
         // Strict compile: rebuild and fold with strict=true
-        let mut asm2 = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm2 = PolydatAssembler::new(vec!["cycle".into()]);
         asm2.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
         asm2.add_node("spec", Box::new(U64ToString::default()), vec![WireRef::node("hashed")]);
         asm2.add_node("dws", Box::new(DynamicWeightedSelect::new()), vec![

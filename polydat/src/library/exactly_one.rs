@@ -22,7 +22,7 @@
 //!                    found <r> rows × <c> columns
 //! ```
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// Assert that the input value is a unary structure and return its
 /// single cell. See module docs.
@@ -44,7 +44,7 @@ impl ExactlyOneValue {
                 outs: vec![Port::new("output", PortType::Str)],
                 // Body wire's port type is a placeholder. The assembler
                 // does not currently surface a "structural body" type;
-                // Push 2 will revisit this when the body wire's GK type
+                // Push 2 will revisit this when the body wire's Polydat type
                 // is settled. For Push 1 we pass-through whatever type
                 // the upstream wire produces (the eval method inspects
                 // the actual `Value` variant).
@@ -54,7 +54,7 @@ impl ExactlyOneValue {
     }
 }
 
-impl GkNode for ExactlyOneValue {
+impl PolydatNode for ExactlyOneValue {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -86,7 +86,7 @@ impl GkNode for ExactlyOneValue {
             // column" iff the slice has exactly one element. Unwrap the
             // single cell to its scalar carrier (F64 for f32, U64 for
             // i32 — the standard widening when these vectors flow
-            // through the GK kernel as scalars).
+            // through the Polydat Kernel as scalars).
             Value::VecF32(arc) => {
                 if arc.len() != 1 {
                     panic!(
@@ -311,7 +311,7 @@ pub(crate) fn build_node(
     name: &str,
     _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "exactly_one_value" => Some(Ok(Box::new(ExactlyOneValue::new()))),
         _ => None,

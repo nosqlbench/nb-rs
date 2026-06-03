@@ -1,19 +1,19 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trait implementations of the GK context API ([`Metadata`],
-//! [`Dataflow`], [`Construction`]) on [`GkKernel`].
+//! Trait implementations of the Polydat context API ([`Metadata`],
+//! [`Dataflow`], [`Construction`]) on [`PolydatKernel`].
 //!
-//! GkKernel is the singular caller-facing interface that fuses
+//! PolydatKernel is the singular caller-facing interface that fuses
 //! the compiled context (program) and per-fiber state. All
 //! external (non-GK-internal) callers should reach the kernel
 //! exclusively through these three traits — `state()` /
 //! `state_ref()` / `program()` are kernel-internal hooks.
 
-use crate::kernel::{Dataflow, GkKernel, Metadata, Construction};
+use crate::kernel::{Dataflow, PolydatKernel, Metadata, Construction};
 use crate::ast::{PortType, Value};
 
-impl Metadata for GkKernel {
+impl Metadata for PolydatKernel {
     #[inline]
     fn find_input(&self, name: &str) -> Option<usize> {
         self.program().find_input(name)
@@ -50,7 +50,7 @@ impl Metadata for GkKernel {
     }
 }
 
-impl Dataflow for GkKernel {
+impl Dataflow for PolydatKernel {
     fn set_wire_idx(&mut self, idx: usize, value: Value) -> Result<(), crate::kernel::api::WriteError> {
         use crate::kernel::api::WriteError;
 
@@ -107,17 +107,17 @@ impl Dataflow for GkKernel {
     }
 }
 
-impl Construction for GkKernel {
+impl Construction for PolydatKernel {
     type Error = crate::kernel::subcontext::ContractViolation;
 
-    fn root(matter: crate::kernel::subcontext::GkMatter<'_>) -> Result<Self, Self::Error> {
-        use crate::kernel::subcontext::GkMatterInner;
+    fn root(matter: crate::kernel::subcontext::PolydatMatter<'_>) -> Result<Self, Self::Error> {
+        use crate::kernel::subcontext::PolydatMatterInner;
         match matter.inner {
-            GkMatterInner::Source(s) => {
-                crate::dsl::compile::compile_gk_with_libs_and_limit(
+            PolydatMatterInner::Source(s) => {
+                crate::dsl::compile::compile_polydat_with_libs_and_limit(
                     &s.body,
                     s.options.workload_dir.as_deref(),
-                    s.options.gk_lib_paths,
+                    s.options.polydat_lib_paths,
                     &s.options.required_outputs,
                     s.options.strict,
                     s.options.context_label.as_deref().unwrap_or(&s.label),
@@ -125,24 +125,24 @@ impl Construction for GkKernel {
                 )
                 .map_err(crate::kernel::subcontext::ContractViolation::Compile)
             }
-            GkMatterInner::Statements(s) => {
+            PolydatMatterInner::Statements(s) => {
                 // Pre-parsed AST — go through the compile-from-AST
-                // path. The `GkFile` AST root takes the statements
+                // path. The `PolydatFile` AST root takes the statements
                 // verbatim; the same options surface as the source
                 // path.
-                let file = crate::dsl::ast::GkFile { statements: s.statements };
+                let file = crate::dsl::ast::PolydatFile { statements: s.statements };
                 crate::dsl::compile::compile_ast_with_libs(
                     &file,
                     s.options.workload_dir.as_deref(),
-                    s.options.gk_lib_paths,
+                    s.options.polydat_lib_paths,
                     &s.options.required_outputs,
                     s.options.strict,
                     s.options.context_label.as_deref().unwrap_or(&s.label),
                 )
                 .map_err(crate::kernel::subcontext::ContractViolation::Compile)
             }
-            GkMatterInner::Program(p) => {
-                let mut k = GkKernel::from_program(p.program);
+            PolydatMatterInner::Program(p) => {
+                let mut k = PolydatKernel::from_program(p.program);
                 for (var, value) in p.iter_bindings {
                     if let Some(idx) = k.program().find_input(var) {
                         k.state().set_input(idx, value.clone());
@@ -155,22 +155,22 @@ impl Construction for GkKernel {
 
     fn subscope(
         &self,
-        matter: crate::kernel::subcontext::GkMatter<'_>,
+        matter: crate::kernel::subcontext::PolydatMatter<'_>,
     ) -> Result<Self, Self::Error> {
-        // Delegate to GkKernel's existing typed subscope path.
-        GkKernel::build_subscope(self, matter)
+        // Delegate to PolydatKernel's existing typed subscope path.
+        PolydatKernel::build_subscope(self, matter)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsl::compile::compile_gk;
+    use crate::dsl::compile::compile_polydat;
 
     /// Indexed wire access works.
     #[test]
     fn dataflow_indexed_set_get() {
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\nconst x := 7\n"
         ).unwrap();
         // cycle is index 0
@@ -181,7 +181,7 @@ mod tests {
     /// Named wire access resolves through metadata.
     #[test]
     fn dataflow_named_set_get() {
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\nextern n: u64\n"
         ).unwrap();
         k.set_wire("n", Value::U64(5)).expect("typed write");
@@ -194,7 +194,7 @@ mod tests {
     /// String key works alongside &str.
     #[test]
     fn dataflow_string_key() {
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\nextern n: u64\n"
         ).unwrap();
         let name = String::from("n");
@@ -205,7 +205,7 @@ mod tests {
     /// Unknown name returns Err(UnknownWire) / None — no panic.
     #[test]
     fn dataflow_unknown_name_safe() {
-        let mut k = compile_gk("input cycle: u64\n").unwrap();
+        let mut k = compile_polydat("input cycle: u64\n").unwrap();
         let err = k.set_wire("nonexistent", Value::U64(1)).unwrap_err();
         assert!(matches!(err, crate::kernel::api::WriteError::UnknownWire { .. }));
         assert!(k.get_wire("nonexistent").is_none());
@@ -221,7 +221,7 @@ mod tests {
     /// pair for testing the diagnostic.
     #[test]
     fn dataflow_type_mismatch_rejected() {
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\nextern n: u64\n"
         ).unwrap();
         let err = k.set_wire(
@@ -258,7 +258,7 @@ mod tests {
     /// through the boundary auto-adapter rather than rejecting.
     #[test]
     fn dataflow_healable_mismatch_adapts() {
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\nextern x: f64\n"
         ).unwrap();
         // u64 → f64 has an auto-adapter (lossless widening); the
@@ -275,7 +275,7 @@ mod tests {
     /// type (per none_semantics.md).
     #[test]
     fn dataflow_none_passes_through_any_slot() {
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\nextern n: u64\n"
         ).unwrap();
         k.set_wire("n", Value::None).expect("None always permitted");
@@ -284,7 +284,7 @@ mod tests {
     /// Metadata trait surfaces names + types.
     #[test]
     fn metadata_listings() {
-        let k = compile_gk(
+        let k = compile_polydat(
             "input (cycle: u64, thread: u64)\nextern n: u64\nconst x := 7\n"
         ).unwrap();
         let inputs: Vec<String> = k.input_names();
@@ -295,39 +295,39 @@ mod tests {
         assert_eq!(k.input_port_type("n"), Some(PortType::U64));
     }
 
-    /// Construction trait — both paths take the same gk
+    /// Construction trait — both paths take the same polydat
     /// matter type. Verify symmetry: root from source, then
     /// subscope from source against the root.
     #[test]
     fn construction_symmetric_paths() {
         let root_opts = crate::kernel::subcontext::CompileOptions {
             workload_dir: None,
-            gk_lib_paths: Vec::new(),
+            polydat_lib_paths: Vec::new(),
             strict: false,
             required_outputs: Vec::new(),
             context_label: Some("root".to_string()),
             cursor_limit: None,
             ..Default::default()
         };
-        let root_matter = crate::kernel::subcontext::GkMatter::builder()
+        let root_matter = crate::kernel::subcontext::PolydatMatter::builder()
             .label("root")
             .source("input cycle: u64\nshared flag := 0\n")
             .options(root_opts)
             .build()
             .expect("matter build");
-        let root = <GkKernel as Construction>::root(root_matter)
+        let root = <PolydatKernel as Construction>::root(root_matter)
             .expect("root from source matter");
 
         let sub_opts = crate::kernel::subcontext::CompileOptions {
             workload_dir: None,
-            gk_lib_paths: Vec::new(),
+            polydat_lib_paths: Vec::new(),
             strict: false,
             required_outputs: Vec::new(),
             context_label: Some("sub".to_string()),
             cursor_limit: None,
             ..Default::default()
         };
-        let sub_matter = crate::kernel::subcontext::GkMatter::builder()
+        let sub_matter = crate::kernel::subcontext::PolydatMatter::builder()
             .label("sub")
             .source("input cycle: u64\n")
             .options(sub_opts)
@@ -343,13 +343,13 @@ mod tests {
     /// the input slot — `n` is an extern input.
     #[test]
     fn construction_root_from_program() {
-        let template = compile_gk("input cycle: u64\nextern n: u64\n").unwrap();
+        let template = compile_polydat("input cycle: u64\nextern n: u64\n").unwrap();
         let program = template.program().clone();
-        let matter = crate::kernel::subcontext::GkMatter::builder()
+        let matter = crate::kernel::subcontext::PolydatMatter::builder()
             .program(program)
             .build()
             .expect("matter build");
-        let mut root = <GkKernel as Construction>::root(matter)
+        let mut root = <PolydatKernel as Construction>::root(matter)
             .expect("root from program matter");
         root.set_wire("n", Value::U64(13));
         assert_eq!(root.get_wire("n"), Some(Value::U64(13)));
@@ -358,8 +358,8 @@ mod tests {
     /// Builder rejects ambiguous matter (multiple input forms).
     #[test]
     fn builder_rejects_multiple_forms() {
-        let template = compile_gk("input cycle: u64\n").unwrap();
-        match crate::kernel::subcontext::GkMatter::builder()
+        let template = compile_polydat("input cycle: u64\n").unwrap();
+        match crate::kernel::subcontext::PolydatMatter::builder()
             .source("input cycle: u64\n")
             .program(template.program().clone())
             .build()
@@ -372,7 +372,7 @@ mod tests {
     /// Builder rejects empty matter.
     #[test]
     fn builder_rejects_empty() {
-        match crate::kernel::subcontext::GkMatter::builder().build() {
+        match crate::kernel::subcontext::PolydatMatter::builder().build() {
             Err(msg) => assert!(msg.contains("no input form"), "expected no-form error, got: {msg}"),
             Ok(_) => panic!("empty matter must error"),
         }

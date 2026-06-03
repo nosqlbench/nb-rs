@@ -3,7 +3,7 @@
 
 //! Shared run pipeline for persona binaries.
 //!
-//! Encapsulates workload parsing → GK compilation → activity
+//! Encapsulates workload parsing → Polydat compilation → activity
 //! construction → execution (single or phased).
 //!
 //! Each persona binary links its adapter crates (which register
@@ -40,6 +40,10 @@ pub const KNOWN_PARAMS: &[&str] = &[
     // line 1439 below; without it on this allow-list the
     // workload-param validator rejects the CLI form.
     "schedule",
+    // `phases=<pattern>` — phase-name filter (bareword / glob /
+    // regex). Scenario-tree walker skips non-matching phases and
+    // elides scope subtrees with no matching descendant.
+    "phases",
     // `--trace=<spec>` — trace-router routing/filter spec.
     // Multiple occurrences supported (collected by
     // `collect_repeated_flag`); parse_params keeps only the
@@ -136,7 +140,7 @@ pub struct DiagnosticConfig {
     pub depth: ExecDepth,
     /// Emit value-provenance / wiring view: how each named wire
     /// was computed and where its inputs originated. Surfaced by
-    /// `dryrun=wiring`. (Was previously `dryrun=gk` — the rename
+    /// `dryrun=wiring`. (Was previously `dryrun=polydat` — the rename
     /// keeps the polydat runtime an internal concept; the user-
     /// facing concept is "wiring" between named values.)
     pub show_wiring: bool,
@@ -201,6 +205,13 @@ impl DiagnosticConfig {
                 // an operator passing `dryrun=emit` doesn't see a
                 // misleading "unknown flag" warning.
                 "emit" | "silent" | "json" => {}
+                // `dryrun=kernels` is a planning-only mode — it
+                // builds the scope tree, then walks every
+                // materialised scope and prints its polydat
+                // source. Depth stays at Phase; the runner
+                // dispatches to a kernel-dump short-circuit
+                // before any phase activation.
+                "kernels" => {}
                 _ => crate::diag!(crate::observer::LogLevel::Warn, "warning: unknown dryrun flag '{flag}'"),
             }
         }
@@ -404,9 +415,20 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // The errorhandler crate stays scope-agnostic; the
     // bridging closure here is what makes the output
     // hierarchic in tui=terminal mode.
+    //
+    // Level = Debug so the per-cycle warns land in the
+    // session log (retain_level defaults to Debug) but
+    // don't spam the realtime status surface (display_level
+    // defaults to Info). The structured form of each
+    // per-cycle error is collected into the phase's
+    // PhaseErrorDetail buffer and rendered in one block by
+    // the `error_readout` builtin at PhaseEnd — the
+    // operator sees the normative ✓/✗ phase line first,
+    // then the error block, instead of N noisy lines
+    // interleaved with progress as the phase runs.
     nbrs_errorhandler::handlers::set_log_fn(|msg| {
         let indent = crate::scene_tree::running_phase_indent();
-        crate::observer::log(crate::observer::LogLevel::Warn, &format!("{indent}{msg}"));
+        crate::observer::log(crate::observer::LogLevel::Debug, &format!("{indent}{msg}"));
     });
 
     // Route nbrs-metrics diagnostic warnings through the observer so
@@ -581,25 +603,25 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // declared param, a known runner/adapter param, or an iter-var
     // introduced by some Comprehension in the scenario tree. A
     // stray `{undeclared}` would otherwise survive
-    // `expand_workload_params` as a literal and trip the GK parser
+    // `expand_workload_params` as a literal and trip the Polydat parser
     // later with a cryptic "expected expression, got LBrace" — that
     // surfaces too late and doesn't name the offender. The check
     // here points at the placeholder by name so the operator sees
     // what to fix.
     {
         // First — catch `{name}` placeholders that appear inside
-        // GK expression bodies outside of string literals. The
-        // GK grammar doesn't accept `{...}` as expression syntax;
+        // Polydat expression bodies outside of string literals. The
+        // Polydat grammar doesn't accept `{...}` as expression syntax;
         // a `{name}` there will always fail compile with a
         // cryptic "expected expression, got LBrace". Catch it
         // here with a targeted message naming the YAML file and
         // line so the operator can jump straight to it.
-        let mut invalid_gk_braces: Vec<GkBraceFinding> = collect_gk_brace_refs(&workload);
-        if !invalid_gk_braces.is_empty() {
-            invalid_gk_braces.sort();
-            invalid_gk_braces.dedup();
+        let mut invalid_polydat_braces: Vec<PolydatBraceFinding> = collect_polydat_brace_refs(&workload);
+        if !invalid_polydat_braces.is_empty() {
+            invalid_polydat_braces.sort();
+            invalid_polydat_braces.dedup();
             let file_path = workload_file.as_deref().unwrap_or("<inline>");
-            let lines: Vec<String> = invalid_gk_braces.iter().map(|f| {
+            let lines: Vec<String> = invalid_polydat_braces.iter().map(|f| {
                 let yaml_line = workload_source_text.as_deref()
                     .and_then(|src| find_yaml_line_for_brace(src, &f.placeholder));
                 let prefix = match yaml_line {
@@ -610,8 +632,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     f.location, f.placeholder, f.placeholder)
             }).collect();
             return Err(format!(
-                "`{{...}}` braces in GK expression context (invalid syntax).\n\
-                 GK accepts bare identifiers; braces are only for YAML string\n\
+                "`{{...}}` braces in Polydat expression context (invalid syntax).\n\
+                 Polydat accepts bare identifiers; braces are only for YAML string\n\
                  interpolation (op `prepared:`/`raw:`, `cycles:`, etc.).\n{}",
                 lines.join("\n"),
             ));
@@ -621,7 +643,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let adapter_params: std::collections::HashSet<&'static str> =
             registered_adapter_params().into_iter().collect();
         let iter_var_names = collect_iter_var_names(&workload);
-        let wire_names = collect_gk_binding_names(&workload);
+        let wire_names = collect_polydat_binding_names(&workload);
 
         // Declared/known direction: every declared param must be
         // referenced.
@@ -663,7 +685,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                  add to the `params:` block, or check for a typo. Recognised \
                  sources for `{{name}}` placeholders: workload `params:`, \
                  runner/adapter built-ins, scenario-tree iter-vars from \
-                 `for_each:`/`for_combinations:`, and wire names from GK \
+                 `for_each:`/`for_combinations:`, and wire names from Polydat \
                  `bindings:`.",
                 plural = if undeclared.len() == 1 { "" } else { "s" },
                 names = undeclared.iter()
@@ -680,7 +702,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // workload kernel. The full `workload.params` map also
     // contains ad-hoc CLI params like `cycles=`, `workload=`,
     // `tags=`, etc., which are not declared bindings and must
-    // not become identifiers in the GK source. Filter by
+    // not become identifiers in the Polydat source. Filter by
     // `declared_params` to keep only the YAML-declared subset.
     let declared: std::collections::HashSet<&String> = workload.declared_params.iter().collect();
     let workload_params: HashMap<String, String> = workload.params.iter()
@@ -814,9 +836,9 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             phases.len(), ops.len(), driver);
     }
 
-    // Collect --gk-lib=path flags
-    let gk_lib_paths: Vec<std::path::PathBuf> = args.iter()
-        .filter_map(|a| a.strip_prefix("--gk-lib="))
+    // Collect --polydat-lib=path flags
+    let polydat_lib_paths: Vec<std::path::PathBuf> = args.iter()
+        .filter_map(|a| a.strip_prefix("--polydat-lib="))
         .map(std::path::PathBuf::from)
         .collect();
     let strict = args.iter().any(|a| a == "--strict")
@@ -1160,7 +1182,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         );
     }
 
-    // Merge all ops for param expansion and GK compilation.
+    // Merge all ops for param expansion and Polydat compilation.
     let _num_top_level_ops = ops.len();
     let mut all_ops_for_compile: Vec<nbrs_workload::model::ParsedOp> = ops;
     all_ops_for_compile.extend(phase_ops_for_compile);
@@ -1181,7 +1203,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // so it has been retired.
     //
     // What's left here: rewrite inline `{{expr}}` constructs to
-    // named bindings so the GK compiler can hoist them as
+    // named bindings so the Polydat compiler can hoist them as
     // `const __expr_N := …` entries. That pass is a bind-point
     // shape transform, not a value substitution — it operates
     // independently of workload params.
@@ -1191,11 +1213,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // a first-class workload-scope input — separate from any
     // op's bindings. We pass it through to the compiler as a
     // distinct source so cursor declarations and other
-    // workload-scoped GK statements land on the workload kernel
+    // workload-scoped Polydat statements land on the workload kernel
     // alongside the workload params, *without* going through
     // the op-binding param-ident rewrite (which would text-
     // substitute `{name}` placeholders inside string literals).
-    // GK's standard string-interpolation handles `{name}` at
+    // Polydat's standard string-interpolation handles `{name}` at
     // compile time against the `final <name> := <literal>`
     // bindings that workload-params injection installs (M3.6 path).
     // SRD-13f Push D: workload-level `bindings:` reach the
@@ -1205,20 +1227,20 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // is the only remaining parser-time inlining; it operates
     // on block-level YAML sugar, not workload-level). Both
     // BindingsDef forms route through here:
-    //   - GkSource: pass through verbatim.
+    //   - PolydatSource: pass through verbatim.
     //   - Map: legacy semicolon-chain syntax translated to GK
-    //     source lines via `legacy_chain_map_to_gk_lines`.
-    let workload_level_gk: Option<String> = match &workload.bindings {
-        nbrs_workload::model::BindingsDef::GkSource(s) if !s.trim().is_empty()
+    //     source lines via `legacy_chain_map_to_polydat_lines`.
+    let workload_level_polydat: Option<String> = match &workload.bindings {
+        nbrs_workload::model::BindingsDef::PolydatSource(s) if !s.trim().is_empty()
             => Some(s.clone()),
         nbrs_workload::model::BindingsDef::Map(m) if !m.is_empty() => {
-            Some(crate::bindings::legacy_chain_map_to_gk_lines(m)
+            Some(crate::bindings::legacy_chain_map_to_polydat_lines(m)
                 .map_err(|e| format!("workload-level bindings: {e}"))?)
         }
         _ => None,
     };
 
-    // === GK Compilation ===
+    // === Polydat Compilation ===
 
     let workload_dir: Option<&std::path::Path> = workload_file.as_ref()
         .and_then(|p| std::path::Path::new(p).parent())
@@ -1273,7 +1295,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         .map_err(|e| format!("workload params kernel: {e}"))?;
 
     // Build the workload kernel directly as a subscope of the
-    // params kernel via the typed GkKernel-controlled
+    // params kernel via the typed PolydatKernel-controlled
     // construction path. Cells from params flow in via the
     // cascade — no late-binding step required.
     // Build the workload kernel as a subscope of the params
@@ -1289,7 +1311,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // SRD-13f Push D: the workload-root kernel still owns the
     // canonical workload-scope bindings, but descendant kernels
     // (phase kernel, op-template kernel) carry a cascade copy
-    // of the workload-level GK source as local matter — so
+    // of the workload-level Polydat source as local matter — so
     // fiber.main_kernel evaluates dynamic workload bindings
     // (e.g. cycle-dependent) on its own state per cycle. See
     // `compile_from_scope` (and its callers in
@@ -1298,30 +1320,30 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // (a) fire side-effecting nodes like `throw_at` outside the
     // phase cascade context, and (b) cache stale values for
     // cycle-dependent bindings.
-    let workload_canonical_kernel: std::sync::Arc<polydat::kernel::GkKernel> =
+    let workload_canonical_kernel: std::sync::Arc<polydat::kernel::PolydatKernel> =
         std::sync::Arc::new(
             build_workload_root_kernel(
                 &params_kernel,
                 &all_ops_for_compile,
                 workload_dir,
-                gk_lib_paths.clone(),
+                polydat_lib_paths.clone(),
                 strict,
                 &config_refs,
                 "outer workload bindings",
                 cursor_limit,
                 &workload_params,
-                workload_level_gk.as_deref(),
+                workload_level_polydat.as_deref(),
             ).map_err(|e| format!("outer workload bindings: {e}"))?
         );
     let kernel = workload_canonical_kernel.clone();
 
 
     // Extract output manifest and folded constant values from outer kernel
-    // === GK Config Resolution (all done before kernel is consumed) ===
+    // === Polydat Config Resolution (all done before kernel is consumed) ===
     // (The `cycles=` / `concurrency=` resolution that used to
     // happen here fed the now-deleted single-activity branch.
     // The phased path resolves these per-phase inside
-    // `run_phase` via the phase-scope GK kernel.)
+    // `run_phase` via the phase-scope Polydat Kernel.)
 
     // Collect phases that are inside scenario for_each groups — these have
     // iteration variables resolved at runtime, not pre-resolution time.
@@ -1368,7 +1390,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         }
         let resolved = phase.cycles.as_ref().and_then(|s| {
             let expanded = expand_workload_params(s, &workload_params);
-            resolve_gk_config(&expanded, &kernel)
+            resolve_polydat_config(&expanded, &kernel)
         });
         resolved_phase_cycles.insert(name.clone(), resolved);
     }
@@ -1399,7 +1421,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // Plan the cadence tree from the observer's cadence preferences
     // (or defaults), validated against the scheduler base interval,
     // build the CadenceReporter, and wire it through the session +
-    // GK metric nodes as the single query source.
+    // Polydat metric nodes as the single query source.
     let base_interval = std::time::Duration::from_secs(1);
     let cadences = observer.cadences()
         .unwrap_or_else(nbrs_metrics::cadence::Cadences::defaults);
@@ -1670,12 +1692,27 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             std::sync::Arc::new(t)
         };
 
+        // dryrun=kernels: register the ride-along visitor BEFORE
+        // the install loop so every install_kernel call (root
+        // workload kernel + per-scope kernels in DFS pre-order)
+        // streams its polydat source to stdout. Cleared after
+        // the install loop runs (see the matching short-circuit
+        // a few hundred lines below).
+        if params.get("dryrun").map(|s| s.as_str()) == Some("kernels") {
+            print_kernel_dump_header();
+            crate::scope_tree::set_kernel_install_visitor(Some(Box::new(
+                |node, _idx, kernel| {
+                    print_kernel_for_scope(node, kernel);
+                },
+            )));
+        }
+
         // Install the canonical workload kernel (SRD 18b §"Iter
         // vars as scope outputs"). After this, intermediate
         // scopes (for_each, for_combinations, …) install their
         // own kernels in DFS pre-order below — each one's
         // synthesis reads its parent's manifest via the standard
-        // GK API on the parent's installed kernel.
+        // Polydat API on the parent's installed kernel.
         scope_tree.install_kernel(scope_tree.root, workload_canonical_kernel);
 
         // M3.2: install per-scope kernels for for_each /
@@ -1935,7 +1972,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     // with every other scope.
                     Some(InstallSpec::Bindings {
                         idx,
-                        bindings: nbrs_workload::model::BindingsDef::GkSource(source.clone()),
+                        bindings: nbrs_workload::model::BindingsDef::PolydatSource(source.clone()),
                     })
                 }
                 _ => None,
@@ -1954,7 +1991,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             // (those are pass-through structural).
             let parent_kernel = {
                 let mut cursor = scope_tree.nodes[idx].parent;
-                let mut found: Option<std::sync::Arc<polydat::kernel::GkKernel>> = None;
+                let mut found: Option<std::sync::Arc<polydat::kernel::PolydatKernel>> = None;
                 while let Some(p) = cursor {
                     if let Some(k) = scope_tree.nodes[p].cached_kernel.get() {
                         found = Some(k.clone());
@@ -1975,12 +2012,12 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     let bindings: Vec<(String, String)> = iter_vars.iter().cloned()
                         .zip(spec_exprs.iter().cloned()).collect();
                     // SRD-13f Push E: translate phase-level
-                    // `bindings:` into the GK source the
-                    // for_each synthesiser folds in. GkSource
+                    // `bindings:` into the Polydat source the
+                    // for_each synthesiser folds in. PolydatSource
                     // form passes verbatim; Map form serialises
                     // to `name := expr\n` lines.
                     let phase_bindings_source = match phase_bindings {
-                        nbrs_workload::model::BindingsDef::GkSource(s)
+                        nbrs_workload::model::BindingsDef::PolydatSource(s)
                             if !s.trim().is_empty() => Some(s),
                         nbrs_workload::model::BindingsDef::Map(m) if !m.is_empty() => {
                             let mut out = String::new();
@@ -1996,7 +2033,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         &parent_manifest,
                         &parent_kernel,
                         &workload_params,
-                        gk_lib_paths.clone(),
+                        polydat_lib_paths.clone(),
                         workload_dir_owned.as_deref(),
                         strict,
                         &context,
@@ -2010,7 +2047,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         &parent_manifest,
                         &parent_kernel,
                         &workload_params,
-                        gk_lib_paths.clone(),
+                        polydat_lib_paths.clone(),
                         workload_dir_owned.as_deref(),
                         strict,
                         &context,
@@ -2027,7 +2064,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         &parent_manifest,
                         &parent_kernel,
                         &workload_params,
-                        gk_lib_paths.clone(),
+                        polydat_lib_paths.clone(),
                         workload_dir_owned.as_deref(),
                         strict,
                         kernel_opt,
@@ -2041,7 +2078,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     // form that lowers to it). The synthesizer
                     // cascades workload params + parent
                     // outputs/inputs as externs and appends the
-                    // body verbatim; GK handles workload-param
+                    // body verbatim; Polydat handles workload-param
                     // interpolation and expression evaluation
                     // at compile time. Lexical shadowing of an
                     // upstream `final NAME` by the body's own
@@ -2053,7 +2090,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         &parent_manifest,
                         &parent_kernel,
                         &workload_params,
-                        gk_lib_paths.clone(),
+                        polydat_lib_paths.clone(),
                         workload_dir_owned.as_deref(),
                         strict,
                         &context,
@@ -2119,6 +2156,24 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             Some("emit") => Some("emit"),
             _ => None,
         };
+
+        // phases=<pattern> filter (bareword / glob / regex). When
+        // unset, every phase runs. When set, the planner's
+        // scenario-tree walker skips phase activations whose name
+        // doesn't match AND elides scope subtrees with no
+        // matching descendant.
+        let phase_filter: Option<Arc<crate::phase_filter::PhasePattern>> =
+            match params.get("phases").map(|s| s.as_str()).filter(|s| !s.is_empty()) {
+                None => None,
+                Some(src) => {
+                    let pat = crate::phase_filter::PhasePattern::parse(src)
+                        .map_err(|e| format!("phases= param: {e}"))?;
+                    crate::diag!(crate::observer::LogLevel::Info,
+                        "phases=<filter>: pattern '{src}' ({})",
+                        pat.dialect().as_str());
+                    Some(Arc::new(pat))
+                }
+            };
         let resource_pool = Arc::new(crate::resource_pool::ResourcePool::new());
         let initial_scene_tree_path = vec![crate::checkpoint::PathSegment::Scenario(
             scenario_name.to_string(),
@@ -2131,12 +2186,13 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             wrappers_override: workload_wrappers_override.clone(),
             wrap_default_order: cli_wrap_default_order.clone(),
             program: program.clone(),
-            gk_lib_paths: gk_lib_paths.clone(),
+            polydat_lib_paths: polydat_lib_paths.clone(),
             workload_dir: workload_dir.map(|p| p.to_path_buf()),
             strict,
             driver: driver.clone(),
             merged_params: merged_params.clone(),
             dry_run: dry_run_static,
+            phase_filter: phase_filter.clone(),
             diag: {
                 let mut d = diag.clone();
                 d.depth = ExecDepth::Phase;
@@ -2205,6 +2261,17 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 None
             }
         };
+
+        // dryrun=kernels short-circuit: pre-map already ran;
+        // the install-kernel visitor (registered above before
+        // execute_tree) streamed each scope's polydat source
+        // to stdout as the walk encountered it. Print the
+        // legend + exit cleanly.
+        if params.get("dryrun").map(|s| s.as_str()) == Some("kernels") {
+            print_kernel_dump_legend();
+            crate::scope_tree::set_kernel_install_visitor(None);
+            return Ok(());
+        }
 
         // --- Checkpoint writer + resume plan (SRD-44 / SRD-44a) ---
         //
@@ -2660,6 +2727,62 @@ pub async fn create_adapter(
 /// `CadenceReporter` → `MetricsQuery`. This function just runs the
 /// activity to completion; lifecycle flush (final delta +
 /// validation metrics) is handled by the caller (executor).
+/// Streaming print: one header line for the `dryrun=kernels`
+/// dump, fired before any kernel installs.
+fn print_kernel_dump_header() {
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let (bold, reset) = if is_tty {
+        ("\x1b[1m", "\x1b[0m")
+    } else { ("", "") };
+    println!();
+    println!("{bold}Polydat Scope Kernels{reset}");
+    println!("{bold}═════════════════════{reset}");
+    println!();
+}
+
+/// Streaming per-scope visitor callback. Prints the scope's
+/// logical name + the polydat source the kernel was compiled
+/// from, indented by the scope's depth.
+fn print_kernel_for_scope(
+    node: &crate::scope_tree::ScopeNode,
+    kernel: &polydat::kernel::PolydatKernel,
+) {
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let (bold, dim, reset, cyan, magenta, green) = if is_tty {
+        ("\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[36m", "\x1b[35m", "\x1b[32m")
+    } else { ("", "", "", "", "", "") };
+
+    let logical = if node.logical_name.is_empty() {
+        "<unnamed scope>".to_string()
+    } else {
+        node.logical_name.clone()
+    };
+    let depth_indent = "  ".repeat(node.depth);
+    println!("{depth_indent}{green}●{reset} {bold}{cyan}{logical}{reset} \
+              {dim}(depth={}, kind={:?}){reset}",
+        node.depth, node.kind);
+    let source = kernel.program().source().trim_end();
+    if source.is_empty() {
+        println!("{depth_indent}  {dim}(empty kernel — no own bindings){reset}");
+    } else {
+        for line in source.lines() {
+            println!("{depth_indent}  {magenta}│{reset} {line}");
+        }
+    }
+    println!();
+}
+
+/// Footer for the `dryrun=kernels` dump (legend + spacing).
+fn print_kernel_dump_legend() {
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let (dim, reset, green) = if is_tty {
+        ("\x1b[2m", "\x1b[0m", "\x1b[32m")
+    } else { ("", "", "") };
+    println!("  {dim}Legend: {green}●{reset}{dim} kernel installed at this scope. \
+              Flattened scopes (those that inherit a parent's kernel) emit no entry.{reset}");
+    println!();
+}
+
 pub async fn run_activity_simple(
     activity: Activity,
     adapters: std::collections::HashMap<String, Arc<dyn crate::adapter::DriverAdapter>>,
@@ -2750,7 +2873,7 @@ struct ParamRefs {
     runtime_only_placeholders: std::collections::HashSet<String>,
     /// Bare identifiers harvested from `if:` / `delay:`
     /// expression bodies. These may be wire names (referencing
-    /// values bound via GK source) rather than workload params,
+    /// values bound via Polydat source) rather than workload params,
     /// so they participate in the "declared but unreferenced"
     /// check (as references) but NOT in the "referenced but
     /// undeclared" check (since wire names legitimately live
@@ -2905,20 +3028,20 @@ fn scan_param_refs(text: &str, refs: &mut ParamRefs) {
             // the new validator surfaces an error if it doesn't.
             refs.placeholders.insert(body.to_string());
         } else {
-            // Inline GK expression body, e.g.
+            // Inline Polydat expression body, e.g.
             // `{is_one_of(cassandra_dialect, "cndb")}` or
             // `{:=mod(hash(cycle), 100):=}`. Walk the body,
             // collect identifier-shaped tokens that aren't
-            // inside string literals — those are GK name
+            // inside string literals — those are Polydat name
             // references which may resolve to workload params.
-            // Over-collecting (function names, GK stdlib
+            // Over-collecting (function names, Polydat stdlib
             // identifiers) is harmless — the validator's
             // membership test below uses the workload's own
             // declared params as the universe of interest.
             //
             // These land in `expression_idents` (not
             // `placeholders`) because they may legitimately
-            // resolve to GK wire names rather than workload
+            // resolve to Polydat wire names rather than workload
             // params; the "declared but unreferenced" check
             // still consults them via `ParamRefs::contains`,
             // but the new "referenced but undeclared" check
@@ -2935,7 +3058,7 @@ fn scan_param_refs(text: &str, refs: &mut ParamRefs) {
 /// regex / display strings, not name references. Recognises
 /// backslash escapes inside string literals.
 ///
-/// This is best-effort: it doesn't honor GK lexer subtleties
+/// This is best-effort: it doesn't honor Polydat lexer subtleties
 /// (numeric suffixes, raw strings, etc.). For the unused-param
 /// check in `runner.rs::collect_param_references` the goal is
 /// "does the param name appear anywhere we'd evaluate it" — a
@@ -2973,7 +3096,7 @@ fn scan_expression_idents(body: &str, out: &mut std::collections::HashSet<String
                 i += 1;
             }
             let ident = &body[start..i];
-            // Skip the few literals the GK lexer also recognises
+            // Skip the few literals the Polydat lexer also recognises
             // — they're definitely not param names.
             if ident != "true" && ident != "false" {
                 out.insert(ident.to_string());
@@ -3017,9 +3140,11 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             scan_param_refs(s, refs);
             scan_expression_idents(s, &mut refs.expression_idents);
         }
-        if let Some(s) = &op.delay {
-            scan_param_refs(s, refs);
-            scan_expression_idents(s, &mut refs.expression_idents);
+        if let Some(spec) = &op.delay {
+            for name in spec.names() {
+                scan_param_refs(name, refs);
+                scan_expression_idents(name, &mut refs.expression_idents);
+            }
         }
         // `params:` values can be strings, numbers, nested
         // maps (e.g. `relevancy: { actual: key, expected: …}`).
@@ -3029,12 +3154,12 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             scan_json_for_refs(v, refs);
         }
         match &op.bindings {
-            nbrs_workload::model::BindingsDef::GkSource(s) => {
-                // Two reference shapes inside GK source:
+            nbrs_workload::model::BindingsDef::PolydatSource(s) => {
+                // Two reference shapes inside Polydat source:
                 //   - `{name}` placeholders inside string literals
-                //     (resolved by GK string-interpolation against
+                //     (resolved by Polydat string-interpolation against
                 //     `const` bindings),
-                //   - bare identifier references in GK expressions
+                //   - bare identifier references in Polydat expressions
                 //     (e.g. `row := char_buf(..., cols)` — `cols`
                 //     resolves directly to its `const` binding).
                 // The unused-param validator must recognise both
@@ -3062,7 +3187,7 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
     // from workload-level bindings (`row := char_buf(..., cols)`)
     // looks unreferenced.
     match &workload.bindings {
-        nbrs_workload::model::BindingsDef::GkSource(s) => {
+        nbrs_workload::model::BindingsDef::PolydatSource(s) => {
             scan_param_refs(s, &mut refs);
             scan_expression_idents(s, &mut refs.expression_idents);
         }
@@ -3081,7 +3206,7 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
         // refs so a phase-binding-only consumer doesn't falsely
         // trip the unused-param check.
         match &phase.bindings {
-            nbrs_workload::model::BindingsDef::GkSource(s) => {
+            nbrs_workload::model::BindingsDef::PolydatSource(s) => {
                 scan_param_refs(s, &mut refs);
                 scan_expression_idents(s, &mut refs.expression_idents);
             }
@@ -3147,7 +3272,7 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
                 }
                 nbrs_workload::model::ScenarioNode::Bindings { source, children } => {
                     // Scenario-tree `bindings:` (and the `set:`
-                    // sugar form) carries GK matter text. Scan
+                    // sugar form) carries Polydat matter text. Scan
                     // the body for `{name}` placeholders and
                     // bare identifiers and route through
                     // `runtime_only_placeholders` so a param
@@ -3273,13 +3398,13 @@ fn collect_iter_vars_recursive(
 ///
 /// The collector also mirrors the workload-root kernel's auto-input
 /// behaviour (see `bindings.rs::compile_workload_kernel`): when no
-/// GK source anywhere in the workload declares any `input` slot,
+/// Polydat source anywhere in the workload declares any `input` slot,
 /// the runtime injects `input cycle: u64` so `{cycle}` resolves at
 /// op-template substitution time. Reflecting that injection in the
 /// validator allow-set prevents false-positive rejection of
 /// `{cycle}` placeholders in workloads with no explicit `bindings:`
 /// block (e.g. inline `op="tick={cycle}"`).
-fn collect_gk_binding_names(
+fn collect_polydat_binding_names(
     workload: &nbrs_workload::model::Workload,
 ) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
@@ -3289,15 +3414,15 @@ fn collect_gk_binding_names(
     let mut scan_bindings = |bindings: &BindingsDef,
                              sink: &mut std::collections::HashSet<String>| {
         match bindings {
-            BindingsDef::GkSource(s) => {
-                scan_gk_binding_lhs(sink, s);
+            BindingsDef::PolydatSource(s) => {
+                scan_polydat_binding_lhs(sink, s);
                 if s.lines().any(|l| l.trim_start().starts_with("input ")) {
                     any_input_decl = true;
                 }
             }
             BindingsDef::Map(m) => {
                 // Legacy nosqlbench-style chains (`Hash(); Mod(...)`)
-                // are translated into GK bindings at runtime by
+                // are translated into Polydat bindings at runtime by
                 // `compile_bindings_with_opts`; the keys of the map
                 // become the wire names those translations produce.
                 // The validator's allow-set must reflect those names
@@ -3337,47 +3462,47 @@ fn collect_gk_binding_names(
 }
 
 /// One occurrence of an invalid `{name}` placeholder inside a
-/// GK expression context. The `location` describes which source
+/// Polydat expression context. The `location` describes which source
 /// block in the workload (e.g. `"phase 'ann_query' bindings"`),
 /// and the `placeholder` is the literal body that appeared inside
 /// the offending `{...}` — kept verbatim so the error formatter
 /// can locate the exact YAML line by substring search.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct GkBraceFinding {
+struct PolydatBraceFinding {
     location: String,
     placeholder: String,
 }
 
 /// Collect every `{name}` placeholder that appears inside a GK
 /// source context but OUTSIDE a string literal — these will
-/// always fail GK compile because `{...}` isn't valid expression
+/// always fail Polydat compile because `{...}` isn't valid expression
 /// syntax. Each finding names the workload block it came from
 /// so the error formatter can point at the offending site.
 ///
-/// Walks every GK source in the workload: top-level `bindings:`,
+/// Walks every Polydat source in the workload: top-level `bindings:`,
 /// per-phase `bindings:`, per-op `bindings:`.
-fn collect_gk_brace_refs(
+fn collect_polydat_brace_refs(
     workload: &nbrs_workload::model::Workload,
-) -> Vec<GkBraceFinding> {
+) -> Vec<PolydatBraceFinding> {
     use nbrs_workload::model::BindingsDef;
-    let mut out: Vec<GkBraceFinding> = Vec::new();
+    let mut out: Vec<PolydatBraceFinding> = Vec::new();
     let mut push_refs = |loc: &str, source: &str| {
-        for name in scan_gk_braced_refs(source) {
-            out.push(GkBraceFinding {
+        for name in scan_polydat_braced_refs(source) {
+            out.push(PolydatBraceFinding {
                 location: loc.to_string(),
                 placeholder: name,
             });
         }
     };
-    if let BindingsDef::GkSource(s) = &workload.bindings {
+    if let BindingsDef::PolydatSource(s) = &workload.bindings {
         push_refs("workload `bindings:`", s);
     }
     for (phase_name, phase) in &workload.phases {
-        if let BindingsDef::GkSource(s) = &phase.bindings {
+        if let BindingsDef::PolydatSource(s) = &phase.bindings {
             push_refs(&format!("phase '{phase_name}' bindings"), s);
         }
         for op in &phase.ops {
-            if let BindingsDef::GkSource(s) = &op.bindings {
+            if let BindingsDef::PolydatSource(s) = &op.bindings {
                 push_refs(&format!("phase '{phase_name}' op-bindings"), s);
             }
         }
@@ -3410,13 +3535,13 @@ fn find_yaml_line_for_brace(yaml_source: &str, placeholder: &str) -> Option<usiz
         .map(|(idx, _)| idx + 1)
 }
 
-/// Scan GK source for `{name}` placeholders that appear OUTSIDE
+/// Scan Polydat source for `{name}` placeholders that appear OUTSIDE
 /// string literals and OUTSIDE comments. Inside `"..."` or
 /// `'...'` (with backslash escapes), `{...}` is part of the
 /// string and gets handled by runtime interpolation — leave it
 /// alone. Lines starting with `#` (and content after `#` on any
 /// line) are comments — also skipped.
-fn scan_gk_braced_refs(source: &str) -> Vec<String> {
+fn scan_polydat_braced_refs(source: &str) -> Vec<String> {
     let bytes = source.as_bytes();
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
@@ -3473,7 +3598,7 @@ fn scan_gk_braced_refs(source: &str) -> Vec<String> {
                 i = j + 1;
                 continue;
             }
-            // Unmatched `{` — let the GK parser handle it with
+            // Unmatched `{` — let the Polydat parser handle it with
             // its own error; don't double-report.
             break;
         }
@@ -3482,14 +3607,14 @@ fn scan_gk_braced_refs(source: &str) -> Vec<String> {
     out
 }
 
-/// Line-by-line scan of GK source for locally-bound names —
+/// Line-by-line scan of Polydat source for locally-bound names —
 /// `cursor NAME = …`, `shared NAME := …`, `const NAME := …`,
 /// `volatile NAME := …`, bare `NAME := …` assignments, and
 /// `input NAME[: TYPE]` / `input (NAME[: TYPE], ...)` declarations.
 /// Skips comments and blank lines. Lines that don't match any of
 /// these shapes (function-call statements, comments, expression
 /// continuations) are ignored.
-fn scan_gk_binding_lhs(
+fn scan_polydat_binding_lhs(
     out: &mut std::collections::HashSet<String>,
     source: &str,
 ) {
@@ -3565,7 +3690,7 @@ fn scan_gk_binding_lhs(
 /// - `cycle` / `cycle: u64`        → inserts `cycle`
 /// - `(a: u64, b: f64, ...)`        → inserts each declared name
 ///
-/// Mirrors `parse_input_decl` in the GK parser; this is a
+/// Mirrors `parse_input_decl` in the Polydat parser; this is a
 /// lightweight scanner used by scope-flattening to register
 /// locally-bound names without re-running the full lexer/parser.
 fn scan_input_decl_names(out: &mut std::collections::HashSet<String>, body: &str) {
@@ -3585,8 +3710,8 @@ fn scan_input_decl_names(out: &mut std::collections::HashSet<String>, body: &str
     }
 }
 
-/// Resolve a config value to u64 via GK scope lookup or numeric parsing.
-pub fn resolve_gk_config(value: &str, kernel: &polydat::kernel::GkKernel) -> Option<u64> {
+/// Resolve a config value to u64 via Polydat scope lookup or numeric parsing.
+pub fn resolve_polydat_config(value: &str, kernel: &polydat::kernel::PolydatKernel) -> Option<u64> {
     if value.starts_with('{') && value.ends_with('}') {
         let inner = &value[1..value.len() - 1];
         // SRD-16 §"Visibility Rules: Shadowing": `lookup`
@@ -3613,7 +3738,7 @@ pub fn resolve_gk_config(value: &str, kernel: &polydat::kernel::GkKernel) -> Opt
     }
 }
 
-/// Convert a GK Value to u64, handling f64→u64 truncation.
+/// Convert a Polydat Value to u64, handling f64→u64 truncation.
 fn value_to_u64(v: &polydat::ast::Value) -> u64 {
     match v {
         polydat::ast::Value::U64(n) => *n,
@@ -3981,10 +4106,10 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
         } else if arg.ends_with(".yaml") || arg.ends_with(".yml") {
             // Workload file path — handled elsewhere
         } else if RECOGNIZED_BARE_FLAGS.contains(&arg.as_str())
-            || arg.starts_with("--gk-lib=")
+            || arg.starts_with("--polydat-lib=")
         {
             // Bare runner flag — consumed elsewhere via `args`
-            // scan (e.g. `--strict`, `--gk-lib=path`).
+            // scan (e.g. `--strict`, `--polydat-lib=path`).
         } else {
             crate::diag!(crate::observer::LogLevel::Error, "error: unrecognized argument '{arg}'. Expected key=value format.");
             std::process::exit(1);
@@ -4068,7 +4193,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 }
 
 // =========================================================================
-// GK Scope Composition (sysref 16)
+// Polydat Scope Composition (sysref 16)
 // =========================================================================
 
 // `ManifestEntry` and `extract_manifest` now live in
@@ -4147,33 +4272,33 @@ mod tests {
         assert_eq!(m.get("concurrency").map(String::as_str), Some("100"));
     }
 
-    // ── GK binding-LHS-name scanner ──────────────────────────
+    // ── Polydat binding-LHS-name scanner ──────────────────────────
 
     fn scan_to_set(src: &str) -> std::collections::HashSet<String> {
         let mut out = std::collections::HashSet::new();
-        scan_gk_binding_lhs(&mut out, src);
+        scan_polydat_binding_lhs(&mut out, src);
         out
     }
 
-    // ── scan_gk_braced_refs: invalid `{...}` outside strings ─
+    // ── scan_polydat_braced_refs: invalid `{...}` outside strings ─
 
     #[test]
-    fn scan_gk_braced_refs_flags_expression_position_braces() {
+    fn scan_polydat_braced_refs_flags_expression_position_braces() {
         // The user's case: `{name}` outside any string literal,
-        // sitting where GK expects an expression. Always invalid.
-        let refs = scan_gk_braced_refs(
+        // sitting where Polydat expects an expression. Always invalid.
+        let refs = scan_polydat_braced_refs(
             "const passes := multiples_at_least({min_query_cycles}, base)\n"
         );
         assert_eq!(refs, vec!["min_query_cycles".to_string()]);
     }
 
     #[test]
-    fn scan_gk_braced_refs_ignores_braces_inside_double_quotes() {
+    fn scan_polydat_braced_refs_ignores_braces_inside_double_quotes() {
         // Inside `"…"` braces are valid — either workload-param
         // interp (if the runtime expanded the string earlier) or
-        // GK string interpolation (parser turns it into printf).
-        // Either way, scan_gk_braced_refs must NOT flag them.
-        let refs = scan_gk_braced_refs(
+        // Polydat string interpolation (parser turns it into printf).
+        // Either way, scan_polydat_braced_refs must NOT flag them.
+        let refs = scan_polydat_braced_refs(
             "const prebuffered := dataset_prebuffer(\"{dataset}:{profile}\")\n"
         );
         assert!(refs.is_empty(),
@@ -4182,8 +4307,8 @@ mod tests {
     }
 
     #[test]
-    fn scan_gk_braced_refs_ignores_braces_inside_single_quotes() {
-        let refs = scan_gk_braced_refs(
+    fn scan_polydat_braced_refs_ignores_braces_inside_single_quotes() {
+        let refs = scan_polydat_braced_refs(
             "tag := assert_eq(actual, '{expected}')\n"
         );
         assert!(refs.is_empty(),
@@ -4191,19 +4316,19 @@ mod tests {
     }
 
     #[test]
-    fn scan_gk_braced_refs_handles_escaped_quotes_in_strings() {
+    fn scan_polydat_braced_refs_handles_escaped_quotes_in_strings() {
         // `"foo \"with brace {x}\" bar"` — the inner `{x}` is
         // inside a string the whole way through; backslash-escape
         // must not be treated as the end of the string.
-        let refs = scan_gk_braced_refs(
+        let refs = scan_polydat_braced_refs(
             "x := concat(\"prefix \\\"{embedded}\\\" suffix\")\n"
         );
         assert!(refs.is_empty(), "escaped quotes inside strings: {refs:?}");
     }
 
     #[test]
-    fn scan_gk_braced_refs_ignores_comments() {
-        let refs = scan_gk_braced_refs(
+    fn scan_polydat_braced_refs_ignores_comments() {
+        let refs = scan_polydat_braced_refs(
             "# this is a comment with {fake} placeholder\n\
              const real := 1\n"
         );
@@ -4212,8 +4337,8 @@ mod tests {
     }
 
     #[test]
-    fn scan_gk_braced_refs_catches_multiple_invalid_braces() {
-        let refs = scan_gk_braced_refs(
+    fn scan_polydat_braced_refs_catches_multiple_invalid_braces() {
+        let refs = scan_polydat_braced_refs(
             "a := foo({x}, {y})\n\
              b := bar({z})\n"
         );
@@ -4225,19 +4350,19 @@ mod tests {
     }
 
     #[test]
-    fn scan_gk_braced_refs_handles_mixed_string_and_expression_braces() {
+    fn scan_polydat_braced_refs_handles_mixed_string_and_expression_braces() {
         // `{inside}` is in a string (OK); `{outside}` is in
         // expression position (flagged).
-        let refs = scan_gk_braced_refs(
+        let refs = scan_polydat_braced_refs(
             "x := concat(\"foo {inside}\", {outside})\n"
         );
         assert_eq!(refs, vec!["outside".to_string()]);
     }
 
-    // ── GK binding-LHS-name scanner ──────────────────────────
+    // ── Polydat binding-LHS-name scanner ──────────────────────────
 
     #[test]
-    fn scan_gk_binding_lhs_handles_tuple_destructure() {
+    fn scan_polydat_binding_lhs_handles_tuple_destructure() {
         // Multi-output stdlib calls bind multiple names via
         // tuple destructure: `(a, b, c) := func(...)`. The
         // scanner must register every name on the LHS so the
@@ -4253,7 +4378,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_gk_binding_lhs_finds_all_recognised_shapes() {
+    fn scan_polydat_binding_lhs_finds_all_recognised_shapes() {
         // Validates the wire-name scanner picks up every shape:
         // init / cursor / shared / final modifier-prefixed
         // bindings, plus bare `NAME := …` assignments.
@@ -4272,7 +4397,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_gk_binding_lhs_skips_comments_and_blank_lines() {
+    fn scan_polydat_binding_lhs_skips_comments_and_blank_lines() {
         let names = scan_to_set(
             "# comment\n\
              \n\
@@ -4284,7 +4409,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_gk_binding_lhs_ignores_non_binding_lines() {
+    fn scan_polydat_binding_lhs_ignores_non_binding_lines() {
         // Expression-call statements and continuation lines must
         // not introduce phantom wires.
         let names = scan_to_set(
@@ -4297,20 +4422,20 @@ mod tests {
     }
 
     #[test]
-    fn scan_gk_binding_lhs_picks_up_input_decl_bare() {
+    fn scan_polydat_binding_lhs_picks_up_input_decl_bare() {
         let names = scan_to_set("input cycle: u64\nx := hash(cycle)\n");
         assert!(names.contains("cycle"));
         assert!(names.contains("x"));
     }
 
     #[test]
-    fn scan_gk_binding_lhs_picks_up_input_decl_untyped() {
+    fn scan_polydat_binding_lhs_picks_up_input_decl_untyped() {
         let names = scan_to_set("input cycle\n");
         assert!(names.contains("cycle"));
     }
 
     #[test]
-    fn scan_gk_binding_lhs_picks_up_input_decl_tuple() {
+    fn scan_polydat_binding_lhs_picks_up_input_decl_tuple() {
         let names = scan_to_set("input (cycle: u64, q: f64)\n");
         assert!(names.contains("cycle"));
         assert!(names.contains("q"));

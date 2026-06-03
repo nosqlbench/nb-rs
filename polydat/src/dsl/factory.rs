@@ -1,10 +1,10 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Node factory: maps GK function names to runtime node instances.
+//! Node factory: maps Polydat function names to runtime node instances.
 //!
 //! `build_node` is the single dispatch point used by the compiler's
-//! `compile_binding` to turn a parsed call expression into a `Box<dyn GkNode>`.
+//! `compile_binding` to turn a parsed call expression into a `Box<dyn PolydatNode>`.
 //! `ConstArg` captures assembly-time constant arguments extracted from the AST.
 //!
 //! Dispatch is decentralized: each node module exposes its own `build_node`
@@ -12,7 +12,7 @@
 //! tries each module in turn and falls back to the registry for variadic nodes.
 
 use crate::compile::assembly::WireRef;
-use crate::ast::GkNode;
+use crate::ast::PolydatNode;
 use crate::library::identity::ConstU64;
 
 use crate::dsl::registry;
@@ -72,7 +72,7 @@ impl ConstArg {
 /// `rate_adj := control_set("rate", target)` calls the factory
 /// with `current_binding()` returning `"rate_adj"`, which the
 /// node stores for runtime attribution in
-/// `ControlOrigin::Gk { binding }`.
+/// `ControlOrigin::Polydat { binding }`.
 pub mod compile_ctx {
     use std::cell::RefCell;
     thread_local! {
@@ -109,7 +109,7 @@ pub fn build_node(
     wires: &[WireRef],
     wire_types: &[crate::ast::PortType],
     consts: &[ConstArg],
-) -> Result<Box<dyn GkNode>, String> {
+) -> Result<Box<dyn PolydatNode>, String> {
     // --- Per-module dispatch via inventory ---
 
     use crate::dsl::registry::NodeRegistration;
@@ -233,8 +233,8 @@ pub fn build_node(
     if let Some(suggestion) = registry::suggest_function(func) {
         msg.push_str(&format!("\n  Did you mean '{suggestion}'?"));
     }
-    msg.push_str("\n\n  This function is not registered in the GK function library.");
-    msg.push_str("\n  Use 'nbrs describe gk functions' to see all available functions.");
+    msg.push_str("\n\n  This function is not registered in the wiring function library.");
+    msg.push_str("\n  Use 'nbrs describe wiring functions' to see all available functions.");
     Err(msg)
 }
 

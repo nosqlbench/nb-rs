@@ -1,13 +1,13 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Abstract syntax tree for the GK DSL.
+//! Abstract syntax tree for the Polydat DSL.
 
 use crate::dsl::lexer::Span;
 
-/// A complete `.gk` file.
+/// A complete `.polydat` file.
 #[derive(Debug, Clone)]
-pub struct GkFile {
+pub struct PolydatFile {
     pub statements: Vec<Statement>,
 }
 
@@ -20,7 +20,7 @@ pub enum Statement {
     ///
     /// Surface forms (parser desugars the tuple into N `InputDecl`s,
     /// mirroring the module-signature param-list shape from
-    /// `nbrs/stdlib/modeling.gk`):
+    /// `nbrs/stdlib/modeling.polydat`):
     /// ```text
     /// input cycle: u64
     /// input (cycle: u64, q: f64)
@@ -71,7 +71,7 @@ pub enum Statement {
 /// An external input port declaration.
 ///
 /// Ports persist across `set_inputs()` calls within a stanza.
-/// Written by capture extraction, read by GK nodes.
+/// Written by capture extraction, read by Polydat nodes.
 ///
 /// ```text
 /// extern balance: f64 = 0.0
@@ -265,7 +265,7 @@ pub struct CursorDecl {
     pub name: String,
     pub constructor: Expr,
     /// SRD 71 `over <expr>` clause. The expression is parsed
-    /// the same way as any other GK expression so authors can
+    /// the same way as any other Polydat expression so authors can
     /// name a workload parameter's `.partitions` projection
     /// (e.g. `cursor.partitions`), an iter-var bound by an
     /// enclosing `for:`, or a sibling cursor's `.cursor`

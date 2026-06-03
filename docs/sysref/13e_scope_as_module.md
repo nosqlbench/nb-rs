@@ -1,4 +1,4 @@
-# 13e: Scope-as-Module — Sub-contexts as First-Class GK Modules
+# 13e: Scope-as-Module — Sub-contexts as First-Class Polydat Modules
 
 **Status:** normative (design — not yet implemented)
 **Owner:** polydat (kernel/program API, ScopeModule type),
@@ -26,7 +26,7 @@ Today's nbrs runtime treats every sub-scope (phase, op-template,
 contract surface against its parent. The synthesisers
 (`build_scope`, `build_op_template_scope_kernel`,
 `synthesize_for_each_scope`, `build_do_loop_scope_kernel`) emit
-ad-hoc GK source strings — `extern <name>: <type>` lines
+ad-hoc Polydat source strings — `extern <name>: <type>` lines
 hand-concatenated with the body — and the parent/child wiring is a
 pile of name-keyed loops at fiber-creation time
 (`OpBuilder::create_fiber_builder`'s scope-values reapply,
@@ -44,7 +44,7 @@ runtime panic far from the cause, with no compile-time check that
 could have caught it.
 
 This SRD specifies the unifying refinement: **every sub-scope is a
-formal GK module.** Its parameter list is the parent-import
+formal Polydat module.** Its parameter list is the parent-import
 contract. Its output list is the child-export contract. Its body is
 this scope's local definitions. Instancing the module is a single
 typed operation — `ScopeModule::instance_under(parent)` — that
@@ -158,9 +158,9 @@ build_op_template_scope_kernel(op, parent_manifest, parent_kernel,
   → emits `extern <name>: <type>` or `const <name> := <literal>`
     or skips
   → string-concatenates body_text after the externs
-  → calls compile_gk_with_libs on the assembled string
+  → calls compile_polydat_with_libs on the assembled string
   → mark_inherited_outputs + bind_outer_scope + propagate_parent_inputs
-  → returns a GkKernel
+  → returns a PolydatKernel
 ```
 
 Three properties of this shape that this SRD eliminates:
@@ -247,7 +247,7 @@ impl ScopeModule {
 }
 ```
 
-`ScopeKernel` is the typed wrapper: `Arc<GkProgram>` + `GkState` +
+`ScopeKernel` is the typed wrapper: `Arc<GkProgram>` + `PolydatState` +
 the typed handle bundle from `ScopeContract`. Methods on
 `ScopeKernel` only accept handles issued by *this* module; the
 type system rejects the cross-kernel mis-route at the use site.
@@ -324,7 +324,7 @@ For every `ScopeModule`, the compiler:
 1. **Validates the import contract against the parent module's
    export contract.** Each import name must exist as an export on
    the parent. Types must match (or be widenable per the standard
-   GK widening rules). Modifiers must be compatible (an import
+   Polydat widening rules). Modifiers must be compatible (an import
    requiring `shared` requires the parent's matching export to be
    `shared`). A `compile-const` import requires the parent's
    matching export to be `compile-const` or `scope-init`. This
@@ -523,11 +523,11 @@ step and the test suite remains the contract for correctness.
 - `build_scope`, `build_op_template_scope_kernel`,
   `synthesize_for_each_scope`, `build_do_loop_scope_kernel`
   rewritten to construct `ScopeModule` values rather than
-  hand-rolled GK source strings.
+  hand-rolled Polydat source strings.
 - The string emission becomes an internal detail of
   `ScopeModule::compile_under`.
 - Each synthesiser's call site changes from
-  `Result<GkKernel, String>` to `Result<ScopeKernel<M>,
+  `Result<PolydatKernel, String>` to `Result<ScopeKernel<M>,
   ContractViolation>`.
 - The Phase 9 followup fixes (Coordinate skip, workload-param
   precedence, owning-phase resolution, post-bind init pull)
@@ -562,7 +562,7 @@ step and the test suite remains the contract for correctness.
   from `ScopeModule::instance_under`.
 - `scope_values` (the kernel method returning
   `Vec<(String, Value)>`) is dropped — it has no consumers.
-- `OpBuilder::new(GkKernel)` and the various
+- `OpBuilder::new(PolydatKernel)` and the various
   `OpBuilder::from_program` constructors are dropped or
   reduced to test-only scaffolding.
 
@@ -631,7 +631,7 @@ prove the legacy phase-merge unmerge preserves behaviour
   Should be straightforward but needs explicit verification
   against SRD-16's lock-free metric examples.
 - **Should `ScopeModule` be a public surface?** The user-
-  facing GK module via SRD-13 is similar in shape but
+  facing Polydat module via SRD-13 is similar in shape but
   different in lifecycle (file-loaded, parsed, inlined). A
   unified surface might be cleaner but reading the SRDs
   suggests they're better kept distinct: SRD-13 modules are
@@ -646,7 +646,7 @@ prove the legacy phase-merge unmerge preserves behaviour
   Stage 2 can land incrementally (one synthesiser at a time)
   or has to be atomic. Initial read: incremental works
   because each synthesiser's caller currently destructures
-  on a `GkKernel` and `ScopeKernel<M>::into_inner()` can
+  on a `PolydatKernel` and `ScopeKernel<M>::into_inner()` can
   produce one for the unconverted callers.
 
 ---

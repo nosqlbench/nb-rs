@@ -1,10 +1,10 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! End-to-end tests: programmatically assemble GK kernels and verify
+//! End-to-end tests: programmatically assemble Polydat Kernels and verify
 //! pull-through evaluation produces correct values.
 
-use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::arithmetic::{AddU64, DivU64, Interleave, MixedRadix, ModU64};
 use polydat::library::convert::U64ToString;
 use polydat::library::hash::{Hash64, HashRange};
@@ -12,7 +12,7 @@ use polydat::library::hash::{Hash64, HashRange};
 /// Simple linear chain: cycle → hash → mod → output
 #[test]
 fn simple_hash_mod_chain() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("m", Box::new(ModU64::new(1000)), vec![WireRef::node("h")]);
@@ -39,7 +39,7 @@ fn simple_hash_mod_chain() {
 /// Multi-output: mixed_radix decomposition
 #[test]
 fn mixed_radix_decomposition() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node(
         "decompose",
@@ -64,7 +64,7 @@ fn mixed_radix_decomposition() {
 /// Shared intermediate: tenant_h used by two downstream nodes
 #[test]
 fn shared_intermediate() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node(
         "decompose",
@@ -111,7 +111,7 @@ fn shared_intermediate() {
 /// Auto edge adapter: u64 → String coercion
 #[test]
 fn auto_edge_adapter_u64_to_string() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node(
         "val",
@@ -147,7 +147,7 @@ fn auto_edge_adapter_u64_to_string() {
 /// Two-input node: interleave
 #[test]
 fn two_input_interleave() {
-    let mut asm = GkAssembler::new(vec!["a".into(), "b".into()]);
+    let mut asm = PolydatAssembler::new(vec!["a".into(), "b".into()]);
 
     asm.add_node(
         "mixed",
@@ -184,7 +184,7 @@ fn two_input_interleave() {
 /// same coordinate context should not re-evaluate upstream nodes.
 #[test]
 fn memoization_within_context() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("m", Box::new(ModU64::new(1000)), vec![WireRef::node("h")]);
@@ -201,7 +201,7 @@ fn memoization_within_context() {
 /// Context change invalidates memoization.
 #[test]
 fn context_change_invalidates() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_output("result", WireRef::node("h"));
@@ -220,7 +220,7 @@ fn context_change_invalidates() {
 /// Assembly error: unknown wire reference
 #[test]
 fn error_unknown_wire() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node(
         "h",
@@ -236,7 +236,7 @@ fn error_unknown_wire() {
 /// Assembly error: arity mismatch
 #[test]
 fn error_arity_mismatch() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     // Hash64 expects 1 input, give it 2
     asm.add_node(
@@ -253,7 +253,7 @@ fn error_arity_mismatch() {
 /// Larger DAG resembling the time-series workload from the SRD.
 #[test]
 fn timeseries_workload_sketch() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     // Decompose cycle into tenant, device, reading
     asm.add_node(

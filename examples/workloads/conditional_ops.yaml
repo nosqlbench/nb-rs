@@ -1,6 +1,6 @@
 # Conditional op execution via `if:` field.
 #
-# The `if` field names a GK binding that is evaluated per cycle.
+# The `if` field names a Polydat binding that is evaluated per cycle.
 # If the binding is falsy (0, false, empty string), the op is skipped.
 #
 # Usage:

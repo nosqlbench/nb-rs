@@ -24,7 +24,7 @@ Related host-side docs:
 [SRD-13e scope-as-module](../../../docs/sysref/13e_scope_as_module.md),
 [engines.md (per-scope canonical kernel cache)](engines.md),
 [module_system.md](module_system.md),
-[SRD-68 dispenser-owned GK context](../../../docs/sysref/68_dispenser_owned_gk_context.md).
+[SRD-68 dispenser-owned Polydat context](../../../docs/sysref/68_dispenser_owned_polydat_context.md).
 
 ---
 
@@ -70,7 +70,7 @@ with how the runtime needs to work:
 
 ### One logical graph; scope boundaries partition lifecycle and access
 
-The GK matter spanning a workload is *one logical graph*. Scope
+The Polydat matter spanning a workload is *one logical graph*. Scope
 boundaries (workload, phase, for_each iteration, op-template,
 per-fiber) are not value-isolation barriers — they partition:
 

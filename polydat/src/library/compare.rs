@@ -24,7 +24,7 @@
 //! widening, and pass them as the `cond` input to `select_*`.
 
 use crate::ast::{
-    CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value,
+    CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ macro_rules! cmp_u64_node {
                 }
             }
         }
-        impl GkNode for $struct_name {
+        impl PolydatNode for $struct_name {
             fn meta(&self) -> &NodeMeta { &self.meta }
             fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
                 let a = inputs[0].as_u64();
@@ -97,7 +97,7 @@ macro_rules! cmp_f64_node {
                 }
             }
         }
-        impl GkNode for $struct_name {
+        impl PolydatNode for $struct_name {
             fn meta(&self) -> &NodeMeta { &self.meta }
             fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
                 let a = inputs[0].as_f64();
@@ -196,7 +196,7 @@ impl SelectU64 {
         }
     }
 }
-impl GkNode for SelectU64 {
+impl PolydatNode for SelectU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let cond = inputs[0].as_u64();
@@ -240,7 +240,7 @@ impl StrEq {
         }
     }
 }
-impl GkNode for StrEq {
+impl PolydatNode for StrEq {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let eq = match (&inputs[0], &inputs[1]) {
@@ -270,7 +270,7 @@ impl StrNe {
         }
     }
 }
-impl GkNode for StrNe {
+impl PolydatNode for StrNe {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let eq = match (&inputs[0], &inputs[1]) {
@@ -300,7 +300,7 @@ impl SelectF64 {
         }
     }
 }
-impl GkNode for SelectF64 {
+impl PolydatNode for SelectF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let cond = inputs[0].as_u64();
@@ -337,7 +337,7 @@ impl SelectStr {
         }
     }
 }
-impl GkNode for SelectStr {
+impl PolydatNode for SelectStr {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let cond = inputs[0].as_u64();
@@ -490,7 +490,7 @@ pub(crate) fn build_node(
     name: &str,
     _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "u64_eq" => Some(Ok(Box::new(U64Eq::new()))),
         "u64_ne" => Some(Ok(Box::new(U64Ne::new()))),
@@ -520,7 +520,7 @@ mod tests {
     use super::*;
     use crate::ast::Value;
 
-    fn run(node: &dyn GkNode, ins: Vec<Value>) -> Value {
+    fn run(node: &dyn PolydatNode, ins: Vec<Value>) -> Value {
         let mut outs = vec![Value::U64(0)];
         node.eval(&ins, &mut outs);
         outs.into_iter().next().unwrap()

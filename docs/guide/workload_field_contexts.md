@@ -14,9 +14,9 @@ Every workload field falls on two axes:
 **Axis 1 — Source of value:**
 - *Literal* — the YAML text IS the value (e.g. `kind: gauge`,
   `concurrency: 100`).
-- *Wire reference* — a name the GK kernel resolves at cycle time
+- *Wire reference* — a name the Polydat kernel resolves at cycle time
   (e.g. `expected: ground_truth`).
-- *GK expression* — a full expression evaluated at cycle time
+- *Polydat expression* — a full expression evaluated at cycle time
   (e.g. `value: count + 1`).
 
 **Axis 2 — Type of value:**
@@ -35,7 +35,7 @@ itself doesn't carry a marker — the field name does.
 Inside a *string-via-template* field:
 
 - `{name}` — replaced by `wires.get(name).to_display_string()`.
-- `{{ expr }}` — evaluates `expr` as a GK expression, then
+- `{{ expr }}` — evaluates `expr` as a Polydat expression, then
   stringifies the result.
 - A *pure-token* field (the entire content is `{name}` with no
   surrounding text) preserves the typed value — useful for
@@ -46,19 +46,19 @@ Inside a *string-via-template* field:
 
 Inside a *GK-expression* or *wire-reference* field:
 
-- Bare identifiers are GK wire names.
+- Bare identifiers are Polydat wire names.
 - Strings need `"..."` (GK syntax).
-- GK's own string templating (`"id_" + format_u64(cycle, 10)`)
+- Polydat's own string templating (`"id_" + format_u64(cycle, 10)`)
   produces typed `Value::Str`.
 
 ## Field-by-field reference
 
 | Field | Source | Type | Example |
 |---|---|---|---|
-| `bindings:` (string or map sugar) | GK source block | per-statement | `cursor q = range(0, n)` |
-| `result:` (string or map sugar) | GK source block | per-statement | `row_count := count` |
-| `metrics.value:` | GK expression | typed numeric | `count + 1` |
-| `if:` | GK expression | typed bool | `cycle > 0` |
+| `bindings:` (string or map sugar) | Polydat source block | per-statement | `cursor q = range(0, n)` |
+| `result:` (string or map sugar) | Polydat source block | per-statement | `row_count := count` |
+| `metrics.value:` | Polydat expression | typed numeric | `count + 1` |
+| `if:` | Polydat expression | typed bool | `cycle > 0` |
 | `evaluations.relevancy.expected:` | wire reference | typed (VecI32 / VecF32 / Str) | `ground_truth` |
 | `evaluations.relevancy.actual:` | result-body column reference | string column name | `key` |
 | `evaluations.relevancy.k:` / `.r:` | literal int OR wire reference (bare or `"{name}"`) | usize | `100`, `k`, or `"{k}"` |
@@ -68,12 +68,12 @@ Inside a *GK-expression* or *wire-reference* field:
 | `concurrency:`, `cycles:`, `rate:`, … | literal scalar (or `"{param}"` text-template) | u64 / f64 | `100` |
 | `kind:`, `unit:`, `format:` (metric) | literal enum / string | structural | `gauge` |
 
-## Map-form sugar for GK text blocks
+## Map-form sugar for Polydat text blocks
 
-Any field that accepts a GK text block accepts either form:
+Any field that accepts a Polydat text block accepts either form:
 
 ```yaml
-# String form — raw GK source.
+# String form — raw Polydat source.
 bindings: |
   cursor q = range(0, n)
   query := query_at(prebuffered, q)
@@ -114,13 +114,13 @@ enough to wedge its slot open.
   pure-token form, the entire field value is `{name}`.
 - "I want a typed value read straight off the kernel for an evaluator
   / metric / conditional" → bare wire name, no braces.
-- "I want a one-shot GK computation inline" → `{{ expr }}` inside a
-  string-template field, or write a GK expression directly in a
+- "I want a one-shot Polydat computation inline" → `{{ expr }}` inside a
+  string-template field, or write a Polydat expression directly in a
   GK-expression field.
 
 ## What changed (post-SRD-68 follow-up, 2026-05-14)
 
-- `metrics.value:` accepts arbitrary GK expressions, not just bare
+- `metrics.value:` accepts arbitrary Polydat expressions, not just bare
   binding names. The op-template synthesiser compiles each
   expression as `__metric_<name> := <expr>` so the magic-extern
   walker sees its identifier references.

@@ -3,14 +3,14 @@
 
 //! Predicate analyzer — spec §10.9.
 //!
-//! Structured analysis of GK boolean expressions used as
+//! Structured analysis of Polydat boolean expressions used as
 //! `filter` predicates. Output is [`PredicateInfo`] —
 //! consumed by the optimizer's R5 (per-axis filter pushdown)
 //! and the deferred R8 / R9 / R10 rules.
 //!
 //! The analyzer operates on the predicate **string** (the form
 //! carried by [`crate::iteration::comprehension::ast::Comprehension::Filter`]).
-//! A future revision may take a pre-parsed `GkExpr`; for the
+//! A future revision may take a pre-parsed `PolydatExpr`; for the
 //! initial implementation, recognizers walk the source text
 //! and match the §10.9.5 pattern catalog.
 //!

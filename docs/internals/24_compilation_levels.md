@@ -1,4 +1,4 @@
-# GK Compilation Levels and Buffer Management
+# Polydat Compilation Levels and Buffer Management
 
 How the four compilation modes share a single flat buffer and how
 nodes at different levels coexist in the hybrid kernel.
@@ -14,7 +14,7 @@ optimal as possible — no lazy initialization, no first-cycle
 penalties, no lock contention from concurrent setup.
 
 This means:
-- **GK kernel compilation** (P1/P2/P3/Hybrid) happens entirely at init
+- **Polydat kernel compilation** (P1/P2/P3/Hybrid) happens entirely at init
 - **Distribution LUTs** are built at init (1000-point tables precomputed)
 - **Module resolution and inlining** happens at compile time, not per-cycle
 - **JIT native code generation** completes before the first `set_coordinates()`
@@ -91,7 +91,7 @@ Overhead: one function pointer call + memcpy per step.
 
 The entire DAG is compiled to a single native function:
 ```
-fn gk_kernel(coords: *const u64, buffer: *mut u64)
+fn polydat_kernel(coords: *const u64, buffer: *mut u64)
 ```
 
 Each node becomes inline machine instructions:
@@ -181,7 +181,7 @@ inter-level marshaling.
 
 ## Thread Scalability
 
-A GK kernel is a **pure function** from input coordinates to output
+A Polydat kernel is a **pure function** from input coordinates to output
 values. Given the same coordinates, it always produces the same
 outputs regardless of which thread evaluates it. This is the
 foundation of the threading model.
@@ -216,11 +216,11 @@ The kernel is split into two structs at the type level:
 └───────────────────────────────────────────────────┘
 ```
 
-`GkProgram` is `Send + Sync` and shared via `Arc`. It contains
+`PolydatProgram` is `Send + Sync` and shared via `Arc`. It contains
 the compiled node instances, wiring, and output map — all immutable
 after assembly.
 
-`GkState` is per-fiber mutable state: value buffers, generation
+`PolydatState` is per-fiber mutable state: value buffers, generation
 counter, and current coordinates. Each fiber creates its own state
 via `program.create_state()`. No sharing, no synchronization, no
 blocking.
@@ -292,7 +292,7 @@ passing the buffer through function signatures.
 
 ### Scaling Properties
 
-Because the only per-thread resource is a small buffer, GK kernel
+Because the only per-thread resource is a small buffer, Polydat kernel
 evaluation scales linearly with thread count:
 
 - **No shared mutable state**: The kernel code is immutable.
@@ -362,7 +362,7 @@ access pattern (out-of-order, skipped cycles, replayed ranges).
   and counters use internal atomics. Designed for concurrent writes.
 - **Error router**: Shared `Arc<ErrorRouter>`, read-only after parse.
 
-The GK kernel evaluation itself — the computationally expensive part
+The Polydat kernel evaluation itself — the computationally expensive part
 — is entirely contention-free.
 
 ---

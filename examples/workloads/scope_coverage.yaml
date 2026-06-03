@@ -1,6 +1,6 @@
 #!/usr/bin/env nbrs
 # scope_coverage.yaml — Thematic coverage workload for the
-# scope-model / GK comprehension / modifier surface (SRD 13c /
+# scope-model / Polydat comprehension / modifier surface (SRD 13c /
 # 13d / 13f / 16 / 18b).
 #
 # Follows the `<theme>_coverage.yaml` pattern: one operator-
@@ -99,7 +99,7 @@ bindings: |
 
   # ── derived binding consuming a shared cell value ──────────
   # The cell is a slot+passthrough output, so downstream
-  # GK wiring reads it like any other value.
+  # Polydat wiring reads it like any other value.
   doubled_count := mul(count_big, 2)
 
 scenarios:
@@ -223,7 +223,7 @@ phases:
         stmt: "cm/const base_dim={base_dim}"
 
   # Derived binding `doubled_count := mul(count_big, 2)` —
-  # consumes a shared cell value through GK wiring; should be
+  # consumes a shared cell value through Polydat wiring; should be
   # 2 × 1000 = 2000.
   emit_derived:
     cycles: 1
@@ -333,8 +333,8 @@ phases:
 # # Limitation: per-cycle propagation from a leaf phase's
 # # per-cycle kernel back to the loop scope's SharedCell isn't
 # # wired — children can READ the cell value through
-# # bind_outer_scope, but a per-cycle GK binding can't WRITE to
-# # it (there's no GK binding syntax that targets an outer
+# # bind_outer_scope, but a per-cycle Polydat binding can't WRITE to
+# # it (there's no Polydat binding syntax that targets an outer
 # # shared cell, and `shared X := <literal>` only accepts
 # # literal initializers). The do-loop dispatcher writes the
 # # counter on the loop kernel each iteration, but child phases

@@ -62,7 +62,7 @@ impl OpDispenser for ScyllaPreparedDispenser {
             // SRD-68 Push 5: pull values by bind-point name in `?`
             // order through the generic wires API. Empty string is
             // the legacy fallback for an unresolved bind name; the
-            // GK compiler should have provisioned every name, but
+            // Polydat compiler should have provisioned every name, but
             // an absent name shouldn't fail-stop the cycle.
             let bind_values: Vec<Value> = self.bind_names.iter()
                 .map(|name| wires.get(name).unwrap_or(Value::Str(String::new().into())))

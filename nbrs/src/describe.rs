@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! The `describe` subcommand: introspect GK functions, stdlib, modules, and DAGs.
+//! The `describe` subcommand: introspect wiring functions, stdlib, modules, and DAGs.
 
 use polydat::dsl::registry;
 
@@ -21,32 +21,48 @@ pub fn describe_command(args: &[String]) {
     let topic = first;
     let subtopic = args.get(1).map(|s| s.as_str()).unwrap_or("");
 
+    // Parse `--verbose` / `-v` flag from the args (applies to
+    // wiring functions; ignored elsewhere for now).
+    let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
+
     match (topic, subtopic) {
         ("adapter", "") => describe_adapters_list(),
         ("adapter", name) => describe_adapter(name),
-        ("gk", "functions") => describe_gk_functions(),
-        ("gk", "functions-md") => {
-            let rest: Vec<String> = args.iter().skip(2).cloned().collect();
-            let path = rest.first().map(|s| s.as_str()).unwrap_or("gk_functions.md");
-            describe_gk_functions_md(path);
+        ("wiring", "functions") => describe_wiring_functions(verbose),
+        ("wiring", "functions-md") => {
+            let rest: Vec<String> = args.iter().skip(2)
+                .filter(|a| !a.starts_with('-'))
+                .cloned().collect();
+            let path = rest.first().map(|s| s.as_str()).unwrap_or("wiring_functions.md");
+            describe_wiring_functions_md(path);
         }
-        ("gk", "stdlib") => describe_gk_stdlib(),
-        ("gk", "dag") => {
-            // Remaining args after "describe gk dag" are the GK source or file
-            let rest: Vec<String> = args.iter().skip(2).cloned().collect();
-            describe_gk_dag(&rest);
+        ("wiring", "stdlib") => describe_wiring_stdlib(),
+        ("wiring", "types") => describe_wiring_types(),
+        ("wiring", "types-md") => {
+            let rest: Vec<String> = args.iter().skip(2)
+                .filter(|a| !a.starts_with('-'))
+                .cloned().collect();
+            let path = rest.first().map(|s| s.as_str()).unwrap_or("wiring_types.md");
+            describe_wiring_types_md(path);
         }
-        ("gk", "modules") => {
+        ("wiring", "dag") => {
+            // Remaining args after "describe wiring dag" are the wiring source or file
             let rest: Vec<String> = args.iter().skip(2).cloned().collect();
-            describe_gk_modules(&rest);
+            describe_wiring_dag(&rest);
         }
-        ("gk", _) => {
-            eprintln!("nbrs describe gk <subtopic>");
-            eprintln!("  functions    List all GK node functions");
-            eprintln!("  functions-md Dump all GK node functions to a markdown file");
-            eprintln!("  stdlib       List embedded standard library modules");
-            eprintln!("  dag          Render a GK source as DOT, Mermaid, or SVG");
-            eprintln!("  modules      List modules from a directory");
+        ("wiring", "modules") => {
+            let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+            describe_wiring_modules(&rest);
+        }
+        ("wiring", _) => {
+            eprintln!("nbrs describe wiring <subtopic>");
+            eprintln!("  functions [--verbose]  List wiring functions (verbose: + signatures, types, associativity)");
+            eprintln!("  functions-md           Dump all wiring functions to a markdown file");
+            eprintln!("  types                  List wiring port types with descriptions");
+            eprintln!("  types-md               Dump wiring types to a markdown file");
+            eprintln!("  stdlib                 List embedded standard library modules");
+            eprintln!("  dag                    Render a wiring source as DOT, Mermaid, or SVG");
+            eprintln!("  modules                List modules from a directory");
         }
         // SRD-32a Push 4 — discoverability commands.
         // `describe wrappers` dumps the wrapper registry; the
@@ -79,7 +95,7 @@ pub fn describe_command(args: &[String]) {
         _ => {
             eprintln!("nbrs describe <topic>");
             eprintln!("  adapter[=<name>]   List adapters / show one adapter's params + drivers");
-            eprintln!("  gk                 Generation kernel topics");
+            eprintln!("  wiring             Wiring (graph-kernel) topics: functions, modules, dag, stdlib");
             eprintln!("  wrappers           List the registered op-template wrappers");
             eprintln!("  op <wkl> <op>      Show the resolved wrapper stack for one op");
             eprintln!();
@@ -176,7 +192,7 @@ fn describe_adapter(name: &str) {
     }
 }
 
-fn describe_gk_functions() {
+fn describe_wiring_functions(verbose: bool) {
     use nbrs_activity::bindings::probe_compile_level;
 
     let grouped = registry::by_category();
@@ -190,8 +206,8 @@ fn describe_gk_functions() {
     };
 
     println!();
-    println!("{bold}GK Node Functions{reset}");
-    println!("{bold}═════════════════{reset}");
+    println!("{bold}Wiring Node Functions{reset}");
+    println!("{bold}═════════════════════{reset}");
     println!();
 
     for (cat, funcs) in &grouped {
@@ -247,6 +263,23 @@ fn describe_gk_functions() {
             print!(" {arity_padded}");
             print!("  {level_col}");
             println!("  {dim}{}{reset}", sig.description);
+
+            if verbose {
+                // Extra line: polydat module-definition syntax
+                // form of the function — `name(arg: type, ...) ->
+                // (out: type, ...)` — plus the
+                // commutativity/associativity tag and arity
+                // qualifier. This is the same surface the
+                // workload-author sees in the polydat manual,
+                // so workload bindings and describe output stay
+                // word-for-word aligned.
+                let module_def_line = format_module_def_signature(sig);
+                let assoc_line = format_commutativity_and_arity(sig);
+                println!("  {dim}    sig: {reset}{module_def_line}");
+                if !assoc_line.is_empty() {
+                    println!("  {dim}    attr:{reset} {dim}{assoc_line}{reset}");
+                }
+            }
         }
         println!();
     }
@@ -259,23 +292,194 @@ fn describe_gk_functions() {
     println!("  {dim}Levels probed from live node instances.{reset}");
     println!("  {dim}Nodes with constant params (mod, div, etc.) reach P3 when{reset}");
     println!("  {dim}constants are known at assembly time, P2 otherwise.{reset}");
+    if !verbose {
+        println!();
+        println!("  {dim}Pass --verbose for per-function signatures, types, and associativity.{reset}");
+    }
     println!();
 }
 
-/// Dump all GK node function metadata to a markdown file.
+/// Render a `FuncSig` as a polydat module-definition signature:
+/// `name(arg1: type1, arg2: type2, ...) -> (out: type)`.
+///
+/// Wire input types and output types are probed from the live
+/// node — the same probe `probe_compile_level` uses to fold a
+/// `out := func(args)` program, then read `NodeMeta` off the
+/// resulting node. Falls back to `?` only when the probe fails
+/// (rare; signature was unrenderable or compile error).
+///
+/// For variadic functions an `...` ellipsis follows the
+/// last repeating slot.
+fn format_module_def_signature(sig: &polydat::dsl::registry::FuncSig) -> String {
+    use polydat::dsl::registry::Arity;
+    // Probe the live node's NodeMeta to get real wire input
+    // types + real output port types.
+    let probed = probe_node_meta(sig.name, sig.params);
+    let wire_types: Vec<String> = probed.as_ref()
+        .map(|m| m.wire_inputs().iter().map(|p| port_type_label(p.typ).to_string()).collect())
+        .unwrap_or_default();
+    let out_types: Vec<String> = probed.as_ref()
+        .map(|m| m.outs.iter().map(|p| port_type_label(p.typ).to_string()).collect())
+        .unwrap_or_default();
+
+    let mut parts: Vec<String> = Vec::with_capacity(sig.params.len());
+    let mut wire_idx: usize = 0;
+    for p in sig.params {
+        let ty = if p.slot_type.is_wire() {
+            let resolved = wire_types.get(wire_idx).cloned()
+                .unwrap_or_else(|| "wire".to_string());
+            wire_idx += 1;
+            resolved
+        } else {
+            slot_type_label(p.slot_type).to_string()
+        };
+        let prefix = if p.required { "" } else { "[" };
+        let suffix = if p.required { "" } else { "]" };
+        parts.push(format!("{prefix}{name}: {ty}{suffix}", name = p.name));
+    }
+    let arity_suffix = match &sig.arity {
+        Arity::Fixed => "",
+        Arity::VariadicWires { .. } | Arity::VariadicConsts { .. } | Arity::VariadicGroup { .. } => ", ...",
+    };
+    let args = format!("{}{arity_suffix}", parts.join(", "));
+    let out = if out_types.is_empty() {
+        if sig.outputs == 0 {
+            "(out: ?, ...)".to_string()
+        } else if sig.outputs == 1 {
+            "(out: ?)".to_string()
+        } else {
+            let outs: Vec<String> = (0..sig.outputs).map(|i| format!("out{i}: ?")).collect();
+            format!("({})", outs.join(", "))
+        }
+    } else if out_types.len() == 1 {
+        format!("(out: {})", out_types[0])
+    } else {
+        let outs: Vec<String> = out_types.iter().enumerate()
+            .map(|(i, t)| format!("out{i}: {t}"))
+            .collect();
+        format!("({})", outs.join(", "))
+    };
+    format!("{name}({args}) -> {out}", name = sig.name)
+}
+
+/// Probe the live NodeMeta for a function by compiling
+/// `out := func(args)` with example args and reading the last
+/// node's meta. Returns `None` if the compile fails — the
+/// caller falls back to `wire` / `?` placeholders.
+fn probe_node_meta(
+    func_name: &str,
+    params: &[polydat::dsl::registry::ParamSpec],
+) -> Option<polydat::ast::NodeMeta> {
+    let parts: Vec<String> = params.iter().map(|p| p.example.to_string()).collect();
+    let source = if parts.is_empty() {
+        format!("input cycle: u64\nout := {func_name}()")
+    } else {
+        format!("input cycle: u64\nout := {func_name}({})", parts.join(", "))
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || polydat::dsl::compile_polydat(&source),
+    ));
+    match result {
+        Ok(Ok(kernel)) => {
+            let program = kernel.program();
+            // Find the node whose name matches `func_name`,
+            // walking in reverse so the most-recent matching
+            // one wins. The compiler may inject helpers
+            // (adapter splices, const folds) ahead of or
+            // behind the user-visible node; matching by name
+            // skips them.
+            let n = program.node_count();
+            for i in (0..n).rev() {
+                let m = program.node_meta(i);
+                if m.name == func_name {
+                    return Some(polydat::ast::NodeMeta {
+                        name: m.name.clone(),
+                        ins: m.ins.clone(),
+                        outs: m.outs.clone(),
+                    });
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn port_type_label(t: polydat::ast::PortType) -> &'static str {
+    use polydat::ast::PortType;
+    match t {
+        PortType::U64 => "u64",
+        PortType::F64 => "f64",
+        PortType::U32 => "u32",
+        PortType::I32 => "i32",
+        PortType::I64 => "i64",
+        PortType::F32 => "f32",
+        PortType::Bool => "bool",
+        PortType::Str => "str",
+        PortType::Bytes => "bytes",
+        PortType::Json => "json",
+        PortType::Ext => "ext",
+        PortType::Handle => "handle",
+        PortType::VecF32 => "vec<f32>",
+        PortType::VecI32 => "vec<i32>",
+        PortType::VecF64 => "vec<f64>",
+        PortType::VecI64 => "vec<i64>",
+        PortType::VecF16 => "vec<f16>",
+        PortType::VecI16 => "vec<i16>",
+    }
+}
+
+fn slot_type_label(slot: polydat::ast::SlotType) -> &'static str {
+    use polydat::ast::SlotType;
+    match slot {
+        SlotType::Wire        => "wire",
+        SlotType::ConstU64    => "const u64",
+        SlotType::ConstF64    => "const f64",
+        SlotType::ConstStr    => "const str",
+        SlotType::ConstVecU64 => "const [u64]",
+        SlotType::ConstVecF64 => "const [f64]",
+    }
+}
+
+fn format_commutativity_and_arity(sig: &polydat::dsl::registry::FuncSig) -> String {
+    use polydat::ast::Commutativity;
+    use polydat::dsl::registry::Arity;
+    let mut bits: Vec<String> = Vec::new();
+    match &sig.commutativity {
+        Commutativity::Positional => bits.push("positional".into()),
+        Commutativity::AllCommutative => bits.push("commutative".into()),
+        Commutativity::Groups(g) => bits.push(format!("commute-groups={g:?}")),
+    }
+    match &sig.arity {
+        Arity::Fixed => bits.push(format!("arity=fixed({})", sig.params.len())),
+        Arity::VariadicWires { min_wires } =>
+            bits.push(format!("arity=variadic-wires(min={min_wires})")),
+        Arity::VariadicConsts { min_consts } =>
+            bits.push(format!("arity=variadic-consts(min={min_consts})")),
+        Arity::VariadicGroup { group, min_repeats } =>
+            bits.push(format!("arity=variadic-group({n} types × min {min_repeats})", n = group.len())),
+    }
+    if sig.outputs == 0 {
+        bits.push("dynamic outputs".into());
+    }
+    bits.join("  ");
+    bits.join("  ")
+}
+
+/// Dump all Polydat node function metadata to a markdown file.
 ///
 /// Writes a complete reference of all registered functions grouped
 /// by category, including signatures, parameters, descriptions,
 /// and help text.
-fn describe_gk_functions_md(path: &str) {
+fn describe_wiring_functions_md(path: &str) {
     use nbrs_activity::bindings::probe_compile_level;
     use std::io::Write;
 
     let grouped = registry::by_category();
     let mut out = String::new();
 
-    out.push_str("# GK Node Functions Reference\n\n");
-    out.push_str("Auto-generated by `nbrs describe gk functions-md`.\n\n");
+    out.push_str("# Polydat Node Functions Reference\n\n");
+    out.push_str("Auto-generated by `nbrs describe wiring functions-md`.\n\n");
 
     // Summary table
     let total: usize = grouped.iter().map(|(_, funcs)| funcs.len()).sum();
@@ -413,10 +617,120 @@ fn describe_gk_functions_md(path: &str) {
 
 /// Display embedded stdlib modules with their typed signatures.
 ///
-/// Parses each `.gk` source from the compiled-in standard library,
+/// Render the catalog of wiring port types with their canonical
+/// names + per-variant docstrings. Mirrors the layout of
+/// `describe_wiring_functions` (header, dimmed descriptions) so
+/// the two surfaces look like sibling readouts.
+fn describe_wiring_types() {
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let (bold, dim, reset, cyan, magenta) = if is_tty {
+        ("\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[36m", "\x1b[35m")
+    } else { ("", "", "", "", "") };
+
+    println!();
+    println!("{bold}Wiring Port Types{reset}");
+    println!("{bold}═════════════════{reset}");
+    println!();
+
+    let groups: &[(&str, &[(polydat::ast::PortType, &str)])] = &[
+        ("Scalars (numeric)", &[
+            (polydat::ast::PortType::U64,  "64-bit unsigned integer; the primary numeric carrier"),
+            (polydat::ast::PortType::I64,  "64-bit signed integer"),
+            (polydat::ast::PortType::U32,  "32-bit unsigned integer; widens to U64 automatically"),
+            (polydat::ast::PortType::I32,  "32-bit signed integer; widens to I64 automatically"),
+            (polydat::ast::PortType::F64,  "64-bit IEEE 754 float (math, distributions, noise)"),
+            (polydat::ast::PortType::F32,  "32-bit IEEE 754 float; widens to F64 automatically"),
+        ]),
+        ("Scalars (other)", &[
+            (polydat::ast::PortType::Bool, "Boolean true/false; widens to U64 (1/0)"),
+            (polydat::ast::PortType::Str,  "Heap-allocated string; everything auto-converts to Str"),
+            (polydat::ast::PortType::Bytes, "Raw byte buffer"),
+            (polydat::ast::PortType::Json, "Structured JSON value"),
+        ]),
+        ("Vectors", &[
+            (polydat::ast::PortType::VecF32, "Typed `f32` vector (`Arc<[f32]>`); native for CQL `vector<float, N>`"),
+            (polydat::ast::PortType::VecF64, "Typed `f64` vector (`Arc<[f64]>`); native for CQL `vector<double, N>`"),
+            (polydat::ast::PortType::VecF16, "Typed half-precision float vector (`Arc<[half::f16]>`); native for CQL `vector<half_float, N>`"),
+            (polydat::ast::PortType::VecI16, "Typed `i16` vector (`Arc<[i16]>`); native for CQL `vector<smallint, N>`"),
+            (polydat::ast::PortType::VecI32, "Typed `i32` vector (`Arc<[i32]>`)"),
+            (polydat::ast::PortType::VecI64, "Typed `i64` vector (`Arc<[i64]>`); native for CQL `vector<bigint, N>`"),
+        ]),
+        ("Reference types", &[
+            (polydat::ast::PortType::Handle, "Type-erased `Arc<dyn Any + Send + Sync>` handle to a resolved resource (dataset, prepared statement, ...)"),
+            (polydat::ast::PortType::Ext,    "Adapter-contributed reflected type (e.g. CQL UUID)"),
+        ]),
+    ];
+
+    for (group_name, types) in groups {
+        println!("  {bold}{cyan}── {group_name} ──{reset}");
+        println!();
+        for (t, desc) in *types {
+            let label = port_type_label(*t);
+            let label_padded = format!("{:<16}", label);
+            println!("  {bold}{magenta}{label_padded}{reset}  {dim}{desc}{reset}");
+        }
+        println!();
+    }
+}
+
+/// Dump the wiring port types as a markdown reference table.
+fn describe_wiring_types_md(path: &str) {
+    use std::io::Write;
+    let mut out = String::new();
+    out.push_str("# Wiring Port Types\n\n");
+    out.push_str("Auto-generated by `nbrs describe wiring types-md`.\n\n");
+    out.push_str("Port types are the wire-level type tags carried by every wiring node's input / output ports. Conversions are inserted automatically at compile time when a producer's port type differs from its consumer's; see the widening notes per variant.\n\n");
+
+    let groups: &[(&str, &[(polydat::ast::PortType, &str)])] = &[
+        ("Scalars (numeric)", &[
+            (polydat::ast::PortType::U64,  "64-bit unsigned integer; the primary numeric carrier"),
+            (polydat::ast::PortType::I64,  "64-bit signed integer"),
+            (polydat::ast::PortType::U32,  "32-bit unsigned integer; widens to U64 automatically"),
+            (polydat::ast::PortType::I32,  "32-bit signed integer; widens to I64 automatically"),
+            (polydat::ast::PortType::F64,  "64-bit IEEE 754 float (math, distributions, noise)"),
+            (polydat::ast::PortType::F32,  "32-bit IEEE 754 float; widens to F64 automatically"),
+        ]),
+        ("Scalars (other)", &[
+            (polydat::ast::PortType::Bool, "Boolean true/false; widens to U64 (1/0)"),
+            (polydat::ast::PortType::Str,  "Heap-allocated string; everything auto-converts to Str"),
+            (polydat::ast::PortType::Bytes, "Raw byte buffer"),
+            (polydat::ast::PortType::Json, "Structured JSON value"),
+        ]),
+        ("Vectors", &[
+            (polydat::ast::PortType::VecF32, "Typed `f32` vector (`Arc<[f32]>`); native for CQL `vector<float, N>`"),
+            (polydat::ast::PortType::VecF64, "Typed `f64` vector (`Arc<[f64]>`); native for CQL `vector<double, N>`"),
+            (polydat::ast::PortType::VecF16, "Typed half-precision float vector (`Arc<[half::f16]>`); native for CQL `vector<half_float, N>`"),
+            (polydat::ast::PortType::VecI16, "Typed `i16` vector (`Arc<[i16]>`); native for CQL `vector<smallint, N>`"),
+            (polydat::ast::PortType::VecI32, "Typed `i32` vector (`Arc<[i32]>`)"),
+            (polydat::ast::PortType::VecI64, "Typed `i64` vector (`Arc<[i64]>`); native for CQL `vector<bigint, N>`"),
+        ]),
+        ("Reference types", &[
+            (polydat::ast::PortType::Handle, "Type-erased `Arc<dyn Any + Send + Sync>` handle to a resolved resource (dataset, prepared statement, ...)"),
+            (polydat::ast::PortType::Ext,    "Adapter-contributed reflected type (e.g. CQL UUID)"),
+        ]),
+    ];
+
+    for (group_name, types) in groups {
+        out.push_str(&format!("## {group_name}\n\n"));
+        out.push_str("| Label | Description |\n|---|---|\n");
+        for (t, desc) in *types {
+            out.push_str(&format!("| `{}` | {} |\n", port_type_label(*t), desc));
+        }
+        out.push('\n');
+    }
+
+    match std::fs::File::create(path)
+        .and_then(|mut f| f.write_all(out.as_bytes()))
+    {
+        Ok(_) => println!("wrote {path} ({} bytes)", out.len()),
+        Err(e) => eprintln!("failed to write {path}: {e}"),
+    }
+}
+
+/// Parses each `.polydat` source from the compiled-in standard library,
 /// extracts `ModuleDef` statements, and prints them grouped by
 /// category (source filename) with ANSI coloring.
-fn describe_gk_stdlib() {
+fn describe_wiring_stdlib() {
     use polydat::dsl::lexer::lex;
     use polydat::dsl::parser::parse;
     use polydat::dsl::ast::Statement;
@@ -436,9 +750,9 @@ fn describe_gk_stdlib() {
     println!();
 
     for (filename, source) in sources {
-        // Category name: filename without .gk extension, title-cased
+        // Category name: filename without .polydat extension, title-cased
         let category = filename
-            .strip_suffix(".gk")
+            .strip_suffix(".polydat")
             .unwrap_or(filename);
         let category_title = category
             .chars()
@@ -506,15 +820,15 @@ fn describe_gk_stdlib() {
     }
 }
 
-/// Display GK modules found in a directory.
+/// Display Polydat modules found in a directory.
 ///
-/// Scans a directory for `.gk` files, parses each one, extracts
+/// Scans a directory for `.polydat` files, parses each one, extracts
 /// `ModuleDef` statements, and displays them with their typed
-/// signatures — same format as `describe gk stdlib`.
+/// signatures — same format as `describe wiring stdlib`.
 ///
 /// Usage:
-///   nbrs describe gk modules [--dir=path]
-fn describe_gk_modules(args: &[String]) {
+///   nbrs describe wiring modules [--dir=path]
+fn describe_wiring_modules(args: &[String]) {
     use polydat::dsl::lexer::lex;
     use polydat::dsl::parser::parse;
     use polydat::dsl::ast::Statement;
@@ -545,20 +859,20 @@ fn describe_gk_modules(args: &[String]) {
         }
     };
 
-    let mut gk_files: Vec<std::path::PathBuf> = entries
+    let mut polydat_files: Vec<std::path::PathBuf> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("gk"))
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("polydat"))
         .collect();
-    gk_files.sort();
+    polydat_files.sort();
 
-    if gk_files.is_empty() {
-        println!("  {dim}(no .gk files found){reset}");
+    if polydat_files.is_empty() {
+        println!("  {dim}(no .polydat files found){reset}");
         println!();
         return;
     }
 
-    for path in &gk_files {
+    for path in &polydat_files {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => { eprintln!("warning: failed to read {}: {e}", path.display()); continue; }
@@ -569,7 +883,7 @@ fn describe_gk_modules(args: &[String]) {
             .unwrap_or("unknown");
 
         let category = filename
-            .strip_suffix(".gk")
+            .strip_suffix(".polydat")
             .unwrap_or(filename);
         let category_title = category
             .chars()
@@ -675,12 +989,12 @@ fn extract_first_comment(source: &str, name: &str) -> Option<String> {
     None
 }
 
-/// Render a GK source file as DOT, Mermaid, or SVG.
+/// Render a Polydat source file as DOT, Mermaid, or SVG.
 ///
 /// Usage:
-///   nbrs describe gk dag <file.gk> [--format=dot|mermaid|svg] [--output=file]
-///   nbrs describe gk dag --with-flattening <workload.yaml>
-fn describe_gk_dag(args: &[String]) {
+///   nbrs describe wiring dag <file.polydat> [--format=dot|mermaid|svg] [--output=file]
+///   nbrs describe wiring dag --with-flattening <workload.yaml>
+fn describe_wiring_dag(args: &[String]) {
     use polydat::viz;
 
     let file = args.iter().find(|a| !a.starts_with("--"));
@@ -700,10 +1014,10 @@ fn describe_gk_dag(args: &[String]) {
             }
         },
         None => {
-            eprintln!("nbrs describe gk dag <file.gk> [--format=dot|mermaid|svg] [--output=file]");
-            eprintln!("nbrs describe gk dag --with-flattening <workload.yaml>");
+            eprintln!("nbrs describe wiring dag <file.polydat> [--format=dot|mermaid|svg] [--output=file]");
+            eprintln!("nbrs describe wiring dag --with-flattening <workload.yaml>");
             eprintln!();
-            eprintln!("Renders a GK source file as a DAG diagram.");
+            eprintln!("Renders a Polydat source file as a DAG diagram.");
             eprintln!("  --format=dot         DOT digraph (default)");
             eprintln!("  --format=mermaid     Mermaid flowchart");
             eprintln!("  --format=svg         Self-contained SVG (pure Rust, no external tools)");
@@ -716,7 +1030,7 @@ fn describe_gk_dag(args: &[String]) {
     };
 
     // SRD-13d Phase 8: --with-flattening switches the surface from
-    // "render a GK source string" to "parse a workload YAML, build
+    // "render a Polydat source string" to "parse a workload YAML, build
     // its scope tree, run mark_scope_flattening with the
     // 'materialise everything' stub predicate, and print the
     // per-node summary." When SRD-13d Phase 3 lands and supplies
@@ -742,9 +1056,9 @@ fn describe_gk_dag(args: &[String]) {
     }
 
     let result = match format {
-        "dot" => viz::gk_to_dot(&source),
-        "mermaid" => viz::gk_to_mermaid(&source),
-        "svg" => viz::gk_to_svg(&source),
+        "dot" => viz::polydat_to_dot(&source),
+        "mermaid" => viz::polydat_to_mermaid(&source),
+        "svg" => viz::polydat_to_svg(&source),
         other => {
             eprintln!("error: unknown format '{other}' (use dot, mermaid, or svg)");
             return;
@@ -775,7 +1089,7 @@ fn describe_gk_dag(args: &[String]) {
 /// to (the SRD-13d "walking parent" reference).
 ///
 /// Today's predicate is a stub — SRD-13d Phase 3 will install
-/// the real one (consulting `HasGkMatter` + program-hash
+/// the real one (consulting `HasPolydatMatter` + program-hash
 /// equivalence). Wiring everything else end-to-end now means
 /// that swap is a one-liner when the predicate lands.
 ///
@@ -820,7 +1134,7 @@ fn render_flattening_summary(yaml_source: &str, path: &str) -> Result<String, St
 
     let mut tree = ScopeTree::build(scenario_name, &scenario_nodes);
     // SRD-13d Phase 3 stub: every node materialises. Swap in
-    // the real predicate (HasGkMatter classification +
+    // the real predicate (HasPolydatMatter classification +
     // program-hash equivalence) when Phase 3 lands.
     tree.mark_scope_flattening(|_kind, _idx| true);
 
@@ -877,7 +1191,7 @@ fn render_flattening_summary(yaml_source: &str, path: &str) -> Result<String, St
 /// completion+help; per-topic flag declarations remain inside
 /// `describe_command`.
 ///
-/// **Open gap:** topics like `describe gk`, `describe adapter`
+/// **Open gap:** topics like `describe wiring`, `describe adapter`
 /// could be modelled as nested `Command`s with their own
 /// flags. Future work would walk each topic's parser and
 /// lift its flag set into a Command subtree.
@@ -889,7 +1203,7 @@ pub fn spec() -> crate::cli_spec::Command {
     }
     Command {
         name: "describe",
-        help: "Documentation surface (`describe gk`, `describe adapter`, …).",
+        help: "Documentation surface (`describe wiring`, `describe adapter`, …).",
         category: Category::Documentation,
         level: Level::FullSurface,
         flags: Vec::new(),
@@ -1012,7 +1326,7 @@ pub fn render_wrappers_table() -> String {
 fn trigger_label(name: &str, owned_fields: &[&str]) -> String {
     match name {
         "traverse" => "always".to_string(),
-        "throttle" => "delay set".to_string(),
+        "delay" => "delay set".to_string(),
         "validate" => "verify/relevancy set".to_string(),
         "poll" => "poll: set".to_string(),
         "if" => "if: set".to_string(),
@@ -1158,9 +1472,9 @@ pub fn render_op_description(workload_path: &str, op_name: &str) -> Result<Strin
 }
 
 #[cfg(test)]
-mod describe_gk_dag_flattening_tests {
+mod describe_wiring_dag_flattening_tests {
     //! SRD-13d Phase 8 — the `--with-flattening` surface on
-    //! `nbrs describe gk dag`. Drives the same code path the CLI
+    //! `nbrs describe wiring dag`. Drives the same code path the CLI
     //! does (parse YAML → build ScopeTree → mark → render
     //! summary) and asserts the produced text contains the
     //! per-node fields the SRD calls out: logical_name,
@@ -1286,7 +1600,7 @@ mod describe_wrappers_tests {
         assert!(out.contains("CONSTRAINTS"), "header missing CONSTRAINTS:\n{out}");
         // Each registered wrapper appears.
         for name in [
-            "traverse", "throttle", "validate", "poll",
+            "traverse", "delay", "validate", "poll",
             "if", "emit", "result", "metrics",
         ] {
             assert!(out.contains(name),
@@ -1384,7 +1698,7 @@ phases:
             .lines()
             .filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()))
             .collect();
-        for unexpected in ["throttle", "validate", "poll", "emit", "metrics"] {
+        for unexpected in ["delay", "validate", "poll", "emit", "metrics"] {
             for line in &stack_lines {
                 assert!(!line.contains(unexpected),
                     "unexpected wrapper `{unexpected}` in stack line: {line}");

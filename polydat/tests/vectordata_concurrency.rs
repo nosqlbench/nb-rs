@@ -7,7 +7,7 @@
 //! concurrency level. Detects race conditions in mmap readers,
 //! caching, or dataset resolution.
 
-use polydat::dsl::compile::compile_gk;
+use polydat::dsl::compile::compile_polydat;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -16,7 +16,7 @@ fn read_vector_single(source: &str, index: u64) -> String {
     let src = format!(
         "input cycle: u64\nvec := vector_at(cycle, \"{source}\")"
     );
-    let mut kernel = compile_gk(&src).unwrap();
+    let mut kernel = compile_polydat(&src).unwrap();
     kernel.set_inputs(&[index]);
     kernel.pull("vec").to_display_string()
 }
@@ -51,7 +51,7 @@ fn concurrent_reads_match_sequential() {
             let src = format!(
                 "input cycle: u64\nvec := vector_at(cycle, \"{source}\")"
             );
-            let mut kernel = compile_gk(&src).unwrap();
+            let mut kernel = compile_polydat(&src).unwrap();
 
             let mut mismatches = Vec::new();
             for _iter in 0..iterations {
@@ -85,7 +85,7 @@ fn concurrent_reads_match_sequential() {
 
 /// Stress test: shared kernel, concurrent fiber-like eval.
 /// This mirrors the actual production path where all fibers share
-/// one Arc<GkProgram> and each has its own GkState.
+/// one Arc<PolydatProgram> and each has its own PolydatState.
 #[test]
 #[ignore] // requires example dataset
 fn shared_kernel_concurrent_eval() {
@@ -93,7 +93,7 @@ fn shared_kernel_concurrent_eval() {
     let src = format!(
         "input cycle: u64\nvec := vector_at(cycle, \"{source}\")"
     );
-    let kernel = compile_gk(&src).unwrap();
+    let kernel = compile_polydat(&src).unwrap();
     let program = kernel.into_program();
 
     let thread_count = 32;
@@ -129,14 +129,14 @@ fn shared_kernel_concurrent_eval() {
 }
 
 /// Tokio async stress test: matches production execution model.
-/// 100 tokio tasks sharing one Arc<GkProgram>, each with its own GkState,
+/// 100 tokio tasks sharing one Arc<PolydatProgram>, each with its own PolydatState,
 /// reading vectors concurrently — same as the activity executor.
 /// Helper: compile kernel on a blocking thread to avoid nested runtime.
-fn compile_shared_program(source: &str) -> Arc<polydat::kernel::GkProgram> {
+fn compile_shared_program(source: &str) -> Arc<polydat::kernel::PolydatProgram> {
     let src = format!(
         "input cycle: u64\nvec := vector_at(cycle, \"{source}\")"
     );
-    let kernel = compile_gk(&src).unwrap();
+    let kernel = compile_polydat(&src).unwrap();
     kernel.into_program()
 }
 
@@ -251,7 +251,7 @@ fn high_contention_reads() {
                 let src = format!(
                     "input cycle: u64\nvec := vector_at(cycle, \"{source}\")"
                 );
-                let mut kernel = compile_gk(&src).unwrap();
+                let mut kernel = compile_polydat(&src).unwrap();
                 for i in 0..reads_per_thread {
                     let idx = (i * 7 + 13) as u64 % 83775; // spread across dataset
                     kernel.set_inputs(&[idx]);

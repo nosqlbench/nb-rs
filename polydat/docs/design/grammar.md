@@ -2,7 +2,7 @@
 
 **Subtitle:** The Grammar Substrate.
 
-Formalises polydat's GK grammar as a substrate the other
+Formalises polydat's Polydat grammar as a substrate the other
 three design docs depend on. Where SRD-10 describes the
 language *prosaically*, this doc states the grammar's
 productions formally and identifies the distinctive
@@ -14,7 +14,7 @@ all rest on.
 ## Authoritative ownership declaration
 
 This document is the **single authoritative reference** for
-polydat's GK grammar's *structural properties* — the
+polydat's Polydat grammar's *structural properties* — the
 formal productions, the type inference rules, and the
 distinctive commitments (G-axioms) that make the
 [Composition Substrate], [Graph Compiler], [Runtime Model],
@@ -47,15 +47,15 @@ specific syntax forms and on rejection rules.
   for embedding. E4 (library inheritance) works because
   the grammar guarantees G6 (single grammar for
   expressions and full programs).
-- [SRD-10: GK Language and Compilation](language_spec.md)
+- [SRD-10: Polydat Language and Compilation](language_spec.md)
   — prosaic specification. This doc complements SRD-10
   by formalising the grammar-level invariants SRD-10's
   syntax assumes.
-- [SRD-11: GK Evaluation Model](evaluation_model.md)
+- [SRD-11: Polydat Evaluation Model](evaluation_model.md)
   — two-lifecycle classification. G5 names this as a
   grammar-level commitment SRD-11's lifecycle taxonomy
   builds on.
-- [SRD-13c: GK Scope Model](scope_model.md)
+- [SRD-13c: Polydat Scope Model](scope_model.md)
   — auto-extern + scope-chain composition. G1 and G3 are
   the grammar-level commitments SRD-13c's scope mechanism
   rests on.
@@ -75,7 +75,7 @@ load-bearing work.
 
 ## 1. The claim
 
-Polydat's GK grammar is unusual. Not in its individual
+Polydat's Polydat grammar is unusual. Not in its individual
 features — function calls, named arguments, lifecycle
 modifiers, and field access are commonplace — but in the
 *combination* of features and the *structural commitments*
@@ -116,7 +116,7 @@ productions out for cross-reference.
 ### 2.1 Top-level structure
 
 ```ebnf
-gk_file        ::= statement*
+polydat_file   ::= statement*
 
 statement      ::= input_decl
                 |  binding
@@ -126,7 +126,7 @@ statement      ::= input_decl
                 |  pragma
 ```
 
-A polydat `.gk` source is a sequence of statements. The
+A polydat `.polydat` source is a sequence of statements. The
 grammar does not commit to a particular ordering between
 statement kinds at the syntactic level; lifecycle and
 dependency analyses (per [Graph Compiler]'s passes) order

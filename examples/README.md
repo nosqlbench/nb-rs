@@ -7,7 +7,7 @@ shebangs — make them executable and run directly.
 
 ### workloads/getting_started/
 - `basic_workload.yaml` — Minimal multi-op workload
-- `gk_bindings.yaml` — Native GK DAG syntax for bindings
+- `polydat_bindings.yaml` — Native Polydat DAG syntax for bindings
 - `inline_ops.yaml` — Inline `op=` expressions and ratio prefixes
 
 ### workloads/
@@ -19,16 +19,16 @@ shebangs — make them executable and run directly.
 
 ### workloads/signals/
 - `fourier_analysis.yaml` — FFT analysis of fractal noise
-- `lfsr.yaml` — Galois LFSR with bitwise GK ops
+- `lfsr.yaml` — Galois LFSR with bitwise Polydat ops
 
 ### workloads/visual/
 - `maze.yaml` — Classic random slash maze pattern
 
 ## modules/
 
-GK module files (`.gk`) and workloads that exercise them.
+GK module files (`.polydat`) and workloads that exercise them.
 
-- `hashed_id.gk` — Example GK module (deterministic hashed ID)
-- `euler_circuit.gk` — Euler circuit GK module
-- `module_test.yaml` — Adjacent `.gk` file resolution
+- `hashed_id.polydat` — Example Polydat module (deterministic hashed ID)
+- `euler_circuit.polydat` — Euler circuit Polydat module
+- `module_test.yaml` — Adjacent `.polydat` file resolution
 - `stdlib_test.yaml` — Embedded stdlib module resolution

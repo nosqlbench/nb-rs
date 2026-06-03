@@ -30,7 +30,7 @@ use nbrs_metrics::controls::{
     BranchScope, ControlBuilder, ControlOrigin,
 };
 use nbrs_metrics::labels::Labels;
-use polydat::ast::{GkNode, Value};
+use polydat::ast::{PolydatNode, Value};
 use polydat::library::param_helpers::{
     InRangeU64, IsPositiveU64, RequiredU64, ThisOrU64,
 };
@@ -184,15 +184,15 @@ async fn fiber_writes_control_via_control_set_and_reads_back() {
         assert_eq!(observed, 42.0, "control_set's write should commit and be visible via read");
     }).await;
 
-    // The committed Versioned carries the GK origin the writer
+    // The committed Versioned carries the Polydat origin the writer
     // supplied — critical for attribution in logs and replay.
     let control: nbrs_metrics::controls::Control<u32> = root.read().unwrap()
         .controls().get("concurrency").unwrap();
     let versioned = control.get();
     assert_eq!(versioned.value, 42);
     assert!(
-        matches!(versioned.origin, ControlOrigin::Gk { ref binding } if binding == "integration_feedback_loop"),
-        "expected Gk origin tagged with the feedback_loop binding, got {:?}",
+        matches!(versioned.origin, ControlOrigin::Polydat { ref binding } if binding == "integration_feedback_loop"),
+        "expected Polydat origin tagged with the feedback_loop binding, got {:?}",
         versioned.origin,
     );
 }

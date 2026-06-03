@@ -126,7 +126,7 @@ fn ancestor_chain_hash(
     if ancestors.is_empty() {
         return None;
     }
-    // The chain hash uses GkProgram::instance_hash with the
+    // The chain hash uses PolydatProgram::instance_hash with the
     // first ancestor as the "self" anchor and the rest as
     // ancestors-of-ancestor. Same shape the runtime produces
     // for its [own_program, ancestors...] chain — just without
@@ -135,7 +135,7 @@ fn ancestor_chain_hash(
     // back to structural equality when one side has the longer
     // chain — see `scene_tree_resume_candidates` doc.
     let head = ancestors[0].program();
-    let tail: Vec<&polydat::kernel::GkProgram> = ancestors[1..]
+    let tail: Vec<&polydat::kernel::PolydatProgram> = ancestors[1..]
         .iter().map(|k| k.program().as_ref()).collect();
     Some(head.instance_hash(&tail))
 }

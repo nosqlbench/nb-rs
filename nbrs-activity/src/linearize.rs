@@ -68,7 +68,7 @@ pub fn analyze_dependencies(templates: &[ParsedOp]) -> Vec<DepGroup> {
                             bindpoints::BindQualifier::None => {
                                 // Unqualified — could be a capture reference.
                                 // We conservatively include it as a potential
-                                // consumer. If it resolves to a GK binding
+                                // consumer. If it resolves to a Polydat binding
                                 // instead, the dependency is spurious but safe
                                 // (over-linearization, not under-linearization).
                                 cons.insert(name.clone());

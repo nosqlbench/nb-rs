@@ -10,26 +10,30 @@
 
 // Per-wrapper modules. As each wrapper migrates out of this
 // file into its own module, add a `pub mod` line + re-export.
-pub mod dry_run;
-pub use dry_run::DryRunWrapper;
+pub mod dryrun;
+pub use dryrun::DryRunWrapper;
 pub mod memo;
 pub use memo::MemoDispenser;
-pub mod throttle;
-pub use throttle::ThrottleDispenser;
-pub mod conditional;
-pub use conditional::ConditionalDispenser;
+pub mod delay;
+pub use delay::DelayDispenser;
+pub mod r#if;
+pub use r#if::ConditionalDispenser;
+pub mod r#while;
+pub use r#while::WhileWrapper;
+pub mod op_rate;
+pub use op_rate::OpRateWrapper;
 pub mod emit;
 pub use emit::EmitDispenser;
-pub mod polling;
-pub use polling::{PollingDispenser, PollingMetrics};
+pub mod poll;
+pub use poll::{PollingDispenser, PollingMetrics};
 pub mod result;
 pub use result::ResultDispenser;
 pub mod metrics;
 pub use metrics::MetricsDispenser;
-pub mod traversing;
-pub use traversing::{TraversingDispenser, TraversalStats};
+pub mod traverse;
+pub use traverse::{TraversingDispenser, TraversalStats};
 
 // All wrappers now live in their own submodules:
-//   conditional.rs / throttle.rs / polling.rs / result.rs /
-//   metrics.rs / emit.rs / memo.rs / dry_run.rs / traversing.rs.
+//   if / throttle.rs / poll / result.rs /
+//   metrics.rs / emit.rs / memo.rs / dryrun / traverse.
 

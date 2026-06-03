@@ -66,9 +66,9 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
 
     // SRD-13f Push D: workload-level `bindings:` live ONLY on
     // `Workload.bindings` and compile directly to the
-    // workload-root GK kernel. They no longer fold into ops at
+    // workload-root Polydat Kernel. They no longer fold into ops at
     // parse time — descendant ops resolve workload-level wires
-    // through the GK kernel chain (workload-root → ... → op
+    // through the Polydat Kernel chain (workload-root → ... → op
     // kernel) via the SRD-13f cell-on-outputs cascade. So we
     // pass an empty `BindingsDef` to every op-producing path
     // here: block-level YAML bindings (parse_blocks) are the
@@ -415,7 +415,7 @@ fn collect_idempotent_under_do_loop(
 /// the operator writes a bare expression like
 /// `cql_dialect == 'cass'`, that doesn't match either
 /// form and the conditional dispenser fails at init when
-/// it tries to look up a GK binding literally named
+/// it tries to look up a Polydat binding literally named
 /// `cql_dialect == 'cass'`.
 ///
 /// Heuristic: if the trimmed value already starts with `{`
@@ -495,7 +495,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
 
             // `for_each` is the canonical key; `for` is accepted as
             // a shorter synonym ("for k in 10,100" reads more
-            // naturally and matches the GK comprehension text
+            // naturally and matches the Polydat comprehension text
             // grammar). Both keys are interchangeable; if both
             // appear, `for_each` wins so misconfigured workloads
             // don't silently change shape.
@@ -708,12 +708,12 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
             } else if let Some(set_val) = obj.get("set") {
                 // `set: { name: value, ... }` — convenience sugar
                 // that desugars to a `Bindings` node carrying GK
-                // matter of the shape `const NAME := <gk-literal>`.
-                // The GK compiler handles workload-param
+                // matter of the shape `const NAME := <polydat-literal>`.
+                // The Polydat compiler handles workload-param
                 // interpolation, string-literal interpolation,
                 // and full const-expression evaluation at kernel
                 // build time, so this form composes with every
-                // other GK feature (no separate two-pass
+                // other Polydat feature (no separate two-pass
                 // evaluator). The `Bindings` node carries the
                 // synthesized source; downstream code never sees
                 // a SetParam-specific shape.
@@ -723,7 +723,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 //
                 // Map iteration order is preserved by serde_yaml
                 // (insertion order); declaration order wins on
-                // collision via the standard GK shadow semantics
+                // collision via the standard Polydat shadow semantics
                 // for the same source.
                 let pairs: Vec<(String, String)> = match set_val {
                     JVal::Object(map) => map.iter()
@@ -768,8 +768,8 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     );
                     Vec::new()
                 } else {
-                    // Synthesize the GK source body. Each pair
-                    // becomes `const NAME := <gk-literal>` — the
+                    // Synthesize the Polydat source body. Each pair
+                    // becomes `const NAME := <polydat-literal>` — the
                     // single canonical effectively-const binding
                     // shape. The compiler tries const-fold at
                     // compile time (pure literals fold; values
@@ -785,7 +785,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     // Literal-format rules:
                     //   - numeric-parseable → bare (no quotes)
                     //   - "true" / "false" → bare boolean
-                    //   - everything else → quoted GK string
+                    //   - everything else → quoted Polydat string
                     //     literal, with `\` / `"` escaped
                     let mut source = String::new();
                     for (name, value) in &pairs {
@@ -1059,7 +1059,7 @@ fn parse_phases(
         // Workload bindings live on `Workload.bindings` and
         // compile to the workload-root kernel; phase bindings
         // live on `WorkloadPhase.bindings` and compile to the
-        // phase kernel. Both reach ops through the GK kernel
+        // phase kernel. Both reach ops through the Polydat Kernel
         // chain (cell-on-outputs cascade, SRD-13f Push B.2),
         // not parser-time concat.
         let phase_bindings_only = extract_bindings(phase_obj.get("bindings"));
@@ -1076,7 +1076,7 @@ fn parse_phases(
                 // Phase inline ops carry zero "outer YAML
                 // bindings sugar" — they're directly under the
                 // phase, no block wrapper. Workload + phase
-                // bindings reach them via the GK kernel chain.
+                // bindings reach them via the Polydat Kernel chain.
                 parse_ops_field(ops_val, phase_name, &BindingsDef::default(), doc_params, &phase_tags, &mut inline_ops)?;
                 break;
             }
@@ -1125,7 +1125,7 @@ fn parse_phases(
 
         // Phase-level `poll:` block (SRD-75). When present,
         // the phase's cycle execution runs in a wall-clock
-        // loop until a GK predicate over captures returns
+        // loop until a Polydat predicate over captures returns
         // `true` or `timeout_ms` elapses. Distinct from the
         // OP-level `poll:` field (which lives on a single op
         // and wraps a `PollingDispenser` — SRD-32). The two
@@ -1145,7 +1145,7 @@ fn parse_phases(
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| format!(
                         "phase '{phase_name}': phase-level `poll:` requires \
-                         `until: <gk-boolean-expression>`. SRD-75."
+                         `until: <polydat-boolean-expression>`. SRD-75."
                     ))?
                     .to_string();
                 let interval_ms = map.get("interval_ms")
@@ -1325,7 +1325,7 @@ fn parse_single_block(
 
     // SRD-13f Push D: workload-level `bindings:` no longer
     // merge into block-level. Blocks are YAML organizational
-    // sugar (not a GK scope), so a block's own `bindings:` is
+    // sugar (not a Polydat scope), so a block's own `bindings:` is
     // *syntactic sugar* expanded into each enclosed op's
     // `op.bindings` at parse time — it does not cross any
     // kernel boundary, and the only "merge" left is this
@@ -1480,6 +1480,10 @@ fn normalize_op_entry(
                 result: None,
                 wrappers: None,
                 captures: Vec::new(),
+                daemon: crate::model::DaemonSpec::Disabled,
+                daemon_cancel_grace_ms: None,
+                while_cond: None,
+                rate: None,
             };
             op.tags.insert("block".to_string(), block_name.to_string());
             Ok(op)
@@ -1533,7 +1537,7 @@ fn normalize_op_object(
     // `bindings:` no longer touch ops at parse time — they
     // compile to their own kernels and reach ops via the GK
     // kernel chain. `parent_bindings` here carries ONLY
-    // block-level YAML sugar (blocks are not a GK scope; their
+    // block-level YAML sugar (blocks are not a Polydat scope; their
     // `bindings:` field is a copy-paste reducer over each
     // enclosed op's bindings). The expansion below is the only
     // remaining parser-time inlining.
@@ -1561,7 +1565,12 @@ fn normalize_op_object(
     // returns `None` from `known_op_fields()` (open vocabulary)
     // which masked this for the existing workloads.
     let reserved = ["name", "description", "desc", "bindings", "params", "tags", "if", "delay",
-        "evaluations", "capture", "metrics", "result"];
+        "evaluations", "capture", "metrics", "result",
+        // Daemon-op declaration + loop / rate primitives:
+        // consumed by the runtime in normalize_op_object below;
+        // mustn't fall through to the adapter's op-fields surface
+        // as if they were op-payload keys.
+        "daemon", "daemon_cancel_grace_ms", "while", "rate"];
     let op_field_names = ["op", "ops", "operations", "stmt", "statement", "statements"];
     // Activity-level params excised from op fields before the
     // adapter sees them. `relevancy` / `verify` stay listed here
@@ -1569,7 +1578,7 @@ fn normalize_op_object(
     // (`relevancy: { ... }` directly under the op); the canonical
     // form puts them inside `evaluations:` and is handled
     // separately below.
-    let activity_params = ["ratio", "driver", "space", "instrument", "start-timers", "stop-timers",
+    let activity_params = ["ratio", "adapter", "driver", "space", "instrument", "start-timers", "stop-timers",
         "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms", "poll_metric_name", "emit",
         "batch", "max_batch_size", "batchtype", "memo"];
 
@@ -1684,9 +1693,85 @@ fn normalize_op_object(
         .and_then(|v| v.as_str())
         .map(normalize_condition_clause);
 
-    let delay = map.get("delay")
+    let delay = match map.get("delay") {
+        None => None,
+        Some(v) => Some(crate::model::parse_delay_spec_value(v)
+            .map_err(|e| format!("op '{name}': {e}"))?),
+    };
+
+    // Daemon-op declaration. Parses bool / int / "on"/"off" /
+    // "true"/"false" via `parse_daemon_spec_value`. When set
+    // to MaxFibers(N), the cycle-pool dispatch spawns the op
+    // on a daemon fiber instead of awaiting inline; the cap
+    // is enforced at spawn time.
+    let daemon = match map.get("daemon") {
+        Some(v) => crate::model::parse_daemon_spec_value(v)
+            .map_err(|e| format!(
+                "op '{name}' (block '{block_name}'): {e}",
+            ))?,
+        None => crate::model::DaemonSpec::Disabled,
+    };
+    let daemon_cancel_grace_ms = map.get("daemon_cancel_grace_ms")
+        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
+    let daemon_enabled = !daemon.is_disabled();
+    if daemon_enabled {
+        // `cycles:` and `ratio:` on a daemon op are workload-shape
+        // errors — the daemon's dispatch cadence is governed by
+        // the cycle-pool walks + per-op `rate:`, not by cycles or
+        // ratios. Silently accepting them would hide a mis-shaped
+        // workload; reject at parse so the operator sees the
+        // contradiction immediately.
+        if let Some(c) = op_params.get("cycles") {
+            return Err(format!(
+                "op '{name}' (block '{block_name}'): `daemon:` and \
+                 `cycles: {c}` are mutually exclusive. A daemon op's \
+                 dispatch cadence is governed by the cycle-pool's \
+                 stanza walk + per-op `rate:`, not by `cycles:`."
+            ));
+        }
+        if let Some(r) = op_params.get("ratio") {
+            return Err(format!(
+                "op '{name}' (block '{block_name}'): `daemon:` and \
+                 `ratio: {r}` are mutually exclusive — a daemon op \
+                 does not participate in cycle-pool ratio scheduling."
+            ));
+        }
+    }
+    if !daemon_enabled && daemon_cancel_grace_ms.is_some() {
+        return Err(format!(
+            "op '{name}' (block '{block_name}'): \
+             `daemon_cancel_grace_ms` is only meaningful when \
+             `daemon:` is enabled (true / N). Either enable `daemon:` \
+             or drop the grace field."
+        ));
+    }
+
+    // Loop / rate primitives (apply to both cycle-pool and
+    // daemon ops, though the typical use case is daemon+while+rate).
+    let while_cond = map.get("while")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let rate = map.get("rate")
+        .and_then(|v| v.as_str().map(|s| s.to_string())
+            .or_else(|| v.as_u64().map(|n| n.to_string()))
+            .or_else(|| v.as_f64().map(|f| f.to_string())));
+    // Rate without while- or per-cycle dispatch is meaningless —
+    // an op that fires once-per-cycle can't be rate-limited in
+    // any observable way. Warn at parse rather than silently
+    // accepting a no-op field.
+    if rate.is_some() && while_cond.is_none() && daemon.is_disabled() {
+        // Soft warn via stderr; this is a workload-shape smell
+        // but not always an error (a workload-author may be
+        // configuring forward-compatible op templates).
+        eprintln!(
+            "warning: op '{name}' (block '{block_name}'): `rate:` is set \
+             but the op has neither `while:` nor `daemon:`. The rate \
+             limit will only fire on each cycle-pool dispatch — likely \
+             not the intended behavior. Add `while:` for a loop or \
+             `daemon:` to enable fiber-kind dispatch.",
+        );
+    }
 
     let metrics = parse_metrics_field(map.get("metrics"), &name, &mut op_bindings)
         .map_err(|e| format!("op '{name}' metrics: {e}"))?;
@@ -1776,6 +1861,10 @@ fn normalize_op_object(
         result,
         wrappers: None,
         captures,
+        daemon,
+        daemon_cancel_grace_ms,
+        while_cond,
+        rate,
     })
 }
 
@@ -1786,7 +1875,7 @@ fn normalize_op_object(
 /// - **Scalar** (bare string, §2.1): one metric with the
 ///   string as both family and `value:`.
 /// - **Sequence** (list, §2.2): each entry is a bare-name
-///   string OR a `name := <gk expression>` wire-expression.
+///   string OR a `name := <Polydat expression>` wire-expression.
 ///   Wire expressions are auto-injected into the op's
 ///   `bindings:` block; the metric is then a bare-name
 ///   reference to the new wire.
@@ -1816,7 +1905,7 @@ fn parse_metrics_field(
             for (idx, item) in items.iter().enumerate() {
                 let raw = item.as_str().ok_or_else(|| format!(
                     "metrics list entry {idx}: must be a string \
-                     (bare name or `name := <gk expr>`)"))?;
+                     (bare name or `name := <polydat expr>`)"))?;
                 let trimmed = raw.trim();
                 if let Some((name, expr)) = trimmed.split_once(":=") {
                     // Wire-expression form: declare the binding +
@@ -1967,15 +2056,15 @@ fn inject_wire_into_bindings(
     let line_to_inject = format!("{name} := {expr}\n");
     // BindingsDef has no `Empty` variant — `Map(empty)` is the
     // default. Detect emptiness via the existing helper, then
-    // promote to GkSource for injection (we're adding a real
-    // GK statement, not a name→expr pair the legacy Map form
+    // promote to PolydatSource for injection (we're adding a real
+    // Polydat statement, not a name→expr pair the legacy Map form
     // can't carry alone).
     if bindings.is_empty() {
-        *bindings = BindingsDef::GkSource(line_to_inject);
+        *bindings = BindingsDef::PolydatSource(line_to_inject);
         return Ok(());
     }
     match bindings {
-        BindingsDef::GkSource(src) => {
+        BindingsDef::PolydatSource(src) => {
             if has_binding_named(src, name) {
                 return Err(format!(
                     "metric wire '{name}' (op '{op_name}') collides \
@@ -1998,7 +2087,7 @@ fn inject_wire_into_bindings(
     Ok(())
 }
 
-/// True when `s` is a valid GK identifier: non-empty, first
+/// True when `s` is a valid Polydat identifier: non-empty, first
 /// char is a letter or underscore, remaining chars are
 /// alphanumerics or underscore. Used by the mapping-form
 /// metric auto-inject to confirm the metric key can stand in
@@ -2012,10 +2101,10 @@ fn is_valid_ident(s: &str) -> bool {
     chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// True when the GK source contains a binding line
+/// True when the Polydat source contains a binding line
 /// `<name> := …` at the start of any (whitespace-trimmed)
 /// line. Used by the wire-expression injection to detect
-/// shadowing without parsing the GK grammar.
+/// shadowing without parsing the Polydat grammar.
 fn has_binding_named(src: &str, name: &str) -> bool {
     for raw in src.lines() {
         let line = raw.trim_start();
@@ -2033,13 +2122,13 @@ fn has_binding_named(src: &str, name: &str) -> bool {
 /// SRD-66 §"Surface 1 §Schema": parse the vari-structured
 /// `result:` field on an op template. Three shapes:
 ///
-/// - **String** scalar — GK source block (multi-line or
+/// - **String** scalar — Polydat source block (multi-line or
 ///   single-line). Each `<name> := <expr>` declares one
 ///   wire.
 /// - **List** sequence — each element is itself a
 ///   `ResultSpec` (recursively); fragments concatenate.
 /// - **Mapping** — named-key short-forms; each value is a
-///   string parsed as `count` / `ok` / path-expr / GK expr.
+///   string parsed as `count` / `ok` / path-expr / Polydat expr.
 fn parse_result_field(
     val: Option<&JVal>,
     op_name: &str,
@@ -2078,7 +2167,7 @@ fn parse_result_spec(
                     other => return Err(format!(
                         "op '{op_name}' result.{key}: expected string \
                          (short-form keyword `count`/`ok`, path \
-                         expression, or GK expression); got {other}")),
+                         expression, or Polydat expression); got {other}")),
                 };
                 if out.insert(key.clone(), source).is_some() {
                     return Err(format!(
@@ -2100,11 +2189,11 @@ fn parse_result_spec(
 
 /// Extract bindings from a YAML value.
 ///
-/// If the value is a string, it's native GK grammar source.
+/// If the value is a string, it's native Polydat grammar source.
 /// If it's a mapping, it's legacy name→expression pairs.
 fn extract_bindings(val: Option<&JVal>) -> BindingsDef {
     match val {
-        Some(JVal::String(s)) => BindingsDef::GkSource(s.clone()),
+        Some(JVal::String(s)) => BindingsDef::PolydatSource(s.clone()),
         Some(JVal::Object(obj)) => {
             let mut map = HashMap::new();
             for (k, v) in obj {
@@ -2123,7 +2212,7 @@ fn extract_bindings(val: Option<&JVal>) -> BindingsDef {
 /// SRD-13f Push D: inline a block's YAML-level `bindings:`
 /// sugar into one of its enclosed ops.
 ///
-/// Blocks are not a GK scope — they're YAML authoring sugar
+/// Blocks are not a Polydat scope — they're YAML authoring sugar
 /// (named groups for tag-filtering + shared defaults). A
 /// block-level `bindings:` field is *syntactic sugar* meaning
 /// "every op underneath has these bindings as part of its own
@@ -2132,18 +2221,18 @@ fn extract_bindings(val: Option<&JVal>) -> BindingsDef {
 ///
 /// Semantics (preserves prior `merge_bindings` shape for the
 /// only call site that still uses it):
-/// - The op's own GkSource fully shadows the block's sugar
+/// - The op's own PolydatSource fully shadows the block's sugar
 ///   (the op declares its full binding set explicitly).
 /// - Op Map merges with block Map (op keys override block).
 /// - Empty op inherits the block sugar verbatim.
 ///
 /// No cross-scope semantics: workload-level and phase-level
 /// `bindings:` no longer flow through this helper. They reach
-/// ops via the GK kernel chain.
+/// ops via the Polydat Kernel chain.
 fn inline_block_sugar_into_op(block_sugar: &BindingsDef, op_own: &BindingsDef) -> BindingsDef {
     match (block_sugar, op_own) {
-        (_, BindingsDef::GkSource(s)) if !s.trim().is_empty() => {
-            BindingsDef::GkSource(s.clone())
+        (_, BindingsDef::PolydatSource(s)) if !s.trim().is_empty() => {
+            BindingsDef::PolydatSource(s.clone())
         }
         (BindingsDef::Map(p), BindingsDef::Map(c)) => {
             let mut merged = p.clone();
@@ -2515,9 +2604,9 @@ ops:
     }
 
     #[test]
-    fn parse_gk_source_bindings() {
+    fn parse_polydat_source_bindings() {
         // SRD-13f Push D: workload-level `bindings:` live on
-        // `Workload.bindings` and reach ops via the GK kernel
+        // `Workload.bindings` and reach ops via the Polydat Kernel
         // chain at runtime — they are NOT folded into per-op
         // bindings at parse time.
         let yaml = r#"
@@ -2537,15 +2626,15 @@ ops:
 "#;
         let workload = parse_workload(yaml, &HashMap::new()).unwrap();
         match &workload.bindings {
-            BindingsDef::GkSource(src) => {
+            BindingsDef::PolydatSource(src) => {
                 assert!(src.contains("input cycle: u64"));
                 assert!(src.contains("user_id := mod(h, 1000000)"));
             }
-            BindingsDef::Map(_) => panic!("expected GkSource at workload level, got Map"),
+            BindingsDef::Map(_) => panic!("expected PolydatSource at workload level, got Map"),
         }
         assert_eq!(workload.ops.len(), 1);
         // Op carries no workload bindings — they reach it via
-        // the GK kernel chain, not via parse-time merge.
+        // the Polydat Kernel chain, not via parse-time merge.
         assert!(workload.ops[0].bindings.is_empty());
     }
 
@@ -2653,7 +2742,7 @@ phases:
     }
 
     #[test]
-    fn parse_phased_workload_gk_cycles() {
+    fn parse_phased_workload_polydat_cycles() {
         let yaml = r#"
 phases:
   rampup:
@@ -2738,11 +2827,11 @@ phases:
         assert!(op.metrics.contains_key("already_bound"));
         // Wire expression auto-injected into op bindings.
         match &op.bindings {
-            BindingsDef::GkSource(src) => {
+            BindingsDef::PolydatSource(src) => {
                 assert!(src.contains("latency_pred := 0.5 + 1.5 * pow(limit, -0.4)"),
                     "wire not injected; bindings: {src:?}");
             }
-            other => panic!("expected GkSource bindings, got {other:?}"),
+            other => panic!("expected PolydatSource bindings, got {other:?}"),
         }
     }
 
@@ -2768,11 +2857,11 @@ phases:
         assert_eq!(m.value, "scaled");
         // The non-bare expression landed in op-template bindings.
         match &op.bindings {
-            BindingsDef::GkSource(src) => {
+            BindingsDef::PolydatSource(src) => {
                 assert!(src.contains("scaled := base * 2"),
                     "expression not injected; bindings: {src:?}");
             }
-            other => panic!("expected GkSource bindings, got {other:?}"),
+            other => panic!("expected PolydatSource bindings, got {other:?}"),
         }
     }
 
@@ -2847,8 +2936,8 @@ phases:
 "#;
         let wl = parse_workload(yaml, &HashMap::new()).unwrap();
         match &wl.phases["p"].bindings {
-            BindingsDef::GkSource(s) => assert!(s.contains("phase_factor := 7")),
-            other => panic!("expected GkSource, got {other:?}"),
+            BindingsDef::PolydatSource(s) => assert!(s.contains("phase_factor := 7")),
+            other => panic!("expected PolydatSource, got {other:?}"),
         }
     }
 
@@ -2957,8 +3046,8 @@ blocks:
     }
 
     #[test]
-    fn parse_gk_source_overrides_parent_map() {
-        // Block-level GK source completely replaces doc-level map bindings
+    fn parse_polydat_source_overrides_parent_map() {
+        // Block-level Polydat source completely replaces doc-level map bindings
         let yaml = r#"
 bindings:
   id: "Hash()"
@@ -2975,11 +3064,11 @@ blocks:
 "#;
         let ops = parse_ops(yaml).unwrap();
         match &ops[0].bindings {
-            BindingsDef::GkSource(src) => {
+            BindingsDef::PolydatSource(src) => {
                 assert!(src.contains("input cycle: u64"));
                 assert!(src.contains("id := mod(h, 1000)"));
             }
-            BindingsDef::Map(_) => panic!("expected GkSource, got Map"),
+            BindingsDef::Map(_) => panic!("expected PolydatSource, got Map"),
         }
     }
 

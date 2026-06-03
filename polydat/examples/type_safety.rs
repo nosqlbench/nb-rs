@@ -13,7 +13,7 @@
 use polydat::ast::Value;
 
 fn main() {
-    let mut kernel = polydat::dsl::compile_gk(r#"
+    let mut kernel = polydat::dsl::compile_polydat(r#"
         input cycle: u64
         n := mod(hash(cycle), 1000)             // u64
         p := unit_interval(hash(cycle))         // f64 in [0.0, 1.0)

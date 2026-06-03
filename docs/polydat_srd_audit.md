@@ -1,7 +1,7 @@
 # Polydat / SRD Audit and Reduction Plan
 
 **Purpose.** Now that polydat owns the definitive design for
-the variates + GK substrate (via five design docs in
+the variates + Polydat substrate (via five design docs in
 `polydat/docs/design/`), the nbrs-level SRDs in
 `docs/sysref/` contain substantial duplication. This doc
 audits each affected SRD against the polydat treatment and
@@ -64,7 +64,7 @@ Two concrete dissonances were found between SRD text and
 current code; both were fixed before the audit's reduction
 plan was revised:
 
-**Dissonance 1: SRD-10 §Node Contract — outdated `GkNode`
+**Dissonance 1: SRD-10 §Node Contract — outdated `PolydatNode`
 trait surface.** The SRD showed `fn evaluate(&self, ...)`
 with only `meta` + `evaluate`; the real trait is
 `fn eval(&self, ...)` plus `commutativity`,
@@ -197,20 +197,20 @@ Each candidate SRD falls into one of three tiers:
 
 | SRD | Lines | Tier | Move target | nbrs-side residue |
 |---|---|---|---|---|
-| SRD-10 GK Language and Compilation | 897 | 3 (split) | `imported/gk_language.md` (DSL syntax, type system, node contract, wiring model, compilation pipeline) | `docs/sysref/10_gk_language.md` keeps: "GK as unified access surface", "Reification: runtime state → GK wire", "Output Selection", "GK as Unified State Holder", "Op-Level Bindings", "Cursor Declarations" |
-| SRD-11 GK Evaluation Model | 498 | 3 (split) | `imported/gk_evaluation_model.md` (Program/State Split, Provenance Invalidation, Two Lifecycles, Const Binding, Input Spaces, Compilation Levels) | `docs/sysref/11_gk_evaluation.md` keeps: FiberBuilder, Cursor-Driven Evaluation |
-| SRD-12 GK Standard Library | 359 | 2 | `imported/gk_stdlib.md` (whole catalog) | stub pointer |
-| SRD-13 GK Modules | 109 | 3 (split) | `imported/gk_modules.md` (module system semantics) | `docs/sysref/13_gk_modules.md` keeps: Compiler Diagnostic Event Stream |
-| SRD-13b GK Combination Modes | 208 | KEEP nbrs | — | nbrs-side terminology doc; add cross-refs to polydat |
-| SRD-13c GK Scope Model | 891 | 2 | `imported/scope_model.md` (whole) | stub with What-This-Does-NOT-Change + Open Design Issue + Design Rationale |
-| SRD-13d Op-template GK Scope Layer | 779 | KEEP nbrs | — | nbrs-activity-specific; add cross-refs |
+| SRD-10 Polydat Language and Compilation | 897 | 3 (split) | `imported/polydat_language.md` (DSL syntax, type system, node contract, wiring model, compilation pipeline) | `docs/sysref/10_polydat_language.md` keeps: "GK as unified access surface", "Reification: runtime state → Polydat wire", "Output Selection", "GK as Unified State Holder", "Op-Level Bindings", "Cursor Declarations" |
+| SRD-11 Polydat Evaluation Model | 498 | 3 (split) | `imported/polydat_evaluation_model.md` (Program/State Split, Provenance Invalidation, Two Lifecycles, Const Binding, Input Spaces, Compilation Levels) | `docs/sysref/11_polydat_evaluation.md` keeps: FiberBuilder, Cursor-Driven Evaluation |
+| SRD-12 Polydat Standard Library | 359 | 2 | `imported/polydat_stdlib.md` (whole catalog) | stub pointer |
+| SRD-13 Polydat Modules | 109 | 3 (split) | `imported/polydat_modules.md` (module system semantics) | `docs/sysref/13_polydat_modules.md` keeps: Compiler Diagnostic Event Stream |
+| SRD-13b Polydat Combination Modes | 208 | KEEP nbrs | — | nbrs-side terminology doc; add cross-refs to polydat |
+| SRD-13c Polydat Scope Model | 891 | 2 | `imported/scope_model.md` (whole) | stub with What-This-Does-NOT-Change + Open Design Issue + Design Rationale |
+| SRD-13d Op-template Polydat Scope Layer | 779 | KEEP nbrs | — | nbrs-activity-specific; add cross-refs |
 | SRD-13e Scope-as-Module Refinement | 678 | KEEP nbrs | — | nbrs-side typed ScopeModule on top of polydat substrate; add cross-refs |
 | SRD-13f Cross-Scope Wire Materialization | 944 | 3 (split) | `imported/wire_materialization.md` (architectural model, materialization gradient, cell classification) | `docs/sysref/13f_*.md` keeps: synthesizer rule, plan-to-true-up, open questions |
-| SRD-14 GK Config Expressions | 170 | 3 (split) | `imported/config_expressions.md` (Expression Syntax, Const Expression Evaluation, embedding mechanics) | `docs/sysref/14_*.md` keeps: Resolution Order, Param Substitution Interaction (host-side param resolution) |
+| SRD-14 Polydat Config Expressions | 170 | 3 (split) | `imported/config_expressions.md` (Expression Syntax, Const Expression Evaluation, embedding mechanics) | `docs/sysref/14_*.md` keeps: Resolution Order, Param Substitution Interaction (host-side param resolution) |
 | SRD-15 Strict Mode | 697 | KEEP nbrs | — | nbrs-side strict-mode policy; add cross-ref to expression_engine.md §5.1.3 |
-| SRD-16 GK Engines | 225 | 2 | `imported/gk_engines.md` (Compilation Levels, Provenance Optimization, Engine Selection, Type System) | stub pointer |
-| SRD-16b GK JIT Wiring | 351 | 1 | `imported/jit_wiring.md` (whole) | stub pointer |
-| SRD-66 Runtime Feature Detection | 1217 | 3 (split) | `imported/runtime_features.md` (polydat stdlib nodes: pick / exactly_one_value / log_*; kernel-driven gk-call slot contract) | `docs/sysref/66_*.md` keeps: vari-structured `result:` field shape, OpResult body projection, workload migration story |
+| SRD-16 Polydat Engines | 225 | 2 | `imported/polydat_engines.md` (Compilation Levels, Provenance Optimization, Engine Selection, Type System) | stub pointer |
+| SRD-16b Polydat JIT Wiring | 351 | 1 | `imported/jit_wiring.md` (whole) | stub pointer |
+| SRD-66 Runtime Feature Detection | 1217 | 3 (split) | `imported/runtime_features.md` (polydat stdlib nodes: pick / exactly_one_value / log_*; kernel-driven polydat-call slot contract) | `docs/sysref/66_*.md` keeps: vari-structured `result:` field shape, OpResult body projection, workload migration story |
 | SRD-67 Parent-gated Subcontext Construction | 1030 | 2 | `imported/subcontext_construction.md` (whole walled-off protocol) | stub with nbrs-side composition-with-13e cross-ref |
 | SRD-74 None Propagation | 302 | 2 | `imported/none_propagation.md` (three orthogonal rules) | stub with workload-author behavior + test contract pointers |
 
@@ -252,7 +252,7 @@ Each imported doc carries a top-of-file YAML-ish manifest:
 
 ```markdown
 ---
-imported_from: docs/sysref/10_gk_language.md
+imported_from: docs/sysref/10_polydat_language.md
 imported_on: 2026-05-30
 reconciliation_status: pending
 overlaps_with:
@@ -341,7 +341,7 @@ and related plan/cutover docs.
 
 ## Per-SRD reduction recommendations
 
-### SRD-10: GK Language and Compilation (897 lines)
+### SRD-10: Polydat Language and Compilation (897 lines)
 
 This SRD is the largest single source of overlap. The DSL
 syntax, type system, wiring model, and pipeline overview
@@ -349,8 +349,8 @@ are now all formally specified in polydat docs.
 
 | Section | Disposition | Action |
 |---|---|---|
-| §"GK as the unified access surface" | KEEP | nbrs-side framing — why GK exists in the workload runtime. |
-| §"Reification: runtime state → GK wire" | KEEP | nbrs-activity integration concern. |
+| §"GK as the unified access surface" | KEEP | nbrs-side framing — why Polydat exists in the workload runtime. |
+| §"Reification: runtime state → Polydat wire" | KEEP | nbrs-activity integration concern. |
 | §"DSL Syntax" (lines 82–384) | **DELETE** | Now owned by [grammar.md §2 (productions)](../polydat/docs/design/grammar.md). Replace with a one-line pointer. |
 | §"Bitwise Operations" (lines 385–418) | KEEP | Library-catalog reference; concrete operator behavior. |
 | §"Const Expression Syntax" (lines 419–441) | **REDUCE** | Cross-reference [grammar.md G2 + expression_engine.md §3.1](../polydat/docs/design/expression_engine.md); keep only nbrs-side use cases. |
@@ -360,7 +360,7 @@ are now all formally specified in polydat docs.
 | §"Type System" (lines 516–571) | **REDUCE** | Cross-reference [composition_substrate.md T1](../polydat/docs/design/composition_substrate.md) + [grammar.md §3](../polydat/docs/design/grammar.md). Keep only the part listing nbrs-activity's use of PortType. |
 | §"Node Contract" (lines 572–592) | **DELETE** | Owned by [composition_substrate.md §2 (slot contract)](../polydat/docs/design/composition_substrate.md). |
 | §"Wiring Model" (lines 593–616) | **DELETE** | Owned by [composition_substrate.md §2 + runtime_model.md §1](../polydat/docs/design/runtime_model.md). |
-| §"GK as Unified State Holder" (lines 617–637) | KEEP | nbrs-activity framing — why GK kernels hold scope state. |
+| §"GK as Unified State Holder" (lines 617–637) | KEEP | nbrs-activity framing — why Polydat kernels hold scope state. |
 | §"Incremental Invalidation" (lines 638–663) | **DELETE** | Owned by [runtime_model.md §3-§4 (R1, R2)](../polydat/docs/design/runtime_model.md). |
 | §"GK Scope Model" (lines 664–688) | **DELETE** | Owned by SRD-13c + [composition_substrate.md L1/L2](../polydat/docs/design/composition_substrate.md). |
 | §"Op-Level Bindings" | KEEP | nbrs-activity-specific. |
@@ -368,7 +368,7 @@ are now all formally specified in polydat docs.
 
 **Estimated reduction:** ~450 lines DELETE + ~80 lines REDUCE. SRD-10 shrinks from 897 → ~350 lines, becoming an nbrs-side integration doc that points at polydat for the substrate.
 
-### SRD-11: GK Evaluation Model (498 lines)
+### SRD-11: Polydat Evaluation Model (498 lines)
 
 Substantial overlap with runtime_model.md and
 composition_substrate.md.
@@ -388,7 +388,7 @@ composition_substrate.md.
 
 **Estimated reduction:** ~280 lines DELETE + ~60 lines REDUCE. SRD-11 shrinks from 498 → ~170 lines.
 
-### SRD-12: GK Standard Library (359 lines)
+### SRD-12: Polydat Standard Library (359 lines)
 
 Less overlap than 10/11; the library catalog itself stays
 in SRD-12 because polydat doesn't have a library-catalog
@@ -404,7 +404,7 @@ design doc.
 
 **Estimated reduction:** ~60 lines. SRD-12 shrinks from 359 → ~300 lines.
 
-### SRD-13: GK Modules (109 lines)
+### SRD-13: Polydat Modules (109 lines)
 
 | Section | Disposition | Action |
 |---|---|---|
@@ -413,7 +413,7 @@ design doc.
 
 **Estimated reduction:** minor. SRD-13 shrinks from 109 → ~80 lines.
 
-### SRD-13b: GK Combination Modes (208 lines)
+### SRD-13b: Polydat Combination Modes (208 lines)
 
 Largely framework material that polydat extended. Stays
 mostly intact.
@@ -429,7 +429,7 @@ mostly intact.
 
 **Estimated reduction:** none structural. Add ~3 cross-references.
 
-### SRD-13c: GK Scope Model (891 lines)
+### SRD-13c: Polydat Scope Model (891 lines)
 
 Highest-overlap SRD. composition_substrate.md L-axioms +
 graph_compiler.md CF-axioms are the load-bearing
@@ -453,7 +453,7 @@ formalisation now.
 
 **Estimated reduction:** ~430 lines DELETE + ~180 lines REDUCE. SRD-13c shrinks from 891 → ~280 lines.
 
-### SRD-13d: Op-template GK Scope Layer (779 lines)
+### SRD-13d: Op-template Polydat Scope Layer (779 lines)
 
 Mostly nbrs-activity-specific (op templates aren't a polydat
 concept). Keep with cross-references to substrate.
@@ -501,7 +501,7 @@ formalises the gradient honoring.
 
 **Estimated reduction:** ~150 lines. SRD-13f shrinks from 944 → ~800 lines.
 
-### SRD-14: GK Config Expressions (170 lines)
+### SRD-14: Polydat Config Expressions (170 lines)
 
 Direct overlap with expression_engine.md.
 
@@ -530,7 +530,7 @@ expression_engine §5.1.3 (opt-in strict contract).
 
 **Estimated reduction:** minor. ~20 lines.
 
-### SRD-16: GK Engines (225 lines)
+### SRD-16: Polydat Engines (225 lines)
 
 Overlap with graph_compiler.md §6 (pipeline including engine
 selection) and §5.3 (Node Fusion polyfills).
@@ -544,7 +544,7 @@ selection) and §5.3 (Node Fusion polyfills).
 
 **Estimated reduction:** ~80 lines. SRD-16 shrinks from 225 → ~145 lines.
 
-### SRD-16b: GK JIT Wiring (351 lines)
+### SRD-16b: Polydat JIT Wiring (351 lines)
 
 Cranelift-specific; mostly polydat-internal but the
 boundary contract is here. graph_compiler.md T3 references
@@ -660,13 +660,13 @@ questions in the SRDs themselves:
 (Workload Model) defines the YAML structure. SRD-21
 (Parameters) defines bind-point resolution. The bridge
 from a parsed workload to a polydat kernel (what
-nbrs-workload does when it produces a `compile_gk` call
+nbrs-workload does when it produces a `compile_polydat` call
 sequence) doesn't have a dedicated design doc. The code
 lives in `nbrs-workload/src/` but the contract between
 nbrs-workload and polydat-as-substrate is implicit.
 **Recommendation:** lower priority; the bridge is
 stable and small, and the contract is "produce valid
-GK source text and invoke `compile_gk`."
+GK source text and invoke `compile_polydat`."
 
 **G3b — Capture-points cross-tier integration.** SRD-34
 (Capture Points), SRD-69 (Capture Semantics, draft),
@@ -691,7 +691,7 @@ A staged reduction over ~6 nbrs-side pushes, in order:
 
 - DELETE: DSL Syntax sections (§§82–384), Type Inference
   Details, Node Contract, Wiring Model, Incremental
-  Invalidation, GK Scope Model.
+  Invalidation, Polydat Scope Model.
 - REDUCE: Compilation Pipeline, Type System, Const
   Expression Syntax.
 - Add cross-references per the table above.

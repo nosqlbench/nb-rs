@@ -87,5 +87,5 @@ and template selection.
   verify field resolution
 - **Dry-run verification**: See what would be sent without a
   live target
-- **GK testing**: Verify data generation patterns
+- **Polydat testing**: Verify data generation patterns
 - **CI validation**: Ensure workloads parse and resolve correctly

@@ -82,14 +82,14 @@ tests fail where Stage 1+ will restore correctness.
    workload-binding and phase-binding scans I added delete.
    Walker reverts.
 7. `nbrs-activity/src/bindings.rs::compile_bindings_with_libs_excluding`
-   `workload_level_gk_map` parameter deletes. Internal
+   `workload_level_polydat_map` parameter deletes. Internal
    `all_bindings` extraction reverts.
-8. `nbrs-activity/src/runner.rs::workload_level_gk_map` local
+8. `nbrs-activity/src/runner.rs::workload_level_polydat_map` local
    deletes.
 
 **Completion gate:**
 
-- `grep -rn "_with_extra\|workload_level_gk_map\|workload_root_excludes\|refresh_per_op_externs_from_main\|phase_binding_names" nbrs-activity nbrs-workload` returns zero hits in non-test files.
+- `grep -rn "_with_extra\|workload_level_polydat_map\|workload_root_excludes\|refresh_per_op_externs_from_main\|phase_binding_names" nbrs-activity nbrs-workload` returns zero hits in non-test files.
 - `cargo build --workspace` succeeds.
 - Test failures are catalogued; not fixed.
 
@@ -124,7 +124,7 @@ what was originally Stage 2 (B.2). All three gates pass.
 5. `EngineCore::pull` writes through to the output's cell
    when one is attached. Outer's per-cycle eval populates
    the cell automatically.
-6. `GkKernel::advance_broadcasts` — outer-side operation
+6. `PolydatKernel::advance_broadcasts` — outer-side operation
    that pulls every output with an attached cell. Called
    from `FiberBuilder::set_source_item` so per-fiber
    `main_kernel` advances its broadcasts at every cycle
@@ -178,7 +178,7 @@ That's a structural change to:
   iteration values, returns a compiled program per
   iteration (or accepts a "template + values" form and
   defers compile to dispatch).
-- `GkKernel::for_iteration`'s contract: stops re-using
+- `PolydatKernel::for_iteration`'s contract: stops re-using
   `canonical.program()` and instead receives the
   iteration-specific program.
 - Dispatch in `dispatch_comprehension`: per-iteration
@@ -247,11 +247,11 @@ Stage 1*, not a separate stage.
 **Deliverable:** bind step in `polydat` attaches outer's
 output cells to inner's matching input slots, completing the
 cell-on-outputs mechanism SRD-13f specifies. No per-cycle
-refresh outside the GK eval engine.
+refresh outside the Polydat eval engine.
 
 **Specific changes:**
 
-- `polydat/src/kernel/gkkernel.rs::bind_outer_scope`
+- `polydat/src/kernel/polydatkernel.rs::bind_outer_scope`
   Step 2: cell-attach using
   `outer.state.core.output_cell(name)`. Passthrough exclusion
   driven by matter classification, not name-overlap heuristics.
@@ -289,7 +289,7 @@ refresh outside the GK eval engine.
 
 **Deliverable:** Cross-scope parser merge retired across
 workload + phase scopes. Block-level YAML `bindings:` was
-clarified (with user) as syntactic sugar — not a GK scope —
+clarified (with user) as syntactic sugar — not a Polydat scope —
 so its parser-time inlining into op-level bindings remains
 under a clearer name (`inline_block_sugar_into_op`).
 Workload-level and phase-level `bindings:` live only on
@@ -304,23 +304,23 @@ kernel chain.
    `parse_phases` / `parse_blocks` / `parse_single_block`
    retired; the only remaining caller is the block→op
    sugar expansion inside `normalize_op_object`.
-2. `nbrs-activity/src/runner.rs`: `workload_level_gk`
+2. `nbrs-activity/src/runner.rs`: `workload_level_polydat`
    extended to handle Map-form workload bindings via a
-   new `bindings::legacy_chain_map_to_gk_lines` helper
+   new `bindings::legacy_chain_map_to_polydat_lines` helper
    (workload-level Map-form bindings translate to GK
    source instead of going through op.bindings merge);
    `collect_param_references` scans `workload.bindings`
    and `phase.bindings` directly so the unused-param
    validator no longer relies on parser-time merge.
 3. `nbrs-activity/src/bindings.rs`: `compile_bindings_with_libs_excluding`'s
-   `scope_already_has_gk` gating simplified to
-   "always append `workload_level_gk` when non-empty"
+   `scope_already_has_polydat` gating simplified to
+   "always append `workload_level_polydat` when non-empty"
    since the duplication risk it was hedging against
    (workload bindings appearing twice via merge + direct
    param) is now structurally impossible.
-4. `nbrs-activity/src/executor.rs`: `ExecCtx.workload_level_gk`
+4. `nbrs-activity/src/executor.rs`: `ExecCtx.workload_level_polydat`
    threaded through; phase-scope compile (`compile_from_scope`)
-   now appends workload-level GK source as local matter so
+   now appends workload-level Polydat source as local matter so
    fiber.main_kernel evaluates dynamic workload bindings
    on its own state per cycle (no shared workload-root
    ticking, which would race across fibers).
@@ -335,7 +335,7 @@ kernel chain.
    cycle `set_inputs` propagation finds a Coordinate
    slot to write to. Conflicting extern declarations
    (auto-emitted from the manifest cascade) are stripped
-   before workload-level GK is appended.
+   before workload-level Polydat is appended.
 6. `nbrs-activity/src/synthesis.rs::FiberBuilder::set_source_item`:
    `advance_broadcasts` gated on per-op kernel having a
    *different* program from main_kernel. When the
@@ -393,8 +393,8 @@ workload layer):
 
    **Fix (proper architectural — `volatile` is the marker,
    not name-prefix):**
-   - `polydat/src/kernel/gkkernel.rs`: thread
-     `output_modifiers` through `GkKernel::new_with_inputs`
+   - `polydat/src/kernel/polydatkernel.rs`: thread
+     `output_modifiers` through `PolydatKernel::new_with_inputs`
      / `new_strict_with_inputs` / `new_impl` and install
      them on the program BEFORE `fold_init_constants`
      runs (the old out-of-band `set_output_modifiers`
@@ -450,7 +450,7 @@ incidentally — Push D retired that fallback.
    declare both `for_each:` and `bindings:` pass
    `phase.bindings.clone()`.
 3. Executor's `ForComprehension` handler translates the
-   `BindingsDef` to GK source (GkSource verbatim, Map →
+   `BindingsDef` to Polydat source (GkSource verbatim, Map →
    `name := expr` lines) and threads it to
    `synthesize_for_each_scope`.
 4. Test added in `nbrs/tests/m3_dependent_for_each.rs`:

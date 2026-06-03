@@ -1,29 +1,29 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Living tests for the literate .gk examples in tests/examples/.
+//! Living tests for the literate .polydat examples in tests/examples/.
 //!
 //! Each test programmatically assembles the DAG described by its
-//! corresponding .gk file and verifies the expected behavior.
+//! corresponding .polydat file and verifies the expected behavior.
 //! When the DSL parser is implemented, these tests will be replaced
-//! by direct parsing of the .gk files.
+//! by direct parsing of the .polydat files.
 
-use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::arithmetic::{
     AddU64, DivU64, Interleave, MixedRadix, ModU64,
 };
 use polydat::library::hash::{Hash64, HashRange};
 
 // ---------------------------------------------------------------
-// hello_world.gk
+// hello_world.polydat
 //
 //   input cycle: u64
 //   hashed := hash(cycle)
 //   user_id := mod(hashed, 1000000)
 // ---------------------------------------------------------------
 
-fn build_hello_world() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn build_hello_world() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("user_id", Box::new(ModU64::new(1_000_000)), vec![WireRef::node("hashed")]);
     asm.add_output("user_id", WireRef::node("user_id"));
@@ -64,7 +64,7 @@ fn hello_world_dispersed() {
 }
 
 // ---------------------------------------------------------------
-// cartesian_space.gk
+// cartesian_space.polydat
 //
 //   input cycle: u64
 //   (region, store, tx) := mixed_radix(cycle, 50, 200, 0)
@@ -76,8 +76,8 @@ fn hello_world_dispersed() {
 //   tx_id := mod(tx_h, 1000000000)
 // ---------------------------------------------------------------
 
-fn build_cartesian_space() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn build_cartesian_space() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![50, 200, 0])),
         vec![WireRef::input("cycle")]);
@@ -151,7 +151,7 @@ fn cartesian_codes_bounded() {
 }
 
 // ---------------------------------------------------------------
-// shared_computation.gk
+// shared_computation.polydat
 //
 //   input cycle: u64
 //   user_h := hash(cycle)
@@ -164,8 +164,8 @@ fn cartesian_codes_bounded() {
 //   account_age_days := mod(age_h, 3650)
 // ---------------------------------------------------------------
 
-fn build_shared_computation() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn build_shared_computation() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("user_h", Box::new(Hash64::new()),
         vec![WireRef::input("cycle")]);
@@ -242,7 +242,7 @@ fn shared_chained_hashes_differ() {
 }
 
 // ---------------------------------------------------------------
-// multi_coordinate.gk
+// multi_coordinate.polydat
 //
 //   input (cycle: u64, thread: u64)
 //   combined := interleave(cycle, thread)
@@ -253,8 +253,8 @@ fn shared_chained_hashes_differ() {
 //   value := mod(value_h, 1000)
 // ---------------------------------------------------------------
 
-fn build_multi_coordinate() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into(), "thread".into()]);
+fn build_multi_coordinate() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into(), "thread".into()]);
 
     asm.add_node("combined", Box::new(Interleave::new()),
         vec![WireRef::input("cycle"), WireRef::input("thread")]);
@@ -331,7 +331,7 @@ fn multi_coord_bounded() {
 }
 
 // ---------------------------------------------------------------
-// hashing_provenance.gk
+// hashing_provenance.polydat
 //
 //   input cycle: u64
 //   (tenant, device) := mixed_radix(cycle, 100, 0)
@@ -344,8 +344,8 @@ fn multi_coord_bounded() {
 //   field_c := mod(hash(hash(tenant_h)), 1000)
 // ---------------------------------------------------------------
 
-fn build_hashing_provenance() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn build_hashing_provenance() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![100, 0])),
         vec![WireRef::input("cycle")]);
@@ -454,14 +454,14 @@ fn provenance_same_tenant_same_fields() {
 }
 
 // ---------------------------------------------------------------
-// timeseries.gk — Full workload (abbreviated, matches end_to_end.rs)
+// timeseries.polydat — Full workload (abbreviated, matches end_to_end.rs)
 //
 // Already covered in tests/end_to_end.rs::timeseries_workload_sketch.
 // Here we add a few additional invariant checks.
 // ---------------------------------------------------------------
 
-fn build_timeseries() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn build_timeseries() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![100, 1000, 0])),
         vec![WireRef::input("cycle")]);

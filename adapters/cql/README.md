@@ -33,7 +33,7 @@ linked.
 
 - `src/common/` — engine-agnostic surface, always compiled:
   config parsing, consistency enum, op-mode dispatch, the
-  `cql_timeuuid` GK node, default status metrics, and the `cql`
+  `cql_timeuuid` Polydat node, default status metrics, and the `cql`
   meta-adapter `AdapterRegistration`.
 - `src/scylla/` — `engine-scylla` feature. Pure-Rust driver.
 - `src/cassandra_cpp/` — `engine-cassandra-cpp` feature. C++

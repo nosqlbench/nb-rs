@@ -27,7 +27,7 @@ nbrs: done.
 
 ---
 
-## GK Compiler Diagnostics
+## Polydat Compiler Diagnostics
 
 The compiler emits structured `CompileEvent` values explaining
 each compilation step:
@@ -61,7 +61,7 @@ $ nbrs bench --explain "hash(cycle)" cycles=1
 Shows parsing, wiring, type adaptation, constant folding, fusion,
 and output selection decisions.
 
-### GK Compiler Events
+### Polydat Compiler Events
 
 | Event | Level | Description |
 |-------|-------|-------------|
@@ -75,7 +75,7 @@ and output selection decisions.
 | ConfigWireCycleWarning | Warning | Config wire perf |
 | Warning | Warning | General |
 
-Query advisories: `nbrs bench gk file.gk --explain`
+Query advisories: `nbrs bench Polydat file.gk --explain`
 
 ---
 

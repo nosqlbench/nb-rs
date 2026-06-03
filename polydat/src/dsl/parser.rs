@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Recursive descent parser for the GK DSL.
+//! Recursive descent parser for the Polydat DSL.
 //!
 //! Parses a token stream (from the lexer) into an AST.
 //! Infix arithmetic expressions (`+`, `-`, `*`, `/`, `%`, `^`) are
@@ -28,7 +28,7 @@
 //! - `"{row.id}"` — field access → `printf("{}", row.id)`.
 //! - `"{{literal braces}}"` — escaped → stays a `StringLit` (printf
 //!   emits `{` / `}` from `{{` / `}}` at format time).
-//! - `"x={:05}"` — printf format spec, not a GK expression → stays
+//! - `"x={:05}"` — printf format spec, not a Polydat expression → stays
 //!   a `StringLit`; the user is calling printf by hand.
 //! - `"missing close {abc"` — unterminated placeholder → stays a
 //!   `StringLit`.
@@ -91,7 +91,7 @@ impl Parser {
             // declaration, elsewhere (module-signature param names,
             // call-site named args, body references like `hash(input)`)
             // it is a plain identifier. This mirrors the convention
-            // in `nbrs/stdlib/modeling.gk` where `input:` is the
+            // in `nbrs/stdlib/modeling.polydat` where `input:` is the
             // canonical parameter name for cycle-driven modules.
             TokenKind::Input => {
                 self.advance();
@@ -125,8 +125,8 @@ impl Parser {
     }
 }
 
-/// Parse a token stream into a GkFile AST.
-pub fn parse(tokens: Vec<Token>) -> Result<GkFile, String> {
+/// Parse a token stream into a PolydatFile AST.
+pub fn parse(tokens: Vec<Token>) -> Result<PolydatFile, String> {
     let mut parser = Parser::new(tokens);
     let mut statements = Vec::new();
 
@@ -134,10 +134,10 @@ pub fn parse(tokens: Vec<Token>) -> Result<GkFile, String> {
         parse_statement_into(&mut parser, &mut statements)?;
     }
 
-    Ok(GkFile { statements })
+    Ok(PolydatFile { statements })
 }
 
-/// Parse a token stream as a single GK expression.
+/// Parse a token stream as a single Polydat expression.
 ///
 /// Used by string-interpolation desugaring to compile placeholder
 /// bodies (`{ … }` inside string literals) the same way any
@@ -216,7 +216,7 @@ fn is_module_def(p: &Parser) -> bool {
     // Need at least: ident ( <param-name> : type
     // The param name accepts plain idents AND the soft keyword
     // `input` (canonical for cycle-driven modules — see
-    // `nbrs/stdlib/modeling.gk`).
+    // `nbrs/stdlib/modeling.polydat`).
     if p.pos + 4 >= p.tokens.len() { return false; }
     let third_is_param_name = matches!(
         &p.tokens[p.pos + 2].kind,
@@ -307,7 +307,7 @@ fn parse_extern_port(p: &mut Parser) -> Result<Statement, String> {
 /// - `input <name>[: <type>]` — bare single
 /// - `input (<name>[: <type>][, ...])` — tuple form mirroring the
 ///   module-signature param-list shape (see
-///   `nbrs/stdlib/modeling.gk`). Desugars to N InputDecls.
+///   `nbrs/stdlib/modeling.polydat`). Desugars to N InputDecls.
 ///
 /// Empty tuple `input ()` is rejected — declare zero inputs by
 /// simply omitting the `input` line.
@@ -649,7 +649,7 @@ fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
 /// no special runtime support beyond the standard node path.
 ///
 /// Implementation: each placeholder body is lexed and parsed as
-/// a full GK expression via the same `parse_expression` entry
+/// a full Polydat expression via the same `parse_expression` entry
 /// the rest of the language uses, so nesting, function calls,
 /// arithmetic, and field access all work uniformly:
 ///
@@ -721,7 +721,7 @@ enum Segment {
     /// `parse_format` pass turns them into single-brace output.
     Literal(String),
     /// A `{ … }` placeholder body, with the surrounding braces
-    /// stripped. Will be lexed + parsed as a GK expression.
+    /// stripped. Will be lexed + parsed as a Polydat expression.
     Placeholder(String),
 }
 
@@ -817,7 +817,7 @@ fn find_placeholder_end(chars: &[char], start: usize) -> Option<usize> {
     None
 }
 
-/// Lex and parse a placeholder body as a single GK expression.
+/// Lex and parse a placeholder body as a single Polydat expression.
 fn parse_placeholder_body(body: &str, _span: Span) -> Result<Expr, String> {
     let body = body.trim();
     if body.is_empty() {
@@ -851,7 +851,7 @@ fn parse_call(p: &mut Parser, func: String, span: Span) -> Result<Expr, String> 
 ///
 /// `name` accepts both plain identifiers and the soft keyword
 /// `input` — the latter is the canonical parameter name in
-/// `nbrs/stdlib/modeling.gk` and other cycle-driven modules.
+/// `nbrs/stdlib/modeling.polydat` and other cycle-driven modules.
 fn parse_arg(p: &mut Parser) -> Result<Arg, String> {
     let arg_name: Option<String> = match p.peek() {
         TokenKind::Ident(name) => Some(name.clone()),
@@ -897,7 +897,7 @@ mod tests {
     use super::*;
     use crate::dsl::lexer::lex;
 
-    fn parse_str(s: &str) -> GkFile {
+    fn parse_str(s: &str) -> PolydatFile {
         let tokens = lex(s).unwrap();
         parse(tokens).unwrap()
     }
@@ -910,7 +910,7 @@ mod tests {
         }
     }
 
-    fn cycle_modifier_of(f: &GkFile) -> BindingModifier {
+    fn cycle_modifier_of(f: &PolydatFile) -> BindingModifier {
         match &f.statements[0] {
             Statement::Binding(b) => b.modifier,
             other => panic!("expected cycle binding, got {other:?}"),
@@ -959,13 +959,13 @@ mod tests {
         assert!(err.contains("duplicate"), "error should call out duplicate: {err}");
     }
 
-    /// End-to-end: compile a tiny GK source with a `volatile`
+    /// End-to-end: compile a tiny Polydat source with a `volatile`
     /// binding and verify the named output reaches the compiled
     /// program. Catches regressions where the modifier flag
     /// somehow filters the binding out of the output set.
     #[test]
     fn volatile_binding_compiles_to_named_output() {
-        let kernel = crate::dsl::compile_gk(
+        let kernel = crate::dsl::compile_polydat(
             "volatile y := 42\n"
         ).expect("compile volatile y");
         let names = kernel.program().output_names();

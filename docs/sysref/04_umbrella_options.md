@@ -143,10 +143,10 @@ the umbrella's kv-list form.** A future option may accept JSON
 at the same flag (e.g. `--session '{"name":"foo"}'`) without
 ambiguity.
 
-This rule applies more broadly to the codebase: **GK's
+This rule applies more broadly to the codebase: **Polydat's
 parameter-interpolation syntax `{...}` is, by design and by
 definition, NOT valid JSON.** Any clause that parses
-successfully as JSON is JSON, definitively not GK parameter
+successfully as JSON is JSON, definitively not Polydat parameter
 syntax. Parsers can use successful JSON parsing as the
 disambiguation signal.
 
@@ -217,5 +217,5 @@ Future umbrella surfaces should mirror this test surface.
 ## See also
 
 - SRD-45 — Sessions (the pilot adoption)
-- SRD-10 §"String Interpolation" — GK `{...}` syntax that
+- SRD-10 §"String Interpolation" — Polydat `{...}` syntax that
   Rule 6 explicitly distinguishes from JSON

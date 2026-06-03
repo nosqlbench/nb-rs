@@ -1,9 +1,9 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! GK runtime: unified compilation context with factory registration.
+//! Polydat runtime: unified compilation context with factory registration.
 //!
-//! The `GkRuntime` holds the complete set of available node functions
+//! The `PolydatRuntime` holds the complete set of available node functions
 //! (built-in + factory-provided), module search paths, and stdlib.
 //! All compilation goes through the runtime — there is no separate
 //! "built-in" vs "external" distinction visible to the user.
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::dsl::registry::{FuncSig, FuncCategory};
-use crate::ast::{GkNode, PortType, Value};
+use crate::ast::{PolydatNode, PortType, Value};
 
 // ───── Virtual-wire resolver registry (γ-8) ─────
 
@@ -92,8 +92,8 @@ pub enum FactoryArg {
 
 /// Trait for external node providers.
 ///
-/// External crates implement this to contribute GK node functions.
-/// Once registered on a `GkRuntime`, the factory's nodes are
+/// External crates implement this to contribute Polydat node functions.
+/// Once registered on a `PolydatRuntime`, the factory's nodes are
 /// indistinguishable from built-in nodes: same registry, same
 /// describe output, same category grouping, same type checking.
 pub trait NodeFactory: Send + Sync {
@@ -113,31 +113,31 @@ pub trait NodeFactory: Send + Sync {
         name: &str,
         wire_count: usize,
         consts: &[FactoryArg],
-    ) -> Result<Box<dyn GkNode>, String>;
+    ) -> Result<Box<dyn PolydatNode>, String>;
 }
 
-/// The GK runtime: unified compilation context.
+/// The Polydat runtime: unified compilation context.
 ///
 /// Holds the complete function registry (built-in + factory-provided),
 /// factory instances for node construction, module search paths, and
 /// stdlib sources. All compilation goes through the runtime.
 ///
 /// Multiple runtimes can coexist with different factory sets.
-pub struct GkRuntime {
+pub struct PolydatRuntime {
     /// Registered factories. Built-in nodes are handled separately
     /// (they're hardcoded in build_node), but their signatures are
     /// included in the unified registry.
     factories: Vec<Box<dyn NodeFactory>>,
-    /// Additional module search paths (from --gk-lib).
-    gk_lib_paths: Vec<PathBuf>,
+    /// Additional module search paths (from --polydat-lib).
+    polydat_lib_paths: Vec<PathBuf>,
 }
 
-impl GkRuntime {
+impl PolydatRuntime {
     /// Create a new runtime with only built-in nodes.
     pub fn new() -> Self {
         Self {
             factories: Vec::new(),
-            gk_lib_paths: Vec::new(),
+            polydat_lib_paths: Vec::new(),
         }
     }
 
@@ -149,9 +149,9 @@ impl GkRuntime {
         self.factories.push(factory);
     }
 
-    /// Add a module search path (from --gk-lib).
-    pub fn add_gk_lib(&mut self, path: PathBuf) {
-        self.gk_lib_paths.push(path);
+    /// Add a module search path (from --polydat-lib).
+    pub fn add_polydat_lib(&mut self, path: PathBuf) {
+        self.polydat_lib_paths.push(path);
     }
 
     /// Return the unified function registry: built-in + all factories.
@@ -185,7 +185,7 @@ impl GkRuntime {
         name: &str,
         wire_count: usize,
         consts: &[FactoryArg],
-    ) -> Option<Result<Box<dyn GkNode>, String>> {
+    ) -> Option<Result<Box<dyn PolydatNode>, String>> {
         for factory in &self.factories {
             if factory.signatures().iter().any(|s| s.name == name) {
                 return Some(factory.build(name, wire_count, consts));
@@ -199,13 +199,13 @@ impl GkRuntime {
         self.factories.len()
     }
 
-    /// The --gk-lib search paths.
-    pub fn gk_lib_paths(&self) -> &[PathBuf] {
-        &self.gk_lib_paths
+    /// The --polydat-lib search paths.
+    pub fn polydat_lib_paths(&self) -> &[PathBuf] {
+        &self.polydat_lib_paths
     }
 }
 
-impl Default for GkRuntime {
+impl Default for PolydatRuntime {
     fn default() -> Self {
         Self::new()
     }
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn default_runtime_has_builtins() {
-        let rt = GkRuntime::new();
+        let rt = PolydatRuntime::new();
         let reg = rt.registry();
         assert!(reg.len() >= 50);
     }
@@ -303,12 +303,12 @@ mod tests {
                 }]
             }
             fn build(&self, _name: &str, _wc: usize, _consts: &[FactoryArg])
-                -> Result<Box<dyn GkNode>, String> {
+                -> Result<Box<dyn PolydatNode>, String> {
                 Ok(Box::new(crate::library::identity::Identity::new()))
             }
         }
 
-        let mut rt = GkRuntime::new();
+        let mut rt = PolydatRuntime::new();
         let before = rt.registry().len();
         rt.register_factory(Box::new(TestFactory));
         let after = rt.registry().len();
@@ -341,7 +341,7 @@ mod tests {
                 }]
             }
             fn build(&self, name: &str, _wc: usize, _consts: &[FactoryArg])
-                -> Result<Box<dyn GkNode>, String> {
+                -> Result<Box<dyn PolydatNode>, String> {
                 match name {
                     "custom_identity" => Ok(Box::new(crate::library::identity::Identity::new())),
                     _ => Err(format!("unknown: {name}")),
@@ -349,7 +349,7 @@ mod tests {
             }
         }
 
-        let mut rt = GkRuntime::new();
+        let mut rt = PolydatRuntime::new();
         rt.register_factory(Box::new(TestFactory));
 
         // Should find and build via factory
@@ -385,12 +385,12 @@ mod tests {
                 }]
             }
             fn build(&self, _: &str, _: usize, _: &[FactoryArg])
-                -> Result<Box<dyn GkNode>, String> {
+                -> Result<Box<dyn PolydatNode>, String> {
                 Ok(Box::new(crate::library::identity::Identity::new()))
             }
         }
 
-        let mut rt = GkRuntime::new();
+        let mut rt = PolydatRuntime::new();
         rt.register_factory(Box::new(TestFactory));
 
         let grouped = rt.by_category();

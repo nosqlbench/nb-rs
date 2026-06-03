@@ -5,7 +5,7 @@
 //!
 //! Each ApiOperation becomes a ParsedOp with fields for method, URI,
 //! body (if POST/PUT/PATCH), and content_type. Path parameters and
-//! body fields become GK bind points. Query parameters become part
+//! body fields become Polydat bind points. Query parameters become part
 //! of the URI template.
 
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ use crate::spec::{ApiOperation, FieldInfo};
 /// - `body`: JSON body template with {field} bind points (for POST/PUT/PATCH)
 /// - `content_type`: from the request body spec
 ///
-/// GK bindings are auto-generated for path parameters and body fields.
+/// Polydat bindings are auto-generated for path parameters and body fields.
 pub fn generate_ops(
     ops: &[ApiOperation],
     base_url: &str,
@@ -52,7 +52,7 @@ pub fn generate_ops(
         // Generate bindings for path parameters
         for param in &api_op.path_params {
             if !seen_bindings.contains_key(&param.name) {
-                binding_lines.push(gk_binding_for_param(&param.name, &param.schema_type));
+                binding_lines.push(polydat_binding_for_param(&param.name, &param.schema_type));
                 seen_bindings.insert(param.name.clone(), true);
             }
         }
@@ -60,7 +60,7 @@ pub fn generate_ops(
         // Generate bindings for query parameters
         for param in &api_op.query_params {
             if !seen_bindings.contains_key(&param.name) {
-                binding_lines.push(gk_binding_for_param(&param.name, &param.schema_type));
+                binding_lines.push(polydat_binding_for_param(&param.name, &param.schema_type));
                 seen_bindings.insert(param.name.clone(), true);
             }
         }
@@ -79,7 +79,7 @@ pub fn generate_ops(
             for field in &body_info.fields {
                 let bind_name = field.name.replace('.', "_");
                 if !seen_bindings.contains_key(&bind_name) {
-                    binding_lines.push(gk_binding_for_param(&bind_name, &field.schema_type));
+                    binding_lines.push(polydat_binding_for_param(&bind_name, &field.schema_type));
                     seen_bindings.insert(bind_name, true);
                 }
             }
@@ -100,6 +100,10 @@ pub fn generate_ops(
             result: None,
             wrappers: None,
             captures: Vec::new(),
+            daemon: nbrs_workload::model::DaemonSpec::Disabled,
+            daemon_cancel_grace_ms: None,
+            while_cond: None,
+            rate: None,
         };
         parsed_ops.push(parsed);
     }
@@ -113,8 +117,8 @@ pub fn generate_ops(
     (parsed_ops, bindings_source)
 }
 
-/// Generate a GK binding expression for a parameter based on its schema type.
-fn gk_binding_for_param(name: &str, schema_type: &str) -> String {
+/// Generate a Polydat binding expression for a parameter based on its schema type.
+fn polydat_binding_for_param(name: &str, schema_type: &str) -> String {
     match schema_type {
         "integer" => format!("{name} := mod(hash(cycle), 1000000)"),
         "number" => format!("{name} := unit_interval(hash(cycle))"),

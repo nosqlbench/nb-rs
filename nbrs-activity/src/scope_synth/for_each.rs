@@ -33,12 +33,12 @@
 use std::collections::HashSet;
 
 use polydat::iteration::comprehension::pre_evaluate_clause;
-use polydat::kernel::{GkKernel, ManifestEntry};
+use polydat::kernel::{PolydatKernel, ManifestEntry};
 
 use super::cascade::{cascade_parent_into_source, CascadeInputs, CascadeOutputs};
 use super::helpers::{collect_leaf_placeholders, scan_one};
 
-/// Synthesize and compile a GK kernel for a for-each scope.
+/// Synthesize and compile a Polydat Kernel for a for-each scope.
 ///
 /// `bindings` is `[(iter_var, spec_expr)]` per scalar variable
 /// (parallel-iter clauses contribute one entry per scalar).
@@ -46,7 +46,7 @@ use super::helpers::{collect_leaf_placeholders, scan_one};
 /// outputs (use `polydat::kernel::extract_manifest` on the
 /// parent's program). `parent_kernel` provides the in-scope
 /// name space for clause pre-evaluation.
-/// `phase_bindings` is optional GK source folded in after the
+/// `phase_bindings` is optional Polydat source folded in after the
 /// extern cascade (SRD-13f Push E — when a phase declares both
 /// `for_each:` and `bindings:`, the bindings live on this scope).
 ///
@@ -57,7 +57,7 @@ use super::helpers::{collect_leaf_placeholders, scan_one};
 ///   exposes.
 /// - `materialize_wiring_from_outer(parent)` already called.
 /// - Parent input-slot values propagated via
-///   [`GkKernel::propagate_inputs_into`].
+///   [`PolydatKernel::propagate_inputs_into`].
 ///
 /// The caller's responsibility: per-iteration, install the
 /// tuple's typed values on this kernel's input slots before
@@ -66,14 +66,14 @@ use super::helpers::{collect_leaf_placeholders, scan_one};
 pub fn build_for_each_scope_kernel(
     bindings: &[(String, String)],
     parent_manifest: &[ManifestEntry],
-    parent_kernel: &GkKernel,
+    parent_kernel: &PolydatKernel,
     workload_params: &std::collections::HashMap<String, String>,
-    gk_lib_paths: Vec<std::path::PathBuf>,
+    polydat_lib_paths: Vec<std::path::PathBuf>,
     workload_dir: Option<&std::path::Path>,
     strict: bool,
     context: &str,
     phase_bindings: Option<&str>,
-) -> Result<GkKernel, String> {
+) -> Result<PolydatKernel, String> {
     let iter_vars: Vec<String> = bindings.iter().map(|(v, _)| v.clone()).collect();
     let spec_exprs: Vec<String> = bindings.iter().map(|(_, e)| e.clone()).collect();
 
@@ -82,7 +82,7 @@ pub fn build_for_each_scope_kernel(
     let mut inherited_names: Vec<String> = Vec::new();
 
     // Probe each clause's spec expression to detect the iter-
-    // var's native GK type and discover any additional
+    // var's native Polydat type and discover any additional
     // placeholders that surface after earlier-iter-vars'
     // values substitute into later specs.
     //
@@ -101,7 +101,7 @@ pub fn build_for_each_scope_kernel(
             .unwrap_or_default();
         let detected_type = values
             .first()
-            .map(polydat::iteration::comprehension::value_to_gk_type_name)
+            .map(polydat::iteration::comprehension::value_to_polydat_type_name)
             .unwrap_or("String");
         source.push_str(&format!("extern {var}: {detected_type}\n"));
         emitted.insert(var.clone());
@@ -128,7 +128,7 @@ pub fn build_for_each_scope_kernel(
     let pre_emitted: HashSet<String> = iter_vars.iter().cloned().collect();
     // Drive the shared cascade walker. include_referenced_cascade
     // is true for for_each — its spec expressions are narrow
-    // GK source where every referenced name needs an extern.
+    // Polydat source where every referenced name needs an extern.
     cascade_parent_into_source(
         CascadeInputs {
             parent_kernel,
@@ -149,7 +149,7 @@ pub fn build_for_each_scope_kernel(
     // SRD-13f Push E — append phase-level `bindings:` source
     // after the extern cascade. Phase bindings can reference
     // iter vars (now externs above) and any cascaded parent
-    // name; the GK compiler resolves both.
+    // name; the Polydat compiler resolves both.
     if let Some(body) = phase_bindings {
         let trimmed = body.trim();
         if !trimmed.is_empty() {
@@ -168,19 +168,19 @@ pub fn build_for_each_scope_kernel(
     }
 
     // SRD-67 Phase 3 — finalize through the SubcontextBuilder
-    // bridge. The for_each synthesiser threads gk_lib_paths /
+    // bridge. The for_each synthesiser threads polydat_lib_paths /
     // workload_dir / strict through CompileOptions so the
     // underlying compile invocation matches the legacy call.
     let compile_options = polydat::kernel::subcontext::CompileOptions {
         workload_dir: workload_dir.map(|p| p.to_path_buf()),
-        gk_lib_paths,
+        polydat_lib_paths,
         strict,
         required_outputs: Vec::new(),
         context_label: Some(context.to_string()),
         cursor_limit: None,
         ..Default::default()
     };
-    let matter = polydat::kernel::subcontext::GkMatter::builder()
+    let matter = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_names)

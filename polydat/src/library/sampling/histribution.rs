@@ -10,7 +10,7 @@
 //! - Implicit labels: `"50 25 13 12"` → outcomes 0,1,2,3 with those weights
 //! - Explicit labels: `"234:50 33:25 17:13 3:12"` → outcomes 234,33,17,3
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
 use crate::library::sampling::alias::AliasTableU64;
 
 /// Parse a histribution spec and build an alias table.
@@ -43,7 +43,7 @@ pub fn parse_histribution(spec: &str) -> (Vec<u64>, AliasTableU64) {
     (labels, table)
 }
 
-/// GK node that samples from a histribution spec.
+/// Polydat node that samples from a histribution spec.
 ///
 /// Signature: `(input: u64) -> (u64)`
 ///
@@ -74,7 +74,7 @@ impl Histribution {
     }
 }
 
-impl GkNode for Histribution {
+impl PolydatNode for Histribution {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }

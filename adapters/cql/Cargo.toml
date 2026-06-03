@@ -46,7 +46,7 @@ nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt"] }
 inventory = "0.3"
-# `cql_timeuuid` GK node uses xxh3 to derive deterministic UUID
+# `cql_timeuuid` Polydat node uses xxh3 to derive deterministic UUID
 # bits from a u64 seed — see common/nodes.rs.
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 

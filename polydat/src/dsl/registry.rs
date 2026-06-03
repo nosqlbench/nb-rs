@@ -9,7 +9,7 @@
 //! generically dispatch variadic functions.
 //!
 //! Categories are a type-safe enum — every function must declare one.
-//! The `describe gk functions` command groups by category automatically.
+//! The `describe wiring functions` command groups by category automatically.
 //! Stdlib modules declare their category via `// @category: Name`
 //! comment syntax.
 //!
@@ -41,7 +41,7 @@ pub struct NodeRegistration {
     /// ignore the slice. When the assembler can't resolve a
     /// wire's type (forward reference, dangling), the slot
     /// defaults to [`crate::ast::PortType::U64`].
-    pub build: fn(&str, &[WireRef], &[crate::ast::PortType], &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>>,
+    pub build: fn(&str, &[WireRef], &[crate::ast::PortType], &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>>,
     /// Optional assembly-time validator for this module's constants.
     ///
     /// The factory calls this **before** `build` whenever the name
@@ -55,7 +55,7 @@ pub struct NodeRegistration {
 
 inventory::collect!(NodeRegistration);
 
-/// Register a node module's signatures and builder with the GK runtime.
+/// Register a node module's signatures and builder with the Polydat runtime.
 ///
 /// Place this call at module scope in each node module. The inventory crate
 /// arranges for the registration to run before `main` so that `registry()`
@@ -94,10 +94,10 @@ macro_rules! register_nodes {
     };
 }
 
-/// Functional category for a GK node function.
+/// Functional category for a Polydat node function.
 ///
 /// Every native node and stdlib module belongs to exactly one category.
-/// Categories drive the `describe gk functions` grouping and provide
+/// Categories drive the `describe wiring functions` grouping and provide
 /// semantic organization for documentation and discovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FuncCategory {
@@ -297,7 +297,7 @@ pub enum Arity {
 /// `NodeMeta`. Some — `log_info`, `identity`, anything documented
 /// as "pass-through" — produce an output whose type matches one
 /// of their inputs. Declaring this here makes the contract visible
-/// to the assembler, the build-node dispatch path, `describe gk
+/// to the assembler, the build-node dispatch path, `describe wiring
 /// functions`, and any future static analysis, instead of being
 /// buried inside an `eval` that silently passes values through a
 /// wire whose declared type lies.
@@ -333,7 +333,7 @@ pub struct FuncSig {
     /// For variadic functions: the identity element for zero inputs.
     pub identity: Option<u64>,
     /// Factory for variadic nodes: takes wire count, returns node.
-    pub variadic_ctor: Option<fn(usize) -> Box<dyn crate::ast::GkNode>>,
+    pub variadic_ctor: Option<fn(usize) -> Box<dyn crate::ast::PolydatNode>>,
     /// Positional parameter list: wires and constants in call order.
     pub params: &'static [ParamSpec],
     /// Arity specification.

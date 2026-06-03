@@ -1,15 +1,15 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! GkKernel: a compiled GK kernel pairing an Arc<GkProgram> with a GkState.
+//! PolydatKernel: a compiled Polydat Kernel pairing an Arc<PolydatProgram> with a PolydatState.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::ast::{GkNode, Value};
+use crate::ast::{PolydatNode, Value};
 use super::{WireSource, InputDef};
-use super::program::GkProgram;
-use super::engines::{GkState, SharedCellEntry};
+use super::program::PolydatProgram;
+use super::engines::{PolydatState, SharedCellEntry};
 
 /// Auto-create `SharedCell`s for `shared`-modifier outputs that
 /// have a backing input slot on this kernel. Call once at
@@ -21,7 +21,7 @@ use super::engines::{GkState, SharedCellEntry};
 /// shape — `shared X := <node-binding>` compiles to a
 /// computation node, not an input slot) is silently skipped;
 /// without a slot there's nothing to share.
-fn seed_shared_cells(state: &mut GkState, program: &GkProgram) {
+fn seed_shared_cells(state: &mut PolydatState, program: &PolydatProgram) {
     for name in program.shared_outputs() {
         let Some(idx) = program.find_input(name) else { continue };
         if state.shared_cell(idx).is_some() { continue; } // already seeded
@@ -87,7 +87,7 @@ pub(crate) fn adapt_boundary_value(slot_name: &str, slot_type: crate::ast::PortT
     }
 }
 
-/// A compiled GK kernel: an `Arc<GkProgram>` plus one `GkState`.
+/// A compiled Polydat Kernel: an `Arc<PolydatProgram>` plus one `PolydatState`.
 ///
 /// ## Invariants
 ///
@@ -101,9 +101,9 @@ pub(crate) fn adapt_boundary_value(slot_name: &str, slot_type: crate::ast::PortT
 ///   inspector, scope-aware diagnostics) call
 ///   [`Self::scope_coordinates`] without needing to walk the scope
 ///   tree themselves. See [`super::scope_coords`].
-pub struct GkKernel {
-    program: Arc<GkProgram>,
-    state: GkState,
+pub struct PolydatKernel {
+    program: Arc<PolydatProgram>,
+    state: PolydatState,
     /// Number of init-time constants folded during compilation.
     pub constants_folded: usize,
     /// Leaf-first scope-coordinate path. Maintained as an
@@ -135,7 +135,7 @@ pub struct GkKernel {
 
 /// SRD-67 Phase 5 — local data shape of a write-through binding
 /// the kernel carries. Mirrors `subcontext::WriteThroughBinding`
-/// but lives at this layer so [`GkKernel`] avoids a cyclic
+/// but lives at this layer so [`PolydatKernel`] avoids a cyclic
 /// dependency on the subcontext module (which already depends on
 /// kernel types).
 #[derive(Debug, Clone)]
@@ -144,18 +144,18 @@ pub(crate) struct KernelWriteThrough {
     pub source_output: String,
 }
 
-impl std::fmt::Debug for GkKernel {
+impl std::fmt::Debug for PolydatKernel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GkKernel")
+        f.debug_struct("PolydatKernel")
             .field("program", &self.program)
             .finish()
     }
 }
 
-impl GkKernel {
+impl PolydatKernel {
     /// Create from pre-validated components (all inputs are coordinates).
     pub(crate) fn new(
-        nodes: Vec<Box<dyn GkNode>>,
+        nodes: Vec<Box<dyn PolydatNode>>,
         wiring: Vec<Vec<WireSource>>,
         input_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
@@ -184,7 +184,7 @@ impl GkKernel {
     /// §"Init Binding Contract" Plan A); these are always fatal
     /// regardless of strict mode.
     pub(crate) fn new_with_inputs(
-        nodes: Vec<Box<dyn GkNode>>,
+        nodes: Vec<Box<dyn PolydatNode>>,
         wiring: Vec<Vec<WireSource>>,
         input_defs: Vec<InputDef>,
         coord_count: usize,
@@ -201,7 +201,7 @@ impl GkKernel {
 
     /// Construct with strict mode.
     pub(crate) fn new_strict_with_inputs(
-        nodes: Vec<Box<dyn GkNode>>,
+        nodes: Vec<Box<dyn PolydatNode>>,
         wiring: Vec<Vec<WireSource>>,
         input_defs: Vec<InputDef>,
         coord_count: usize,
@@ -217,7 +217,7 @@ impl GkKernel {
     }
 
     fn new_impl(
-        nodes: Vec<Box<dyn GkNode>>,
+        nodes: Vec<Box<dyn PolydatNode>>,
         wiring: Vec<Vec<WireSource>>,
         input_defs: Vec<InputDef>,
         coord_count: usize,
@@ -230,7 +230,7 @@ impl GkKernel {
         log: Option<&mut crate::dsl::events::CompileEventLog>,
         strict: bool,
     ) -> Result<Self, String> {
-        let mut program = GkProgram::with_inputs(
+        let mut program = PolydatProgram::with_inputs(
             nodes, wiring, input_defs, coord_count, output_map, output_order,
             source, context,
         );
@@ -281,7 +281,7 @@ impl GkKernel {
 
     /// Mark a set of output names as inherited (cascade-only)
     /// on the program. Must be called immediately after
-    /// construction, before the `Arc<GkProgram>` is shared.
+    /// construction, before the `Arc<PolydatProgram>` is shared.
     /// Panics if the Arc has other references.
     pub fn mark_inherited_outputs<I>(&mut self, names: I)
     where I: IntoIterator<Item = String>
@@ -295,7 +295,7 @@ impl GkKernel {
 
     /// Bake Rule 2 write-through bindings onto the underlying
     /// program. Must be called immediately after construction,
-    /// before the `Arc<GkProgram>` is shared. Panics if the Arc
+    /// before the `Arc<PolydatProgram>` is shared. Panics if the Arc
     /// has other references. Also updates this kernel's own
     /// `write_throughs` field so the just-built kernel matches
     /// what later `from_program` callers will see.
@@ -314,7 +314,7 @@ impl GkKernel {
     }
 
     /// Construct a fresh kernel from a previously-compiled
-    /// `Arc<GkProgram>`. The state is freshly created and seeded
+    /// `Arc<PolydatProgram>`. The state is freshly created and seeded
     /// the same way the standard new-kernel path does, so callers
     /// can immediately `set_input(...)` for externs and execute.
     ///
@@ -332,7 +332,7 @@ impl GkKernel {
     /// §"Cache-and-rebind contract"): a phase scope compiles once,
     /// caches its program, and instantiates a fresh kernel per
     /// `run_phase` call against the cached program.
-    pub(crate) fn from_program(program: Arc<GkProgram>) -> Self {
+    pub(crate) fn from_program(program: Arc<PolydatProgram>) -> Self {
         let mut state = program.create_state();
         // Populate buffers for folded constants so get_constant()
         // works on the new kernel — mirrors the seeding done in
@@ -367,7 +367,7 @@ impl GkKernel {
     }
 
     /// The shared immutable program.
-    pub fn program(&self) -> &Arc<GkProgram> {
+    pub fn program(&self) -> &Arc<PolydatProgram> {
         &self.program
     }
 
@@ -469,21 +469,21 @@ impl GkKernel {
     /// still uniquely owned. The subscope synthesizer
     /// (SRD-13f §"Wire-reference classification") queries this
     /// to integrate parent bindings' matter into child scopes.
-    pub fn set_ast(&mut self, ast: Arc<crate::dsl::ast::GkFile>) {
+    pub fn set_ast(&mut self, ast: Arc<crate::dsl::ast::PolydatFile>) {
         Arc::get_mut(&mut self.program)
             .expect("set_ast must be called before program is shared")
             .set_ast(ast);
     }
 
     /// The per-fiber mutable evaluation state.
-    pub fn state(&mut self) -> &mut GkState {
+    pub fn state(&mut self) -> &mut PolydatState {
         &mut self.state
     }
 
     /// Read-only access to the kernel's evaluation state. Used by
     /// callers (e.g. the scope-init pass) that need to inspect
     /// pulled values without consuming the kernel.
-    pub fn state_ref(&self) -> &GkState {
+    pub fn state_ref(&self) -> &PolydatState {
         &self.state
     }
 
@@ -523,7 +523,7 @@ impl GkKernel {
     /// This is the kernel-chain operation that lets cascade-extern
     /// propagate transitively across multi-level scope chains. Each
     /// scope builder calls it after `build_subscope` finishes.
-    pub fn propagate_inputs_into(&self, child: &mut GkKernel) {
+    pub fn propagate_inputs_into(&self, child: &mut PolydatKernel) {
         let names = self.program.input_names();
         for name in names {
             let Some(outer_value) = self.get_input(&name) else { continue };
@@ -683,18 +683,18 @@ impl GkKernel {
     /// typed primitive should be caught at the compiler):
     ///
     /// ```compile_fail,E0624
-    /// use polydat::kernel::GkKernel;
-    /// use polydat::dsl::compile::compile_gk;
-    /// let parent = compile_gk("input cycle: u64\n").unwrap();
-    /// let mut child = compile_gk("input cycle: u64\n").unwrap();
+    /// use polydat::kernel::PolydatKernel;
+    /// use polydat::dsl::compile::compile_polydat;
+    /// let parent = compile_polydat("input cycle: u64\n").unwrap();
+    /// let mut child = compile_polydat("input cycle: u64\n").unwrap();
     /// child.materialize_wiring_from_outer(&parent); // ← private; refuses to compile
     /// ```
     pub(crate) fn materialize_subscope(
         &self,
-        program: Arc<GkProgram>,
+        program: Arc<PolydatProgram>,
         iter_bindings: &[(String, Value)],
-    ) -> GkKernel {
-        let mut child = GkKernel::from_program(program);
+    ) -> PolydatKernel {
+        let mut child = PolydatKernel::from_program(program);
         for (var, value) in iter_bindings {
             if let Some(idx) = child.program.find_input(var) {
                 child.state.set_input(idx, value.clone());
@@ -712,12 +712,12 @@ impl GkKernel {
     /// Used by the typed-builder bridge
     /// (`build_kernel_under_parent_full`) when it needs an
     /// `Arc<ScopeKernel<RootMarker>>` standing in for a borrowed
-    /// `&GkKernel` — the wrapping must reflect the LIVE parent's
+    /// `&PolydatKernel` — the wrapping must reflect the LIVE parent's
     /// cell view, not just its program shape, otherwise Rule 2
     /// in the builder's finalize sees no cells and produces no
     /// write-throughs.
-    pub(crate) fn snapshot_with_cells(&self) -> GkKernel {
-        let mut snapshot = GkKernel::from_program(self.program.clone());
+    pub(crate) fn snapshot_with_cells(&self) -> PolydatKernel {
+        let mut snapshot = PolydatKernel::from_program(self.program.clone());
         snapshot.transit_cells = self.transit_cells.clone();
         // Re-attach every cell from `self`'s input slots onto
         // the matching input slot of `snapshot`. Slot indices
@@ -743,7 +743,7 @@ impl GkKernel {
     /// `build_subscope` (which calls `materialize_subscope` /
     /// `adopt_subscope` internally). External callers don't see
     /// this operation directly.
-    fn materialize_wiring_from_outer(&mut self, outer: &GkKernel) {
+    fn materialize_wiring_from_outer(&mut self, outer: &PolydatKernel) {
         // Step 1 — typed shared-cell cascade. Compute every
         // cell visible at the outer scope: cells on outer's
         // own input slots (its `shared X := …` declarations
@@ -973,7 +973,7 @@ impl GkKernel {
     /// Intended to run once per cycle on each per-fiber outer
     /// kernel whose outputs are visible to inner scopes. The
     /// alternative — validity-bit + auto-pull-on-stale-read
-    /// — would put the trigger fully inside the GK engine
+    /// — would put the trigger fully inside the Polydat engine
     /// (so inner reads transparently fetch fresh values),
     /// but requires the engine to track upstream dependencies
     /// across the cell boundary. This eager-broadcast form
@@ -1046,15 +1046,15 @@ impl GkKernel {
     /// compile a scope's program **once**, then hydrate many
     /// per-instance kernels from it — one per iteration tuple,
     /// per fiber, per scenario-tree visit. The program is
-    /// immutable substance (the `Arc<GkProgram>`); each
+    /// immutable substance (the `Arc<PolydatProgram>`); each
     /// hydrated kernel carries its own state (the input slot
     /// values for this iteration).
     ///
     /// The pattern's three load-bearing properties:
     ///
-    /// 1. **Compile cost amortizes.** GK source → typed program
+    /// 1. **Compile cost amortizes.** Polydat source → typed program
     ///    is paid once per canonical scope, not per iteration
-    ///    or per fiber. The compiled `Arc<GkProgram>` is shared
+    ///    or per fiber. The compiled `Arc<PolydatProgram>` is shared
     ///    via clone (cheap — refcount bump).
     /// 2. **Each hydrated kernel is independent.** Per-fiber
     ///    state means no synchronization between fibers running
@@ -1104,10 +1104,10 @@ impl GkKernel {
     ///   scope walker so multi-level cascades reach the
     ///   grandchild).
     pub fn for_iteration(
-        canonical: &Arc<GkKernel>,
-        parent: &Arc<GkKernel>,
+        canonical: &Arc<PolydatKernel>,
+        parent: &Arc<PolydatKernel>,
         bindings: &[(String, Value)],
-    ) -> Arc<GkKernel> {
+    ) -> Arc<PolydatKernel> {
         // Routes through the parent's typed materialization
         // primitive so cell propagation is uniform with every
         // other parent → child path.
@@ -1199,7 +1199,7 @@ impl GkKernel {
     }
 
     /// Extract the program for concurrent use.
-    pub fn into_program(self) -> Arc<GkProgram> {
+    pub fn into_program(self) -> Arc<PolydatProgram> {
         self.program
     }
 }

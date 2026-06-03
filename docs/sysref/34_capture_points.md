@@ -6,14 +6,14 @@ request authenticates the next.
 
 **Status:** Core capture flow implemented with automatic
 linearization (dependency group analysis). Captured values write
-directly to GK ports on the fiber's GkState.
+directly to Polydat ports on the fiber's GkState.
 
 ---
 
 ## Capture Flow
 
-Captured values write directly to GK state ports — no
-intermediate storage. Each fiber owns its own `GkState` with
+Captured values write directly to Polydat state ports — no
+intermediate storage. Each fiber owns its own `PolydatState` with
 port buffers that persist across `set_inputs()` calls.
 
 ### Lifecycle
@@ -57,8 +57,8 @@ ops:
     prepared: "UPDATE users SET name = {username} WHERE id = {id}"
 ```
 
-Unqualified `{username}` resolves from GK outputs. If the
-program has a port named `username` and a GK node wired
+Unqualified `{username}` resolves from Polydat outputs. If the
+program has a port named `username` and a Polydat node wired
 to it, the captured value flows through the DAG. The
 `{capture:name}` qualifier is also accepted for explicit
 disambiguation.
@@ -119,17 +119,17 @@ value changes, ensuring re-evaluation of dependent outputs.
 
 ---
 
-## Design: GK as Unified State Holder
+## Design: Polydat as Unified State Holder
 
-Captured values write to GK state ports, which are read by GK
+Captured values write to Polydat state ports, which are read by GK
 nodes via the standard wiring model. This means:
 
-1. Captures are GK inputs — they feed into the DAG
-2. Downstream GK nodes can compute derived values from captures
+1. Captures are Polydat inputs — they feed into the DAG
+2. Downstream Polydat nodes can compute derived values from captures
 3. Op templates consume those derived values via `{name}`
-4. Everything flows through one namespace: GK outputs
+4. Everything flows through one namespace: Polydat outputs
 
-The GK kernel acts as the single state holder for all inter-op
+The Polydat kernel acts as the single state holder for all inter-op
 data flow. There is no separate capture storage, no priority
-chain between multiple resolution sources — just GK state and
+chain between multiple resolution sources — just Polydat state and
 GK evaluation.

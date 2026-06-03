@@ -3,7 +3,7 @@
 Scan of `links/nosqlbench/**/*.yaml` for the most interesting
 bindings graphs to test with GK.
 
-## Top Binding Chains for GK Testing
+## Top Binding Chains for Polydat Testing
 
 ### Longest / Most Complex Composition
 
@@ -16,7 +16,7 @@ StartingEpochMillis('2018-10-02 04:00:00'); ToDate(); ToString()
 ```
 
 GK equivalent:
-```gk
+```polydat
 input cycle: u64
 h := hash(cycle)
 hour_ms := (h % 3) * 3600000
@@ -40,8 +40,8 @@ Hash(); Mod(1000000000); CharBufImage('A-Za-z0-9 _|/',16000000,HashRange(50000,1
 
 **3-5. Collection Builders**
 HOF patterns like `long->HashRange(1,5)->int` are subsumed by
-GK's DAG model. The inner function is a node, not a lambda:
-```gk
+Polydat's DAG model. The inner function is a node, not a lambda:
+```polydat
 dim := hash_range(hash(cycle), 1, 5)  // replaces long->HashRange(1,5)->int
 ```
 
@@ -52,7 +52,7 @@ the `random_vector`/`random_list` design.
 ### Distribution / Probability Chains
 
 **6. Normal + Clamp + Conditional**
-```gk
+```polydat
 risk_score := clamp_f64(dist_normal(hash(cycle), 0.0, 5.0), 1.0, 100.0)
 bucket := discretize(risk_score, 90.0, 2)
 is_active := select(bucket, 1, 0)
@@ -60,7 +60,7 @@ is_active := select(bucket, 1, 0)
 **Status: Supported.** `discretize` + `select` replaces `Expr()`.
 
 **7. WeightedStrings**
-```gk
+```polydat
 platform := weighted_strings(hash(cycle), "android:6;ios:4;linux:2;osx:7;windows:3")
 ```
 **Status: Supported.** `weighted_strings` exists.
@@ -68,7 +68,7 @@ platform := weighted_strings(hash(cycle), "android:6;ios:4;linux:2;osx:7;windows
 ### Crypto / Buffer Chains
 
 **8. Digest Pipeline**
-```gk
+```polydat
 buf := bytes_from_hash(hash(cycle), 1000)
 digest := sha256(buf)
 hex := to_hex(digest)
@@ -78,7 +78,7 @@ hex := to_hex(digest)
 ### Access Pattern / Partitioning
 
 **9-10. Scaled Hash Ranges and Partitioning**
-```gk
+```polydat
 scaled := hash(div(cycle, 2)) * 1.0   // HashRangeScaled
 partition := (cycle / 10000) % 100
 ```
@@ -97,7 +97,7 @@ partition := (cycle / 10000) % 100
 | `random_map(seed, size, k, v)` | Low | Not yet |
 | `format_timestamp(ms, pattern)` | Low | Not yet |
 
-## What GK Eliminates
+## What Polydat Eliminates
 
 - **Save/Load** → DAG wiring (every intermediate is a named node)
 - **Expr()** → infix operators + const expressions

@@ -19,15 +19,15 @@ tokio runtime (num_cpus OS worker threads)
         │
         │  Each fiber independently:
         │  1. Reserves a stride from the source (one atomic CAS)
-        │  2. Renders + resolves each op (fiber-local GK state)
+        │  2. Renders + resolves each op (fiber-local Polydat state)
         │  3. Executes each op (sequential, declaration order)
         │  4. Records metrics
         └── loop until source exhausted
 ```
 
 Each fiber is a tokio task (~300 bytes). No shared mutable state
-between fibers during rendering or execution. The `GkProgram` is
-immutable and shared via `Arc`; each fiber owns its own `GkState`.
+between fibers during rendering or execution. The `PolydatProgram` is
+immutable and shared via `Arc`; each fiber owns its own `PolydatState`.
 
 ---
 
@@ -49,7 +49,7 @@ calls `reserve(stride)` which does one `fetch_add` to atomically
 claim a range of ordinals. This is the **only** shared-state
 interaction per stanza — lock-free, ~10ns on x86.
 
-The cursor lives on the `DataSourceFactory`, not on GK nodes:
+The cursor lives on the `DataSourceFactory`, not on Polydat nodes:
 
 ```
 Activity
@@ -67,16 +67,16 @@ reader holds an `Arc` clone pointing to the same atomic cursor.
 The factory itself lives on the `Activity` struct, which is
 `Arc`-shared across all fibers.
 
-**The GK graph does not own the cursor.** The GK `cursor` keyword
+**The Polydat graph does not own the cursor.** The Polydat `cursor` keyword
 declares a source with a name and extent, but the runtime owns the
-atomic state. GK nodes receive rendered `SourceItem` values — they
+atomic state. Polydat nodes receive rendered `SourceItem` values — they
 never interact with the atomic cursor directly.
 
 ### Phase 2: Render (fiber-local — no shared state)
 
 ```rust
 let item = source.render_item(ordinal);   // fiber-local
-fiber.set_source_item(&item);             // feed into GK state
+fiber.set_source_item(&item);             // feed into Polydat state
 let fields = fiber.resolve_with_field_pulls(template, &field_pulls[idx]);
 let pulls  = fiber.resolve_pulls(&pull_plans[idx]);
 let ctx    = ExecCtx::new(&fields, &pulls);
@@ -88,9 +88,9 @@ the data). For dataset sources, this reads vector/metadata from
 mmap'd storage — a fiber-local operation that touches no shared
 mutable state.
 
-The rendered item is fed into the fiber's GK state via
-`set_source_item`, then the GK graph resolves all bindings for
-the op template. The `FiberBuilder` owns its `GkState` — no
+The rendered item is fed into the fiber's Polydat state via
+`set_source_item`, then the Polydat graph resolves all bindings for
+the op template. The `FiberBuilder` owns its `PolydatState` — no
 sharing, no locking.
 
 ### Phase 3: Execute (fiber-local — async I/O)

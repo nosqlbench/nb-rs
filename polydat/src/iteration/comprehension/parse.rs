@@ -217,13 +217,13 @@ fn is_simple_ident(s: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Parse the full GK comprehension text grammar:
+/// Parse the full Polydat comprehension text grammar:
 /// `<clause_list> [where <predicate>]`.
 ///
 /// The clause list is a comma-separated sequence of `var in expr`
 /// clauses (paren-respecting; see [`parse_clause_list`]). The
 /// optional `where` keyword at top-paren-depth-0 ends the
-/// clause list and starts a single GK predicate expression that
+/// clause list and starts a single Polydat predicate expression that
 /// runs to end-of-string. The predicate is **not** parsed here —
 /// it's stored as text and evaluated at iteration time against
 /// the per-tuple kernel.
@@ -338,7 +338,7 @@ fn build_order_from_terse(name: &str, n: Option<usize>) -> Result<TraversalOrder
         "sobol" => Ok(TraversalOrder::Sobol { count: n }),
         "lhs" => Ok(TraversalOrder::Lhs { count: n, seed: None }),
         "custom" => Err(format!(
-            "order spec 'custom': use 'custom(<function>)' to name the GK function"
+            "order spec 'custom': use 'custom(<function>)' to name the Polydat function"
         )),
         other => Err(format!(
             "order spec: unknown strategy '{other}' — \

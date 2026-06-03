@@ -6,7 +6,7 @@
 //! These are development aids, not hot-path nodes. They let users
 //! inspect types and values flowing through the DAG.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Purity, SideChannelSink, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Purity, SideChannelSink, Slot, Value};
 
 /// Emit the type name of the input value as a string.
 ///
@@ -36,7 +36,7 @@ impl TypeOf {
     }
 }
 
-impl GkNode for TypeOf {
+impl PolydatNode for TypeOf {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
@@ -69,7 +69,7 @@ impl DebugRepr {
     }
 }
 
-impl GkNode for DebugRepr {
+impl PolydatNode for DebugRepr {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -114,7 +114,7 @@ impl Inspect {
     }
 }
 
-impl GkNode for Inspect {
+impl PolydatNode for Inspect {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -188,7 +188,7 @@ impl FftAnalyzer {
     }
 }
 
-impl GkNode for FftAnalyzer {
+impl PolydatNode for FftAnalyzer {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -328,7 +328,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a diagnostic node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "type_of" => Some(Ok(Box::new(TypeOf::for_u64()))),
         "inspect" => Some(Ok(Box::new(Inspect::u64("inspect")))),

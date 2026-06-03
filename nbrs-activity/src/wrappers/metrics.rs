@@ -39,12 +39,17 @@ fn describe_assignment(template: &ParsedOp) -> Option<String> {
 /// outside it (except DRYRUN, which is strictly outermost via
 /// its own `forbids_outer` declaration).
 const FORBIDS_OUTER: &[WrapperName] = &[
-    super::traversing::NAME,
-    super::throttle::NAME,
+    super::traverse::NAME,
+    super::delay::NAME,
     crate::validation::WRAPPER_NAME,
-    super::polling::NAME,
-    super::conditional::NAME,
-    super::emit::NAME,
+    super::poll::NAME,
+    super::r#if::NAME,
+    // `emit` is INTENTIONALLY allowed outer of metrics — the
+    // emit wrapper is the operator-visible render surface and
+    // under `dryrun=emit` it sits outer of DRYRUN (and therefore
+    // outer of metrics) so the rendered op text reaches stdout
+    // before the short-circuit. Metrics fires inner of emit;
+    // the per-cycle measurement is unaffected.
     super::result::NAME,
 ];
 
@@ -103,7 +108,7 @@ pub struct MetricsDispenser {
 }
 
 /// One compiled metric slot: instrument storage + sanitiser +
-/// pre-bound GK pull handle.
+/// pre-bound Polydat pull handle.
 struct MetricSlot {
     /// Family name registered with the [`Component`]. Used in
     /// diagnostic messages (e.g. the counter non-positive warning).
@@ -241,12 +246,12 @@ impl MetricsDispenser {
             };
 
             // Resolve the metric's value expression against the
-            // GK kernel up front. The op-template synthesiser
+            // Polydat Kernel up front. The op-template synthesiser
             // appended each metric's `value:` expression as a
             // `__metric_<name> := <expr>` binding on the kernel
             // (see `crate::scope::synthesize_metric_binding_name`),
             // so cycle-time reads go through that internal output —
-            // arbitrary GK expressions work, not just bare names.
+            // arbitrary Polydat expressions work, not just bare names.
             // The closure-binding-economy walker injected magic
             // externs (body/count/ok) for any of those names this
             // expression referenced, so a workload that writes
@@ -291,7 +296,6 @@ impl MetricsDispenser {
 impl WrappingDispenser for MetricsDispenser {}
 
 impl OpDispenser for MetricsDispenser {
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
     fn execute<'a>(
         &'a self,
         cycle: u64,
@@ -373,6 +377,7 @@ impl OpDispenser for MetricsDispenser {
             Ok(result)
         })
     }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
 }
 
 #[cfg(test)]
@@ -403,9 +408,9 @@ mod tests {
     }
 
     fn fresh_fixture() -> crate::fixture::ScopeFixture {
-        use polydat::compile::assembly::{GkAssembler, WireRef};
+        use polydat::compile::assembly::{PolydatAssembler, WireRef};
         use polydat::library::identity::Identity;
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("cycle_id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
         asm.add_output("cycle_id", WireRef::node("cycle_id"));
         let kernel = asm.compile().expect("test fixture asm.compile");
@@ -463,12 +468,12 @@ mod tests {
     fn kernel_with_const_outputs(
         consts: &[(&str, f64)],
     ) -> (
-        polydat::kernel::GkKernel,
+        polydat::kernel::PolydatKernel,
         crate::fixture::ScopeFixture,
     ) {
-        use polydat::compile::assembly::{GkAssembler, WireRef};
+        use polydat::compile::assembly::{PolydatAssembler, WireRef};
         use polydat::library::fixed::ConstF64;
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         for (name, val) in consts {
             let binding = crate::scope::synthesize_metric_binding_name(name);
             asm.add_node(&binding, Box::new(ConstF64::new(*val)), vec![]);
@@ -487,7 +492,7 @@ mod tests {
         (
             Arc<MetricsDispenser>,
             crate::fixture::ResolvedPulls,
-            polydat::kernel::GkKernel,
+            polydat::kernel::PolydatKernel,
         ),
         String,
     > {
@@ -547,7 +552,7 @@ mod tests {
     fn run_dispenser(
         dispenser: Arc<dyn OpDispenser>,
         pulls: &crate::fixture::ResolvedPulls,
-        kernel: &mut polydat::kernel::GkKernel,
+        kernel: &mut polydat::kernel::PolydatKernel,
     ) -> Result<OpResult, ExecutionError> {
         let fields = crate::adapter::ResolvedFields::new(vec![], vec![]);
         let cw = crate::wires::CycleWires::new(kernel);
@@ -674,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn metrics_dispenser_accepts_arbitrary_gk_expression() {
+    fn metrics_dispenser_accepts_arbitrary_polydat_expression() {
         let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut decl = HashMap::new();
         decl.insert(
@@ -685,7 +690,7 @@ mod tests {
         let (mut kernel, mut fx) = kernel_with_const_outputs(&[("computed", 6.0)]);
         let mut comp = fresh_component();
         let _ = MetricsDispenser::wrap(inner, &decl, &mut comp, &mut fx)
-            .expect("arbitrary GK expression should wrap cleanly");
+            .expect("arbitrary Polydat expression should wrap cleanly");
         let plan = fx.seal();
         kernel.set_inputs(&[0]);
         let _pulls = plan.resolve_with(&mut kernel);

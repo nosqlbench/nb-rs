@@ -128,7 +128,7 @@ Two call sites in `polydat/src/kernel/state.rs` /
 
 - `seed_shared_cells` — creates one cell per `shared`
   output that has a backing input slot. Called at
-  kernel construction from `GkKernel::from_program`.
+  kernel construction from `PolydatKernel::from_program`.
 - `seed_output_cells` — creates one cell per output
   for SRD-13f Push B.2 broadcast. Called from the
   same constructor.

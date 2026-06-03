@@ -1,11 +1,11 @@
 # Scope Model
 
-How GK kernels compose across lifecycle boundaries (phases,
+How Polydat kernels compose across lifecycle boundaries (phases,
 `for_each` iterations, scope groups) with visibility,
 mutability, and isolation rules. This doc is the in-depth
 specification of the **scope-composition** mode (#2 of the
 four modes in
-[SRD 13b GK Combination Modes](../../../docs/sysref/13b_gk_combination_modes.md));
+[SRD 13b Polydat Combination Modes](../../../docs/sysref/13b_polydat_combination_modes.md));
 read that first if you're unsure which composition mode
 applies to your situation.
 
@@ -18,30 +18,30 @@ This doc extends axiom-level statements:
 
 ## Principles
 
-1. **The GK API provides scope composition primitives.**
-   `GkKernel::bind_outer_scope()` copies matching constant
+1. **The Polydat API provides scope composition primitives.**
+   `PolydatKernel::bind_outer_scope()` copies matching constant
    values from an outer kernel into an inner kernel's extern
-   inputs. `GkKernel::scope_values()` extracts bound values
-   for fiber replication. `GkProgram` carries output modifier
+   inputs. `PolydatKernel::scope_values()` extracts bound values
+   for fiber replication. `PolydatProgram` carries output modifier
    metadata (`shared`, `const`) so callers can query scope
    behavior. These are standard API methods — callers invoke
-   them at scope boundaries without interpreting GK internals.
+   them at scope boundaries without interpreting Polydat internals.
 
-2. **Each scope is a standard GK kernel.** An inner scope is
-   just a `GkProgram` + `GkState` that happens to have some
+2. **Each scope is a standard Polydat kernel.** An inner scope is
+   just a `PolydatProgram` + `PolydatState` that happens to have some
    `extern` inputs whose values come from an outer scope's
    outputs. The kernel doesn't know or care where the values
    come from.
 
-3. **Callers wire scopes via the GK API.** The phase runner
+3. **Callers wire scopes via the Polydat API.** The phase runner
    (or any other caller) calls `bind_outer_scope()` and
    `scope_values()` to connect kernels at lifecycle
-   boundaries. The GK API does the name matching and value
+   boundaries. The Polydat API does the name matching and value
    copying. The caller decides *when* to wire, not *how*.
 
 4. **No runtime delegation chains inside GK.** The inner
    kernel does NOT hold a reference to the outer kernel. It
-   has extern inputs that the GK scope API populates at
+   has extern inputs that the Polydat scope API populates at
    construction time. From the kernel's perspective, they're
    ordinary inputs.
 
@@ -69,8 +69,8 @@ typed from the outer scope's output manifest.
 ### What is NOT a scope boundary
 
 Ops, stanzas, and cycles are evaluations within the enclosing
-scope — they do not create new GK contexts. Each op dispenser
-holds a reference to the enclosing scope's `GkProgram`. Op-level
+scope — they do not create new Polydat contexts. Each op dispenser
+holds a reference to the enclosing scope's `PolydatProgram`. Op-level
 `bindings:` blocks augment the enclosing scope's DAG at compile
 time. They cannot shadow enclosing names (compile error).
 
@@ -93,7 +93,7 @@ Instead:
    not defined in the inner bindings is looked up in the
    outer manifest. If found, it becomes an `extern` input
    on the inner kernel with the matching type.
-4. The GK API provides `bind_outer_scope()` on `GkKernel`,
+4. The Polydat API provides `bind_outer_scope()` on `PolydatKernel`,
    which copies matching constant values from the outer
    kernel's outputs into the inner kernel's extern inputs.
    `scope_values()` extracts the bound values for replication
@@ -101,7 +101,7 @@ Instead:
    ordinary input values — the API handles name matching and
    value copying. Callers (e.g., the phase runner) invoke
    these methods at scope boundaries but do not themselves
-   interpret or manage GK internal state.
+   interpret or manage Polydat internal state.
 
 Result: the inner kernel is small (only its own nodes), its
 constants are already resolved (copied from outer), and there
@@ -163,8 +163,8 @@ output and the lookup falls through to the next tier. This is
 what makes the `set:` sugar from SRD-73 / SRD-22 behave as a
 *conditional* shadow: a shadow that didn't actually bind to a
 value leaves the upstream default in place. The desugar itself
-is unchanged canonical GK (`const NAME := <expr>`); the
-behavior emerges from how GK compiles and resolves any
+is unchanged canonical Polydat (`const NAME := <expr>`); the
+behavior emerges from how Polydat compiles and resolves any
 `const` declaration.
 
 ### Explicit Occlude Prevention
@@ -226,7 +226,7 @@ mechanism:
    type = literal` — the modifier carries the cross-scope
    intent.
 
-2. **Outer construction.** `GkKernel::new_with_inputs` and
+2. **Outer construction.** `PolydatKernel::new_with_inputs` and
    `from_program` call `seed_shared_cells` after the
    modifier pipeline runs (`set_output_modifiers`). Every
    `Shared`-modifier output that has a backing input slot
@@ -472,17 +472,17 @@ external-write ports, no non-deterministic sources); see
 ### Per-Scope Canonical Kernel Cache
 
 Each non-trivial `ScopeNode` in `nbrs-activity::scope_tree`
-carries a `cached_kernel: OnceLock<Arc<GkKernel>>` slot
+carries a `cached_kernel: OnceLock<Arc<PolydatKernel>>` slot
 (M3.1+). The canonical kernel is the *single authoritative
 answer* for "what is `<name>` at this scope?" — every name
 visible at this scope (own outputs plus parent-inherited values
 bound via `bind_outer_scope`) resolves through the standard GK
 API on this one kernel. Callers do not walk the scope tree to
-do name resolution; GK's auto-extern + outer-scope wiring
+do name resolution; Polydat's auto-extern + outer-scope wiring
 already encapsulates the layering.
 
 Per-execution kernels (per-iteration in for_each, per-fiber in
-phase) come from `GkKernel::from_program(canonical.program()
+phase) come from `PolydatKernel::from_program(canonical.program()
 .clone())` — the cache-and-rebind primitive whose docstring
 references this section directly. The canonical's program is
 `Arc`-shared; only state is cloned per execution.
@@ -534,7 +534,7 @@ a fresh inner kernel.
 
 ### State Wiring
 
-At scope boundaries, callers use the GK scope API:
+At scope boundaries, callers use the Polydat scope API:
 
 ```rust
 // Simple case: bind all matching outer outputs to inner inputs
@@ -551,7 +551,7 @@ for (name, value) in scope_values {
 let values = inner_kernel.scope_values();
 ```
 
-The GK API handles name matching and value copying. The caller
+The Polydat API handles name matching and value copying. The caller
 decides when to wire (at phase start, per iteration, etc.).
 
 ### Iteration State Carrying (`iter_scope: inherit`)
@@ -567,11 +567,11 @@ No `shared` keyword required within the for_each boundary.
 
 ### Shared Write-Back (`shared` keyword)
 
-Shared write-back is now a GK API: `inner.propagate_shared_to(&mut outer)`
+Shared write-back is now a Polydat API: `inner.propagate_shared_to(&mut outer)`
 at each iteration boundary copies inner's `shared`-output values
 back into outer's matching input slots. See §"Mutability Rules:
 Shared Mutable" above for the full rationale; the rest of this
-section describes the pre-API runner pattern that the GK call
+section describes the pre-API runner pattern that the Polydat call
 replaces.
 
 (Pre-API, the runner did this manually: at the end of each
@@ -600,7 +600,7 @@ Binding modifiers flow through the full compilation pipeline:
 2. **Parser**: `const name := expr` / `shared name := expr` / `volatile name := expr` → `BindingModifier` on AST nodes
 3. **Compiler**: sets `asm.set_output_modifier(name, modifier)` per binding
 4. **Assembler**: carries `output_modifiers` through `ResolvedDag`
-5. **GkKernel**: applies modifiers via `set_output_modifiers()` before Arc sharing
+5. **PolydatKernel**: applies modifiers via `set_output_modifiers()` before Arc sharing
 6. **GkProgram**: stores `output_modifiers: HashMap<String, BindingModifier>`
 7. **Runner**: queries `program.output_modifier(name)` for manifest extraction
 
@@ -625,7 +625,7 @@ Other variables only affect values flowing through a fixed DAG:
   node change.
 
 **Structural variables** require recompilation when they change.
-**Parametric variables** can be GK inputs — no recompilation.
+**Parametric variables** can be Polydat inputs — no recompilation.
 
 The `for_each` iteration variable is structural when it appears
 in bindings source (affects node construction) and parametric
@@ -659,7 +659,7 @@ iteration patterns like iterating over table names.
 
 ## How It Works: Plugging Graphs Together
 
-Think of each GK scope as a circuit board with labeled
+Think of each Polydat scope as a circuit board with labeled
 connectors on the edges. The outer scope has output jacks.
 The inner scope has input jacks. The runner plugs wires
 between matching names.
@@ -686,7 +686,7 @@ between matching names.
 └───────────────────────────────────────────┘
 ```
 
-Each board is a standard GK DAG — nodes, wires, inputs,
+Each board is a standard Polydat DAG — nodes, wires, inputs,
 outputs. The boards don't know about each other. The runner
 plugs them together at the boundary.
 
@@ -740,18 +740,18 @@ Properties that composition preserves:
 
 ## What This Does NOT Change
 
-- `GkNode` trait — unchanged
-- `GkProgram` struct — unchanged
-- `GkState` struct — unchanged
+- `PolydatNode` trait — unchanged
+- `PolydatProgram` struct — unchanged
+- `PolydatState` struct — unchanged
 - `Value` enum — unchanged
 - `WireSource` enum — unchanged
 - `InputDef` struct — unchanged
-- The GK compiler — unchanged (already handles `extern`)
+- The Polydat compiler — unchanged (already handles `extern`)
 - The provenance system — unchanged
 - The evaluation loop — unchanged
 
 All scoping is orchestrated by the runner using existing
-kernel APIs. The GK core remains a flat, single-scope
+kernel APIs. The Polydat core remains a flat, single-scope
 evaluation engine.
 
 ---
@@ -761,7 +761,7 @@ evaluation engine.
 **Status:** unresolved as of 2026-04-30. Documented for later
 review; do not paper over with more wrappers.
 
-The current public read surface on `GkKernel` exposes the
+The current public read surface on `PolydatKernel` exposes the
 storage-strategy split:
 
 - `get_constant(name)` — reads the folded-output buffer.
@@ -801,8 +801,8 @@ constraints any future fix must respect:
   fights Rust aliasing at every callsite.
 
 - **Engine vs state split.** `Arc<GkProgram>` is the engine,
-  `GkState` is per-fiber. The scope tree caches the canonical
-  state via `Arc<GkKernel>` so multiple readers share the
+  `PolydatState` is per-fiber. The scope tree caches the canonical
+  state via `Arc<PolydatKernel>` so multiple readers share the
   seeded folded constants without re-computing. Whatever the
   unified read becomes, it needs to preserve this split.
 
@@ -855,7 +855,7 @@ offset into a global index.
 **Why parametric variables skip recompilation?**
 
 When the `for_each` variable only appears in op field
-strings (e.g., table names in SQL templates), no GK nodes
+strings (e.g., table names in SQL templates), no Polydat nodes
 change between iterations. The DAG topology is identical.
 The runner detects this automatically (`Structural vs
 Parametric Detection`, above) and reuses the outer kernel,
@@ -866,7 +866,7 @@ patterns like iterating over table names or keyspaces.
 
 Merging creates ambiguity about which definition wins.
 Replacement is explicit — if you need workload bindings in
-a phase, include them. This makes each phase's GK program
+a phase, include them. This makes each phase's Polydat program
 self-contained and readable without tracing inheritance
 chains.
 

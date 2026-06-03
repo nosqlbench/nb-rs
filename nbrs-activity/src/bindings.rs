@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Binding expression compiler: parses nosqlbench-style binding chains
-//! into GK kernel node wiring.
+//! into Polydat Kernel node wiring.
 //!
 //! Binding syntax: `FuncA(args); FuncB(args); FuncC(args)`
 //!
@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use polydat::kernel::GkKernel;
+use polydat::kernel::PolydatKernel;
 
 use nbrs_workload::model::ParsedOp;
 use nbrs_workload::bindpoints;
@@ -92,28 +92,28 @@ fn split_args(s: &str) -> Vec<String> {
 }
 
 // build_chain_node and its helpers have been removed.
-// Legacy semicolon-chain bindings are now translated to GK source
-// and compiled through the unified GK compiler. See compile_bindings_with_opts.
+// Legacy semicolon-chain bindings are now translated to Polydat source
+// and compiled through the unified Polydat compiler. See compile_bindings_with_opts.
 
 
-/// Compile all bindings from a set of ParsedOps into a GK kernel.
+/// Compile all bindings from a set of ParsedOps into a Polydat Kernel.
 ///
 /// Collects all unique binding names and expressions, plus any
 /// unreferenced bind points in op fields (auto-bound to hash+mod).
-/// Wires them through the GK assembler as proper node chains.
-/// Probe the compile level of a GK function by name.
+/// Wires them through the Polydat assembler as proper node chains.
+/// Probe the compile level of a Polydat function by name.
 ///
 /// Instantiates a dummy node and calls its intrinsic `compile_level()`.
 /// This is the single source of truth — no external classification needed.
-/// Probe the compile level of a GK function by name.
+/// Probe the compile level of a Polydat function by name.
 ///
 /// Instantiates a node with a representative constant and probes
 /// its intrinsic compile level. This is the single source of truth.
-/// Probe the compile level of a GK function by name.
+/// Probe the compile level of a Polydat function by name.
 ///
-/// Constructs a representative GK program containing the function
+/// Constructs a representative Polydat program containing the function
 /// and inspects the resulting kernel's node for its compile level.
-/// Uses the unified GK compiler — no separate dispatch table.
+/// Uses the unified Polydat compiler — no separate dispatch table.
 pub fn probe_compile_level(func_name: &str) -> polydat::ast::CompileLevel {
     let sig = match polydat::dsl::registry::lookup(func_name) {
         Some(s) => s,
@@ -139,7 +139,7 @@ pub fn probe_compile_level(func_name: &str) -> polydat::ast::CompileLevel {
     // Probe compile level via catch_unwind — fallback is Phase1.
     // Does not replace the global panic hook (not thread-safe).
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-        || polydat::dsl::compile_gk(&source)
+        || polydat::dsl::compile_polydat(&source)
     ));
 
     match result {
@@ -148,7 +148,7 @@ pub fn probe_compile_level(func_name: &str) -> polydat::ast::CompileLevel {
     }
 }
 
-pub fn compile_bindings(ops: &[ParsedOp]) -> Result<GkKernel, String> {
+pub fn compile_bindings(ops: &[ParsedOp]) -> Result<PolydatKernel, String> {
     compile_bindings_with_path(ops, None)
 }
 
@@ -199,43 +199,43 @@ fn collect_json_bindings(
     }
 }
 
-pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::path::Path>) -> Result<GkKernel, String> {
+pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::path::Path>) -> Result<PolydatKernel, String> {
     compile_bindings_with_opts(ops, source_dir, false)
 }
 
-/// Compile a GK kernel from a pre-built `BindingScope`.
+/// Compile a Polydat Kernel from a pre-built `BindingScope`.
 ///
 /// The scope has already been validated and carries structured
-/// provenance. This function emits the scope to GK source, collects
-/// required outputs, and compiles via the standard GK compiler.
+/// provenance. This function emits the scope to Polydat source, collects
+/// required outputs, and compiles via the standard Polydat compiler.
 ///
 /// `pragmas` carries the chain-walked effective pragma state for
 /// the scope (typically obtained from
 /// `ScopeTree::nodes[idx].pragmas`). Pragma directives matching
 /// the effective state are prepended to the emitted source so
-/// the GK compiler's existing AST-pragma extraction (SRD 15
+/// the Polydat compiler's existing AST-pragma extraction (SRD 15
 /// §"Module-Level Pragmas") drives the assembler's strict-wire
 /// flags. Pass `&PragmaSet::default()` to disable pragma effects
 /// for legacy callers.
 pub fn compile_from_scope(
     scope: &crate::scope::BindingScope,
     source_dir: Option<&std::path::Path>,
-    gk_lib_paths: Vec<std::path::PathBuf>,
+    polydat_lib_paths: Vec<std::path::PathBuf>,
     strict: bool,
     context: &str,
     cursor_limit: Option<u64>,
     pragmas: &polydat::dsl::pragmas::PragmaSet,
-) -> Result<GkKernel, String> {
+) -> Result<PolydatKernel, String> {
     let body = scope.emit();
     let required = scope.required_outputs();
     let source = prepend_effective_pragmas(pragmas, &body);
-    polydat::dsl::compile_gk_with_libs_and_limit(
-        &source, source_dir, gk_lib_paths, &required, strict, context, cursor_limit,
+    polydat::dsl::compile_polydat_with_libs_and_limit(
+        &source, source_dir, polydat_lib_paths, &required, strict, context, cursor_limit,
     )
 }
 
 /// Prepend pragma directives matching the chain's effective
-/// state. The resulting GK source is functionally equivalent to
+/// state. The resulting Polydat source is functionally equivalent to
 /// having the pragmas declared locally — the compiler's AST walk
 /// picks them up the same way regardless of whether they came
 /// from the original source or were synthesised here.
@@ -263,7 +263,7 @@ pub(crate) fn prepend_effective_pragmas(
     out
 }
 
-/// Build the workload-root [`GkKernel`] as a subscope of the
+/// Build the workload-root [`PolydatKernel`] as a subscope of the
 /// workload-params kernel.
 ///
 /// The workload-root is "just another scope" per SRD-67
@@ -287,17 +287,17 @@ pub(crate) fn prepend_effective_pragmas(
 /// shape exercises (workload params are always present, so the
 /// `needs_scope` gate always picked the modern path).
 pub fn build_workload_root_kernel(
-    parent: &GkKernel,
+    parent: &PolydatKernel,
     ops: &[ParsedOp],
     source_dir: Option<&std::path::Path>,
-    gk_lib_paths: Vec<std::path::PathBuf>,
+    polydat_lib_paths: Vec<std::path::PathBuf>,
     strict: bool,
     extra_required: &[String],
     context: &str,
     cursor_limit: Option<u64>,
     workload_params: &std::collections::HashMap<String, String>,
-    workload_level_gk: Option<&str>,
-) -> Result<GkKernel, String> {
+    workload_level_polydat: Option<&str>,
+) -> Result<PolydatKernel, String> {
     // Build the workload-root scope. workload_params get
     // injected as `const` bindings so descendants resolve them
     // via the standard manifest auto-extern.
@@ -316,9 +316,9 @@ pub fn build_workload_root_kernel(
     // `bindings:` block lives on the workload-root scope as
     // local matter. Ingest before validate/emit so emit()
     // produces a single coherent source.
-    if let Some(extra) = workload_level_gk {
+    if let Some(extra) = workload_level_polydat {
         if !extra.trim().is_empty() {
-            scope.ingest_gk_source(extra, crate::scope::BindingOrigin::Inherited);
+            scope.ingest_polydat_source(extra, crate::scope::BindingOrigin::Inherited);
         }
     }
     scope.validate().map_err(|e| format!("{context}: {e}"))?;
@@ -345,7 +345,7 @@ pub fn build_workload_root_kernel(
         }
     }
 
-    // Standard ScopeKernel construction: GkMatter::source +
+    // Standard ScopeKernel construction: PolydatMatter::source +
     // parent.build_subscope. Identical to every other scope's
     // build pathway (SRD-67 §"The construction protocol").
     let mut source = scope.emit();
@@ -364,7 +364,7 @@ pub fn build_workload_root_kernel(
     }
     let opts = polydat::kernel::subcontext::CompileOptions {
         workload_dir: source_dir.map(|p| p.to_path_buf()),
-        gk_lib_paths,
+        polydat_lib_paths,
         strict,
         required_outputs: scope_required,
         context_label: Some(context.to_string()),
@@ -389,7 +389,7 @@ pub fn build_workload_root_kernel(
     let mut inherited_param_names: Vec<String> = workload_params.keys()
         .cloned().collect();
     inherited_param_names.sort();
-    let matter = polydat::kernel::subcontext::GkMatter::builder()
+    let matter = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_param_names)
@@ -401,26 +401,26 @@ pub fn build_workload_root_kernel(
         .map_err(|e| format!("{e:?}"))
 }
 
-/// Compile all bindings from a set of ParsedOps into a GK kernel.
+/// Compile all bindings from a set of ParsedOps into a Polydat Kernel.
 ///
-/// When `strict` is true, the GK compiler enforces:
+/// When `strict` is true, the Polydat compiler enforces:
 /// - Explicit `input ...: u64` declaration (no inference)
 /// - All module arguments must be named (no positional)
 /// - All module inputs must be provided by caller (no fallthrough)
-pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::path::Path>, strict: bool) -> Result<GkKernel, String> {
+pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::path::Path>, strict: bool) -> Result<PolydatKernel, String> {
     use nbrs_workload::model::BindingsDef;
 
-    // Check if any op uses GK source mode
-    let gk_source = ops.iter().find_map(|op| {
-        if let BindingsDef::GkSource(src) = &op.bindings {
+    // Check if any op uses Polydat source mode
+    let polydat_source = ops.iter().find_map(|op| {
+        if let BindingsDef::PolydatSource(src) = &op.bindings {
             if !src.trim().is_empty() { Some(src.clone()) } else { None }
         } else {
             None
         }
     });
 
-    if let Some(source) = gk_source {
-        // Native GK grammar mode: collect referenced bind points from
+    if let Some(source) = polydat_source {
+        // Native Polydat grammar mode: collect referenced bind points from
         // op templates for dead code elimination. Only the bindings
         // actually used by ops are compiled into the kernel.
         let mut required: Vec<String> = Vec::new();
@@ -435,12 +435,12 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
                 }
             }
         }
-        return polydat::dsl::compile_gk_with_outputs(&source, source_dir, &required, strict);
+        return polydat::dsl::compile_polydat_with_outputs(&source, source_dir, &required, strict);
     }
 
-    // Legacy mode: translate semicolon-chain bindings into GK source
-    // and compile through the unified GK compiler. No separate dispatch
-    // table — every node function available in GK grammar is automatically
+    // Legacy mode: translate semicolon-chain bindings into Polydat source
+    // and compile through the unified Polydat compiler. No separate dispatch
+    // table — every node function available in Polydat grammar is automatically
     // available in legacy chain syntax.
     let mut all_bindings: HashMap<String, String> = HashMap::new();
     for op in ops {
@@ -465,9 +465,9 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
         }
     }
 
-    // Translate each legacy chain into GK source lines
-    let mut gk_lines: Vec<String> = Vec::new();
-    gk_lines.push("input cycle: u64".into());
+    // Translate each legacy chain into Polydat source lines
+    let mut polydat_lines: Vec<String> = Vec::new();
+    polydat_lines.push("input cycle: u64".into());
 
     for (binding_name, expr) in &all_bindings {
         let chain = parse_binding_chain(expr);
@@ -475,7 +475,7 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
             return Err(format!("empty binding expression for '{binding_name}'"));
         }
 
-        // Convert each chain step into a GK binding.
+        // Convert each chain step into a Polydat binding.
         // Chain: FuncA(args); FuncB(args) → sequential wiring from cycle.
         let mut prev_wire = "cycle".to_string();
 
@@ -487,7 +487,7 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
                 format!("__chain_{binding_name}_{i}")
             };
 
-            // Translate legacy function names to GK equivalents
+            // Translate legacy function names to Polydat equivalents
             let (func_name, extra_args) = translate_legacy_func(&func.name, &func.args);
             let mut call_args = vec![prev_wire.clone()];
             for arg in &func.args {
@@ -495,7 +495,7 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
             }
             call_args.extend(extra_args);
 
-            gk_lines.push(format!("{target} := {func_name}({args})",
+            polydat_lines.push(format!("{target} := {func_name}({args})",
                 args = call_args.join(", ")));
 
             prev_wire = target;
@@ -503,7 +503,7 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
     }
 
     // Validate: all bind point references must have a binding or
-    // be a declared coordinate (the GK compiler auto-exposes
+    // be a declared coordinate (the Polydat compiler auto-exposes
     // coordinates as passthrough outputs, so they resolve without
     // a user-declared binding).
     let coord_names: HashSet<String> = ["cycle".to_string()].into_iter().collect();
@@ -520,22 +520,22 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
         ));
     }
 
-    let gk_source = gk_lines.join("\n");
-    polydat::dsl::compile_gk_with_outputs(&gk_source, source_dir, &required, strict)
+    let polydat_source = polydat_lines.join("\n");
+    polydat::dsl::compile_polydat_with_outputs(&polydat_source, source_dir, &required, strict)
 }
 
 // ---------------------------------------------------------------------------
 // Legacy function name translation (virtdata → GK)
 //
 // This is a compatibility overlay that maps Java nosqlbench function
-// names to their nb-rs GK equivalents. It lives ONLY in the binding
-// chain compiler — the GK registry and node implementations are not
+// names to their nb-rs Polydat equivalents. It lives ONLY in the binding
+// chain compiler — the Polydat registry and node implementations are not
 // polluted with legacy names.
 // ---------------------------------------------------------------------------
 
-/// Translate a legacy Java nosqlbench function name to its GK equivalent.
+/// Translate a legacy Java nosqlbench function name to its Polydat equivalent.
 ///
-/// Returns `(gk_func_name, extra_args)` where extra_args are additional
+/// Returns `(polydat_func_name, extra_args)` where extra_args are additional
 /// arguments to append (e.g., for ToString → format_u64 which needs a radix).
 fn translate_legacy_func(name: &str, args: &[String]) -> (String, Vec<String>) {
     match name.to_lowercase().as_str() {
@@ -554,10 +554,10 @@ fn translate_legacy_func(name: &str, args: &[String]) -> (String, Vec<String>) {
         "tooctalstring" => ("format_u64".into(), vec!["8".into()]),
         "tobinarystring" => ("format_u64".into(), vec!["2".into()]),
 
-        // Distributions (Java names → GK equivalents)
+        // Distributions (Java names → Polydat equivalents)
         // Uniform(min, max) → hash_range(input, max-min) + add(min)
         // This is approximate — Java Uniform samples from a distribution;
-        // GK hash_range does modular hash. Close enough for key distribution.
+        // Polydat hash_range does modular hash. Close enough for key distribution.
         "uniform" => {
             if args.len() >= 2 {
                 // Uniform(min, max) → mod(hash(input), range) then add(min)
@@ -585,7 +585,7 @@ fn translate_legacy_func(name: &str, args: &[String]) -> (String, Vec<String>) {
 
         // Long suffix stripping (Java allows 1000000000L)
         _ => {
-            // Default: lowercase the name and hope the GK registry has it
+            // Default: lowercase the name and hope the Polydat registry has it
             (name.to_lowercase(), vec![])
         }
     }
@@ -598,7 +598,7 @@ fn strip_java_long_suffix(arg: &str) -> &str {
 
 /// SRD-13f Push D: translate a Map-form bindings block (legacy
 /// semicolon-chain syntax, e.g. `{user_id: "Hash(); Mod(1000000)"}`)
-/// into GK source lines. Returns one or more `name := func(args)`
+/// into Polydat source lines. Returns one or more `name := func(args)`
 /// lines per entry — multi-step chains expand to intermediate
 /// `__chain_<name>_<i> := ...` wires.
 ///
@@ -606,10 +606,10 @@ fn strip_java_long_suffix(arg: &str) -> &str {
 /// enclosing scope's emit. Intended for routing workload-level
 /// `bindings:` directly to the workload-root kernel without
 /// going through the parser merge (which retired in Push D).
-pub fn legacy_chain_map_to_gk_lines(
+pub fn legacy_chain_map_to_polydat_lines(
     map: &std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
-    let mut gk_lines: Vec<String> = Vec::new();
+    let mut polydat_lines: Vec<String> = Vec::new();
     for (binding_name, expr) in map {
         let chain = parse_binding_chain(expr);
         if chain.is_empty() {
@@ -629,14 +629,14 @@ pub fn legacy_chain_map_to_gk_lines(
                 call_args.push(strip_java_long_suffix(arg.trim()).to_string());
             }
             call_args.extend(extra_args);
-            gk_lines.push(format!(
+            polydat_lines.push(format!(
                 "{target} := {func_name}({args})",
                 args = call_args.join(", ")
             ));
             prev_wire = target;
         }
     }
-    Ok(gk_lines.join("\n"))
+    Ok(polydat_lines.join("\n"))
 }
 
 
@@ -749,7 +749,7 @@ mod tests {
         let chain = parse_binding_chain("Mod(1000000000L)");
         assert_eq!(chain[0].args, vec!["1000000000L"]);
         // The L suffix is preserved in the chain parse.
-        // The GK compiler handles it during node construction.
+        // The Polydat compiler handles it during node construction.
     }
 
     #[test]

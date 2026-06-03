@@ -18,7 +18,7 @@ pub struct Workload {
     pub scenarios: HashMap<String, Vec<ScenarioStep>>,
     #[serde(default)]
     pub ops: Vec<ParsedOp>,
-    /// Workload-level GK bindings declared via the top-level
+    /// Workload-level Polydat bindings declared via the top-level
     /// `bindings:` block. These compile into the workload-root
     /// kernel directly, separate from per-op bindings — so
     /// declarations like `cursor row = range(0, 50)` are visible
@@ -28,7 +28,7 @@ pub struct Workload {
     #[serde(default)]
     pub bindings: BindingsDef,
     /// Resolved workload parameters. These are available as bind points
-    /// in op templates and as constants in GK bindings.
+    /// in op templates and as constants in Polydat bindings.
     /// Populated from: workload `params:` defaults, CLI overrides, env vars.
     #[serde(default)]
     pub params: HashMap<String, String>,
@@ -162,11 +162,11 @@ impl Workload {
         // The legacy `Map` form (`user_id: Hash(); Mod(...)`)
         // gets a translation pass at workload-root that the
         // phase-level parser doesn't apply — so we leave that
-        // form alone. Only `GkSource` (native GK string form)
+        // form alone. Only `PolydatSource` (native Polydat string form)
         // moves down. This split matches the two-form parser
         // contract and avoids re-implementing translation.
         let bindings = match &self.bindings {
-            BindingsDef::GkSource(_) => std::mem::take(&mut self.bindings),
+            BindingsDef::PolydatSource(_) => std::mem::take(&mut self.bindings),
             BindingsDef::Map(_) => BindingsDef::default(),
         };
         let phase = WorkloadPhase {
@@ -299,7 +299,7 @@ pub struct SummaryConfig {
     pub aggregates: Vec<AggregateExpr>,
     /// Whether to show individual data rows (default `true`).
     pub show_details: bool,
-    /// Raw source string for diagnostics and future GK template detection.
+    /// Raw source string for diagnostics and future Polydat template detection.
     pub raw: String,
     /// SRD-46 v2: native MetricsQL columns. When non-empty,
     /// `summary_command` routes through the metricsql renderer
@@ -646,11 +646,11 @@ mod summary_config_tests {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WorkloadPhase {
     /// Number of stanzas for this phase. Each stanza executes all
-    /// ops in sequence once. String type to support GK constant
+    /// ops in sequence once. String type to support Polydat constant
     /// references like `"{train_count}"`. Default 1 (one stanza).
     #[serde(default)]
     pub cycles: Option<String>,
-    /// Concurrency (async fibers). String type to support GK constant
+    /// Concurrency (async fibers). String type to support Polydat constant
     /// or workload param references like `"{concurrency}"`. Default 1.
     #[serde(default)]
     pub concurrency: Option<String>,
@@ -670,7 +670,7 @@ pub struct WorkloadPhase {
     #[serde(default)]
     pub ops: Vec<ParsedOp>,
     /// Phase template iteration: `"var in expr"`.
-    /// The phase is instantiated once per element of the GK expression
+    /// The phase is instantiated once per element of the Polydat expression
     /// result (which must be a comma-separated string). Each instance
     /// has `{var}` available as a workload param in its ops and config.
     ///
@@ -724,10 +724,10 @@ pub struct WorkloadPhase {
     /// ```
     #[serde(default)]
     pub status_metrics: Vec<String>,
-    /// Phase-level GK `bindings:` block (SRD-13c, SRD-13d).
+    /// Phase-level Polydat `bindings:` block (SRD-13c, SRD-13d).
     /// Captured on the phase AST so the scope-tree pre-walk
-    /// (SRD-13d §3) can classify phase-level GK content via
-    /// [`crate::gk_matter::HasGkMatter`] and so the runtime
+    /// (SRD-13d §3) can classify phase-level Polydat content via
+    /// [`crate::polydat_matter::HasPolydatMatter`] and so the runtime
     /// can compose a phase kernel layered between the
     /// workload kernel and any op-template kernels.
     ///
@@ -737,7 +737,7 @@ pub struct WorkloadPhase {
     /// SRD-13d phases 3–9 land (per-template kernels with
     /// proper `bind_outer_scope` chaining through the phase
     /// kernel), the per-op merge is removed and ops resolve
-    /// phase bindings via the GK scope chain.
+    /// phase bindings via the Polydat scope chain.
     #[serde(default, skip_serializing_if = "BindingsDef::is_empty")]
     pub bindings: BindingsDef,
     /// Phase-level poll spec — when present, the phase's
@@ -751,7 +751,7 @@ pub struct WorkloadPhase {
     /// phase scope for capture names referenced by the
     /// predicate / `if:` conditions / metric values so
     /// cross-op visibility happens through the canonical
-    /// GK chain (no sidecar HashMap; see SRD-75
+    /// Polydat chain (no sidecar HashMap; see SRD-75
     /// §"Architectural shape").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll: Option<PhasePollSpec>,
@@ -760,7 +760,7 @@ pub struct WorkloadPhase {
 /// Phase-level `poll:` block (SRD-75). When set on a
 /// `WorkloadPhase`, the runner wraps the phase's cycle
 /// execution in a wall-clock loop that re-runs all ops
-/// per iteration until `until` (a GK boolean expression
+/// per iteration until `until` (a Polydat boolean expression
 /// over captures) returns `true` or `timeout_ms` elapses.
 ///
 /// Differs from the per-op `PollingDispenser` (SRD-32):
@@ -772,7 +772,7 @@ pub struct WorkloadPhase {
 /// completion.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PhasePollSpec {
-    /// GK boolean expression evaluated against the phase
+    /// Polydat boolean expression evaluated against the phase
     /// scope kernel after each iteration. Compiles into
     /// the phase scope as `__poll_until := <until>`;
     /// dynamic (re-evaluates per pull) per SRD-11's "two
@@ -1048,12 +1048,12 @@ pub enum ScenarioNode {
     ///         - search
     /// ```
     IncludedScenario { name: String, children: Vec<ScenarioNode> },
-    /// Scenario-tree-level GK bindings block — the canonical way
+    /// Scenario-tree-level Polydat bindings block — the canonical way
     /// to introduce a scope-local layer of bound names anywhere
     /// in the scenario tree.
     ///
-    /// `source` is GK matter text exactly as a phase-level
-    /// `bindings:` block would contain. Anything the GK grammar
+    /// `source` is Polydat matter text exactly as a phase-level
+    /// `bindings:` block would contain. Anything the Polydat grammar
     /// accepts is valid: `const NAME := <literal>`, derived
     /// bindings (`scaled := mul(workload_limit, 2)`), shared
     /// cells, init bindings, etc. Workload-param `{name}` and
@@ -1064,7 +1064,7 @@ pub enum ScenarioNode {
     /// `Bindings` is also the canonical lowered form of `set:`.
     /// The parser recognizes `set: { name: value, ... }` as
     /// syntactic sugar and emits a `Bindings` node whose
-    /// `source` is `final <name> := <gk-literal>\n` (one line
+    /// `source` is `final <name> := <polydat-literal>\n` (one line
     /// per pair, declaration order preserved). So
     ///
     /// ```yaml
@@ -1084,7 +1084,7 @@ pub enum ScenarioNode {
     ///
     /// Both produce one `Bindings` node. Authors keep the
     /// short `set:` form for the common override case; the
-    /// long form unlocks the full GK grammar (derived
+    /// long form unlocks the full Polydat grammar (derived
     /// bindings, expressions referencing other in-scope
     /// names, etc.) without any new variant.
     ///
@@ -1121,16 +1121,16 @@ pub type ScenarioStep = ScenarioNode;
 /// Two modes:
 /// - **Map**: Legacy nosqlbench-style `name: "FuncA(); FuncB()"` chains.
 ///   Each binding is independent; inheritance merges at key level.
-/// - **GkSource**: Native GK grammar as a multiline string. The entire
-///   binding block is a single GK program with coordinates, named outputs,
+/// - **PolydatSource**: Native Polydat grammar as a multiline string. The entire
+///   binding block is a single Polydat program with coordinates, named outputs,
 ///   and full DAG wiring. Replaces (not merges with) any inherited bindings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum BindingsDef {
     /// Legacy nosqlbench-style: name → expression chain.
     Map(HashMap<String, String>),
-    /// Native GK grammar source text.
-    GkSource(String),
+    /// Native Polydat grammar source text.
+    PolydatSource(String),
 }
 
 impl Default for BindingsDef {
@@ -1144,21 +1144,21 @@ impl BindingsDef {
     pub fn is_empty(&self) -> bool {
         match self {
             BindingsDef::Map(m) => m.is_empty(),
-            BindingsDef::GkSource(s) => s.trim().is_empty(),
+            BindingsDef::PolydatSource(s) => s.trim().is_empty(),
         }
     }
 
-    /// Get the map view (for legacy code). Returns empty map for GkSource.
+    /// Get the map view (for legacy code). Returns empty map for PolydatSource.
     pub fn as_map(&self) -> &HashMap<String, String> {
         static EMPTY: std::sync::LazyLock<HashMap<String, String>> =
             std::sync::LazyLock::new(HashMap::new);
         match self {
             BindingsDef::Map(m) => m,
-            BindingsDef::GkSource(_) => &EMPTY,
+            BindingsDef::PolydatSource(_) => &EMPTY,
         }
     }
 
-    /// Insert a key-value pair (legacy map mode). Converts GkSource to Map.
+    /// Insert a key-value pair (legacy map mode). Converts PolydatSource to Map.
     pub fn insert(&mut self, key: String, value: String) {
         match self {
             BindingsDef::Map(m) => { m.insert(key, value); }
@@ -1184,7 +1184,7 @@ pub struct ParsedOp {
     /// for adapters that dispatch on execution mode.
     pub op: HashMap<String, serde_json::Value>,
     /// Binding definitions: either a name→expression map (legacy) or
-    /// a GK grammar source string (native).
+    /// a Polydat grammar source string (native).
     #[serde(default, skip_serializing_if = "BindingsDef::is_empty")]
     pub bindings: BindingsDef,
     /// Configuration parameters.
@@ -1198,11 +1198,15 @@ pub struct ParsedOp {
     /// is falsy (false, 0, empty string, None), the op is skipped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
-    /// Optional delay binding (from YAML `delay:` field).
-    /// GK binding name producing per-cycle delay: u64 = nanoseconds,
-    /// f64 = milliseconds. Applied before adapter execution.
+    /// Optional delay specification (from YAML `delay:` field).
+    /// Two surface forms:
+    /// - Bare string: `delay: <name>` — a Polydat binding name
+    ///   producing the pre-op delay value (u64 = ns, f64 = ms).
+    /// - Map: `delay: { before: <name>, after: <name> }` —
+    ///   independent pre-op and post-op delays; both subkeys
+    ///   are optional but at least one must be set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delay: Option<String>,
+    pub delay: Option<DelaySpec>,
     /// SRD-40b synthetic-metric declarations. Each entry
     /// publishes one metric family per cycle, valued by a GK
     /// expression evaluated in the op's bound scope. Empty
@@ -1214,7 +1218,7 @@ pub struct ParsedOp {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metrics: HashMap<String, MetricSpec>,
     /// SRD-66 result-bindings. Vari-structured: string is
-    /// GK source, list is a sequence of fragments, map is
+    /// Polydat source, list is a sequence of fragments, map is
     /// named-key short-forms with a composite-map output.
     /// `None` ⇒ no result wires; the result wrapper is a
     /// no-op for this op.
@@ -1241,13 +1245,555 @@ pub struct ParsedOp {
     /// list directly — no re-parsing of the op's text fields.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub captures: Vec<crate::bindpoints::CapturePoint>,
+    /// Daemon-fiber declaration. When set to a non-`Disabled`
+    /// value, dispatches of this op from the cycle-pool spawn
+    /// onto a daemon fiber instead of running inline. Daemons
+    /// stay in scope of the phase so their failures bubble up;
+    /// the cycle-pool fiber continues immediately to the next
+    /// op without awaiting.
+    ///
+    /// YAML forms accepted:
+    /// - `daemon: false` / `daemon: 0` / `daemon: "off"`
+    ///   → not a daemon (cycle-pool op).
+    /// - `daemon: true` / `daemon: 1` / `daemon: "on"`
+    ///   → daemon, max 1 concurrent fiber per phase activation.
+    /// - `daemon: <N>` (N ≥ 1) → daemon, max N concurrent
+    ///   fibers per phase activation.
+    ///
+    /// The cap is enforced at spawn time: when the cycle-pool
+    /// dispatches the op and the live-fiber count is already at
+    /// N, the spawn errors and the phase fails with a clear
+    /// stop_reason. There's no queuing — exceeding the cap is a
+    /// workload-design error, not backpressure to absorb.
+    ///
+    /// Per-op-name dedup: daemons are tracked by op-template
+    /// name. Subsequent dispatches of the same name silently
+    /// succeed up to the cap; over the cap they fail loud.
+    /// Natural daemon exit (Completed / Cancelled / Errored /
+    /// TimedOut / Panicked) decrements the count, freeing a
+    /// slot for the next dispatch.
+    ///
+    /// Use case: a long-running server call (e.g.
+    /// `forceKeyspaceCompaction`) that the workload wants to
+    /// fire while a sibling op concurrently observes progress.
+    /// The daemon op stays in scope so its failures bubble up;
+    /// the cycle-pool op runs alongside without serialisation.
+    ///
+    /// Parser invariants when `daemon` is `MaxFibers(_)`:
+    /// - `cycles:` and `ratio:` on this op are rejected — the
+    ///   daemon's dispatch cadence is governed by the cycle-pool
+    ///   walks, not by cycles-per-second.
+    /// - `if:` / `while:` apply as usual; a falsy guard skips
+    ///   the dispatch with no spawn.
+    #[serde(default, skip_serializing_if = "DaemonSpec::is_disabled")]
+    pub daemon: DaemonSpec,
+    /// How long the phase waits for this daemon's in-flight
+    /// future to drop after sending the stop signal. Past the
+    /// window, the phase records a daemon-shutdown failure and
+    /// fails. Per-op override of the activity-level default
+    /// (5000 ms).
+    ///
+    /// Only meaningful when `daemon` is `MaxFibers(_)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_cancel_grace_ms: Option<u64>,
+    /// Polydat boolean expression evaluated on the daemon's fiber
+    /// inside the wrapper stack. When set, the daemon body runs
+    /// a loop: while the condition is truthy, dispatch the
+    /// inner op; when falsy or stop-signalled, exit.
+    ///
+    /// `while:` composes inside `if:` (which gates whether the
+    /// loop starts at all) and outside the per-op-rate
+    /// throttling (which paces iterations).
+    ///
+    /// Parser invariants:
+    /// - `while:` on a non-daemon op is currently allowed but
+    ///   blocks the cycle-pool fiber until the loop exits. The
+    ///   common use case is daemon + while.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub while_cond: Option<String>,
+    /// Per-op rate spec governing the iteration cadence of the
+    /// while-loop (or per-cycle dispatch for non-loop ops).
+    /// Format: `"<N>"` (N/s, bare integer), `"<N>/s"`,
+    /// `"<N>/m"`, `"<N>/h"`. Each op with `rate:` gets its own
+    /// `RateLimiter` at phase init — INDEPENDENT of the
+    /// activity-level `rate:` and of other ops' rate limiters.
+    ///
+    /// `rate: 0` is "unlimited" (no throttling).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate: Option<String>,
+}
+
+/// Daemon-fiber capacity declaration. The on-disk surface
+/// accepts multiple YAML scalar shapes (bool / int / string)
+/// that all map into this two-variant enum.
+///
+/// `Disabled` is the default — the op runs on the cycle-pool
+/// fiber inline like everything else. `MaxFibers(N)` opts in
+/// to daemon-fiber dispatch with a per-op-name cap of N.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonSpec {
+    Disabled,
+    MaxFibers(u32),
+}
+
+impl Default for DaemonSpec {
+    fn default() -> Self { Self::Disabled }
+}
+
+impl DaemonSpec {
+    pub fn is_disabled(&self) -> bool {
+        matches!(self, DaemonSpec::Disabled)
+    }
+    pub fn max_fibers(&self) -> Option<u32> {
+        match self {
+            DaemonSpec::Disabled => None,
+            DaemonSpec::MaxFibers(n) => Some(*n),
+        }
+    }
+}
+
+impl serde::Serialize for DaemonSpec {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            DaemonSpec::Disabled => s.serialize_bool(false),
+            DaemonSpec::MaxFibers(1) => s.serialize_bool(true),
+            DaemonSpec::MaxFibers(n) => s.serialize_u32(*n),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DaemonSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        parse_daemon_spec_value(&v).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Parse a YAML/JSON scalar into a `DaemonSpec`.
+///
+/// Accepted forms:
+/// - `true` / `1` / `"true"` / `"on"`        → `MaxFibers(1)`
+/// - `false` / `0` / `"false"` / `"off"`     → `Disabled`
+/// - non-negative integer N ≥ 1              → `MaxFibers(N)`
+/// - non-negative integer 0                  → `Disabled`
+///
+/// Rejected forms (returns descriptive error):
+/// - negative integers
+/// - non-integer numbers (1.5, NaN, ...)
+/// - strings other than the accepted set
+/// - null, arrays, objects
+///
+/// Public so the unit + proptest layers can exercise it
+/// directly without a full YAML round-trip.
+pub fn parse_daemon_spec_value(v: &serde_json::Value) -> Result<DaemonSpec, String> {
+    match v {
+        serde_json::Value::Bool(true) => Ok(DaemonSpec::MaxFibers(1)),
+        serde_json::Value::Bool(false) => Ok(DaemonSpec::Disabled),
+        serde_json::Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                if u == 0 {
+                    Ok(DaemonSpec::Disabled)
+                } else if u <= u32::MAX as u64 {
+                    Ok(DaemonSpec::MaxFibers(u as u32))
+                } else {
+                    Err(format!(
+                        "daemon: {u} exceeds u32::MAX — caps above {} \
+                         aren't supported (and don't make practical sense)",
+                        u32::MAX,
+                    ))
+                }
+            } else if n.as_i64().is_some_and(|i| i < 0) {
+                Err(format!(
+                    "daemon: {n} — negative integers are invalid. \
+                     Use 0 / false / \"off\" to disable, or a positive \
+                     integer for the max-fibers cap.",
+                ))
+            } else {
+                Err(format!(
+                    "daemon: {n} — non-integer numbers are invalid. \
+                     Use a boolean or a non-negative integer.",
+                ))
+            }
+        }
+        serde_json::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "on"  => Ok(DaemonSpec::MaxFibers(1)),
+            "false" | "off" => Ok(DaemonSpec::Disabled),
+            other => Err(format!(
+                "daemon: \"{other}\" — unknown string form. \
+                 Accepted: \"on\" / \"off\" / \"true\" / \"false\", \
+                 or use a boolean / non-negative integer directly.",
+            )),
+        },
+        serde_json::Value::Null => Err(
+            "daemon: null is not a valid value. Use false to disable.".into(),
+        ),
+        other => Err(format!(
+            "daemon: {other:?} — only boolean, integer, or string forms \
+             are accepted.",
+        )),
+    }
+}
+
+/// Per-op delay specification. Two surface forms on YAML:
+/// - Bare string `delay: <name>` → `Before(<name>)`: a GK
+///   binding name producing the pre-op delay value (u64 ns,
+///   f64 ms).
+/// - Map `delay: { before: <name>, after: <name> }` →
+///   `BeforeAfter`: independent pre-op and post-op delays.
+///   Both subkeys are optional; an empty map is a parse error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DelaySpec {
+    /// Single pre-op delay. Equivalent to BeforeAfter { Some, None }
+    /// at runtime; the discriminant exists so YAML round-trip
+    /// preserves the author's chosen surface form.
+    Before(String),
+    BeforeAfter {
+        before: Option<String>,
+        after: Option<String>,
+    },
+}
+
+impl DelaySpec {
+    /// Pre-op delay binding name, if any.
+    pub fn before(&self) -> Option<&str> {
+        match self {
+            DelaySpec::Before(n) => Some(n.as_str()),
+            DelaySpec::BeforeAfter { before, .. } => before.as_deref(),
+        }
+    }
+    /// Post-op delay binding name, if any.
+    pub fn after(&self) -> Option<&str> {
+        match self {
+            DelaySpec::Before(_) => None,
+            DelaySpec::BeforeAfter { after, .. } => after.as_deref(),
+        }
+    }
+    /// Every binding name this spec references. Used by scope
+    /// synthesis to ensure the names land on the per-op kernel.
+    pub fn names(&self) -> Vec<&str> {
+        match self {
+            DelaySpec::Before(n) => vec![n.as_str()],
+            DelaySpec::BeforeAfter { before, after } => {
+                let mut out = Vec::with_capacity(2);
+                if let Some(b) = before.as_deref() { out.push(b); }
+                if let Some(a) = after.as_deref() { out.push(a); }
+                out
+            }
+        }
+    }
+}
+
+impl serde::Serialize for DelaySpec {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            DelaySpec::Before(name) => s.serialize_str(name),
+            DelaySpec::BeforeAfter { before, after } => {
+                let mut m = s.serialize_map(None)?;
+                if let Some(b) = before { m.serialize_entry("before", b)?; }
+                if let Some(a) = after { m.serialize_entry("after", a)?; }
+                m.end()
+            }
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DelaySpec {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        parse_delay_spec_value(&v).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Parse a YAML/JSON value into a `DelaySpec`.
+///
+/// Accepted:
+/// - non-empty string                        → `Before(<string>)`
+/// - object with `before` and/or `after` keys → `BeforeAfter`
+///
+/// Rejected (descriptive error):
+/// - empty string
+/// - empty object
+/// - object with unknown keys
+/// - object whose `before` / `after` values aren't strings
+/// - null, arrays, numbers, booleans
+///
+/// Public for unit tests + smoke validation.
+pub fn parse_delay_spec_value(v: &serde_json::Value) -> Result<DelaySpec, String> {
+    match v {
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                Err("delay: empty string is not a valid binding name".into())
+            } else {
+                Ok(DelaySpec::Before(trimmed.to_string()))
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let mut before: Option<String> = None;
+            let mut after: Option<String> = None;
+            for (k, v) in map {
+                match k.as_str() {
+                    "before" => {
+                        before = match v {
+                            serde_json::Value::String(s) => {
+                                let t = s.trim();
+                                if t.is_empty() {
+                                    return Err(
+                                        "delay.before: empty string is not a valid binding name".into());
+                                }
+                                Some(t.to_string())
+                            }
+                            other => return Err(format!(
+                                "delay.before: expected string, got {other:?}",
+                            )),
+                        };
+                    }
+                    "after" => {
+                        after = match v {
+                            serde_json::Value::String(s) => {
+                                let t = s.trim();
+                                if t.is_empty() {
+                                    return Err(
+                                        "delay.after: empty string is not a valid binding name".into());
+                                }
+                                Some(t.to_string())
+                            }
+                            other => return Err(format!(
+                                "delay.after: expected string, got {other:?}",
+                            )),
+                        };
+                    }
+                    other => return Err(format!(
+                        "delay: unknown key `{other}` — accepted: `before`, `after`",
+                    )),
+                }
+            }
+            if before.is_none() && after.is_none() {
+                Err("delay: map form must set at least one of `before` / `after`".into())
+            } else {
+                Ok(DelaySpec::BeforeAfter { before, after })
+            }
+        }
+        serde_json::Value::Null => Err(
+            "delay: null is not a valid value. Omit the field instead.".into(),
+        ),
+        other => Err(format!(
+            "delay: {other:?} — accepted forms are a binding-name string or \
+             a map `{{ before: <name>, after: <name> }}`",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod delay_spec_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_bare_string_is_before() {
+        let spec = parse_delay_spec_value(&json!("ticks")).unwrap();
+        assert_eq!(spec, DelaySpec::Before("ticks".into()));
+    }
+
+    #[test]
+    fn parse_trimmed_string() {
+        let spec = parse_delay_spec_value(&json!("  ticks  ")).unwrap();
+        assert_eq!(spec, DelaySpec::Before("ticks".into()));
+    }
+
+    #[test]
+    fn parse_map_with_both() {
+        let spec = parse_delay_spec_value(&json!({
+            "before": "pre", "after": "post"
+        })).unwrap();
+        assert_eq!(spec, DelaySpec::BeforeAfter {
+            before: Some("pre".into()),
+            after:  Some("post".into()),
+        });
+    }
+
+    #[test]
+    fn parse_map_before_only() {
+        let spec = parse_delay_spec_value(&json!({ "before": "pre" })).unwrap();
+        assert_eq!(spec, DelaySpec::BeforeAfter {
+            before: Some("pre".into()),
+            after: None,
+        });
+    }
+
+    #[test]
+    fn parse_map_after_only() {
+        let spec = parse_delay_spec_value(&json!({ "after": "post" })).unwrap();
+        assert_eq!(spec, DelaySpec::BeforeAfter {
+            before: None,
+            after: Some("post".into()),
+        });
+    }
+
+    #[test]
+    fn parse_rejects_empty_string() {
+        assert!(parse_delay_spec_value(&json!("")).is_err());
+        assert!(parse_delay_spec_value(&json!("   ")).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_empty_map() {
+        assert!(parse_delay_spec_value(&json!({})).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_unknown_key() {
+        let e = parse_delay_spec_value(&json!({
+            "before": "pre", "during": "mid"
+        })).unwrap_err();
+        assert!(e.contains("during"));
+    }
+
+    #[test]
+    fn parse_rejects_non_string_value() {
+        assert!(parse_delay_spec_value(&json!({ "before": 5 })).is_err());
+        assert!(parse_delay_spec_value(&json!({ "after": true })).is_err());
+        assert!(parse_delay_spec_value(&json!({ "before": null })).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_null_top_level() {
+        assert!(parse_delay_spec_value(&json!(null)).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_array() {
+        assert!(parse_delay_spec_value(&json!(["pre"])).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_number() {
+        assert!(parse_delay_spec_value(&json!(1.5)).is_err());
+        assert!(parse_delay_spec_value(&json!(100)).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_empty_after_value() {
+        assert!(parse_delay_spec_value(&json!({ "after": "" })).is_err());
+    }
+
+    #[test]
+    fn round_trip_before_serializes_as_string() {
+        let spec = DelaySpec::Before("ticks".into());
+        let v = serde_json::to_value(&spec).unwrap();
+        assert_eq!(v, json!("ticks"));
+        let parsed: DelaySpec = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed, spec);
+    }
+
+    #[test]
+    fn round_trip_map_serializes_as_object() {
+        let spec = DelaySpec::BeforeAfter {
+            before: Some("pre".into()), after: Some("post".into()),
+        };
+        let v = serde_json::to_value(&spec).unwrap();
+        assert_eq!(v.get("before"), Some(&json!("pre")));
+        assert_eq!(v.get("after"), Some(&json!("post")));
+        let parsed: DelaySpec = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed, spec);
+    }
+
+    #[test]
+    fn names_returns_all_referenced() {
+        assert_eq!(DelaySpec::Before("x".into()).names(), vec!["x"]);
+        let spec = DelaySpec::BeforeAfter {
+            before: Some("a".into()), after: Some("b".into()),
+        };
+        assert_eq!(spec.names(), vec!["a", "b"]);
+        let only_before = DelaySpec::BeforeAfter {
+            before: Some("a".into()), after: None,
+        };
+        assert_eq!(only_before.names(), vec!["a"]);
+    }
+
+    #[test]
+    fn accessors_return_correct_names() {
+        let s = DelaySpec::Before("x".into());
+        assert_eq!(s.before(), Some("x"));
+        assert_eq!(s.after(), None);
+        let s = DelaySpec::BeforeAfter {
+            before: Some("a".into()), after: Some("b".into()),
+        };
+        assert_eq!(s.before(), Some("a"));
+        assert_eq!(s.after(), Some("b"));
+    }
+}
+
+#[cfg(test)]
+mod daemon_spec_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test] fn bool_true_is_max_1() {
+        assert_eq!(parse_daemon_spec_value(&json!(true)).unwrap(), DaemonSpec::MaxFibers(1));
+    }
+    #[test] fn bool_false_is_disabled() {
+        assert_eq!(parse_daemon_spec_value(&json!(false)).unwrap(), DaemonSpec::Disabled);
+    }
+    #[test] fn int_0_is_disabled() {
+        assert_eq!(parse_daemon_spec_value(&json!(0)).unwrap(), DaemonSpec::Disabled);
+    }
+    #[test] fn int_1_is_max_1() {
+        assert_eq!(parse_daemon_spec_value(&json!(1)).unwrap(), DaemonSpec::MaxFibers(1));
+    }
+    #[test] fn int_n_is_max_n() {
+        assert_eq!(parse_daemon_spec_value(&json!(10)).unwrap(), DaemonSpec::MaxFibers(10));
+    }
+    #[test] fn str_on_is_max_1() {
+        assert_eq!(parse_daemon_spec_value(&json!("on")).unwrap(), DaemonSpec::MaxFibers(1));
+        assert_eq!(parse_daemon_spec_value(&json!("true")).unwrap(), DaemonSpec::MaxFibers(1));
+        assert_eq!(parse_daemon_spec_value(&json!("ON")).unwrap(), DaemonSpec::MaxFibers(1));
+    }
+    #[test] fn str_off_is_disabled() {
+        assert_eq!(parse_daemon_spec_value(&json!("off")).unwrap(), DaemonSpec::Disabled);
+        assert_eq!(parse_daemon_spec_value(&json!("false")).unwrap(), DaemonSpec::Disabled);
+        assert_eq!(parse_daemon_spec_value(&json!("OFF")).unwrap(), DaemonSpec::Disabled);
+    }
+    #[test] fn negative_int_rejected() {
+        assert!(parse_daemon_spec_value(&json!(-1)).is_err());
+        assert!(parse_daemon_spec_value(&json!(-100)).is_err());
+    }
+    #[test] fn float_rejected() {
+        assert!(parse_daemon_spec_value(&json!(1.5)).is_err());
+    }
+    #[test] fn unknown_string_rejected() {
+        assert!(parse_daemon_spec_value(&json!("garbage")).is_err());
+        assert!(parse_daemon_spec_value(&json!("yes")).is_err());
+    }
+    #[test] fn null_rejected() {
+        assert!(parse_daemon_spec_value(&json!(null)).is_err());
+    }
+    #[test] fn array_object_rejected() {
+        assert!(parse_daemon_spec_value(&json!([1, 2])).is_err());
+        assert!(parse_daemon_spec_value(&json!({"max": 5})).is_err());
+    }
+    #[test] fn round_trip_disabled() {
+        let s = serde_json::to_value(DaemonSpec::Disabled).unwrap();
+        assert_eq!(parse_daemon_spec_value(&s).unwrap(), DaemonSpec::Disabled);
+    }
+    #[test] fn round_trip_max_1_serialises_as_bool() {
+        let s = serde_json::to_value(DaemonSpec::MaxFibers(1)).unwrap();
+        assert_eq!(s, json!(true));
+        assert_eq!(parse_daemon_spec_value(&s).unwrap(), DaemonSpec::MaxFibers(1));
+    }
+    #[test] fn round_trip_max_n_serialises_as_int() {
+        let s = serde_json::to_value(DaemonSpec::MaxFibers(5)).unwrap();
+        assert_eq!(s, json!(5));
+        assert_eq!(parse_daemon_spec_value(&s).unwrap(), DaemonSpec::MaxFibers(5));
+    }
 }
 
 /// SRD-40b §1 schema for one synthetic-metric declaration on
 /// an op template.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricSpec {
-    /// Required. A GK expression evaluated in the op's bound
+    /// Required. A Polydat expression evaluated in the op's bound
     /// scope. A bare binding name is the canonical form when
     /// the formula belongs in a `bindings:` block; any GK
     /// expression that produces a numeric result is also
@@ -1296,7 +1842,7 @@ impl Default for MetricKind {
 /// SRD-66 result-bindings declaration. Vari-structured to
 /// match the three YAML shapes the user can write:
 ///
-/// - **String**: a multi-line GK source block. Each
+/// - **String**: a multi-line Polydat source block. Each
 ///   `<name> := <expr>` assignment declares one result wire.
 /// - **List**: a sequence of nested `ResultSpec`s; each
 ///   element processes in order and contributes its
@@ -1308,16 +1854,16 @@ impl Default for MetricKind {
 ///
 /// SRD-40b §5.1's mapping form is preserved as the map
 /// shape with two refinements: any non-built-in non-path
-/// string is a GK expression (no `(`-detector magic), and
+/// string is a Polydat expression (no `(`-detector magic), and
 /// the composite-map output is added.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResultSpec {
-    /// GK source block — one or more `<name> := <expr>`
+    /// Polydat source block — one or more `<name> := <expr>`
     /// assignments separated by newlines. The pre-bound
     /// wires (`body`, `count`, `ok`, captures) are
     /// available; references resolve via the standard
-    /// closure-binding rule (gk module matter detects
+    /// closure-binding rule (polydat module matter detects
     /// linkages).
     String(String),
     /// Sequence of fragments. Each element is itself a
@@ -1328,7 +1874,7 @@ pub enum ResultSpec {
     List(Vec<ResultSpec>),
     /// Named-key short-forms. Each value is one of:
     /// `"count"`, `"ok"`, a path expression (no parens), or
-    /// any other string treated as a GK expression. Map
+    /// any other string treated as a Polydat expression. Map
     /// shape also produces a composite-map wire keyed by
     /// the YAML keys.
     Map(std::collections::BTreeMap<String, String>),
@@ -1364,9 +1910,9 @@ impl ResultSpec {
     /// spec ultimately declares.
     ///
     /// For map-shape entries, the source is whatever the
-    /// user wrote (`count` / `ok` / path-expr / GK expr).
+    /// user wrote (`count` / `ok` / path-expr / Polydat expr).
     /// For string-shape entries, the source is the entire
-    /// GK block — the caller compiles it as a unit and
+    /// Polydat block — the caller compiles it as a unit and
     /// extracts wire names from the LHS of each `:=`
     /// assignment.
     pub fn walk_fragments<F: FnMut(ResultFragment<'_>)>(&self, mut on: F) {
@@ -1402,7 +1948,7 @@ impl ResultSpec {
 }
 
 /// One step of `ResultSpec::walk_fragments`. Either a
-/// string-shape source block (compile as a GK module) or a
+/// string-shape source block (compile as a Polydat module) or a
 /// map-shape `(name, source)` pair (compile as a single
 /// `name := source` binding).
 pub enum ResultFragment<'a> {
@@ -1428,6 +1974,10 @@ impl ParsedOp {
             result: None,
             wrappers: None,
             captures: Vec::new(),
+            daemon: DaemonSpec::Disabled,
+            daemon_cancel_grace_ms: None,
+            while_cond: None,
+            rate: None,
         }
     }
 }

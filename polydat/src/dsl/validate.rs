@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! AST validation and diagnostics for GK source files.
+//! AST validation and diagnostics for Polydat source files.
 //!
 //! Provides `validate_ast` and supporting helpers that check function names,
 //! wire references, forward references, and coordinate inference before the
@@ -21,7 +21,7 @@ use crate::dsl::registry;
 /// automatically promoted to a kernel input. If at least one
 /// `input` declaration IS present, any unbound reference not in
 /// that set is an error.
-pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
+pub(crate) fn validate_ast(file: &PolydatFile, report: &mut DiagnosticReport) {
     let mut defined: HashSet<String> = HashSet::new();
     let mut referenced: HashSet<String> = HashSet::new();
     let mut input_names: HashSet<String> = HashSet::new();

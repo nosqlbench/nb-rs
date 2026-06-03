@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use cranelift_jit::JITModule;
 
-use crate::ast::GkNode;
+use crate::ast::PolydatNode;
 
 /// Shared fields for all JIT kernel variants.
 pub(super) struct JitCore {
@@ -20,7 +20,7 @@ pub(super) struct JitCore {
     pub(super) coord_count: usize,
     pub(super) output_map: HashMap<String, usize>,
     pub(super) _module: JITModule,
-    pub(super) _nodes: Vec<Box<dyn GkNode>>,
+    pub(super) _nodes: Vec<Box<dyn PolydatNode>>,
 }
 
 /// Compute slot provenance from input_dependents.

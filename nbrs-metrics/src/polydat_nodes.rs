@@ -10,7 +10,7 @@
 //! this crate; polydat picks it up at link time without knowing
 //! who registered it.
 //!
-//! GK node functions for reading live metrics from the unified
+//! Polydat node functions for reading live metrics from the unified
 //! [`MetricsQuery`] (SRD-42 §"MetricsQuery").
 //!
 //! - `metric(label_pattern, stat)` — reads
@@ -34,17 +34,17 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use polydat::dsl::registry::{FuncSig, FuncCategory as C, ParamSpec, Arity};
-use polydat::ast::{GkNode, NodeMeta, Port, PortType, SlotType, Value};
+use polydat::ast::{PolydatNode, NodeMeta, Port, PortType, SlotType, Value};
 use crate::metrics_query::{MetricsQuery, Selection};
 use crate::snapshot::{MetricSet, MetricValue};
 
 /// Global metrics query reference. Set by the runner once the
-/// cadence reporter is built. GK metric nodes capture this at
+/// cadence reporter is built. Polydat metric nodes capture this at
 /// construction time.
 static METRICS_QUERY: LazyLock<Mutex<Option<Arc<MetricsQuery>>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// Set the global metrics query for GK node access.
+/// Set the global metrics query for Polydat node access.
 pub fn set_global_query(query: Arc<MetricsQuery>) {
     *METRICS_QUERY.lock().unwrap_or_else(|e| e.into_inner()) = Some(query);
 }
@@ -93,7 +93,7 @@ impl MetricCumulative {
     }
 }
 
-impl GkNode for MetricCumulative {
+impl PolydatNode for MetricCumulative {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let sel = selection_from_pattern(&self.label_pattern);
@@ -130,7 +130,7 @@ impl MetricWindow {
     }
 }
 
-impl GkNode for MetricWindow {
+impl PolydatNode for MetricWindow {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let sel = selection_from_pattern(&self.label_pattern);
@@ -229,7 +229,7 @@ fn build_node(
     name: &str,
     _wires: &[polydat::compile::assembly::WireRef], _wire_types: &[polydat::ast::PortType],
     consts: &[polydat::dsl::ConstArg],
-) -> Option<Result<Box<dyn GkNode>, String>> {
+) -> Option<Result<Box<dyn PolydatNode>, String>> {
     match name {
         "metric" => {
             let pattern = consts.first().map(|c| c.as_str()).unwrap_or("");

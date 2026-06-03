@@ -1,6 +1,6 @@
-# GK pure-dataflow assumptions, foldability, and the `volatile` escape hatch
+# Polydat pure-dataflow assumptions, foldability, and the `volatile` escape hatch
 
-This guide explains the dataflow-purity model GK assumes about
+This guide explains the dataflow-purity model Polydat assumes about
 node functions, how the compiler turns "purity" into
 identity-affecting facts (const folding + `hash_const` for resume
 identity), and the one trapdoor case the structural analysis
@@ -12,9 +12,9 @@ with new functions.
 
 ---
 
-## What GK assumes about data flow
+## What Polydat assumes about data flow
 
-Every GK function is **a pure function of its wire inputs and
+Every Polydat function is **a pure function of its wire inputs and
 const args**. Same inputs in → same output out, no side effects,
 no hidden state. That's the contract every node-function provider
 signs when they `register_nodes!`.
@@ -84,7 +84,7 @@ identity.
 
 ## The trapdoor case — pure-looking impurity
 
-GK's structural detector classifies non-determinism by
+Polydat's structural detector classifies non-determinism by
 **absence of wire inputs**. That's a heuristic, not a proof. A
 node-function provider can write a function that *looks* pure
 to the type system (takes const-string args, no wire inputs
@@ -222,7 +222,7 @@ keeping the model honest:
   all work today — they're "non-deterministic" structurally
   but session-stable in practice.
 
-**Workload authors** (anyone writing GK source consumed by a
+**Workload authors** (anyone writing Polydat source consumed by a
 phase):
 
 - The structural detector handles obvious cases. For

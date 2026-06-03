@@ -7,7 +7,7 @@
 //! [`crate::synthesis`] (which handles fiber/op synthesis). Here
 //! we handle **scope** synthesis — turning workload-shape intent
 //! (a comprehension, a do-loop, a phase, an op template) into a
-//! child [`polydat::kernel::GkKernel`].
+//! child [`polydat::kernel::PolydatKernel`].
 //!
 //! This module hosts the walking + Surface #7 helpers + scope-
 //! builder functions that drive [`polydat::kernel::subcontext::SubcontextBuilder`]
@@ -19,7 +19,7 @@
 //!
 //! - [`helpers`] — Surface #7: pure utilities for turning typed
 //!   values, workload-param strings, and PortType variants into
-//!   GK source literals / extern type names. Also the placeholder
+//!   Polydat source literals / extern type names. Also the placeholder
 //!   scanner used by every scope-builder walk.
 //!
 //! ## What's planned (PR 9c-1b in progress)
@@ -49,7 +49,7 @@ pub use cascade::{cascade_parent_into_source, CascadeInputs, CascadeOutputs};
 pub use cascade_emit::emit_workload_param_chain_aware;
 pub use for_each::build_for_each_scope_kernel;
 pub use helpers::{
-    collect_leaf_placeholders, format_value_as_final_literal, format_value_as_gk_literal,
-    format_workload_param_as_gk_literal, port_type_to_extern_name, scan_one,
+    collect_leaf_placeholders, format_value_as_final_literal, format_value_as_polydat_literal,
+    format_workload_param_as_polydat_literal, port_type_to_extern_name, scan_one,
     value_to_param_string, workload_param_type_name,
 };

@@ -3,12 +3,12 @@
 
 //! Programmatic kernel construction via the assembler API.
 
-use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::hash::Hash64;
 use polydat::library::arithmetic::{ModU64, MixedRadix};
 
 fn main() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     // Decompose cycle into (region, device, reading) coordinates
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![100, 1000, 0])),

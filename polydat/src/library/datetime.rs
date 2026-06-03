@@ -3,7 +3,7 @@
 
 //! Datetime and epoch function nodes.
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// Scale a u64 to epoch milliseconds by multiplying by a factor.
 ///
@@ -34,7 +34,7 @@ impl EpochScale {
     }
 }
 
-impl GkNode for EpochScale {
+impl PolydatNode for EpochScale {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_u64().wrapping_mul(self.factor));
@@ -76,7 +76,7 @@ impl EpochOffset {
     pub fn from_2025() -> Self { Self::new(1_735_689_600_000) }
 }
 
-impl GkNode for EpochOffset {
+impl PolydatNode for EpochOffset {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_u64().wrapping_add(self.base));
@@ -117,7 +117,7 @@ impl ToTimestamp {
     }
 }
 
-impl GkNode for ToTimestamp {
+impl PolydatNode for ToTimestamp {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(epoch_ms_to_iso(inputs[0].as_u64()).into());
@@ -153,7 +153,7 @@ impl DateComponents {
     }
 }
 
-impl GkNode for DateComponents {
+impl PolydatNode for DateComponents {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let (y, mo, d, h, mi, s, ms) = decompose_epoch_ms(inputs[0].as_u64());
@@ -295,7 +295,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a datetime node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "epoch_scale" => Some(Ok(Box::new(EpochScale::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
         "epoch_offset" => Some(Ok(Box::new(EpochOffset::new(consts.first().map(|c| c.as_u64()).unwrap_or(0))))),

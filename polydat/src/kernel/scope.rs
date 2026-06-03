@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Scope coordinates — the formal GK-side model of the
+//! Scope coordinates — the formal Polydat-side model of the
 //! iteration position a kernel occupies inside an enclosing
 //! comprehension chain.
 //!
@@ -25,11 +25,11 @@
 //! ## Invariant
 //!
 //! Every kernel that has been *initialised in its scope* —
-//! either via [`super::GkKernel::materialize_wiring_from_outer`] (post-bind
+//! either via [`super::PolydatKernel::materialize_wiring_from_outer`] (post-bind
 //! the path is `[own] ++ outer.scope_coordinates()`), or as a
 //! root scope (path is `[own]` if non-empty, else empty) —
-//! has [`super::GkKernel::scope_coordinates`] populated. This
-//! is treated as a structural invariant of the GK model, not
+//! has [`super::PolydatKernel::scope_coordinates`] populated. This
+//! is treated as a structural invariant of the Polydat model, not
 //! an optional add-on: the runtime contract is that any
 //! consumer (presentation layer, inspector, future scope-aware
 //! diagnostics) can call `scope_coordinates()` on an

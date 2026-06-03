@@ -364,7 +364,7 @@ pub enum TraversalOrder {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seed: Option<u64>,
     },
-    /// User-supplied GK function name. Function takes the tuple
+    /// User-supplied Polydat function name. Function takes the tuple
     /// list and returns a permutation/subset.
     Custom { function: String },
 }
@@ -386,7 +386,7 @@ pub enum ShellOrigin {
 
 /// The static shape of an iteration scope. See module doc.
 ///
-/// `filter` is an optional GK predicate evaluated against each
+/// `filter` is an optional Polydat predicate evaluated against each
 /// emitted tuple. Tuples for which the predicate evaluates to
 /// `Value::Bool(false)` are skipped — children don't run for
 /// them.
@@ -449,7 +449,7 @@ impl Comprehension {
     }
 
     /// Attach a filter predicate, returning `self` for builder
-    /// chaining. The predicate is a GK expression that must
+    /// chaining. The predicate is a Polydat expression that must
     /// evaluate to `Value::Bool` per tuple — anything else is a
     /// runtime error from the comprehension's evaluator.
     pub fn with_filter(mut self, predicate: impl Into<String>) -> Self {

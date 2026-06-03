@@ -126,15 +126,15 @@ pub async fn dag_render(Form(form): Form<DagRenderForm>) -> Html<String> {
     let source = form.source.trim();
     if source.is_empty() {
         return Html(
-            "<p style=\"color: var(--text-dim);\">Enter GK source to render</p>".into(),
+            "<p style=\"color: var(--text-dim);\">Enter Polydat source to render</p>".into(),
         );
     }
 
     let fmt = form.format.as_deref().unwrap_or("svg");
     let result = match fmt {
-        "svg" => viz::gk_to_svg(source),
-        "mermaid" => viz::gk_to_mermaid(source).map(|m| format!("<pre>{}</pre>", esc(&m))),
-        "dot" => viz::gk_to_dot(source).map(|d| format!("<pre>{}</pre>", esc(&d))),
+        "svg" => viz::polydat_to_svg(source),
+        "mermaid" => viz::polydat_to_mermaid(source).map(|m| format!("<pre>{}</pre>", esc(&m))),
+        "dot" => viz::polydat_to_dot(source).map(|d| format!("<pre>{}</pre>", esc(&d))),
         _ => Err("unknown format".into()),
     };
     match result {
@@ -472,7 +472,7 @@ fn build_stdlib_groups() -> Vec<(String, Vec<StdlibModuleView>)> {
             .find(|l| l.trim().starts_with("// @category:"))
             .and_then(|l| l.trim().strip_prefix("// @category:"))
             .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| filename.replace(".gk", ""));
+            .unwrap_or_else(|| filename.replace(".polydat", ""));
 
         let tokens = match lexer::lex(source) {
             Ok(t) => t,

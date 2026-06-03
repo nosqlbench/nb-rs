@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Typed binding scope model for GK kernel compilation.
+//! Typed binding scope model for Polydat Kernel compilation.
 //!
 //! A `BindingScope` is the structured intermediate representation
 //! that replaces raw string manipulation for scope composition.
@@ -53,7 +53,7 @@ impl std::fmt::Display for BindingOrigin {
 }
 
 /// The modifier on a binding declaration. Mirrors the
-/// `BindingModifier` flag set in polydat' GK AST plus
+/// `BindingModifier` flag set in polydat' Polydat AST plus
 /// the binding-kind keywords (`init`, `cursor`) that
 /// nbrs-activity's text-level scope assembly cares about.
 ///
@@ -62,7 +62,7 @@ impl std::fmt::Display for BindingOrigin {
 /// historically only needs to know "is this final?" /
 /// "is this shared?" for shadow checks; combinations get
 /// reduced here to the most-distinctive single tag. The full
-/// flag set is preserved in the eventual GK AST when the
+/// flag set is preserved in the eventual Polydat AST when the
 /// scope-emitted source compiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeModifier {
@@ -79,7 +79,7 @@ pub enum ScopeModifier {
 pub struct ScopedBinding {
     /// The binding name (LHS of `:=`).
     pub name: String,
-    /// The full declaration line as GK source text.
+    /// The full declaration line as Polydat source text.
     /// For regular bindings: `"name := expr"`
     /// For init: `"const name := \"value\""`
     /// For externs: `"extern name: Type"`
@@ -97,10 +97,10 @@ pub struct ExternDecl {
     pub type_name: String,
 }
 
-/// Typed scope for a phase's GK kernel compilation.
+/// Typed scope for a phase's Polydat Kernel compilation.
 ///
 /// Built by the executor from structured inputs, validated for
-/// scope rules, then emitted as a single GK source string.
+/// scope rules, then emitted as a single Polydat source string.
 pub struct BindingScope {
     /// The coordinate declaration (e.g., `"input cycle: u64"`).
     coordinates: Option<String>,
@@ -126,16 +126,16 @@ impl BindingScope {
         }
     }
 
-    /// Ingest bindings from a `BindingsDef::GkSource`, classifying each
+    /// Ingest bindings from a `BindingsDef::PolydatSource`, classifying each
     /// line by the given origin. Extracts coordinates and handles all
-    /// GK declaration forms (init, shared, final, cursor, extern, plain).
+    /// Polydat declaration forms (init, shared, final, cursor, extern, plain).
     ///
     /// A "line" here is a *logical* line: physical newlines inside
     /// unbalanced `()`/`[]`/`{}` or inside a string literal are
     /// absorbed into the current binding. This is what lets multi-line
     /// expressions like
     ///
-    /// ```gk
+    /// ```polydat
     /// rate_adjust := control_set("rate",
     ///                            to_f64(control_u64("rate")) * 1.05)
     /// ```
@@ -143,7 +143,7 @@ impl BindingScope {
     /// survive the later split-on-`\n` in [`Self::emit`]: we rejoin
     /// them onto one physical line so the downstream parser sees a
     /// complete expression.
-    pub fn ingest_gk_source(&mut self, source: &str, origin: BindingOrigin) {
+    pub fn ingest_polydat_source(&mut self, source: &str, origin: BindingOrigin) {
         for line in logical_lines(source) {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') {
@@ -153,7 +153,7 @@ impl BindingScope {
             // `input` declarations: `input <name>[: <type>]` (bare) or
             // `input (<name>[: <type>], ...)` (tuple). Stored verbatim
             // on the scope's `coordinates` slot — the synthesizer
-            // re-emits this line into the per-scope GK source so the
+            // re-emits this line into the per-scope Polydat source so the
             // compiler can pick up the declared inputs.
             if trimmed.starts_with("input ") {
                 self.coordinates = Some(trimmed.to_string());
@@ -163,7 +163,7 @@ impl BindingScope {
             // Cursor declarations use `=` not `:=`:
             //   cursor row = range(0, vector_count("example"))
             //   const prebuffer := dataset_prebuffer("example")
-            // These are GK statements that the compiler handles directly.
+            // These are Polydat statements that the compiler handles directly.
             // Pass them through as bindings so they survive emission.
             if trimmed.starts_with("cursor ") || trimmed.starts_with("init ") {
                 if let Some(eq_pos) = trimmed.find('=') {
@@ -225,7 +225,7 @@ impl BindingScope {
     /// than init-time bindings (SRD 18b §"Iteration variables as
     /// scope outputs"). The runtime sets the extern's value
     /// before the leaf kernel executes, so we no longer
-    /// text-substitute literal values into the GK source. The
+    /// text-substitute literal values into the Polydat source. The
     /// type is inferred from the current iteration's value:
     /// numeric strings get `u64`/`f64`, anything else is `String`.
     pub fn add_iteration_var(&mut self, name: &str, value: &str) {
@@ -257,7 +257,7 @@ impl BindingScope {
     /// contract: workload params are immutable for the run, so
     /// downstream nodes consume them as constants.
     ///
-    /// String values are emitted as quoted GK string literals
+    /// String values are emitted as quoted Polydat string literals
     /// with embedded `"` and `\` escaped, so JSON-shaped param
     /// values (`{"a": 1}`, `{'class': 'SimpleStrategy'}`,
     /// arbitrary nested quotes) round-trip through GK
@@ -394,7 +394,7 @@ impl BindingScope {
 
                     // IterationVar replacing Inherited/Phase: iteration
                     // variables are injected before inherited bindings
-                    // in the emission order, so GK sees them first.
+                    // in the emission order, so Polydat sees them first.
                     // This is intentional — for_each vars override params.
                     (BindingOrigin::IterationVar, BindingOrigin::Inherited | BindingOrigin::Phase) |
                     (BindingOrigin::Inherited | BindingOrigin::Phase, BindingOrigin::IterationVar) => {
@@ -457,7 +457,7 @@ impl BindingScope {
         Ok(())
     }
 
-    /// Emit the validated scope as a single GK source string.
+    /// Emit the validated scope as a single Polydat source string.
     ///
     /// Entries are ordered:
     /// 1. Coordinates declaration
@@ -475,10 +475,10 @@ impl BindingScope {
         let mut emitted_names: HashSet<String> = HashSet::new();
 
         // 1. Coordinates — emit only when an ingested source
-        // declared them. The GK compiler auto-infers coordinates
+        // declared them. The Polydat compiler auto-infers coordinates
         // from `cycle` references in non-strict mode, so a
         // workload-level scope built purely from injected
-        // workload params (no op-supplied GK source, no `cycle`
+        // workload params (no op-supplied Polydat source, no `cycle`
         // references) compiles fine without a synthetic line.
         if let Some(ref coords) = self.coordinates {
             lines.push(coords.clone());
@@ -524,7 +524,7 @@ impl BindingScope {
     }
 }
 
-/// Parse the modifier prefix and bare name from a GK LHS.
+/// Parse the modifier prefix and bare name from a Polydat LHS.
 ///
 /// `"shared foo"` → `(Shared, "foo")`
 /// `"init bar"` → `(Init, "bar")`
@@ -537,9 +537,9 @@ impl BindingScope {
 /// A logical line ends at the first physical newline that sits at
 /// bracket-depth 0 and outside any string. Each returned String has
 /// its interior newlines collapsed to single spaces so the downstream
-/// GK parser sees one-expression-per-line, which is all it supports.
+/// Polydat parser sees one-expression-per-line, which is all it supports.
 fn logical_lines(source: &str) -> Vec<String> {
-    // GK grammar uses ONLY `"`-delimited string literals (see
+    // Polydat grammar uses ONLY `"`-delimited string literals (see
     // `polydat/src/dsl/lexer.rs`). Apostrophes (`'`) carry
     // no special meaning at the lexical level — they appear
     // verbatim in comments ("the workload's bindings") and
@@ -553,7 +553,7 @@ fn logical_lines(source: &str) -> Vec<String> {
     //
     // Comments (`#`-to-EOL and `//`-to-EOL) are NOT skipped at
     // this level — physical newlines inside them terminate the
-    // logical line uniformly, and the per-line `ingest_gk_source`
+    // logical line uniformly, and the per-line `ingest_polydat_source`
     // pass skips any `#`/`//`-leading line via `trimmed.starts_with`.
     // What matters at this level is that bracket/string state
     // doesn't get confused by content inside comments.
@@ -630,7 +630,7 @@ fn logical_lines(source: &str) -> Vec<String> {
 /// and quotes everything else.
 ///
 /// Returns `None` for value types that can't be represented as a
-/// GK source literal (`Bytes`, `Json`, `Ext`, `Handle`, vectors,
+/// Polydat source literal (`Bytes`, `Json`, `Ext`, `Handle`, vectors,
 /// `None`). The synthesizer falls back to extern cascade in
 /// those cases, since promoted-final inlining only works when
 /// the value can round-trip through source.
@@ -690,7 +690,7 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
     // multi-modifier forms like `volatile final` or `final shared`
     // only see a single ScopeModifier tag at the scope-assembly
     // level (the most-distinctive one wins), but the bare name
-    // still gets extracted correctly. The eventual GK compile
+    // still gets extracted correctly. The eventual Polydat compile
     // sees the full source line with all keywords intact.
     let mut rest = lhs;
     let mut tag = ScopeModifier::None;
@@ -747,10 +747,10 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 // do_while / do_until aren't comprehensions.
 
 
-/// Build the per-scope GK kernel for a `do_while` / `do_until`
+/// Build the per-scope Polydat Kernel for a `do_while` / `do_until`
 /// node (SRD 18b). Same composition contract as for_each
 /// (every name visible at this scope resolves through standard
-/// GK API on the synthesized kernel) — the difference is the
+/// Polydat API on the synthesized kernel) — the difference is the
 /// "scope output" is a `counter: u64` rather than tuple
 /// iteration variables, and there's no value list to pre-eval.
 ///
@@ -776,11 +776,11 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 /// expression against the kernel via `interpolate_via_kernel` +
 /// `eval_const_expr`. Children inherit `counter` (and any
 /// inherited names) through standard `materialize_wiring_from_outer`.
-/// Synthesize the GK scope kernel for a phase that carries its own
+/// Synthesize the Polydat scope kernel for a phase that carries its own
 /// `bindings:` block.
 ///
 /// The phase scope owns this kernel as part of its closure lifetime
-/// (per the GK builder/walk/instancing protocol): a phase whose YAML
+/// (per the Polydat builder/walk/instancing protocol): a phase whose YAML
 /// declared `bindings: |` produces matter that the parent kernel's
 /// `build_subscope` materializes into a layered kernel. Op-template
 /// scopes that descend from this phase find these bindings as
@@ -792,7 +792,7 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 /// the parent walker resolves through to the nearest ancestor with a
 /// kernel. The closure invariant ("every scope has a kernel
 /// reference") still holds; the reference is just the parent's,
-/// matter-gated as the GK APIs prescribe.
+/// matter-gated as the Polydat APIs prescribe.
 ///
 /// Source emitted (in order):
 ///
@@ -802,14 +802,14 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 ///   <phase_bindings_body>                   # phase-declared bindings
 /// ```
 ///
-/// The phase's bindings body is appended verbatim so the GK compiler
+/// The phase's bindings body is appended verbatim so the Polydat compiler
 /// classifies them per the same rules as op-level bindings (init /
 /// shared / final detection, type inference). Iteration coordinate
 /// (`cycle`) cascades from the parent — we never re-declare it here.
 /// Compose a phase scope's bindings source with SRD-75
 /// phase-poll augmentation when applicable. Returns the
 /// existing `BindingsDef` unchanged when `phase.poll` is
-/// `None`; otherwise produces a `BindingsDef::GkSource`
+/// `None`; otherwise produces a `BindingsDef::PolydatSource`
 /// that:
 ///
 /// - **Prepends** `shared <name>: u64 := 0` for each
@@ -873,7 +873,7 @@ pub fn synthesize_phase_bindings_with_poll(
          # slots (Rule 1 shared import → cell attached at spawn).\n",
     );
     for name in &capture_names {
-        // GK's `shared X := <literal>` form infers the type
+        // Polydat's `shared X := <literal>` form infers the type
         // from the RHS literal (per SRD-13c
         // §"Implementation: SharedCell-backed input slots"
         // — `shared X := 0` lands as u64 via literal-fold).
@@ -885,7 +885,7 @@ pub fn synthesize_phase_bindings_with_poll(
     }
 
     let original_body: String = match &phase.bindings {
-        BindingsDef::GkSource(s) => s.clone(),
+        BindingsDef::PolydatSource(s) => s.clone(),
         BindingsDef::Map(m) => {
             let mut out = String::new();
             for (n, e) in m {
@@ -924,7 +924,7 @@ pub fn synthesize_phase_bindings_with_poll(
     // capture writes, so it must re-evaluate per pull).
     source.push_str(&format!("__poll_until := {}\n", poll.until));
 
-    Ok(BindingsDef::GkSource(source))
+    Ok(BindingsDef::PolydatSource(source))
 }
 
 /// Synthesize a phase-scope kernel.
@@ -936,17 +936,17 @@ pub fn synthesize_phase_bindings_with_poll(
 pub fn build_phase_scope_kernel(
     bindings: &nbrs_workload::model::BindingsDef,
     parent_manifest: &[crate::runner::ManifestEntry],
-    parent_kernel: &polydat::kernel::GkKernel,
+    parent_kernel: &polydat::kernel::PolydatKernel,
     workload_params: &HashMap<String, String>,
-    gk_lib_paths: Vec<std::path::PathBuf>,
+    polydat_lib_paths: Vec<std::path::PathBuf>,
     workload_dir: Option<&std::path::Path>,
     strict: bool,
     context: &str,
-) -> Result<polydat::kernel::GkKernel, String> {
+) -> Result<polydat::kernel::PolydatKernel, String> {
     use nbrs_workload::model::BindingsDef;
 
     let body_text: String = match bindings {
-        BindingsDef::GkSource(s) => s.clone(),
+        BindingsDef::PolydatSource(s) => s.clone(),
         BindingsDef::Map(m) => {
             let mut out = String::new();
             for (name, expr) in m {
@@ -966,7 +966,7 @@ pub fn build_phase_scope_kernel(
     let body_locally_declared = scan_locally_declared_idents(&body_text);
     let mut referenced: HashSet<String> = HashSet::new();
     collect_string_interp_refs(&body_text, &mut referenced);
-    for ident in scan_idents_in_gk_source(&body_text) {
+    for ident in scan_idents_in_polydat_source(&body_text) {
         if !body_locally_declared.contains(&ident) {
             referenced.insert(ident);
         }
@@ -1013,14 +1013,14 @@ pub fn build_phase_scope_kernel(
     let _ = parent_manifest; // reserved for future strict cross-scope checks
     let compile_options = polydat::kernel::subcontext::CompileOptions {
         workload_dir: workload_dir.map(|p| p.to_path_buf()),
-        gk_lib_paths,
+        polydat_lib_paths,
         strict,
         required_outputs: Vec::new(),
         context_label: Some(context.to_string()),
         cursor_limit: None,
         ..Default::default()
     };
-    let matter = polydat::kernel::subcontext::GkMatter::builder()
+    let matter = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_names)
@@ -1038,13 +1038,13 @@ pub fn build_do_loop_scope_kernel(
     counter: Option<&str>,
     condition: &str,
     parent_manifest: &[crate::runner::ManifestEntry],
-    parent_kernel: &polydat::kernel::GkKernel,
+    parent_kernel: &polydat::kernel::PolydatKernel,
     workload_params: &HashMap<String, String>,
-    gk_lib_paths: Vec<std::path::PathBuf>,
+    polydat_lib_paths: Vec<std::path::PathBuf>,
     workload_dir: Option<&std::path::Path>,
     strict: bool,
     context: &str,
-) -> Result<polydat::kernel::GkKernel, String> {
+) -> Result<polydat::kernel::PolydatKernel, String> {
     // Scope-specific contribution: declare the counter extern
     // (if a counter is in play). The counter is the do-loop's
     // only own-iter wire; pre-emit it so the shared cascade
@@ -1074,7 +1074,7 @@ pub fn build_do_loop_scope_kernel(
             pre_emitted: &pre_emitted,
             shadow_names: &shadow_names,
             // do-loop opts in: the condition expression is
-            // narrowly-scoped GK source that references
+            // narrowly-scoped Polydat source that references
             // names which need extern declarations to be
             // resolvable. Step 3 emits those externs against
             // parent_manifest's types.
@@ -1092,12 +1092,12 @@ pub fn build_do_loop_scope_kernel(
     }
 
     // SRD-67 — finalize through the SubcontextBuilder bridge.
-    // `gk_lib_paths` / `workload_dir` / `strict` aren't yet
+    // `polydat_lib_paths` / `workload_dir` / `strict` aren't yet
     // threaded through (the bridge uses the default `compile_ast`
     // path); the do-loop's emitted source shape doesn't need
     // them. Recorded as a Phase 3 follow-up.
-    let _ = (gk_lib_paths, workload_dir, strict);
-    let matter = polydat::kernel::subcontext::GkMatter::builder()
+    let _ = (polydat_lib_paths, workload_dir, strict);
+    let matter = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_names)
@@ -1110,14 +1110,14 @@ pub fn build_do_loop_scope_kernel(
     Ok(kernel)
 }
 
-/// Token-shaped identifier scan over GK source. Returns every
+/// Token-shaped identifier scan over Polydat source. Returns every
 /// alphanumeric/underscore-shaped token that isn't a keyword
 /// or numeric literal. Used by
 /// [`build_op_template_scope_kernel`] to discover names the
-/// op's bindings body references; the GK compiler does the
+/// op's bindings body references; the Polydat compiler does the
 /// authoritative parse downstream — this scan is just a
 /// best-effort first pass for the cross-scope contract check.
-pub(crate) fn scan_idents_in_gk_source(src: &str) -> HashSet<String> {
+pub(crate) fn scan_idents_in_polydat_source(src: &str) -> HashSet<String> {
     const KEYWORDS: &[&str] = &[
         "input", "extern", "final", "init", "shared", "volatile", "cursor", "pragma",
         "true", "false", "as", "in", "for",
@@ -1186,7 +1186,7 @@ pub(crate) fn scan_idents_in_gk_source(src: &str) -> HashSet<String> {
 }
 
 /// Names declared on the LHS of `:=` (or `=` for init bindings)
-/// in GK source. Locally-declared names shadow parent-scope
+/// in Polydat source. Locally-declared names shadow parent-scope
 /// references per SRD-13c §"Shadowing", so the cross-scope
 /// contract check skips them.
 pub(crate) fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
@@ -1256,14 +1256,14 @@ pub(crate) fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
 pub fn build_op_template_scope_kernel(
     op: &nbrs_workload::model::ParsedOp,
     parent_manifest: &[crate::runner::ManifestEntry],
-    parent_kernel: &polydat::kernel::GkKernel,
+    parent_kernel: &polydat::kernel::PolydatKernel,
     workload_params: &HashMap<String, String>,
-    gk_lib_paths: Vec<std::path::PathBuf>,
+    polydat_lib_paths: Vec<std::path::PathBuf>,
     workload_dir: Option<&std::path::Path>,
     strict: bool,
     kernel_opt: polydat::kernel::KernelOptLevel,
     context: &str,
-) -> Result<polydat::kernel::GkKernel, String> {
+) -> Result<polydat::kernel::PolydatKernel, String> {
     use nbrs_workload::model::BindingsDef;
 
     let manifest_by_name: HashMap<&str, &crate::runner::ManifestEntry> =
@@ -1285,7 +1285,7 @@ pub fn build_op_template_scope_kernel(
     // §"The read invariant"). The wires layer takes one kernel
     // handle and never composes chains externally.
     let body_text: String = match &op.bindings {
-        BindingsDef::GkSource(s) => s.clone(),
+        BindingsDef::PolydatSource(s) => s.clone(),
         BindingsDef::Map(m) => {
             let mut out = String::new();
             for (name, expr) in m {
@@ -1319,7 +1319,7 @@ pub fn build_op_template_scope_kernel(
             }
         }
     }
-    let body_idents = scan_idents_in_gk_source(&body_text);
+    let body_idents = scan_idents_in_polydat_source(&body_text);
     let body_locally_declared = scan_locally_declared_idents(&body_text);
     let mut referenced: Vec<String> = Vec::new();
     // Op field references — `stmt`, `uri`, `body`, etc. carry
@@ -1345,7 +1345,7 @@ pub fn build_op_template_scope_kernel(
         }
     }
     // String-interpolation references inside the body (e.g.
-    // `dataset_prebuffer("{dataset}:{profile}")`). The GK compiler
+    // `dataset_prebuffer("{dataset}:{profile}")`). The Polydat compiler
     // desugars those into wires that need a matching extern;
     // without this scan, the cascade misses them and the compiler
     // defaults the auto-extern to u64, landing a Str value into a
@@ -1367,12 +1367,14 @@ pub fn build_op_template_scope_kernel(
             referenced.push(n.to_string());
         }
     }
-    if let Some(ref s) = op.delay {
-        let n = s.trim().trim_start_matches('{').trim_end_matches('}');
-        if !n.is_empty() && !body_locally_declared.contains(n)
-            && !referenced.iter().any(|r| r == n)
-        {
-            referenced.push(n.to_string());
+    if let Some(ref delay_spec) = op.delay {
+        for raw in delay_spec.names() {
+            let n = raw.trim().trim_start_matches('{').trim_end_matches('}');
+            if !n.is_empty() && !body_locally_declared.contains(n)
+                && !referenced.iter().any(|r| r == n)
+            {
+                referenced.push(n.to_string());
+            }
         }
     }
     for spec in op.metrics.values() {
@@ -1427,7 +1429,7 @@ pub fn build_op_template_scope_kernel(
     // Bool/Str/etc. cell — surfaces downstream as a "non-bool
     // type" pick panic.
     //
-    // String-shape fragments carry full GK source whose LHS we
+    // String-shape fragments carry full Polydat source whose LHS we
     // extract via `scan_locally_declared_idents`. Map-shape
     // fragments give the name directly.
     if let Some(rb) = op.result.as_ref() {
@@ -1597,17 +1599,17 @@ pub fn build_op_template_scope_kernel(
 
     // SRD-67 Phase 3 — route op-template scope synthesis through
     // the SubcontextBuilder bridge. The Phase-9 op-template
-    // kernel needs the same `compile_gk_with_libs` knobs the
+    // kernel needs the same `compile_polydat_with_libs` knobs the
     // legacy direct call took (lib paths, strict, source dir,
     // context label); those flow through `CompileOptions`. The
     // bridge applies `mark_inherited_outputs` and
     // `materialize_wiring_from_outer` against the live parent so per-cycle
     // values reach the inner kernel's input slots; the trailing
-    // `GkKernel::propagate_inputs_into` keeps cascade-extern'd inputs
+    // `PolydatKernel::propagate_inputs_into` keeps cascade-extern'd inputs
     // flowing through (until Rule 4 / Rule 5 absorb them).
     let compile_options = polydat::kernel::subcontext::CompileOptions {
         workload_dir: workload_dir.map(|p| p.to_path_buf()),
-        gk_lib_paths,
+        polydat_lib_paths,
         strict,
         required_outputs: Vec::new(),
         context_label: Some(context.to_string()),
@@ -1656,9 +1658,21 @@ pub fn build_op_template_scope_kernel(
             result_source.push_str(&format!("{binding} := {expr}\n", expr = spec.value));
         }
     }
+    // While-wrapper predicate. Synthesised as `__while := <expr>`
+    // so `add_result_bindings` walks the expression, injects
+    // magic externs for any captured wires it references, and
+    // registers `__while` as a kernel output the WhileWrapper
+    // reads at cycle time via the canonical pull plan.
+    if let Some(while_expr) = op.while_cond.as_ref() {
+        result_source.push_str(&format!(
+            "{} := {expr}\n",
+            crate::wrappers::r#while::BINDING_NAME,
+            expr = while_expr,
+        ));
+    }
     let result_source: Option<String> = Some(result_source).filter(|s| !s.trim().is_empty());
 
-    let mut matter_builder = polydat::kernel::subcontext::GkMatter::builder()
+    let mut matter_builder = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_names)
@@ -1690,14 +1704,14 @@ pub fn synthesize_metric_binding_name(metric_name: &str) -> String {
 }
 
 /// Flatten a [`nbrs_workload::model::ResultSpec`] into a single
-/// GK source string suitable for
+/// Polydat source string suitable for
 /// [`polydat::kernel::subcontext::SubcontextBuilder::add_result_bindings`].
 /// String-shape entries pass through verbatim; map-shape entries
 /// emit `<name> := <source>` lines (the same projection the
 /// SRD-66 schema specifies); list-shape entries recurse.
 ///
 /// Path-expression and built-in short forms (`count` / `ok`) in
-/// map-shape entries land as bare GK expressions — `count` and
+/// map-shape entries land as bare Polydat expressions — `count` and
 /// `ok` resolve to the magic-extern wires
 /// [`SubcontextBuilder::add_result_bindings`] injects, while
 /// path expressions like `rows[0].field` produce an unbound-
@@ -1735,20 +1749,20 @@ pub fn build_scope(
     // folded constant state (for case 1 promoted-final
     // emission). `None` for the workload-root build (it IS the
     // root; no parent).
-    parent_kernel: Option<&polydat::kernel::GkKernel>,
+    parent_kernel: Option<&polydat::kernel::PolydatKernel>,
 ) -> Result<BindingScope, String> {
     let mut scope = BindingScope::new();
 
     // --- Step 1: Classify op bindings by origin ---
     //
-    // The first op's GkSource is the "base" (inherited/phase-level).
-    // Subsequent ops: if their GkSource matches the base exactly,
+    // The first op's PolydatSource is the "base" (inherited/phase-level).
+    // Subsequent ops: if their PolydatSource matches the base exactly,
     // they're inherited duplicates. If different, they're op-level
     // augmentations carrying new bindings.
     let mut base_source: Option<String> = None;
 
     for op in ops {
-        if let BindingsDef::GkSource(src) = &op.bindings {
+        if let BindingsDef::PolydatSource(src) = &op.bindings {
             let src = src.trim();
             if src.is_empty() { continue; }
 
@@ -1756,7 +1770,7 @@ pub fn build_scope(
                 None => {
                     // First op's source becomes the base — classified as Inherited
                     base_source = Some(src.to_string());
-                    scope.ingest_gk_source(src, BindingOrigin::Inherited);
+                    scope.ingest_polydat_source(src, BindingOrigin::Inherited);
                 }
                 Some(base) => {
                     if src == base.as_str() {
@@ -1781,7 +1795,7 @@ pub fn build_scope(
                                 // This line is inherited — already ingested from base
                             } else {
                                 // This line is op-specific
-                                scope.ingest_gk_source(trimmed, BindingOrigin::Op(op.name.clone()));
+                                scope.ingest_polydat_source(trimmed, BindingOrigin::Op(op.name.clone()));
                             }
                         }
                     }
@@ -1814,11 +1828,11 @@ pub fn build_scope(
 
     // Collect all referenced names from op templates AND
     // binding source RHS. Names referenced in either need
-    // extern declarations so the GK compile path can wire
+    // extern declarations so the Polydat compile path can wire
     // them. Without scanning bindings, a phase whose binding
     // RHS uses `{outer_name}` (e.g. `dim := vector_dim(
     // "{dataset}:{profile}")`) wouldn't get extern declarations
-    // for `dataset` and `profile`, leaving the GK string
+    // for `dataset` and `profile`, leaving the Polydat string
     // interpolation desugar to fail at compile time.
     let mut referenced: HashSet<String> = HashSet::new();
     for op in ops {
@@ -1840,21 +1854,23 @@ pub fn build_scope(
         // expression. Both consume a binding and need to land
         // in `referenced` so the auto-extern + DCE-keepalive
         // passes provision them.
-        if let Some(ref delay) = op.delay {
-            let bare = delay.trim()
-                .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
-                .unwrap_or(delay.trim());
-            referenced.insert(bare.to_string());
+        if let Some(ref delay_spec) = op.delay {
+            for raw in delay_spec.names() {
+                let bare = raw.trim()
+                    .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                    .unwrap_or(raw.trim());
+                referenced.insert(bare.to_string());
+            }
         }
-        // Bindings: scan GK source for `{name}` placeholders
-        // that the GK string-interpolation desugar will treat
+        // Bindings: scan Polydat source for `{name}` placeholders
+        // that the Polydat string-interpolation desugar will treat
         // as wire references.
-        if let BindingsDef::GkSource(src) = &op.bindings {
+        if let BindingsDef::PolydatSource(src) = &op.bindings {
             collect_string_interp_refs(src, &mut referenced);
             // Also scan for bare identifiers used in binding
             // RHSs (e.g. `if(optimize_for == "LATENCY", …)`).
             // Without this, names like `optimize_for` flow
-            // through to the GK compiler unresolved and get
+            // through to the Polydat compiler unresolved and get
             // auto-externed at the compiler's default type
             // (u64); `materialize_wiring_from_outer` then writes the
             // parent's Str value into the u64-typed slot, and
@@ -1865,7 +1881,7 @@ pub fn build_scope(
             // declared by THIS scope's own bindings are
             // resolved locally, not externed.
             let body_locally_declared = scan_locally_declared_idents(src);
-            for ident in scan_idents_in_gk_source(src) {
+            for ident in scan_idents_in_polydat_source(src) {
                 if !body_locally_declared.contains(&ident) {
                     referenced.insert(ident);
                 }
@@ -2081,7 +2097,7 @@ pub fn build_scope(
             // then emits externs for them.
             for stmt in chain {
                 let line = polydat::dsl::pprint::pp_statement(stmt);
-                scope.ingest_gk_source(&line, BindingOrigin::Inherited);
+                scope.ingest_polydat_source(&line, BindingOrigin::Inherited);
                 let body = match stmt {
                     polydat::dsl::ast::Statement::Binding(b) => Some(&b.value),
                     _ => None,
@@ -2128,7 +2144,7 @@ pub fn build_scope(
     // SRD-13f §"Wire-reference classification" — case 4:
     // unresolved → synthesizer-level validation error. Fires
     // only on descendant scopes (parent_kernel is Some). The
-    // workload-root build skips this check; the GK compiler's
+    // workload-root build skips this check; the Polydat compiler's
     // auto-input-inference path handles unresolved refs there.
     //
     // A reference is resolved if any of: defined locally,
@@ -2200,12 +2216,12 @@ pub fn build_scope(
     // materialize-source. If we baked `const NAME := <literal>`
     // here at the workload-root, that local constant would mask
     // the input slot via the get_constant fast-path in
-    // GkKernel::lookup, and no scope-tree-level shadow could
+    // PolydatKernel::lookup, and no scope-tree-level shadow could
     // get through.
     //
     // Author-declared `final` in the workload's `bindings:`
     // block is unaffected — that source goes through
-    // workload_level_gk ingestion in build_workload_root_kernel
+    // workload_level_polydat ingestion in build_workload_root_kernel
     // and keeps whatever modifier the author wrote. Only the
     // auto-cascade of the workload `params:` block changes
     // shape.
@@ -2279,7 +2295,9 @@ pub fn build_scope(
         // those get hoisted out of `op.op` by the parser into
         // dedicated fields on `ParsedOp`.
         if let Some(s) = &op.condition { collect(s); }
-        if let Some(s) = &op.delay { collect(s); }
+        if let Some(spec) = &op.delay {
+            for name in spec.names() { collect(name); }
+        }
     }
     for (expr, name) in &expr_to_name {
         scope.add_inline_expr(name, expr);
@@ -2341,9 +2359,11 @@ pub fn build_scope(
             }
         };
         if let Some(ref cond) = op.condition { collect_required(cond); }
-        if let Some(ref delay) = op.delay { collect_required(delay); }
+        if let Some(ref delay_spec) = op.delay {
+            for name in delay_spec.names() { collect_required(name); }
+        }
         // SRD-40b §6: synthetic-metric `value:` references must
-        // survive DCE so the dispenser's GK pull plan can resolve
+        // survive DCE so the dispenser's Polydat pull plan can resolve
         // them. Bare-name values (the SRD-40b §1 canonical form)
         // refer to a wire produced somewhere in scope; non-bare
         // expressions are deferred to Phase 9 elsewhere — for the
@@ -2358,7 +2378,7 @@ pub fn build_scope(
         }
         // SRD-40b §5 result-as-GK: each `result:` wire reads a
         // path expression off the response body and exposes it as
-        // a GK wire. The wire's *name* is what subsequent
+        // a Polydat wire. The wire's *name* is what subsequent
         // wrappers (metrics, validation) pull against — mark each
         // declared result wire as required so the kernel exposes
         // an extern slot for it on the post-execute write path.
@@ -2395,7 +2415,7 @@ pub fn build_scope(
 /// Apply iteration-variable substitution to *op-template
 /// strings only* — `raw:`, `prepared:`, `stmt:`, etc.
 ///
-/// Iter vars flow into GK binding source as wires (declared as
+/// Iter vars flow into Polydat binding source as wires (declared as
 /// externs by `BindingScope::add_iteration_var` and bound at
 /// runtime via the standard input mechanism), so this helper
 /// **does not** touch `op.bindings`. It only rewrites the
@@ -2426,7 +2446,7 @@ pub fn build_scope(
 /// only the diagnostic surface is.
 pub fn validate_placeholders_via_kernel(
     ops: &[ParsedOp],
-    kernel: &polydat::kernel::GkKernel,
+    kernel: &polydat::kernel::PolydatKernel,
 ) -> Result<(), String> {
     let per_cycle_names = collect_phase_binding_lhs_names(ops);
 
@@ -2468,7 +2488,7 @@ pub fn validate_placeholders_via_kernel(
     }
     let in_scope_str = in_scope().join(", ");
     let mut out = String::from(
-        "placeholder resolution failed (single read path: GK kernel lookup):\n"
+        "placeholder resolution failed (single read path: Polydat Kernel lookup):\n"
     );
     for e in &errors {
         out.push_str("  - ");
@@ -2500,7 +2520,7 @@ pub fn validate_placeholders_via_kernel(
 /// activity-layer parent.
 pub fn resolve_placeholders_in_op_params(
     op: &mut ParsedOp,
-    kernel: &polydat::kernel::GkKernel,
+    kernel: &polydat::kernel::PolydatKernel,
 ) -> Result<(), String> {
     let per_cycle_names = collect_phase_binding_lhs_names(std::slice::from_ref(op));
 
@@ -2564,7 +2584,7 @@ pub fn resolve_placeholders_in_op_params(
 fn collect_phase_binding_lhs_names(ops: &[ParsedOp]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for op in ops {
-        if let BindingsDef::GkSource(src) = &op.bindings {
+        if let BindingsDef::PolydatSource(src) = &op.bindings {
             for line in logical_lines(src) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
@@ -2646,7 +2666,7 @@ fn is_bare_ident(s: &str) -> bool {
 }
 
 /// Recursively walk a JSON value and resolve every `{name}`
-/// placeholder via [`GkKernel::lookup`]. Non-resolving names
+/// placeholder via [`PolydatKernel::lookup`]. Non-resolving names
 /// that are in the per-cycle binding set stay as-is (the
 /// dispenser will resolve them at execute time); anything else
 /// gets pushed onto `errors`.
@@ -2656,7 +2676,7 @@ fn is_bare_ident(s: &str) -> bool {
 /// placeholders.
 fn resolve_placeholders_in_json(
     value: &mut serde_json::Value,
-    kernel: &polydat::kernel::GkKernel,
+    kernel: &polydat::kernel::PolydatKernel,
     per_cycle_names: &[String],
     field_path: &str,
     errors: &mut Vec<String>,
@@ -2697,7 +2717,7 @@ fn resolve_placeholders_in_json(
 /// for context.
 fn resolve_placeholders_in_string(
     s: &str,
-    kernel: &polydat::kernel::GkKernel,
+    kernel: &polydat::kernel::PolydatKernel,
     per_cycle_names: &[String],
     field_path: &str,
 ) -> Result<String, Vec<String>> {
@@ -2835,8 +2855,8 @@ fn resolve_placeholders_in_string(
 pub fn rewrite_inline_exprs(
     ops: &mut [ParsedOp],
 ) -> HashMap<String, String> {
-    // SRD-13d: each op template is its own GK scope. Inline
-    // `{{<expr>}}` rewrites are GK matter that belongs to the
+    // SRD-13d: each op template is its own Polydat scope. Inline
+    // `{{<expr>}}` rewrites are Polydat matter that belongs to the
     // op-template scope, not to the shared phase scope. So each
     // op gets its OWN expression-to-name mapping, with
     // op-locally unique synth names — no cross-op dedup. Two ops
@@ -2882,8 +2902,10 @@ pub fn rewrite_inline_exprs(
         if let Some(s) = &op.condition {
             collect_from(s, &mut inline_idx, op_map);
         }
-        if let Some(s) = &op.delay {
-            collect_from(s, &mut inline_idx, op_map);
+        if let Some(spec) = &op.delay {
+            for name in spec.names() {
+                collect_from(name, &mut inline_idx, op_map);
+            }
         }
     }
     // For diagnostics + downstream: the legacy single
@@ -2895,7 +2917,7 @@ pub fn rewrite_inline_exprs(
         .collect();
 
     // Inject the synthesised `__expr_N := expr` bindings into
-    // the first op's GK bindings source so `build_scope`'s
+    // the first op's Polydat bindings source so `build_scope`'s
     // normal ingestion pass picks them up. Without this the
     // op fields get rewritten to reference `{__expr_N}` but
     // no binding declaring `__expr_N` ever lands in the
@@ -2910,7 +2932,7 @@ pub fn rewrite_inline_exprs(
     // expr_to_name mapping (per_op_expr_to_name[op_index]).
     // Synth lines land in that op's bindings; field rewrites
     // see only that op's expression names. SRD-13d: the
-    // op-template scope owns its own GK matter, including
+    // op-template scope owns its own Polydat matter, including
     // synth bindings from inline expressions.
     if expr_to_name.is_empty() {
         return expr_to_name;
@@ -2929,10 +2951,10 @@ pub fn rewrite_inline_exprs(
             synth_lines.push_str(&format!("\n{name} := {expr}"));
         }
 
-        // Inject into op.bindings. Map → GkSource conversion
+        // Inject into op.bindings. Map → PolydatSource conversion
         // mirrors the existing scope-source assembly path.
         match &mut op.bindings {
-            BindingsDef::GkSource(s) => {
+            BindingsDef::PolydatSource(s) => {
                 if s.trim().is_empty() {
                     *s = synth_lines.trim_start_matches('\n').to_string();
                 } else {
@@ -2945,7 +2967,7 @@ pub fn rewrite_inline_exprs(
                     for (k, v) in map.iter() {
                         existing.push_str(&format!("{k} := {v}\n"));
                     }
-                    op.bindings = BindingsDef::GkSource(format!(
+                    op.bindings = BindingsDef::PolydatSource(format!(
                         "{existing}{synth_lines}"
                     ));
                 }
@@ -2983,8 +3005,20 @@ pub fn rewrite_inline_exprs(
         if let Some(s) = &op.condition {
             op.condition = Some(rewrite(s));
         }
-        if let Some(s) = &op.delay {
-            op.delay = Some(rewrite(s));
+        if let Some(spec) = &op.delay {
+            // Rewrite each binding name in place, preserving
+            // the spec's enum shape (Before vs BeforeAfter).
+            op.delay = Some(match spec {
+                nbrs_workload::model::DelaySpec::Before(name) => {
+                    nbrs_workload::model::DelaySpec::Before(rewrite(name))
+                }
+                nbrs_workload::model::DelaySpec::BeforeAfter { before, after } => {
+                    nbrs_workload::model::DelaySpec::BeforeAfter {
+                        before: before.as_deref().map(rewrite),
+                        after: after.as_deref().map(rewrite),
+                    }
+                }
+            });
         }
     }
 
@@ -2995,9 +3029,9 @@ pub fn rewrite_inline_exprs(
 mod tests {
     use super::*;
 
-    fn make_gk_op(name: &str, stmt: &str, bindings: &str) -> ParsedOp {
+    fn make_polydat_op(name: &str, stmt: &str, bindings: &str) -> ParsedOp {
         let mut op = ParsedOp::simple(name, stmt);
-        op.bindings = BindingsDef::GkSource(bindings.to_string());
+        op.bindings = BindingsDef::PolydatSource(bindings.to_string());
         op
     }
 
@@ -3005,8 +3039,8 @@ mod tests {
     fn inherited_bindings_dedup_across_ops() {
         let bindings = "input cycle: u64\nprofiles := matching_profiles(\"example\", \"label\")";
         let ops = vec![
-            make_gk_op("op_a", "{profiles}", bindings),
-            make_gk_op("op_b", "{profiles}", bindings),
+            make_polydat_op("op_a", "{profiles}", bindings),
+            make_polydat_op("op_b", "{profiles}", bindings),
         ];
         let scope = build_scope(
             &ops,
@@ -3029,8 +3063,8 @@ mod tests {
     fn iteration_vars_dont_conflict_with_inherited() {
         let bindings = "input cycle: u64\nprofiles := matching_profiles(\"example\", \"label\")";
         let ops = vec![
-            make_gk_op("op_a", "{profiles} {table}", bindings),
-            make_gk_op("op_b", "{profiles} {table}", bindings),
+            make_polydat_op("op_a", "{profiles} {table}", bindings),
+            make_polydat_op("op_b", "{profiles} {table}", bindings),
         ];
         let mut iter_vars = HashMap::new();
         iter_vars.insert("table".to_string(), "vec_default".to_string());
@@ -3063,8 +3097,8 @@ mod tests {
         let base = "input cycle: u64\nfoo := hash(cycle)";
         let augmented = "input cycle: u64\nfoo := hash(cycle)\nbar := mod(cycle, 100)";
         let ops = vec![
-            make_gk_op("op_a", "{foo}", base),
-            make_gk_op("op_b", "{foo} {bar}", augmented),
+            make_polydat_op("op_a", "{foo}", base),
+            make_polydat_op("op_b", "{foo} {bar}", augmented),
         ];
         let scope = build_scope(
             &ops,
@@ -3087,8 +3121,8 @@ mod tests {
         let base = "input cycle: u64\nfoo := hash(cycle)";
         let shadow = "input cycle: u64\nfoo := mod(cycle, 100)";
         let ops = vec![
-            make_gk_op("op_a", "{foo}", base),
-            make_gk_op("op_b", "{foo}", shadow),
+            make_polydat_op("op_a", "{foo}", base),
+            make_polydat_op("op_b", "{foo}", shadow),
         ];
         let scope = build_scope(
             &ops,
@@ -3115,9 +3149,9 @@ mod tests {
         // The init injection used to make them differ, causing false shadow.
         let bindings = "input cycle: u64\nprofiles := matching_profiles(\"example\", \"label\")";
         let ops = vec![
-            make_gk_op("drop_metadata_index", "DROP INDEX {table}_meta_idx", bindings),
-            make_gk_op("drop_vector_index", "DROP INDEX {table}_idx", bindings),
-            make_gk_op("drop_table", "DROP TABLE {table}", bindings),
+            make_polydat_op("drop_metadata_index", "DROP INDEX {table}_meta_idx", bindings),
+            make_polydat_op("drop_vector_index", "DROP INDEX {table}_idx", bindings),
+            make_polydat_op("drop_table", "DROP TABLE {table}", bindings),
         ];
         let mut iter_vars = HashMap::new();
         iter_vars.insert("table".to_string(), "fknn_default".to_string());
@@ -3149,12 +3183,12 @@ mod tests {
 
     // ── SRD-13d Phase 9 cross-scope contract check ──────────
 
-    fn parent_kernel_with_load() -> polydat::kernel::GkKernel {
+    fn parent_kernel_with_load() -> polydat::kernel::PolydatKernel {
         // Parent has `cycle` input, a folded constant `dim`, a
         // shared output `budget`, and a dynamic output `load`
         // (cycle-dependent, no modifier). Each shape exercises
         // a different `ParentRefKind` arm.
-        polydat::dsl::compile::compile_gk(
+        polydat::dsl::compile::compile_polydat(
             "input cycle: u64\n\
              const dim := 128\n\
              shared budget := 100\n\
@@ -3164,7 +3198,7 @@ mod tests {
 
     fn op_with_body(name: &str, body: &str) -> ParsedOp {
         let mut op = ParsedOp::simple(name, "noop");
-        op.bindings = BindingsDef::GkSource(body.into());
+        op.bindings = BindingsDef::PolydatSource(body.into());
         op
     }
 
@@ -3284,7 +3318,7 @@ extern limit: u64
 extern optimize_for: String
 extern table: String
 "#;
-        let parent = polydat::dsl::compile::compile_gk_with_libs(
+        let parent = polydat::dsl::compile::compile_polydat_with_libs(
             parent_src, None, vec![], &[], false, "parent",
         ).expect("parent compile");
         let manifest: Vec<crate::runner::ManifestEntry> =
@@ -3371,7 +3405,7 @@ extern dataset: String
 extern profile: String
 extern keyspace: String
 "#;
-        let parent = polydat::dsl::compile::compile_gk_with_libs(
+        let parent = polydat::dsl::compile::compile_polydat_with_libs(
             parent_src, None, vec![], &[], false, "parent",
         ).expect("parent compile");
         let manifest: Vec<crate::runner::ManifestEntry> =
@@ -3423,7 +3457,7 @@ extern keyspace: String
             })
             .collect::<Vec<_>>();
         let mut op = ParsedOp::simple("read", "noop");
-        op.bindings = BindingsDef::GkSource("".into());
+        op.bindings = BindingsDef::PolydatSource("".into());
         op.params.insert("relevancy".into(), serde_json::json!({
             "actual": "rows",
             "expected": "ground_truth",
@@ -3454,7 +3488,7 @@ extern keyspace: String
             const ground_truth := \"1,2,3\"\n\
             const k_value := 5\n\
             const limit_value := 100\n";
-        let real_parent = polydat::dsl::compile::compile_gk(kernel_src)
+        let real_parent = polydat::dsl::compile::compile_polydat(kernel_src)
             .expect("parent compile");
         let real_manifest = polydat::kernel::extract_manifest(real_parent.program())
             .into_iter()
@@ -3503,7 +3537,7 @@ extern keyspace: String
             })
             .collect::<Vec<_>>();
         let mut op = ParsedOp::simple("read", "noop");
-        op.bindings = BindingsDef::GkSource("".into());
+        op.bindings = BindingsDef::PolydatSource("".into());
         op.metrics.insert(
             "rows_per_op".into(),
             nbrs_workload::model::MetricSpec {
@@ -3541,7 +3575,7 @@ extern keyspace: String
         // upstream and a Str, the synthesizer emits
         // `const name := "value"` in the child's source rather
         // than auto-externing it.
-        let parent = polydat::dsl::compile_gk(
+        let parent = polydat::dsl::compile_polydat(
             "input cycle: u64\nconst dataset := \"sift1m\"\n"
         ).expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
@@ -3551,7 +3585,7 @@ extern keyspace: String
                     name: e.name, port_type: e.port_type, modifier: e.modifier,
                 })
                 .collect();
-        let ops = vec![make_gk_op("step", "x={dataset}", "input cycle: u64")];
+        let ops = vec![make_polydat_op("step", "x={dataset}", "input cycle: u64")];
         let scope = build_scope(
             &ops,
             &HashMap::new(),
@@ -3575,7 +3609,7 @@ extern keyspace: String
 
     #[test]
     fn promoted_final_emits_inline_literal_for_u64() {
-        let parent = polydat::dsl::compile_gk(
+        let parent = polydat::dsl::compile_polydat(
             "input cycle: u64\nconst count := 42\n"
         ).expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
@@ -3585,7 +3619,7 @@ extern keyspace: String
                     name: e.name, port_type: e.port_type, modifier: e.modifier,
                 })
                 .collect();
-        let ops = vec![make_gk_op("step", "n={count}", "input cycle: u64")];
+        let ops = vec![make_polydat_op("step", "n={count}", "input cycle: u64")];
         let scope = build_scope(
             &ops,
             &HashMap::new(),
@@ -3608,8 +3642,8 @@ extern keyspace: String
         // SRD-13f case 4 — a typo in a `{...}` placeholder (here
         // `{tirp}` instead of the declared `trip`) is rejected
         // at the synthesizer level with a structured error,
-        // not via a downstream GK compiler error.
-        let parent = polydat::dsl::compile_gk(
+        // not via a downstream Polydat compiler error.
+        let parent = polydat::dsl::compile_polydat(
             "input cycle: u64\nconst dataset := \"sift1m\"\n"
         ).expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
@@ -3619,7 +3653,7 @@ extern keyspace: String
                     name: e.name, port_type: e.port_type, modifier: e.modifier,
                 })
                 .collect();
-        let ops = vec![make_gk_op("step", "x={tirp}", "input cycle: u64")];
+        let ops = vec![make_polydat_op("step", "x={tirp}", "input cycle: u64")];
         let err = match build_scope(
             &ops,
             &HashMap::new(),
@@ -3640,7 +3674,7 @@ extern keyspace: String
 
     #[test]
     fn ingest_preserves_bindings_when_comment_contains_apostrophe() {
-        // Regression: GK grammar uses only `"`-delimited string
+        // Regression: Polydat grammar uses only `"`-delimited string
         // literals. `logical_lines` previously treated `'` as a
         // string delimiter too, which meant an unmatched
         // apostrophe in a `#` comment (e.g. "the workload's
@@ -3666,7 +3700,7 @@ extern keyspace: String
         let src_with_apostrophe_comment = "# full_cql_vector's bindings block\n\
                                            shared has_a := true\n\
                                            shared has_b := false\n";
-        scope.ingest_gk_source(src_with_apostrophe_comment, BindingOrigin::Inherited);
+        scope.ingest_polydat_source(src_with_apostrophe_comment, BindingOrigin::Inherited);
         let defined = scope.defined_names();
         assert!(defined.contains("has_a"),
             "comment with apostrophe must NOT consume subsequent bindings; \
@@ -3686,7 +3720,7 @@ extern keyspace: String
         // Mirrors the workload-root compile path in
         // `compile_bindings_with_libs_excluding`: workload-level
         // bindings (`shared has_X := false`) get ingested via
-        // `scope.ingest_gk_source(..., Inherited)` before emit.
+        // `scope.ingest_polydat_source(..., Inherited)` before emit.
         // The resulting source then compiles via the
         // standard pipeline.
         //
@@ -3698,11 +3732,11 @@ extern keyspace: String
         // and descendant kernels can cell-attach via
         // `materialize_wiring_from_outer`.
         let mut scope = BindingScope::new();
-        let workload_gk = "shared has_sai_column_indexes := false\n\
+        let workload_polydat = "shared has_sai_column_indexes := false\n\
                           shared has_indexes := false\n";
-        scope.ingest_gk_source(workload_gk, BindingOrigin::Inherited);
+        scope.ingest_polydat_source(workload_polydat, BindingOrigin::Inherited);
         let source = scope.emit();
-        let kernel = polydat::dsl::compile_gk(&source)
+        let kernel = polydat::dsl::compile_polydat(&source)
             .unwrap_or_else(|e| panic!("compile failed for source:\n{source}\nerror: {e}"));
         let shared = kernel.program().shared_outputs();
         assert!(
@@ -3725,16 +3759,16 @@ extern keyspace: String
     fn synthesize_phase_bindings_with_poll_passthrough_when_no_poll() {
         use nbrs_workload::model::{BindingsDef, WorkloadPhase};
         let phase = WorkloadPhase {
-            bindings: BindingsDef::GkSource("k := 5\n".into()),
+            bindings: BindingsDef::PolydatSource("k := 5\n".into()),
             poll: None,
             ..Default::default()
         };
         let out = synthesize_phase_bindings_with_poll(&phase)
             .expect("no-poll synthesis is a no-op");
         match out {
-            BindingsDef::GkSource(s) => assert_eq!(s, "k := 5\n",
+            BindingsDef::PolydatSource(s) => assert_eq!(s, "k := 5\n",
                 "no-poll should return the original bindings unchanged"),
-            other => panic!("expected GkSource, got {other:?}"),
+            other => panic!("expected PolydatSource, got {other:?}"),
         }
     }
 
@@ -3770,7 +3804,7 @@ extern keyspace: String
         ];
         let phase = WorkloadPhase {
             ops: vec![op],
-            bindings: BindingsDef::GkSource("dummy := 1\n".into()),
+            bindings: BindingsDef::PolydatSource("dummy := 1\n".into()),
             poll: Some(PhasePollSpec {
                 until: "sstables == 1 && active_for_cf == 0".into(),
                 ..Default::default()
@@ -3780,8 +3814,8 @@ extern keyspace: String
         let out = synthesize_phase_bindings_with_poll(&phase)
             .expect("poll synthesis should succeed");
         let src = match out {
-            BindingsDef::GkSource(s) => s,
-            other => panic!("expected GkSource, got {other:?}"),
+            BindingsDef::PolydatSource(s) => s,
+            other => panic!("expected PolydatSource, got {other:?}"),
         };
         assert!(src.contains("shared sstables := 0"),
             "missing shared declaration for sstables; source:\n{src}");
@@ -3821,7 +3855,7 @@ extern keyspace: String
         // collision is the bug.
         let phase = WorkloadPhase {
             ops: vec![op],
-            bindings: BindingsDef::GkSource("sstables := 7\n".into()),
+            bindings: BindingsDef::PolydatSource("sstables := 7\n".into()),
             poll: Some(PhasePollSpec {
                 until: "sstables == 1".into(),
                 ..Default::default()
@@ -3846,12 +3880,12 @@ extern keyspace: String
         let parent_kernel = crate::scope_synth::build_for_each_scope_kernel(
             &[("p".to_string(), "partitions(\"linear:3\")".to_string())],
             &[],
-            &polydat::dsl::compile_gk("\n").unwrap(),
+            &polydat::dsl::compile_polydat("\n").unwrap(),
             &HashMap::new(),
             Vec::new(), None, false, "test_for_each", None,
         ).expect("for-each scope synthesis");
 
-        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+        let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
             "n := mod_in(cycle, p)\n".to_string()
         );
         let phase_kernel = build_phase_scope_kernel(
@@ -3888,8 +3922,8 @@ extern keyspace: String
         let parent_kernel = crate::scope_synth::build_for_each_scope_kernel(
             &[("p".to_string(), "partitions(\"linear:3\")".to_string())],
             &[], // empty parent_manifest is fine; for_each scope only
-                 // cascades names it actually references.
-            &polydat::dsl::compile_gk("\n").unwrap(),
+            // cascades names it actually references.
+            &polydat::dsl::compile_polydat("\n").unwrap(),
             &HashMap::new(),
             Vec::new(), None, false, "test_for_each", None,
         ).expect("for-each scope synthesis");
@@ -3903,7 +3937,7 @@ extern keyspace: String
 
         // Now build a phase under it that references `p` in a
         // cursor's `over` clause.
-        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+        let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
             "cursor row = range(0, 1000) over p\n".to_string()
         );
         let phase_kernel = build_phase_scope_kernel(
@@ -3946,12 +3980,12 @@ extern keyspace: String
         // attaches gets a slot whose declared type doesn't match
         // the cell's actual Value variant — downstream consumers
         // (e.g. pick) see the runtime variant and reject it.
-        let parent = polydat::dsl::compile_gk(
+        let parent = polydat::dsl::compile_polydat(
             "input cycle: u64\nshared has_sai_column_indexes := false\n\
              shared has_indexes := false\n"
         ).expect("parent compile");
         // The phase has its own bindings block (the await_index shape).
-        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+        let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
             "target_index_table := pick(has_sai_column_indexes, has_indexes, \
              \"a\", \"b\")\n".to_string()
         );
@@ -4008,7 +4042,7 @@ extern keyspace: String
         use polydat::kernel::extract_manifest;
 
         // ── workload root ──
-        let root = polydat::dsl::compile_gk(
+        let root = polydat::dsl::compile_polydat(
             "shared has_a := true\n\
              shared has_b := false\n\
              selector := mod(cycle, 1)\n"
@@ -4028,7 +4062,7 @@ extern keyspace: String
         ).expect("for_each synth");
 
         // ── phase scope kernel (cached_kernel) ──
-        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+        let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
             "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string()
         );
         let phase_scope = build_phase_scope_kernel(
@@ -4067,10 +4101,10 @@ extern keyspace: String
         let emitted = scope.emit();
 
         // ── compile_from_scope equivalent — uses the SAME compile
-        // path the executor takes (compile_gk_with_libs_and_limit
+        // path the executor takes (compile_polydat_with_libs_and_limit
         // → compile_filtered with optional required_outputs filter).
         let required = scope.required_outputs();
-        let executor_kernel = polydat::dsl::compile_gk_with_libs_and_limit(
+        let executor_kernel = polydat::dsl::compile_polydat_with_libs_and_limit(
             &emitted,
             None,
             Vec::new(),
@@ -4112,11 +4146,11 @@ extern keyspace: String
         //
         //   1. params kernel (workload params as `const` bindings).
         //   2. workload-root kernel via the `compile_bindings_with_libs_excluding`-style
-        //      flow: build_scope + scope.ingest_gk_source + parent.build_subscope.
+        //      flow: build_scope + scope.ingest_polydat_source + parent.build_subscope.
         //   3. for_each scope kernel (outer iter var).
         //   4. for_each scope kernel (inner with multi-iter clause).
         //   5. phase scope kernel via build_phase_scope_kernel (consume).
-        //   6. executor's build_scope + compile_gk_with_libs_and_limit.
+        //   6. executor's build_scope + compile_polydat_with_libs_and_limit.
         //
         // Verifies at the END that the consumer phase's executor-
         // compiled kernel has has_a as Bool/non-Coordinate.
@@ -4133,7 +4167,7 @@ extern keyspace: String
         for k in sorted {
             params_source.push_str(&format!("const {k} := \"{}\"\n", workload_params[k]));
         }
-        let params_kernel = polydat::dsl::compile_gk(&params_source)
+        let params_kernel = polydat::dsl::compile_polydat(&params_source)
             .expect("params compile");
 
         // Step 2: workload-root kernel.
@@ -4151,17 +4185,17 @@ extern keyspace: String
         // workload params. This is what triggers the chain
         // corruption — without it, the test passes; with it, the
         // integration test fails.
-        let workload_level_gk = "combo_label := str_concat(\"{dataset}\", \"{prefix}\")\n\
+        let workload_level_polydat = "combo_label := str_concat(\"{dataset}\", \"{prefix}\")\n\
                                  shared has_a := true\n\
                                  shared has_b := false\n";
-        scope.ingest_gk_source(workload_level_gk, BindingOrigin::Inherited);
+        scope.ingest_polydat_source(workload_level_polydat, BindingOrigin::Inherited);
         let root_source = scope.emit();
-        let root_matter = polydat::kernel::subcontext::GkMatter::builder()
+        let root_matter = polydat::kernel::subcontext::PolydatMatter::builder()
             .label("test_root")
             .source(root_source.clone())
             .options(polydat::kernel::subcontext::CompileOptions {
                 workload_dir: None,
-                gk_lib_paths: Vec::new(),
+                polydat_lib_paths: Vec::new(),
                 strict: false,
                 required_outputs: scope.required_outputs(),
                 context_label: Some("test_root".to_string()),
@@ -4207,7 +4241,7 @@ extern keyspace: String
         ).expect("inner for_each synth");
 
         // Step 5: phase scope kernel for consume.
-        let phase_bindings = BindingsDef::GkSource(
+        let phase_bindings = BindingsDef::PolydatSource(
             "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string()
         );
         let phase_scope = build_phase_scope_kernel(
@@ -4243,7 +4277,7 @@ extern keyspace: String
         ).expect("executor build_scope");
 
         let exec_source = exec_scope.emit();
-        let exec_kernel = polydat::dsl::compile_gk_with_libs_and_limit(
+        let exec_kernel = polydat::dsl::compile_polydat_with_libs_and_limit(
             &exec_source,
             None,
             Vec::new(),
@@ -4283,12 +4317,12 @@ extern keyspace: String
         //     parent=params_kernel,
         //     ops=all_ops,
         //     workload_params=<non-empty>,
-        //     workload_level_gk=Some(<the bindings: block>),
+        //     workload_level_polydat=Some(<the bindings: block>),
         //   )
         //
         // The actual function takes a complex set of args; here
         // we replicate the essential moves to expose what differs
-        // from a direct `compile_gk(source)` invocation.
+        // from a direct `compile_polydat(source)` invocation.
         //
         // SRD-13c §"Shared Mutable" requires has_a to be ExternalWrite
         // kind, Bool type on the workload-root program. The
@@ -4313,11 +4347,11 @@ extern keyspace: String
             let v = &workload_params[k];
             params_source.push_str(&format!("const {k} := \"{v}\"\n"));
         }
-        let params_kernel = polydat::dsl::compile_gk(&params_source)
+        let params_kernel = polydat::dsl::compile_polydat(&params_source)
             .expect("params compile");
 
         // The workload's `bindings:` block. The trigger.
-        let workload_level_gk = "selector := mod(cycle, 1)\n\
+        let workload_level_polydat = "selector := mod(cycle, 1)\n\
                                  shared has_a := true\n\
                                  shared has_b := false\n";
 
@@ -4332,21 +4366,21 @@ extern keyspace: String
             &[],
             None,
         ).expect("build_scope");
-        scope.ingest_gk_source(workload_level_gk, BindingOrigin::Inherited);
+        scope.ingest_polydat_source(workload_level_polydat, BindingOrigin::Inherited);
 
         // The actual workload-root compile goes through
         // parent.build_subscope. Build the matter and finalize.
         let source = scope.emit();
         let opts = polydat::kernel::subcontext::CompileOptions {
             workload_dir: None,
-            gk_lib_paths: Vec::new(),
+            polydat_lib_paths: Vec::new(),
             strict: false,
             required_outputs: scope.required_outputs(),
             context_label: Some("test_workload_root".to_string()),
             cursor_limit: None,
             ..Default::default()
         };
-        let matter = polydat::kernel::subcontext::GkMatter::builder()
+        let matter = polydat::kernel::subcontext::PolydatMatter::builder()
             .label("test_workload_root")
             .source(source.clone())
             .options(opts)
@@ -4422,7 +4456,7 @@ extern keyspace: String
 
         // Step 1: workload root with shared bool AND a
         // non-shared cycle binding. The trigger.
-        let root = polydat::dsl::compile_gk(
+        let root = polydat::dsl::compile_polydat(
             "shared has_a := true\n\
              shared has_b := false\n\
              selector := mod(cycle, 1)\n"
@@ -4462,7 +4496,7 @@ extern keyspace: String
             "for_each has_a must NOT be Coordinate; got {fe_has_a_kind:?}");
 
         // Step 3: phase scope with its own bindings via pick.
-        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+        let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
             "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string()
         );
         let phase = build_phase_scope_kernel(
@@ -4504,7 +4538,7 @@ extern keyspace: String
         // bind_outer_scope then cell-attaches at each level so
         // the original SharedCell reaches the leaf.
         use polydat::kernel::extract_manifest;
-        let root = polydat::dsl::compile_gk(
+        let root = polydat::dsl::compile_polydat(
             "input cycle: u64\nshared has_sai_column_indexes := false\n\
              shared has_indexes := false\n"
         ).expect("root compile");
@@ -4518,7 +4552,7 @@ extern keyspace: String
             &extract_manifest(root.program()),
             &root,
             &HashMap::new(),  // workload_params
-            Vec::new(),       // gk_lib_paths
+            Vec::new(),       // polydat_lib_paths
             None,             // workload_dir
             false,            // strict
             "test_for_each",
@@ -4537,7 +4571,7 @@ extern keyspace: String
 
         // Now build await_index's phase scope under for_each
         // (the real scope-tree shape).
-        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+        let phase_bindings = nbrs_workload::model::BindingsDef::PolydatSource(
             "target_index_table := pick(has_sai_column_indexes, has_indexes, \
              \"a\", \"b\")\n".to_string()
         );

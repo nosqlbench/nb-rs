@@ -72,7 +72,7 @@ impl Execution {
 ///
 /// The session is the root of the component tree and — once the
 /// runner has installed one — holds the shared [`MetricsQuery`] that
-/// every in-process reader (TUI, summary, GK metric nodes) reads
+/// every in-process reader (TUI, summary, Polydat metric nodes) reads
 /// through. See SRD-42 §"MetricsQuery — the unified read interface".
 ///
 /// Per SRD-77, the session is a persistent container; the
@@ -1167,7 +1167,7 @@ impl Session {
             std::collections::HashMap::new(),
         );
         // Install the session root as the resolver backing for
-        // GK runtime-context nodes (`control(...)`, `rate()`,
+        // Polydat runtime-context nodes (`control(...)`, `rate()`,
         // `concurrency()`, etc.). See SRD 12 §"Runtime context
         // nodes" and polydat/src/nodes/runtime_context.rs.
         crate::polydat_nodes::runtime_context::set_session_root(component.clone());

@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Structured error types for the GK DSL with rich source context.
+//! Structured error types for the Polydat DSL with rich source context.
 //!
 //! Every error includes a source location (line:col), the relevant
 //! source text, and a clear message with suggestions where possible.

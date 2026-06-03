@@ -1,4 +1,4 @@
-# SRD-78 — PolyStreamer: Comprehension-Sourced Scope Streams as a First-Class GK Type
+# SRD-78 — PolyStreamer: Comprehension-Sourced Scope Streams as a First-Class Polydat Type
 
 > **Ownership note:** Comprehension semantics (constructors,
 > validity axioms, optimization, IR, consumption surfaces) are
@@ -52,19 +52,19 @@ nbrs-workload (YAML→PolyStreamer-binding desugaring).
   redirect stub. Material formerly here is now in the polydat
   spec; cross-references to SRD-18e should target the polydat
   spec directly.
-- [SRD-13c](13c_gk_scope_model.md) — what a GK scope is (kernel
+- [SRD-13c](13c_polydat_scope_model.md) — what a Polydat scope is (kernel
   + bound inputs + scope coordinates). PolyStreamer's `pull`
   yields one of these (specifically, a
-  `ScopedKernelInstance<GkKernel>` per polydat spec §9.5.3).
+  `ScopedKernelInstance<PolydatKernel>` per polydat spec §9.5.3).
 - [SRD-13e](13e_scope_as_module.md) — typed import/export
   contracts. The clauses' LHS variable names are the exported
   scope coordinates; the streamer's bound-extern semantics
   match this contract.
-- [SRD-67](67_gk_subcontext_construction.md) — parent-gated
+- [SRD-67](67_polydat_subcontext_construction.md) — parent-gated
   sub-context construction (`SubcontextBuilder`, `ScopeKernel`).
   PolyStreamer's `scope_once` (polydat spec §9.5.3) is the
   unit-of-work that maps a coordinate tuple to a
-  `ScopedKernelInstance<GkKernel>`; it shares the
+  `ScopedKernelInstance<PolydatKernel>`; it shares the
   parent-gating discipline with `SubcontextBuilder`.
 - [Comprehensions First-Class memo](../internals/50_comprehensions_first_class.md)
   — completed migration that moved the AST + parser + evaluator
@@ -75,17 +75,17 @@ nbrs-workload (YAML→PolyStreamer-binding desugaring).
 **Audit alignment note (2026-05-28):** This SRD predates the
 polydat spec's §9.5 consumption-surfaces split (defined as part
 of polydat's F26 push). The current SRD-78 text often discusses
-"PolyStreamer" as a single type that dispenses GK kernels;
+"PolyStreamer" as a single type that dispenses Polydat kernels;
 under §9.5 there are *three* concrete surfaces over the shared
 IR — `CoordinateStream` (dispenses coordinate tuples),
 `ScopedKernelStream<K>` (dispenses scoped kernel instances),
 and `scope_once` (one-shot). Where this SRD describes
-"PolyStreamer.pull yields a GkKernel" the underlying type is
-`ScopedKernelStream<GkKernel>`. The §"API surface" and §"Lock-
+"PolyStreamer.pull yields a PolydatKernel" the underlying type is
+`ScopedKernelStream<PolydatKernel>`. The §"API surface" and §"Lock-
 free internals" sections need a follow-up update push to
 explicitly distinguish the two stream types; until that push
 lands, treat the existing SRD-78 narrative as describing
-`ScopedKernelStream<GkKernel>` with the understanding that an
+`ScopedKernelStream<PolydatKernel>` with the understanding that an
 analogous `CoordinateStream` exists alongside it with the same
 internal mechanics.
 
@@ -109,7 +109,7 @@ consumed. There's no way to:
   source and have `myscope` become a value the kernel can pass
   around.
 - Hold a reference to a still-emitting comprehension from another
-  GK binding or a Rust caller and ask "how many tuples have been
+  Polydat binding or a Rust caller and ask "how many tuples have been
   dispensed? what's the next one?" mid-flight.
 - Express "give me the next scope context from this comprehension"
   as a uniform operation across deterministic single-pass and
@@ -173,8 +173,8 @@ shaped reference (concrete shape below). Multiple references to
 the same streamer all advance the same internal cursor — there's
 exactly one stream, observed from many viewpoints.
 
-**It is a GK port type.** A binding `s := for k in 1..10` produces
-a value of GK type `PolyStreamer`; subsequent expressions can
+**It is a Polydat port type.** A binding `s := for k in 1..10` produces
+a value of Polydat type `PolyStreamer`; subsequent expressions can
 reference `s` by name, pass it to functions that accept
 `PolyStreamer`, or pull from it via the `pull_scope(s)` node.
 
@@ -189,7 +189,7 @@ goes through the streamer.
 
 ### Surface 1: GK-level wire assignment (declarative)
 
-In GK source, the comprehension keyword on the RHS of `:=`
+In Polydat source, the comprehension keyword on the RHS of `:=`
 produces a `PolyStreamer`:
 
 ```text
@@ -213,12 +213,12 @@ boundary := for k in 1..10, limit in 1..10
             order extrema/3
 ```
 
-**One keyword, RHS-shape detection.** GK expression form uses a
+**One keyword, RHS-shape detection.** Polydat expression form uses a
 single `for` keyword. The four scenario-tree-layer keywords from
 SRD-18c (`for_each`, `for_combinations`, `for_each_union`,
 `for`) were a YAML-side disambiguation artifact — the YAML
 parser couldn't always tell sub-space lists from clause lists
-without a hint. In GK expression form the RHS shape is
+without a hint. In Polydat expression form the RHS shape is
 unambiguous, so one keyword carries every mode:
 
 | RHS shape | Mode emitted |
@@ -229,13 +229,13 @@ unambiguous, so one keyword carries every mode:
 | `for <flat-clause-list>` where var names repeat | Union (inferred per polydat spec §8.4) |
 
 The YAML scenario-tree layer keeps its existing four-keyword
-surface (SRD-18c unchanged). Only the GK expression form
+surface (SRD-18c unchanged). Only the Polydat expression form
 unifies on `for`.
 
-**Type inference**: the GK compiler recognises the `for`
+**Type inference**: the Polydat compiler recognises the `for`
 keyword on a binding RHS as producing a wire of port type
 `PolyStreamer`. The downstream wires reference `k_stream` /
-`sweep` / etc. by name like any other GK wire.
+`sweep` / etc. by name like any other Polydat wire.
 
 **Scope-coordinate semantics inside a pulled context**: when a
 consumer pulls a sub-scope from `sweep`, the resulting child
@@ -254,13 +254,13 @@ bindings that reference `k_stream` share one streamer state
 (important for observable counters and lock-free dispense
 ordering).
 
-### Surface 2: Rust-side method on `GkKernel` (programmatic)
+### Surface 2: Rust-side method on `PolydatKernel` (programmatic)
 
 For Rust callers that already hold a kernel and need a streamer
-without round-tripping through GK source:
+without round-tripping through Polydat source:
 
 ```rust
-let parent: Arc<GkKernel> = /* outer-scope kernel */;
+let parent: Arc<PolydatKernel> = /* outer-scope kernel */;
 let streamer = parent.streamscopes("for k in 1..10, profile in {profiles}")?;
 //  streamer: Arc<PolyStreamer>
 ```
@@ -270,9 +270,9 @@ The string argument is parsed by polydat's existing
 `Comprehension` is bound to `parent` as its scope context.
 
 **The returned type is the pure-Rust `Arc<PolyStreamer>` form** —
-not a GK wire. The two creation surfaces converge on the same
+not a Polydat wire. The two creation surfaces converge on the same
 runtime value; the only difference is whether the streamer is
-addressable by name from GK source (Surface 1) or only from Rust
+addressable by name from Polydat source (Surface 1) or only from Rust
 (Surface 2).
 
 ---
@@ -283,8 +283,8 @@ addressable by name from GK source (Surface 1) or only from Rust
 /// Stream of scope contexts dispensed in comprehension-declared
 /// order. See SRD-78.
 ///
-/// Constructed via [`GkKernel::streamscopes`] or as the value of
-/// a GK comprehension binding. Cannot be cloned — callers share
+/// Constructed via [`PolydatKernel::streamscopes`] or as the value of
+/// a Polydat comprehension binding. Cannot be cloned — callers share
 /// access via [`Arc<PolyStreamer>`].
 pub struct PolyStreamer {
     // -- private --
@@ -358,7 +358,7 @@ impl PolyStreamer {
     /// The parent kernel this streamer dispenses contexts from.
     /// Each pulled context's scope chain has `parent_kernel()`
     /// as its immediate parent.
-    pub fn parent_kernel(&self) -> &Arc<GkKernel>;
+    pub fn parent_kernel(&self) -> &Arc<PolydatKernel>;
 }
 
 #[derive(Debug, Clone)]
@@ -388,7 +388,7 @@ pub enum Cardinality {
 /// reference to the dispensing streamer for observability.
 pub struct ScopeHandle {
     pub bindings: Vec<(String, Value)>,
-    pub kernel: Arc<GkKernel>,
+    pub kernel: Arc<PolydatKernel>,
     pub coord_path: Vec<ScopeCoord>,
     /// Sequence number of this dispense within the streamer.
     /// 0-indexed; equals `streamer.dispensed() - 1` immediately
@@ -401,7 +401,7 @@ pub struct ScopeHandle {
     pub source: Weak<PolyStreamer>,
 }
 
-impl GkKernel {
+impl PolydatKernel {
     /// Rust-side entry point for creating a streamer (Surface 2).
     /// `comprehension_text` is parsed via
     /// `polydat::comprehension::parse::parse_comprehension_text`;
@@ -418,7 +418,7 @@ impl GkKernel {
 
 - **`Arc<PolyStreamer>` is the only handle type.** Owners can
   store one in a struct field, pass one to a fiber, install one
-  on a GK wire. Cloning the `Arc` is what produces "multiple
+  on a Polydat wire. Cloning the `Arc` is what produces "multiple
   references to one streamer." Cloning the inner `PolyStreamer`
   is not exposed — the streamer is structurally a single thing.
 - **`pull` returns `ScopeHandle`, not `IterationStep`.** Same
@@ -442,7 +442,7 @@ impl GkKernel {
 
 ---
 
-## GK type system integration
+## Polydat type system integration
 
 ### Port type
 
@@ -481,7 +481,7 @@ streamer state.
 
 ### Grammar extension
 
-The GK DSL parser (`polydat/src/dsl/`) already understands
+The Polydat DSL parser (`polydat/src/dsl/`) already understands
 comprehension keywords at the *scenario-tree* layer (where
 comprehensions currently live). SRD-78 promotes the comprehension
 construct to **expressions** the binding-RHS parser also
@@ -516,7 +516,7 @@ contract as any other binding's `extern` semantics.
 
 ### `pull_scope` node
 
-A new stdlib node provides the consume primitive at GK level:
+A new stdlib node provides the consume primitive at Polydat level:
 
 ```text
 input cycle: u64
@@ -528,7 +528,7 @@ ctx := pull_scope(sweep)
 ```
 
 Signature: `pull_scope(streamer: Streamer) -> Context`, where
-`Context` is a new GK type representing a pulled child scope.
+`Context` is a new Polydat type representing a pulled child scope.
 Bindings made inside the puller's evaluation block see the
 context's `k` / `profile` as if they were inherited externs.
 
@@ -561,8 +561,8 @@ indexed against a pre-enumerated tuple list:
 ```rust
 struct PolyStreamerInner {
     comprehension: Comprehension,
-    parent: Arc<GkKernel>,
-    canonical: Arc<GkKernel>,
+    parent: Arc<PolydatKernel>,
+    canonical: Arc<PolydatKernel>,
     // Pre-materialised tuple list for Cartesian / Union /
     // eager-filtered cases. Built once at streamer
     // construction.
@@ -599,14 +599,14 @@ protects `Option::take`-style consumption of a single FnMut
 closure that the activity layer installs at streamer
 construction. The lock is held for one closure call per pull;
 the closure itself doesn't block (it's a pure kernel-building
-function that does GK source synthesis + compile + bind). For
+function that does Polydat source synthesis + compile + bind). For
 the common case where multiple fibers pull concurrently from
 the same streamer, the lock is the bottleneck — but the
 critical section is small (microseconds) and the alternative
 (per-fiber closure clones with their own state) is heavier.
 
 For streamers that don't need a per-iteration kernel constructor
-(legacy `GkKernel::for_iteration` path), the mutex is never
+(legacy `PolydatKernel::for_iteration` path), the mutex is never
 contended.
 
 ### Unbounded sources
@@ -618,8 +618,8 @@ producer/consumer queue rather than a pre-materialised vec:
 ```rust
 struct PolyStreamerInnerUnbounded {
     comprehension: Comprehension,
-    parent: Arc<GkKernel>,
-    canonical: Arc<GkKernel>,
+    parent: Arc<PolydatKernel>,
+    canonical: Arc<PolydatKernel>,
     // crossbeam channel: producer pushes tuples; pullers
     // pop. Fully lock-free under uncontested operations.
     queue: crossbeam_queue::SegQueue<Vec<(String, Value)>>,
@@ -685,7 +685,7 @@ duplication.
 
 `Value::Streamer(Arc<PolyStreamer>)` is cloneable as a Value —
 the `Arc` clone is the data movement, the inner streamer state
-is untouched. This matches the GK convention for `Value::Str`
+is untouched. This matches the Polydat convention for `Value::Str`
 (`Arc<str>`), `Value::Bytes` (`Arc<[u8]>`), `Value::Json`
 (`Arc<serde_json::Value>`) — all reference-semantic with cheap
 clones.
@@ -793,7 +793,7 @@ purely additive).
 
 ### Shared dispensing across consumers
 
-When multiple Rust callers (or multiple GK consumers) hold
+When multiple Rust callers (or multiple Polydat consumers) hold
 `Arc<PolyStreamer>` to the same streamer, all of them pull
 from the same atomic cursor. Tuple N is dispensed to exactly
 one caller — whichever called `pull` first won the
@@ -823,11 +823,11 @@ narrows.
 - `PolyStreamer::pull` implementation for the bounded
   pre-materialised case (Cartesian + Union, filter-eager).
 - `Arc<PolyStreamer>` only; no `Clone` impl.
-- `GkKernel::streamscopes(text)` Rust-side constructor.
+- `PolydatKernel::streamscopes(text)` Rust-side constructor.
 - Unit tests for: bounded exhaustion, snapshot consistency under
   concurrent pulls (loom or shuttle-based), cardinality
   reporting.
-- No GK grammar / port-type changes yet.
+- No Polydat grammar / port-type changes yet.
 
 ### Push 2 — `Value::Streamer` + `PortType::Streamer`
 - Add the enum variant + port type.
@@ -839,7 +839,7 @@ narrows.
 - The `Value::Streamer` is constructable from Rust code only at
   this push; no grammar surface yet.
 
-### Push 3 — GK grammar: comprehension RHS in bindings
+### Push 3 — Polydat grammar: comprehension RHS in bindings
 - DSL parser learns to recognise `for` as an expression on the
   RHS of `:=`, with the four modes (single-clause Cartesian,
   multi-clause Cartesian, Union-by-bracketed-list, Union-by-
@@ -884,7 +884,7 @@ narrows.
   size-of-checkpoint considerations may push this out).
 
 ### Push 8 — Workload-author surfaces + tests
-- A workload-author-facing example showing the new GK syntax
+- A workload-author-facing example showing the new Polydat syntax
   (`s := for k in ...; ctx := pull_scope(s)`).
 - End-to-end test: workload uses a `PolyStreamer` binding,
   verifies dispense order matches lex semantics, verifies
@@ -922,7 +922,7 @@ narrows.
 ## Open questions
 
 - **`pull_scope` and strict mode.** Like other non-deterministic
-  context nodes, the puller's GK expression that uses
+  context nodes, the puller's Polydat expression that uses
   `pull_scope(s)` requires explicit acknowledgement under
   strict mode. Need to decide whether the acknowledgement
   pragma applies to the binding (e.g.
@@ -973,7 +973,7 @@ narrows.
   bars become `streamer.snapshot()` reads instead of
   walk-the-scene-tree-for-the-iteration-counter loops. One
   source of truth; no parallel counter maintenance.
-- **First-class iteration in GK source.** The comprehension
+- **First-class iteration in Polydat source.** The comprehension
   becomes a value the workload can name, pass around, and reason
   about. The current "comprehension is a structural concept
   invisible to GK" gap closes.
@@ -996,7 +996,7 @@ narrows.
   `polydat/docs/design/comprehension_forms.md`; the AST
   PolyStreamer holds is the polydat operator-tree AST per
   polydat spec §3.
-- SRD-13c — GK scope model; PolyStreamer's `pull` produces a
+- SRD-13c — Polydat scope model; PolyStreamer's `pull` produces a
   child scope per this contract.
 - SRD-13e — Scope as module; the streamer's per-tuple kernel
   honors the typed import/export contract.

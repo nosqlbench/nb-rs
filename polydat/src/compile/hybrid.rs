@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{CompiledU64Op, GkNode};
+use crate::ast::{CompiledU64Op, PolydatNode};
 use crate::kernel::WireSource;
 
 #[cfg(feature = "jit")]
@@ -59,7 +59,7 @@ struct HybridCore {
     gather_buf: Vec<u64>,
     scatter_buf: Vec<u64>,
     /// Keep source nodes alive so JIT-baked pointers remain valid.
-    _nodes: Vec<Box<dyn GkNode>>,
+    _nodes: Vec<Box<dyn PolydatNode>>,
 }
 
 /// Run all hybrid steps unconditionally (no clean checks).
@@ -182,7 +182,7 @@ impl HybridKernelRaw {
     }
 
     /// Store owned nodes to keep JIT-baked pointers valid.
-    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn GkNode>>) {
+    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn PolydatNode>>) {
         self.core._nodes = nodes;
     }
 }
@@ -259,7 +259,7 @@ impl HybridKernelPull {
     }
 
     /// Store owned nodes to keep JIT-baked pointers valid.
-    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn GkNode>>) {
+    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn PolydatNode>>) {
         self.core._nodes = nodes;
     }
 }
@@ -396,7 +396,7 @@ impl HybridKernelPushPull {
     }
 
     /// Store owned nodes to keep JIT-baked pointers valid.
-    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn GkNode>>) {
+    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn PolydatNode>>) {
         self.core._nodes = nodes;
     }
 }
@@ -417,7 +417,7 @@ pub type HybridKernel = HybridKernelPushPull;
 /// Returns a `HybridKernelPushPull` (the production default).
 #[cfg(feature = "jit")]
 pub fn build_hybrid(
-    nodes: &[Box<dyn GkNode>],
+    nodes: &[Box<dyn PolydatNode>],
     wiring: &[Vec<WireSource>],
     coord_count: usize,
     total_slots: usize,
@@ -509,7 +509,7 @@ pub fn build_hybrid(
 /// Build a hybrid kernel without JIT (all closures).
 #[cfg(not(feature = "jit"))]
 pub fn build_hybrid(
-    nodes: &[Box<dyn GkNode>],
+    nodes: &[Box<dyn PolydatNode>],
     wiring: &[Vec<WireSource>],
     coord_count: usize,
     total_slots: usize,
@@ -563,7 +563,7 @@ pub fn build_hybrid(
 fn build_pushpull_from_steps(
     steps: Vec<HybridStep>,
     wiring: &[Vec<WireSource>],
-    nodes: &[Box<dyn GkNode>],
+    nodes: &[Box<dyn PolydatNode>],
     coord_count: usize,
     total_slots: usize,
     output_map: HashMap<String, usize>,
@@ -574,8 +574,8 @@ fn build_pushpull_from_steps(
 
     // Compute per-node provenance and invert into per-input step dependents.
     // Since each step currently maps to one node, step index == node index.
-    let node_provenance = crate::kernel::GkProgram::compute_provenance(nodes, wiring);
-    let step_dependents = crate::kernel::GkProgram::compute_dependents(&node_provenance, coord_count);
+    let node_provenance = crate::kernel::PolydatProgram::compute_provenance(nodes, wiring);
+    let step_dependents = crate::kernel::PolydatProgram::compute_dependents(&node_provenance, coord_count);
 
     let slot_provenance = compute_hybrid_slot_provenance(
         coord_count, total_slots, &step_dependents, &steps,

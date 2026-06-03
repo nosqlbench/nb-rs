@@ -8,7 +8,7 @@
 //! and how to partition across concurrent fibers.
 //!
 //! Sources replace the `cycles` counter as the workload iteration driver.
-//! The GK graph declares sources via the `source` keyword. The runtime
+//! The Polydat graph declares sources via the `source` keyword. The runtime
 //! pulls from sources to drive op dispatch. When a source is exhausted,
 //! the phase is done.
 //!
@@ -16,7 +16,7 @@
 //!
 //! - **Range**: `range(0, N)` — finite sequence of ordinals. Replaces `cycles: N`.
 //! - **Dataset**: `dataset_source("example:label_00", "base")` — vectors, queries, etc.
-//! - **Derived**: any GK binding promoted to a source via the `source` keyword.
+//! - **Derived**: any Polydat binding promoted to a source via the `source` keyword.
 //!
 //! ## Crate Sovereignty
 //!
@@ -58,7 +58,7 @@ impl SourceItem {
 /// Schema describing what a source yields.
 #[derive(Clone, Debug)]
 pub struct SourceSchema {
-    /// Source name as declared in the GK graph.
+    /// Source name as declared in the Polydat graph.
     pub name: String,
     /// Field names and types available for projection (e.g., `ordinal: U64`, `vector: Json`).
     pub projections: Vec<(String, PortType)>,
@@ -101,13 +101,13 @@ pub struct SourceSchema {
     pub partition_output: Option<String>,
 }
 
-/// Cursor-construction discriminator. Set by the GK compiler
+/// Cursor-construction discriminator. Set by the Polydat compiler
 /// when it recognises a cursor's constructor expression
 /// (`range(...)`, `until_elapsed(...)`, etc.); read by the
 /// executor at phase setup to instantiate the matching
 /// data-source factory + policy.
 ///
-/// Each `Extending*` variant carries the GK output names the
+/// Each `Extending*` variant carries the Polydat output names the
 /// runtime should pull at phase setup to resolve the policy's
 /// parameters (same pattern as `extent_outputs` for `range`).
 /// `delta_output` is optional — when `None`, the cursor's base
@@ -164,14 +164,14 @@ pub enum CursorKind {
 ///    when the source is globally exhausted.
 ///
 /// 2. **Render** — the fiber uses the reserved range with its own
-///    GK instance to produce field values. No shared state, no
+///    Polydat instance to produce field values. No shared state, no
 ///    contention between fibers. For range sources, rendering is
 ///    trivial (ordinal IS the data). For dataset sources, rendering
 ///    reads vectors/metadata from mmap'd storage.
 ///
 /// The `next_chunk` convenience method combines both phases. Use
 /// `reserve` directly when the rendering is handled by the
-/// executor's GK fiber.
+/// executor's Polydat fiber.
 pub trait DataSource: Send {
     /// Atomically reserve up to `stride` ordinals from the source.
     ///
@@ -607,11 +607,11 @@ impl DataSource for ExtendingRangeSource {
 // Cursors: provenance-driven cursor targeting
 // =========================================================================
 
-/// A cursor target: a DataSource reader paired with its GK input index.
+/// A cursor target: a DataSource reader paired with its Polydat input index.
 struct CursorTarget {
     /// The DataSource reader that provides values for this cursor.
     reader: Box<dyn DataSource>,
-    /// The GK input index where the cursor's ordinal is injected.
+    /// The Polydat input index where the cursor's ordinal is injected.
     input_index: usize,
     /// Source name (for diagnostics).
     #[allow(dead_code)]
@@ -621,19 +621,19 @@ struct CursorTarget {
 /// Provenance-driven advancer that targets only the cursor nodes
 /// relevant to a specific set of output fields.
 ///
-/// Built at phase setup by tracing GK provenance from the op template's
+/// Built at phase setup by tracing Polydat provenance from the op template's
 /// referenced fields back to root cursor nodes. Only those cursors
 /// advance — unused cursors are left untouched.
 pub struct Cursors {
     targets: Vec<CursorTarget>,
-    /// Last items read from each target (for injecting into GK state).
+    /// Last items read from each target (for injecting into Polydat state).
     last_items: Vec<Option<SourceItem>>,
     /// Total advances performed.
     advances: u64,
 }
 
 impl Cursors {
-    /// Build an advancer from a GK program, a set of output field names,
+    /// Build an advancer from a Polydat program, a set of output field names,
     /// and a map of source name → DataSourceFactory.
     ///
     /// Traces provenance: for each field, finds the output node, gets its
@@ -641,7 +641,7 @@ impl Cursors {
     /// ordinals (matching `{source}__ordinal` pattern). Creates a reader
     /// for each targeted source.
     pub fn for_fields(
-        program: &crate::kernel::GkProgram,
+        program: &crate::kernel::PolydatProgram,
         field_names: &[&str],
         source_factories: &std::collections::HashMap<String, Arc<dyn DataSourceFactory>>,
     ) -> Self {
@@ -702,11 +702,11 @@ impl Cursors {
         true
     }
 
-    /// Inject the current cursor values into a GK state.
+    /// Inject the current cursor values into a Polydat state.
     ///
     /// Sets each cursor's ordinal at its input index, plus any
     /// field projections from the source item.
-    pub fn inject_into_state(&self, state: &mut crate::kernel::GkState) {
+    pub fn inject_into_state(&self, state: &mut crate::kernel::PolydatState) {
         for (i, target) in self.targets.iter().enumerate() {
             if let Some(ref item) = self.last_items[i] {
                 state.set_input(target.input_index, crate::ast::Value::U64(item.ordinal));

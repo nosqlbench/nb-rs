@@ -22,7 +22,7 @@
 use regex::Regex;
 
 use crate::ast::{
-    CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value,
+    CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value,
 };
 
 // =========================================================================
@@ -60,7 +60,7 @@ impl RequiredU64 {
     }
 }
 
-impl GkNode for RequiredU64 {
+impl PolydatNode for RequiredU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         if matches!(inputs[0], Value::None) {
@@ -110,7 +110,7 @@ impl ThisOrU64 {
     }
 }
 
-impl GkNode for ThisOrU64 {
+impl PolydatNode for ThisOrU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = if matches!(inputs[0], Value::None) {
@@ -154,7 +154,7 @@ impl IsPositiveU64 {
     }
 }
 
-impl GkNode for IsPositiveU64 {
+impl PolydatNode for IsPositiveU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let v = inputs[0].as_u64();
@@ -207,7 +207,7 @@ impl InRangeU64 {
     }
 }
 
-impl GkNode for InRangeU64 {
+impl PolydatNode for InRangeU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let v = inputs[0].as_u64();
@@ -267,7 +267,7 @@ impl IsOneOfU64 {
     }
 }
 
-impl GkNode for IsOneOfU64 {
+impl PolydatNode for IsOneOfU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let v = inputs[0].as_u64();
@@ -324,7 +324,7 @@ impl MatchesStr {
     }
 }
 
-impl GkNode for MatchesStr {
+impl PolydatNode for MatchesStr {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let s = inputs[0].as_str();
@@ -441,7 +441,7 @@ pub(crate) fn build_node(
     name: &str,
     _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType],
     consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "required" => {
             let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();

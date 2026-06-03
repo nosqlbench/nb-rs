@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-fiber GK kernel construction.
+//! Per-fiber Polydat Kernel construction.
 //!
 //! `OpBuilder` owns the activity's source kernel and seeds each
 //! per-fiber [`FiberBuilder`] with a typed subscope plus any
@@ -12,12 +12,12 @@
 //! this module now scopes to fiber construction and bind-point
 //! validation.
 //!
-//! See `docs/sysref/68_dispenser_owned_gk_context.md` for the
+//! See `docs/sysref/68_dispenser_owned_polydat_context.md` for the
 //! resolution model.
 
 use std::sync::{Arc, OnceLock};
 
-use polydat::kernel::{GkKernel, GkProgram, GkState};
+use polydat::kernel::{PolydatKernel, PolydatProgram, PolydatState};
 use polydat::ast::Value;
 use nbrs_workload::model::ParsedOp;
 use nbrs_workload::bindpoints::{self, BindPoint, BindQualifier};
@@ -33,9 +33,9 @@ fn nbrs_dirty_debug_enabled() -> bool {
 
 /// Shared op builder that distributes per-fiber builders.
 ///
-/// Holds the `Arc<GkProgram>` (immutable, shared). Each executor
+/// Holds the `Arc<PolydatProgram>` (immutable, shared). Each executor
 /// fiber calls `create_fiber_builder()` to get its own `FiberBuilder`
-/// with private `GkState` — no locks, no contention on the hot path.
+/// with private `PolydatState` — no locks, no contention on the hot path.
 pub struct OpBuilder {
     /// Values to inject into every new FiberBuilder's state at creation.
     /// Used for scope composition: outer scope constants are set as
@@ -52,26 +52,26 @@ pub struct OpBuilder {
     scope_values: Vec<(String, Value)>,
     /// Pre-evaluated init binding values to seed into every new
     /// FiberBuilder's state — `(node_idx, port_idx, value)`. Captured
-    /// from the activation kernel after [SRD 11](../../docs/sysref/11_gk_evaluation.md)
+    /// from the activation kernel after [SRD 11](../../docs/sysref/11_polydat_evaluation.md)
     /// §"Init Binding Contract" Plan B has run. With this seeding,
     /// the binding's eval function fires exactly once per scope
     /// activation (on the activation kernel), not once per fiber.
     init_overrides: Vec<(usize, usize, Value)>,
     /// The source kernel — the activity's own kernel that
     /// each per-fiber `FiberBuilder` materializes a subscope
-    /// of via [`GkKernel::materialize_subscope`]. Owning the
+    /// of via [`PolydatKernel::materialize_subscope`]. Owning the
     /// kernel (not just its program) carries the activity's
     /// full cell state — own input-slot cells plus transit
     /// cells inherited from ancestors — to every fiber's main
     /// kernel via the typed subscope protocol.
     ///
     /// Routes per-fiber kernel construction through the only
-    /// two sanctioned paths: root (`compile_gk`) or
+    /// two sanctioned paths: root (`compile_polydat`) or
     /// parent-supervised subscope (`materialize_subscope`).
     /// The earlier `instance_program(program)` path is
     /// removed — it produced parentless kernels that lost
     /// the cell handles workload-root → fiber needs.
-    source_kernel: Arc<GkKernel>,
+    source_kernel: Arc<PolydatKernel>,
     /// SRD-13d Phase 9 — per-op-template kernel programs keyed
     /// by op name. Populated by [`Self::with_op_template_programs`]
     /// when the runner has materialised op-template kernels in
@@ -79,7 +79,7 @@ pub struct OpBuilder {
     /// the program for their template via [`Self::program_for_op`]
     /// and build their `ScopeFixture` against it; flattened
     /// op-templates fall through to the activity-wide `program`.
-    op_template_programs: std::collections::HashMap<String, Arc<GkProgram>>,
+    op_template_programs: std::collections::HashMap<String, Arc<PolydatProgram>>,
 }
 
 impl OpBuilder {
@@ -94,8 +94,8 @@ impl OpBuilder {
     /// [`Self::init_overrides`] and propagated to every fiber, so
     /// init eval fires once per activation rather than once per
     /// fiber.
-    pub fn new(kernel: impl Into<Arc<GkKernel>>) -> Self {
-        let kernel: Arc<GkKernel> = kernel.into();
+    pub fn new(kernel: impl Into<Arc<PolydatKernel>>) -> Self {
+        let kernel: Arc<PolydatKernel> = kernel.into();
         let scope_values = kernel.scope_values();
         let init_overrides = collect_init_overrides(&kernel);
         Self {
@@ -114,7 +114,7 @@ impl OpBuilder {
     /// program when constructing their fixtures.
     pub fn with_op_template_programs(
         mut self,
-        programs: std::collections::HashMap<String, Arc<GkProgram>>,
+        programs: std::collections::HashMap<String, Arc<PolydatProgram>>,
     ) -> Self {
         self.op_template_programs = programs;
         self
@@ -124,7 +124,7 @@ impl OpBuilder {
     /// per-op-template program if Phase 9 produced one for this
     /// op (i.e. `materialised` and bindings non-empty); otherwise
     /// returns the activity-wide program (the flatten path).
-    pub fn program_for_op(&self, name: &str) -> Arc<GkProgram> {
+    pub fn program_for_op(&self, name: &str) -> Arc<PolydatProgram> {
         self.op_template_programs.get(name)
             .cloned()
             .unwrap_or_else(|| self.source_kernel.program().clone())
@@ -133,23 +133,23 @@ impl OpBuilder {
     /// The activity-wide kernel program. Used by callers that
     /// need the source program shape (output names, manifest)
     /// without rebuilding a fresh kernel.
-    pub fn program(&self) -> Arc<GkProgram> {
+    pub fn program(&self) -> Arc<PolydatProgram> {
         self.source_kernel.program().clone()
     }
 
-    /// The activity-wide source kernel — the GK context every
+    /// The activity-wide source kernel — the Polydat context every
     /// op-template subscope is built upon. Adapters' `map_op`
     /// implementations receive a clone of this Arc as the `parent`
     /// argument so they can materialise their own canonical
     /// op-template kernel via SRD-67 `build_subscope` (SRD-68
     /// invariant I-3) or simply retain the Arc when their op has
     /// no matter to add.
-    pub fn source_kernel(&self) -> &Arc<GkKernel> {
+    pub fn source_kernel(&self) -> &Arc<PolydatKernel> {
         &self.source_kernel
     }
 
     /// Build the canonical op-template kernel for `op_name` —
-    /// the GK context the dispenser owns and that per-fiber
+    /// the Polydat context the dispenser owns and that per-fiber
     /// instances are materialised from (SRD-68 invariants I-3,
     /// I-4). Equivalent in shape to today's per-fiber
     /// `op_template_kernels[op_name]` but built once at dispenser
@@ -162,11 +162,11 @@ impl OpBuilder {
     /// `source_kernel` carrying that program. Otherwise the
     /// canonical is the source kernel itself (Arc-cloned), which
     /// covers the flattened-op-template path (no per-op matter).
-    pub fn canonical_kernel_for_op(&self, op_name: &str) -> Arc<GkKernel> {
+    pub fn canonical_kernel_for_op(&self, op_name: &str) -> Arc<PolydatKernel> {
         match self.op_template_programs.get(op_name) {
             Some(program) => {
                 let canonical = self.source_kernel.build_subscope(
-                    polydat::kernel::subcontext::GkMatter::builder()
+                    polydat::kernel::subcontext::PolydatMatter::builder()
                         .program(program.clone())
                         .build()
                         .expect("program-form matter is infallible"),
@@ -230,7 +230,7 @@ impl OpBuilder {
         // function returns (see executor cycle dispatch). The
         // legacy `op_template_kernels` HashMap and its name-keyed
         // population have retired; per-fiber instances now live in
-        // `per_op_kernels: Vec<Option<GkKernel>>` indexed parallel
+        // `per_op_kernels: Vec<Option<PolydatKernel>>` indexed parallel
         // to the dispenser registry, with each adapter's
         // `OpDispenser::canonical_kernel()` providing the per-op
         // canonical that gets `build_subscope`-instanced per fiber.
@@ -243,7 +243,7 @@ impl OpBuilder {
 /// seeding fiber states. `Value::None` entries are skipped — the
 /// scope-init pass should have errored on those before getting
 /// here, but defensively we don't propagate them either way.
-fn collect_init_overrides(kernel: &GkKernel) -> Vec<(usize, usize, Value)> {
+fn collect_init_overrides(kernel: &PolydatKernel) -> Vec<(usize, usize, Value)> {
     let program = kernel.program();
     let init_outputs = program.const_outputs();
     if init_outputs.is_empty() { return Vec::new(); }
@@ -261,20 +261,20 @@ fn collect_init_overrides(kernel: &GkKernel) -> Vec<(usize, usize, Value)> {
     out
 }
 
-/// Per-fiber op builder. Owns its own GkState.
+/// Per-fiber op builder. Owns its own PolydatState.
 /// No locks, no synchronization, no contention.
 ///
 /// Created via `OpBuilder::create_fiber_builder()` at fiber startup.
 ///
 /// When capture extraction is implemented, captured values will
-/// write directly to GK volatile/sticky ports on the state,
+/// write directly to Polydat volatile/sticky ports on the state,
 /// bypassing any intermediate storage.
 pub struct FiberBuilder {
     /// The fiber's main kernel — typically the activity-wide
     /// (workload / phase) program. State lives inside the
     /// kernel; access via [`Self::state`] and
     /// [`Self::state_ref`].
-    main_kernel: GkKernel,
+    main_kernel: PolydatKernel,
     /// Scope-bound input values (per-iteration extern bindings)
     /// that should persist across stanza-level
     /// `reset_inputs_from` resets. Empty for a builder created
@@ -286,19 +286,19 @@ pub struct FiberBuilder {
     /// is a `build_subscope` materialisation of the corresponding
     /// dispenser's canonical kernel (the kernel the dispenser owns
     /// per SRD-68 I-3); `None` for dispensers that don't expose
-    /// a canonical kernel (adapters with no GK needs, or wrappers
+    /// a canonical kernel (adapters with no Polydat needs, or wrappers
     /// that delegate). Populated by
     /// [`Self::attach_dispenser_kernels`] right after fiber spawn,
     /// before any cycles run; read at cycle dispatch to populate
     /// `ExecCtx::wires` for the firing dispenser.
-    per_op_kernels: Vec<Option<GkKernel>>,
+    per_op_kernels: Vec<Option<PolydatKernel>>,
     /// Pre-resolved input indices for each entry in
     /// [`Self::scope_values`] against [`Self::main_kernel`].
     /// `None` slots are scope values the main program doesn't
     /// declare (silently skipped at write time — matches the
     /// historical name-based-skip semantics).
     ///
-    /// Eliminates the `GkProgram::find_input` linear scan that
+    /// Eliminates the `PolydatProgram::find_input` linear scan that
     /// fired per scope-value per cycle in `reset_captures`.
     /// Populated once at [`Self::new`] (initially empty since
     /// scope_values is empty) and refreshed by
@@ -318,10 +318,10 @@ pub struct FiberBuilder {
 /// Validate that all bind points in op templates can be resolved.
 ///
 /// Called at init time. Warns for each unresolvable `{name}` reference.
-/// A bind point is resolvable if it matches a GK output, input name,
+/// A bind point is resolvable if it matches a Polydat output, input name,
 /// or a known capture declaration from another op. Workload params are
-/// injected into the GK source as constant bindings before compilation,
-/// so they resolve as GK outputs.
+/// injected into the Polydat source as constant bindings before compilation,
+/// so they resolve as Polydat outputs.
 /// Validate that all bind points in op templates can be resolved.
 ///
 /// Returns `Err` with a descriptive message if any bind point is
@@ -329,7 +329,7 @@ pub struct FiberBuilder {
 /// unresolved bind points produce broken ops at runtime.
 pub fn validate_bind_points(
     templates: &[ParsedOp],
-    program: &GkProgram,
+    program: &PolydatProgram,
 ) -> Result<(), String> {
     // Collect all capture declarations across templates. Captures
     // are extracted at workload-parse time and live on
@@ -364,7 +364,7 @@ pub fn validate_bind_points(
                         if !resolvable {
                             errors.push(format!(
                                 "unresolved bind point '{{{name}}}' in op '{}' field '{field_name}'. \
-                                 Not found in GK bindings, captures, or inputs.",
+                                 Not found in Polydat bindings, captures, or inputs.",
                                 template.name
                             ));
                         }
@@ -389,13 +389,13 @@ impl FiberBuilder {
     /// activity's source kernel.
     ///
     /// The fiber's main kernel is built via
-    /// [`GkKernel::materialize_subscope`] — the typed parent →
+    /// [`PolydatKernel::materialize_subscope`] — the typed parent →
     /// child construction path. Per-fiber state is fresh; cell
     /// handles are Arc-shared with the parent so writes
     /// propagate to the workload-root through the cascade.
-    pub fn new(parent: &GkKernel) -> Self {
+    pub fn new(parent: &PolydatKernel) -> Self {
         let main_kernel = parent.build_subscope(
-            polydat::kernel::subcontext::GkMatter::builder().program(parent.program().clone()).build().unwrap(),
+            polydat::kernel::subcontext::PolydatMatter::builder().program(parent.program().clone()).build().unwrap(),
         ).expect("program-form subscope is infallible");
         Self {
             main_kernel,
@@ -465,7 +465,7 @@ impl FiberBuilder {
         // through the closure; we capture an immutable borrow
         // of `self.main_kernel` separately and iterate
         // dispensers in a way that doesn't conflict.
-        let dispenser_programs: Vec<Option<std::sync::Arc<polydat::kernel::GkProgram>>> =
+        let dispenser_programs: Vec<Option<std::sync::Arc<polydat::kernel::PolydatProgram>>> =
             dispensers.iter()
                 .map(|d| d.canonical_kernel().map(|k| k.program().clone()))
                 .collect();
@@ -474,7 +474,7 @@ impl FiberBuilder {
         // `reset_captures` so the per-cycle stanza-boundary
         // restore is pure indexed `set_input` — no per-call
         // `find_input` linear scan, no name hashing.
-        let mut per_op_kernels: Vec<Option<GkKernel>> =
+        let mut per_op_kernels: Vec<Option<PolydatKernel>> =
             Vec::with_capacity(dispenser_programs.len());
         let mut per_op_idx: Vec<Option<Vec<Option<usize>>>> =
             Vec::with_capacity(dispenser_programs.len());
@@ -486,7 +486,7 @@ impl FiberBuilder {
                 }
                 Some(program) => {
                     let mut op_kernel = self.main_kernel.build_subscope(
-                        polydat::kernel::subcontext::GkMatter::builder()
+                        polydat::kernel::subcontext::PolydatMatter::builder()
                             .program(program)
                             .build()
                             .expect("program-form matter is infallible"),
@@ -527,9 +527,9 @@ impl FiberBuilder {
 
     /// Get the per-fiber kernel for the firing dispenser at
     /// `template_idx`. Returns `None` when the dispenser exposes
-    /// no canonical kernel (adapters with no GK needs); callers
+    /// no canonical kernel (adapters with no Polydat needs); callers
     /// fall back to the `NullWireSource` baseline.
-    pub fn per_op_kernel(&self, template_idx: usize) -> Option<&GkKernel> {
+    pub fn per_op_kernel(&self, template_idx: usize) -> Option<&PolydatKernel> {
         self.per_op_kernels.get(template_idx).and_then(|s| s.as_ref())
     }
 
@@ -537,7 +537,7 @@ impl FiberBuilder {
     /// cycle dispatch to wrap the kernel in [`crate::wires::CycleWires`]
     /// for `&mut`-requiring output pulls. Returns `None` when no
     /// canonical kernel was attached for this slot.
-    pub fn per_op_kernel_mut(&mut self, template_idx: usize) -> Option<&mut GkKernel> {
+    pub fn per_op_kernel_mut(&mut self, template_idx: usize) -> Option<&mut PolydatKernel> {
         self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut())
     }
 
@@ -546,31 +546,31 @@ impl FiberBuilder {
     /// canonical op-template kernel (the flattened path). The
     /// per-op kernel path uses [`Self::per_op_kernel_mut`]
     /// instead.
-    pub fn main_kernel_mut(&mut self) -> &mut GkKernel {
+    pub fn main_kernel_mut(&mut self) -> &mut PolydatKernel {
         &mut self.main_kernel
     }
 
-    /// Borrow this fiber's main GK program.
-    pub fn program(&self) -> &Arc<GkProgram> {
+    /// Borrow this fiber's main Polydat program.
+    pub fn program(&self) -> &Arc<PolydatProgram> {
         self.main_kernel.program()
     }
 
-    /// Mutable access to the fiber's main `GkState`. The state
+    /// Mutable access to the fiber's main `PolydatState`. The state
     /// lives inside `main_kernel`; this accessor preserves the
     /// pre-restructure call shape for sites that wrote
     /// `fiber.state.…` directly.
-    pub fn state(&mut self) -> &mut GkState {
+    pub fn state(&mut self) -> &mut PolydatState {
         self.main_kernel.state()
     }
 
     /// Borrowed (`&`) accessor for the main state.
-    pub fn state_ref(&self) -> &GkState {
+    pub fn state_ref(&self) -> &PolydatState {
         self.main_kernel.state_ref()
     }
 
     /// Set coordinates and begin a new evaluation scope.
     ///
-    /// Bounded by [`GkProgram::coord_count`]: the slice is
+    /// Bounded by [`PolydatProgram::coord_count`]: the slice is
     /// truncated to the program's declared coordinate count
     /// before being written. A phase kernel with no
     /// coordinates (e.g. all bindings are invariant within the
@@ -603,13 +603,13 @@ impl FiberBuilder {
         }
     }
 
-    /// Feed a source item into the GK state.
+    /// Feed a source item into the Polydat state.
     ///
     /// Sets the ordinal as the coordinate input and injects field
     /// projections into the appropriate state slots (e.g.
     /// `base__ordinal`, `base__vector`).
     ///
-    /// The ordinal write is bounded by [`GkProgram::coord_count`]
+    /// The ordinal write is bounded by [`PolydatProgram::coord_count`]
     /// — phases whose programs declare no coordinates (only
     /// externs and stanza-invariant bindings) skip the write
     /// rather than clobbering an extern slot. Field
@@ -735,9 +735,9 @@ impl FiberBuilder {
         }
     }
 
-    /// Store a captured value directly into GK state.
+    /// Store a captured value directly into Polydat state.
     ///
-    /// Writes to the named port in GkState. Returns `true` if the
+    /// Writes to the named port in PolydatState. Returns `true` if the
     /// port was found and the value stored, `false` if no port with
     /// this name exists in the program (value is dropped).
     pub fn capture(&mut self, name: &str, value: Value) -> bool {
@@ -863,7 +863,7 @@ impl FiberBuilder {
         }
     }
 
-    /// Materialize a [`PullPlan`] against this fiber's main GkState.
+    /// Materialize a [`PullPlan`] against this fiber's main PolydatState.
     /// O(plan_len) on the hot path, no name hashing — the plan
     /// holds pre-resolved indices.
     ///
@@ -882,7 +882,7 @@ impl FiberBuilder {
         plan.resolve(self.main_kernel.state())
     }
 
-    /// SRD-68 Push 5d resolve path — picks the right `GkState`
+    /// SRD-68 Push 5d resolve path — picks the right `PolydatState`
     /// for the dispenser at `template_idx` and resolves the
     /// plan against it. When a per-fiber op-template kernel was
     /// instanced for that position (every adapter exposes
@@ -905,12 +905,12 @@ impl FiberBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polydat::compile::assembly::{GkAssembler, WireRef};
+    use polydat::compile::assembly::{PolydatAssembler, WireRef};
     use polydat::library::hash::Hash64;
     use polydat::library::arithmetic::ModU64;
 
-    fn make_kernel() -> GkKernel {
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    fn make_kernel() -> PolydatKernel {
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
         asm.add_node("user_id", Box::new(ModU64::new(1_000_000)), vec![WireRef::node("hashed")]);
         asm.add_output("user_id", WireRef::node("user_id"));
@@ -942,16 +942,16 @@ mod tests {
 
         // Stand up a shared canonical via the public API.
         let workload_src = "input cycle: u64\nfolded := 42\n";
-        let canonical_program = polydat::dsl::compile::compile_gk(workload_src)
+        let canonical_program = polydat::dsl::compile::compile_polydat(workload_src)
             .expect("compile probe canonical").program().clone();
-        let canonical_kernel: std::sync::Arc<GkKernel> = builder.canonical_kernel_for_op("nonexistent");
+        let canonical_kernel: std::sync::Arc<PolydatKernel> = builder.canonical_kernel_for_op("nonexistent");
         // For this probe we only need the canonical to expose
         // a program; reuse builder's source_kernel program.
         let _ = canonical_program;
 
-        struct ProbeDispenser(std::sync::Arc<GkKernel>);
+        struct ProbeDispenser(std::sync::Arc<PolydatKernel>);
         impl OpDispenser for ProbeDispenser {
-            fn canonical_kernel(&self) -> Option<&std::sync::Arc<GkKernel>> {
+            fn canonical_kernel(&self) -> Option<&std::sync::Arc<PolydatKernel>> {
                 Some(&self.0)
             }
             fn execute<'a>(
@@ -982,20 +982,20 @@ mod tests {
         // distinct per-fiber instance, neither of them
         // pointing to the shared canonical kernel.
         assert!(
-            !std::ptr::eq(per_op_a as *const GkKernel,
-                          canonical_kernel.as_ref() as *const GkKernel),
+            !std::ptr::eq(per_op_a as *const PolydatKernel,
+                          canonical_kernel.as_ref() as *const PolydatKernel),
             "per_op_a must be a distinct per-fiber instance, \
              not the shared canonical",
         );
         assert!(
-            !std::ptr::eq(per_op_b as *const GkKernel,
-                          canonical_kernel.as_ref() as *const GkKernel),
+            !std::ptr::eq(per_op_b as *const PolydatKernel,
+                          canonical_kernel.as_ref() as *const PolydatKernel),
             "per_op_b must be a distinct per-fiber instance, \
              not the shared canonical",
         );
         assert!(
-            !std::ptr::eq(per_op_a as *const GkKernel,
-                          per_op_b as *const GkKernel),
+            !std::ptr::eq(per_op_a as *const PolydatKernel,
+                          per_op_b as *const PolydatKernel),
             "fiber A and fiber B must each have their own \
              per-op kernel instance",
         );
@@ -1018,7 +1018,7 @@ mod tests {
             meta: polydat::ast::NodeMeta,
             calls: StdArc<AtomicU64>,
         }
-        impl polydat::ast::GkNode for CountingNode {
+        impl polydat::ast::PolydatNode for CountingNode {
             fn meta(&self) -> &polydat::ast::NodeMeta { &self.meta }
             fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
                 self.calls.fetch_add(1, Ordering::Relaxed);
@@ -1027,7 +1027,7 @@ mod tests {
         }
 
         let calls = StdArc::new(AtomicU64::new(0));
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         // Compile-const seed expression — wires empty.
         asm.add_node("ticks", Box::new(CountingNode {
             meta: polydat::ast::NodeMeta {

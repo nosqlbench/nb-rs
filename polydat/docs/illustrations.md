@@ -9,7 +9,7 @@ coordinate always produces the same outputs — deterministic,
 reproducible, and parallelizable with zero shared mutable state.
 
 The two entry points below are the two surfaces polydat presents to a
-caller: the GK DSL (a small expression grammar you write as a string)
+caller: the Polydat DSL (a small expression grammar you write as a string)
 and the Assembler API (programmatic node-by-node construction). They
 produce the same kind of compiled kernel; pick the one that fits your
 call-site shape.
@@ -20,12 +20,12 @@ Every code block in this file is the body of a runnable example under
 quoted below. If a snippet ever drifts from what the example actually
 does, the example is the source of truth.
 
-## From the GK DSL
+## From the Polydat DSL
 
 ```rust
-use polydat::dsl::compile_gk;
+use polydat::dsl::compile_polydat;
 
-let mut kernel = compile_gk(r#"
+let mut kernel = compile_polydat(r#"
     input cycle: u64
     hashed := hash(cycle)
     user_id := mod(hashed, 1000000)
@@ -71,7 +71,7 @@ nodes by name, forming directed edges. The compiler topologically
 sorts the result and refuses cycles.
 
 ```rust
-let mut kernel = polydat::dsl::compile_gk(r#"
+let mut kernel = polydat::dsl::compile_polydat(r#"
     input cycle: u64
 
     // Decompose one coordinate into two dimensions (device, reading).
@@ -97,7 +97,7 @@ tracks each wire's port type (u64, f64, str, bool, bytes, json,
 vectors…) and rejects mismatches at compile time, before the kernel
 ever runs.
 
-Note: GK numeric literals don't accept Rust-style underscores —
+Note: Polydat numeric literals don't accept Rust-style underscores —
 `1000000` is fine, `1_000_000` is a parse error.
 
 See [`examples/function_graph_grammar.rs`](../examples/function_graph_grammar.rs).
@@ -111,7 +111,7 @@ distinct, reproducible variates in parallel — each thread gets its
 own state, the program is shared via `Arc`.
 
 ```rust
-let kernel = polydat::dsl::compile_gk(r#"
+let kernel = polydat::dsl::compile_polydat(r#"
     input cycle: u64
     user_id := mod(hash(cycle), 1000000)
 "#).unwrap();
@@ -140,18 +140,18 @@ larger benchmark form).
 ## A function library and loader
 
 The 230 built-in nodes (see [nodes.md](nodes.md)) are one library.
-Workload-author functions written in `.gk` files are another —
-`compile_gk_with_libs` loads them from disk and they're callable from
+Workload-author functions written in `.polydat` files are another —
+`compile_polydat_with_libs` loads them from disk and they're callable from
 your DSL by name as if they were built in.
 
 ```rust
 let stdlib = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-    .join("stdlib").join("identity.gk");
+    .join("stdlib").join("identity.polydat");
 
-let mut kernel = polydat::dsl::compile_gk_with_libs(
+let mut kernel = polydat::dsl::compile_polydat_with_libs(
     r#"
         input cycle: u64
-        // `hashed_id` is loaded from identity.gk, not a built-in.
+        // `hashed_id` is loaded from identity.polydat, not a built-in.
         uid := hashed_id(cycle, 1000000)
     "#,
     None,                 // source_dir — no implicit ./*.gk lookup
@@ -163,7 +163,7 @@ let mut kernel = polydat::dsl::compile_gk_with_libs(
 ```
 
 The shipped [`stdlib/`](../stdlib/) directory has more examples:
-`identity.gk`, `distributions.gk`, `hashing.gk`, `modeling.gk`, etc.
+`identity.polydat`, `distributions.polydat`, `hashing.polydat`, `modeling.polydat`, etc.
 Each is loadable the same way.
 
 See [`examples/library_and_loader.rs`](../examples/library_and_loader.rs).
@@ -179,7 +179,7 @@ typed accessor.
 ```rust
 use polydat::node::Value;
 
-let mut kernel = polydat::dsl::compile_gk(r#"
+let mut kernel = polydat::dsl::compile_polydat(r#"
     input cycle: u64
     n := mod(hash(cycle), 1000)             // u64
     p := unit_interval(hash(cycle))         // f64 in [0.0, 1.0)
@@ -217,7 +217,7 @@ A single integer coordinate (`cycle`) is a 1-D parameter space.
 drive everything.
 
 ```rust
-let mut kernel = polydat::dsl::compile_gk(r#"
+let mut kernel = polydat::dsl::compile_polydat(r#"
     input cycle: u64
     (device, reading) := mixed_radix(cycle, 100, 0)
 "#).unwrap();
@@ -259,9 +259,9 @@ at each call.
 
 ```rust
 let stdlib = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-    .join("stdlib").join("identity.gk");
+    .join("stdlib").join("identity.polydat");
 
-let mut kernel = polydat::dsl::compile_gk_with_libs(
+let mut kernel = polydat::dsl::compile_polydat_with_libs(
     r#"
         input cycle: u64
         (tenant, device) := mixed_radix(cycle, 100, 0)
@@ -275,7 +275,7 @@ let mut kernel = polydat::dsl::compile_gk_with_libs(
 
 The polydat-direct form is single-file kernel composition like the
 above. The heavier `polydat::subcontext` API (`SubcontextBuilder`,
-`ScopeKernel`, `GkMatter`) is what nbrs uses for layering entire
+`ScopeKernel`, `PolydatMatter`) is what nbrs uses for layering entire
 scope-trees over parent kernels — with typed import/export contracts
 at every boundary. The principle is the same; the multi-scope case
 just needs more bookkeeping.
@@ -284,13 +284,13 @@ See [`examples/context_layering.rs`](../examples/context_layering.rs).
 
 ## An expression language
 
-The `:=` lines in GK are full expressions, not just direct node calls.
+The `:=` lines in Polydat are full expressions, not just direct node calls.
 You can nest, chain, and combine without naming every intermediate
 wire — useful for one-line derivations where naming the intermediate
 would just be noise.
 
 ```rust
-let mut kernel = polydat::dsl::compile_gk(r#"
+let mut kernel = polydat::dsl::compile_polydat(r#"
     input cycle: u64
 
     // Nested expressions — no named intermediates needed.

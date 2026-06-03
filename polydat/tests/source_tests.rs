@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Adversarial, fuzz, and correctness tests for the GK source system.
+//! Adversarial, fuzz, and correctness tests for the Polydat source system.
 //!
 //! Tests cover:
 //! - Source keyword parsing and compilation
@@ -11,7 +11,7 @@
 //! - Concurrent source consumption
 //! - Edge cases and error handling
 
-use polydat::dsl::compile::compile_gk;
+use polydat::dsl::compile::compile_polydat;
 use polydat::iteration::source::{DataSourceFactory, RangeSourceFactory, SourceItem};
 use polydat::ast::Value;
 use std::sync::Arc;
@@ -92,7 +92,7 @@ fn vectordata_source_rejects_unknown_facet() {
     // error before compilation hits any vectordata I/O.
     let src = r#"cursor row = vectordata_source("example", "label_00", "bogus")
 id := row.ordinal"#;
-    let err = compile_gk(src).unwrap_err();
+    let err = compile_polydat(src).unwrap_err();
     assert!(
         err.contains("facet must be") && err.contains("bogus"),
         "expected facet validation error, got: {err}",
@@ -103,7 +103,7 @@ id := row.ordinal"#;
 fn vectordata_source_rejects_non_string_args() {
     let src = r#"cursor row = vectordata_source(42, "label_00", "base")
 id := row.ordinal"#;
-    let err = compile_gk(src).unwrap_err();
+    let err = compile_polydat(src).unwrap_err();
     assert!(
         err.contains("string literal"),
         "expected string-literal error, got: {err}",
@@ -116,7 +116,7 @@ fn vectordata_source_requires_three_args() {
     // string-literal error rather than panic on out-of-bounds args.
     let src = r#"cursor row = vectordata_source("example", "label_00")
 id := row.ordinal"#;
-    let err = compile_gk(src).unwrap_err();
+    let err = compile_polydat(src).unwrap_err();
     assert!(
         err.contains("string literal") || err.contains("facet"),
         "expected validation error, got: {err}",
@@ -128,7 +128,7 @@ fn vectordata_base_rejects_non_string_args() {
     // Facet-baked shortcut: only dataset + profile required.
     let src = r#"cursor row = vectordata_base("example", 7)
 id := row.ordinal"#;
-    let err = compile_gk(src).unwrap_err();
+    let err = compile_polydat(src).unwrap_err();
     assert!(
         err.contains("string literal"),
         "expected string-literal error, got: {err}",
@@ -139,7 +139,7 @@ id := row.ordinal"#;
 fn vectordata_query_requires_two_args() {
     let src = r#"cursor q = vectordata_query("example")
 id := q.ordinal"#;
-    let err = compile_gk(src).unwrap_err();
+    let err = compile_polydat(src).unwrap_err();
     assert!(
         err.contains("string literal"),
         "expected string-literal error, got: {err}",
@@ -433,7 +433,7 @@ fn cursor_compiles_and_produces_schema() {
         input cycle: u64
         id := hash(r.ordinal)
     "#;
-    let kernel = compile_gk(src).unwrap();
+    let kernel = compile_polydat(src).unwrap();
     let schemas = kernel.program().cursor_schemas();
     assert_eq!(schemas.len(), 1);
     assert_eq!(schemas[0].name, "r");
@@ -450,7 +450,7 @@ fn cursor_extent_folds_const_function_call() {
         input cycle: u64
         id := hash(r.ordinal)
     "#;
-    let kernel = compile_gk(src).unwrap();
+    let kernel = compile_polydat(src).unwrap();
     let schemas = kernel.program().cursor_schemas();
     assert_eq!(schemas.len(), 1);
     assert_eq!(schemas[0].extent, Some(2), "extent should fold mod(100, 7) = 2");
@@ -464,7 +464,7 @@ fn cursor_extent_folds_arithmetic_expression() {
         input cycle: u64
         id := hash(r.ordinal)
     "#;
-    let kernel = compile_gk(src).unwrap();
+    let kernel = compile_polydat(src).unwrap();
     let schemas = kernel.program().cursor_schemas();
     assert_eq!(schemas[0].extent, Some(50), "extent should fold (10+50) - 10 = 50");
 }
@@ -476,7 +476,7 @@ fn cursor_projection_wires_into_downstream_nodes() {
         input cycle: u64
         doubled := r.ordinal + r.ordinal
     "#;
-    let mut kernel = compile_gk(src).unwrap();
+    let mut kernel = compile_polydat(src).unwrap();
     // Set the source projection input (r__ordinal) to 21
     if let Some(idx) = kernel.program().find_input("r__ordinal") {
         kernel.state().set_input(idx, Value::U64(21));
@@ -494,7 +494,7 @@ fn multiple_cursors_produce_independent_schemas() {
         input cycle: u64
         sum := a.ordinal + b.ordinal
     "#;
-    let kernel = compile_gk(src).unwrap();
+    let kernel = compile_polydat(src).unwrap();
     let schemas = kernel.program().cursor_schemas();
     assert_eq!(schemas.len(), 2);
     assert_eq!(schemas[0].name, "a");
@@ -510,7 +510,7 @@ fn cursor_with_non_literal_extent() {
         input cycle: u64
         cursor r = range(0, cycle)
     "#;
-    let kernel = compile_gk(src).unwrap();
+    let kernel = compile_polydat(src).unwrap();
     let schemas = kernel.program().cursor_schemas();
     assert_eq!(schemas[0].extent, None);
 }
@@ -522,7 +522,7 @@ fn cursor_projection_feeds_function_call() {
         input cycle: u64
         id := hash(r.ordinal)
     "#;
-    let mut kernel = compile_gk(src).unwrap();
+    let mut kernel = compile_polydat(src).unwrap();
     if let Some(idx) = kernel.program().find_input("r__ordinal") {
         kernel.state().set_input(idx, Value::U64(42));
     }
@@ -547,7 +547,7 @@ fn advancer_targets_correct_cursors() {
         id := hash(base.ordinal)
         unused := hash(cycle)
     "#;
-    let kernel = compile_gk(src).unwrap();
+    let kernel = compile_polydat(src).unwrap();
     let program = kernel.program();
 
     let mut factories: HashMap<String, Arc<dyn polydat::iteration::source::DataSourceFactory>> = HashMap::new();
@@ -570,7 +570,7 @@ fn advancer_does_not_target_unused_sources() {
         input cycle: u64
         id := hash(base.ordinal)
     "#;
-    let kernel = compile_gk(src).unwrap();
+    let kernel = compile_polydat(src).unwrap();
     let program = kernel.program();
 
     let mut factories: HashMap<String, Arc<dyn polydat::iteration::source::DataSourceFactory>> = HashMap::new();
@@ -593,7 +593,7 @@ fn advancer_advance_and_exhaust() {
         input cycle: u64
         id := hash(r.ordinal)
     "#;
-    let kernel = compile_gk(src).unwrap();
+    let kernel = compile_polydat(src).unwrap();
     let program = kernel.program();
 
     let mut factories: HashMap<String, Arc<dyn polydat::iteration::source::DataSourceFactory>> = HashMap::new();
@@ -619,7 +619,7 @@ fn advancer_last_items_reflect_position() {
         input cycle: u64
         id := hash(r.ordinal)
     "#;
-    let kernel = compile_gk(src).unwrap();
+    let kernel = compile_polydat(src).unwrap();
     let program = kernel.program();
 
     let mut factories: HashMap<String, Arc<dyn polydat::iteration::source::DataSourceFactory>> = HashMap::new();
@@ -644,7 +644,7 @@ fn advancer_empty_when_no_sources_referenced() {
         input cycle: u64
         id := hash(cycle)
     "#;
-    let kernel = compile_gk(src).unwrap();
+    let kernel = compile_polydat(src).unwrap();
     let program = kernel.program();
 
     let factories: HashMap<String, Arc<dyn polydat::iteration::source::DataSourceFactory>> = HashMap::new();
@@ -658,7 +658,7 @@ fn advancer_empty_when_no_sources_referenced() {
 
 #[test]
 fn limit_node_compiles_and_clamps_extent() {
-    use polydat::dsl::compile::compile_gk_with_libs_and_limit;
+    use polydat::dsl::compile::compile_polydat_with_libs_and_limit;
     use std::path::PathBuf;
 
     let src = r#"
@@ -666,7 +666,7 @@ fn limit_node_compiles_and_clamps_extent() {
         input cycle: u64
         id := hash(r.ordinal)
     "#;
-    let kernel = compile_gk_with_libs_and_limit(
+    let kernel = compile_polydat_with_libs_and_limit(
         src, None, Vec::<PathBuf>::new(), &[], false, "(test)", Some(100),
     ).unwrap();
     let schemas = kernel.program().cursor_schemas();
@@ -677,7 +677,7 @@ fn limit_node_compiles_and_clamps_extent() {
 
 #[test]
 fn limit_node_not_inserted_when_no_limit() {
-    use polydat::dsl::compile::compile_gk_with_libs_and_limit;
+    use polydat::dsl::compile::compile_polydat_with_libs_and_limit;
     use std::path::PathBuf;
 
     let src = r#"
@@ -685,7 +685,7 @@ fn limit_node_not_inserted_when_no_limit() {
         input cycle: u64
         id := hash(r.ordinal)
     "#;
-    let kernel = compile_gk_with_libs_and_limit(
+    let kernel = compile_polydat_with_libs_and_limit(
         src, None, Vec::<PathBuf>::new(), &[], false, "(test)", None,
     ).unwrap();
     let schemas = kernel.program().cursor_schemas();
@@ -694,7 +694,7 @@ fn limit_node_not_inserted_when_no_limit() {
 
 #[test]
 fn limit_larger_than_extent_preserves_extent() {
-    use polydat::dsl::compile::compile_gk_with_libs_and_limit;
+    use polydat::dsl::compile::compile_polydat_with_libs_and_limit;
     use std::path::PathBuf;
 
     let src = r#"
@@ -702,7 +702,7 @@ fn limit_larger_than_extent_preserves_extent() {
         input cycle: u64
         id := hash(r.ordinal)
     "#;
-    let kernel = compile_gk_with_libs_and_limit(
+    let kernel = compile_polydat_with_libs_and_limit(
         src, None, Vec::<PathBuf>::new(), &[], false, "(test)", Some(1000),
     ).unwrap();
     let schemas = kernel.program().cursor_schemas();

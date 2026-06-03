@@ -3,7 +3,7 @@
 
 //! String generation and transformation nodes.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 // =================================================================
 // Combinations: mixed-radix character set mapping
@@ -76,7 +76,7 @@ impl Combinations {
     }
 }
 
-impl GkNode for Combinations {
+impl PolydatNode for Combinations {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -164,7 +164,7 @@ impl NumberToWords {
     }
 }
 
-impl GkNode for NumberToWords {
+impl PolydatNode for NumberToWords {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -387,7 +387,7 @@ impl HashedUuid {
     }
 }
 
-impl GkNode for HashedUuid {
+impl PolydatNode for HashedUuid {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let seed = inputs[0].as_u64();
@@ -470,7 +470,7 @@ impl CharBuf {
     }
 }
 
-impl GkNode for CharBuf {
+impl PolydatNode for CharBuf {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let seed = inputs[0].as_u64();
@@ -529,7 +529,7 @@ impl FileLineAt {
     }
 }
 
-impl GkNode for FileLineAt {
+impl PolydatNode for FileLineAt {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -586,7 +586,7 @@ fn value_to_display(val: &Value) -> String {
     }
 }
 
-impl GkNode for StrConcat {
+impl PolydatNode for StrConcat {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let mut out = String::new();
@@ -620,7 +620,7 @@ impl StrLower {
     }
 }
 
-impl GkNode for StrLower {
+impl PolydatNode for StrLower {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(value_to_display(&inputs[0]).to_lowercase().into());
@@ -646,7 +646,7 @@ impl StrUpper {
     }
 }
 
-impl GkNode for StrUpper {
+impl PolydatNode for StrUpper {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(value_to_display(&inputs[0]).to_uppercase().into());
@@ -656,7 +656,7 @@ impl GkNode for StrUpper {
 /// Try to build a string node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "combinations" => Some(Ok(Box::new(Combinations::new(
             consts.first().map(|c| c.as_str()).unwrap_or("a-z"),
@@ -668,7 +668,7 @@ pub(crate) fn build_node(name: &str, wires: &[crate::compile::assembly::WireRef]
         )))),
         "file_line_at" => {
             let path = consts.first().map(|c| c.as_str()).unwrap_or("");
-            Some(FileLineAt::new(path).map(|n| Box::new(n) as Box<dyn crate::ast::GkNode>))
+            Some(FileLineAt::new(path).map(|n| Box::new(n) as Box<dyn crate::ast::PolydatNode>))
         }
         "str_concat" => Some(Ok(Box::new(StrConcat::new(wires.len())))),
         "str_lower" => Some(Ok(Box::new(StrLower::new()))),

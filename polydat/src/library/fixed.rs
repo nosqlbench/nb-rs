@@ -3,7 +3,7 @@
 
 //! Fixed value and value-list nodes across fundamental types.
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 // =================================================================
 // Constants (0→1 nodes)
@@ -30,7 +30,7 @@ impl ConstF64 {
     }
 }
 
-impl GkNode for ConstF64 {
+impl PolydatNode for ConstF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::F64(self.value);
@@ -58,7 +58,7 @@ impl ConstBool {
     }
 }
 
-impl GkNode for ConstBool {
+impl PolydatNode for ConstBool {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Bool(self.value);
@@ -92,7 +92,7 @@ impl FixedValuesU64 {
     }
 }
 
-impl GkNode for FixedValuesU64 {
+impl PolydatNode for FixedValuesU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -131,7 +131,7 @@ impl FixedValuesF64 {
     }
 }
 
-impl GkNode for FixedValuesF64 {
+impl PolydatNode for FixedValuesF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -162,7 +162,7 @@ impl FixedValuesStr {
     }
 }
 
-impl GkNode for FixedValuesStr {
+impl PolydatNode for FixedValuesStr {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -201,7 +201,7 @@ impl CoinFlip {
     }
 }
 
-impl GkNode for CoinFlip {
+impl PolydatNode for CoinFlip {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {

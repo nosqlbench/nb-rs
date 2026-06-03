@@ -16,7 +16,7 @@
 //! The core algorithm is a Galois-configuration LFSR. The `Shuffle` GK
 //! node wraps it with range normalization and rejection sampling.
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
 
 // -----------------------------------------------------------------
 // LFSR feedback polynomials (one per register width 4..64)
@@ -167,7 +167,7 @@ impl Shuffle {
     }
 }
 
-impl GkNode for Shuffle {
+impl PolydatNode for Shuffle {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -198,10 +198,10 @@ impl GkNode for Shuffle {
 }
 
 // -----------------------------------------------------------------
-// Raw LFSR step as a GK node (for advanced use)
+// Raw LFSR step as a Polydat node (for advanced use)
 // -----------------------------------------------------------------
 
-/// Single Galois LFSR step as a GK node.
+/// Single Galois LFSR step as a Polydat node.
 ///
 /// Signature: `(input: u64) -> (u64)`
 ///
@@ -232,7 +232,7 @@ impl LfsrStep {
     }
 }
 
-impl GkNode for LfsrStep {
+impl PolydatNode for LfsrStep {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -355,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_gk_node() {
+    fn shuffle_polydat_node() {
         let node = Shuffle::zero_based(100);
         let mut out = [Value::None];
         node.eval(&[Value::U64(7)], &mut out);

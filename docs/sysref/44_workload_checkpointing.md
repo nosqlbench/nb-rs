@@ -149,7 +149,7 @@ A phase whose body references a workload param via `{dataset}`
 produces different work for `dataset=sift1m` vs. `dataset=sift10m`
 even though its YAML bytes are byte-identical. Hashing the YAML
 body alone would silently skip the phase across that param
-change — wrong. The compiled `GkProgram` already incorporates
+change — wrong. The compiled `PolydatProgram` already incorporates
 substituted-in param values, transitively-referenced binding
 values, and all fold-able compile-time state. Hashing its
 canonical re-emission catches:
@@ -225,7 +225,7 @@ within a single resume plan cannot legitimately exist —
 polydat comprehensions enumerate distinct tuples (per
 `polydat/docs/design/comprehension_forms.md` §3 + §9.2's
 dispense-sequence-preserving contract) and DFS pre-map order
-is deterministic. Any duplicate is a GK / pre-map bug, not a
+is deterministic. Any duplicate is a Polydat / pre-map bug, not a
 recoverable condition. Hard error at checkpoint load.
 
 ---
@@ -405,7 +405,7 @@ The serial order rules it out by construction.
 
 Not everything goes in the checkpoint:
 
-- **Per-fiber GK state** — re-derived from the kernel + cycle
+- **Per-fiber Polydat state** — re-derived from the kernel + cycle
   number on every cycle. Stateless.
 - **Metrics deltas / aggregates** — already in `metrics.db`.
   The checkpoint doesn't duplicate them.

@@ -1,9 +1,9 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Assembly-time validation of GK node constant arguments.
+//! Assembly-time validation of Polydat node constant arguments.
 //!
-//! GK's contract (SRD 15 §"Input Validity Model") keeps the hot
+//! Polydat's contract (SRD 15 §"Input Validity Model") keeps the hot
 //! path branch-free by letting node `::new` trust its constants —
 //! no runtime checks. That only holds if the *factory* has already
 //! proven each constant satisfies the node's contract, rejecting

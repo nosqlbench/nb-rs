@@ -1,18 +1,18 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! GkProgram: the immutable compiled DAG shared across all fibers.
+//! PolydatProgram: the immutable compiled DAG shared across all fibers.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::ast::{GkNode, Value};
+use crate::ast::{PolydatNode, Value};
 use super::{WireSource, InputDef};
-use super::engines::{GkState, RawState, ProvScanState, EngineCore};
-use crate::dsl::ast::{GkFile, Statement};
+use super::engines::{PolydatState, RawState, ProvScanState, EngineCore};
+use crate::dsl::ast::{PolydatFile, Statement};
 
 /// Evaluation lifecycle classification used by the init-binding
-/// contract (see [SRD 11 §"Three Evaluation Lifecycles"](../../../../docs/sysref/11_gk_evaluation.md)).
+/// contract (see [SRD 11 §"Three Evaluation Lifecycles"](../../../../docs/sysref/11_polydat_evaluation.md)).
 ///
 /// The variants are *ordered* — `Dynamic > ScopeInit > CompileConst`
 /// — so propagation along wires is a `max()` operation: a node's
@@ -20,7 +20,7 @@ use crate::dsl::ast::{GkFile, Statement};
 /// node's lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum EvalLifecycle {
-    /// Foldable at GK compile time. No dependency on extern slots
+    /// Foldable at Polydat compile time. No dependency on extern slots
     /// or cycle inputs.
     CompileConst,
     /// Foldable at scope activation, after `materialize_wiring_from_outer`
@@ -40,7 +40,7 @@ pub(crate) enum EvalLifecycle {
 /// nearest dynamic source. Best-effort — an unresolvable wire
 /// returns a generic message.
 fn first_dynamic_wire(
-    nodes: &[Box<dyn GkNode>],
+    nodes: &[Box<dyn PolydatNode>],
     wiring: &[Vec<WireSource>],
     lifecycle: &[EvalLifecycle],
     input_defs: &[InputDef],
@@ -97,9 +97,9 @@ fn first_dynamic_wire(
 }
 
 /// The immutable compiled DAG. Shared across fibers via `Arc`.
-pub struct GkProgram {
+pub struct PolydatProgram {
     /// Node instances in topological order.
-    pub(crate) nodes: Vec<Box<dyn GkNode>>,
+    pub(crate) nodes: Vec<Box<dyn PolydatNode>>,
     /// For each node, the wiring of its input ports.
     pub(crate) wiring: Vec<Vec<WireSource>>,
     /// All input definitions (coordinates first, then captures).
@@ -141,7 +141,7 @@ pub struct GkProgram {
     /// to distinguish "names defined here" from "names visible
     /// here through inheritance."
     inherited_outputs: std::collections::HashSet<String>,
-    /// Source schemas declared in the GK program. The runtime queries
+    /// Source schemas declared in the Polydat program. The runtime queries
     /// these to discover data sources and their extents.
     cursor_schemas: Vec<crate::iteration::source::SourceSchema>,
     /// Names declared with the `const` keyword in the source. Subject
@@ -171,15 +171,15 @@ pub struct GkProgram {
     /// view of what defines each binding. `None` only for
     /// legacy / programmatic construction paths that bypass the
     /// parser; the DSL entry points always populate this.
-    pub(crate) ast: Option<Arc<GkFile>>,
+    pub(crate) ast: Option<Arc<PolydatFile>>,
 }
 
-unsafe impl Send for GkProgram {}
-unsafe impl Sync for GkProgram {}
+unsafe impl Send for PolydatProgram {}
+unsafe impl Sync for PolydatProgram {}
 
-impl std::fmt::Debug for GkProgram {
+impl std::fmt::Debug for PolydatProgram {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GkProgram")
+        f.debug_struct("PolydatProgram")
             .field("nodes", &self.nodes.len())
             .field("inputs", &self.input_names())
             .field("coord_count", &self.coord_count)
@@ -187,12 +187,12 @@ impl std::fmt::Debug for GkProgram {
     }
 }
 
-impl GkProgram {
+impl PolydatProgram {
     /// Create a program from pre-validated, topologically-sorted components.
     /// All inputs are treated as coordinates.
     #[allow(dead_code)]
     pub(crate) fn new(
-        nodes: Vec<Box<dyn GkNode>>,
+        nodes: Vec<Box<dyn PolydatNode>>,
         wiring: Vec<Vec<WireSource>>,
         input_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
@@ -235,7 +235,7 @@ impl GkProgram {
     /// Create a program with explicit input definitions and output ordering.
     #[allow(dead_code)]
     pub(crate) fn with_inputs(
-        nodes: Vec<Box<dyn GkNode>>,
+        nodes: Vec<Box<dyn PolydatNode>>,
         wiring: Vec<Vec<WireSource>>,
         input_defs: Vec<InputDef>,
         coord_count: usize,
@@ -280,7 +280,7 @@ impl GkProgram {
     }
 
     /// Read this program's Rule 2 write-through bindings.
-    /// Used by `GkKernel::from_program` to auto-seed the
+    /// Used by `PolydatKernel::from_program` to auto-seed the
     /// kernel's `write_throughs` field, so the per-fiber
     /// re-instance path picks them up without a side channel.
     pub(crate) fn write_throughs(&self) -> &[crate::kernel::KernelWriteThrough] {
@@ -290,7 +290,7 @@ impl GkProgram {
     /// Attach the parsed AST as live metadata. Called once by
     /// every DSL compile entry point right after assembly, while
     /// the program Arc is still uniquely owned.
-    pub(crate) fn set_ast(&mut self, ast: Arc<GkFile>) {
+    pub(crate) fn set_ast(&mut self, ast: Arc<PolydatFile>) {
         self.ast = Some(ast);
     }
 
@@ -299,7 +299,7 @@ impl GkProgram {
     /// synthesizer queries this to integrate parent bindings'
     /// graph structure into child scopes. Returns `None` for
     /// programs built via programmatic (non-DSL) paths.
-    pub fn ast(&self) -> Option<&Arc<GkFile>> {
+    pub fn ast(&self) -> Option<&Arc<PolydatFile>> {
         self.ast.as_ref()
     }
 
@@ -521,7 +521,7 @@ impl GkProgram {
 
     /// Compute per-node input provenance bitmask from the DAG wiring.
     pub(crate) fn compute_provenance(
-        nodes: &[Box<dyn GkNode>],
+        nodes: &[Box<dyn PolydatNode>],
         wiring: &[Vec<WireSource>],
     ) -> Vec<u64> {
         let n = nodes.len();
@@ -577,7 +577,7 @@ impl GkProgram {
     }
 
     /// Create a new evaluation state for this program.
-    pub fn create_state(&self) -> GkState {
+    pub fn create_state(&self) -> PolydatState {
         let buffers: Vec<Vec<Value>> = self.nodes
             .iter()
             .map(|n| vec![Value::None; n.meta().outs.len()])
@@ -665,7 +665,7 @@ impl GkProgram {
             cell_cones: Vec::new(),
         };
 
-        GkState::from_parts(core, self.input_dependents.clone(), nondeterministic_nodes)
+        PolydatState::from_parts(core, self.input_dependents.clone(), nondeterministic_nodes)
     }
 
     /// Create a raw state (no provenance). For benchmarking.
@@ -828,16 +828,16 @@ impl GkProgram {
     /// handles. Cheap (one hash compare); doesn't allocate
     /// state. The pre-walker uses this to flatten one scope
     /// into another that materialises identical content.
-    pub fn is_equivalent_to(&self, other: &GkProgram) -> bool {
+    pub fn is_equivalent_to(&self, other: &PolydatProgram) -> bool {
         self.canonical_hash() == other.canonical_hash()
     }
 
     /// SRD-13d §3.2: "can-flatten?" predicate. Returns true
-    /// when this program adds no GK content the parent
+    /// when this program adds no Polydat content the parent
     /// program doesn't already supply — i.e. when the inner
     /// scope's contribution is structurally a subset of the
     /// parent's. The pre-walker uses this for nodes that
-    /// classified as `GkMatter::Definitions` to detect cases
+    /// classified as `PolydatMatter::Definitions` to detect cases
     /// where the new content turns out to be parent-equivalent
     /// (rare, but correct: a binding that duplicates a parent
     /// declaration is structurally a no-op).
@@ -848,7 +848,7 @@ impl GkProgram {
     /// equivalence form (new bindings whose definitions equal
     /// parent bindings) is documented as future work in
     /// SRD-13d §8.2 item 4 (hash normalisation depth).
-    pub fn is_subset_of(&self, parent: &GkProgram) -> bool {
+    pub fn is_subset_of(&self, parent: &PolydatProgram) -> bool {
         // Equivalent programs flatten trivially.
         if self.is_equivalent_to(parent) {
             return true;
@@ -936,19 +936,19 @@ impl GkProgram {
     /// parent kernel's const slots.
     ///
     /// `canonical_hash` stays a pure local operation (no
-    /// kernel-chain dependency); GK refuses to walk parent
+    /// kernel-chain dependency); Polydat refuses to walk parent
     /// scopes inside a per-program hash. The runtime owns
     /// the parent-chain walk and feeds the resulting program
     /// chain here. Callers are responsible for ensuring every
     /// piece of state that should affect identity lives in
-    /// some attached GK module — e.g. nbrs injects workload
+    /// some attached Polydat module — e.g. nbrs injects workload
     /// `params:` as a synthetic root module
     /// (`build_workload_params_kernel`) whose `const` bindings
     /// land in const slots `canonical_hash` covers.
-    pub fn instance_hash(&self, ancestors: &[&GkProgram]) -> [u8; 32] {
+    pub fn instance_hash(&self, ancestors: &[&PolydatProgram]) -> [u8; 32] {
         use sha2::{Sha256, Digest};
         let mut h = Sha256::new();
-        h.update(b"GkProgram-instance-v1\n");
+        h.update(b"PolydatProgram-instance-v1\n");
         h.update(self.canonical_hash());
         for a in ancestors {
             h.update(a.canonical_hash());
@@ -961,7 +961,7 @@ impl GkProgram {
     pub fn canonical_hash(&self) -> [u8; 32] {
         use sha2::{Sha256, Digest};
         let mut h = Sha256::new();
-        h.update(b"GkProgram-v1\n");
+        h.update(b"PolydatProgram-v1\n");
 
         // Inputs: emit name + kind + port type. Sorted by name
         // for stability — input declaration order is set by
@@ -1071,7 +1071,7 @@ impl GkProgram {
             return *h;
         }
         // Insert a sentinel to handle the (theoretical)
-        // cycle case — GK DAGs aren't supposed to cycle, but
+        // cycle case — Polydat DAGs aren't supposed to cycle, but
         // guarding against an infinite recursion if a future
         // node graph violates that is cheap insurance.
         memo.insert(ni, [0u8; 32]);
@@ -1483,7 +1483,7 @@ impl GkProgram {
             let value = state.core.buffers[i][0].clone();
             if matches!(value, Value::None) { continue; }
 
-            let const_node: Box<dyn crate::ast::GkNode> = match &value {
+            let const_node: Box<dyn crate::ast::PolydatNode> = match &value {
                 Value::U64(v) => Box::new(ConstU64::new(*v)),
                 Value::F64(v) => Box::new(ConstF64::new(*v)),
                 Value::Bool(v) => Box::new(ConstU64::new(if *v { 1 } else { 0 })),
@@ -1491,7 +1491,7 @@ impl GkProgram {
                 // Handles (e.g. `init prebuffered = dataset_prebuffer(...)`)
                 // get a dedicated `ConstHandle` replacement so the original
                 // side-effect-bearing node is removed from the program.
-                // Without this, every fresh fiber's `GkState` walks the
+                // Without this, every fresh fiber's `PolydatState` walks the
                 // dirty original on first pull and re-fires its eval —
                 // producing a per-fiber stampede that exhausts process
                 // thread limits when the eval spawns HTTP workers (the
@@ -1548,10 +1548,10 @@ impl GkProgram {
 /// Hash one [`super::WireSource`] in canonical form. Inputs
 /// resolve to their *name* (stable identifier) rather than
 /// their positional index. Node-output references recurse via
-/// [`GkProgram::node_canonical_hash`].
+/// [`PolydatProgram::node_canonical_hash`].
 fn canonical_wire_source(
     src: &super::WireSource,
-    program: &GkProgram,
+    program: &PolydatProgram,
     memo: &mut HashMap<usize, [u8; 32]>,
     h: &mut sha2::Sha256,
 ) {
@@ -1616,28 +1616,28 @@ fn canonical_const_value(v: &crate::ast::ConstValue, h: &mut sha2::Sha256) {
 
 #[cfg(test)]
 mod canonical_hash_tests {
-    use crate::dsl::compile_gk;
+    use crate::dsl::compile_polydat;
 
     #[test]
     fn identical_source_produces_identical_hash() {
         let src = "const dataset := \"sift1m\"\nconst count := 100\n";
-        let k1 = compile_gk(src).expect("compile1");
-        let k2 = compile_gk(src).expect("compile2");
+        let k1 = compile_polydat(src).expect("compile1");
+        let k2 = compile_polydat(src).expect("compile2");
         assert_eq!(k1.program().canonical_hash(), k2.program().canonical_hash());
     }
 
     #[test]
     fn different_const_value_changes_hash() {
-        let a = compile_gk("const x := 100\n").expect("compile a");
-        let b = compile_gk("const x := 101\n").expect("compile b");
+        let a = compile_polydat("const x := 100\n").expect("compile a");
+        let b = compile_polydat("const x := 101\n").expect("compile b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "differing const value must change canonical hash");
     }
 
     #[test]
     fn different_string_value_changes_hash() {
-        let a = compile_gk("const s := \"sift1m\"\n").expect("compile a");
-        let b = compile_gk("const s := \"sift10m\"\n").expect("compile b");
+        let a = compile_polydat("const s := \"sift1m\"\n").expect("compile a");
+        let b = compile_polydat("const s := \"sift10m\"\n").expect("compile b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "differing string value must change canonical hash");
     }
@@ -1647,16 +1647,16 @@ mod canonical_hash_tests {
         // Same RHS, different output name → different program
         // identity. The output map contributes to canonical
         // identity.
-        let a = compile_gk("const foo := 42\n").expect("compile a");
-        let b = compile_gk("const bar := 42\n").expect("compile b");
+        let a = compile_polydat("const foo := 42\n").expect("compile a");
+        let b = compile_polydat("const bar := 42\n").expect("compile b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "renamed output must change canonical hash");
     }
 
     #[test]
     fn comment_only_change_does_not_change_hash() {
-        let a = compile_gk("const x := 42\n").expect("compile a");
-        let b = compile_gk("# explanatory comment\nconst x := 42\n# trailing comment\n")
+        let a = compile_polydat("const x := 42\n").expect("compile a");
+        let b = compile_polydat("# explanatory comment\nconst x := 42\n# trailing comment\n")
             .expect("compile b");
         assert_eq!(a.program().canonical_hash(), b.program().canonical_hash(),
             "comment-only edits should not affect canonical hash — \
@@ -1665,16 +1665,16 @@ mod canonical_hash_tests {
 
     #[test]
     fn whitespace_change_does_not_change_hash() {
-        let a = compile_gk("const x := 42\n").expect("compile a");
-        let b = compile_gk("const  x  :=  42\n\n\n").expect("compile b");
+        let a = compile_polydat("const x := 42\n").expect("compile a");
+        let b = compile_polydat("const  x  :=  42\n\n\n").expect("compile b");
         assert_eq!(a.program().canonical_hash(), b.program().canonical_hash(),
             "whitespace-only edits should not affect canonical hash");
     }
 
     #[test]
     fn additional_binding_changes_hash() {
-        let a = compile_gk("const x := 1\n").expect("compile a");
-        let b = compile_gk("const x := 1\nconst y := 2\n").expect("compile b");
+        let a = compile_polydat("const x := 1\n").expect("compile a");
+        let b = compile_polydat("const x := 1\nconst y := 2\n").expect("compile b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "added output must change canonical hash");
     }
@@ -1689,9 +1689,9 @@ mod canonical_hash_tests {
         // slot that canonical_hash should cover — even when it's
         // an argument to a function call rather than a top-level
         // `const X := <literal>` binding.
-        let a = compile_gk("input cycle: u64\nshard := mod(hash(cycle), 8)\n")
+        let a = compile_polydat("input cycle: u64\nshard := mod(hash(cycle), 8)\n")
             .expect("a");
-        let b = compile_gk("input cycle: u64\nshard := mod(hash(cycle), 16)\n")
+        let b = compile_polydat("input cycle: u64\nshard := mod(hash(cycle), 16)\n")
             .expect("b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "literal-arg const value must change canonical hash");
@@ -1704,7 +1704,7 @@ mod canonical_hash_tests {
         // distinguishable. Prevents a caller from accidentally
         // comparing an instance_hash against a canonical_hash
         // and getting a coincidental match.
-        let p = compile_gk("const x := 1\n").expect("compile");
+        let p = compile_polydat("const x := 1\n").expect("compile");
         let prog = p.program();
         assert_ne!(prog.instance_hash(&[]), prog.canonical_hash());
     }
@@ -1714,9 +1714,9 @@ mod canonical_hash_tests {
         // Parent A vs B differ only in a const-slot literal —
         // canonical_hash distinguishes them, so instance_hash
         // computed against the same child must distinguish too.
-        let parent_a = compile_gk("const ds := \"v1\"\n").expect("a");
-        let parent_b = compile_gk("const ds := \"v2\"\n").expect("b");
-        let child = compile_gk("const y := 42\n").expect("child");
+        let parent_a = compile_polydat("const ds := \"v1\"\n").expect("a");
+        let parent_b = compile_polydat("const ds := \"v2\"\n").expect("b");
+        let child = compile_polydat("const y := 42\n").expect("child");
         let cp = child.program();
         let h_a = cp.instance_hash(&[parent_a.program().as_ref()]);
         let h_b = cp.instance_hash(&[parent_b.program().as_ref()]);
@@ -1731,9 +1731,9 @@ mod canonical_hash_tests {
         // must map to different identities. The hash mixes
         // ancestor[i].canonical_hash() in chain order, so swapping
         // ancestors yields a different result.
-        let g = compile_gk("const g := 1\n").expect("g");
-        let p = compile_gk("const p := 2\n").expect("p");
-        let c = compile_gk("const c := 3\n").expect("c");
+        let g = compile_polydat("const g := 1\n").expect("g");
+        let p = compile_polydat("const p := 2\n").expect("p");
+        let c = compile_polydat("const c := 3\n").expect("c");
         let cp = c.program();
         let chain1 = cp.instance_hash(&[p.program().as_ref(), g.program().as_ref()]);
         let chain2 = cp.instance_hash(&[g.program().as_ref(), p.program().as_ref()]);
@@ -1745,9 +1745,9 @@ mod canonical_hash_tests {
         // Two independent compiles of the same source feeding
         // the same child must produce the same instance_hash.
         let parent_src = "const ds := \"sift1m\"\n";
-        let p1 = compile_gk(parent_src).expect("p1");
-        let p2 = compile_gk(parent_src).expect("p2");
-        let child = compile_gk("const y := 42\n").expect("child");
+        let p1 = compile_polydat(parent_src).expect("p1");
+        let p2 = compile_polydat(parent_src).expect("p2");
+        let child = compile_polydat("const y := 42\n").expect("child");
         let cp = child.program();
         let h1 = cp.instance_hash(&[p1.program().as_ref()]);
         let h2 = cp.instance_hash(&[p2.program().as_ref()]);
@@ -1759,22 +1759,22 @@ mod canonical_hash_tests {
     #[test]
     fn is_equivalent_to_identical_programs() {
         let src = "const x := 100\n";
-        let a = compile_gk(src).expect("a");
-        let b = compile_gk(src).expect("b");
+        let a = compile_polydat(src).expect("a");
+        let b = compile_polydat(src).expect("b");
         assert!(a.program().is_equivalent_to(b.program()));
         assert!(b.program().is_equivalent_to(a.program())); // symmetric
     }
 
     #[test]
     fn is_equivalent_to_differs_when_const_differs() {
-        let a = compile_gk("const x := 100\n").expect("a");
-        let b = compile_gk("const x := 101\n").expect("b");
+        let a = compile_polydat("const x := 100\n").expect("a");
+        let b = compile_polydat("const x := 101\n").expect("b");
         assert!(!a.program().is_equivalent_to(b.program()));
     }
 
     #[test]
     fn is_subset_of_self_is_true() {
-        let p = compile_gk("const x := 1\n").expect("p");
+        let p = compile_polydat("const x := 1\n").expect("p");
         // A program is trivially a subset of itself (the
         // equivalence shortcut at the top of is_subset_of).
         assert!(p.program().is_subset_of(p.program()));
@@ -1784,28 +1784,28 @@ mod canonical_hash_tests {
     fn is_subset_of_distinct_definitions_is_false() {
         // Inner declares a NEW output the parent doesn't —
         // structurally not a subset.
-        let parent = compile_gk("const x := 1\n").expect("parent");
-        let inner = compile_gk("const y := 2\n").expect("inner");
+        let parent = compile_polydat("const x := 1\n").expect("parent");
+        let inner = compile_polydat("const y := 2\n").expect("inner");
         assert!(!inner.program().is_subset_of(parent.program()));
     }
 }
 
 #[cfg(test)]
 mod ast_metadata_tests {
-    use crate::dsl::compile_gk;
+    use crate::dsl::compile_polydat;
     use crate::dsl::ast::Statement;
 
     #[test]
     fn retained_ast_is_present_after_compile() {
         let src = "const dataset := \"sift1m\"\ncount := 100\n";
-        let k = compile_gk(src).expect("compile");
+        let k = compile_polydat(src).expect("compile");
         assert!(k.program().ast().is_some(), "AST should be retained on program");
     }
 
     #[test]
     fn binding_ast_for_finds_init_binding() {
         let src = "const dataset := \"sift1m\"\nratio := 2.5\n";
-        let k = compile_gk(src).expect("compile");
+        let k = compile_polydat(src).expect("compile");
         let stmt = k.program().binding_ast_for("dataset")
             .expect("dataset binding should be retrievable");
         match stmt {
@@ -1817,7 +1817,7 @@ mod ast_metadata_tests {
     #[test]
     fn binding_ast_for_finds_cycle_binding() {
         let src = "count := 42\n";
-        let k = compile_gk(src).expect("compile");
+        let k = compile_polydat(src).expect("compile");
         let stmt = k.program().binding_ast_for("count")
             .expect("count binding should be retrievable");
         match stmt {
@@ -1831,7 +1831,7 @@ mod ast_metadata_tests {
 
     #[test]
     fn binding_ast_for_unknown_name_returns_none() {
-        let k = compile_gk("const x := 1\n").expect("compile");
+        let k = compile_polydat("const x := 1\n").expect("compile");
         assert!(k.program().binding_ast_for("does_not_exist").is_none());
     }
 
@@ -1843,7 +1843,7 @@ mod ast_metadata_tests {
 foo := hash(cycle)
 bar := mod(foo, 100)
 ";
-        let k = compile_gk(src).expect("compile");
+        let k = compile_polydat(src).expect("compile");
         let chain = k.program()
             .local_inclusion_chain("bar", &std::collections::HashSet::new());
         assert_eq!(chain.len(), 2, "expected 2 bindings in chain, got {}", chain.len());
@@ -1865,7 +1865,7 @@ bar := mod(foo, 100)
 const seed := 12345
 mixed := hash(seed)
 ";
-        let k = compile_gk(src).expect("compile");
+        let k = compile_polydat(src).expect("compile");
         let chain = k.program()
             .local_inclusion_chain("mixed", &std::collections::HashSet::new());
         // Just `mixed` — `seed` is final, walk stops.
@@ -1884,7 +1884,7 @@ mixed := hash(seed)
 foo := hash(cycle)
 bar := mod(foo, 100)
 ";
-        let k = compile_gk(src).expect("compile");
+        let k = compile_polydat(src).expect("compile");
         let mut excluded = std::collections::HashSet::new();
         excluded.insert("foo".to_string());
         let chain = k.program()
@@ -1898,7 +1898,7 @@ bar := mod(foo, 100)
 
     #[test]
     fn local_inclusion_chain_unknown_name_is_empty() {
-        let k = compile_gk("const x := 1\n").expect("compile");
+        let k = compile_polydat("const x := 1\n").expect("compile");
         let chain = k.program()
             .local_inclusion_chain("missing", &std::collections::HashSet::new());
         assert!(chain.is_empty());
@@ -1914,12 +1914,12 @@ bar := mod(foo, 100)
 /// cycle's timestamp.
 #[cfg(test)]
 mod r1v_contagion_tests {
-    use crate::dsl::compile_gk;
+    use crate::dsl::compile_polydat;
     use crate::ast::Value;
 
     /// Pull `out` from kernel `k` at coordinate `cycle`,
     /// returning the resulting u64.
-    fn pull_u64_at(k: &mut crate::kernel::GkKernel, cycle: u64, out: &str) -> u64 {
+    fn pull_u64_at(k: &mut crate::kernel::PolydatKernel, cycle: u64, out: &str) -> u64 {
         k.set_inputs(&[cycle]);
         match k.pull(out) {
             Value::U64(v) => *v,
@@ -1935,7 +1935,7 @@ mod r1v_contagion_tests {
         let src = "input cycle: u64\n\
                    now := current_epoch_millis()\n\
                    b := add(now, 1)\n";
-        let mut k = compile_gk(src).expect("compile");
+        let mut k = compile_polydat(src).expect("compile");
         let v0 = pull_u64_at(&mut k, 0, "b");
         // Spin briefly to ensure system clock advances. A few ms
         // is enough; if clock granularity is coarser the test
@@ -1963,7 +1963,7 @@ mod r1v_contagion_tests {
                    now := current_epoch_millis()\n\
                    b := add(now, 1)\n\
                    c := add(b, 1)\n";
-        let mut k = compile_gk(src).expect("compile");
+        let mut k = compile_polydat(src).expect("compile");
         let v0 = pull_u64_at(&mut k, 0, "c");
         std::thread::sleep(std::time::Duration::from_millis(4));
         let v1 = pull_u64_at(&mut k, 1, "c");
@@ -1980,7 +1980,7 @@ mod r1v_contagion_tests {
         let src = "input cycle: u64\n\
                    c := counter()\n\
                    wrapped := add(c, 1000)\n";
-        let mut k = compile_gk(src).expect("compile");
+        let mut k = compile_polydat(src).expect("compile");
         let v0 = pull_u64_at(&mut k, 0, "wrapped");
         let v1 = pull_u64_at(&mut k, 1, "wrapped");
         let v2 = pull_u64_at(&mut k, 2, "wrapped");
@@ -1996,7 +1996,7 @@ mod r1v_contagion_tests {
         // per-pull freshness.
         let src = "input cycle: u64\n\
                    c := counter()\n";
-        let mut k = compile_gk(src).expect("compile");
+        let mut k = compile_polydat(src).expect("compile");
         k.set_inputs(&[0]);
         let a = match k.pull("c") { Value::U64(v) => *v, _ => panic!() };
         let b = match k.pull("c") { Value::U64(v) => *v, _ => panic!() };
@@ -2015,7 +2015,7 @@ mod r1v_contagion_tests {
         let src = "input cycle: u64\n\
                    pure_chain := add(cycle, 1)\n\
                    pure_outer := mul(pure_chain, 2)\n";
-        let mut k = compile_gk(src).expect("compile");
+        let mut k = compile_polydat(src).expect("compile");
         // For the same coordinate, multiple pulls must return
         // the same value AND not re-evaluate the eval function.
         // The latter property is hard to assert without

@@ -2,7 +2,7 @@
 #
 # This uses the legacy nosqlbench semicolon-chain binding syntax
 # (Hash(); Mod(1000000)) which is automatically translated to GK
-# nodes. For the native GK syntax, see gk_bindings.yaml.
+# nodes. For the native Polydat syntax, see polydat_bindings.yaml.
 #
 # Usage:
 #   nbrs run workload=examples/workloads/getting_started/basic_workload.yaml cycles=10

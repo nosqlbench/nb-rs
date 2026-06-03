@@ -41,15 +41,15 @@ unifying capability the surfaces collectively provide.
   into E1 (self-contained submission) + E4 (library
   inheritance) + the expression-as-kernel correspondence
   in §2.
-- [SRD-10: GK Language and Compilation](language_spec.md)
+- [SRD-10: Polydat Language and Compilation](language_spec.md)
   — DSL syntax. Owns the language grammar; this doc shows
   how the grammar's full expressivity becomes a host
   utility.
-- [SRD-11: GK Evaluation Model](evaluation_model.md)
+- [SRD-11: Polydat Evaluation Model](evaluation_model.md)
   — two-lifecycle classification. Owns the const-binding
   contract; this doc shows how `eval_const_expr` is the
   const-binding contract at single-expression scale.
-- [SRD-14: GK Config Expressions](expression_engine.md)
+- [SRD-14: Polydat Config Expressions](expression_engine.md)
   — the `{...}` config expression surface. Owns one of the
   evaluation surfaces; this doc places it in the broader
   embedding catalog.
@@ -106,7 +106,7 @@ shorter input.
 ## 2. The expression-as-kernel correspondence
 
 Every text input the host submits compiles to a
-`GkProgram` — same shape, same compilation pipeline, same
+`PolydatProgram` — same shape, same compilation pipeline, same
 slot contract, as a full workload kernel. The size of the
 program is proportional to the input's complexity; an
 expression like `"k * 2 + 1"` compiles to a three-node
@@ -270,7 +270,7 @@ Signature:
 
 ```rust
 pub fn interpolate_via_kernel(
-    text: &str, kernel: &GkKernel,
+    text: &str, kernel: &PolydatKernel,
 ) -> Result<String, String>
 ```
 
@@ -349,7 +349,7 @@ Three things to notice:
 - **No expression grammar required.** The template is not
   a polydat expression — it's a string with `{placeholder}`
   syntax. Polydat doesn't try to parse `"data/.../"` as a
-  GK expression; the `{...}` form is the only syntactic
+  Polydat expression; the `{...}` form is the only syntactic
   surface interpolation cares about.
 - **Lifecycle gating doesn't apply.** Since no eval
   follows, there's no `LifecycleMismatch` to fire. If a
@@ -380,7 +380,7 @@ Signature:
 
 ```rust
 pub fn evaluate_spec(
-    spec_text: &str, kernel: &GkKernel,
+    spec_text: &str, kernel: &PolydatKernel,
 ) -> Result<Vec<Value>, String>
 ```
 
@@ -402,20 +402,20 @@ Cost: dominated by the recognition cascade (~us per cheap
 form) + an `eval_const_expr` fallback for the literal-list
 case (~ms).
 
-### 3.4 The underlying surface: `compile_gk`
+### 3.4 The underlying surface: `compile_polydat`
 
-Location: [`crate::dsl::compile::compile_gk`].
+Location: [`crate::dsl::compile::compile_polydat`].
 
 Signature:
 
 ```rust
-pub fn compile_gk(source: &str) -> Result<GkKernel, String>
+pub fn compile_polydat(source: &str) -> Result<PolydatKernel, String>
 ```
 
 The full compilation entry point: text → compiled +
-instanced `GkKernel`. The three higher-level surfaces above
+instanced `PolydatKernel`. The three higher-level surfaces above
 are all built on this; the host can also reach for
-`compile_gk` directly when it wants a kernel rather than
+`compile_polydat` directly when it wants a kernel rather than
 just a value.
 
 Use case: host crates that pre-compile expressions for
@@ -438,7 +438,7 @@ property at expression scale.
 ### Axiom E1 — Self-contained submission
 
 **A host submits self-contained text (and optionally a
-`&GkKernel` for context). Polydat does not reach for
+`&PolydatKernel` for context). Polydat does not reach for
 ambient state, global registries-not-named-in-the-call, or
 thread-local context. The submission is the input; the
 return is the output; there is no third channel.**
@@ -491,7 +491,7 @@ declaring per-expression node availability.**
 Enforcement: the compiler reads the runtime registry at
 compile time. Host crates that extend the registry (e.g.,
 nbrs-activity registers runtime-context nodes; nbrs-metrics
-registers GK metric nodes) make those nodes available to all
+registers Polydat metric nodes) make those nodes available to all
 embedded expression evaluation.
 
 ### Axiom E5 — Lifecycle transparency
@@ -500,7 +500,7 @@ embedded expression evaluation.
 need: const-fold via `eval_const_expr` (the expression must
 be Effectively-const), kernel-bound dynamic via
 `interpolate_via_kernel` + eval (the expression sees the
-kernel's bound state), or full compile via `compile_gk` (the
+kernel's bound state), or full compile via `compile_polydat` (the
 host owns the resulting kernel for repeated evaluation).
 Each surface preserves the substrate's lifecycle
 classification — they differ in *which* lifecycle window
@@ -510,7 +510,7 @@ Enforcement: the surfaces are distinct entry points with
 distinct contracts. `eval_const_expr` rejects expressions
 that reach dynamic inputs (typed error). The two-step
 interpolate-then-eval composition handles dynamic-via-
-kernel cases. `compile_gk` exposes the full kernel for any
+kernel cases. `compile_polydat` exposes the full kernel for any
 remaining use case.
 
 ### Axiom E6 — Composability via interpolation
@@ -603,7 +603,7 @@ The minimum a host must do to use the surfaces:
 | Obligation | Required surface |
 |---|---|
 | Self-contained text | A `&str` submitted to one of §3's surfaces |
-| Context (when needed) | A `&GkKernel` for kernel-bound evaluation |
+| Context (when needed) | A `&PolydatKernel` for kernel-bound evaluation |
 | Registry contributions (when needed) | Factory registration before evaluation |
 
 That's it. A baseline-only host calls a surface, receives
@@ -781,7 +781,7 @@ The Graph Compiler's Node Fusion pass (§5.3 of
 [graph_compiler.md]) implements this via the catalog of
 known conversions in [`library::convert`]:
 `U64ToString`, `F64ToString`, `U64ToF64`, `JsonToStr`,
-etc. Each catalog entry is itself a `GkNode` with declared
+etc. Each catalog entry is itself a `PolydatNode` with declared
 input and output `PortType`s; Node Fusion's
 adapter-insertion rule inserts the appropriate adapter
 node when a wire's source type differs from its
@@ -900,15 +900,15 @@ boundary extension as the spec means:
 
 ### 5.5 Virtual nodes — host-registered factory contributions
 
-**Status: shipped.** Host crates contribute `GkNode`
+**Status: shipped.** Host crates contribute `PolydatNode`
 implementations to the runtime registry; from the
 substrate's perspective these are indistinguishable from
 built-in nodes and obey the full slot contract.
 
 The host registers a factory contribution with
-[`GkRuntime`](../../src/dsl/factories.rs) before
+[`PolydatRuntime`](../../src/dsl/factories.rs) before
 embedding evaluation begins. Each contribution declares
-one or more `GkNode` implementations whose `eval`
+one or more `PolydatNode` implementations whose `eval`
 delegates to host code:
 
 ```rust
@@ -931,8 +931,8 @@ Examples of current host contributions:
 
 | Host crate | Virtual node | Purpose |
 |---|---|---|
-| nbrs-activity | `runtime_context` family | Surfaces per-cycle activity state (current op name, scope path, etc.) as typed input values to GK expressions. |
-| nbrs-metrics | GK metric nodes | Surfaces metric values (counters, gauges) to GK predicates without leaking metric infrastructure into polydat. |
+| nbrs-activity | `runtime_context` family | Surfaces per-cycle activity state (current op name, scope path, etc.) as typed input values to Polydat expressions. |
+| nbrs-metrics | Polydat metric nodes | Surfaces metric values (counters, gauges) to Polydat predicates without leaking metric infrastructure into polydat. |
 | Adapters | Driver-aware nodes | A CQL adapter might register a `cql_table_exists` predicate node usable in workload expressions. |
 
 The host's only obligation: register the factory before
@@ -1078,14 +1078,14 @@ D1/D2/D3 at expression scale.
 
 #### 5.7.1 The embedded expression's kernel is its own scope tier
 
-Per the Runtime Model's L1 realisation (per-fiber `GkState`),
+Per the Runtime Model's L1 realisation (per-fiber `PolydatState`),
 an embedded expression's kernel is its own scope tier
-owned by the host call. The kernel's `GkState` is not
+owned by the host call. The kernel's `PolydatState` is not
 shared with the host's other state; the kernel's program
 is `Arc<GkProgram>`, sharable across fibers if the host
 caches it.
 
-The host context (passed as `&GkKernel`) is the **outer
+The host context (passed as `&PolydatKernel`) is the **outer
 scope** for the embedded expression. Context Fusion (per
 the Graph Compiler) populates the expression kernel's
 extern slots from the context kernel's bindings at
@@ -1278,7 +1278,7 @@ pub enum EmbeddingError {
 |---|---|---|
 | `Parse` | Lexer/parser rejects the input. | Surface the parse position to the user; the input is malformed expression text. |
 | `UnresolvedPlaceholder` | `{name}` has no binding in the kernel chain. | Check the kernel's `scope_coordinates()`; suggest declaring the name as a workload param or fixing the spelling. |
-| `LifecycleMismatch` | `eval_const_expr` was called on text reaching a dynamic input. | Either: (a) use the two-step interpolate-then-eval pattern to resolve dynamic names, or (b) accept the expression must be evaluated per-cycle via `compile_gk` + cycle dispatch. |
+| `LifecycleMismatch` | `eval_const_expr` was called on text reaching a dynamic input. | Either: (a) use the two-step interpolate-then-eval pattern to resolve dynamic names, or (b) accept the expression must be evaluated per-cycle via `compile_polydat` + cycle dispatch. |
 | `UnknownNode` | A node call uses a name not in the registry. | If `suggestion` is `Some`, render it; otherwise tell the user to check the available node catalog. Host crates that register custom nodes should ensure registration happens before evaluation. |
 | `TypeMismatch` | Wire types incompatible and no auto-adapter exists. | Surface the from/to node and types; suggest inserting an explicit conversion (e.g., `u64_to_str(x)`) or using a different node. |
 | `NodeEvalPanic` | A node panicked during scope-init. | Surface the panic message; this is typically a node-internal contract violation (invalid argument range, etc.). Forwarded to the user with provenance. |
@@ -1334,7 +1334,7 @@ property each E-axiom rests on.
 | E1 (Self-contained submission) | Compiler entry-point design — pure functions of declared inputs + the process-level node registry. |
 | E2 (Typed result) | Substrate T1 (every slot typed) → compiler emits typed output → value carries declared type. |
 | E3 (Deterministic evaluation) | Substrate T1+L2 (typed deterministic lifecycle) + compiler H3 (hoisting preserves value) + NF2 (fusion preserves determinism). |
-| E4 (Library inheritance) | Compiler reads the runtime registry; registry extension via `GkRuntime` is process-level and uniform. |
+| E4 (Library inheritance) | Compiler reads the runtime registry; registry extension via `PolydatRuntime` is process-level and uniform. |
 | E5 (Lifecycle transparency) | Substrate L2 (two-lifecycle classification) + compiler hoisting analysis (§3 in graph_compiler) → surfaces match each lifecycle window. |
 | E6 (Composability via interpolation) | Substrate S1+S2 (synthesis surface) + compiler Context Fusion → interpolation is text-level access to bound slot values. |
 
@@ -1354,7 +1354,7 @@ use polydat::kernel::interp::interpolate_via_kernel;
 use polydat::dsl::compile::eval_const_expr;
 
 fn evaluate_predicate(
-    text: &str, kernel: &GkKernel,
+    text: &str, kernel: &PolydatKernel,
 ) -> Result<bool, String> {
     let resolved = interpolate_via_kernel(text, kernel)?;
     let value = eval_const_expr(&resolved)?;
@@ -1438,7 +1438,7 @@ A compile + scope-init evaluation for a small expression is
 via `from_program` reduces repeated evaluation to per-fiber
 state setup + per-cycle dispatch — sub-microsecond per
 evaluation for an interpreted (P1) or closure (P2) kernel.
-Hosts that care about cost choose `compile_gk` + cache;
+Hosts that care about cost choose `compile_polydat` + cache;
 hosts that don't care reach for `eval_const_expr` per call.
 
 ---
@@ -1449,7 +1449,7 @@ hosts that don't care reach for `eval_const_expr` per call.
 
 When a host has N expressions over the same kernel context,
 it currently issues N compile + eval cycles. A bulk
-surface — `evaluate_many(&[&str], &GkKernel) ->
+surface — `evaluate_many(&[&str], &PolydatKernel) ->
 Vec<Result<Value, EmbeddingError>>` — could amortise some
 compilation work (shared parser state, shared node lookups,
 etc.). Profile-driven: only worth specifying if bulk
@@ -1481,7 +1481,7 @@ result shapes.
 [`crate::ast`]: ../../src/ast.rs
 [`crate::kernel`]: ../../src/kernel/mod.rs
 [`crate::dsl::compile::eval_const_expr`]: ../../src/dsl/compile.rs
-[`crate::dsl::compile::compile_gk`]: ../../src/dsl/compile.rs
+[`crate::dsl::compile::compile_polydat`]: ../../src/dsl/compile.rs
 [`crate::dsl::factories::GkRuntime`]: ../../src/dsl/factories.rs
 [`crate::kernel::interp::interpolate_via_kernel`]: ../../src/kernel/interp.rs
 [`crate::iteration::comprehension::eval::evaluate_spec`]: ../../src/iteration/comprehension/eval.rs

@@ -17,9 +17,9 @@ detail they reference:
 
 ## Motivation
 
-GK's `Value` enum carries `Value::None` as the canonical "absent"
+Polydat's `Value` enum carries `Value::None` as the canonical "absent"
 sentinel. The kernel's name-resolution chokepoints
-(`GkKernel::get_constant`, `GkKernel::lookup`) already treat
+(`PolydatKernel::get_constant`, `PolydatKernel::lookup`) already treat
 `Value::None` outputs as "not present in this scope" and fall
 through accordingly. But the same discipline wasn't applied at
 the language surface: string-literal interpolation in source
@@ -74,9 +74,9 @@ const X := "{Y}"            // Y is unbound (read as Value::None)
    ↓
    const-fold writes Value::None to X's output buffer
    ↓
-   GkKernel::get_constant("X") filters Value::None → returns None
+   PolydatKernel::get_constant("X") filters Value::None → returns None
    ↓
-   GkKernel::lookup("X") falls through to find_input tier
+   PolydatKernel::lookup("X") falls through to find_input tier
 ```
 
 The pre-fix bug was that printf used the catch-all `_ =>
@@ -142,7 +142,7 @@ The workload-parser sugar `set: { X: "{Y}" }` desugars to:
 const X := "{Y}"
 ```
 
-This is canonical GK grammar — the desugar produces no
+This is canonical Polydat grammar — the desugar produces no
 special-case AST. The semantic correctness lives in **how GK
 compiles and evaluates `const NAME := <expr>`**, not in the
 sugar layer.
@@ -168,7 +168,7 @@ then provides the fall-through automatically:
 
 1. `get_constant(NAME)` — own scope's folded output. Real
    value → return it. `Value::None` → **fall through**
-   (existing filter, gkkernel.rs:458-462).
+   (existing filter, polydatkernel.rs:458-462).
 2. `find_input(NAME)` — own scope's input slot, populated at
    `materialize_wiring_from_outer` time from the outer
    scope's `NAME` binding (if any). If wired, return that
@@ -195,7 +195,7 @@ read invariant from SRD-13f §"The read invariant" requires
 where the buffer may hold `Value::None` (Rule 1) but
 `outer.lookup` falls through to outer's wired-from-grandparent
 slot, the wiring uses value-copy via `outer.lookup` instead
-of cell-attach (gkkernel.rs:711-727). Cell-attach would
+of cell-attach (polydatkernel.rs:711-727). Cell-attach would
 broadcast the raw `None` buffer and defeat the chain walk;
 value-copy of `lookup` result keeps inner aligned with the
 invariant. For non-const computed outputs (per-cycle dynamic
@@ -280,7 +280,7 @@ P3 error names the field if any don't.
 ## Why this is safe
 
 - **The desugar invariant is preserved.** `set:` writes
-  canonical GK; the new semantics emerge from how GK compiles
+  canonical GK; the new semantics emerge from how Polydat compiles
   `const`, not from special-casing the sugar.
 - **Existing workloads where every bind-point resolves to a
   real value keep working unchanged.** Rule 1's hot path is
@@ -303,7 +303,7 @@ P3 error names the field if any don't.
 - [Scope Model](scope_model.md) — scope chain, visibility
   rules, two-tier lookup. The existing machinery this SRD
   leverages.
-- [SRD 13d](../../../docs/sysref/13d_op_template_scope.md) — op-template GK scope;
+- [SRD 13d](../../../docs/sysref/13d_op_template_scope.md) — op-template Polydat scope;
   the rendering site Rule 3 targets.
 - [Wire Materialization](wire_materialization.md) —
   cross-scope wire materialization invariants. Conditional-

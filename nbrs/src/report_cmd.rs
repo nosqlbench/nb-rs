@@ -852,7 +852,7 @@ fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
     const FLAGS_WITH_VALUES: &[&str] = &[
         "--session", "--session-name", "--session-path",
         "--session-reuse", "--session-keep", "--session-shelflife",
-        "--resume", "--gk-lib",
+        "--resume", "--polydat-lib",
     ];
     const BOOL_FLAGS: &[&str] = &[
         "--strict", "--no-prompt", "--resume-latest",

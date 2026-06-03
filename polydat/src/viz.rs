@@ -1,9 +1,9 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! DAG visualization for GK kernels.
+//! DAG visualization for Polydat Kernels.
 //!
-//! Renders a GK kernel's node graph as DOT (with record nodes and
+//! Renders a Polydat Kernel's node graph as DOT (with record nodes and
 //! port-based edge routing), Mermaid, or self-contained SVG.
 //!
 //! The DOT output uses graphviz record syntax:
@@ -38,12 +38,12 @@ struct VizEdge {
     to_port: String,
 }
 
-/// Render a GK source string as DOT with record nodes and ports.
-pub fn gk_to_dot(source: &str) -> Result<String, String> {
+/// Render a Polydat source string as DOT with record nodes and ports.
+pub fn polydat_to_dot(source: &str) -> Result<String, String> {
     let (nodes, edges) = build_graph(source)?;
     let mut dot = String::new();
 
-    dot.push_str("digraph gk {\n");
+    dot.push_str("digraph Polydat {\n");
     dot.push_str("    rankdir=TB;\n");
     dot.push_str("    bgcolor=\"#1a1a2e\";\n");
     dot.push_str("    node [shape=record, style=filled, fontname=\"monospace\", fontsize=11];\n");
@@ -132,8 +132,8 @@ pub fn gk_to_dot(source: &str) -> Result<String, String> {
     Ok(dot)
 }
 
-/// Render a GK source string as a Mermaid flowchart.
-pub fn gk_to_mermaid(source: &str) -> Result<String, String> {
+/// Render a Polydat source string as a Mermaid flowchart.
+pub fn polydat_to_mermaid(source: &str) -> Result<String, String> {
     let (nodes, edges) = build_graph(source)?;
     let mut lines = vec!["flowchart TD".to_string()];
 
@@ -166,13 +166,13 @@ pub fn gk_to_mermaid(source: &str) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
-/// Render a GK source string as self-contained SVG.
+/// Render a Polydat source string as self-contained SVG.
 ///
 /// Generates DOT with record nodes and port syntax, then renders
 /// through layout-rs (pure Rust, no external graphviz needed).
 /// Layout-rs supports record shapes and port-based edge routing.
-pub fn gk_to_svg(source: &str) -> Result<String, String> {
-    let dot_source = gk_to_dot(source)?;
+pub fn polydat_to_svg(source: &str) -> Result<String, String> {
+    let dot_source = polydat_to_dot(source)?;
 
     // Parse DOT through layout-rs
     let mut parser = layout::gv::DotParser::new(&dot_source);
@@ -418,11 +418,11 @@ fn dot_escape(s: &str) -> String {
 mod tests {
     use super::*;
 
-    const SIMPLE_GK: &str = "input cycle: u64\nh := hash(cycle)\nuser_id := mod(h, 1000000)";
+    const SIMPLE_POLYDAT: &str = "input cycle: u64\nh := hash(cycle)\nuser_id := mod(h, 1000000)";
 
     #[test]
     fn dot_has_ports() {
-        let dot = gk_to_dot(SIMPLE_GK).unwrap();
+        let dot = polydat_to_dot(SIMPLE_POLYDAT).unwrap();
         assert!(dot.contains("shape=record"));
         assert!(dot.contains("bgcolor"));
         assert!(dot.contains(":o_"));  // output port syntax
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn dot_dark_theme() {
-        let dot = gk_to_dot(SIMPLE_GK).unwrap();
+        let dot = polydat_to_dot(SIMPLE_POLYDAT).unwrap();
         assert!(dot.contains("#1a1a2e"));  // dark bg
         assert!(dot.contains("#16213e"));  // node fill
         assert!(dot.contains("#e0e0e0"));  // light text
@@ -439,14 +439,14 @@ mod tests {
 
     #[test]
     fn mermaid_output() {
-        let mermaid = gk_to_mermaid(SIMPLE_GK).unwrap();
+        let mermaid = polydat_to_mermaid(SIMPLE_POLYDAT).unwrap();
         assert!(mermaid.contains("flowchart TD"));
         assert!(mermaid.contains("-->"));
     }
 
     #[test]
     fn svg_dark_background() {
-        let svg = gk_to_svg(SIMPLE_GK).unwrap();
+        let svg = polydat_to_svg(SIMPLE_POLYDAT).unwrap();
         assert!(svg.contains("<svg"));
         assert!(svg.contains("#1a1a2e"));
     }
@@ -454,14 +454,14 @@ mod tests {
     #[test]
     fn inferred_coords() {
         let src = "h := hash(cycle)\nid := mod(h, 100)";
-        let dot = gk_to_dot(src).unwrap();
+        let dot = polydat_to_dot(src).unwrap();
         assert!(dot.contains("cycle"));
     }
 
     #[test]
     fn multi_output() {
         let src = "input cycle: u64\n(x, y) := mixed_radix(cycle, 100, 0)\nhx := hash(x)";
-        let dot = gk_to_dot(src).unwrap();
+        let dot = polydat_to_dot(src).unwrap();
         assert!(dot.contains("mixed_radix"));
         assert!(dot.contains("hash"));
     }

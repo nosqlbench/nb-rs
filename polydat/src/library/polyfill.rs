@@ -30,14 +30,14 @@
 
 use std::sync::Arc;
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, SliceArc, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, SliceArc, Slot, Value};
 
 // =================================================================
 // Adapter macro
 // =================================================================
 
 /// Generate an edge-adapter struct + `Default` + `new` +
-/// `GkNode` impl from (name, node_name, from_port, to_port,
+/// `PolydatNode` impl from (name, node_name, from_port, to_port,
 /// eval closure) tuple. Every adapter in this module follows
 /// the same shape: one input slot of `from_port` type, one
 /// output port of `to_port` type, eval is a single-input
@@ -72,7 +72,7 @@ macro_rules! polyfill_adapter {
             }
         }
 
-        impl GkNode for $name {
+        impl PolydatNode for $name {
             fn meta(&self) -> &NodeMeta {
                 &self.meta
             }
@@ -920,7 +920,7 @@ polyfill_adapter!(VecF32ToVecI32, "__vec_f32_to_vec_i32", VecF32, VecI32, |v| {
 mod tests {
     use super::*;
 
-    fn check<N: GkNode>(node: &N, input: Value, expected: Value) {
+    fn check<N: PolydatNode>(node: &N, input: Value, expected: Value) {
         let mut out = [Value::None];
         node.eval(&[input], &mut out);
         assert_eq!(
@@ -930,7 +930,7 @@ mod tests {
         );
     }
 
-    fn check_panics<N: GkNode>(node: &N, input: Value, msg_substring: &str) {
+    fn check_panics<N: PolydatNode>(node: &N, input: Value, msg_substring: &str) {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut out = [Value::None];
             node.eval(&[input], &mut out);

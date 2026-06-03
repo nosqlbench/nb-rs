@@ -38,8 +38,8 @@ slice — not what `from_params` actually parses.
 > in the structure; if it appears in the structure, the runtime
 > uses it. No second list.
 
-This mirrors the GK principle that one canonical kernel answers
-all in-scope names — see *GK Is Canonical Scope* in MEMORY.md.
+This mirrors the Polydat principle that one canonical kernel answers
+all in-scope names — see *Polydat Is Canonical Scope* in MEMORY.md.
 
 ## Sketch
 

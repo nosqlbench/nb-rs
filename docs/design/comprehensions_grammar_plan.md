@@ -31,8 +31,8 @@ state, and ends with a green CI.
 | 8 | Sequencer expansions (`bucket`, `concat_seq`, `interval_seq`) — reuses `nbrs-activity::opseq` algorithms | ✅ shipped — both parallel-list and ratio-prefix shorthand forms + 4 tests |
 | 9 | Layer 5 — set operators (`concat`, `unique`, `interleave`, `intersect`, `subtract`, `cycle`, `reverse`, `take`, `skip`) | ✅ shipped — comprehension-layer dispatcher with recursive arg eval + 10 tests |
 | 10 | Index-space ordering rejection on Union mode (`validate_order_for_mode`) | ✅ shipped — 7 tests |
-| 11 | Layer 7b — destructure clauses (`(host, port) in pairs_csv()`) — depends on `Value::Tuple` | ⏳ deferred — gated on GK type extension |
-| 12 | `order: custom(<gk-fn>)` — depends on Push 11 | ⏳ deferred — same `Value::Tuple` dep |
+| 11 | Layer 7b — destructure clauses (`(host, port) in pairs_csv()`) — depends on `Value::Tuple` | ⏳ deferred — gated on Polydat type extension |
+| 12 | `order: custom(<polydat-fn>)` — depends on Push 11 | ⏳ deferred — same `Value::Tuple` dep |
 
 Push 10 is small and orthogonal; can land at any time
 between pushes 1 and 11.
@@ -69,7 +69,7 @@ the implementation work is the rest of this plan.
 | I6 | Set operators not in stdlib | Push 9 |
 | I7 | Sequencer expansions not in clause-expression layer | Push 8 |
 | I8 | Index-space orderings on Union pass-through (should reject) | Push 10 |
-| I9 | Destructure form not parsed; `Value::Tuple` not in GK | Push 11 |
+| I9 | Destructure form not parsed; `Value::Tuple` not in Polydat | Push 11 |
 
 ---
 
@@ -162,7 +162,7 @@ ClauseSource::Single(e.into()) }`).
 Lexer + AST + desugar to stdlib `range(...)`. Independent of
 any other push.
 
-- [ ] GK lexer recognises `..`, `..=`, and trailing
+- [ ] Polydat lexer recognises `..`, `..=`, and trailing
       `..step`.
 - [ ] Lexer disambiguates `1..10` (range) from `1.0..10`
       (float `1.0` followed by `..10`) — the half-open
@@ -272,7 +272,7 @@ matter; pick a batch and land them.
 - [ ] `log_steps(start, end, n)` — log-spaced
 - [ ] `linear_steps(start, end, n)` — alias for
       `subdivide_inclusive`
-- [ ] Each registers as a normal GK stdlib node;
+- [ ] Each registers as a normal Polydat stdlib node;
       composes with const folding.
 - [ ] Tests: typical sizes, `n=0`, large `n`, float
       vs integer bases, composition with Push 3 ranges
@@ -335,7 +335,7 @@ Tiny, independent.
 ## Push 11 — Layer 7b destructure *(closes I9 partial)*
 
 Big lift: requires `Value::Tuple` (or `Vec<Vec<Value>>`
-return shape). Deferred until the GK side is ready.
+return shape). Deferred until the Polydat side is ready.
 
 - [ ] Decide between (a) `Value::Tuple(Vec<Value>)` variant,
       or (b) clause-evaluator-returns-`Vec<Vec<Value>>` shape.
@@ -349,13 +349,13 @@ return shape). Deferred until the GK side is ready.
 
 ---
 
-## Push 12 — `order: custom(<gk-fn>)` *(closes I9 partial)*
+## Push 12 — `order: custom(<polydat-fn>)` *(closes I9 partial)*
 
 Same `Value::Tuple` dependency as Push 11.
 
 - [ ] Parser already accepts `custom(<fn>)`; eval path
-      currently errors. Wire to GK function lookup.
-- [ ] GK function signature: `fn(tuples: List<Tuple>) ->
+      currently errors. Wire to Polydat function lookup.
+- [ ] Polydat function signature: `fn(tuples: List<Tuple>) ->
       List<Tuple>`. Validation at scope-init (function
       exists, signature matches).
 - [ ] Tests: custom ordering reorders, returns subset,

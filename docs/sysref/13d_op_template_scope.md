@@ -1,4 +1,4 @@
-# 13d: Op-template GK scope layer
+# 13d: Op-template Polydat scope layer
 
 **Status:** normative (sketch — not yet implemented)
 **Owner:** polydat (kernel/program API), nbrs-activity
@@ -13,10 +13,10 @@
 
 ## What this SRD covers
 
-This document extends [SRD-13c — GK Scope Model](13c_gk_scope_model.md)
+This document extends [SRD-13c — Polydat Scope Model](13c_polydat_scope_model.md)
 with the op-template scope layer. It specifies:
 
-- That an op template *is* a GK scope, distinct from its enclosing
+- That an op template *is* a Polydat scope, distinct from its enclosing
   phase scope.
 - **Scope flattening** — the optimisation by which the compiler
   detects that an op-template scope is materially equivalent to
@@ -31,7 +31,7 @@ with the op-template scope layer. It specifies:
 
 Without this SRD the existing pipeline merges every op-template's
 bindings into one phase-level program. That model worked when ops
-had no per-template GK content of their own; it loses to
+had no per-template Polydat content of their own; it loses to
 diagnostics quality, cache granularity, and naming hygiene as soon
 as they do.
 
@@ -50,7 +50,7 @@ phase kernel
 op-template kernel        ← this layer
 ```
 
-The op-template kernel's GK content is whatever the op declares:
+The op-template kernel's Polydat content is whatever the op declares:
 
 - Its `bindings:` block.
 - Wire expressions auto-injected from sugared `metrics:` forms
@@ -73,13 +73,13 @@ boundary, every short-circuit — is in §4.
 ### 2.1 Validation: every kernel compiles at workload load
 
 At workload-init time, the compiler walks every op template,
-collects its GK matter, and **compiles the kernel program** to
-prove the GK source is valid. This is type-checking, not
-instancing — no `GkState`, no per-cycle execution, no scope
+collects its Polydat matter, and **compiles the kernel program** to
+prove the Polydat source is valid. This is type-checking, not
+instancing — no `PolydatState`, no per-cycle execution, no scope
 binding. The output of this pass is the program AST + program
 hash for each scope node.
 
-Failures here are workload errors (bad GK source, unresolved
+Failures here are workload errors (bad Polydat source, unresolved
 names, type mismatches) and surface before any cycle runs.
 
 ### 2.2 Instancing: at premap time, scope-by-scope
@@ -93,7 +93,7 @@ extended one tier so op-template kernels are part of the same
 walk.
 
 Each instance comes from the op template's compiled program via
-`GkKernel::from_program(program.clone())` plus
+`PolydatKernel::from_program(program.clone())` plus
 `bind_outer_scope(parent_kernel)`, identical machinery to every
 other scope layer — no new mechanism. The instance cache (SRD-13c
 §"Per-Scope Canonical Kernel Cache") is consulted before
@@ -124,7 +124,7 @@ adapter execution cost.
 ## 3. Scope flattening
 
 Compiling a per-template kernel for every op is wasteful when the
-template adds nothing to its parent's GK content. The compiler
+template adds nothing to its parent's Polydat content. The compiler
 detects this case and **flattens** the per-template scope into
 its parent — descendants `bind_outer_scope` directly to the
 phase kernel, the op-template kernel layer simply doesn't exist
@@ -142,27 +142,27 @@ answers most cases; the **program-hash check** (§3.2) is the
 refinement that catches definitions which happen to be identical
 to a parent's. The pre-walk (§3.3) wires them together.
 
-### 3.1 The `HasGkMatter` trait
+### 3.1 The `HasPolydatMatter` trait
 
 Every node in the construction tree (components, phases, op
 templates, scenario-tree nodes) implements a single trait
-declaring its GK usage:
+declaring its Polydat usage:
 
 ```rust
 pub trait HasGkMatter {
-    /// Classify this node's contribution to GK content. The
+    /// Classify this node's contribution to Polydat content. The
     /// scope walker uses this to decide whether the node needs
     /// its own kernel context or can reference the parent's.
-    fn gk_matter(&self) -> GkMatter;
+    fn polydat_matter(&self) -> GkMatter;
 }
 
 pub enum GkMatter {
-    /// No GK references at all. Trivial node — no `bindings:`,
+    /// No Polydat references at all. Trivial node — no `bindings:`,
     /// no `metrics:`, no inline `{{<expr>}}`, no GK-typed
     /// fields. Walker skips kernel construction entirely.
     None,
 
-    /// References parent-scope GK names but **defines nothing
+    /// References parent-scope Polydat names but **defines nothing
     /// new**. Examples:
     /// - `metrics:` declarations whose `value:` is a bare name
     ///   that resolves to a parent binding.
@@ -187,10 +187,10 @@ The trait is implemented by **workload-model AST types** —
 the static description of the workload as parsed from YAML.
 Runtime objects (the `Component` tree, fibers, dispensers)
 *consume* the marks the trait produced; they don't implement
-it themselves. GK content lives on the AST, not on runtime
+it themselves. Polydat content lives on the AST, not on runtime
 state.
 
-| Type                            | `gk_matter()` derives from                                                        |
+| Type                            | `polydat_matter()` derives from                                                        |
 |---------------------------------|------------------------------------------------------------------------------------|
 | `Workload` (root)               | Top-level `bindings:` block                                                        |
 | `WorkloadPhase`                 | Phase-level `bindings:`; `for_each:` clauses                                       |
@@ -211,7 +211,7 @@ question** the scope-tree pre-walker asks at every node:
 
 This is the cheap path: 90%+ of op templates classify as `None`
 or `Readonly` and never reach the compiler. The hash check is
-reserved for nodes that genuinely declare new GK content.
+reserved for nodes that genuinely declare new Polydat content.
 
 ### 3.2 The hash check (refinement for `Definitions` nodes)
 
@@ -227,7 +227,7 @@ constants — no instance state required. Two scopes with identical
 runtime instances would differ only by parent-bound values, which
 is exactly what `bind_outer_scope` already handles.
 
-A new helper on the GK API exposes this without forcing
+A new helper on the Polydat API exposes this without forcing
 materialisation:
 
 ```rust
@@ -253,7 +253,7 @@ scope add anything new?" answered without instancing.)
 The scope-tree pre-walk visits every node bottom-up. At each
 node:
 
-1. Ask `node.gk_matter()`.
+1. Ask `node.polydat_matter()`.
 2. **If `None` or `Readonly`** — mark as **flattened**. No
    kernel will be compiled for this scope. Done; no further
    work.
@@ -273,10 +273,10 @@ recomputes it.
 The trait + hash-check separation means most workloads pay
 **zero compile cost** for op-template scope construction:
 trivial ops short-circuit at the trait check; only ops with
-real GK content compile a candidate program.
+real Polydat content compile a candidate program.
 
 The mechanism generalises beyond op templates: any scope-tree
-node whose `gk_matter()` is `None`/`Readonly` (or whose
+node whose `polydat_matter()` is `None`/`Readonly` (or whose
 `Definitions` content collapses by hash) can be flattened by the
 same pre-walk. SRD-40b's op-template surface is the first
 concrete consumer; future for_each / do-loop optimisations may
@@ -287,10 +287,10 @@ piggyback on the same mechanism.
 The flattening decision is **deterministic over the workload
 AST**. A workload that compiles with op X flattened will compile
 that way on every run; adding a single binding to op X may flip
-its `gk_matter()` from `Readonly` to `Definitions` (and the bit
+its `polydat_matter()` from `Readonly` to `Definitions` (and the bit
 to materialised), but the result is stable for any fixed
 workload text. Diagnostics (`dryrun=op` with verbose) print the
-per-node `gk_matter()` value and the resulting flatten/
+per-node `polydat_matter()` value and the resulting flatten/
 materialise mark.
 
 ---
@@ -300,7 +300,7 @@ materialise mark.
 Scope flattening, the canonical-kernel cache, and the
 materialise-or-reuse decision all depend on a staged
 compilation pipeline. This section names the stages
-explicitly so each subsystem (parser, GK compiler, scope-tree
+explicitly so each subsystem (parser, Polydat compiler, scope-tree
 walker, premap, runtime) has a clear input/output contract
 with the next.
 
@@ -311,10 +311,10 @@ survive all filters reach the materialisation step.
 
 ### 4.1 Stage A — Source → AST
 
-**Input:** YAML / inline GK source text.
+**Input:** YAML / inline Polydat source text.
 **Output:** AST with location metadata for diagnostics.
 **Cost:** Single parse pass per source string; trivial.
-**Failure mode:** YAML syntax error, GK parse error.
+**Failure mode:** YAML syntax error, Polydat parse error.
 **Cache:** None (source is the cache key for everything
 downstream; you can't cache before parsing).
 
@@ -340,7 +340,7 @@ small and the rewrites are cheap, so re-running them per
 workload load is acceptable.
 
 The output of this stage is what the trait classification
-(§3.1) inspects. `gk_matter()` reads the resolvable AST, not
+(§3.1) inspects. `polydat_matter()` reads the resolvable AST, not
 the raw source — placeholder rewrites can promote a `None`
 node to `Definitions` (e.g. an inline `{{<expr>}}` becomes a
 `__expr_N := …` binding).
@@ -359,11 +359,11 @@ This is the **first filter**. `None` and `Readonly` short-
 circuit the entire downstream pipeline — no compilation, no
 hash check, no instancing. Most op templates classify here.
 
-### 4.4 Stage D — Compile to `GkProgram`
+### 4.4 Stage D — Compile to `PolydatProgram`
 
 **Input:** Resolvable AST + parent program (for auto-extern
 slot resolution).
-**Output:** `GkProgram` (compiled, immutable, carries
+**Output:** `PolydatProgram` (compiled, immutable, carries
 `program_hash`).
 **Cost:** Moderate. Type-checking, name resolution against
 the parent chain, auto-extern wiring.
@@ -371,7 +371,7 @@ the parent chain, auto-extern wiring.
 mismatch, output-modifier conflict).
 **Cache:** **Yes — keyed on `(ast_hash, parent_ast_hash)`**.
 Two scopes whose AST and parent's AST hash identically
-produce the same `GkProgram`; the compile work runs once per
+produce the same `PolydatProgram`; the compile work runs once per
 unique pair.
 
 This stage runs only for nodes that classified as
@@ -381,7 +381,7 @@ program, not 50.
 
 ### 4.5 Stage E — Hash check (subset / equivalence)
 
-**Input:** `GkProgram` + parent `GkProgram`.
+**Input:** `PolydatProgram` + parent `PolydatProgram`.
 **Output:** "flatten" / "materialise" decision.
 **Cost:** Hash compare (cheap) plus, if hashes differ, an
 optional `is_subset_of` walk (still cheap — it's a structural
@@ -397,9 +397,9 @@ node (§3.3 mark) and frozen for the workload load.
 
 ### 4.6 Stage F — Instance materialisation
 
-**Input:** `GkProgram` + parent `GkKernel` instance + bound
+**Input:** `PolydatProgram` + parent `PolydatKernel` instance + bound
 parent values.
-**Output:** `GkKernel` (`from_program` + `bind_outer_scope`
+**Output:** `PolydatKernel` (`from_program` + `bind_outer_scope`
 + `set_input`).
 **Cost:** Small per instance — clones the program reference,
 copies parent values into extern slots.
@@ -418,10 +418,10 @@ do need a new instance here."
 
 ### 4.7 Stage G — Per-cycle execution
 
-**Input:** `GkKernel` instance + cycle coordinates.
+**Input:** `PolydatKernel` instance + cycle coordinates.
 **Output:** Bound wire values.
 **Cost:** Hot path — runs every cycle.
-**Failure mode:** Per-cycle GK error (typically caught by
+**Failure mode:** Per-cycle Polydat error (typically caught by
 strict-mode validation).
 **Cache:** None at this layer; the hot path is the kernel's
 own per-fiber state.
@@ -433,7 +433,7 @@ own per-fiber state.
        |
    Stage B: AST + params → resolvable AST
        |
-   Stage C: gk_matter()? ──┬── None / Readonly → flatten, done
+   Stage C: polydat_matter()? ──┬── None / Readonly → flatten, done
        |                   └── Definitions
        v
    Stage D: compile → GkProgram   [cached by (ast_hash, parent_ast_hash)]
@@ -457,7 +457,7 @@ made and recorded.
 `dryrun=op` (§2.3) walks stages A–F for every op template
 and prints, per node:
 
-- The `gk_matter()` classification.
+- The `polydat_matter()` classification.
 - The compile-cache hit/miss and the program_hash.
 - The hash-check decision (when applicable).
 - The materialise-or-flatten mark.
@@ -476,7 +476,7 @@ kernel (for `bind_outer_scope`, for hash-keyed cache lookups,
 for diagnostics) can't just point at "my immediate parent" —
 the immediate parent didn't materialise. They need a reference
 that walks past flattened tiers to the **last materialised
-ancestor**. The GK subcontextual API exposes this directly so
+ancestor**. The Polydat subcontextual API exposes this directly so
 no caller has to walk the scope tree by hand.
 
 ### 5.1 The walking reference
@@ -537,18 +537,18 @@ diagnostics, since they don't exist as kernels. `dryrun=op`
 output reads:
 
 ```
-op pvs_query.predict   gk_matter=Definitions  flatten=false
+op pvs_query.predict   polydat_matter=Definitions  flatten=false
    logical_name=phase.pvs_query.op.predict
    binds_outer=phase.pvs_query
    program_hash=…  cache=miss
    instance=new
 
-op pvs_query.bare      gk_matter=None         flatten=true
+op pvs_query.bare      polydat_matter=None         flatten=true
    logical_name=phase.pvs_query        ← inherited; no own kernel
 ```
 
 Logical names are also the right surface for `nbrs describe
-gk` (resolves Q2 in §7) — when the user inspects the workload's
+polydat` (resolves Q2 in §7) — when the user inspects the workload's
 GK structure, every kernel has a stable, human-readable name
 independent of compile-cache hits or flattening decisions.
 
@@ -585,7 +585,7 @@ Assert that for both runs:
 - Every metric `metric_instance` row is bit-identical (same
   family, same labels, same recorded values across all sample
   rows).
-- Every captured GK output (per cycle, per op) compares equal.
+- Every captured Polydat output (per cycle, per op) compares equal.
 - Side-effect logs (op execution order, throttle delays,
   emit-dispenser output) are identical.
 
@@ -602,7 +602,7 @@ diagnostics):
   `{{...}}`. (The trivial case.)
 - Op template whose only `metrics:` declarations use bare-name
   `value:` references that resolve to phase bindings. (No new
-  GK content; flatten safe.)
+  Polydat content; flatten safe.)
 - Op template whose `bindings:` block is byte-identical to the
   phase's `bindings:` block. (Exact program-hash equality.)
 
@@ -637,7 +637,7 @@ Direct unit tests on `GkProgram::is_equivalent_to` and
 
 Compare the canonical-kernel cache hit rate and total compile
 time between baseline and flattened modes for a workload with
-many trivial op templates (e.g. 50+ ops with no GK matter). Flat
+many trivial op templates (e.g. 50+ ops with no Polydat matter). Flat
 mode should reduce kernel instances by approximately the
 trivial-op count and reduce compile time proportionally. Not
 strict thresholds; the test is a regression guard against future
@@ -656,7 +656,7 @@ op-template layer:
   outer scopes per SRD-13c §"Output Modifiers".
 - The canonical-kernel cache keyed on
   `(program_hash, parent_instance_hash)` works at this layer
-  too — multiple op templates with the same GK content share a
+  too — multiple op templates with the same Polydat content share a
   canonical kernel; per-instance state diverges only on bound
   values.
 
@@ -679,8 +679,8 @@ else flows from SRD-13c.
    when first needed. §6.4's hash-API contract tests pin the
    refusal at the API level.
 
-2. **`nbrs describe gk` flatten/materialise display.** Yes —
-   the diagnostic surface in `nbrs describe gk` (when details
+2. **`nbrs describe polydat` flatten/materialise display.** Yes —
+   the diagnostic surface in `nbrs describe polydat` (when details
    are turned on) shows, for every scope-tree node:
    - The materialise/flatten bit.
    - The logical kernel name (§5.3).
@@ -741,14 +741,14 @@ SRD freezes them as decisions, not pending.
 
 | Phase | What                                                                          | Where                                      |
 |-------|-------------------------------------------------------------------------------|--------------------------------------------|
-| 1     | `HasGkMatter` trait + impls on `WorkloadPhase`, `ParsedOp`, `ScenarioNode`    | `nbrs-workload/src/model.rs`               |
+| 1     | `HasPolydatMatter` trait + impls on `WorkloadPhase`, `ParsedOp`, `ScenarioNode`    | `nbrs-workload/src/model.rs`               |
 | 2     | `GkProgram::is_equivalent_to` / `is_subset_of`; redefinition-forbidden check  | `polydat/src/kernel.rs` (or sibling) |
 | 3     | Workload-init validation walk over op templates (Stage A–D, §4)               | `nbrs-activity/src/runner.rs`              |
 | 4     | Scope-tree node carries `materialised: bool` + `logical_name`; pre-walk sets  | `nbrs-activity/src/scope_tree.rs`          |
 | 5     | `nearest_materialised()` walking accessor (§5.1)                              | `nbrs-activity/src/scope_tree.rs`          |
 | 6     | Premap descends to op level when `materialised`                               | `nbrs-activity/src/scope_tree.rs`          |
 | 7     | `dryrun=op` depth + per-stage diagnostics (§4.9, §5.3)                        | `nbrs-activity/src/runner.rs`              |
-| 8     | `nbrs describe gk` flatten/materialise/logical-name display                   | `nbrs/src/describe.rs`                     |
+| 8     | `nbrs describe polydat` flatten/materialise/logical-name display                   | `nbrs/src/describe.rs`                     |
 | 9     | Op-dispenser holds (or doesn't hold) its own kernel handle                    | `nbrs-activity/src/activity.rs`            |
 
 Phases 1–2 are independently testable in isolation. Phases 3–5
@@ -764,11 +764,11 @@ per-op-template kernels for materialised scopes (via
 `build_op_template_scope_kernel` in `nbrs-activity/src/scope.rs`)
 and installs them on `cached_kernel` slots. `OpBuilder` carries
 per-op-template programs, `FiberBuilder` instances one
-`GkKernel` per template at fiber creation via the canonical
+`PolydatKernel` per template at fiber creation via the canonical
 `from_program` + `bind_outer_scope` recipe (SRD-13c §"Per-Scope
 Canonical Kernel Cache"), and `resolve_pulls_for_op` routes
 wrapper-side reads to the right state. `MetricsDispenser`
-resolves through the GK pull plan against the op-template
+resolves through the Polydat pull plan against the op-template
 kernel's program.
 
 `MetricsDispenser` still requires `value:` to be a bare

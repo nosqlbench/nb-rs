@@ -203,7 +203,7 @@ and indexed (R2 push-down with closed-form draws).
 
 ## PR 4 — Phase 5: Predicate analyzer ✅
 
-**Goal:** Structured analysis of GK boolean expressions used as
+**Goal:** Structured analysis of Polydat boolean expressions used as
 filter predicates per spec §10.9.
 
 ### Deliverables
@@ -249,12 +249,12 @@ filter predicates per spec §10.9.
 ### Notes
 
 - The recognizer catalog walks the predicate **string** rather
-  than a pre-parsed GK AST. Pre-parsed AST input is a future
+  than a pre-parsed Polydat AST. Pre-parsed AST input is a future
   extension; not needed for R5 (Phase 6) which only consults
   the structured factorization output.
 - Nondeterministic-function detection is text-pattern-based
   (recognizes `random`, `pcg(`, `now(`, etc.). A future
-  refinement could consult polydat's GK kernel
+  refinement could consult polydat's Polydat kernel
   `requires_seed` flags; today's text check is conservative
   (false positives mark `Opaque`, never false negatives).
 
@@ -402,7 +402,7 @@ per spec §9.1 + §9.2.
 - Predicate evaluator is sufficient for §10.9.5 catalog
   patterns. Unknown predicates evaluate to `true`
   (conservative pass-through); production wiring to
-  polydat's GK expression evaluator is a Phase 9 task.
+  polydat's Polydat expression evaluator is a Phase 9 task.
 - `Source::Generator` / `Source::WorkloadParamList` /
   continuous sources currently exhaust to `None` in the
   interpreter — they need runtime evaluator wiring that
@@ -460,7 +460,7 @@ the shared compiled IR.
 ### Notes
 
 - `KernelScope` is the algebra-layer abstraction; nb-rs's
-  `GkKernel` implements it during the Phase 9 (PR 9)
+  `PolydatKernel` implements it during the Phase 9 (PR 9)
   migration. Tests use a `MockKernel` to exercise the
   surfaces end-to-end without pulling in the full GK
   runtime.
@@ -557,7 +557,7 @@ the old `Comprehension` shape with the new polydat surfaces.
   deferred).
 - [x] **Executor** (`nbrs-activity`): `runtime_iterate` calls
   `polydat::comprehension::runtime::evaluate_for_iteration`
-  directly; per-iter kernel built via `GkKernel::for_iteration`.
+  directly; per-iter kernel built via `PolydatKernel::for_iteration`.
   Two-branch Cartesian/Union dispatch collapsed into one
   algebra-native path (PR 9c-4).
 - [x] **Scope-tree** (`nbrs-activity`):

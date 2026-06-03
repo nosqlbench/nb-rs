@@ -12,7 +12,7 @@
 //!    time, then extract variable-length slices at cycle time using
 //!    hash-based offset selection. Fast hot path — just a memcpy.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 // =================================================================
@@ -44,7 +44,7 @@ impl U64ToBytes {
     }
 }
 
-impl GkNode for U64ToBytes {
+impl PolydatNode for U64ToBytes {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Bytes(inputs[0].as_u64().to_le_bytes().to_vec().into());
@@ -76,7 +76,7 @@ impl BytesFromHash {
     }
 }
 
-impl GkNode for BytesFromHash {
+impl PolydatNode for BytesFromHash {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let seed = inputs[0].as_u64();
@@ -157,7 +157,7 @@ impl ByteImageExtract {
     }
 }
 
-impl GkNode for ByteImageExtract {
+impl PolydatNode for ByteImageExtract {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let slice = self.image.extract(inputs[0].as_u64(), self.slice_size);
@@ -258,7 +258,7 @@ impl CharImageExtract {
     }
 }
 
-impl GkNode for CharImageExtract {
+impl PolydatNode for CharImageExtract {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let text = self.image.extract(inputs[0].as_u64(), self.slice_size);
@@ -293,7 +293,7 @@ impl ByteSlice {
     }
 }
 
-impl GkNode for ByteSlice {
+impl PolydatNode for ByteSlice {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let bytes = inputs[0].as_bytes();
@@ -328,7 +328,7 @@ impl ToHex {
     }
 }
 
-impl GkNode for ToHex {
+impl PolydatNode for ToHex {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let hex: String = inputs[0].as_bytes().iter().map(|b| format!("{b:02x}")).collect();
@@ -361,7 +361,7 @@ impl FromHex {
     }
 }
 
-impl GkNode for FromHex {
+impl PolydatNode for FromHex {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let s = inputs[0].as_str();
@@ -457,7 +457,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a byte-buffer node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "bytes_from_hash" => Some(Ok(Box::new(BytesFromHash::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(16) as usize,

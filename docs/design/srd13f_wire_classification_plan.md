@@ -30,19 +30,19 @@ the canonical four-case synthesizer.
 `build_phase_scope_kernel`, and `build_op_template_scope_kernel`
 apply the four-case rule to every wire reference they encounter.
 
-**Foundational primitive — AST-as-metadata on `GkProgram`:**
+**Foundational primitive — AST-as-metadata on `PolydatProgram`:**
 
 A binding's "matter" is not contiguous in source: a binding's
 RHS may invoke helpers, module functions, or other named
 bindings that live elsewhere in the file. Source-text slicing
 captures only the binding's surface declaration, not its
 graph-structural neighbourhood. Therefore the AST itself
-(`Arc<GkFile>`) is retained on every compiled `GkProgram` as
+(`Arc<GkFile>`) is retained on every compiled `PolydatProgram` as
 live metadata.
 
 - `polydat/src/kernel/program.rs` — add `ast: Arc<GkFile>`
-  field to `GkProgram`. Populated by every compile entry point
-  in `compile.rs` (`compile_gk_*`, `compile_ast*`, `Compiler::compile`).
+  field to `PolydatProgram`. Populated by every compile entry point
+  in `compile.rs` (`compile_polydat_*`, `compile_ast*`, `Compiler::compile`).
 - Accessors:
   - `pub fn ast(&self) -> &Arc<GkFile>` — the full retained AST.
   - `pub fn binding_ast_for(&self, name: &str) -> Option<&Statement>`
@@ -81,22 +81,22 @@ live metadata.
 
 **AST-mode synthesis path:**
 
-The existing synthesizer concatenates `.gk` source text and
+The existing synthesizer concatenates `.polydat` source text and
 re-parses. To consume the AST primitive, the synthesizer needs
 either:
 
 - (a) An AST pretty-printer that re-emits `Statement` →
   text and stays faithful to grammar (modifiers, tuple targets,
   interpolated strings). Risk: drift between parser and printer.
-- (b) A direct AST-construction path that builds a `GkFile`
+- (b) A direct AST-construction path that builds a `PolydatFile`
   by composing the subscope's own AST with the inherited
   `Statement`s and feeds it to `compile_ast_*` (which already
   exists — see `compile.rs:458`). No round-trip through text.
   Cleaner; matches the user's "AST as kernel metadata" framing.
 
 Stage 1 commits to (b). Synthesizers move from string
-concatenation to `GkFile` assembly. The compile entry point
-already accepts `GkFile`, so the change is local to the
+concatenation to `PolydatFile` assembly. The compile entry point
+already accepts `PolydatFile`, so the change is local to the
 synthesizers — no compiler surgery.
 
 **Files touched:**
@@ -104,8 +104,8 @@ synthesizers — no compiler surgery.
 - `polydat/src/kernel/program.rs` — add `ast` field +
   accessors.
 - `polydat/src/dsl/compile.rs` — every compile entry
-  point passes the parsed `GkFile` Arc through to the
-  assembler, which forwards it to `GkProgram` at construction.
+  point passes the parsed `PolydatFile` Arc through to the
+  assembler, which forwards it to `PolydatProgram` at construction.
 - `polydat/src/dsl/assembler.rs` — accept and forward
   the `Arc<GkFile>`.
 - `nbrs-activity/src/scope.rs` — `build_scope`,
@@ -142,7 +142,7 @@ synthesizers — no compiler surgery.
 
 ## Stage 2 — Kernel parent-ref + cascade-on-read primitive
 
-**Deliverable:** `GkKernel` carries an optional `parent`
+**Deliverable:** `PolydatKernel` carries an optional `parent`
 reference. `materialize_wiring_from_outer` (formerly
 `bind_outer_scope`) records cascade routes for each `extern X`
 slot; reads on those slots delegate to `parent.pull(X)`.
@@ -150,8 +150,8 @@ Shared-cell attachment stays unchanged.
 
 **Specific changes:**
 
-- `polydat/src/kernel/gkkernel.rs::GkKernel` gains
-  `parent: Option<Arc<GkKernel>>`. Set by
+- `polydat/src/kernel/polydatkernel.rs::PolydatKernel` gains
+  `parent: Option<Arc<PolydatKernel>>`. Set by
   `materialize_subscope` / `adopt_subscope` at construction.
 - `polydat/src/kernel/engines.rs::EngineCore::read_input`
   gains a cascade-route slot per input. When the slot's route
@@ -159,7 +159,7 @@ Shared-cell attachment stays unchanged.
   `parent.pull(name)` instead of reading the local buffer.
   Routes are set up at construction by
   `materialize_wiring_from_outer`.
-- `materialize_wiring_from_outer` (in `gkkernel.rs`): for each
+- `materialize_wiring_from_outer` (in `polydatkernel.rs`): for each
   input slot whose program-side declaration is `extern X: T`
   with the explicit-extern marker (Stage 1 emits this), record
   the cascade route to `parent.pull(X)`. Shared cells continue
@@ -192,14 +192,14 @@ together cover the cases those patches were patching.
 **Specific changes:**
 
 - `nbrs-activity/src/bindings.rs::compile_from_scope` — drop
-  the `workload_level_gk: Option<&str>` parameter and the
+  the `workload_level_polydat: Option<&str>` parameter and the
   source-append block. The phase scope's matter (from Stage
   1's synthesizer) is complete.
 - `nbrs-activity/src/scope.rs::build_scope` — drop the
-  `workload_level_gk` parameter and the reference-scan block
+  `workload_level_polydat` parameter and the reference-scan block
   that fed the source-append.
 - `nbrs-activity/src/executor.rs::ExecCtx` — drop the
-  `workload_level_gk: Option<String>` field. Drop the
+  `workload_level_polydat: Option<String>` field. Drop the
   threading at the `ExecCtx` construction site.
 - `polydat/src/comprehension/synthesis.rs::synthesize_for_each_scope`
   — drop the `phase_bindings: Option<&str>` parameter and
@@ -216,7 +216,7 @@ together cover the cases those patches were patching.
 
 **Gate (Stage 3 test surface):**
 
-- `grep -rn "workload_level_gk" nbrs-activity polydat`
+- `grep -rn "workload_level_polydat" nbrs-activity polydat`
   zero hits in src/ trees (test fixtures may retain literal
   uses where they verify the synthesizer's output).
 - `cargo build --workspace --tests` zero warnings.
@@ -279,7 +279,7 @@ unresolved-reference validation error surface.
 
 - **AST retention memory cost** — every compiled program now
   carries an `Arc<GkFile>`. Programs are reused across fibers
-  (Arc-shared), and `GkFile` is small (a `Vec<Statement>` of
+  (Arc-shared), and `PolydatFile` is small (a `Vec<Statement>` of
   enum nodes), so the cost is bounded. Negligible against
   per-fiber state buffers. The Arc means no clone on share.
 - **Module/extern resolution in inherited AST** — when the
@@ -292,7 +292,7 @@ unresolved-reference validation error surface.
 - **Recursive inclusion termination** — the inclusion walk
   terminates at case 1 (promoted-final), case 2 (authored
   extern), case 4 (unresolved). A workload with circular
-  refs across scopes would loop, but GK's existing
+  refs across scopes would loop, but Polydat's existing
   acyclic-DAG constraint prevents that statically.
 - **Side-effecting nodes** — under local inclusion, a
   side-effecting nullary node like
@@ -321,10 +321,10 @@ unresolved-reference validation error surface.
 ## Status
 
 - Stage 1: **landed (cases 1+3)** 2026-05-11.
-  - AST retained on `GkProgram` (`ast` field +
+  - AST retained on `PolydatProgram` (`ast` field +
     `binding_ast_for`, `local_inclusion_chain`).
   - AST-mode synthesizer wired into `build_scope` via a new
-    `parent_kernel: Option<&GkKernel>` parameter (carries both
+    `parent_kernel: Option<&PolydatKernel>` parameter (carries both
     the program's retained AST and the folded constant state).
   - Pretty-printer covers Statement / Expr / modifier / arg /
     binop / escapes (12 round-trip tests).
@@ -369,13 +369,13 @@ unresolved-reference validation error surface.
   gap. Until then the architectural cleanup isn't worth the
   semantic-change risk.
 - Stage 3: **landed** 2026-05-11.
-  - `build_scope::workload_level_gk` parameter + scan block: **removed**.
-  - `compile_from_scope::workload_level_gk` parameter + source-append + `input cycle: u64` fallback: **removed**.
+  - `build_scope::workload_level_polydat` parameter + scan block: **removed**.
+  - `compile_from_scope::workload_level_polydat` parameter + source-append + `input cycle: u64` fallback: **removed**.
   - `compile_bindings_with_libs_excluding`: kept the
-    workload_level_gk parameter but switched its internal
+    workload_level_polydat parameter but switched its internal
     handling from post-emit source-append to
-    `scope.ingest_gk_source(..., Inherited)` before emit.
-  - `ExecCtx::workload_level_gk` field: **removed** (no readers
+    `scope.ingest_polydat_source(..., Inherited)` before emit.
+  - `ExecCtx::workload_level_polydat` field: **removed** (no readers
     left after the build_scope/compile_from_scope retirements).
   - Phase-scope coord propagation: synthesizer now emits
     `input ...: u64` from the parent program's coord names.

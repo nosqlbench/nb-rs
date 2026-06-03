@@ -5,7 +5,7 @@
 //!
 //! `ScenarioNode` (in `nbrs-workload`) is the *static authored*
 //! tree — what the user wrote in YAML. `ScopeTree` is the
-//! *runtime hierarchy* — what GK and the scheduler see. Every
+//! *runtime hierarchy* — what Polydat and the scheduler see. Every
 //! non-trivial scenario node gets a 1:1 scope here, with
 //! parent pointers, depth, pragma sets, and a slot for a compiled
 //! kernel.
@@ -46,7 +46,7 @@ pub type ScopeNodeIdx = usize;
 #[derive(Debug, Clone)]
 pub enum ScopeKind {
     /// The workload root. Always the single tree root. Owns the
-    /// outer GK kernel that's currently compiled in
+    /// outer Polydat Kernel that's currently compiled in
     /// `runner::run_with_observer` once at session start.
     Workload,
     /// A named scenario. Wraps the scenario's children so that
@@ -79,10 +79,10 @@ pub enum ScopeKind {
     /// A phase reference. With SRD-13d Phase 6 the phase is no
     /// longer a leaf — every op template the phase declares
     /// becomes an `OpTemplate` child of this node. The kernel
-    /// slot, if filled, holds the per-phase GK program.
+    /// slot, if filled, holds the per-phase Polydat program.
     Phase { name: String },
     /// SRD-13d Phase 6 — an op template's scope, child of its
-    /// declaring phase. Per-template GK content (`bindings:`,
+    /// declaring phase. Per-template Polydat content (`bindings:`,
     /// `metrics:` wire-injections, inline `{{<expr>}}` rewrites)
     /// hangs off this node; the scope-flattening pre-walk
     /// (§3.3) decides whether it materialises its own kernel
@@ -92,13 +92,13 @@ pub enum ScopeKind {
     /// `Component::register_instrument`) surfaces per-op
     /// rather than per-phase.
     OpTemplate { name: String },
-    /// Scenario-tree-level GK bindings block (see
+    /// Scenario-tree-level Polydat bindings block (see
     /// [`nbrs_workload::model::ScenarioNode::Bindings`]). The
-    /// `source` is GK matter text that compiles into a kernel
+    /// `source` is Polydat matter text that compiles into a kernel
     /// layered over the parent scope. Used for any scope-tree-
     /// level state injection: workload-param shadowing (the
     /// `set: { ... }` sugar form), derived bindings spanning a
-    /// subtree, shared cells, etc. — the GK grammar is the
+    /// subtree, shared cells, etc. — the Polydat grammar is the
     /// only constraint on what the source may contain.
     Bindings {
         source: String,
@@ -106,7 +106,7 @@ pub enum ScopeKind {
 }
 
 impl ScopeKind {
-    /// True if this kind opens a *new* GK scope (its own
+    /// True if this kind opens a *new* Polydat scope (its own
     /// kernel + pragmas + extern wiring). Phase scopes are only
     /// "new" when the phase has its own bindings or it's an
     /// iteration of a parent — that decision lives in the
@@ -250,9 +250,9 @@ pub struct ScopeNode {
     /// inline pragma block once the workload model supports
     /// per-node pragmas).
     pub pragmas: PragmaSet,
-    /// Cache for this scope's compiled GK kernel — the canonical
-    /// instance that owns its `Arc<GkProgram>` and a folded-
-    /// constant-seeded `GkState` so `get_constant(name)` is a
+    /// Cache for this scope's compiled Polydat Kernel — the canonical
+    /// instance that owns its `Arc<PolydatProgram>` and a folded-
+    /// constant-seeded `PolydatState` so `get_constant(name)` is a
     /// straight `&self` read. Populated at pre-map time by
     /// [`ScopeTree::install_kernel`].
     ///
@@ -260,15 +260,15 @@ pub struct ScopeNode {
     /// non-trivial scope owns a kernel. The cached kernel is
     /// shared via `Arc` (read-only canonical state). Mutable
     /// per-iteration / per-fiber execution pulls a fresh kernel
-    /// via `GkKernel::from_program(kernel.program().clone())` —
+    /// via `PolydatKernel::from_program(kernel.program().clone())` —
     /// the cache-and-rebind primitive documented on
-    /// `GkKernel::from_program`.
+    /// `PolydatKernel::from_program`.
     ///
     /// `OnceLock` keeps installation lock-free; downstream
     /// readers walk the parent chain via
     /// [`ScopeTree::lookup_name`] and never touch this slot
     /// directly.
-    pub cached_kernel: std::sync::OnceLock<std::sync::Arc<polydat::kernel::GkKernel>>,
+    pub cached_kernel: std::sync::OnceLock<std::sync::Arc<polydat::kernel::PolydatKernel>>,
     /// SRD-13d §3 scope-flattening mark — set once at
     /// pre-walk by [`ScopeTree::mark_scope_flattening`] and
     /// read by every consumer (premap, runtime, diagnostics).
@@ -281,7 +281,7 @@ pub struct ScopeNode {
     /// SRD-13d §5.3 logical kernel name. Stable, fully-
     /// qualified scope-tree path (`workload`, `phase.<n>`,
     /// `phase.<n>.op.<o>`, etc.). Used by `dryrun=op`
-    /// diagnostics and `nbrs describe gk` displays. Empty
+    /// diagnostics and `nbrs describe wiring` displays. Empty
     /// before the pre-walk runs.
     pub logical_name: String,
 }
@@ -551,7 +551,7 @@ impl ScopeTree {
     ///
     /// `is_materialising` is the predicate the pre-walk
     /// applies per node — typically a closure that consults
-    /// the AST node's `HasGkMatter` classification (None /
+    /// the AST node's `HasPolydatMatter` classification (None /
     /// Readonly ⇒ flatten; Definitions ⇒ check program-hash
     /// equivalence with the parent and decide). The walker is
     /// agnostic to the exact predicate; SRD-13d §3.3 fixes
@@ -704,11 +704,11 @@ impl ScopeTree {
     /// Rule 2 write-through bindings ride on the program itself
     /// (baked in by the SRD-67 builder's finalize step). Any
     /// kernel built from the program inherits them automatically
-    /// via `GkKernel::from_program` — no side channel.
+    /// via `PolydatKernel::from_program` — no side channel.
     pub fn op_template_programs_for_phase(
         &self,
         phase_idx: ScopeNodeIdx,
-    ) -> std::collections::HashMap<String, std::sync::Arc<polydat::kernel::GkProgram>> {
+    ) -> std::collections::HashMap<String, std::sync::Arc<polydat::kernel::PolydatProgram>> {
         let mut out = std::collections::HashMap::new();
         for &child_idx in &self.nodes[phase_idx].children {
             let child = &self.nodes[child_idx];
@@ -740,7 +740,7 @@ impl ScopeTree {
     pub fn nearest_installed_ancestor_kernel(
         &self,
         idx: ScopeNodeIdx,
-    ) -> Option<std::sync::Arc<polydat::kernel::GkKernel>> {
+    ) -> Option<std::sync::Arc<polydat::kernel::PolydatKernel>> {
         let mut cursor = self.nodes.get(idx)?.parent;
         while let Some(p) = cursor {
             if let Some(k) = self.nodes[p].cached_kernel.get() {
@@ -756,13 +756,13 @@ impl ScopeTree {
     /// Skips ancestor levels whose `cached_kernel` is empty
     /// (intermediate nodes that don't own their own kernel).
     /// Used by the checkpoint identity path to feed
-    /// [`polydat::kernel::GkProgram::instance_hash`]
+    /// [`polydat::kernel::PolydatProgram::instance_hash`]
     /// (SRD-44 §"Identity matching at resume" + project
     /// memory `program_vs_instance_hash`).
     pub fn ancestor_kernels(
         &self,
         idx: ScopeNodeIdx,
-    ) -> Vec<std::sync::Arc<polydat::kernel::GkKernel>> {
+    ) -> Vec<std::sync::Arc<polydat::kernel::PolydatKernel>> {
         let mut out = Vec::new();
         let mut cursor = self.nodes.get(idx).and_then(|n| n.parent);
         while let Some(p) = cursor {
@@ -955,13 +955,13 @@ impl ScopeTree {
     /// Install the canonical compiled kernel for `scope_idx`.
     ///
     /// Called at pre-map time after compiling the scope's
-    /// `GkProgram`. Once installed, the kernel is the *single*
+    /// `PolydatProgram`. Once installed, the kernel is the *single*
     /// authoritative answer for "what is `<name>` at this
     /// scope?" — every name visible at this scope (own outputs
     /// plus parent-inherited values bound via
-    /// [`GkKernel::materialize_wiring_from_outer`]) resolves through the
-    /// standard GK API on this one kernel. Callers don't walk
-    /// the scope tree to do name resolution; GK's auto-extern +
+    /// [`PolydatKernel::materialize_wiring_from_outer`]) resolves through the
+    /// standard Polydat API on this one kernel. Callers don't walk
+    /// the scope tree to do name resolution; Polydat's auto-extern +
     /// outer-scope wiring already encapsulates the layering.
     ///
     /// Idempotent only by virtue of `OnceLock`: a second install
@@ -971,16 +971,26 @@ impl ScopeTree {
     pub fn install_kernel(
         &self,
         scope_idx: ScopeNodeIdx,
-        kernel: std::sync::Arc<polydat::kernel::GkKernel>,
+        kernel: std::sync::Arc<polydat::kernel::PolydatKernel>,
     ) -> bool {
         match self.nodes.get(scope_idx) {
-            Some(node) => node.cached_kernel.set(kernel).is_ok(),
+            Some(node) => {
+                let inserted = node.cached_kernel.set(kernel.clone()).is_ok();
+                // Ride-along visitor hook (SRD planning-walk
+                // dryrun=kernels surface). Fires exactly once
+                // per scope's fresh install — the OnceLock
+                // semantics above guarantee no duplicate calls.
+                if inserted {
+                    notify_kernel_installed(node, scope_idx, &kernel);
+                }
+                inserted
+            }
             None => false,
         }
     }
 
     /// Populate `pragmas` on every phase-leaf scope by scanning
-    /// each phase's `BindingsDef::GkSource` strings for `pragma`
+    /// each phase's `BindingsDef::PolydatSource` strings for `pragma`
     /// statements, then walk the tree to chain each scope's
     /// `PragmaSet` onto its parent's. After this call, querying
     /// `node.pragmas.strict_values()` walks the chain through
@@ -1001,7 +1011,7 @@ impl ScopeTree {
 
         // Pass 1: extract phase-local pragmas. Iterate by
         // `phase_leaves` (which already does the kind filter)
-        // and walk each phase's ops for GK source strings to
+        // and walk each phase's ops for Polydat source strings to
         // parse.
         let leaves = self.phase_leaves();
         for idx in leaves {
@@ -1051,7 +1061,7 @@ pub struct PragmaConflict {
 }
 
 /// Extract pragmas from a phase's source by walking every op's
-/// `BindingsDef::GkSource` and collecting `Statement::Pragma`s.
+/// `BindingsDef::PolydatSource` and collecting `Statement::Pragma`s.
 /// A phase has multiple ops; their bindings can each declare
 /// pragmas. Today the convention is one pragma block at the
 /// phase head; multi-op phases that put pragmas on individual
@@ -1061,7 +1071,7 @@ fn extract_phase_pragmas(phase: &nbrs_workload::model::WorkloadPhase) -> PragmaS
     let mut entries = Vec::new();
     for op in &phase.ops {
         let src = match &op.bindings {
-            BindingsDef::GkSource(s) => s.as_str(),
+            BindingsDef::PolydatSource(s) => s.as_str(),
             _ => continue,
         };
         // Lex/parse to AST to surface `Statement::Pragma`s. If
@@ -1079,6 +1089,42 @@ fn extract_phase_pragmas(phase: &nbrs_workload::model::WorkloadPhase) -> PragmaS
         entries.extend(local.entries);
     }
     PragmaSet { entries, parent: None }
+}
+
+/// Ride-along visitor for kernel-installation events. Set by
+/// the runner when `dryrun=kernels` is requested so each
+/// `install_kernel` fires the printer as the planning walk
+/// encounters the scope. `None` (the default) keeps install
+/// a no-cost hot path.
+pub type KernelInstallVisitor = Box<dyn Fn(&ScopeNode, ScopeNodeIdx, &polydat::kernel::PolydatKernel) + Send + Sync>;
+
+static KERNEL_INSTALL_VISITOR: std::sync::OnceLock<std::sync::Mutex<Option<KernelInstallVisitor>>>
+    = std::sync::OnceLock::new();
+
+fn visitor_slot() -> &'static std::sync::Mutex<Option<KernelInstallVisitor>> {
+    KERNEL_INSTALL_VISITOR.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Register a visitor that fires on every `install_kernel`
+/// call. Replaces any prior visitor; pass `None` to clear.
+/// Called by the runner at session start when
+/// `dryrun=kernels` is set.
+pub fn set_kernel_install_visitor(v: Option<KernelInstallVisitor>) {
+    if let Ok(mut slot) = visitor_slot().lock() {
+        *slot = v;
+    }
+}
+
+fn notify_kernel_installed(
+    node: &ScopeNode,
+    idx: ScopeNodeIdx,
+    kernel: &polydat::kernel::PolydatKernel,
+) {
+    if let Ok(slot) = visitor_slot().lock()
+        && let Some(visitor) = slot.as_ref()
+    {
+        visitor(node, idx, kernel);
+    }
 }
 
 /// Depth-first pre-order iterator over `(idx, &ScopeNode)`.
@@ -1238,7 +1284,7 @@ mod tests {
     fn make_phase_with_source(src: &str) -> nbrs_workload::model::WorkloadPhase {
         use nbrs_workload::model::{BindingsDef, ParsedOp, WorkloadPhase};
         let mut op = ParsedOp::simple("op", "noop");
-        op.bindings = BindingsDef::GkSource(src.into());
+        op.bindings = BindingsDef::PolydatSource(src.into());
         WorkloadPhase {
             cycles: None,
             concurrency: None,
@@ -1298,12 +1344,12 @@ mod tests {
 
     // ---- M3.1: kernel install primitive ----
 
-    /// Compile a tiny GK source into a kernel for use as a
+    /// Compile a tiny Polydat source into a kernel for use as a
     /// scope's canonical instance. A one-line `name := <const>`
     /// suffices to populate `output_map` so `get_constant`
     /// returns the folded value.
-    fn compile_kernel(source: &str) -> std::sync::Arc<polydat::kernel::GkKernel> {
-        let kernel = polydat::dsl::compile::compile_gk(source)
+    fn compile_kernel(source: &str) -> std::sync::Arc<polydat::kernel::PolydatKernel> {
+        let kernel = polydat::dsl::compile::compile_polydat(source)
             .expect("test source should compile");
         std::sync::Arc::new(kernel)
     }
@@ -1311,11 +1357,11 @@ mod tests {
     #[test]
     fn install_kernel_seeds_canonical_state() {
         // After install, the cached kernel answers the name via
-        // the standard GK API. No tree-walking on the caller
+        // the standard Polydat API. No tree-walking on the caller
         // side — the kernel encapsulates its own scope, and
         // composition (auto-extern + materialize_wiring_from_outer) is what
         // makes parent values reachable. This test only verifies
-        // the install primitive; the GK side already has its own
+        // the install primitive; the Polydat side already has its own
         // tests for composition.
         let tree = ScopeTree::build("default", &[phase("p")]);
         let workload_kernel = compile_kernel("const dataset := \"example\"\n");
@@ -1336,15 +1382,15 @@ mod tests {
         // for_each scope kernel that references that param plus
         // its own iter var, bind from parent, then verify both
         // values are reachable on the synthesized kernel via
-        // standard GK API. Validates the chain inheritance
+        // standard Polydat API. Validates the chain inheritance
         // path without any caller-side scope walking.
-        use polydat::kernel::GkKernel;
+        use polydat::kernel::PolydatKernel;
         use std::sync::Arc;
 
         // Parent: a workload-shaped kernel exposing `k_values`.
         let parent_src = "const k_values := \"1, 10\"\n";
-        let parent: Arc<GkKernel> = Arc::new(
-            polydat::dsl::compile::compile_gk(parent_src).unwrap(),
+        let parent: Arc<PolydatKernel> = Arc::new(
+            polydat::dsl::compile::compile_polydat(parent_src).unwrap(),
         );
 
         // Build the for_each scope kernel as the runner would.
@@ -1378,11 +1424,11 @@ mod tests {
         assert!(kernel.program().find_input("k").is_some(),
             "iter var should be declared as an extern input");
 
-        // GK's `extern` declaration auto-installs a passthrough
+        // Polydat's `extern` declaration auto-installs a passthrough
         // node that exposes the name as an output too — so
         // children's `materialize_wiring_from_outer(this_scope)` sees both
         // `k_values` and `k` in this scope's manifest and the
-        // chain inheritance flows through standard GK API
+        // chain inheritance flows through standard Polydat API
         // without any caller-side scope walking.
         let manifest = crate::runner::extract_manifest(kernel.program());
         let output_names: std::collections::HashSet<_> =
@@ -1399,12 +1445,12 @@ mod tests {
         // Pre-eval at synthesis detects U64 from "1, 10" and
         // declares `extern k: u64` instead of `extern k: String`.
         // Per SRD-18b "native types as the general rule".
-        use polydat::kernel::GkKernel;
+        use polydat::kernel::PolydatKernel;
         use std::sync::Arc;
 
         let parent_src = "const k_values := \"1, 10\"\n";
-        let parent: Arc<GkKernel> = Arc::new(
-            polydat::dsl::compile::compile_gk(parent_src).unwrap(),
+        let parent: Arc<PolydatKernel> = Arc::new(
+            polydat::dsl::compile::compile_polydat(parent_src).unwrap(),
         );
         let parent_manifest = crate::runner::extract_manifest(parent.program());
 
@@ -1437,7 +1483,7 @@ mod tests {
         // substitutes {k}→1, leaving `{k_1_limits}`, which
         // resolves to "1, 2, 4, 8" via parent's manifest. First
         // value is 1, type U64.
-        use polydat::kernel::GkKernel;
+        use polydat::kernel::PolydatKernel;
         use std::sync::Arc;
 
         let parent_src = concat!(
@@ -1445,8 +1491,8 @@ mod tests {
             "const k_1_limits := \"1, 2, 4, 8\"\n",
             "const k_10_limits := \"10, 20, 30\"\n",
         );
-        let parent: Arc<GkKernel> = Arc::new(
-            polydat::dsl::compile::compile_gk(parent_src).unwrap(),
+        let parent: Arc<PolydatKernel> = Arc::new(
+            polydat::dsl::compile::compile_polydat(parent_src).unwrap(),
         );
         let parent_manifest = crate::runner::extract_manifest(parent.program());
 

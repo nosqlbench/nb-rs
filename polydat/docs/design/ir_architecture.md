@@ -212,7 +212,7 @@ ever reached during interpretation, which bounds spec §9.3's
 **Out of scope (deferred to higher layers):**
 
 - Predicate evaluation beyond the §10.9.5 catalog. A
-  production wiring would consult polydat's GK expression
+  production wiring would consult polydat's Polydat expression
   evaluator. The current evaluator is sufficient for
   algebra-layer tests; "unknown" predicates evaluate to
   `true` (conservative pass-through).

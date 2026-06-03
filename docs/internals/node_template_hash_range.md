@@ -19,7 +19,7 @@ pub struct HashRange {
 Two fields:
 
 - `meta` — the node's interface metadata (inputs, outputs). Every
-  GK node carries this.
+  Polydat node carries this.
 - `max` — the upper bound for the output range `[0, max)`. This is
   an assembly-time constant: set once at construction, immutable
   thereafter. It appears in three places: as a struct field (for
@@ -287,7 +287,7 @@ FusionRule {
 }
 ```
 
-When a user writes `mod(hash(cycle), 100)` in their `.gk` file,
+When a user writes `mod(hash(cycle), 100)` in their `.polydat` file,
 the assembly phase recognizes the `hash → mod` pattern and replaces
 it with `HashRange::new(100)`. The user gets the fused node
 automatically — one fewer buffer slot, one fewer node in the

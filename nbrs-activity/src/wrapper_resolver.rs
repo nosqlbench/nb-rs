@@ -188,11 +188,10 @@ impl std::error::Error for ResolveError {}
 /// byte-identical.
 pub const DEFAULT_ORDER: &[&str] = &[
     "traverse",
-    "throttle",
+    "delay",
     "validate",
     "poll",
     "if",
-    "emit",
     "result",
     "metrics",
     // `memo` must appear before `dryrun` here so the topo-
@@ -206,6 +205,16 @@ pub const DEFAULT_ORDER: &[&str] = &[
     // from default order would surface as a
     // `ForbiddenOuter` resolve error.
     "memo",
+    // `op_rate:` paces inner iterations. Slotted inside
+    // `while:` so the acquire fires once per loop iteration;
+    // outside metrics/memo so the wait isn't counted against
+    // per-op service-time measurement.
+    "op_rate",
+    // `while:` sits outer of memo + metrics so each loop
+    // iteration's per-cycle effects (metric update, memo
+    // emit) fire once per iteration rather than once per
+    // outer dispatch.
+    "while",
     // `dryrun` last so its short-circuit happens before any
     // inner wrapper observes the dryrun stand-in's empty
     // body. The DRYRUN registration's `forbids_outer = [every
@@ -213,6 +222,14 @@ pub const DEFAULT_ORDER: &[&str] = &[
     // explicit slot here is the resolver's tiebreaker for any
     // future wrapper that DRYRUN doesn't yet forbid.
     "dryrun",
+    // `emit` is intentionally LAST — outer of everything
+    // including dryrun — so under `dryrun=emit` the emit
+    // wrapper's pre-execute render runs BEFORE DRYRUN's
+    // short-circuit (emit's render+println is the surface
+    // that produces the operator-visible "what would have
+    // been sent" output). Innermost-first list ordering
+    // means later index = outer position at execute time.
+    "emit",
 ];
 
 /// Resolves a [`WrapperPlan`] for a parsed op template.
@@ -515,7 +532,9 @@ fn op_has_field(template: &ParsedOp, field: &str) -> bool {
     // canonical names to their actual storage.
     match field {
         "if" => template.condition.is_some(),
-        "delay" | "rate" | "rate_limiter" => template.delay.is_some(),
+        "delay" => template.delay.is_some(),
+        "while" => template.while_cond.is_some(),
+        "rate" => template.rate.is_some(),
         _ => template.params.contains_key(field),
     }
 }

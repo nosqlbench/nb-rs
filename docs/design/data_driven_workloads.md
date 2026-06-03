@@ -2,9 +2,9 @@
 
 ## The Core Shift
 
-Today: a counter (`cycle`) drives the workload. The GK graph computes values *from* the counter. The op loop iterates the counter.
+Today: a counter (`cycle`) drives the workload. The Polydat graph computes values *from* the counter. The op loop iterates the counter.
 
-Proposed: **data sources** drive the workload. The GK graph declares sources. The op loop **pulls** from sources. When sources are exhausted, the phase is done. There is no counter to configure.
+Proposed: **data sources** drive the workload. The Polydat graph declares sources. The op loop **pulls** from sources. When sources are exhausted, the phase is done. There is no counter to configure.
 
 ## Sources as First-Class Concepts
 
@@ -53,9 +53,9 @@ trait DataSource: Send + Sync {
 
 `next()` returns `Option<SourceItem>` — `None` is unambiguous EOD. `next_chunk(10)` returns a `Vec` of 1–10 items, or empty only on true exhaustion. This is important for batch filling: the dispenser calls `next_chunk(budget_remaining)` and always gets a usable chunk or a definitive end signal.
 
-## Sources in the GK Graph
+## Sources in the Polydat Graph
 
-Sources are GK nodes with **state**. Unlike pure functions (`hash(cycle)` is stateless), a source has a cursor that advances:
+Sources are Polydat nodes with **state**. Unlike pure functions (`hash(cycle)` is stateless), a source has a cursor that advances:
 
 ```
 dataset_vectors("example:label_00")
@@ -64,7 +64,7 @@ dataset_vectors("example:label_00")
   └─ yields: (u64, Vec<f32>) per pull
 ```
 
-The GK graph exposes sources as **coordinate providers**. Today, `input cycle: u64` declares one coordinate. With sources:
+The Polydat graph exposes sources as **coordinate providers**. Today, `input cycle: u64` declares one coordinate. With sources:
 
 ```yaml
 bindings: |
@@ -87,7 +87,7 @@ loop {
     let item = source.next();    // advance the cursor
     if item.is_none() { break; } // source exhausted → phase done
     
-    let fields = gk.eval(item);  // GK graph evaluates with source values
+    let fields = polydat.eval(item);  // Polydat graph evaluates with source values
     dispenser.execute(fields);    // adapter builds and sends the op
 }
 ```
@@ -101,7 +101,7 @@ loop {
     
     while batch_bytes < MAX_BATCH_BYTES {
         let Some(item) = source.next() else { break };
-        let fields = gk.eval(item);
+        let fields = polydat.eval(item);
         let stmt = render_statement(fields);
         batch_bytes += stmt.len();
         batch_items.push(stmt);
@@ -125,7 +125,7 @@ trait OpDispenser {
     fn execute(
         &self,
         source: &mut dyn DataSource,
-        gk: &mut GkEvaluator,
+        polydat: &mut GkEvaluator,
     ) -> Result<OpResult, ExecutionError>;
 }
 ```
@@ -133,14 +133,14 @@ trait OpDispenser {
 The CQL batch dispenser:
 
 ```rust
-fn execute(&self, source: &mut dyn DataSource, gk: &mut GkEvaluator) -> ... {
+fn execute(&self, source: &mut dyn DataSource, polydat: &mut GkEvaluator) -> ... {
     let mut batch = session.batch(BatchType::UNLOGGED);
     let mut byte_budget = self.max_batch_bytes;  // e.g., 4096
     let mut rows = 0;
     
     while byte_budget > 0 {
         let Some(item) = source.next() else { break };
-        let fields = gk.eval(item);
+        let fields = polydat.eval(item);
         let stmt_text = fields.render_statement(&self.template);
         byte_budget -= stmt_text.len();
         batch.add_statement(session.statement(&stmt_text));
@@ -294,7 +294,7 @@ ops:
 
 The dispenser fills incrementally:
 1. Pull item from source
-2. Evaluate GK graph → get resolved fields
+2. Evaluate Polydat graph → get resolved fields
 3. Render statement text
 4. Check byte budget: `accumulated_bytes + stmt.len() <= max_bytes`?
 5. If yes: add to batch, continue
@@ -309,7 +309,7 @@ This solves the "batch too large" problem automatically — the dispenser adapts
 source <name> = <constructor>(<args>)
 ```
 
-This is a new GK keyword (alongside `inputs`, `init`, `shared`, `final`). It declares a stateful data source:
+This is a new Polydat keyword (alongside `inputs`, `init`, `shared`, `final`). It declares a stateful data source:
 
 ```yaml
 bindings: |
@@ -325,13 +325,13 @@ bindings: |
   query_vector := queries.vector
 ```
 
-Source projections (`base.ordinal`, `base.vector`) are like struct field access. The GK compiler knows the source's schema (what fields it yields) from the constructor.
+Source projections (`base.ordinal`, `base.vector`) are like struct field access. The Polydat compiler knows the source's schema (what fields it yields) from the constructor.
 
 ## Relationship to Coordinates
 
 Today: `input cycle: u64` declares one coordinate. All nodes compute from it.
 
-With sources: the source **replaces** the coordinate for its dependents. `base.ordinal` is the effective coordinate for `id` and `vector`. The GK graph wires source projections as inputs to downstream nodes.
+With sources: the source **replaces** the coordinate for its dependents. `base.ordinal` is the effective coordinate for `id` and `vector`. The Polydat graph wires source projections as inputs to downstream nodes.
 
 Multiple sources in one graph means multiple independent coordinates. The executor advances each source independently, or zips them (for phases that consume from multiple facets in lockstep).
 
@@ -391,29 +391,29 @@ The scheduler is an internal optimization — the user doesn't configure it dire
 
 ## Crate Sovereignty
 
-All GK-involved API surface — the `source` keyword, `DataSource` trait, source projections, chunk consumption, and source-to-coordinate wiring — lives in the **polydat** (GK) crate. The GK crate defines:
+All GK-involved API surface — the `source` keyword, `DataSource` trait, source projections, chunk consumption, and source-to-coordinate wiring — lives in the **polydat** (GK) crate. The Polydat crate defines:
 
 - `DataSource` trait and `SourceItem` types
 - `SourceReader` and `WorkPool` for partitioned consumption
 - Source constructors (`dataset_source`, `range`, `random_range`)
 - Source combinators (`zip`, `filter`, `sample`)
-- Source projection nodes for the GK graph
+- Source projection nodes for the Polydat graph
 
-The runtime crates (nbrs-activity, adapters) consume these types but don't define them. The GK crate maintains sovereignty over the data model — sources are a GK concept, not a runtime concept. The runtime asks the GK graph "what sources exist?" and "what is their extent?" — the GK crate answers authoritatively.
+The runtime crates (nbrs-activity, adapters) consume these types but don't define them. The Polydat crate maintains sovereignty over the data model — sources are a Polydat concept, not a runtime concept. The runtime asks the Polydat graph "what sources exist?" and "what is their extent?" — the Polydat crate answers authoritatively.
 
 This means:
 - `polydat` defines `DataSource`, `SourceReader`, source nodes
 - `nbrs-activity` implements the fiber loop, work-stealing pool, and executor
 - Adapters (nbrs-adapter-cql, etc.) implement batch dispensers that consume from `DataSource`
-- `nbrs-workload` parses the `source` keyword in YAML and passes it to GK compilation
+- `nbrs-workload` parses the `source` keyword in YAML and passes it to Polydat compilation
 
 ## Migration Path
 
-1. **Phase 0** (now): Keep `cycles` working. Add `source` as a GK keyword. Implement `dataset_source()` constructor. Wire source extent into phase completion.
+1. **Phase 0** (now): Keep `cycles` working. Add `source` as a Polydat keyword. Implement `dataset_source()` constructor. Wire source extent into phase completion.
 
 2. **Phase 1**: Implement budget-based batching in the CQL dispenser. The dispenser pulls from the source incrementally and fills to the byte budget.
 
-3. **Phase 2**: Implement `over: auto` which inspects the GK graph for source declarations and derives the extent. `cycles` becomes a fallback/override.
+3. **Phase 2**: Implement `over: auto` which inspects the Polydat graph for source declarations and derives the extent. `cycles` becomes a fallback/override.
 
 4. **Phase 3**: Implement source partitioning for concurrent fibers. Add `zip`, `filter`, `sample` source combinators.
 
@@ -421,7 +421,7 @@ This means:
 
 ```
 Phase setup:
-  1. Compile GK graph → detect source declarations
+  1. Compile Polydat graph → detect source declarations
   2. Instantiate sources (dataset handles, cursors, extents)
   3. Partition sources across fibers → create SourceReaders
   4. Determine phase extent from source(s) for progress reporting
@@ -431,7 +431,7 @@ Fiber loop (source-driven):
   loop {
       match reader.next() {
           Some(item) => {
-              let fields = gk.eval(item);
+              let fields = polydat.eval(item);
               let result = dispenser.execute(fields).await;
               record_metrics(result);
           }
@@ -444,7 +444,7 @@ Fiber loop (LUT-scheduled, mixed ops with ratios):
       let template = scheduler.next_template();  // LUT/bucket/interval
       match reader.next() {
           Some(item) => {
-              let fields = gk.eval_for(template, item);
+              let fields = polydat.eval_for(template, item);
               let result = dispensers[template].execute(fields).await;
               record_metrics(result);
           }
@@ -453,13 +453,13 @@ Fiber loop (LUT-scheduled, mixed ops with ratios):
   }
 
 Batch dispenser (budget-driven):
-  fn execute(&self, reader, gk) {
+  fn execute(&self, reader, polydat) {
       let mut batch = new_batch();
       let mut bytes = 0;
       loop {
           match reader.next() {
               Some(item) => {
-                  let fields = gk.eval(item);
+                  let fields = polydat.eval(item);
                   let stmt = render(fields);
                   if bytes + stmt.len() > self.max_bytes && !batch.is_empty() {
                       // Budget exceeded — dispatch what we have,
@@ -491,7 +491,7 @@ This section refines the cursor semantics based on design discussion.
 
 ### Cursors Are Just Nodes
 
-A cursor is a GK node that has positional state (an ordinal) and can
+A cursor is a Polydat node that has positional state (an ordinal) and can
 advance. There is no special cursor type or trait — any node can be
 promoted to cursor behavior at runtime. The cursor holds a value;
 advancing changes that value and invalidates its cached state.
@@ -500,10 +500,10 @@ advancing changes that value and invalidates its cached state.
 
 - **Advance**: sets the cursor to the next position, invalidates the
   cursor node's cached value (and transitively, the upstream cone of
-  all downstream dependents via standard GK invalidation). Does NOT
+  all downstream dependents via standard Polydat invalidation). Does NOT
   trigger recomputation.
 - **Access**: pulling a value from any node triggers lazy evaluation
-  through the invalidated cone — standard GK pull-through semantics.
+  through the invalidated cone — standard Polydat pull-through semantics.
 
 Within a single dispatch, all projections from the same cursor see
 the same position. No `.next` or `.current` syntax — access is always
@@ -533,7 +533,7 @@ that targets only those cursors.
 
 ```rust
 // At phase setup (static analysis):
-let cursors = gk.cursors_for(&["id", "base_vector"]);
+let cursors = polydat.cursors_for(&["id", "base_vector"]);
 // traces: id → format_u64 → data.ordinal → data cursor
 //         base_vector → vector_at → data.ordinal → data cursor
 // cursors targets: {data cursor}
@@ -542,17 +542,17 @@ let cursors = gk.cursors_for(&["id", "base_vector"]);
 // At dispatch time:
 loop {
     if !cursors.advance() { break; }  // only advances relevant cursors
-    let fields = gk.resolve(template);
+    let fields = polydat.resolve(template);
     dispenser.execute(fields);
 }
 ```
 
-The cursors is computed once at phase setup from the GK provenance
+The cursors is computed once at phase setup from the Polydat provenance
 graph. It's a projection: "which cursor nodes have downstream
 dependents that are actually used in this scope?"
 
 This means:
-- A single GK definition can have cursors for base vectors AND queries
+- A single Polydat definition can have cursors for base vectors AND queries
 - The rampup phase's cursors targets only the base cursor
 - The search phase's cursors targets only the query cursor
 - Unused cursors don't advance, don't exhaust, don't cause errors
@@ -585,11 +585,11 @@ returns `false` from `advance()` when this happens.
 For batch dispensers, the cursors is passed as a handle:
 
 ```rust
-fn execute_batch(gk: &mut GkContext, cursors: &Cursors, budget: &BatchBudget) {
+fn execute_batch(polydat: &mut GkContext, cursors: &Cursors, budget: &BatchBudget) {
     let mut batch = new_batch();
     // The cursor already points at unseen data (advanced by executor)
     loop {
-        let fields = gk.resolve(template);  // lazy eval from current cursor
+        let fields = polydat.resolve(template);  // lazy eval from current cursor
         batch.add(render(fields));
         if batch.bytes() > budget.max_bytes { break; }
         if !cursors.advance() { break; }  // advance — exhausted = done
@@ -667,7 +667,7 @@ vector := vector_at(row, "example:label_00")    → 82,993
 meta := metadata_value_at(row, "example:label_00") → 82,993
 ```
 
-At init time, GK walks downstream from `row`, finds `vector_at`
+At init time, Polydat walks downstream from `row`, finds `vector_at`
 (cardinality 82,993) and `metadata_value_at` (cardinality 82,993).
 They agree → cursor extent = 82,993.
 
@@ -687,7 +687,7 @@ This forces correct modeling — different cardinalities require
 separate cursors, which the provenance-driven `Cursors` advances
 independently per phase.
 
-### One GK Definition, Multiple Phases
+### One Polydat Definition, Multiple Phases
 
 ```yaml
 bindings: |
@@ -719,7 +719,7 @@ phases:
         prepared: "SELECT ... ORDER BY value ANN OF {query_vector} LIMIT {k}"
 ```
 
-Same GK graph, different cursor sets per phase. The `Cursors`
+Same Polydat graph, different cursor sets per phase. The `Cursors`
 object traces provenance from each phase's template fields to
 discover which cursors to advance.
 
@@ -748,7 +748,7 @@ Supported forms:
 
 The limit is applied at the cursor level — the source factory
 creates readers with a reduced extent. The cursor node, accessor
-functions, and GK graph are unaffected.
+functions, and Polydat graph are unaffected.
 
 Smoke scenarios become simple limit overrides:
 

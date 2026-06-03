@@ -27,10 +27,10 @@ in `docs/design/srd13f_wire_classification_plan.md`.
   (visibility rules, the "Default: Immutable Propagation" clause
   this SRD updates), SRD-13d (op-template scope layer),
   SRD-13e (scope-as-module — the formal typed protocol this SRD's
-  wiring is materialized within), [gk_engines](../../polydat/docs/design/engines.md)
+  wiring is materialized within), [polydat_engines](../../polydat/docs/design/engines.md)
   (per-scope canonical kernel cache), [subcontext_construction](../../polydat/docs/design/subcontext_construction.md)
   (parent-supervised subcontext construction), SRD-68
-  (dispenser-owned GK context)
+  (dispenser-owned Polydat context)
 
 ---
 
@@ -87,7 +87,7 @@ time I read it."
 
 - Synthesizer emits `extern X: T` in the subscope's matter
   unchanged.
-- Subscope kernel keeps an `Arc<GkKernel>` reference to its
+- Subscope kernel keeps an `Arc<PolydatKernel>` reference to its
   parent. Reads on the `extern` slot delegate to
   `parent.pull(X)`.
 - The eval happens **on the parent, with the parent's
@@ -138,7 +138,7 @@ phase '<name>' (<coord>): unresolved wire reference '<name>'
 
 The error surface is load-bearing: prior to this rule the
 synthesizer auto-emitted `extern <name>` for any op-field
-reference that didn't otherwise resolve, then the GK compiler
+reference that didn't otherwise resolve, then the Polydat compiler
 either silently defaulted the slot to `Value::None` or failed
 mid-compile with a less-targeted "unknown wire" message. The
 new rule makes `extern` a deliberate author opt-in and turns
@@ -193,7 +193,7 @@ case 3 walks the lineage until each name terminates in case
 
 ### `bind_outer_scope`'s current behavior
 
-In `polydat/src/kernel/gkkernel.rs::GkKernel::bind_outer_scope`,
+In `polydat/src/kernel/polydatkernel.rs::PolydatKernel::bind_outer_scope`,
 the operation runs in three steps:
 
 1. **Cell cascade.** Walks outer's "shared cells in scope" (its
@@ -247,7 +247,7 @@ cell materialization, per the gradient above.
 in the current code compose two kernels at the wires layer:
 "primary is the per-op kernel; if a name doesn't resolve there,
 fall back to the fiber main kernel." This is the wires layer
-patching the materialization gap from outside the GK API.
+patching the materialization gap from outside the Polydat API.
 
 Under this SRD the wires layer takes one kernel handle, calls the
 kernel's local read API, and trusts the matter interpreter to
@@ -346,7 +346,7 @@ Scope: `nbrs-activity/src/wires.rs`,
 Change:
 
 - `CycleWires::with_fallback` and the `fallback` field deleted.
-  `CycleWires` is a single `Mutex<&mut GkKernel>`. Local reads
+  `CycleWires` is a single `Mutex<&mut PolydatKernel>`. Local reads
   through `WireSource::get` resolve every visible wire because
   Push B.1's construction-time wiring + per-cycle refresh
   established correctness on the per-op kernel itself.
@@ -356,7 +356,7 @@ Change:
 - Activity cycle dispatch calls `CycleWires::new(per_op)` for
   the standard case and `CycleWires::new(main)` for the
   flattened fallback path. One kernel handle either way; no
-  chain composition outside the GK API.
+  chain composition outside the Polydat API.
 
 ### Push B.2 — Cell-on-outputs in polydat *(shipped)*
 
@@ -412,12 +412,12 @@ re-introducing the storage.
 
 
 
-Scope: `polydat/src/kernel/gkkernel.rs`,
+Scope: `polydat/src/kernel/polydatkernel.rs`,
 `polydat/src/kernel/engines.rs`.
 
 The Push B.1 per-cycle refresh in the dispatch layer is the
 functional placeholder; B.2 moves the live-link mechanism into
-the GK engine itself, in line with the SRD's "wiring at
+the Polydat engine itself, in line with the SRD's "wiring at
 construction" model.
 
 Change:
@@ -467,7 +467,7 @@ plumbing more than external callers.
 Materialization gradient after B.2:
 
 - Inlined constant (`const` + literal): unchanged, already
-  works via the GK compiler's fold pass.
+  works via the Polydat compiler's fold pass.
 - Value-only shared cell (read-only inner side, recomputable
   upstream): new path under B.2, replaces both today's
   value-copy AND B.1's dispatch-layer refresh.
@@ -501,7 +501,7 @@ kernel.
 
 With SRD-13f's construction-time wiring landed, the parser
 merge is functionally redundant — phase bindings reach ops
-through the GK scope chain (phase scope kernel → fiber main
+through the Polydat scope chain (phase scope kernel → fiber main
 kernel → op-template kernel via `extern` + refresh), not
 through a parse-time concat. Removing the merge:
 
@@ -520,7 +520,7 @@ Change shipped (D.1):
 1. **Phase-merge dropped** — `parse_phases` no longer merges
    phase-level `bindings:` into per-op bindings. Phase bindings
    stay on `WorkloadPhase.bindings`; they reach ops through
-   the GK scope chain via `InstallSpec::PhaseBindings` +
+   the Polydat scope chain via `InstallSpec::PhaseBindings` +
    `build_op_template_scope_kernel`'s extern cascade + per-cycle
    refresh from main_kernel (SRD-13f Push B.1).
 2. **Workload-merge retained (temporarily)** — `parse_op` still
@@ -557,11 +557,11 @@ Pending (D.2 — depends on B.2):
    parser merge which folds them into ops' bindings (so
    fiber.main_kernel's program has them locally and can pull
    per-cycle). Without the merge, ops' references resolve
-   through the GK chain — which requires cell-on-outputs
+   through the Polydat chain — which requires cell-on-outputs
    wiring (Push B.2) to keep values fresh across the
    per-fiber chain. An attempt to land D.2 alone failed
    exactly here: `compile_bindings_with_libs_excluding`
-   accepts a `workload_level_gk_map` parameter and the
+   accepts a `workload_level_polydat_map` parameter and the
    workload-root kernel compiles correctly, but the per-fiber
    chain doesn't carry the computed values without B.2.
 6. After B.2 lands, complete D.2 and delete `merge_bindings`
@@ -576,7 +576,7 @@ workload using `bindings:` at the workload level with
 legacy chain syntax — those flows must keep working through
 a new direct workload-root-kernel path.
 
-Push D depends on B.1 + C being in place (so the GK chain
+Push D depends on B.1 + C being in place (so the Polydat chain
 actually carries phase bindings); D.2 is independent of B.2.
 
 ### Push E — Combined `for_each:` + `bindings:` phase support *(shipped)*
@@ -615,7 +615,7 @@ combined-case workloads on legacy behavior until E lands.
 
 ### Push F — `bind_outer_scope` rename *(shipped — chose `materialize_wiring_from_outer`)*
 
-Scope: `polydat/src/kernel/gkkernel.rs::bind_outer_scope`
+Scope: `polydat/src/kernel/polydatkernel.rs::bind_outer_scope`
 and every caller in `nbrs-activity/src/scope.rs` and
 `polydat/src/subcontext/`.
 
@@ -636,7 +636,7 @@ interpreter makes for strictly-constant wires; the general
 visibility rule is the read invariant in §"Architectural
 model" above.
 
-Shipped: `docs/sysref/13c_gk_scope_model.md` §"Default:
+Shipped: `docs/sysref/13c_polydat_scope_model.md` §"Default:
 Immutable Propagation" carries a "**Superseded by SRD-13f**"
 banner pointing at this SRD's §"Architectural model" + §"Plan
 to true-up". The legacy text stays for historical context;
@@ -680,7 +680,7 @@ inner-side handle per the classification gradient (inlined
 constant, value-only cell, read-write cell). `shared` is purely
 a write-permission flag — read mediation is uniform across all
 visible wires. The wires layer takes one kernel handle and calls
-its local read API; no chain composition outside the GK API.
+its local read API; no chain composition outside the Polydat API.
 Workload params are root-level context wires — they appear on
 every scope's program as folded constants. The three-push true-up
 plan extends `bind_outer_scope`'s wiring uniformly, retires the

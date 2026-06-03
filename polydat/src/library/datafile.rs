@@ -8,7 +8,7 @@
 //! ordinal lookups at cycle time. Ordinals wrap via modulo so every
 //! u64 input is valid.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 // ─── CSV ───────────────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ impl CsvField {
     }
 }
 
-impl GkNode for CsvField {
+impl PolydatNode for CsvField {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = inputs[0].as_u64() as usize % self.values.len();
@@ -107,7 +107,7 @@ impl CsvRow {
     }
 }
 
-impl GkNode for CsvRow {
+impl PolydatNode for CsvRow {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = inputs[0].as_u64() as usize % self.rows.len();
@@ -143,7 +143,7 @@ impl CsvRowCount {
     }
 }
 
-impl GkNode for CsvRowCount {
+impl PolydatNode for CsvRowCount {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(self.count);
@@ -192,7 +192,7 @@ impl JsonlField {
     }
 }
 
-impl GkNode for JsonlField {
+impl PolydatNode for JsonlField {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = inputs[0].as_u64() as usize % self.values.len();
@@ -231,7 +231,7 @@ impl JsonlRow {
     }
 }
 
-impl GkNode for JsonlRow {
+impl PolydatNode for JsonlRow {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = inputs[0].as_u64() as usize % self.rows.len();
@@ -266,7 +266,7 @@ impl JsonlRowCount {
     }
 }
 
-impl GkNode for JsonlRowCount {
+impl PolydatNode for JsonlRowCount {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(self.count);
@@ -408,33 +408,33 @@ pub fn signatures() -> &'static [FuncSig] {
     ]
 }
 
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn PolydatNode>, String>> {
     match name {
         "csv_field" => {
             let filename = consts.first().map(|c| c.as_str()).unwrap_or("");
             let column = consts.get(1).map(|c| c.as_str()).unwrap_or("0");
-            Some(CsvField::new(filename, column).map(|n| Box::new(n) as Box<dyn GkNode>))
+            Some(CsvField::new(filename, column).map(|n| Box::new(n) as Box<dyn PolydatNode>))
         }
         "csv_row" => {
             let filename = consts.first().map(|c| c.as_str()).unwrap_or("");
-            Some(CsvRow::new(filename).map(|n| Box::new(n) as Box<dyn GkNode>))
+            Some(CsvRow::new(filename).map(|n| Box::new(n) as Box<dyn PolydatNode>))
         }
         "csv_row_count" => {
             let filename = consts.first().map(|c| c.as_str()).unwrap_or("");
-            Some(CsvRowCount::new(filename).map(|n| Box::new(n) as Box<dyn GkNode>))
+            Some(CsvRowCount::new(filename).map(|n| Box::new(n) as Box<dyn PolydatNode>))
         }
         "jsonl_field" => {
             let filename = consts.first().map(|c| c.as_str()).unwrap_or("");
             let path = consts.get(1).map(|c| c.as_str()).unwrap_or("");
-            Some(JsonlField::new(filename, path).map(|n| Box::new(n) as Box<dyn GkNode>))
+            Some(JsonlField::new(filename, path).map(|n| Box::new(n) as Box<dyn PolydatNode>))
         }
         "jsonl_row" => {
             let filename = consts.first().map(|c| c.as_str()).unwrap_or("");
-            Some(JsonlRow::new(filename).map(|n| Box::new(n) as Box<dyn GkNode>))
+            Some(JsonlRow::new(filename).map(|n| Box::new(n) as Box<dyn PolydatNode>))
         }
         "jsonl_row_count" => {
             let filename = consts.first().map(|c| c.as_str()).unwrap_or("");
-            Some(JsonlRowCount::new(filename).map(|n| Box::new(n) as Box<dyn GkNode>))
+            Some(JsonlRowCount::new(filename).map(|n| Box::new(n) as Box<dyn PolydatNode>))
         }
         _ => None,
     }

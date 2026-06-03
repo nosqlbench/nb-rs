@@ -9,7 +9,7 @@
 //! - **Explicit conversions**: user-placed nodes for lossy, formatted,
 //!   or parameterized conversions. These require deliberate intent.
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// Convert u64 to its decimal string representation.
 ///
@@ -42,7 +42,7 @@ impl U64ToString {
     }
 }
 
-impl GkNode for U64ToString {
+impl PolydatNode for U64ToString {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -83,7 +83,7 @@ impl F64ToString {
     }
 }
 
-impl GkNode for F64ToString {
+impl PolydatNode for F64ToString {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -126,7 +126,7 @@ impl U64ToF64 {
     }
 }
 
-impl GkNode for U64ToF64 {
+impl PolydatNode for U64ToF64 {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -166,7 +166,7 @@ impl BoolToStr {
     }
 }
 
-impl GkNode for BoolToStr {
+impl PolydatNode for BoolToStr {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(if inputs[0].as_bool() { "true" } else { "false" }.into());
@@ -196,7 +196,7 @@ impl BoolToU64 {
     }
 }
 
-impl GkNode for BoolToU64 {
+impl PolydatNode for BoolToU64 {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -238,7 +238,7 @@ impl U64ToBool {
     }
 }
 
-impl GkNode for U64ToBool {
+impl PolydatNode for U64ToBool {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -276,7 +276,7 @@ impl U32ToU64 {
     }
 }
 
-impl GkNode for U32ToU64 {
+impl PolydatNode for U32ToU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_u64() & 0xFFFF_FFFF);
@@ -307,7 +307,7 @@ impl I32ToI64 {
     }
 }
 
-impl GkNode for I32ToI64 {
+impl PolydatNode for I32ToI64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let i32_val = inputs[0].as_u64() as i32;
@@ -339,7 +339,7 @@ impl F32ToF64 {
     }
 }
 
-impl GkNode for F32ToF64 {
+impl PolydatNode for F32ToF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let bits = inputs[0].as_u64() as u32;
@@ -372,7 +372,7 @@ impl I32ToF64 {
     }
 }
 
-impl GkNode for I32ToF64 {
+impl PolydatNode for I32ToF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let i32_val = inputs[0].as_u64() as i32;
@@ -404,7 +404,7 @@ impl U32ToF64 {
     }
 }
 
-impl GkNode for U32ToF64 {
+impl PolydatNode for U32ToF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let u32_val = (inputs[0].as_u64() & 0xFFFF_FFFF) as u32;
@@ -437,7 +437,7 @@ impl I64ToF64 {
     }
 }
 
-impl GkNode for I64ToF64 {
+impl PolydatNode for I64ToF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let i64_val = inputs[0].as_u64() as i64;
@@ -473,7 +473,7 @@ impl I32ToString {
     }
 }
 
-impl GkNode for I32ToString {
+impl PolydatNode for I32ToString {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let i32_val = inputs[0].as_u64() as i32;
@@ -505,7 +505,7 @@ impl I64ToString {
     }
 }
 
-impl GkNode for I64ToString {
+impl PolydatNode for I64ToString {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let i64_val = inputs[0].as_u64() as i64;
@@ -537,7 +537,7 @@ impl F32ToString {
     }
 }
 
-impl GkNode for F32ToString {
+impl PolydatNode for F32ToString {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let bits = inputs[0].as_u64() as u32;
@@ -570,7 +570,7 @@ impl U32ToString {
     }
 }
 
-impl GkNode for U32ToString {
+impl PolydatNode for U32ToString {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let u32_val = (inputs[0].as_u64() & 0xFFFF_FFFF) as u32;
@@ -632,7 +632,7 @@ impl StrToBool {
     }
 }
 
-impl GkNode for StrToBool {
+impl PolydatNode for StrToBool {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -682,7 +682,7 @@ impl StrToU64 {
     }
 }
 
-impl GkNode for StrToU64 {
+impl PolydatNode for StrToU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -726,7 +726,7 @@ impl StrToF64 {
     }
 }
 
-impl GkNode for StrToF64 {
+impl PolydatNode for StrToF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -775,7 +775,7 @@ impl F64ToU64 {
     }
 }
 
-impl GkNode for F64ToU64 {
+impl PolydatNode for F64ToU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -822,7 +822,7 @@ impl RoundToU64 {
     }
 }
 
-impl GkNode for RoundToU64 {
+impl PolydatNode for RoundToU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -868,7 +868,7 @@ impl FloorToU64 {
     }
 }
 
-impl GkNode for FloorToU64 {
+impl PolydatNode for FloorToU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -913,7 +913,7 @@ impl CeilToU64 {
     }
 }
 
-impl GkNode for CeilToU64 {
+impl PolydatNode for CeilToU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -967,7 +967,7 @@ impl Discretize {
     }
 }
 
-impl GkNode for Discretize {
+impl PolydatNode for Discretize {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -1032,7 +1032,7 @@ impl FormatU64 {
     }
 }
 
-impl GkNode for FormatU64 {
+impl PolydatNode for FormatU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -1075,7 +1075,7 @@ impl FormatF64 {
     }
 }
 
-impl GkNode for FormatF64 {
+impl PolydatNode for FormatF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -1112,7 +1112,7 @@ impl ZeroPadU64 {
     }
 }
 
-impl GkNode for ZeroPadU64 {
+impl PolydatNode for ZeroPadU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -1299,7 +1299,7 @@ impl ToF64 {
     }
 }
 
-impl GkNode for ToF64 {
+impl PolydatNode for ToF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::F64(inputs[0].as_u64() as f64);
@@ -1314,7 +1314,7 @@ impl GkNode for ToF64 {
 /// Try to build a conversion node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "unit_interval" => Some(Ok(Box::new(crate::library::sampling::icd::UnitInterval::new()))),
         "clamp_f64" => Some(Ok(Box::new(crate::library::sampling::icd::ClampF64::new(

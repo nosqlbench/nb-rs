@@ -24,7 +24,7 @@ What's **explicitly out of scope** for this SRD:
 - `ResultBody::capture(name)` adapter-side hook (SRD-69 §"The
   adapter-side capture hook").
 - New `captures:` YAML block (SRD-69 §"Capture declarations").
-- Per-element GK transform during column projection (SRD-69
+- Per-element Polydat transform during column projection (SRD-69
   §"Multi-row column projection... Path B / Path C").
 - Adapter-direct capture namespace convention.
 
@@ -166,12 +166,12 @@ The `body_column_i32(body, "name")` node added under SRD-69's
 draft already covers the recall use case end-to-end. SRD-70's
 path-expression form is the **canonical workload-author surface**
 because it stays inside the existing `result:` block grammar —
-the workload author doesn't need to know about GK function names
+the workload author doesn't need to know about Polydat function names
 to get a column-to-Vec capture.
 
 `body_column_i32` stays as a power-user / GK-author surface for
 cases where a workload wants to compose the capture inline with
-other GK operations (e.g. `result: { weighted_keys:
+other Polydat operations (e.g. `result: { weighted_keys:
 weighted_pick(body_column_i32(body, "key"), some_seed) }`).
 Path-expression captures and GK-function captures coexist; they're
 different surface levels.
@@ -250,7 +250,7 @@ Repeating for clarity, all of these stay parked under SRD-69:
 - Adapter-typed capture (`ResultBody::capture(name)`). Today's
   flow still goes through `to_json()` + JSON walk.
 - Captures: YAML block as a unified declarative surface.
-- Per-element GK transform during column projection (e.g.
+- Per-element Polydat transform during column projection (e.g.
   `rows[*].key | hash(value) % shard_count`).
 - Captures landing on result bodies that aren't JSON-serializable
   (binary blobs, opaque handles).

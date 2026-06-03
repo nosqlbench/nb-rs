@@ -3,7 +3,7 @@
 
 //! Regex processing nodes.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use regex::Regex;
 
 /// Regex replace: substitute all matches of a pattern.
@@ -30,7 +30,7 @@ impl RegexReplace {
     }
 }
 
-impl GkNode for RegexReplace {
+impl PolydatNode for RegexReplace {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let result = self.re.replace_all(inputs[0].as_str(), &self.replacement);
@@ -59,7 +59,7 @@ impl RegexMatch {
     }
 }
 
-impl GkNode for RegexMatch {
+impl PolydatNode for RegexMatch {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let input = inputs[0].as_str();
@@ -101,7 +101,7 @@ impl RegexExtract {
     }
 }
 
-impl GkNode for RegexExtract {
+impl PolydatNode for RegexExtract {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let s = inputs[0].as_str();
@@ -165,7 +165,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a regex node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "regex_replace" => Some(Ok(Box::new(RegexReplace::new(
             consts.first().map(|c| c.as_str()).unwrap_or(""),

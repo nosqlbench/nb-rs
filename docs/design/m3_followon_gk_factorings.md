@@ -1,11 +1,11 @@
-# M3 follow-on: GK API factorings to revisit
+# M3 follow-on: Polydat API factorings to revisit
 
 Notes captured during the M3 milestone (per-scope kernel
 migration, SRD-18b §"Iteration variables as scope outputs"). These
-are GK-side refinements that weren't necessary to land M3 but
+are Polydat-side refinements that weren't necessary to land M3 but
 should be revisited once SRD-18b is squared up. None of these are
 in scope of M3 itself — the milestone explicitly stays within the
-existing GK surface.
+existing Polydat surface.
 
 ## 1. `bind_outer_scope` chain inheritance
 
@@ -33,7 +33,7 @@ clearer.
 
 ## 2. Passthrough / alias keyword for re-export
 
-**Today (M3.2 finding):** GK's `extern x: <type>` already
+**Today (M3.2 finding):** Polydat's `extern x: <type>` already
 auto-installs a passthrough node, so the name appears as both an
 input *and* an output. M3.2 leverages this — no explicit
 `final x := x` re-export needed for children's
@@ -48,7 +48,7 @@ to a String passthrough. Reproducible via the M3.2 diagnostic
 test (since removed); easy to re-create with three-line GK
 source. The auto-passthrough makes the explicit pattern
 unnecessary for inheritance, so the bug doesn't block M3, but it
-should be fixed in GK proper — `final` re-exports of a String
+should be fixed in Polydat proper — `final` re-exports of a String
 extern read perfectly cleanly in the user's mental model.
 
 **Possible extension:** a `passthrough x` or `alias x` keyword
@@ -58,9 +58,9 @@ priority than the `final`-on-String bug fix.
 
 **Why deferred:** auto-passthrough on extern covers the M3 use
 case. Fix the `final`-on-String type-inference bug as a
-standalone GK issue; revisit syntactic sugar separately.
+standalone Polydat issue; revisit syntactic sugar separately.
 
-## 3. Unified `get_value(name)` on `GkKernel`
+## 3. Unified `get_value(name)` on `PolydatKernel`
 
 **Today:** `get_constant(name)` reads folded outputs;
 `get_input(name)` reads input slots (extern or coordinate).
@@ -74,25 +74,25 @@ SRD 13c §"Visibility Rules" already commits to.
 
 **Why deferred:** trivial helper; M3.5 (interpolation migration)
 can call both methods in sequence without API change. Worth
-adding when a second consumer materializes (e.g., GK's own
+adding when a second consumer materializes (e.g., Polydat's own
 diagnostic surface, the inspector REPL's name-resolution
 queries).
 
-## 4. `for_each` as a first-class GK library construct
+## 4. `for_each` as a first-class Polydat library construct
 
 **Today:** for_each is a workload-YAML directive driven by
 `nbrs-activity`. The runtime walks scenario nodes and dispatches
 per-iteration phase execution.
 
-**Possible extension:** promote for_each to a GK stdlib node
+**Possible extension:** promote for_each to a Polydat stdlib node
 (`comprehension_select(values, idx)`-style). Cycle-time iteration
 within a phase and scenario-time iteration across phases would
-share the same primitive. Extends the GK language meaningfully
+share the same primitive. Extends the Polydat language meaningfully
 (SRD-10 / SRD-12 / SRD-13c revisions).
 
 **Why deferred:** explicitly scoped out of M3 by the user (see
 session notes). The dependent-tuple case (`{k_{k}_limits}`)
-would either need a higher-order GK node or runtime text-
+would either need a higher-order Polydat node or runtime text-
 template fallback for the dependent name composition. Worth
 its own design discussion once M3 lands.
 
@@ -106,29 +106,29 @@ explicitly named this as a desirable extraction.
 
 **Today:** `Value::VecF32` and `Value::VecI32` exist; no
 `VecStr`. Iteration values arriving as comma-separated strings
-get parsed by callers, not flowed through GK as a typed list.
+get parsed by callers, not flowed through Polydat as a typed list.
 
 **Possible extension:** add `Value::VecStr(SliceArc<String>)` and
 list-construction / list-select nodes so iteration value lists
-flow as typed GK values. Most useful if for_each promotes to GK
+flow as typed Polydat values. Most useful if for_each promotes to GK
 (extension #4) — a `comprehension_select` over a `VecStr` is the
 clean shape.
 
 **Why deferred:** unnecessary as long as iteration values stay
 as strings handled by the runtime side. Only matters if for_each
-goes into GK proper.
+goes into Polydat proper.
 
 ---
 
 ## How this list relates to M3
 
-M3 deliberately stays inside the existing GK API. Per-scope
+M3 deliberately stays inside the existing Polydat API. Per-scope
 kernels use `from_program`, `bind_outer_scope` (current
 single-level semantics), `get_constant`, `get_input`,
 `set_input`. All of the above factorings are real and
 defensible, but each is its own design discussion against the
 SRD it touches. Bundling them into M3 would conflate
-"square up SRD-18b" with "evolve the GK language" — exactly the
+"square up SRD-18b" with "evolve the Polydat language" — exactly the
 kind of scope creep this thread has been correcting.
 
 When M3 lands and we revisit this list, expect the order to be

@@ -9,7 +9,7 @@
 //! count — into GK-readable wires. They are the read-side of
 //! the reification principle (SRD 10 §"GK as the unified access
 //! surface"): any value a workload might want to read is reached
-//! through a GK binding, not a side channel.
+//! through a Polydat binding, not a side channel.
 //!
 //! Like the metric nodes (see `metrics.rs`), these are
 //! non-deterministic context projections — their output changes
@@ -23,7 +23,7 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use polydat::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use polydat::ast::{GkNode, NodeMeta, Port, PortType, Slot, SlotType, Value};
+use polydat::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, SlotType, Value};
 
 use nbrs_metrics::component::Component;
 
@@ -120,7 +120,7 @@ fn task_cycle() -> u64 {
 // control_set(name, value) — GK-driven write into a control
 // =========================================================================
 
-/// GK write node. Submits an f64 write against the named
+/// Polydat write node. Submits an f64 write against the named
 /// control via the enclosing session root's walk-up lookup.
 /// Returns `1` if the write was dispatched, `0` if the session
 /// root isn't installed (i.e. outside a running scenario).
@@ -133,7 +133,7 @@ fn task_cycle() -> u64 {
 /// See SRD 23 §"Mutation entry points →
 /// GK-driven feedback loops".
 ///
-/// `binding` is the name of the GK binding that issued the
+/// `binding` is the name of the Polydat binding that issued the
 /// write — surfaces in control logs so operators can attribute
 /// a change to a specific DSL expression rather than just
 /// "from GK".
@@ -162,7 +162,7 @@ impl ControlSet {
     }
 }
 
-impl GkNode for ControlSet {
+impl PolydatNode for ControlSet {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let value = match inputs.first() {
@@ -201,7 +201,7 @@ impl GkNode for ControlSet {
                     }
                 }
             };
-            let origin = nbrs_metrics::controls::ControlOrigin::Gk { binding };
+            let origin = nbrs_metrics::controls::ControlOrigin::Polydat { binding };
             if let Err(e) = erased.set_f64(value, origin).await {
                 polydat::library::support::audit::warn(&format!("control_set({name}, {value}) failed: {e}"));
             }
@@ -270,7 +270,7 @@ impl ControlValue {
     }
 }
 
-impl GkNode for ControlValue {
+impl PolydatNode for ControlValue {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::F64(self.read_f64());
@@ -313,7 +313,7 @@ impl ControlU64 {
     }
 }
 
-impl GkNode for ControlU64 {
+impl PolydatNode for ControlU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let v = self.inner.read_f64();
@@ -348,7 +348,7 @@ impl ControlBool {
     }
 }
 
-impl GkNode for ControlBool {
+impl PolydatNode for ControlBool {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let v = self.inner.read_f64();
@@ -386,7 +386,7 @@ impl ControlStr {
     }
 }
 
-impl GkNode for ControlStr {
+impl PolydatNode for ControlStr {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let s = self.root.as_ref()
@@ -426,7 +426,7 @@ impl RateNow {
     }
 }
 
-impl GkNode for RateNow {
+impl PolydatNode for RateNow {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::F64(self.inner.read_f64());
@@ -457,7 +457,7 @@ impl ConcurrencyNow {
     }
 }
 
-impl GkNode for ConcurrencyNow {
+impl PolydatNode for ConcurrencyNow {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::F64(self.inner.read_f64());
@@ -491,7 +491,7 @@ impl PhaseName {
     }
 }
 
-impl GkNode for PhaseName {
+impl PolydatNode for PhaseName {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let name = task_phase()
@@ -531,7 +531,7 @@ impl CycleNow {
     }
 }
 
-impl GkNode for CycleNow {
+impl PolydatNode for CycleNow {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(task_cycle());
@@ -548,7 +548,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "control", category: C::Context, outputs: 1,
             description: "read a dynamic control's current value as f64",
-            help: "Projects a [dynamic control](SRD 23) into the GK graph. Walks\nup the component tree from the session root, honors branch\nscope, and returns the control's reified gauge projection\n(f64). Missing controls and un-projected values return 0.0.\nParameters:\n  name — control name to resolve",
+            help: "Projects a [dynamic control](SRD 23) into the Polydat graph. Walks\nup the component tree from the session root, honors branch\nscope, and returns the control's reified gauge projection\n(f64). Missing controls and un-projected values return 0.0.\nParameters:\n  name — control name to resolve",
             identity: None, variadic_ctor: None,
             params: &[
                 ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
@@ -599,7 +599,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "control_set", category: C::Context, outputs: 1,
-            description: "write a dynamic control value from GK (non-blocking)",
+            description: "write a dynamic control value from Polydat (non-blocking)",
             help: "Submits an f64 write against a named dynamic control. The\nwrite dispatches on a background tokio task; the fiber does\nnot block. The target control must declare a from_f64\nconverter (see ControlBuilder::from_f64) or the write is\nrejected with a ValidationFailed message in the log.\nReturns 1 if dispatched, 0 if no session root is installed.\nParameters:\n  name  — control name to resolve (walk-up from session root)\n  value — f64 wire; the control's converter maps this to its\n          native type (e.g. f64 → u32 for concurrency)",
             identity: None, variadic_ctor: None,
             params: &[
@@ -662,7 +662,7 @@ pub(crate) fn build_node(
     name: &str,
     _wires: &[polydat::compile::assembly::WireRef], _wire_types: &[polydat::ast::PortType],
     consts: &[polydat::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn polydat::ast::GkNode>, String>> {
+) -> Option<Result<Box<dyn polydat::ast::PolydatNode>, String>> {
     match name {
         "control" => {
             let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();
@@ -685,7 +685,7 @@ pub(crate) fn build_node(
             // The DSL compiler installs the enclosing binding's
             // name via `factory::compile_ctx::scoped_binding`
             // before each `build_node` call. That binding is
-            // what appears in `ControlOrigin::Gk { binding }`
+            // what appears in `ControlOrigin::Polydat { binding }`
             // for attribution. If no scope is active (library
             // tests that call build_node directly) we fall back
             // to the control name.
@@ -879,7 +879,7 @@ mod tests {
         root.read().unwrap().controls().declare(c.clone());
         set_session_root(root);
 
-        // Issue the write through the GK node.
+        // Issue the write through the Polydat node.
         let node = ControlSet::new("concurrency", "feedback_loop");
         let mut out = [Value::None];
         node.eval(&[Value::F64(64.0)], &mut out);
@@ -895,7 +895,7 @@ mod tests {
         let committed = c.get();
         assert!(matches!(
             committed.origin,
-            nbrs_metrics::controls::ControlOrigin::Gk { .. }
+            nbrs_metrics::controls::ControlOrigin::Polydat { .. }
         ));
     }
 
@@ -1009,11 +1009,11 @@ mod tests {
         }
         assert_eq!(c.value(), 4242.0);
         match c.get().origin {
-            nbrs_metrics::controls::ControlOrigin::Gk { ref binding } => {
+            nbrs_metrics::controls::ControlOrigin::Polydat { ref binding } => {
                 assert_eq!(binding, "rate_adj",
                     "attribution should be the DSL binding name, not the control name");
             }
-            other => panic!("expected Gk origin, got {other:?}"),
+            other => panic!("expected Polydat origin, got {other:?}"),
         }
     }
 

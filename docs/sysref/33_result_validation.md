@@ -35,7 +35,7 @@ ops:
     prepared: "SELECT key FROM vectors ORDER BY v ANN OF {query} LIMIT {k}"
     relevancy:
       actual: key              # column name in result rows
-      expected: "{ground_truth}" # GK binding for neighbor indices
+      expected: "{ground_truth}" # Polydat binding for neighbor indices
       k: 100
       functions:
         - recall
@@ -71,7 +71,7 @@ ValidatingDispenser reads ground_truth via stored PullHandle:
     let gt = ctx.pulls.get(self.expected_handle);
 ```
 
-**Key**: `ground_truth` is NOT an op field. It's a GK binding
+**Key**: `ground_truth` is NOT an op field. It's a Polydat binding
 needed only by validation. The validation wrapper self-registers
 the name with the scope fixture at init, receives a `PullHandle`,
 and reads from `ResolvedPulls` at cycle time. There is no
@@ -82,7 +82,7 @@ Consumer Self-Registration" for the contract.
 ```
 error: [op] [relevancy_error] relevancy: no ground truth for
 'ground_truth'. Available fields: ["prepared"]. Ensure the
-binding exists in the GK program.
+binding exists in the Polydat program.
 ```
 
 ---
@@ -154,7 +154,7 @@ read; the hot-path consumer picks the faster route.
   capture's destination is typed (e.g. feeding a CQL prepared
   statement's typed parameter on the next cycle), use a typed
   accessor; it's both faster and more precise.
-- **Captures whose destination is a GK wire.** The wire's
+- **Captures whose destination is a Polydat wire.** The wire's
   declared type decides: `String → String` captures go
   through the typed accessor if the adapter exposes one,
   otherwise through `to_json()` and a string render.

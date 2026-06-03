@@ -1,7 +1,7 @@
 # Module System
 
-The mechanism for file-based GK modules: how reusable
-`.gk` source files are discovered, inlined into the host
+The mechanism for file-based Polydat modules: how reusable
+`.polydat` source files are discovered, inlined into the host
 program, and tracked through the resolution chain. This
 doc extends three axiom-level statements:
 
@@ -13,8 +13,8 @@ The nbrs-side compiler-diagnostic event stream stays in
 [SRD-13](module_system.md).
 
 > Composition mechanics — how modules combine with the host
-> program and with other GK kernels — live in
-> [SRD 13b: GK Combination Modes](../../../docs/sysref/13b_gk_combination_modes.md).
+> program and with other Polydat kernels — live in
+> [SRD 13b: Polydat Combination Modes](../../../docs/sysref/13b_polydat_combination_modes.md).
 > This file covers only the module-as-source-file system.
 
 ---
@@ -23,13 +23,13 @@ The nbrs-side compiler-diagnostic event stream stays in
 
 ### File-Based Modules
 
-A `.gk` file is a module. Interface is inferred:
+A `.polydat` file is a module. Interface is inferred:
 - **Inputs**: unbound references (names not defined in the file)
 - **Outputs**: all terminal bindings (names defined but not
   consumed by other bindings in the file)
 
 ```
-// user_generator.gk
+// user_generator.polydat
 input cycle: u64
 user_id := mod(hash(cycle), 1000000)
 username := format_u64(user_id, 8)
@@ -46,7 +46,7 @@ When a host program references a module, the compiler:
 
 ```
 // host workload bindings
-use "user_generator.gk"
+use "user_generator.polydat"
 full_name := weighted_strings(hash(cycle), "names.csv")
 ```
 
@@ -61,7 +61,7 @@ indistinguishable from the host's once compiled.
 
 Module files are resolved in order:
 1. Workload directory (same directory as the `.yaml`)
-2. `--gk-lib` paths (CLI argument)
+2. `--polydat-lib` paths (CLI argument)
 3. Bundled stdlib (compiled into `polydat`)
 4. Error if not found
 

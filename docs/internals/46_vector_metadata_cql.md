@@ -44,9 +44,9 @@ The adapter must:
 
 ## Architecture
 
-### GK Node Functions
+### Polydat Node Functions
 
-New node functions expose metadata and predicates into the GK space:
+New node functions expose metadata and predicates into the Polydat space:
 
 | Function | Input | Output | Description |
 |----------|-------|--------|-------------|

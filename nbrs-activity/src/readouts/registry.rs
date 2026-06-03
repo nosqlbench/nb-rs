@@ -28,6 +28,7 @@ impl Registry {
     pub fn lookup(name: &str) -> Option<ReadoutHandle> {
         match name {
             "each_close"      => Some(Arc::new(builtins::each_close::EachClose) as Arc<dyn Readout>),
+            "error_readout"   => Some(Arc::new(builtins::error_readout::ErrorReadout) as Arc<dyn Readout>),
             "metric"          => Some(Arc::new(builtins::metric::Metric) as Arc<dyn Readout>),
             "phase_outcome"   => Some(Arc::new(builtins::phase_outcome::PhaseOutcomeReadout) as Arc<dyn Readout>),
             "phase_starting"  => Some(Arc::new(builtins::phase_starting::PhaseStarting) as Arc<dyn Readout>),
@@ -50,6 +51,7 @@ impl Registry {
     pub fn all_names() -> &'static [&'static str] {
         &[
             "each_close",
+            "error_readout",
             "metric",
             "phase_outcome",
             "phase_starting",

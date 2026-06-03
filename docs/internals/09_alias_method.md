@@ -54,7 +54,7 @@ discrete distribution curve classes.
 
 Java had three separate classes for different output types. In Rust,
 we use a single generic struct with the outcome type as a parameter,
-plus a specialized u64-only variant for GK compiled mode.
+plus a specialized u64-only variant for Polydat compiled mode.
 
 ### Struct: `AliasTable<T>`
 
@@ -88,9 +88,9 @@ pub struct AliasTableU64 {
 }
 ```
 
-### GK Node: `AliasSample`
+### Polydat Node: `AliasSample`
 
-A GK node that wraps an `AliasTable` and samples from it.
+A Polydat node that wraps an `AliasTable` and samples from it.
 
 Signature: `(input: u64) -> (u64)`
 
@@ -111,7 +111,7 @@ For the u64 variant, outcomes are implicitly 0..N (index-based).
 ### Integration Points
 
 - **WeightedLookup node**: uses `AliasTable<String>` backed by CSV
-  data. The GK node hashes → alias samples → returns the string.
+  data. The Polydat node hashes → alias samples → returns the string.
 - **Discrete distributions** (Zipf, Poisson, Binomial, etc.): the
   distribution's PMF is pre-computed over a range and loaded into an
   `AliasTableU64`. Sampling is then O(1).

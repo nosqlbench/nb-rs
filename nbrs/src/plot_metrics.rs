@@ -82,7 +82,7 @@ const FLAGS_TAKING_VALUE: &[&str] = &[
     // argv when plot's parser walks them.
     "--session", "--session-name", "--session-path",
     "--session-reuse", "--session-keep", "--session-shelflife",
-    "--resume", "--gk-lib",
+    "--resume", "--polydat-lib",
 ];
 
 /// Register the bundled font with plotters' ab_glyph backend.
@@ -2250,7 +2250,7 @@ pub fn is_no_data_error(msg: &str) -> bool {
 }
 
 /// Entry point — called from `plot::plot_command` when the
-/// first arg isn't `gk`.
+/// first arg isn't `polydat`.
 pub fn plot_metrics_command(args: &[String]) {
     register_bundled_font();
 
@@ -3352,7 +3352,7 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                 let _ = iter.next();
             }
             "--strict" | "--no-prompt" | "--resume-latest" | "--force-retry-failed" => {}
-            "--resume" | "--gk-lib" => { let _ = iter.next(); }
+            "--resume" | "--polydat-lib" => { let _ = iter.next(); }
             "--csv-also" => opts.csv_also = Some(PathBuf::from(next(&mut iter, "csv-also")?)),
             "--report" | "--update-markdown" => {
                 let v = next(&mut iter, "report")?;
@@ -3523,7 +3523,7 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                 } else if matches!(other, "--strict" | "--no-prompt"
                     | "--resume-latest" | "--force-retry-failed")
                     || other.starts_with("--session")
-                    || other.starts_with("--gk-lib=")
+                    || other.starts_with("--polydat-lib=")
                     || other.starts_with("--resume=")
                 {
                     // Global flag consumed at startup; ignore.

@@ -1,4 +1,4 @@
-# SRD-66 — Runtime Feature Detection: result-wire gk-call form, shared-wire upward writes, and `pick` for branched dispatch
+# SRD-66 — Runtime Feature Detection: result-wire polydat-call form, shared-wire upward writes, and `pick` for branched dispatch
 
 **Status:** Pushes 1+3 shipped; Push 2 partial as of
 2026-05-08. The three stdlib node functions (`pick`,
@@ -14,11 +14,11 @@ overrides for TextBody and others). The
 landed in the new shape — `cql_dialect` param removed,
 `detect_dialect` phase prepended to every scenario, four
 `if`-gated ops collapsed to two `pick`-driven ops. The full
-kernel-driven gk-call path (compile result-bindings into a
+kernel-driven polydat-call path (compile result-bindings into a
 runtime-evaluated kernel, write `body` / `count` / `ok`
 extern slots per cycle, propagate writes through the
 SharedCell upward to outer-scope `shared` wires) is
-documented but not yet wired — gk-call sources currently
+documented but not yet wired — polydat-call sources currently
 emit a Warn at op-init and resolve to their default value,
 and the workload won't actually detect the dialect at
 runtime until the path lands. See §"Push 2 follow-up:
@@ -28,7 +28,7 @@ discovered during the partial implementation.
 authors
 **Implementation target:**
   `polydat/src/nodes/pick.rs` (new),
-  `nbrs-activity/src/wrappers.rs` (result-wire gk-call dispatch
+  `nbrs-activity/src/wrappers.rs` (result-wire polydat-call dispatch
   — replaces today's deferred-Warn stub at line ~751),
   `nbrs-activity/src/fixture.rs` / op-template scope wiring
   (magic `body` extern),
@@ -54,8 +54,8 @@ This SRD gives workloads three composable primitives so the
 detect-then-dispatch pattern is expressible end-to-end without
 new ad-hoc machinery:
 
-1. **`result:` as a GK source block (general-purpose).** The
-   `result:` op-template field becomes a multi-line GK source
+1. **`result:` as a Polydat source block (general-purpose).** The
+   `result:` op-template field becomes a multi-line Polydat source
    string — same syntactic shape as `bindings:`, just
    evaluated AFTER the op runs with a small set of pre-bound
    wires injected: `body: Str` (the result body's text
@@ -63,11 +63,11 @@ new ad-hoc machinery:
    (success boolean), plus every name from the op's
    `[name]`-bracket capture declarations. Each `:=`
    assignment in the block declares one result wire. The user
-   reads the file and immediately knows it's GK source — no
+   reads the file and immediately knows it's Polydat source — no
    YAML-mapping-with-magic-source-strings to decode.
    Specialised forms like regex matching, body-length
    thresholds, multi-field arithmetic, and shape predicates
-   all compose from existing GK stdlib functions
+   all compose from existing Polydat stdlib functions
    (`regex_match`, `len`, `if`, etc.) — no per-shape built-in
    needed. **This supersedes SRD-40b §5.1's YAML-mapping
    shape**, which is dropped (no shipped consumer to migrate).
@@ -82,11 +82,11 @@ new ad-hoc machinery:
    V`: exactly one of the booleans must be true; returns the
    value at the same index. The branched-dispatch primitive that
    makes "set N booleans, look up the matching value" expressible
-   in one GK expression.
+   in one Polydat expression.
 
 Together they replace `if: "cql_dialect == 'cass5'"`-style gates
 with `pick(has_sai_column_indexes, has_indexes, "...", "...")`
-expressions reading detected booleans (set by gk-call result
+expressions reading detected booleans (set by polydat-call result
 wires that ran `regex_match(body, "...")` at the probe phase),
 eliminating the static operator-set parameter.
 
@@ -112,7 +112,7 @@ The load-bearing rule:
   inner kernels' writes propagate up to the outer kernel and
   across to sibling inner kernels. This SRD does NOT introduce
   the mechanism; it documents the contract.
-- **Result bindings block.** A multi-line GK source string
+- **Result bindings block.** A multi-line Polydat source string
   attached to an op template under `result:` — same syntactic
   shape as `bindings:`, just with a different scope: it's
   evaluated AFTER the op runs, with the body / built-in result
@@ -143,9 +143,9 @@ The load-bearing rule:
 shape: each key is a wire name and its value is a source
 string in one of four forms: `count` (row count), `ok`
 (success boolean), `<path-expr>` (JSON-path into the result
-body), or `<gk-call>` (arbitrary GK expression). The first
+body), or `<polydat-call>` (arbitrary Polydat expression). The first
 three are implemented in
-`nbrs-activity/src/wrappers.rs::ResultDispenser`. The gk-call
+`nbrs-activity/src/wrappers.rs::ResultDispenser`. The polydat-call
 form emits a one-time Warn ("not yet supported — slot will
 resolve to its default") at runtime; the parser at
 `wrappers.rs:751` recognises it via a `(` detector but the
@@ -156,28 +156,28 @@ The CQL workload uses `metrics:` (SRD-40b §1) but not
 `result:`. SRD-66 is the first material consumer of the
 mechanism — and the natural moment to **change the syntax
 shape** to one that doesn't co-mingle YAML-field assignment
-with GK wire-write semantics.
+with Polydat wire-write semantics.
 
 ### Why the YAML-mapping shape is the wrong syntax
 
 The mapping form has each entry compile differently depending
 on the source-string contents — `count` and `ok` are
-built-ins, anything containing `(` is a gk-call, anything else
+built-ins, anything containing `(` is a polydat-call, anything else
 is a path expression. The shape on the page is the same
 (`name: source`), but the meaning slips between assignment of
-a literal and a GK expression compile. For a workload author
+a literal and a Polydat expression compile. For a workload author
 reading the file, the mapping looks like ordinary YAML
 key→value pairs, not like wire writes.
 
 `bindings:` already solved this in the workload schema: it's
-a multi-line GK source string with `:=` assignment. SRD-66
+a multi-line Polydat source string with `:=` assignment. SRD-66
 adopts the same shape for `result:`. The fact that `result:`
-is GK source is then **immediately visible from the
+is Polydat source is then **immediately visible from the
 syntax** — no inference required.
 
 ### Schema
 
-`result:` is a multi-line scalar containing GK source. Each
+`result:` is a multi-line scalar containing Polydat source. Each
 `<name> := <expr>` assignment declares one result wire. The
 expression may reference:
 
@@ -204,7 +204,7 @@ The `|` is YAML's literal-block-scalar marker — every line
 preserved verbatim, no escaping of inner double-quotes
 needed (mirrors `bindings: |`).
 
-`regex_match` is the existing GK stdlib node
+`regex_match` is the existing Polydat stdlib node
 (`polydat/src/nodes/regex.rs`).
 
 ### Built-in wires available in the result-bindings scope
@@ -225,14 +225,14 @@ reassigned in `result:`") — keeps the mental model tight.
 
 The YAML-mapping form is **dropped**. Since no shipped
 workload uses it, the migration cost is zero. The four source
-forms map to GK source as follows:
+forms map to Polydat source as follows:
 
-| SRD-40b mapping form              | SRD-66 GK source                        |
+| SRD-40b mapping form              | SRD-66 Polydat source                        |
 |-----------------------------------|------------------------------------------|
 | `<name>: count`                   | `<name> := count`                        |
 | `<name>: ok`                      | `<name> := ok`                           |
 | `<name>: rows[0].field` (path)    | (DEFERRED — see §"Out of scope")         |
-| `<name>: <gk-call>`               | `<name> := <gk-call>`                    |
+| `<name>: <polydat-call>`               | `<name> := <polydat-call>`                    |
 
 Path expressions are deferred because they require structural
 access to the body that `body: Str` doesn't provide. They land
@@ -251,8 +251,8 @@ At op-template scope synthesis (SRD-13d Phase 9):
    per-cycle path is the existing no-result fast path.
 2. The result-bindings source is compiled as a separate
    scope-extension of the op-template kernel. **Closure
-   bindings follow the standard GK rule: linkages are made
-   only where gk module matter detects them.** That is, the
+   bindings follow the standard Polydat rule: linkages are made
+   only where Polydat module matter detects them.** That is, the
    compiler walks the source's free identifiers and resolves
    each one. References that hit a runtime-injected name
    (`body`, `count`, `ok`, or any name from the op's
@@ -297,9 +297,9 @@ Per cycle:
 
 ### Why this is a self-consistent surface
 
-- The `result:` block looks like GK source because it IS GK
+- The `result:` block looks like Polydat source because it IS GK
   source. No special parser; no per-shape detector.
-- Existing GK stdlib functions (`regex_match`, `len`, `if`,
+- Existing Polydat stdlib functions (`regex_match`, `len`, `if`,
   `eq`, `and`, `hash_str`, …) compose against the pre-injected
   `body` / `count` / `ok` / capture wires automatically.
 - The pre-injected wires are rare and named clearly; a workload
@@ -307,7 +307,7 @@ Per cycle:
   immediately knows `body` is a runtime wire, not an
   adapter-specific keyword.
 - The whole thing is one mental model: `bindings:` and
-  `result:` are both GK source blocks, differing only in WHEN
+  `result:` are both Polydat source blocks, differing only in WHEN
   they evaluate (init-time vs. post-op) and WHICH wires they
   see.
 
@@ -359,7 +359,7 @@ Always-error, strict-independent:
   identifier named.
 - The eval cost per cycle is the cost of the dependent nodes
   re-evaluating with `body` / `count` / `ok` / captures
-  changed; the existing GK provenance machinery skips
+  changed; the existing Polydat provenance machinery skips
   unchanged subgraphs.
 
 ---
@@ -477,7 +477,7 @@ polydat-substrate and have moved into the polydat crate:
 
 The workload-author surface (Surfaces 1 and 2 above), the
 worked migration example, push order, decisions, open
-questions, and the Push 2 follow-up (kernel-driven gk-call
+questions, and the Push 2 follow-up (kernel-driven polydat-call
 slot contract) remain in this file.
 
 ---
@@ -638,16 +638,16 @@ migrated.
 The following promote from warn → error under `--strict` (per
 SRD-15):
 
-- A gk-call result wire that references `body` on an op whose
+- A polydat-call result wire that references `body` on an op whose
   adapter exposes only an empty body — see Surface 1
   §"Strict-mode interactions."
-- A gk-call result wire whose compile produces a constant-
+- A polydat-call result wire whose compile produces a constant-
   valued expression (no dependency on `body`, captures, or
   in-scope wires) — same section.
 
 Always-error, strict-independent:
 
-- gk-call source string fails to compile (unknown function,
+- polydat-call source string fails to compile (unknown function,
   type mismatch, unbound identifier).
 - `pick` with odd total argument count.
 - `pick` with a non-bool selector slot.
@@ -716,9 +716,9 @@ Three pushes with gates:
     `Map(IndexMap<String, ResultMapValue>)`. The parser
     reads any of the three YAML shapes.
   - The old SRD-40b §5.1 YAML-mapping form (with
-    `count`/`ok`/`<path-expr>`/`<gk-call>` source strings)
+    `count`/`ok`/`<path-expr>`/`<polydat-call>` source strings)
     is preserved as the **map shape** (§"Surface 1 §Shape
-    3") with two refinements: gk-call magic detection drops
+    3") with two refinements: polydat-call magic detection drops
     (any non-short-form string is just GK), and the
     composite-map output is added.
 - Op-template scope synthesis (per the closure-bindings rule
@@ -728,20 +728,20 @@ Three pushes with gates:
   that resolve to runtime-injected values (`body`, `count`,
   `ok`, capture names). Unreferenced runtime values are not
   injected (zero per-cycle cost when not used, matching the
-  standard GK linkage-detection pattern).
+  standard Polydat linkage-detection pattern).
 - `OpResult::body` access — Surface 4's `exactly_one_value()`
   takes a structural body; Push 2 settles the Value-enum
   variant for the body wire (see §"Open: body type" in
   Surface 4) and how it round-trips through the JSON-AST
   for map-shape composite output.
 - `nbrs-activity/src/wrappers.rs::ResultDispenser`:
-  - Replaces the count/ok/path-expr/gk-call source dispatch
+  - Replaces the count/ok/path-expr/polydat-call source dispatch
     with a kernel-driven path. The wrapper still occupies
     its position in the SRD-32a registry with
     `requires_inner: [TRAVERSE]` — unchanged.
   - Per cycle: write `body` / `count` / `ok` / captures to
     the kernel's input slots (only the slots actually
-    referenced); let GK provenance re-evaluate; read each
+    referenced); let Polydat provenance re-evaluate; read each
     declared output and write it through to the op's main
     GkState. Map-shape adds the composite-wire assembly step
     (collect each entry's typed value, project to JSON AST,
@@ -791,12 +791,12 @@ plus `exactly_one_value` and `log_info` from the Push 1 set.
   with a composite-map output, list is a sequence of
   either. The shape on the page signals intent; the runtime
   parses each accordingly. SRD-40b §5.1's mapping form
-  survives as the map shape with two refinements: gk-call
+  survives as the map shape with two refinements: polydat-call
   magic-detection drops, and the composite-map output is
   added.
-- **Closure bindings follow the standard GK linkage-detection
+- **Closure bindings follow the standard Polydat linkage-detection
   rule.** Result-bindings extern slots (`body`, `count`,
-  `ok`, captures) are instantiated only where gk module
+  `ok`, captures) are instantiated only where Polydat module
   matter detects linkages — same economy `bindings:` already
   uses. No unconditional pre-declaration; no per-cycle cost
   for slots the source doesn't reference.
@@ -808,7 +808,7 @@ plus `exactly_one_value` and `log_info` from the Push 1 set.
   different behaviour against different bodies.
 - **`exactly_one_value` and `log_*` are stdlib node
   functions.** Land in Push 1 alongside `pick`. They compose
-  inside any GK expression, not just result bindings — pure
+  inside any Polydat expression, not just result bindings — pure
   primitives, not result-wire-specific magic.
 - **`pick` takes split-halves args, not interleaved pairs.**
   See §"Why not pair-wise `(b, v)` interleaving?" Cleaner at
@@ -834,8 +834,8 @@ record of the design decisions.)
 1. **Zero-pair `pick`** — rejected. `min_wires: 2` stays.
    See §"Variadic registration."
 2. **Magic-extern injection rule** — follow the standard
-   "closure bindings in inner GK scopes are made only where
-   gk module matter detects linkages" rule. The runtime
+   "closure bindings in inner Polydat scopes are made only where
+   Polydat module matter detects linkages" rule. The runtime
    doesn't pre-inject `body` / `count` / `ok` unconditionally;
    it inspects the result-bindings source's free identifiers
    and binds only the ones referenced. See §"Compilation
@@ -847,7 +847,7 @@ record of the design decisions.)
    and structured-body assertions."
 4. **Logging from result bindings** — out of scope as a
    status-line concern, but the Surface-4 set adds
-   `log_debug` / `log_info` / `log_warn` GK node functions for
+   `log_debug` / `log_info` / `log_warn` Polydat node functions for
    the side-effect-logging case. See §"Surface 5 — Logging
    node functions."
 5. **Cycling re-eval** — every cycle's source re-evaluates
@@ -864,7 +864,7 @@ wiring the kernel-driven path next needs to address these:
 
 ### Design constraint 1 — the extern-vs-result-wire collision
 
-`bind_outer_scope` (`polydat/src/kernel/gkkernel.rs:369`)
+`bind_outer_scope` (`polydat/src/kernel/polydatkernel.rs:369`)
 attaches an outer-scope `shared X := init` cell to an inner
 kernel's input slot ONLY when the inner kernel already
 declares `extern X: T`. There's no auto-creation of input
@@ -906,7 +906,7 @@ shape (§"Compilation lifecycle"), but requires the constraint-1
 fix.
 
 **B. Build a separate auxiliary kernel.** Compile the result-
-bindings as a standalone GkKernel attached to the
+bindings as a standalone PolydatKernel attached to the
 ResultDispenser. Per cycle, set body/count/ok inputs, lookup
 each declared output, write to OpResult.captures, let the
 existing capture plumbing route values to the op's main
@@ -949,7 +949,7 @@ and the kernel-driven path's body extern.
 
 ## See also
 
-- SRD-12 — GK stdlib (where `pick`'s function metadata lives).
+- SRD-12 — Polydat stdlib (where `pick`'s function metadata lives).
 - SRD-13d — Op-template scope (the `extern`/`shared` binding
   layer this SRD's contract rides on).
 - SRD-16 — Mutability rules (the load-bearing `shared`

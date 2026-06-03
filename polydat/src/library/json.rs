@@ -8,7 +8,7 @@
 //! serialization/deserialization round-trips when passing structured
 //! data between nodes or to adapters that consume JSON natively.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use serde_json::json;
 
 // =================================================================
@@ -51,7 +51,7 @@ impl JsonObject {
     }
 }
 
-impl GkNode for JsonObject {
+impl PolydatNode for JsonObject {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -86,7 +86,7 @@ impl JsonArray {
     }
 }
 
-impl GkNode for JsonArray {
+impl PolydatNode for JsonArray {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -116,7 +116,7 @@ impl ToJson {
     }
 }
 
-impl GkNode for ToJson {
+impl PolydatNode for ToJson {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Json(std::sync::Arc::new(value_to_json(&inputs[0])));
@@ -148,7 +148,7 @@ impl JsonMerge {
     }
 }
 
-impl GkNode for JsonMerge {
+impl PolydatNode for JsonMerge {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let left = inputs[0].as_json();
@@ -196,7 +196,7 @@ impl JsonToStr {
     }
 }
 
-impl GkNode for JsonToStr {
+impl PolydatNode for JsonToStr {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(inputs[0].as_json().to_string().into());
@@ -228,7 +228,7 @@ impl JsonToStrPretty {
     }
 }
 
-impl GkNode for JsonToStrPretty {
+impl PolydatNode for JsonToStrPretty {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(
@@ -262,7 +262,7 @@ impl StrToJson {
     }
 }
 
-impl GkNode for StrToJson {
+impl PolydatNode for StrToJson {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let parsed = serde_json::from_str(inputs[0].as_str())
@@ -299,7 +299,7 @@ impl EscapeJson {
     }
 }
 
-impl GkNode for EscapeJson {
+impl PolydatNode for EscapeJson {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         // serde_json::to_string adds quotes; strip them for interior-only
@@ -336,7 +336,7 @@ impl JsonField {
     }
 }
 
-impl GkNode for JsonField {
+impl PolydatNode for JsonField {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let val = inputs[0].as_json();
@@ -404,7 +404,7 @@ impl JsonText {
     }
 }
 
-impl GkNode for JsonText {
+impl PolydatNode for JsonText {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -497,7 +497,7 @@ impl BodyColumnI32 {
     }
 }
 
-impl GkNode for BodyColumnI32 {
+impl PolydatNode for BodyColumnI32 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -748,7 +748,7 @@ impl NormalizeVector {
     }
 }
 
-impl GkNode for NormalizeVector {
+impl PolydatNode for NormalizeVector {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -806,7 +806,7 @@ impl RandomVector {
     }
 }
 
-impl GkNode for RandomVector {
+impl PolydatNode for RandomVector {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -848,7 +848,7 @@ impl ArrayLen {
     }
 }
 
-impl GkNode for ArrayLen {
+impl PolydatNode for ArrayLen {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let s = inputs[0].as_str();
@@ -887,7 +887,7 @@ impl ArrayAt {
     }
 }
 
-impl GkNode for ArrayAt {
+impl PolydatNode for ArrayAt {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let s = inputs[0].as_str();
@@ -910,7 +910,7 @@ impl GkNode for ArrayAt {
 /// Try to build a JSON node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "to_json" => Some(Ok(Box::new(ToJson::new(crate::ast::PortType::U64)))),
         "json_to_str" => Some(Ok(Box::new(JsonToStr::new()))),

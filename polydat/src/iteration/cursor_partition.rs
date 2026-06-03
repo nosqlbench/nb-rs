@@ -16,7 +16,7 @@
 //! See [`docs/sysref/71_cursor_partitions.md`] for the design
 //! memo this implements. The parser and resolution math live
 //! here; the DSL `over` clause and cursor source factory
-//! integration live in their own modules. The GK `Value`
+//! integration live in their own modules. The Polydat `Value`
 //! integration rides on the existing [`Value::Ext`] /
 //! [`ReflectedValue`] mechanism — see the impls below.
 
@@ -666,10 +666,10 @@ fn pct_of(ordinal: u64, base_start: u64, extent: u64) -> f64 {
 }
 
 // =========================================================================
-// GK Value integration
+// Polydat Value integration
 // =========================================================================
 //
-// Partition and PartitionSpec carry through GK wires as
+// Partition and PartitionSpec carry through Polydat wires as
 // `Value::Ext(Box<dyn ReflectedValue>)` rather than dedicated
 // enum variants. This avoids sweeping every Value-match site in
 // the codebase. Stdlib node functions that consume partitions
@@ -735,7 +735,7 @@ impl ReflectedValue for PartitionSpec {
     }
 }
 
-/// A list of resolved partitions carried as a single GK value.
+/// A list of resolved partitions carried as a single Polydat value.
 ///
 /// Needed because [`Value::Ext`] holds one [`ReflectedValue`] —
 /// to flow a `Vec<Partition>` on a single wire we wrap it once
@@ -783,17 +783,17 @@ impl ReflectedValue for PartitionList {
 /// partition-typed wires. Use these at node entry / exit to
 /// avoid `Value::Ext(Box::new(...))` boilerplate.
 impl Value {
-    /// Wrap a [`Partition`] as a GK `Value::Ext`.
+    /// Wrap a [`Partition`] as a Polydat `Value::Ext`.
     pub fn from_partition(p: Partition) -> Self {
         Value::Ext(Box::new(p))
     }
 
-    /// Wrap a [`PartitionSpec`] as a GK `Value::Ext`.
+    /// Wrap a [`PartitionSpec`] as a Polydat `Value::Ext`.
     pub fn from_partition_spec(s: PartitionSpec) -> Self {
         Value::Ext(Box::new(s))
     }
 
-    /// Wrap a `Vec<Partition>` as a GK `Value::Ext` via
+    /// Wrap a `Vec<Partition>` as a Polydat `Value::Ext` via
     /// [`PartitionList`]. Use this when a wire needs to carry
     /// the whole resolved list (e.g. the `<param>.partitions`
     /// projection).
@@ -1286,7 +1286,7 @@ mod tests {
         );
     }
 
-    // ── GK Value round-trip ────────────────────────────────
+    // ── Polydat Value round-trip ────────────────────────────────
 
     #[test]
     fn partition_roundtrips_through_value_ext() {

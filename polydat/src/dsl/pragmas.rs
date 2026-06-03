@@ -1,14 +1,14 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Module-level pragmas for GK source.
+//! Module-level pragmas for Polydat source.
 //!
-//! Pragmas are first-class GK statements the module author places at
-//! the head of a `.gk` file or module body to opt into compile-time
+//! Pragmas are first-class Polydat statements the module author places at
+//! the head of a `.polydat` file or module body to opt into compile-time
 //! graph transforms. Today they cover assertion-injection modes that
 //! complement the const-constraint metadata (SRD 15):
 //!
-//! ```gk
+//! ```polydat
 //! pragma strict_values
 //! pragma strict_types
 //! pragma strict          // convenience alias for both
@@ -16,7 +16,7 @@
 //! id := mod(hash(cycle), 1000)
 //! ```
 //!
-//! `pragma` is a reserved keyword in the GK grammar; pragmas are
+//! `pragma` is a reserved keyword in the Polydat grammar; pragmas are
 //! [`Statement::Pragma`] in the AST and walked by the compiler the
 //! same way other statements are. They're not comments — distinct
 //! syntactic construct, distinguishable from `//`/`#` line comments.
@@ -40,7 +40,7 @@
 //!
 //! ## Scoping (SRD 15 §"Pragma Scope")
 //!
-//! Each GK graph or module has its own [`PragmaSet`]. Inner
+//! Each Polydat graph or module has its own [`PragmaSet`]. Inner
 //! contexts inherit the outer scope's pragmas automatically — an
 //! enclosing `strict_values` applies to every nested module body
 //! attached to it. On conflict (an inner pragma whose effective
@@ -59,7 +59,7 @@ pub struct Pragma {
     pub line: usize,
 }
 
-/// All pragmas declared in one GK scope. Multiple `PragmaSet`s
+/// All pragmas declared in one Polydat scope. Multiple `PragmaSet`s
 /// chain via [`PragmaSet::with_parent`] to model nested scopes
 /// (workload → phase → `for_each` iteration). Per SRD 13b
 /// §"Scope composition" + SRD 15 §"Pragma Scope": each scope is
@@ -163,7 +163,7 @@ fn is_known(name: &str) -> bool {
 /// [`PragmaSet`]. This is the canonical extraction path — pragmas
 /// are first-class grammar (the `pragma` keyword) and the parser
 /// produces them as proper statements.
-pub fn collect_from_ast(file: &crate::dsl::ast::GkFile) -> PragmaSet {
+pub fn collect_from_ast(file: &crate::dsl::ast::PolydatFile) -> PragmaSet {
     use crate::dsl::ast::Statement;
     let mut entries = Vec::new();
     for stmt in &file.statements {

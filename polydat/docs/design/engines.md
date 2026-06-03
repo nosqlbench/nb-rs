@@ -1,6 +1,6 @@
 # Engines
 
-The GK evaluation engine has multiple compilation levels and
+The Polydat evaluation engine has multiple compilation levels and
 optimization strategies that compose independently. The
 compiler selects the optimal combination at graph construction
 time and produces a **monomorphic kernel** — a distinct type
@@ -213,16 +213,16 @@ diagnostic events the assembler emits alongside
 
 ```bash
 # Default: provenance-enabled for each level
-nbrs bench gk graph.gk iters=5
+nbrs bench Polydat graph.gk iters=5
 
 # Compare raw vs provenance per level
-nbrs bench gk graph.gk --compare iters=5
+nbrs bench Polydat graph.gk --compare iters=5
 
 # Full 3-way decomposition: raw / push / push+pull
-nbrs bench gk graph.gk --compare-modes iters=5
+nbrs bench Polydat graph.gk --compare-modes iters=5
 
 # Full test suite
-nbrs bench gk "polydat/tests/perf_tests/*.gk" --compare-modes iters=5
+nbrs bench Polydat "polydat/tests/perf_tests/*.polydat" --compare-modes iters=5
 ```
 
 The `--compare-modes` flag shows all three variants (raw, push,

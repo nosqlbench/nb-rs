@@ -1,13 +1,13 @@
 # 21: Parameters and Bind Points
 
 Parameters configure workloads without editing YAML. Bind points
-connect parameters and GK bindings to op templates.
+connect parameters and Polydat bindings to op templates.
 
 > **Parameters vs runtime reads.** This document covers *launch-
 > time* parameter resolution (CLI → workload → env) and the bind-
-> point syntax that names parameter and GK values in op fields.
+> point syntax that names parameter and Polydat values in op fields.
 > *Runtime-mutable* values — anything a workload reads that can
-> change mid-run — are accessed as GK bindings too, not as a
+> change mid-run — are accessed as Polydat bindings too, not as a
 > parallel mechanism. See SRD 10 §"GK as the unified access
 > surface" for the general principle and SRD 12 §"Runtime context
 > nodes" for the node catalog (`control`, `metric`, `rate`,
@@ -57,17 +57,17 @@ CLI override: `nbrs run ... concurrency=200` replaces the
 effective concurrency for every block that hasn't overridden
 it locally.
 
-### Explicit layering with GK helpers
+### Explicit layering with Polydat helpers
 
 Closest-wins covers the common case, but workloads sometimes
 need to say "use this value if it's defined, otherwise fall
 back to *that* one" — across scopes, with explicit ordering.
-The GK layer exposes three helpers for that:
+The Polydat layer exposes three helpers for that:
 
 - **`this_or(primary, default)`** — returns `primary` if it
   resolves to a defined value, otherwise `default`. Use when
   a block's value should override the workload default only
-  when explicitly set. Both arguments are ordinary GK wires,
+  when explicitly set. Both arguments are ordinary Polydat wires,
   so `default` can itself be another `this_or`, a literal, a
   capture from a prior op, or another param lookup.
 - **`required(name)`** — asserts that `name` resolves to a
@@ -90,7 +90,7 @@ params:
   timeout_ms: "{in_range({param:timeout_ms}, 10, 60_000)}"
 ```
 
-These helpers live in the GK stdlib (SRD 12); workload param
+These helpers live in the Polydat stdlib (SRD 12); workload param
 values go through the same reification path as every other
 runtime value (SRD 10), so predicates and layering compose
 with bind points, capture references, and runtime context
@@ -121,7 +121,7 @@ precedence.
 
 | Syntax | Source | Description |
 |--------|--------|-------------|
-| `{bind:name}` | GK binding | Output of a GK kernel node |
+| `{bind:name}` | Polydat binding | Output of a Polydat kernel node |
 | `{capture:name}` | Capture context | Value captured from a prior op's result |
 | `{input:name}` | Graph input | External input value (e.g., cycle) |
 | `{param:name}` | Workload params | Workload parameter value |
@@ -132,7 +132,7 @@ one source. Required in strict mode (sysref 15).
 
 `{param:name}` provides explicit access to workload parameters in
 op fields. Without it, params are only available via pre-compile
-string substitution in GK source. With it, a param can be
+string substitution in Polydat source. With it, a param can be
 referenced directly in an op field without relying on the
 pre-compile expansion phase.
 
@@ -140,7 +140,7 @@ pre-compile expansion phase.
 
 | Syntax | Resolution Order |
 |--------|-----------------|
-| `{name}` | GK binding → capture → input → param (first match wins) |
+| `{name}` | Polydat binding → capture → input → param (first match wins) |
 
 Convenient for simple workloads. Produces a warning if `name`
 exists in multiple namespaces (could resolve to the wrong one).
@@ -155,9 +155,9 @@ ops:
     prepared: "UPDATE users SET tag = {capture:username} WHERE id = {bind:user_id}"
 ```
 
-### Workload Params vs GK Bindings
+### Workload Params vs Polydat Bindings
 
-Workload params are expanded **before** GK compilation. GK
+Workload params are expanded **before** Polydat compilation. GK
 bind points are resolved **per cycle** during execution.
 
 ```yaml
@@ -165,13 +165,13 @@ params:
   dataset: glove-25-angular     # expanded pre-compile
 
 bindings: |
-  dim := vector_dim("{dataset}")  # {dataset} → "glove-25-angular" before GK sees it
+  dim := vector_dim("{dataset}")  # {dataset} → "glove-25-angular" before Polydat sees it
   user_id := hash(cycle)          # {user_id} resolved per cycle
 ```
 
-The expansion order matters: `{dataset}` in GK source is a param
+The expansion order matters: `{dataset}` in Polydat source is a param
 substitution (string replacement pre-compile). `{user_id}` in an
-op field is a bind point (resolved per cycle from GK output).
+op field is a bind point (resolved per cycle from Polydat output).
 
 ---
 
@@ -181,18 +181,18 @@ Activity settings resolve from CLI > workload params, with GK
 constant substitution for values like `cycles: "{train_count}"`:
 
 ```rust
-fn resolve_param_with_gk(cli, workload, kernel, key) -> Option<String> {
+fn resolve_param_with_polydat(cli, workload, kernel, key) -> Option<String> {
     // CLI always wins (no substitution)
     if let Some(v) = cli.get(key) { return Some(v); }
-    // Workload params: substitute {name} from GK folded constants
-    if let Some(v) = workload.get(key) { return Some(resolve_gk_refs(v, kernel)); }
+    // Workload params: substitute {name} from Polydat folded constants
+    if let Some(v) = workload.get(key) { return Some(resolve_polydat_refs(v, kernel)); }
     None
 }
 ```
 
 Workload params referenced in op templates are injected into the
 GK source as constant bindings before compilation. They resolve
-as normal GK outputs at cycle time — no separate globals mechanism.
+as normal Polydat outputs at cycle time — no separate globals mechanism.
 
 Settings resolved this way:
 - `cycles` — total cycle count
@@ -213,9 +213,9 @@ And users override on CLI: `concurrency=200 rate=50000`
 
 ---
 
-## Param Expansion in GK Source
+## Param Expansion in Polydat Source
 
-Before GK compilation, `{param}` references in binding source
+Before Polydat compilation, `{param}` references in binding source
 strings are expanded from resolved workload params:
 
 ```yaml
@@ -227,16 +227,16 @@ bindings: |
   # After expansion: dim := vector_dim("glove-25-angular")
 ```
 
-This is pure string substitution — the GK compiler never sees
+This is pure string substitution — the Polydat compiler never sees
 `{dataset}`, only the expanded value. This is necessary because
 GK node constructors (like `vector_dim`) need the dataset name
 at compile time, not cycle time.
 
 Additionally, params referenced in op templates (e.g., `{dataset}`
-in a stmt field) are injected as standalone GK constant bindings
+in a stmt field) are injected as standalone Polydat constant bindings
 (e.g., `dataset := "glove-25-angular"`) before compilation. This
-makes them available as normal GK outputs at cycle time, eliminating
-the need for a separate globals mechanism on `GkProgram`.
+makes them available as normal Polydat outputs at cycle time, eliminating
+the need for a separate globals mechanism on `PolydatProgram`.
 
 ---
 

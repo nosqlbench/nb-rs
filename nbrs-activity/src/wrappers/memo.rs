@@ -53,7 +53,7 @@ inventory::submit! {
         // wrapper sees and writes to its own atomic.
         owned_fields: &["memo"],
         triggers,
-        requires_inner: &[super::traversing::NAME],
+        requires_inner: &[super::traverse::NAME],
         forbids_outer: &[],
         mutually_exclusive_with: &[],
         describe_assignment,
@@ -122,10 +122,6 @@ impl MemoDispenser {
 impl WrappingDispenser for MemoDispenser {}
 
 impl OpDispenser for MemoDispenser {
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
-        Some(self.inner.as_ref())
-    }
-
     fn execute<'a>(
         &'a self,
         cycle: u64,
@@ -141,6 +137,10 @@ impl OpDispenser for MemoDispenser {
             }
             Ok(result)
         })
+    }
+
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        Some(self.inner.as_ref())
     }
 }
 

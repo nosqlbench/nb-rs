@@ -33,7 +33,7 @@ nestable control flow constructs at any level of the scenario tree.
    - Scenario level (wrapping phases)
    - Phase level (on the phase's `for_each` field)
    - Op level (future: wrapping individual ops within a stanza)
-   The GK scope model (SRD 13c) handles variable resolution
+   The Polydat scope model (SRD 13c) handles variable resolution
    at every level.
 
 ---
@@ -269,11 +269,11 @@ scenarios:
 
 ### bindings: (scenario level) and the set: sugar form
 
-`bindings:` is a scenario-tree node that publishes GK matter
+`bindings:` is a scenario-tree node that publishes Polydat matter
 over its `phases:` subtree. It's the canonical way to layer
 scope-local bindings between an enclosing scenario context and
 a leaf phase — workload-param shadowing, derived expressions
-spanning a subtree, shared cells, or any other GK construct
+spanning a subtree, shared cells, or any other Polydat construct
 the grammar accepts.
 
 `set:` is the convenience sugar form for the workload-param
@@ -294,7 +294,7 @@ scenarios:
         - search
 ```
 
-The `source:` body is GK matter, compiled by the standard
+The `source:` body is Polydat matter, compiled by the standard
 synthesizer that builds phase-level `bindings:` scopes. The
 modifier choice (`init`, `final`, no-modifier, `shared`,
 `volatile`) follows the standard SRD-11 §"Three Evaluation
@@ -331,20 +331,20 @@ scenarios:
 ```
 
 The parser desugars `set: { name: value, … }` to a `bindings:`
-node carrying one `init NAME = <gk-literal>` line per pair.
+node carrying one `init NAME = <polydat-literal>` line per pair.
 Multiple keys produce sibling `init` lines in the same source
 body, in declaration order. Value-literal rules:
 
 - numeric-parseable → bare (no quotes): `set: { count: 100 }`
   → `init count = 100`
 - `true` / `false` → bare boolean
-- everything else → quoted GK string literal with `\` and `"`
+- everything else → quoted Polydat string literal with `\` and `"`
   escaped
 
-Strings carry GK's `"prefix {name}"` interpolation surface for
+Strings carry Polydat's `"prefix {name}"` interpolation surface for
 free — `set: { mode: "for_{size}" }` desugars to
 `init mode = "for_{size}"`, which compiles to
-`init mode = printf("for_{}", size)` at the GK layer.
+`init mode = printf("for_{}", size)` at the Polydat layer.
 
 A single-string shorthand is also accepted for the one-key
 form:
@@ -385,7 +385,7 @@ scenarios:
 ```
 
 Both `load_test` instances share the same `Arc<GkProgram>`
-AST (immutable, structural) but have distinct `GkKernel`
+AST (immutable, structural) but have distinct `PolydatKernel`
 state. Each materializes from its own bindings-scope parent,
 so each picks up its own override at scope-init.
 
@@ -515,13 +515,13 @@ the scenario tree. The runner lifts it during plan building.
 
 The expression is evaluated once at loop entry. The result is
 a comma-separated string. Each value drives one iteration.
-The iteration variable is injected as a GK init constant.
+The iteration variable is injected as a Polydat init constant.
 
 ### do_while / do_until
 
-The condition is a GK expression or a result body check:
+The condition is a Polydat expression or a result body check:
 
-- **GK expression**: evaluated after each iteration using the
+- **Polydat expression**: evaluated after each iteration using the
   current scope state. Returns a boolean (or u64 where 0=false).
 - **`"empty"`**: special keyword — checks if the last op's result
   body has zero rows (same as poll wrapper's await_empty).
@@ -534,7 +534,7 @@ most languages.
 
 When `counter: name` is specified, the variable starts at 0 and
 increments by 1 per iteration. It's available to all children as
-a GK scope value via `shared` semantics — inner scopes see it,
+a Polydat scope value via `shared` semantics — inner scopes see it,
 and it carries across iterations.
 
 ---
@@ -573,7 +573,7 @@ evaluated at runtime. The execution plan has two types of entries:
 2. **Dynamic entries** (from `DoWhile`/`DoUntil`): evaluated
    at runtime, looping until the condition is met.
 
-### GK scope integration
+### Polydat scope integration
 
 Loop variables (iteration values, counters) are injected as GK
 init constants into the inner scope. This uses the same mechanism

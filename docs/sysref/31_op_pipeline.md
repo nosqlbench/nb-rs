@@ -10,7 +10,7 @@ compilation, dispenser creation, wrapping, and per-cycle execution.
 ```
 ParsedOp[]
   │
-  ├── Compile GK bindings ──▶ GkKernel ──▶ GkProgram (Arc)
+  ├── Compile Polydat bindings ──▶ PolydatKernel ──▶ GkProgram (Arc)
   │     (scans op fields AND params for {name} references — see SRD 13c
   │      §"Auto-Extern Generation"; bind point scanner already walks
   │      the full template, so the kernel knows every name referenced
@@ -40,7 +40,7 @@ ParsedOp[]
 The fixture is the **net product of all consumers' scope-init
 preparation**. There is no top-level coordinator that gathers names
 "on behalf of" a consumer — each consumer is responsible for its
-own scoping against the GK context. Activity construction iterates
+own scoping against the Polydat context. Activity construction iterates
 the registered consumer set and seals the fixture at the end. See
 [32: Dispenser Wrappers](32_wrappers.md) §"Init-Time Fixture and
 Consumer Self-Registration" for the trait contract.
@@ -110,7 +110,7 @@ contracts and must not be conflated:
 | Consumer | Innermost adapter dispenser | Outer wrappers (validation, conditional, throttle, …) |
 | Why distinct | Adapters need slot-ordered typed values that match the prepared statement; consumers need by-name handles resolved at init | A wrapper's read should not depend on whether the same name happens to appear in op fields |
 
-Both are populated from the same `GkState` per cycle; the GK
+Both are populated from the same `PolydatState` per cycle; the GK
 kernel remains the single canonical source of values. A name
 that appears in both an op field and a wrapper config is pulled
 once from the kernel and observed via two independent

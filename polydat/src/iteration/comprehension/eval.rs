@@ -9,7 +9,7 @@
 //! free-form workload-author text. At runtime, the executor
 //! needs to turn that text into a list of typed values to
 //! enumerate over. That's what [`evaluate_spec`] does, given a
-//! GK kernel that holds the in-scope name space (own outputs +
+//! Polydat Kernel that holds the in-scope name space (own outputs +
 //! inherited externs from `materialize_wiring_from_outer`).
 //!
 //! ## Pipeline
@@ -21,7 +21,7 @@
 //!   interpolate_via_kernel  ← {name} → kernel.lookup(name)
 //!       │
 //!       ▼
-//!   eval_const_expr         ← optional: GK expression eval
+//!   eval_const_expr         ← optional: Polydat expression eval
 //!       │
 //!       ▼
 //!   parse_list_with_types   ← comma-split, per-element type
@@ -34,7 +34,7 @@
 //!
 //! Pre-Phase-C this code lived in `nbrs-activity::scope` and
 //! `nbrs-activity::interpolate`. The lift was driven by
-//! `docs/internals/50_comprehensions_first_class.md`: GK is the
+//! `docs/internals/50_comprehensions_first_class.md`: Polydat is the
 //! canonical owner of what a comprehension *means*, including
 //! how its spec strings resolve. Activity now consumes this
 //! API rather than implementing it.
@@ -42,7 +42,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::kernel::GkKernel;
+use crate::kernel::PolydatKernel;
 use crate::kernel::interp::{interpolate_via_kernel, interpolate_with_lookup};
 use crate::ast::Value;
 
@@ -57,7 +57,7 @@ use crate::ast::Value;
 ///     list with per-element type detection. Other typed
 ///     variants become a single-element typed list.
 ///  3. On eval failure (most common case for literal lists like
-///     `"1, 10"` which aren't valid GK const expressions), fall
+///     `"1, 10"` which aren't valid Polydat const expressions), fall
 ///     back to [`parse_list_with_types`] on the interpolated
 ///     text — `1` → `U64`, `1.5` → `F64`, `true` → `Bool`,
 ///     anything else → `Str`.
@@ -67,7 +67,7 @@ use crate::ast::Value;
 /// actionable diagnostics.
 pub fn evaluate_spec(
     spec_text: &str,
-    kernel: &GkKernel,
+    kernel: &PolydatKernel,
 ) -> Result<Vec<Value>, crate::dsl::compile::EmbeddingError> {
     evaluate_spec_internal(spec_text, kernel).map_err(|msg| {
         if let Some(rest) = msg.strip_prefix("interpolation: unresolved placeholder '{") {
@@ -89,7 +89,7 @@ pub fn evaluate_spec(
 
 fn evaluate_spec_internal(
     spec_text: &str,
-    kernel: &GkKernel,
+    kernel: &PolydatKernel,
 ) -> Result<Vec<Value>, String> {
     if let Some(values) = try_eval_all_cursor(spec_text, kernel)? {
         return Ok(values);
@@ -99,7 +99,7 @@ fn evaluate_spec_internal(
     })?;
     // SRD-18c Layer 2 / SRD-18e Push 3: range operator
     // (`a..b`, `a..=b`, `a..b..s`, `a..=b..s`). Bounds and
-    // step are GK const expressions evaluated at this
+    // step are Polydat const expressions evaluated at this
     // (post-interpolation) point.
     if let Some(values) = try_eval_range(&interpolated)? {
         return Ok(values);
@@ -134,7 +134,7 @@ fn evaluate_spec_internal(
         // Fall back to the literal-list parse only when the text
         // is unambiguously a comma-separated list of literals
         // (e.g. `1, 10, 100` — `eval_const_expr` doesn't accept
-        // that shape because it isn't a single GK expression).
+        // that shape because it isn't a single Polydat expression).
         // Anything that looks like an expression (parens, GK
         // operators, identifiers other than `true`/`false`) was
         // *meant* to evaluate; if it failed, we MUST surface the
@@ -199,7 +199,7 @@ fn looks_like_literal_list(text: &str) -> bool {
 /// kernel via the synthesis path.
 pub fn pre_evaluate_clause(
     spec_text: &str,
-    parent_kernel: &GkKernel,
+    parent_kernel: &PolydatKernel,
     workload_params: &HashMap<String, String>,
     probes: &HashMap<String, String>,
 ) -> Result<Vec<Value>, String> {
@@ -305,7 +305,7 @@ pub fn parse_list_with_types(text: &str) -> Vec<Value> {
 /// and resolve it against the parent kernel's cursor extent
 /// auxiliary outputs.
 ///
-/// Cursors declared via the GK `cursor name = Cursor(start, end)`
+/// Cursors declared via the Polydat `cursor name = Cursor(start, end)`
 /// shape compile to two well-known auxiliary outputs on the
 /// kernel: `__cursor_extent_<name>_start` and
 /// `__cursor_extent_<name>_end`. Reading those gives the cursor's
@@ -322,7 +322,7 @@ pub fn parse_list_with_types(text: &str) -> Vec<Value> {
 ///   missing, etc.) — surfaced as a clause-level diagnostic.
 fn try_eval_all_cursor(
     spec_text: &str,
-    kernel: &GkKernel,
+    kernel: &PolydatKernel,
 ) -> Result<Option<Vec<Value>>, String> {
     let trimmed = spec_text.trim();
     let Some(stripped) = trimmed.strip_prefix("all(") else { return Ok(None); };
@@ -374,7 +374,7 @@ fn is_valid_ident(s: &str) -> bool {
 /// - `a..b..s`      half-open with step `s`
 /// - `a..=b..s`     closed with step `s`
 ///
-/// Bounds and step are GK const expressions; this function
+/// Bounds and step are Polydat const expressions; this function
 /// evaluates each segment via `eval_const_expr`. Numeric
 /// type follows the bounds: if both are integers, the
 /// emitted list is `Value::U64`; otherwise `Value::F64`.
@@ -924,7 +924,7 @@ fn generate_log_steps(start: f64, end: f64, n: u64) -> Result<Vec<Value>, String
 /// recursively evaluates its arguments through `evaluate_spec`
 /// (so `concat(1..10, fib(8))` works), then combines the
 /// resulting lists.
-fn try_eval_setop(text: &str, kernel: &GkKernel) -> Result<Option<Vec<Value>>, String> {
+fn try_eval_setop(text: &str, kernel: &PolydatKernel) -> Result<Option<Vec<Value>>, String> {
     let Some((name, args)) = parse_func_call(text) else {
         return Ok(None);
     };
@@ -1037,7 +1037,7 @@ fn try_eval_setop(text: &str, kernel: &GkKernel) -> Result<Option<Vec<Value>>, S
 /// outputs match `build_bucket_lut` / `build_concat_lut` /
 /// `build_interval_lut` byte-for-byte (covered by the
 /// op-sequencing tests in `nbrs-activity`).
-fn try_eval_sequencer(text: &str, kernel: &GkKernel) -> Result<Option<Vec<Value>>, String> {
+fn try_eval_sequencer(text: &str, kernel: &PolydatKernel) -> Result<Option<Vec<Value>>, String> {
     let Some((name, args)) = parse_func_call(text) else {
         return Ok(None);
     };
@@ -1176,15 +1176,15 @@ fn seq_interval(items: &[Value], ratios: &[usize]) -> Vec<Value> {
     out
 }
 
-/// Map a `Value` variant to the GK extern type name string the
+/// Map a `Value` variant to the Polydat extern type name string the
 /// parser accepts (`u64`, `f64`, `bool`, `String`).
 ///
-/// The GK parser today accepts only `u64`, `f64`, and
+/// The Polydat parser today accepts only `u64`, `f64`, and
 /// anything-else-as-Str for extern declarations, so Bytes /
 /// Json / Ext / Handle / VecF32 / VecI32 / Str / None all map
 /// to "String". The runtime spec evaluator surfaces the actual
 /// typed value via interpolation regardless.
-pub fn value_to_gk_type_name(v: &Value) -> &'static str {
+pub fn value_to_polydat_type_name(v: &Value) -> &'static str {
     match v {
         Value::U64(_) => "u64",
         Value::F64(_) => "f64",
@@ -1201,7 +1201,7 @@ pub fn value_to_gk_type_name(v: &Value) -> &'static str {
 /// Walks the dependent-tuple tree depth-first using fresh
 /// per-branch kernels. Each branch installs the prior clauses'
 /// typed values as inputs on a fresh kernel
-/// ([`GkKernel::from_program`] + [`GkKernel::materialize_wiring_from_outer`]),
+/// ([`PolydatKernel::from_program`] + [`PolydatKernel::materialize_wiring_from_outer`]),
 /// then evaluates the next clause's spec against that kernel.
 /// This is the kernel-per-logical-subspace rule from SRD-18b
 /// §"Dependent Tuple Iteration".
@@ -1222,8 +1222,8 @@ pub fn value_to_gk_type_name(v: &Value) -> &'static str {
 /// returning `Err` aborts enumeration, `Ok(())` skips the
 /// branch.
 pub fn enumerate_tuples<F>(
-    canonical: &Arc<GkKernel>,
-    parent: &Arc<GkKernel>,
+    canonical: &Arc<PolydatKernel>,
+    parent: &Arc<PolydatKernel>,
     clauses: &[super::ast_legacy::Clause],
     filter: Option<&str>,
     mut on_empty_clause: F,
@@ -1241,8 +1241,8 @@ where
 
 #[allow(clippy::too_many_arguments)]
 fn enumerate_into<F>(
-    canonical: &Arc<GkKernel>,
-    parent: &Arc<GkKernel>,
+    canonical: &Arc<PolydatKernel>,
+    parent: &Arc<PolydatKernel>,
     clauses: &[super::ast_legacy::Clause],
     filter: Option<&str>,
     idx: usize,
@@ -1274,7 +1274,7 @@ where
                 .map_err(|e| format!("comprehension filter '{predicate}': {e}"))?;
             let result = crate::dsl::compile::eval_const_expr(&interpolated)
                 .map_err(|e| format!("comprehension filter '{predicate}': {e}"))?;
-            // GK comparison operators return U64 (0/1); accept
+            // Polydat comparison operators return U64 (0/1); accept
             // any truthy/falsy scalar uniformly, matching the
             // do-loop condition handler.
             let keep = match result {
@@ -1504,7 +1504,7 @@ mod tests {
 
     #[test]
     fn kernel_resolves_via_get_constant() {
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "const dataset := \"example\"\n"
         ).unwrap();
         let out = interpolate_via_kernel("path/{dataset}/data", &kernel).unwrap();
@@ -1513,10 +1513,10 @@ mod tests {
 
     #[test]
     fn kernel_resolves_via_get_input() {
-        let parent = crate::dsl::compile::compile_gk(
+        let parent = crate::dsl::compile::compile_polydat(
             "const k_values := \"1, 10\"\n"
         ).unwrap();
-        let child_program = crate::dsl::compile::compile_gk(
+        let child_program = crate::dsl::compile::compile_polydat(
             "extern k_values: String\n"
         ).unwrap().program().clone();
         let child = parent.materialize_subscope(child_program, &[]);
@@ -1526,7 +1526,7 @@ mod tests {
 
     #[test]
     fn kernel_unresolved_name_errors() {
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "const x := 1\n"
         ).unwrap();
         let err = interpolate_via_kernel("hello {nope}", &kernel).unwrap_err().to_string();
@@ -1536,7 +1536,7 @@ mod tests {
 
     #[test]
     fn kernel_nested_template_iterates_to_fixed_point() {
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "const k := \"1\"\nconst k_1_limits := \"1, 2, 4, 8\"\n"
         ).unwrap();
         let out = interpolate_via_kernel("{k_{k}_limits}", &kernel).unwrap();
@@ -1567,7 +1567,7 @@ mod tests {
         // constants. The real cursor compiler emits these via
         // `__cursor_extent_<name>_{start,end}` outputs; for this
         // test we synthesize them directly.
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "const __cursor_extent_row_start := 0\n\
              const __cursor_extent_row_end := 5\n"
         ).unwrap();
@@ -1579,7 +1579,7 @@ mod tests {
 
     #[test]
     fn all_cursor_non_zero_start() {
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "const __cursor_extent_data_start := 100\n\
              const __cursor_extent_data_end := 103\n"
         ).unwrap();
@@ -1589,7 +1589,7 @@ mod tests {
 
     #[test]
     fn all_cursor_missing_extent_errors() {
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "const unrelated := 1\n"
         ).unwrap();
         let err = evaluate_spec("all(no_such_cursor)", &kernel).unwrap_err().to_string();
@@ -1609,7 +1609,7 @@ mod tests {
         // a clean clause-level error (the legacy silent
         // literal-list fallback masked this kind of typo six
         // layers downstream).
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "const __cursor_extent_row_start := 0\n\
              const __cursor_extent_row_end := 5\n"
         ).unwrap();
@@ -1644,7 +1644,7 @@ mod tests {
         // The user-visible result was a CQL parser error from a
         // malformed `DROP INDEX`. After this fix every layer
         // propagates an actionable diagnostic.
-        let kernel = crate::dsl::compile::compile_gk("const unrelated := 1\n").unwrap();
+        let kernel = crate::dsl::compile::compile_polydat("const unrelated := 1\n").unwrap();
         let result = evaluate_spec(
             "matching_profiles('nonexistent_dataset_xyz_qqq', 'label_')",
             &kernel,
@@ -1672,7 +1672,7 @@ mod tests {
         // must propagate the failure rather than splitting on
         // commas. This guards the broader contract that
         // protected the dataset-resolution case above.
-        let kernel = crate::dsl::compile::compile_gk("const unrelated := 1\n").unwrap();
+        let kernel = crate::dsl::compile::compile_polydat("const unrelated := 1\n").unwrap();
         let err = evaluate_spec("nonexistent_func('a', 'b', 'c')", &kernel).unwrap_err().to_string();
         assert!(err.contains("failed to evaluate") || err.contains("unknown"),
             "expected a clean eval-failure error, got: {err}");
@@ -1686,7 +1686,7 @@ mod tests {
         // (which it should — `1, 10, 100` isn't a single GK
         // expression). This is the legitimate use case that the
         // fallback exists for.
-        let kernel = crate::dsl::compile::compile_gk("const unrelated := 1\n").unwrap();
+        let kernel = crate::dsl::compile::compile_polydat("const unrelated := 1\n").unwrap();
         let values = evaluate_spec("1, 10, 100", &kernel).unwrap();
         assert_eq!(values, vec![Value::U64(1), Value::U64(10), Value::U64(100)]);
 
@@ -1704,7 +1704,7 @@ mod tests {
         // the compiler-side change that emits
         // __cursor_extent_<name>_{start,end} as final bindings
         // even in the literal-args case.
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "cursor row = range(0, 50)\n"
         ).unwrap();
         let start = kernel.lookup("__cursor_extent_row_start");
@@ -1717,7 +1717,7 @@ mod tests {
 
     #[test]
     fn all_cursor_with_real_cursor_decl_works() {
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "cursor row = range(0, 5)\n"
         ).unwrap();
         let values = evaluate_spec("all(row)", &kernel).unwrap();
@@ -1728,7 +1728,7 @@ mod tests {
 
     #[test]
     fn all_cursor_ignores_whitespace() {
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "const __cursor_extent_row_start := 0\n\
              const __cursor_extent_row_end := 3\n"
         ).unwrap();
@@ -1738,7 +1738,7 @@ mod tests {
 
     #[test]
     fn evaluate_spec_resolves_against_kernel() {
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "const k_values := \"1, 10, 100\"\n"
         ).unwrap();
         let v = evaluate_spec("{k_values}", &kernel).unwrap();
@@ -1795,7 +1795,7 @@ mod tests {
     }
 
     #[test]
-    fn value_to_gk_type_name_returns_ext_for_partition_value() {
+    fn value_to_polydat_type_name_returns_ext_for_partition_value() {
         // The for_each scope synthesizer uses this to emit
         // `extern <var>: <type>` for each iter-var. Ext-typed
         // values (Partition, PartitionSpec, PartitionList) must
@@ -1807,13 +1807,13 @@ mod tests {
             start_pct: 0.0, end_pct: 100.0, base_extent: 10,
         };
         let v = Value::from_partition(p);
-        assert_eq!(value_to_gk_type_name(&v), "Ext");
+        assert_eq!(value_to_polydat_type_name(&v), "Ext");
     }
 
     // ── SRD-18c Layer 2 / SRD-18e Push 3: range operator ──
 
-    fn empty_kernel() -> GkKernel {
-        crate::dsl::compile::compile_gk("\n").unwrap()
+    fn empty_kernel() -> PolydatKernel {
+        crate::dsl::compile::compile_polydat("\n").unwrap()
     }
 
     #[test]
@@ -1926,7 +1926,7 @@ mod tests {
 
     #[test]
     fn range_with_kernel_referenced_bounds() {
-        let kernel = crate::dsl::compile::compile_gk(
+        let kernel = crate::dsl::compile::compile_polydat(
             "const lo := 5\nconst hi := 12\n"
         ).unwrap();
         let v = evaluate_spec("{lo}..{hi}", &kernel).unwrap();
@@ -2140,7 +2140,7 @@ mod tests {
             "bucket(concat('ann', 'scan', 'fetch'), concat(3, 1, 2))",
             &empty_kernel()).unwrap();
         // Wait — concat doesn't make sense with these args (mixed types).
-        // Use the literal form via the GK list parser.
+        // Use the literal form via the Polydat list parser.
         let _ = v;
     }
 

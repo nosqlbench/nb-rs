@@ -4,7 +4,7 @@
 //! cassandra-cpp-engine per-statement modifier impls for the
 //! universal CQL field surface (SRD 73).
 //!
-//! Each modifier captures the resolved GK Value at dispenser-
+//! Each modifier captures the resolved Polydat Value at dispenser-
 //! initializer time and applies it via the engine's per-statement
 //! setter at execute time. Target type is `cassandra_cpp::Statement`.
 //!

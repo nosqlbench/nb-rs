@@ -1,11 +1,11 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Graph editor backend: palette API and graph JSON → GK source compilation.
+//! Graph editor backend: palette API and graph JSON → Polydat source compilation.
 //!
 //! The palette API serves the function registry as JSON for the
 //! Litegraph.js client to register node types. The compile endpoint
-//! converts a Litegraph graph JSON into GK source, compiles it, and
+//! converts a Litegraph graph JSON into Polydat source, compiles it, and
 //! returns the source text, SVG visualization, and sample output.
 
 use std::collections::HashMap;
@@ -42,7 +42,7 @@ pub struct PaletteParam {
     pub required: bool,
 }
 
-/// Build the palette from the GK function registry.
+/// Build the palette from the Polydat function registry.
 pub fn build_palette() -> Vec<PaletteCategory> {
     let grouped = registry::by_category();
     grouped
@@ -112,20 +112,20 @@ pub struct LiteSlot {
 /// Result of compiling a graph.
 #[derive(Serialize)]
 pub struct CompileResult {
-    pub gk_source: String,
+    pub polydat_source: String,
     pub svg: String,
     pub samples: Vec<String>,
     pub error: Option<String>,
 }
 
-/// Convert a Litegraph JSON graph into GK source text, compile it,
+/// Convert a Litegraph JSON graph into Polydat source text, compile it,
 /// render SVG, and produce sample output for a few cycles.
 pub fn compile_graph(graph_json: &str) -> CompileResult {
     let graph: LiteGraph = match serde_json::from_str(graph_json) {
         Ok(g) => g,
         Err(e) => {
             return CompileResult {
-                gk_source: String::new(),
+                polydat_source: String::new(),
                 svg: String::new(),
                 samples: vec![],
                 error: Some(format!("invalid graph JSON: {e}")),
@@ -133,11 +133,11 @@ pub fn compile_graph(graph_json: &str) -> CompileResult {
         }
     };
 
-    let translation = match graph_to_gk(&graph) {
+    let translation = match graph_to_polydat(&graph) {
         Ok(t) => t,
         Err(e) => {
             return CompileResult {
-                gk_source: String::new(),
+                polydat_source: String::new(),
                 svg: String::new(),
                 samples: vec![],
                 error: Some(e),
@@ -145,21 +145,21 @@ pub fn compile_graph(graph_json: &str) -> CompileResult {
         }
     };
 
-    let gk_source = translation.source;
+    let polydat_source = translation.source;
 
-    if gk_source.trim().is_empty() {
+    if polydat_source.trim().is_empty() {
         return CompileResult {
-            gk_source,
+            polydat_source,
             svg: String::new(),
             samples: vec![],
             error: None,
         };
     }
 
-    let svg = viz::gk_to_svg(&gk_source).unwrap_or_default();
+    let svg = viz::polydat_to_svg(&polydat_source).unwrap_or_default();
 
     // Compile and sample a few cycles.
-    let samples = match polydat::dsl::compile_gk(&gk_source) {
+    let samples = match polydat::dsl::compile_polydat(&polydat_source) {
         Ok(mut kernel) => {
             let output_names: Vec<String> = kernel.output_names().iter().map(|s| s.to_string()).collect();
             (0..5u64)
@@ -178,7 +178,7 @@ pub fn compile_graph(graph_json: &str) -> CompileResult {
         }
         Err(e) => {
             return CompileResult {
-                gk_source,
+                polydat_source,
                 svg,
                 samples: vec![],
                 error: Some(format!("compile error: {e}")),
@@ -187,25 +187,25 @@ pub fn compile_graph(graph_json: &str) -> CompileResult {
     };
 
     CompileResult {
-        gk_source,
+        polydat_source,
         svg,
         samples,
         error: None,
     }
 }
 
-/// Result of translating a Litegraph graph into GK source text.
-pub struct GkTranslation {
-    /// The generated GK source code.
+/// Result of translating a Litegraph graph into Polydat source text.
+pub struct PolydatTransition {
+    /// The generated Polydat source code.
     pub source: String,
     /// Maps LiteGraph node ID to a list of (slot_index, var_name).
     pub var_map: HashMap<i64, Vec<(usize, String)>>,
 }
 
-/// Convert a Litegraph graph structure into GK source text.
-fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
+/// Convert a Litegraph graph structure into Polydat source text.
+fn graph_to_polydat(graph: &LiteGraph) -> Result<PolydatTransition, String> {
     if graph.nodes.is_empty() {
-        return Ok(GkTranslation { source: String::new(), var_map: HashMap::new() });
+        return Ok(PolydatTransition { source: String::new(), var_map: HashMap::new() });
     }
 
     // Build link map: link_id → (source_node_id, source_slot, dest_node_id, dest_slot)
@@ -227,7 +227,7 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
     // Find coordinate nodes and collect their output names.
     let mut coord_names: Vec<String> = Vec::new();
     for node in &graph.nodes {
-        if node.node_type == "gk/coordinates" {
+        if node.node_type == "polydat/coordinates" {
             for (i, out) in node.outputs.iter().enumerate() {
                 let name = out.name.clone();
                 coord_names.push(name.clone());
@@ -242,10 +242,10 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
 
     // Assign output variable names for function nodes.
     for node in &graph.nodes {
-        if node.node_type == "gk/coordinates" || node.node_type == "gk/output" || node.node_type == "gk/plotter" {
+        if node.node_type == "polydat/coordinates" || node.node_type == "polydat/output" || node.node_type == "polydat/plotter" {
             continue;
         }
-        // Node type is "Category/funcname" or "gk/special" — extract last segment
+        // Node type is "Category/funcname" or "polydat/special" — extract last segment
         let func_name = node.node_type.rsplit('/').next().unwrap_or(&node.node_type);
         if node.outputs.len() == 1 {
             // Single output: use the node's custom name or func_id.
@@ -278,7 +278,7 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
         output_names.get(&(*src_node, *src_slot)).cloned()
     };
 
-    // Generate GK source. One `input` line per declared coordinate
+    // Generate Polydat source. One `input` line per declared coordinate
     // (single-form) or a tuple `input (a: u64, b: u64, ...)` when
     // there's more than one.
     let mut lines = Vec::new();
@@ -298,12 +298,12 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
     let mut sorted_nodes: Vec<&LiteNode> = graph
         .nodes
         .iter()
-        .filter(|n| n.node_type != "gk/coordinates" && n.node_type != "gk/output" && n.node_type != "gk/plotter")
+        .filter(|n| n.node_type != "polydat/coordinates" && n.node_type != "polydat/output" && n.node_type != "polydat/plotter")
         .collect();
     sorted_nodes.sort_by_key(|n| n.id);
 
     for node in &sorted_nodes {
-        // Node type is "Category/funcname" or "gk/special" — extract last segment
+        // Node type is "Category/funcname" or "polydat/special" — extract last segment
         let func_name = node.node_type.rsplit('/').next().unwrap_or(&node.node_type);
 
         // Collect wire inputs.
@@ -362,7 +362,7 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
     for ((node_id, slot_idx), var_name) in &output_names {
         var_map.entry(*node_id).or_default().push((*slot_idx, var_name.clone()));
     }
-    Ok(GkTranslation { source: lines.join("\n"), var_map })
+    Ok(PolydatTransition { source: lines.join("\n"), var_map })
 }
 
 // ─── Eval API ──────────────────────────────────────────────
@@ -377,7 +377,7 @@ pub struct EvalRequest {
 /// Full evaluation result including per-node port values.
 #[derive(Serialize)]
 pub struct EvalResult {
-    pub gk_source: String,
+    pub polydat_source: String,
     pub svg: String,
     pub error: Option<String>,
     pub sample: String,
@@ -428,7 +428,7 @@ pub fn plot_graph(req: PlotRequest) -> PlotResult {
         },
     };
 
-    let translation = match graph_to_gk(&graph) {
+    let translation = match graph_to_polydat(&graph) {
         Ok(t) => t,
         Err(e) => return PlotResult {
             error: Some(e),
@@ -442,7 +442,7 @@ pub fn plot_graph(req: PlotRequest) -> PlotResult {
         };
     }
 
-    match polydat::dsl::compile_gk(&translation.source) {
+    match polydat::dsl::compile_polydat(&translation.source) {
         Ok(mut kernel) => {
             let output_names: Vec<String> = kernel.output_names()
                 .iter().map(|s| s.to_string()).collect();
@@ -485,30 +485,30 @@ pub fn eval_graph(req: EvalRequest) -> EvalResult {
     let graph: LiteGraph = match serde_json::from_str(&req.graph) {
         Ok(g) => g,
         Err(e) => return EvalResult {
-            gk_source: String::new(), svg: String::new(),
+            polydat_source: String::new(), svg: String::new(),
             error: Some(format!("invalid graph JSON: {e}")),
             sample: String::new(), node_values: HashMap::new(),
         },
     };
 
-    let translation = match graph_to_gk(&graph) {
+    let translation = match graph_to_polydat(&graph) {
         Ok(t) => t,
         Err(e) => return EvalResult {
-            gk_source: String::new(), svg: String::new(),
+            polydat_source: String::new(), svg: String::new(),
             error: Some(e), sample: String::new(), node_values: HashMap::new(),
         },
     };
 
     if translation.source.trim().is_empty() {
         return EvalResult {
-            gk_source: translation.source, svg: String::new(),
+            polydat_source: translation.source, svg: String::new(),
             error: None, sample: String::new(), node_values: HashMap::new(),
         };
     }
 
-    let svg = viz::gk_to_svg(&translation.source).unwrap_or_default();
+    let svg = viz::polydat_to_svg(&translation.source).unwrap_or_default();
 
-    match polydat::dsl::compile_gk(&translation.source) {
+    match polydat::dsl::compile_polydat(&translation.source) {
         Ok(mut kernel) => {
             kernel.set_inputs(&[req.cycle]);
 
@@ -541,7 +541,7 @@ pub fn eval_graph(req: EvalRequest) -> EvalResult {
             let sample = format!("cycle {}: {}", req.cycle, sample_vals.join(", "));
 
             EvalResult {
-                gk_source: translation.source,
+                polydat_source: translation.source,
                 svg,
                 error: None,
                 sample,
@@ -549,7 +549,7 @@ pub fn eval_graph(req: EvalRequest) -> EvalResult {
             }
         }
         Err(e) => EvalResult {
-            gk_source: translation.source,
+            polydat_source: translation.source,
             svg,
             error: Some(format!("compile error: {e}")),
             sample: String::new(),

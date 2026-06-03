@@ -1,12 +1,12 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! The `bench gk` subcommand: benchmark GK expressions across all
+//! The `bench polydat` subcommand: benchmark Polydat expressions across all
 //! compilation levels, provenance modes, and thread counts.
 
 use std::sync::Arc;
-use polydat::dsl::compile::compile_gk_to_assembler;
-use polydat::kernel::GkProgram;
+use polydat::dsl::compile::compile_polydat_to_assembler;
+use polydat::kernel::PolydatProgram;
 
 /// How a compiled kernel evaluates per cycle.
 ///
@@ -78,7 +78,7 @@ fn adjust_stats(stats: &BenchStats, overhead: f64) -> BenchStats {
 
 // ── Scenario / Driver ──────────────────────────────────────────
 
-/// Parsed bench scenario from a .gk file's `@driver` and `@pull_weights`.
+/// Parsed bench scenario from a .polydat file's `@driver` and `@pull_weights`.
 #[derive(Clone)]
 struct BenchScenario {
     driver_source: Option<String>,
@@ -138,7 +138,7 @@ fn parse_bench_annotations(source: &str) -> BenchScenario {
 
     let (driver_source, driver_outputs) = if !driver_lines.is_empty() {
         let src = format!("input meta: u64\n{}", driver_lines.join("\n"));
-        let outputs = match polydat::dsl::compile::compile_gk(&src) {
+        let outputs = match polydat::dsl::compile::compile_polydat(&src) {
             Ok(kernel) => {
                 kernel.program().output_names().iter()
                     .filter(|n| !n.starts_with("__"))
@@ -160,15 +160,15 @@ fn parse_bench_annotations(source: &str) -> BenchScenario {
 
 /// Per-thread driver state: compiled driver kernel + state.
 struct DriverState {
-    program: Arc<GkProgram>,
-    state: polydat::kernel::GkState,
+    program: Arc<PolydatProgram>,
+    state: polydat::kernel::PolydatState,
     output_names: Vec<String>,
 }
 
 impl DriverState {
     fn new(scenario: &BenchScenario) -> Option<Self> {
         let source = scenario.driver_source.as_ref()?;
-        let kernel = polydat::dsl::compile::compile_gk(source).ok()?;
+        let kernel = polydat::dsl::compile::compile_polydat(source).ok()?;
         let program = kernel.into_program();
         let state = program.create_state();
         Some(Self {
@@ -409,7 +409,7 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
             ba.iters = 1;
             if ba.cycles < 1_000_000 { ba.cycles = 1_000_000; }
             eprintln!("profile mode: 1 iter, {} cycles", ba.cycles);
-            eprintln!("  Run with: perf record -g --call-graph dwarf target/release/nbrs bench gk <expr> --profile cycles=N");
+            eprintln!("  Run with: perf record -g --call-graph dwarf target/release/nbrs bench Polydat <expr> --profile cycles=N");
             eprintln!("  Then:     perf script | inferno-collapse-perf | inferno-flamegraph > flame.svg");
         } else if arg.starts_with('-') {
             eprintln!("error: unrecognized option '{arg}'");
@@ -485,7 +485,7 @@ fn explain_source(source: &str) {
     };
     log.push(CompileEvent::Parsed { statements: ast.statements.len() });
 
-    match compile_gk_to_assembler(source) {
+    match compile_polydat_to_assembler(source) {
         Err(e) => { eprintln!("error: compile failed: {e}"); }
         Ok(asm) => {
             for name in asm.output_names() {
@@ -542,7 +542,7 @@ fn explain_source(source: &str) {
     }
 
     // Engine auto-selection analysis
-    if let Ok(asm) = compile_gk_to_assembler(source) {
+    if let Ok(asm) = compile_polydat_to_assembler(source) {
         match asm.auto_compile_p3() {
             Ok((engine, analysis)) => {
                 println!("{bold}Engine Selection:{reset}");
@@ -559,7 +559,7 @@ fn explain_source(source: &str) {
             }
             Err(_) => {
                 // P3 not available, try P2
-                if let Ok(asm2) = compile_gk_to_assembler(source) {
+                if let Ok(asm2) = compile_polydat_to_assembler(source) {
                     if let Ok((engine, analysis)) = asm2.auto_compile_p2() {
                         println!("{bold}Engine Selection (P2):{reset}");
                         println!("  {dim}max cone ratio: {:.2}, avg cone ratio: {:.2}{reset}",
@@ -584,9 +584,9 @@ struct ExprResult {
     p3_ns: f64,
 }
 
-/// Normalize an expression or file path into GK source.
+/// Normalize an expression or file path into Polydat source.
 fn normalize_source(expr: &str) -> Result<String, String> {
-    if expr.ends_with(".gk") {
+    if expr.ends_with(".polydat") {
         std::fs::read_to_string(expr)
             .map_err(|e| format!("failed to read '{expr}': {e}"))
     } else {
@@ -612,7 +612,7 @@ fn normalize_source(expr: &str) -> Result<String, String> {
     }
 }
 
-/// Find the last binding name from GK source (for output slot resolution).
+/// Find the last binding name from Polydat source (for output slot resolution).
 fn last_binding_name(source: &str) -> String {
     source.lines().rev()
         .filter_map(|line| {
@@ -628,7 +628,7 @@ fn last_binding_name(source: &str) -> String {
         .unwrap_or_else(|| "out".to_string())
 }
 
-/// Bench a single GK expression/file. Returns an ExprResult for comparison tables.
+/// Bench a single Polydat expression/file. Returns an ExprResult for comparison tables.
 fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
     let source = match normalize_source(expr) {
         Ok(s) => s,
@@ -663,7 +663,7 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
     let mut bench_p3_ns = 0.0f64;
 
     // Compact graph summary
-    if let Ok(asm) = compile_gk_to_assembler(&source) {
+    if let Ok(asm) = compile_polydat_to_assembler(&source) {
         if let Ok(kernel) = asm.compile() {
             let program = kernel.program();
             bench_node_count = program.node_count();
@@ -688,7 +688,7 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
     let driver_ns_per_cycle = if scenario.driver_source.is_some() {
         let mut driver = DriverState::new(&scenario);
         if let Some(ref mut d) = driver {
-            let n_inputs = if let Ok(asm) = compile_gk_to_assembler(&source) {
+            let n_inputs = if let Ok(asm) = compile_polydat_to_assembler(&source) {
                 asm.compile().map(|k| k.program().input_names().len()).unwrap_or(1)
             } else { 1 };
             for c in 0..warmup { d.eval(c, n_inputs); }
@@ -732,7 +732,7 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
             || args.engine.as_deref() == Some("all");
 
         // P1 engines — share the same harness, differ only in state constructor
-        match compile_gk_to_assembler(&source) {
+        match compile_polydat_to_assembler(&source) {
             Err(e) => {
                 eprintln!("  {bold}compile error:{reset} {e}");
                 return None;
@@ -744,7 +744,7 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
                 let n_inputs = program.input_names().len();
 
                 // Shared closure builder for all P1 variants
-                let bench_p1 = |create_state: fn(&Arc<GkProgram>) -> Box<dyn P1Engine + Send>| {
+                let bench_p1 = |create_state: fn(&Arc<PolydatProgram>) -> Box<dyn P1Engine + Send>| {
                     run_threaded_bench(nthreads, iters, cycles, warmup, || {
                         let program = program.clone();
                         let out = output_name.clone();
@@ -835,7 +835,7 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
         for level in &levels {
             let level_name = level.base.as_str();
             let use_prov = level.prov;
-            let available = compile_gk_to_assembler(&source).ok()
+            let available = compile_polydat_to_assembler(&source).ok()
                 .and_then(|asm| match (level_name, &level.eval_mode) {
                     ("P2", EvalMode::Raw) => asm.try_compile_raw().ok().map(|_| ()),
                     ("P2", EvalMode::PushOnly) => asm.try_compile_push().ok().map(|_| ()),
@@ -856,7 +856,7 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
 
             let eval_mode = level.eval_mode;
             let mut samples = run_threaded_bench(nthreads, iters, cycles, warmup, || {
-                let asm = compile_gk_to_assembler(&source).ok()?;
+                let asm = compile_polydat_to_assembler(&source).ok()?;
                 let sc = scenario.clone();
                 let lb = last_binding.clone();
                 build_compiled_kernel(asm, level_name, use_prov, eval_mode, &sc, &lb)
@@ -888,7 +888,7 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
 
     println!();
 
-    let label = if expr.ends_with(".gk") {
+    let label = if expr.ends_with(".polydat") {
         std::path::Path::new(expr)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -916,26 +916,26 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
 /// The pull return value is discarded — we only care about timing.
 trait P1Engine {
     fn set_inputs(&mut self, coords: &[u64]);
-    fn pull_discard(&mut self, program: &GkProgram, name: &str);
+    fn pull_discard(&mut self, program: &PolydatProgram, name: &str);
 }
 
-impl P1Engine for polydat::kernel::GkState {
+impl P1Engine for polydat::kernel::PolydatState {
     fn set_inputs(&mut self, coords: &[u64]) { self.set_inputs(coords); }
-    fn pull_discard(&mut self, program: &GkProgram, name: &str) {
+    fn pull_discard(&mut self, program: &PolydatProgram, name: &str) {
         let _ = self.pull(program, name);
     }
 }
 
 impl P1Engine for polydat::kernel::RawState {
     fn set_inputs(&mut self, coords: &[u64]) { self.set_inputs(coords); }
-    fn pull_discard(&mut self, program: &GkProgram, name: &str) {
+    fn pull_discard(&mut self, program: &PolydatProgram, name: &str) {
         let _ = self.pull(program, name);
     }
 }
 
 impl P1Engine for polydat::kernel::ProvScanState {
     fn set_inputs(&mut self, coords: &[u64]) { self.set_inputs(coords); }
-    fn pull_discard(&mut self, program: &GkProgram, name: &str) {
+    fn pull_discard(&mut self, program: &PolydatProgram, name: &str) {
         let _ = self.pull(program, name);
     }
 }
@@ -948,7 +948,7 @@ impl P1Engine for polydat::kernel::ProvScanState {
 /// weighted-slot state. The returned `FnMut(u64)` evaluates one
 /// cycle including input generation and output selection.
 fn build_compiled_kernel(
-    asm: polydat::compile::assembly::GkAssembler,
+    asm: polydat::compile::assembly::PolydatAssembler,
     level: &str,
     _use_prov: bool,
     eval_mode: EvalMode,
@@ -1125,10 +1125,10 @@ fn print_comparison_table(results: &[ExprResult]) {
 
 pub fn bench_command(args: &[String]) {
     let topic = args.first().map(|s| s.as_str()).unwrap_or("");
-    if topic != "gk" {
-        eprintln!("Usage: nbrs bench gk <expr> [cycles=N] [threads=RANGE]");
-        eprintln!("  Example: nbrs bench gk \"hash_range(hash(cycle), 1000)\"");
-        eprintln!("  Example: nbrs bench gk \"weighted_pick(hash(cycle), 0.5, 10, 0.3, 20)\" threads=1:8*2");
+    if topic != "wiring" {
+        eprintln!("Usage: nbrs bench wiring <expr> [cycles=N] [threads=RANGE]");
+        eprintln!("  Example: nbrs bench wiring \"hash_range(hash(cycle), 1000)\"");
+        eprintln!("  Example: nbrs bench wiring \"weighted_pick(hash(cycle), 0.5, 10, 0.3, 20)\" threads=1:8*2");
         eprintln!();
         eprintln!("Range syntax: N | start:end:step | start:end*factor");
         return;
@@ -1137,9 +1137,9 @@ pub fn bench_command(args: &[String]) {
     let ba = parse_bench_args(&args[1..]);
 
     if ba.exprs.is_empty() {
-        eprintln!("Usage: nbrs bench gk <expr|file.gk ...> [cycles=N] [threads=RANGE] [--explain]");
-        eprintln!("  Example: nbrs bench gk \"hash_range(hash(cycle), 1000)\"");
-        eprintln!("  Example: nbrs bench gk tests/bench_graphs/*.gk --engine=all");
+        eprintln!("Usage: nbrs bench Polydat <expr|file.polydat ...> [cycles=N] [threads=RANGE] [--explain]");
+        eprintln!("  Example: nbrs bench Polydat \"hash_range(hash(cycle), 1000)\"");
+        eprintln!("  Example: nbrs bench Polydat tests/bench_graphs/*.polydat --engine=all");
         return;
     }
 

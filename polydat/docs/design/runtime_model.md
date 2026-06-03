@@ -21,7 +21,7 @@ propagates (lazily), and what determinism guarantees the
 host can rely on. Where the [Composition Substrate]
 describes the *static contract* (slot contract via S/T/L
 axioms) and the [Graph Compiler] describes the *construction
-passes* (H/CF/NF axioms) that produce a `GkProgram`, this
+passes* (H/CF/NF axioms) that produce a `PolydatProgram`, this
 doc describes the *execution-time behaviour* that compiled
 programs exhibit. The R-axioms (runtime mechanics) and
 D-axioms (determinism guarantees) are the load-bearing
@@ -39,7 +39,7 @@ contract.
 - [The Expression Engine](expression_engine.md) —
   embedded-evaluation surface. E3 (bounded determinism)
   references D1/D2/D3 from this doc.
-- [SRD-11: GK Evaluation Model](evaluation_model.md)
+- [SRD-11: Polydat Evaluation Model](evaluation_model.md)
   — kernel/state split, two-lifecycle classification, const-
   binding contract. Owns the foundational evaluation
   semantics that R-axioms operationalise.
@@ -53,8 +53,8 @@ contract.
   (typed-return determinism); G5 (structural lifecycle
   classification) underwrites R1 + D3 (cost determinism).
 
-The forcing question: **given a compiled `GkProgram` and a
-per-fiber `GkState`, how do values flow at runtime, what
+The forcing question: **given a compiled `PolydatProgram` and a
+per-fiber `PolydatState`, how do values flow at runtime, what
 caching does the kernel perform, how does invalidation
 propagate, and what determinism guarantees does the
 composition of those mechanics deliver to consumers?** This
@@ -71,7 +71,7 @@ and enforced.
 ## 1. Data flow along the wire chain
 
 Every value in a polydat kernel flows along a **declared
-wire**. The compiled `GkProgram`'s wiring is the data-
+wire**. The compiled `PolydatProgram`'s wiring is the data-
 dependency graph: wire `w` connects node `u`'s output port
 to node `v`'s input port iff the assembled DAG (per the
 Graph Compiler's pipeline) declared that connection. No
@@ -91,7 +91,7 @@ Concrete consequences:
   state, produce the same flow. No order-of-call dependence.
 - Adjacent fibers operating on identical `Arc<GkProgram>`
   with identical `set_inputs` produce identical wire values
-  per fiber. The per-fiber `GkState` is the only mutable
+  per fiber. The per-fiber `PolydatState` is the only mutable
   surface.
 - A node's output is a function of its inputs and its
   configuration. Nothing else.
@@ -124,7 +124,7 @@ discovery of dependencies; everything is structural.
 
 ## 3. Node caching — per-eval clean tracking
 
-`GkState` maintains a per-node `node_clean: Vec<bool>`
+`PolydatState` maintains a per-node `node_clean: Vec<bool>`
 flag. When the kernel pulls a value, it walks the cone
 recursively from the requested output and for each upstream
 node checks whether it has already been evaluated since
@@ -164,7 +164,7 @@ during scope-init and never re-evaluates.
 ### Axiom R1 — Per-eval clean-flag memoization
 
 **A node's `eval` is invoked at most once between any two
-dirtying events in a given `GkState`. Multiple pulls
+dirtying events in a given `PolydatState`. Multiple pulls
 touching the node between dirtying events use the cached
 result; the cache is reset only when an upstream input
 change marks the node dirty.**
@@ -172,7 +172,7 @@ change marks the node dirty.**
 Enforcement: the pull walker's `node_clean[i]` check (see
 pseudocode above). The substrate's L1 (each layer owns its
 state) guarantees that `node_clean[i]` is owned by this
-fiber's `GkState`; no cross-fiber cache contention.
+fiber's `PolydatState`; no cross-fiber cache contention.
 
 ### Sub-axiom R1.v — Volatility carves out per-cycle clean-flag memoization
 
@@ -262,7 +262,7 @@ clears `node_clean[idx]` for each entry. User-opt-in
 the producing node is marked `EvalLifecycle::Dynamic` and the
 fixed-point propagation contaminates downstream consumers.
 The transitive set is computed
-`GkProgram`, not the per-fiber `GkState`. The grammar's
+`PolydatProgram`, not the per-fiber `PolydatState`. The grammar's
 `volatile` modifier (G2) is the syntactic surface; SRD-10
 documents the specific modifier syntax.
 
@@ -357,7 +357,7 @@ realisations:
 
 | L-axiom | Runtime realisation |
 |---|---|
-| **L1** (each layer owns its state) | Per-fiber `GkState`. The kernel's program is `Arc<GkProgram>` (shared, read-only); state is owned by the fiber that holds the kernel. No cross-fiber state sharing at the node tier. |
+| **L1** (each layer owns its state) | Per-fiber `PolydatState`. The kernel's program is `Arc<GkProgram>` (shared, read-only); state is owned by the fiber that holds the kernel. No cross-fiber state sharing at the node tier. |
 | **L2** (two-lifecycle classification bridges layers) | Effectively-const wires are evaluated once during the kernel's scope-init phase; dynamic wires are evaluated on demand per `set_inputs` advance. The buffer layout reflects this — Effectively-const values live in a separate region computed at scope-init. |
 
 The runtime model is the *enactment* of the substrate's
@@ -492,7 +492,7 @@ guarantees real?" reads §3–§5 (R-axioms and state layering).
 | [Composition Substrate](composition_substrate.md) | The static contract (S/T/L axioms). D1's typed-return guarantee follows from T1+T2 at the slot tier. |
 | [Graph Compiler](graph_compiler.md) | Construction passes (H/CF/NF axioms). The R-axioms operate over compiled output; H1's lifecycle classification determines what runs at scope-init vs per-cycle. |
 | [Expression Engine](expression_engine.md) | Embedded-evaluation surface. E3 references D1/D2/D3 as the realisation of bounded determinism. |
-| [SRD-02](../../../docs/sysref/02_concurrency_model.md) | Concurrency model. L1 (each layer owns its state) is realised as per-fiber `GkState`; SRD-02 owns the cross-fiber contract. D1 holds per-fiber. |
+| [SRD-02](../../../docs/sysref/02_concurrency_model.md) | Concurrency model. L1 (each layer owns its state) is realised as per-fiber `PolydatState`; SRD-02 owns the cross-fiber contract. D1 holds per-fiber. |
 | [SRD-11](evaluation_model.md) | Foundational evaluation semantics. R1 / R2 are SRD-11's two-lifecycle classification at runtime. The const-binding contract is the scope-init expression of R1. |
 | [SRD-13f](wire_materialization.md) | Cross-scope read/write. R3's "forward-only with S5 carve-out" cites SRD-13f's SharedCell write-through as the named exception. |
 | [SRD-67](subcontext_construction.md) | Walled-off construction. SRD-67's API prevents alternative construction paths that could violate R3. |

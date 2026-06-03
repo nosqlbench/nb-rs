@@ -319,7 +319,7 @@ impl ControlEditPrompt {
 /// `Err(msg)` if the session root is not installed or no
 /// control by that name exists via walk-up.
 ///
-/// This is the TUI-side counterpart to the GK `control_set`
+/// This is the TUI-side counterpart to the Polydat `control_set`
 /// node (SRD 23 §"Mutation entry points → TUI").
 pub fn write_control_f64_from_tui(
     name: String,

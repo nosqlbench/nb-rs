@@ -52,7 +52,7 @@ impl std::fmt::Display for WrapperName {
 /// signature). The registry decides PRESENCE and ORDER; the
 /// cascade looks up the resolved plan and dispatches by name.
 pub struct WrapperRegistration {
-    /// Stable name (`"validate"`, `"poll"`, `"throttle"`,
+    /// Stable name (`"validate"`, `"poll"`, `"delay"`,
     /// `"if"`, `"emit"`, `"result"`, `"metrics"`, `"traverse"`).
     pub name: WrapperName,
 
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn closest_match_finds_typo() {
-        let names = ["validate", "poll", "throttle"];
+        let names = ["validate", "poll", "delay"];
         assert_eq!(closest_match("validatte", names), Some("validate"));
         assert_eq!(closest_match("plll", names), Some("poll"));
         assert_eq!(closest_match("wildly_different", names), None);

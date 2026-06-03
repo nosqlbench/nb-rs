@@ -5,7 +5,7 @@
 //!
 //! OpenAPI workload-source adapter for nb-rs. Reads an OpenAPI
 //! 3.x spec, discovers endpoints, and synthesizes [`ParsedOp`]s
-//! plus GK binding source so a runner can drive traffic against
+//! plus Polydat binding source so a runner can drive traffic against
 //! the target API through the standard `http` adapter.
 //!
 //! Unlike a transport adapter (`stdout`, `cql`, `http`), this

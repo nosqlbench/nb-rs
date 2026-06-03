@@ -110,7 +110,7 @@ fn scope_const_modifier_round_trips() {
 #[test]
 fn scope_derived_binding_consumes_shared_cell() {
     // `doubled_count := mul(count_big, 2)` reads the cell value
-    // (1000) through standard GK wiring. Output must show the
+    // (1000) through standard Polydat wiring. Output must show the
     // multiplied result, proving the cell value flows downstream
     // (not just visible via `lookup`).
     let (stdout, stderr, ok) = run_scenario("derived_from_shared");

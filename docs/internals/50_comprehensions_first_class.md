@@ -1,9 +1,9 @@
-# Comprehensions as a first-class GK concept
+# Comprehensions as a first-class Polydat concept
 
 Migration plan to lift the comprehension model out of
 `nbrs-activity` / `nbrs-workload` and into `polydat`,
-making `Comprehension` a peer of `GkProgram` / `GkKernel` /
-`ScopeCoord` in the GK API surface.
+making `Comprehension` a peer of `PolydatProgram` / `PolydatKernel` /
+`ScopeCoord` in the Polydat API surface.
 
 Status: **complete** — phases A–D shipped per the plan; the
 follow-up algebra cutover (PRs 9a–9c-5) further reshaped the
@@ -21,7 +21,7 @@ doc's original Phase A–D plan:
 - `polydat::comprehension::synthesis` was dissolved; its
   substance moved to `nbrs-activity::scope_synth` (the
   walker that drives polydat's `SubcontextBuilder`) and to
-  `polydat::kernel::GkKernel` methods (kernel-chain
+  `polydat::kernel::PolydatKernel` methods (kernel-chain
   operations like `propagate_inputs_into`).
 - `polydat::comprehension::iteration` and `::order` were
   deleted; `runtime::evaluate_for_iteration` replaced
@@ -50,21 +50,21 @@ nbrs-workload
 
 nbrs-activity
 ├── scope_tree.rs         ScopeKind (mirrors ScenarioNode 1:1) + ScopeTree
-├── scope.rs              build_scope (the big one): synthesises GK source
+├── scope.rs              build_scope (the big one): synthesises Polydat source
 │                         for each comprehension scope;
 │                         pre_evaluate_clause, evaluate_spec,
 │                         parse_list_with_types,
-│                         format_workload_param_as_gk_literal,
-│                         value_to_gk_type_name,
+│                         format_workload_param_as_polydat_literal,
+│                         value_to_polydat_type_name,
 │                         collect_string_interp_refs
 ├── executor.rs           TupleComprehension::{new, enumerate},
 │                         dispatch_comprehension, run_one_iteration,
 │                         TerminalAction
-└── interpolate.rs        interpolate_via_kernel — reads GK kernel
+└── interpolate.rs        interpolate_via_kernel — reads Polydat kernel
                           for `{name}` substitution inside specs
 
 polydat             carries InputKind::IterationExtern, ScopeCoord,
-                          GkKernel::scope_coordinates() — but doesn't
+                          PolydatKernel::scope_coordinates() — but doesn't
                           know about comprehensions as a structural concept.
 ```
 
@@ -85,7 +85,7 @@ against what values) is invisible to GK.
 polydat                                   ← becomes the home of the model
 ├── kernel/
 │   ├── scope_coords.rs   ScopeCoord (already there)
-│   └── gkkernel.rs       scope_coordinates() invariant (already there)
+│   └── polydatkernel.rs  scope_coordinates() invariant (already there)
 └── comprehension/                              ← NEW MODULE
     ├── ast.rs            Clause { var, expr },
     │                     Comprehension { mode },
@@ -107,7 +107,7 @@ nbrs-activity                                   ← orchestration only
 ├── executor.rs           dispatch_comprehension calls
 │                            comprehension::enumerate_tuples(...)
 └── (scope.rs largely retires; what's left is the composition glue —
-    "given a comprehension scope's GK source, compile it, install
+    "given a comprehension scope's Polydat source, compile it, install
     the kernel, run lifecycle." Pure activity concerns.)
 
 nbrs-workload                                   ← parser only
@@ -145,13 +145,13 @@ pub mod comprehension {
     pub fn parse_comprehension_spec(text: &str) -> Result<Comprehension, String>;
 
     pub fn evaluate_clause(
-        kernel: &GkKernel,
+        kernel: &PolydatKernel,
         clause: &Clause,
     ) -> Result<Vec<Value>, String>;
 
     pub fn enumerate_tuples(
-        canonical: &Arc<GkKernel>,
-        parent: &Arc<GkKernel>,
+        canonical: &Arc<PolydatKernel>,
+        parent: &Arc<PolydatKernel>,
         comprehension: &Comprehension,
         strict: bool,
     ) -> Result<Vec<Vec<(String, Value)>>, String>;
@@ -183,8 +183,8 @@ evolve. The string form stays as a debug rendering only.
   first-class, the synthesiser declares "coordinate X" once,
   and the kernel's coord set is provably the comprehension's
   clause LHS set — no classification round-trip.
-- **GK gets a self-contained iteration model.** A future
-  `for_each` keyword in the GK DSL, programmatic GK consumers,
+- **Polydat gets a self-contained iteration model.** A future
+  `for_each` keyword in the Polydat DSL, programmatic Polydat consumers,
   unit tests — none need to drag in workload/activity to
   iterate.
 - **Reduces nbrs-activity by ~600 LoC.** scope.rs's
@@ -202,8 +202,8 @@ Each phase lands cleanly, keeping the workspace green.
 
 - **Phase A — Lift the AST.** ✅ Shipped. `polydat::comprehension::ast` carries `Clause`, `Comprehension`, `ComprehensionMode`.
 - **Phase B — Parser.** ✅ Shipped. `parse_clause`, `parse_clause_list`, `comprehension_from_subspaces`, `split_respecting_parens` live in `comprehension::parse`. Workload parser delegates.
-- **Phase C — Evaluation.** ✅ Shipped. `evaluate_spec`, `pre_evaluate_clause`, `parse_list_with_types`, `value_to_gk_type_name`, `collect_string_interp_refs`, `interpolate_via_kernel`, `interpolate_with_lookup`, `enumerate_tuples` all in `comprehension::eval`. `nbrs-activity::interpolate` deleted.
-- **Phase D — Synthesis.** ✅ Shipped. `synthesize_for_each_scope`, `propagate_parent_inputs`, `collect_leaf_placeholders`, `scan_one`, `workload_param_type_name`, `format_workload_param_as_gk_literal` in `comprehension::synthesis`. `ManifestEntry`/`extract_manifest` moved to `polydat::kernel::manifest`. `iterate(comprehension, parent, …) → ComprehensionIter` is the headline ergonomic.
+- **Phase C — Evaluation.** ✅ Shipped. `evaluate_spec`, `pre_evaluate_clause`, `parse_list_with_types`, `value_to_polydat_type_name`, `collect_string_interp_refs`, `interpolate_via_kernel`, `interpolate_with_lookup`, `enumerate_tuples` all in `comprehension::eval`. `nbrs-activity::interpolate` deleted.
+- **Phase D — Synthesis.** ✅ Shipped. `synthesize_for_each_scope`, `propagate_parent_inputs`, `collect_leaf_placeholders`, `scan_one`, `workload_param_type_name`, `format_workload_param_as_polydat_literal` in `comprehension::synthesis`. `ManifestEntry`/`extract_manifest` moved to `polydat::kernel::manifest`. `iterate(comprehension, parent, …) → ComprehensionIter` is the headline ergonomic.
 - **Phase E — Drop duplicated representations.** ✅ Shipped. `ScenarioNode::ForEach` / `ForCombinations` / `ForEachUnion` collapsed into one `ScenarioNode::Comprehension { comprehension, children }`; same on `ScopeKind`. `find_comprehension_scope` replaces the trio of find methods. Bespoke `spec` / `specs` / `sets` fields gone.
 - **Phase F — SRD pass.** ✅ Shipped (this commit). SRD-18b §"The Comprehension model" plus the canonical-traversal table now describe the unified shape.
 
@@ -238,12 +238,12 @@ Each phase lands cleanly, keeping the workspace green.
 ### Phase C — Move evaluation
 
 5. Move `evaluate_spec`, `parse_list_with_types`,
-   `pre_evaluate_clause`, `value_to_gk_type_name`,
+   `pre_evaluate_clause`, `value_to_polydat_type_name`,
    `collect_string_interp_refs` from `scope.rs` into
    `comprehension::eval`. Re-export from scope.rs for the
    migration window.
 6. `interpolate_via_kernel` moves with them — it only reads
-   GK kernel state, no activity dependencies. (Or stays in
+   Polydat kernel state, no activity dependencies. (Or stays in
    activity with a callback shape; pick simpler.)
 7. Update `TupleComprehension::enumerate` to call
    `comprehension::enumerate_tuples`.
@@ -255,7 +255,7 @@ interpolate-cross-call decision is the only design choice.
 ### Phase D — Move synthesis
 
 8. Lift the chunk of `scope::build_scope` that emits the
-   comprehension scope's GK source (extern declarations,
+   comprehension scope's Polydat source (extern declarations,
    final injections for workload params, cascade externs).
    ~200 LoC. Lands as
    `comprehension::synthesize_scope_source`.
@@ -286,7 +286,7 @@ mechanical, but the call-site refactor needs care.
 12. Update SRD-18b §"Iteration variables as scope outputs" +
     new section on the `Comprehension` model.
 13. Update SRD-10 §"GK Language" to mention that
-    comprehensions are part of the GK API surface (even if
+    comprehensions are part of the Polydat API surface (even if
     the DSL doesn't have a `for_each` keyword today, the
     model is GK-owned).
 
@@ -308,7 +308,7 @@ mechanical, but the call-site refactor needs care.
   against prior clauses' values): today done by
   `pre_evaluate_clause` building per-clause sub-kernels.
   Algorithm unchanged; logic moves to `comprehension::eval`.
-- **A new `for_each` keyword in the GK DSL itself.**
+- **A new `for_each` keyword in the Polydat DSL itself.**
   Possible follow-up; doesn't block this refactor.
 - **Streaming evaluation** for very large iteration sets.
   Today everything's pre-enumerated into a Vec; fine for
@@ -325,11 +325,11 @@ mechanical, but the call-site refactor needs care.
 - [SRD 18b](../sysref/18b_scenario_tree_and_scheduler.md)
   §"Scope coordinates" — the existing kernel-side invariant
   this plan builds on.
-- [SRD 11](../sysref/11_gk_evaluation.md)
+- [SRD 11](../sysref/11_polydat_evaluation.md)
   §"Effectively-Const Nodes" — defines `IterationExtern`,
   the structural marker comprehensions emit.
-- [SRD 13b](../sysref/13b_gk_combination_modes.md) —
+- [SRD 13b](../sysref/13b_polydat_combination_modes.md) —
   semantics of for_combinations / for_each_union.
-- [SRD 13c](../sysref/13c_gk_scope_model.md) — how scope
+- [SRD 13c](../sysref/13c_polydat_scope_model.md) — how scope
   composition (`bind_outer_scope`, manifest extraction)
   interacts with what synthesis emits.

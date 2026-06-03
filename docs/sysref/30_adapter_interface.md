@@ -3,7 +3,7 @@
 The adapter interface is the contract between the execution engine
 and protocol-specific drivers. A tiered pipeline separates
 scope-init template analysis from dynamic per-cycle execution
-(see [SRD 11](11_gk_evaluation.md) for the lifecycle vocabulary).
+(see [SRD 11](11_polydat_evaluation.md) for the lifecycle vocabulary).
 
 ---
 
@@ -101,7 +101,7 @@ pub trait OpDispenser: Send + Sync {
 `Arc`. `OpDispenser` is created per unique template at init time
 and shared across fibers.
 
-`ExecCtx` bundles two parallel dynamic-pull views of GK state:
+`ExecCtx` bundles two parallel dynamic-pull views of Polydat state:
 
 - `ctx.fields: &ResolvedFields` — op-field substitution view for
   this dispenser. Adapters consume *only* this.
@@ -117,7 +117,7 @@ for the contract that keeps the two views distinct.
 
 ## ResolvedFields
 
-Typed values from the GK kernel, with lazy string rendering:
+Typed values from the Polydat kernel, with lazy string rendering:
 
 ```rust
 pub struct ResolvedFields {
@@ -277,7 +277,7 @@ struct CqlBatchDispenser {
 ```
 
 **Batch budget model**: The executor advances the cursor
-repeatedly, evaluates the GK graph per position, binds each
+repeatedly, evaluates the Polydat graph per position, binds each
 statement, and accumulates rows. The batch is executed as one
 CQL BATCH call. `rows_timer` records amortized latency
 (batch_nanos / row_count) per row for throughput reporting.

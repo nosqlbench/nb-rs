@@ -7,7 +7,7 @@
 //! builder owns an `Arc<ScopeKernel<P>>` for the parent, records
 //! imports / exports / body fragments / pull consumers, and at
 //! `finalize` validates the import contract against the parent's
-//! exports + compiles the body via the existing `compile_gk` /
+//! exports + compiles the body via the existing `compile_polydat` /
 //! `compile_ast` pipeline. The result is a closed
 //! [`ScopeModule<Child<P>>`] artifact.
 
@@ -15,7 +15,7 @@ use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::dsl::ast::{Arg, CallExpr, Expr, ExternPort, GkFile, Statement};
+use crate::dsl::ast::{Arg, CallExpr, Expr, ExternPort, PolydatFile, Statement};
 use crate::dsl::compile::{compile_ast, compile_ast_with_libs};
 use crate::dsl::lexer::{lex, Span};
 use crate::dsl::parser::parse;
@@ -47,20 +47,20 @@ fn port_type_keyword(pt: PortType) -> &'static str {
 }
 
 /// Optional compile-time configuration passed through to
-/// [`compile_gk_with_libs`] when finalize compiles the body. When
+/// [`compile_polydat_with_libs`] when finalize compiles the body. When
 /// every field is at its default, finalize falls back to the
 /// minimal [`compile_ast`] path used by the do-loop bridge — no
 /// behaviour change for the simplest synthesisers.
 ///
 /// SRD-67 Phase 3 bridge hook: the for_each / op-template
-/// synthesisers used to call `compile_gk_with_libs` directly with
-/// `gk_lib_paths`, `workload_dir`, `strict`, and a context label.
+/// synthesisers used to call `compile_polydat_with_libs` directly with
+/// `polydat_lib_paths`, `workload_dir`, `strict`, and a context label.
 /// Routing those concerns through the builder preserves byte-
 /// identical compile output during migration.
 #[derive(Clone, Debug, Default)]
 pub struct CompileOptions {
     pub workload_dir: Option<PathBuf>,
-    pub gk_lib_paths: Vec<PathBuf>,
+    pub polydat_lib_paths: Vec<PathBuf>,
     pub strict: bool,
     pub required_outputs: Vec<String>,
     pub context_label: Option<String>,
@@ -77,7 +77,7 @@ pub struct CompileOptions {
 impl CompileOptions {
     fn is_default(&self) -> bool {
         self.workload_dir.is_none()
-            && self.gk_lib_paths.is_empty()
+            && self.polydat_lib_paths.is_empty()
             && !self.strict
             && self.required_outputs.is_empty()
             && self.context_label.is_none()
@@ -124,10 +124,10 @@ impl<P> SubcontextBuilder<P> {
     }
 
     /// SRD-67 Phase 3 bridge hook: route the legacy
-    /// [`compile_gk_with_libs`] knobs (lib paths, strict mode,
+    /// [`compile_polydat_with_libs`] knobs (lib paths, strict mode,
     /// required-output filter, workload dir, context label)
     /// through the builder. Synthesisers that previously called
-    /// `compile_gk_with_libs` directly fold those calls into a
+    /// `compile_polydat_with_libs` directly fold those calls into a
     /// single `with_compile_options(...)` invocation; the do-loop
     /// bridge leaves this at its default and finalize uses
     /// [`compile_ast`].
@@ -199,7 +199,7 @@ impl<P> SubcontextBuilder<P> {
     /// existing finalize Rule 2 rewrite fire when result-LHS
     /// names collide with parent `shared` exports.
     ///
-    /// `source` is GK source — the same `<name> := <expr>` form
+    /// `source` is Polydat source — the same `<name> := <expr>` form
     /// `bindings:` accepts. Both string-shape (`ResultSpec::String`)
     /// and map-shape (`ResultSpec::Map { name, source }` flattened
     /// to `<name> := <source>`) end up here.
@@ -221,7 +221,7 @@ impl<P> SubcontextBuilder<P> {
     ///
     /// Path expressions (map-shape entries with no `:=` in the
     /// source) are NOT supported here — the caller flattens them
-    /// to `<name> := <source>` and the GK compiler rejects them
+    /// to `<name> := <source>` and the Polydat compiler rejects them
     /// as unbound-identifier failures, surfacing the SRD-66
     /// "deferred until structural body wire lands" diagnostic.
     pub fn add_result_bindings(&mut self, source: &str) -> Result<&mut Self, ContractViolation> {
@@ -356,7 +356,7 @@ impl<P> SubcontextBuilder<P> {
         // Compose the prepended externs with the user's
         // statements and submit as a single Statements fragment.
         // This sidesteps the source-string round-trip the
-        // GkSource fragment shape would force when prepended
+        // PolydatSource fragment shape would force when prepended
         // declarations need to lead the user's source.
         let mut combined: Vec<Statement> = prepended;
         combined.extend(file.statements);
@@ -475,7 +475,7 @@ impl<P> SubcontextBuilder<P> {
         // ----- Lower every body fragment into a single
         // Vec<Statement>. The Rule 2 rewrite operates on the AST
         // directly so it doesn't need a source-string round-trip;
-        // GkSource fragments parse here once. -----
+        // PolydatSource fragments parse here once. -----
         if body.is_empty() {
             return Err(ContractViolation::Compile(
                 "scope module body is empty — at least one fragment is required".into(),
@@ -484,7 +484,7 @@ impl<P> SubcontextBuilder<P> {
         let mut statements: Vec<Statement> = Vec::new();
         for fragment in &body {
             match fragment {
-                BodyFragment::GkSource(src) => {
+                BodyFragment::PolydatSource(src) => {
                     let tokens = lex(src).map_err(ContractViolation::Compile)?;
                     let file = parse(tokens).map_err(ContractViolation::Compile)?;
                     statements.extend(file.statements);
@@ -557,15 +557,15 @@ impl<P> SubcontextBuilder<P> {
         //
         // When `compile_options` carries non-default knobs (lib
         // paths, strict mode, required-output filter, source dir,
-        // context label) we route through `compile_gk_with_libs`
+        // context label) we route through `compile_polydat_with_libs`
         // so the same code path the for_each / op-template
         // synthesisers have always used handles them.
-        // `compile_gk_with_libs` takes a source string; when the
-        // caller supplies a single `GkSource` fragment that's the
+        // `compile_polydat_with_libs` takes a source string; when the
+        // caller supplies a single `PolydatSource` fragment that's the
         // raw input. If the body was AST-only (or fragments are
         // mixed) the source is re-emitted by concatenating
-        // GkSource fragments — the existing synthesisers all
-        // produce a single `GkSource(String)` body so this path
+        // PolydatSource fragments — the existing synthesisers all
+        // produce a single `PolydatSource(String)` body so this path
         // is the byte-identical replacement.
         //
         // If a Rule 2 write-through rewrite needs to fire AND
@@ -577,7 +577,7 @@ impl<P> SubcontextBuilder<P> {
         // explicitly so a future caller hits a clear diagnostic
         // rather than silently dropping the rewrite.
         let mut kernel = if compile_options.is_default() {
-            compile_ast(&GkFile {
+            compile_ast(&PolydatFile {
                 statements: statements.clone(),
             })
             .map_err(ContractViolation::Compile)?
@@ -598,11 +598,11 @@ impl<P> SubcontextBuilder<P> {
                 .as_deref()
                 .unwrap_or(context.label.as_str());
             compile_ast_with_libs(
-                &GkFile {
+                &PolydatFile {
                     statements: statements.clone(),
                 },
                 compile_options.workload_dir.as_deref(),
-                compile_options.gk_lib_paths.clone(),
+                compile_options.polydat_lib_paths.clone(),
                 &compile_options.required_outputs,
                 compile_options.strict,
                 context_label,
@@ -611,13 +611,13 @@ impl<P> SubcontextBuilder<P> {
         } else {
             // No rewrite, no Statements fragments — reconstruct
             // the source string and use the source-aware
-            // `compile_gk_with_libs` so the legacy synthesiser
+            // `compile_polydat_with_libs` so the legacy synthesiser
             // pathway preserves byte-identical output (the
             // compiler stashes `source_text` for diagnostics).
             let mut src = String::new();
             for fragment in &body {
                 match fragment {
-                    BodyFragment::GkSource(s) => {
+                    BodyFragment::PolydatSource(s) => {
                         src.push_str(s);
                         if !s.ends_with('\n') {
                             src.push('\n');
@@ -632,10 +632,10 @@ impl<P> SubcontextBuilder<P> {
                 .context_label
                 .as_deref()
                 .unwrap_or(context.label.as_str());
-            crate::dsl::compile::compile_gk_with_libs_and_limit(
+            crate::dsl::compile::compile_polydat_with_libs_and_limit(
                 &src,
                 compile_options.workload_dir.as_deref(),
-                compile_options.gk_lib_paths.clone(),
+                compile_options.polydat_lib_paths.clone(),
                 &compile_options.required_outputs,
                 compile_options.strict,
                 context_label,
@@ -772,7 +772,7 @@ fn collect_expr_idents(expr: &Expr, out: &mut std::collections::HashSet<String>)
             // {body, count, ok}, so the only way `body.x` could
             // appear is the user wrote a structural body access.
             // Record `source` as a referenced ident so the
-            // magic-extern check sees it; the GK compiler will
+            // magic-extern check sees it; the Polydat compiler will
             // produce the canonical "field access on non-source"
             // diagnostic if it doesn't resolve.
             out.insert(source.clone());

@@ -1,4 +1,4 @@
-# SRD 44: GK Kernel Composition and Init-Time Value Propagation
+# SRD 44: Polydat Kernel Composition and Init-Time Value Propagation
 
 ## Overview
 
@@ -12,7 +12,7 @@ init-time computed constants, and pipeline staging.
 
 ### 1. Pipeline Staging
 
-Two or more GK kernels are connected in sequence. Named outputs from
+Two or more Polydat kernels are connected in sequence. Named outputs from
 an earlier stage that match named inputs on a later stage are
 auto-wired.
 
@@ -36,11 +36,11 @@ The JIT can fold it — no per-cycle lookup.
 ### 2. Module Embedding
 
 A kernel is embedded within another kernel as a subgraph. This is
-the existing GK module system (SRD 27): `.gk` files are inlined
+the existing Polydat module system (SRD 27): `.polydat` files are inlined
 into the host kernel at compile time. The combined graph is
 recompiled and optimized as a single unit.
 
-```gk
+```polydat
 // timeseries.gk module
 input cycle: u64
 timestamp := add(epoch_offset(cycle, 1704067200000), mod(hash(cycle), 86400000))
@@ -115,8 +115,8 @@ values replace the nodes in the cycle-time graph as constants.
 
 ```rust
 // Compile two kernels independently
-let init_kernel = compile_gk("dataset_size := count(load_vectors(...))")?;
-let cycle_kernel = compile_gk("idx := mod(hash(cycle), {dataset_size})")?;
+let init_kernel = compile_polydat("dataset_size := count(load_vectors(...))")?;
+let cycle_kernel = compile_polydat("idx := mod(hash(cycle), {dataset_size})")?;
 
 // Compose: init outputs feed cycle inputs
 let composed = GkProgram::compose_pipeline(vec![
@@ -129,10 +129,10 @@ let composed = GkProgram::compose_pipeline(vec![
 
 ### DSL
 
-In the GK DSL, composition is implicit. The compiler handles the
+In the Polydat DSL, composition is implicit. The compiler handles the
 init/cycle split automatically based on dependency analysis:
 
-```gk
+```polydat
 input cycle: u64
 
 // These are init-time (no cycle dependency):

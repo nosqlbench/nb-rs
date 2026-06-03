@@ -351,7 +351,7 @@ impl DriverAdapter for PlotterAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+        parent: std::sync::Arc<nbrs_activity::adapter::PolydatKernel>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
         Box::pin(async move {
             // SRD-68 Push 5: snapshot the op-field templates at map_op.
@@ -380,8 +380,8 @@ impl Drop for PlotterAdapter {
 
 struct PlotterDispenser {
     data: Arc<Mutex<PlotData>>,
-    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
-    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+    /// SRD-68 invariant I-3: dispenser-owned canonical Polydat Kernel.
+    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::PolydatKernel>,
     /// Op-field templates snapshotted at `map_op`. Resolved per
     /// cycle via the generic `wires` API; typed `Value`s feed the
     /// numeric plot data store.
@@ -389,7 +389,7 @@ struct PlotterDispenser {
 }
 
 impl OpDispenser for PlotterDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 

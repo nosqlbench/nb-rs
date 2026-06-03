@@ -415,7 +415,7 @@ phases:
 
   lerp_clamp_phase:
     # `inv_lerp` exists as a struct but isn't yet registered in
-    # the GK function library (SRD-12), so this scenario covers
+    # the Polydat function library (SRD-12), so this scenario covers
     # the registered surface only: lerp / clamp_f64 / quantize.
     cycles: 1
     concurrency: 1

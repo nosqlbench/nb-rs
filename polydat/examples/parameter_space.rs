@@ -10,7 +10,7 @@
 //! list: the first dimension fills before the second advances.
 
 fn main() {
-    let mut kernel = polydat::dsl::compile_gk(r#"
+    let mut kernel = polydat::dsl::compile_polydat(r#"
         input cycle: u64
         // 100 × 500 = 50,000 distinct (device, reading) pairs.
         (device, reading) := mixed_radix(cycle, 100, 0)

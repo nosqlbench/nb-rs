@@ -5,7 +5,7 @@
 ## Why this exists
 
 "Capture" has been an implicit concept across SRD-66 (result-bindings),
-SRD-67 (subcontext construction), SRD-68 (dispenser-owned GK context),
+SRD-67 (subcontext construction), SRD-68 (dispenser-owned Polydat context),
 and the recent wrapper-stack-canonical-scope follow-up. The *sink* side
 got unified — every capture lands on the op-template kernel via
 `ctx.wires.write`. The *source* side is still scattered: bind-points
@@ -27,9 +27,9 @@ on a separate read API, they are not stored in a sidecar. The
 distinction "capture vs binding" is about *source*, not about
 storage or visibility.
 
-This is deliberate. We do not extend the GK kernel surface with a
+This is deliberate. We do not extend the Polydat kernel surface with a
 capture-specific API. Captures are inputs the kernel doesn't know
-came from outside the GK matter walk; the matter walk treats them
+came from outside the Polydat matter walk; the matter walk treats them
 identically to any other input slot. Encapsulation stays at the
 `ResultBody` / `WireSource` boundary.
 
@@ -63,9 +63,9 @@ result:
   name1: expr1
   name2: expr2
 ```
-or the equivalent string-form GK source.
+or the equivalent string-form Polydat source.
 
-**Parsing:** SRD-66 `ResultSpec`, flattened to a GK source by
+**Parsing:** SRD-66 `ResultSpec`, flattened to a Polydat source by
 `collect_result_bindings_source` (`nbrs-activity/src/scope.rs`).
 
 **Site:** Compiled INTO the op-template kernel by
@@ -74,7 +74,7 @@ output (and possibly a Rule 2 write-through to a parent shared cell).
 The RHS may reference magic externs (which the closure-binding
 economy walks for slot allocation).
 
-**Typing:** Whatever the GK expression evaluates to. Fully typed
+**Typing:** Whatever the Polydat expression evaluates to. Fully typed
 through the eval cone.
 
 ### (3) Magic-extern captures (`body` / `count` / `ok`)
@@ -160,7 +160,7 @@ When multiple sources target the same name:
      bind-point captures.
   2. `ResultDispenser` runs (outer), writes magic externs and any
      `result:` LHS computed dispenser-side (path-expr legacy form).
-  3. GK eval cone fires for result-binding LHSs that are kernel
+  3. Polydat eval cone fires for result-binding LHSs that are kernel
      outputs.
 
   Net result: last writer wins. Today's TraversingDispenser is the
@@ -219,7 +219,7 @@ This SRD specifies adding:
 pub trait ResultBody: Send + Sync + fmt::Debug {
     // ... existing methods ...
 
-    /// Extract a named field from this body as a typed GK `Value`.
+    /// Extract a named field from this body as a typed Polydat `Value`.
     /// Adapters with native typed columns (CQL row metadata, HTTP
     /// header maps, etc.) override to return the underlying typed
     /// data without a JSON detour. The default implementation walks
@@ -282,7 +282,7 @@ captures:
   keys: { from: body, column: "key", map: hash(value) % shard_count }
 ```
 
-…because GK doesn't have closures and the per-element binding name
+…because Polydat doesn't have closures and the per-element binding name
 `value` isn't a thing in the current language.
 
 ### The shape of the eventual answer
@@ -306,12 +306,12 @@ captures:
     per_element: hash(value) % shard_count
 ```
 
-The synthesiser compiles `per_element` as a GK micro-program with a
+The synthesiser compiles `per_element` as a Polydat micro-program with a
 free variable `value` that each row's value gets bound to. The
 compiled node iterates the column, applies the micro-program, collects
 into a typed vector. No language extension; pure synthesis-layer work.
 
-**Path C — GK closures / for-each.** Add closure literals to the GK
+**Path C — Polydat closures / for-each.** Add closure literals to the GK
 language: `body | for_each(value -> hash(value) % shard_count) | collect_i32`.
 Real language extension. Powerful, but a bigger surface to maintain.
 
@@ -397,7 +397,7 @@ multi-column or typed captures.
   contract isn't stated. Should `set_inputs` clear capture slots, or
   preserve them?
 - **Path B implementation cost.** Capture-pipeline declarations
-  with `per_element` GK micro-programs — sketch the compiler step.
+  with `per_element` Polydat micro-programs — sketch the compiler step.
 
 ## Code references
 
@@ -417,6 +417,6 @@ multi-column or typed captures.
   the `[name]` syntax itself.
 - SRD-66 — `result:` block schema and magic externs.
 - SRD-67 — Subcontext construction, Rule 2 write-throughs.
-- SRD-68 — Dispenser-owned GK context, `WireSource` trait.
+- SRD-68 — Dispenser-owned Polydat context, `WireSource` trait.
 - `docs/guide/workload_field_contexts.md` — workload-author reference
   for field evaluation contexts.

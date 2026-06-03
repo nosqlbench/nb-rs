@@ -343,7 +343,7 @@ impl DriverAdapter for StdoutAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+        parent: std::sync::Arc<nbrs_activity::adapter::PolydatKernel>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
         Box::pin(async move {
             // SRD-40b §9: per-op-template channel routing. The
@@ -361,7 +361,7 @@ impl DriverAdapter for StdoutAdapter {
             // SRD-68 Push 5: snapshot the op-field templates at
             // construction. At cycle time the dispenser walks this list
             // and resolves each field's `{name}` references through the
-            // generic GK wires API (`wires.get` for pure-token positions,
+            // generic Polydat wires API (`wires.get` for pure-token positions,
             // `substitute_via_wires` for embedded references). No
             // synthesis-layer ResolvedFields needed — wires answers
             // every name directly.
@@ -410,24 +410,24 @@ pub struct StdoutDispenser {
     color: bool,
     /// Per-op channel routing. SRD-40b §9.
     channel: StdoutChannel,
-    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
+    /// SRD-68 invariant I-3: dispenser-owned canonical Polydat Kernel.
     /// Stored so the per-fiber fan-out can build per-fiber kernels
     /// from this dispenser's slot via the standard `build_subscope`
     /// path (see `OpDispenser::canonical_kernel`).
-    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::PolydatKernel>,
     /// Op-field templates snapshotted at `map_op` (name + raw
     /// JSON value from the parsed op). At cycle time each entry
     /// is resolved against the per-fiber wires: pure-token
     /// strings (`{name}`) preserve their typed `Value` via
     /// `wires.get`; embedded references (`{a}/{b}` etc.) render
     /// through `substitute_via_wires`. SRD-68 invariant I-1: the
-    /// generic GK API answers every name; no synthesis-layer
+    /// generic Polydat API answers every name; no synthesis-layer
     /// ResolvedFields is consulted.
     op_fields: Vec<(String, serde_json::Value)>,
 }
 
 impl OpDispenser for StdoutDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
     fn execute<'a>(
@@ -540,7 +540,7 @@ impl OpDispenser for StdoutDispenser {
                 StdoutChannel::Silent => {
                     // No emit. Op-execution side effects (running
                     // through the dispenser pipeline, populating
-                    // GK wires, recording wrapped metrics) still
+                    // Polydat wires, recording wrapped metrics) still
                     // happen by virtue of having reached this
                     // closure.
                 }
@@ -566,13 +566,13 @@ mod tests {
     }
 
     /// Minimal kernel used as the `parent` argument to `map_op`
-    /// in tests that don't need a richer GK context. SRD-68 Push 2:
+    /// in tests that don't need a richer Polydat context. SRD-68 Push 2:
     /// the `parent` parameter is plumbed through every `map_op`
-    /// signature as `Arc<GkKernel>`; tests pass this fixture so
+    /// signature as `Arc<PolydatKernel>`; tests pass this fixture so
     /// they don't need to stand up the full activity-init pipeline.
-    fn test_kernel() -> std::sync::Arc<polydat::kernel::GkKernel> {
+    fn test_kernel() -> std::sync::Arc<polydat::kernel::PolydatKernel> {
         std::sync::Arc::new(
-            polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap()
+            polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap()
         )
     }
 
@@ -687,9 +687,9 @@ mod tests {
         // Literal stmt — exercises the format renderer without
         // requiring a wires source for substitution.
         let template = ParsedOp::simple("test", "key=value42");
-        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
+        let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
 
-        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
@@ -718,15 +718,15 @@ mod tests {
         template.op.remove("stmt");
         template.op.insert("name".into(), serde_json::Value::String("{name}".into()));
         template.op.insert("age".into(),  serde_json::Value::String("{age}".into()));
-        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
+        let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
 
         // Two compiled kernels — one per row's wire values.
-        let mut k1 = polydat::dsl::compile::compile_gk(
+        let mut k1 = polydat::dsl::compile::compile_polydat(
             "input cycle: u64\n\
              name := \"alice\"\n\
              age := \"30\"\n",
         ).unwrap();
-        let mut k2 = polydat::dsl::compile::compile_gk(
+        let mut k2 = polydat::dsl::compile::compile_polydat(
             "input cycle: u64\n\
              name := \"bob\"\n\
              age := \"25\"\n",
@@ -833,8 +833,8 @@ mod tests {
         let mut template = template;
         template.op.insert("stmt".into(),
             serde_json::Value::String("default_terminal_marker_abc".into()));
-        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
-        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
+        let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
@@ -883,8 +883,8 @@ mod tests {
             serde_json::Value::String("eventlog".into()),
         );
 
-        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
-        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
+        let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
@@ -936,8 +936,8 @@ mod tests {
             serde_json::Value::String("silent".into()),
         );
 
-        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
-        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let dispenser = adapter.map_op(&template, test_kernel()).await.unwrap();
+        let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
@@ -954,12 +954,12 @@ mod tests {
         assert!(!leaked, "silent channel must not emit through observer; logs: {logs:?}");
     }
 
-    #[test]
-    fn map_op_rejects_unknown_channel_value() {
+    #[tokio::test]
+    async fn map_op_rejects_unknown_channel_value() {
         let adapter = StdoutAdapter::new();
         let mut template = ParsedOp::simple("bad", "ignored");
         template.params.insert("stdout".into(), serde_json::Value::String("nope".into()));
-        let err = match adapter.map_op(&template, test_kernel()) {
+        let err = match adapter.map_op(&template, test_kernel()).await {
             Ok(_) => panic!("unknown channel must error"),
             Err(e) => e,
         };
@@ -967,12 +967,12 @@ mod tests {
         assert!(err.contains("'bad'"), "diagnostic should name the op: {err}");
     }
 
-    #[test]
-    fn map_op_rejects_non_string_channel_value() {
+    #[tokio::test]
+    async fn map_op_rejects_non_string_channel_value() {
         let adapter = StdoutAdapter::new();
         let mut template = ParsedOp::simple("bad", "ignored");
         template.params.insert("stdout".into(), serde_json::Value::Bool(true));
-        let err = match adapter.map_op(&template, test_kernel()) {
+        let err = match adapter.map_op(&template, test_kernel()).await {
             Ok(_) => panic!("non-string channel must error"),
             Err(e) => e,
         };

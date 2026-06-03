@@ -49,7 +49,7 @@ source language**. Every clause's `<source>` produces a polydat
 clause-source value per polydat spec §3.1; whether it came from
 a literal, a range, a generator function, or a set composition
 is invisible to the polydat algebra. New syntactic shapes lower
-to new GK expression-language constructs (range operators,
+to new Polydat expression-language constructs (range operators,
 literal suffixes, stdlib functions) — not to new comprehension
 machinery.
 
@@ -77,11 +77,11 @@ one doesn't change the others.
 | Layer | Adds | Where it lives |
 |--|--|--|
 | 1 | Literal comma lists | `parse_clause_list` (shipped) |
-| 2 | Range operator `a..b`, `a..=b`, `a..b..s` | GK lexer + AST (planned) |
-| 3 | Named generators (`fib`, `pow2`, `geometric`, …) | GK stdlib (planned) |
+| 2 | Range operator `a..b`, `a..=b`, `a..b..s` | Polydat lexer + AST (planned) |
+| 3 | Named generators (`fib`, `pow2`, `geometric`, …) | Polydat stdlib (planned) |
 | 4 | `where <predicate>` filter | `Comprehension::filter` (shipped) |
-| 5 | Set operators (`concat`, `unique`, `interleave`, …) | GK stdlib (planned) |
-| 6 | SI suffix literals (`1K`, `1Mi`) | GK lexer (planned) |
+| 5 | Set operators (`concat`, `unique`, `interleave`, …) | Polydat stdlib (planned) |
+| 6 | SI suffix literals (`1K`, `1Mi`) | Polydat lexer (planned) |
 | 7 | Tuple LHS / parallel-iter form | `Clause::Parallel` (planned)¹ |
 
 ¹ The AST extension is staged but not yet wired through to the
@@ -137,7 +137,7 @@ x in subdivide(0, 100, 5)
 ```
 
 **Semantics:**
-- Range bounds and step are GK const expressions; they're
+- Range bounds and step are Polydat const expressions; they're
   evaluated against the parent kernel at scope-init time.
 - Empty ranges (`5..5`, `5..2..1`) produce empty lists, which
   triggers the `on_empty_clause` policy (warn or strict, per
@@ -174,7 +174,7 @@ place. Each returns a `Vec<Value>` like a literal list.
 
 ### `all(<cursor>)` — iterate a cursor's full extent
 
-A cursor declared in GK as `cursor name = Cursor(start, end)` carries a known extent — the half-open ordinal range it spans. `all(<cursor>)` lowers that extent into a clause value list at scope-init time:
+A cursor declared in Polydat as `cursor name = Cursor(start, end)` carries a known extent — the half-open ordinal range it spans. `all(<cursor>)` lowers that extent into a clause value list at scope-init time:
 
 ```yaml
 bindings:
@@ -228,7 +228,7 @@ x in fib(50) where {x} > 1000 and {x} < 1_000_000
 
 ## Layer 4: `where` filter (shipped)
 
-A single GK predicate evaluated against each emitted tuple,
+A single Polydat predicate evaluated against each emitted tuple,
 *after* the cross-product (or zip, or union) is built. The
 predicate uses `{name}` interpolation — clause-bound names and
 inherited scope names appear as placeholders, expanded against
@@ -364,9 +364,9 @@ positionally. Useful for stdlib functions that emit paired or
 N-ary data.
 
 **Implementation note:** destructure requires either a
-`Value::Tuple` variant in GK or a `Vec<Vec<Value>>` return
+`Value::Tuple` variant in Polydat or a `Vec<Vec<Value>>` return
 shape from the clause evaluator. Parallel form (7a) ships
-first since it doesn't need new GK type machinery.
+first since it doesn't need new Polydat type machinery.
 
 ### AST representation
 
@@ -492,7 +492,7 @@ shapes; both lower to the same `Comprehension` AST.
 
 ### Inline (one-liner) form
 
-`for:` / `for_each:` carries the full GK comprehension text —
+`for:` / `for_each:` carries the full Polydat comprehension text —
 clauses plus any `where` predicate plus any `order` spec — in
 one string. Most concise; useful for short specs.
 
@@ -532,7 +532,7 @@ silently mix or merge. The parser merges:
 
 ### Common YAML shape mappings
 
-| YAML | Equivalent GK text |
+| YAML | Equivalent Polydat text |
 |--|--|
 | `for: "k in 1..10"` | `k in 1..10` |
 | `for_each: "k in 1..10"` | `k in 1..10` (synonym) |
@@ -543,7 +543,7 @@ silently mix or merge. The parser merges:
 | `for_combinations: { k: 1..10, l: 1..3 }` | `k in 1..10, l in 1..3` |
 
 YAML-shape detection (string vs list vs object) lives in
-`nbrs-workload`; the GK comprehension parser only sees text.
+`nbrs-workload`; the Polydat comprehension parser only sees text.
 Both paths produce the same `Comprehension` AST.
 
 ---
@@ -608,7 +608,7 @@ Every layer is independently optional and orthogonal:
 ## Why this shape
 
 **One AST, many surfaces.** The comprehension AST is the
-fixed point. Everything above — YAML sugar, GK text grammar,
+fixed point. Everything above — YAML sugar, Polydat text grammar,
 stdlib functions, range operator, SI suffixes — lowers to the
 same `Comprehension { mode, filter }`. New surface forms add
 parser code or stdlib nodes; they don't add comprehension
@@ -620,7 +620,7 @@ operators, sequencers, and SI literals all evaluate to
 `Vec<Value>`. Any expression-language feature that produces a
 list is automatically a clause source — no per-feature
 plumbing through the comprehension layer. The same `bucket()`
-function works in a clause expression, in a regular GK binding,
+function works in a clause expression, in a regular Polydat binding,
 in a const-folded final, and in a workload param.
 
 **LUT facility for free.** The sequencer functions (bucket,
@@ -634,7 +634,7 @@ by design — chained filtering is a single boolean expression
 (`and`, `or`, `not`). This keeps the AST shape simple and
 makes `Comprehension` round-trip cleanly through serde for
 diagnostic output. The expression grammar inside `where` is
-fully GK, so users get the full power of GK's stdlib (string
+fully GK, so users get the full power of Polydat's stdlib (string
 ops, regex, range checks, etc.) without the comprehension
 layer needing to know about any of it.
 
@@ -726,7 +726,7 @@ have the continuous variants. Reference: polydat spec §3.1
   per-strategy algorithmic detail (Halton recurrence, Sobol
   direction numbers, etc.). Polydat spec §3.6 owns the
   compositional behavior and per-strategy input requirements.
-- [SRD-10 — GK Language](10_gk_language.md): the expression
+- [SRD-10 — Polydat Language](10_polydat_language.md): the expression
   grammar that clause expressions and the `where` predicate
   both use.
 - [SRD-22 — Op Sequencing](22_op_sequencing.md): the bucket /
@@ -735,4 +735,4 @@ have the continuous variants. Reference: polydat spec §3.1
 - `docs/internals/50_comprehensions_first_class.md`: the
   migration plan that built the polydat `Comprehension` model.
 - `examples/workloads/for_each_forms.yaml`: every shipped form
-  with side-by-side YAML + GK text + iteration shape.
+  with side-by-side YAML + Polydat text + iteration shape.

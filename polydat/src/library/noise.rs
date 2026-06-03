@@ -15,7 +15,7 @@
 //! Inputs are u64 coordinates mapped to a float domain via scaling.
 //! Outputs are f64 in [-1, 1] (raw noise) or [0, 1] (normalized).
 
-use crate::ast::{GkNode, NodeMeta, Port, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, Slot, Value};
 
 // =================================================================
 // Permutation table (init-time artifact)
@@ -168,7 +168,7 @@ fn simplex_2d(perm: &PermTable, x: f64, y: f64) -> f64 {
 }
 
 // =================================================================
-// GK Nodes
+// Polydat Nodes
 // =================================================================
 
 /// 1D Perlin noise.
@@ -197,7 +197,7 @@ impl Perlin1D {
     }
 }
 
-impl GkNode for Perlin1D {
+impl PolydatNode for Perlin1D {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let x = inputs[0].as_u64() as f64 * self.frequency;
@@ -228,7 +228,7 @@ impl Perlin2D {
     }
 }
 
-impl GkNode for Perlin2D {
+impl PolydatNode for Perlin2D {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let x = inputs[0].as_u64() as f64 * self.frequency;
@@ -262,7 +262,7 @@ impl SimplexNoise2D {
     }
 }
 
-impl GkNode for SimplexNoise2D {
+impl PolydatNode for SimplexNoise2D {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let x = inputs[0].as_u64() as f64 * self.frequency;
@@ -316,7 +316,7 @@ impl FractalNoise1D {
     }
 }
 
-impl GkNode for FractalNoise1D {
+impl PolydatNode for FractalNoise1D {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let base_x = inputs[0].as_u64() as f64;
@@ -373,7 +373,7 @@ impl FractalNoise2D {
     }
 }
 
-impl GkNode for FractalNoise2D {
+impl PolydatNode for FractalNoise2D {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let base_x = inputs[0].as_u64() as f64;
@@ -491,7 +491,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a noise node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "perlin_1d" => Some(Ok(Box::new(Perlin1D::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(0),

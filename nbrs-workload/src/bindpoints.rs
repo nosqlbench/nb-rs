@@ -14,7 +14,7 @@ pub enum BindQualifier {
     None,
     /// `{input:name}` — graph input value.
     Input,
-    /// `{bind:name}` — GK binding output.
+    /// `{bind:name}` — Polydat binding output.
     Bind,
     /// `{capture:name}` — capture context (volatile or sticky port).
     /// Also accepts `{port:name}` as an alias.
@@ -188,7 +188,7 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
     points
 }
 
-/// Detect whether bind point content is a GK expression (not a simple name).
+/// Detect whether bind point content is a Polydat expression (not a simple name).
 ///
 /// Returns true if the content contains operators, function calls,
 /// or other syntax that can't be a plain identifier.
@@ -324,7 +324,7 @@ fn is_expression(s: &str) -> bool {
 }
 
 /// Content between `{` and `}` that is clearly literal text — not a
-/// binding name or GK expression. If the content starts with a quote
+/// binding name or Polydat expression. If the content starts with a quote
 /// character, it's a literal value (e.g. CQL map `{'class': ...}`),
 /// never a bind point or expression.
 fn is_literal_content(s: &str) -> bool {

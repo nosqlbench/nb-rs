@@ -192,7 +192,7 @@ fn merge_per_name(parent: JVal, child: JVal) -> JVal {
     merge_per_key(parent, child)
 }
 
-/// Bindings concat: parent's GK source emitted first, child's
+/// Bindings concat: parent's Polydat source emitted first, child's
 /// appended. Handles both the string form (the common case) and
 /// the legacy map form. Mixed forms (one string, one map) fall
 /// back to child-wins because there's no sensible concatenation.

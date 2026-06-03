@@ -7,7 +7,7 @@
 # 3. default_or provides a fallback when captures aren't set yet
 #
 # Since the stdout adapter doesn't produce real captures, this
-# example uses GK bindings to simulate the capture flow pattern.
+# example uses Polydat bindings to simulate the capture flow pattern.
 # With a real database adapter, [username] syntax in the SELECT
 # would extract the value from the result and feed it downstream.
 #

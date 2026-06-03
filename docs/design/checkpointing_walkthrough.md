@@ -362,7 +362,7 @@ nbrs run workload=full.yaml dataset=sift10m --resume-latest
 The `dataset=sift10m` CLI param **changes the workload params
 context**. Pre-map produces 7 phases at the same yaml_paths
 and coords as before, but with **different compiled
-`GkProgram`s** for any phase that transitively reads
+`PolydatProgram`s** for any phase that transitively reads
 `{dataset}`.
 
 ### Hash-mismatch classification

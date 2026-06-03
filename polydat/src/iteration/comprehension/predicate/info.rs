@@ -83,7 +83,7 @@ pub enum OpaqueReason {
     /// catalog.
     UnknownPattern,
 
-    /// Predicate references a non-deterministic GK function
+    /// Predicate references a non-deterministic Polydat function
     /// (PRNG draw, time-of-day, etc.). Detected
     /// conservatively — any function call we don't recognize
     /// as deterministic falls here.

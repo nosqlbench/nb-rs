@@ -19,7 +19,7 @@
 //! **Discrete:**
 //! Zipf, Poisson, Binomial, Geometric
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use crate::library::sampling::lut::{LutF64, LutSample};
 
 /// Default interpolation table resolution.
@@ -62,7 +62,7 @@ impl UnitInterval {
     }
 }
 
-impl GkNode for UnitInterval {
+impl PolydatNode for UnitInterval {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -118,7 +118,7 @@ impl ClampF64 {
     }
 }
 
-impl GkNode for ClampF64 {
+impl PolydatNode for ClampF64 {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -143,7 +143,7 @@ impl GkNode for ClampF64 {
 // Convenience: IcdSample node (wraps LutSample with distribution builder)
 // =================================================================
 
-/// A distribution-sampling GK node backed by a LUT.
+/// A distribution-sampling Polydat node backed by a LUT.
 ///
 /// Signature: `icd_sample(input: f64) -> (f64)`
 ///
@@ -226,7 +226,7 @@ impl IcdSample {
     }
 }
 
-impl GkNode for IcdSample {
+impl PolydatNode for IcdSample {
     fn meta(&self) -> &NodeMeta {
         self.inner.meta()
     }
@@ -569,7 +569,7 @@ pub fn dist_geometric(prob: f64, resolution: usize) -> LutF64 {
 // Discrete u64 sampler (avoids f64 round-trip)
 // =================================================================
 
-/// GK node for discrete distribution sampling with direct u64 output.
+/// Polydat node for discrete distribution sampling with direct u64 output.
 ///
 /// Signature: `(input: u64) -> (u64)`
 ///
@@ -625,7 +625,7 @@ impl DiscreteSample {
     }
 }
 
-impl GkNode for DiscreteSample {
+impl PolydatNode for DiscreteSample {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -868,7 +868,7 @@ pub(crate) fn build_node(
     _name: &str,
     _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     None
 }
 

@@ -6,7 +6,7 @@
   - CLI (dynamic/smart autocompletion)
   - TUIs
 - test data
-  - variates (gk subsystem)
+  - variates (polydat subsystem)
     - function graphs
     - expressions
     - layered scopes

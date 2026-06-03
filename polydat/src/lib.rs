@@ -14,12 +14,12 @@
 //!
 //! ### From DSL source
 //!
-//! The simplest way to build a kernel is from GK DSL source:
+//! The simplest way to build a kernel is from Polydat DSL source:
 //!
 //! ```rust
-//! use polydat::dsl::compile_gk;
+//! use polydat::dsl::compile_polydat;
 //!
-//! let mut kernel = compile_gk(r#"
+//! let mut kernel = compile_polydat(r#"
 //!     input cycle: u64
 //!     hashed := hash(cycle)
 //!     user_id := mod(hashed, 1000000)
@@ -35,11 +35,11 @@
 //! For programmatic construction:
 //!
 //! ```rust
-//! use polydat::compile::assembly::{GkAssembler, WireRef};
+//! use polydat::compile::assembly::{PolydatAssembler, WireRef};
 //! use polydat::library::hash::Hash64;
 //! use polydat::library::arithmetic::ModU64;
 //!
-//! let mut asm = GkAssembler::new(vec!["cycle".into()]);
+//! let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 //! asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
 //! asm.add_node("user_id", Box::new(ModU64::new(1_000_000)), vec![WireRef::node("hashed")]);
 //! asm.add_output("user_id", WireRef::node("user_id"));
@@ -56,14 +56,14 @@
 //!     │
 //!     ▼
 //! ┌─────────────────────────┐
-//! │  GkProgram (immutable)  │  Shared via Arc across threads
-//! │  - nodes: Vec<GkNode>   │
+//! │  PolydatProgram (immutable)  │  Shared via Arc across threads
+//! │  - nodes: Vec<PolydatNode>   │
 //! │  - wiring: Vec<Vec<..>> │
 //! │  - output_map           │
 //! └──────────┬──────────────┘
 //!            │
 //!     ┌──────┴──────┐
-//!     │  GkState    │  One per thread — no locks
+//!     │  PolydatState    │  One per thread — no locks
 //!     │  - buffers  │
 //!     │  - coords   │
 //!     └──────┬──────┘
@@ -90,16 +90,16 @@
 //!
 //! ## Modules
 //!
-//! - [`ast`]: Core types — [`ast::Value`], [`ast::GkNode`] trait,
+//! - [`ast`]: Core types — [`ast::Value`], [`ast::PolydatNode`] trait,
 //!   [`ast::Port`], [`ast::PortType`]
-//! - [`kernel`]: Runtime — [`kernel::GkProgram`], [`kernel::GkKernel`],
-//!   [`kernel::GkState`]
+//! - [`kernel`]: Runtime — [`kernel::PolydatProgram`], [`kernel::PolydatKernel`],
+//!   [`kernel::PolydatState`]
 //! - [`compile`]: DAG construction + compilation strategies —
-//!   [`compile::assembly::GkAssembler`], [`compile::fusion`],
+//!   [`compile::assembly::PolydatAssembler`], [`compile::fusion`],
 //!   [`compile::closures`] (Phase 2), [`compile::hybrid`]
 //!   (per-node optimal), [`compile::jit`] (Phase 3 Cranelift,
 //!   feature-gated)
-//! - [`dsl`]: GK language — [`dsl::compile_gk`], lexer, parser, registry
+//! - [`dsl`]: Polydat language — [`dsl::compile_polydat`], lexer, parser, registry
 //! - [`library`]: 250+ built-in function nodes (hash, arithmetic, string,
 //!   math, distributions, datetime, noise, etc.) plus [`library::sampling`]
 //!   (alias tables, LUT interpolation, ICD) and [`library::support`]

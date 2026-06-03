@@ -33,9 +33,9 @@ update via htmx `hx-swap-oob` (out-of-band swap) — the server pushes
 updated HTML fragments over the WebSocket, htmx swaps them into the
 DOM by element ID. No polling.
 
-### 2. GK Function Browser
+### 2. Polydat Function Browser
 
-Interactive version of `nbrs describe gk functions`:
+Interactive version of `nbrs describe Polydat functions`:
 
 - **Category-grouped table**: all native node functions with
   signature, arity, P123 level, description
@@ -51,25 +51,25 @@ fragments, no client-side JavaScript.
 
 ### 3. Stdlib Module Browser
 
-Interactive version of `nbrs describe gk stdlib`:
+Interactive version of `nbrs describe Polydat stdlib`:
 
 - **Module list**: all embedded stdlib modules with typed signatures
-- **Source view**: click a module to see its `.gk` source with syntax
+- **Source view**: click a module to see its `.polydat` source with syntax
   highlighting
 - **Category grouping**: from `@category:` annotations
 
 ### 4. DAG Viewer
 
-Interactive version of `nbrs describe gk dag`:
+Interactive version of `nbrs describe Polydat dag`:
 
-- **Source editor**: textarea where you paste or type GK source
+- **Source editor**: textarea where you paste or type Polydat source
 - **Render button**: submits source via htmx, server renders the DAG
   and returns an SVG fragment
 - **Format selector**: DOT, Mermaid, or SVG output
 - **Live preview**: as you type (debounced), the DAG re-renders
-- **Example loader**: dropdown of example `.gk` files
+- **Example loader**: dropdown of example `.polydat` files
 
-Uses `polydat::viz::gk_to_svg()` for pure-Rust SVG rendering.
+Uses `polydat::viz::polydat_to_svg()` for pure-Rust SVG rendering.
 No graphviz installation needed.
 
 ### 5. Workload Inspector
@@ -81,9 +81,9 @@ Dry-run and inspection tools:
   reference them
 - **Sample output**: render N sample cycles showing the assembled ops
   with all bind points resolved
-- **GK kernel info**: coordinate names, output names, node count,
+- **Polydat kernel info**: coordinate names, output names, node count,
   compilation level per node
-- **Module resolution trace**: show which `.gk` modules were loaded
+- **Module resolution trace**: show which `.polydat` modules were loaded
   and from where (workload dir, stdlib)
 
 ### 6. Activity Control (Future)
@@ -149,7 +149,7 @@ GET  /api/activities      → Activities table fragment (htmx)
 GET  /api/recent-ops      → Recent ops fragment (htmx)
 GET  /api/functions?q=..  → Filtered function table fragment (htmx)
 GET  /api/stdlib          → Stdlib module list fragment (htmx)
-POST /api/dag/render      → Render GK source, return SVG fragment (htmx)
+POST /api/dag/render      → Render Polydat source, return SVG fragment (htmx)
 POST /api/inspect         → Inspect workload YAML, return analysis (htmx)
 
 WS   /ws/metrics          → Live metric frame stream (WebSocket)

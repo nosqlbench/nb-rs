@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use crate::dsl::compile::compile_gk;
+use crate::dsl::compile::compile_polydat;
 use crate::ast::PortType;
 
 use super::builder::SubcontextBuilder;
@@ -23,7 +23,7 @@ use crate::ast::Value;
 /// import against. `dataset` is a final-folded string; `cycle`
 /// is the standard coordinate input.
 fn parent_kernel() -> Arc<ScopeKernel<RootMarker>> {
-    let kernel = compile_gk(
+    let kernel = compile_polydat(
         "input cycle: u64\n\
          const dataset := \"sift1m\"\n\
          seed := hash(cycle)\n",
@@ -42,16 +42,16 @@ fn subcontext_builder_yields_typed_builder() {
 }
 
 #[test]
-fn finalize_compiles_simple_gk_source_block() {
+fn finalize_compiles_simple_polydat_source_block() {
     let parent = parent_kernel();
     let mut b = parent.subcontext_builder();
-    b.context(SourceContext::new("simple-gk-source"));
-    b.body(BodyFragment::GkSource(
+    b.context(SourceContext::new("simple-polydat-source"));
+    b.body(BodyFragment::PolydatSource(
         "input cycle: u64\nx := 5\n".to_string(),
     ));
     let module = b.finalize().expect("finalize should succeed");
     assert!(module.program().output_names().iter().any(|n| *n == "x"));
-    assert_eq!(module.context().label, "simple-gk-source");
+    assert_eq!(module.context().label, "simple-polydat-source");
 }
 
 #[test]
@@ -61,9 +61,9 @@ fn finalize_rejects_unbound_import() {
     b.context(SourceContext::new("unbound-import"));
     // Body references `foo` which is not declared anywhere —
     // neither as a local binding nor as a declared import. The
-    // GK compiler surfaces this as a wiring / resolution error,
+    // Polydat compiler surfaces this as a wiring / resolution error,
     // which the builder wraps as `ContractViolation::Compile`.
-    b.body(BodyFragment::GkSource(
+    b.body(BodyFragment::PolydatSource(
         "input cycle: u64\nout := mul(cycle, foo)\n".to_string(),
     ));
     let err = b.finalize().expect_err("should fail to compile");
@@ -89,7 +89,7 @@ fn finalize_rejects_import_with_no_matching_parent_name() {
     let mut b = parent.subcontext_builder();
     b.context(SourceContext::new("rule1-direct"));
     b.import(ImportSpec::extern_("nonexistent", PortType::U64));
-    b.body(BodyFragment::GkSource("input cycle: u64\nx := 5\n".to_string()));
+    b.body(BodyFragment::PolydatSource("input cycle: u64\nx := 5\n".to_string()));
     let err = b.finalize().expect_err("should reject");
     match err {
         ContractViolation::UnboundImport { import, .. } => {
@@ -104,7 +104,7 @@ fn spawn_records_named_child() {
     let parent = parent_kernel();
     let mut b = parent.clone().subcontext_builder();
     b.context(SourceContext::for_phase("p1"));
-    b.body(BodyFragment::GkSource(
+    b.body(BodyFragment::PolydatSource(
         "input cycle: u64\ny := mul(cycle, 2)\n".to_string(),
     ));
     let module: ScopeModule<_> = b.finalize().expect("finalize");
@@ -124,13 +124,13 @@ fn duplicate_spawn_errors() {
     let module1 = {
         let mut b = parent.clone().subcontext_builder();
         b.context(SourceContext::for_phase("dup"));
-        b.body(BodyFragment::GkSource("input cycle: u64\na := 1\n".to_string()));
+        b.body(BodyFragment::PolydatSource("input cycle: u64\na := 1\n".to_string()));
         b.finalize().expect("first finalize")
     };
     let module2 = {
         let mut b = parent.clone().subcontext_builder();
         b.context(SourceContext::for_phase("dup-again"));
-        b.body(BodyFragment::GkSource("input cycle: u64\nb := 2\n".to_string()));
+        b.body(BodyFragment::PolydatSource("input cycle: u64\nb := 2\n".to_string()));
         b.finalize().expect("second finalize")
     };
 
@@ -160,13 +160,13 @@ fn release_child_allows_respawn() {
     let module1 = {
         let mut b = parent.clone().subcontext_builder();
         b.context(SourceContext::for_phase("rel"));
-        b.body(BodyFragment::GkSource("input cycle: u64\na := 1\n".to_string()));
+        b.body(BodyFragment::PolydatSource("input cycle: u64\na := 1\n".to_string()));
         b.finalize().expect("first finalize")
     };
     let module2 = {
         let mut b = parent.clone().subcontext_builder();
         b.context(SourceContext::for_phase("rel-again"));
-        b.body(BodyFragment::GkSource("input cycle: u64\na := 1\n".to_string()));
+        b.body(BodyFragment::PolydatSource("input cycle: u64\na := 1\n".to_string()));
         b.finalize().expect("second finalize")
     };
 
@@ -191,7 +191,7 @@ fn register_pull_persists_into_artifact() {
         ["seed".to_string(), "dataset".to_string()],
     ));
     b.register_pull(consumer);
-    b.body(BodyFragment::GkSource(
+    b.body(BodyFragment::PolydatSource(
         "input cycle: u64\nz := mul(cycle, 3)\n".to_string(),
     ));
 
@@ -248,7 +248,7 @@ fn parent_with_shared_u64(name: &str, init: u64) -> Arc<ScopeKernel<RootMarker>>
         "input cycle: u64\n\
          shared {name} := {init}\n",
     );
-    let kernel = compile_gk(&src).expect("parent kernel compile");
+    let kernel = compile_polydat(&src).expect("parent kernel compile");
     wrap_root_kernel(kernel, "test-root-shared")
 }
 
@@ -265,7 +265,7 @@ fn parent_shared_export_collision_rewrites_to_cell_write() {
     let mut b = parent.clone().subcontext_builder();
     b.context(SourceContext::for_phase("rule2-rewrite"));
     b.export(ExportSpec::shared("X", crate::ast::PortType::U64));
-    b.body(BodyFragment::GkSource(
+    b.body(BodyFragment::PolydatSource(
         "input cycle: u64\nX := 42\n".to_string(),
     ));
 
@@ -310,7 +310,7 @@ fn parent_shared_export_collision_propagates_through_siblings() {
         let mut b = parent.clone().subcontext_builder();
         b.context(SourceContext::for_phase("writer"));
         b.export(ExportSpec::shared("flag", crate::ast::PortType::U64));
-        b.body(BodyFragment::GkSource(
+        b.body(BodyFragment::PolydatSource(
             "input cycle: u64\nflag := 7\n".to_string(),
         ));
         b.finalize().expect("writer finalize")
@@ -321,7 +321,7 @@ fn parent_shared_export_collision_propagates_through_siblings() {
         // Standard import — the reader expects parent to expose
         // `flag` as a shared cell-bound value.
         b.import(ImportSpec::shared("flag", crate::ast::PortType::U64));
-        b.body(BodyFragment::GkSource(
+        b.body(BodyFragment::PolydatSource(
             "input cycle: u64\nextern flag: u64\nseen := flag\n".to_string(),
         ));
         b.finalize().expect("reader finalize")
@@ -451,7 +451,7 @@ CREATE VIRTUAL TABLE system_views.indexes (
 #[test]
 fn describe_keyspace_body_is_multirow_not_unary() {
     use crate::library::exactly_one::ExactlyOneValue;
-    use crate::ast::GkNode;
+    use crate::ast::PolydatNode;
 
     let multi_row_body = Value::Json(std::sync::Arc::new(serde_json::json!([
         {"keyspace_name": "system_views", "type": "keyspace", "name": "system_views",
@@ -504,7 +504,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     // 1. Workload-root carrying the shared cell. Mirror of the
     //    `shared has_sai_column_indexes := false` declaration
     //    in the workload bindings block.
-    let workload_canonical = compile_gk(
+    let workload_canonical = compile_polydat(
         "input cycle: u64\nshared has_match := false\n"
     ).expect("workload-root compile");
 
@@ -518,7 +518,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     // matches the workload's
     // `has_sai_column_indexes := log_info(regex_match(...))`
     // shape. regex_match produces Bool, the cell-declared type.
-    let detect_matter = super::GkMatter::builder()
+    let detect_matter = super::PolydatMatter::builder()
         .label("detect_op")
         .source("input cycle: u64\n".to_string())
         .result_bindings(
@@ -535,7 +535,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     //    `main_kernel` field. Built as a subscope of the
     //    workload-canonical using its OWN program (state
     //    fork). Cells propagate via the cascade.
-    let fiber_main_matter = super::GkMatter::builder()
+    let fiber_main_matter = super::PolydatMatter::builder()
         .program(workload_canonical.program().clone())
         .build()
         .expect("fiber main matter");
@@ -549,7 +549,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     //    `op_template_programs` and binding each under
     //    `fb.main_kernel`. Cell handles flow:
     //        workload_canonical → fiber_main → detect_fiber
-    let detect_fiber_matter = super::GkMatter::builder()
+    let detect_fiber_matter = super::PolydatMatter::builder()
         .program(detect_canonical.program().clone())
         .build()
         .expect("detect fiber matter");
@@ -588,7 +588,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     // 6. Consumer op-template (analog of `await_index`). Built
     //    via Source matter; its `extern has_match: bool` slot
     //    receives the cell via cascade.
-    let consumer_matter = super::GkMatter::builder()
+    let consumer_matter = super::PolydatMatter::builder()
         .label("consumer_op")
         .source(
             "input cycle: u64\nextern has_match: bool\nseen := has_match\n".to_string()
@@ -602,7 +602,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     // 7. Per-fiber consumer instance — under fiber_main, same
     //    chain as the detect fiber so the cell handle is
     //    shared end-to-end.
-    let consumer_fiber_matter = super::GkMatter::builder()
+    let consumer_fiber_matter = super::PolydatMatter::builder()
         .program(consumer_canonical.program().clone())
         .build()
         .expect("consumer fiber matter");
@@ -646,7 +646,7 @@ fn shared_bool_literal_init_does_not_leak_false_as_named_input() {
         "shared has_sai_column_indexes := false\n\
          shared has_indexes := true\n",
     ] {
-        let kernel = compile_gk(src).expect("compile");
+        let kernel = compile_polydat(src).expect("compile");
         let inputs = kernel.program().input_names();
         assert!(
             !inputs.iter().any(|n| n == "false" || n == "true"),
@@ -674,12 +674,12 @@ fn log_info_preserves_bool_type_through_result_binding_cell() {
     // the Bool flows through unchanged and lands in the cell.
     use super::CompileOptions;
 
-    let root = compile_gk(
+    let root = compile_polydat(
         "input cycle: u64\nshared has_match := false\n"
     ).expect("root compile");
 
     // Phase scope (silent intermediate — body never names has_match).
-    let phase_program = compile_gk(
+    let phase_program = compile_polydat(
         "input cycle: u64\nlocal := cycle\n"
     ).expect("phase compile").program().clone();
     let phase_kernel = root.materialize_subscope(phase_program, &[]);
@@ -687,7 +687,7 @@ fn log_info_preserves_bool_type_through_result_binding_cell() {
     // Op-template: result-binding wraps regex_match with log_info.
     let opts = CompileOptions {
         workload_dir: None,
-        gk_lib_paths: Vec::new(),
+        polydat_lib_paths: Vec::new(),
         strict: false,
         required_outputs: Vec::new(),
         context_label: Some("op-template".to_string()),
@@ -699,7 +699,7 @@ fn log_info_preserves_bool_type_through_result_binding_cell() {
     // add_result_bindings; exactly_one_value walks its
     // structural shape. The schema_text wire feeds regex_match.
     let result_bindings = "schema_text := exactly_one_value(body)\nhas_match := log_info(regex_match(schema_text, \"hello\"))\n";
-    let matter = super::GkMatter::builder()
+    let matter = super::PolydatMatter::builder()
         .label("op-template")
         .source(body)
         .result_bindings(result_bindings)
@@ -757,14 +757,14 @@ fn build_kernel_under_parent_full_sees_live_parents_cells() {
     use super::CompileOptions;
 
     // Workload root with a `shared` cell.
-    let root = compile_gk(
+    let root = compile_polydat(
         "input cycle: u64\nshared has_sai_column_indexes := false\n"
     ).expect("root compile");
 
     // Phase scope built under root via the typed subscope path
     // — the canonical activity-layer path. Phase body never
     // names the shared wire; the cell rides as transit.
-    let phase_program = compile_gk(
+    let phase_program = compile_polydat(
         "input cycle: u64\nlocal := cycle\n"
     ).expect("phase compile").program().clone();
     let phase_kernel = root.materialize_subscope(phase_program, &[]);
@@ -774,7 +774,7 @@ fn build_kernel_under_parent_full_sees_live_parents_cells() {
     // that writes through the shared cell.
     let opts = CompileOptions {
         workload_dir: None,
-        gk_lib_paths: Vec::new(),
+        polydat_lib_paths: Vec::new(),
         strict: false,
         required_outputs: Vec::new(),
         context_label: Some("op-template".to_string()),
@@ -788,7 +788,7 @@ fn build_kernel_under_parent_full_sees_live_parents_cells() {
     // the RHS — they're only special-cased in
     // try_fold_shared_init / evaluate_default_expr).
     let result_bindings = "has_sai_column_indexes := cycle == cycle\n";
-    let matter = super::GkMatter::builder()
+    let matter = super::PolydatMatter::builder()
         .label("op-template")
         .source(body)
         .result_bindings(result_bindings)
@@ -802,7 +802,7 @@ fn build_kernel_under_parent_full_sees_live_parents_cells() {
     // Rule 2 saw the transitively-inherited shared cell at
     // finalize and baked the write-through onto the program.
     kernel.commit_write_throughs();
-    // GK comparison ops produce U64(1) for true; the cell-
+    // Polydat comparison ops produce U64(1) for true; the cell-
     // bound input slot snapshots whatever the source pulled.
     // The assertion is "cell observed a non-init write" — the
     // shape (U64 vs Bool) is incidental to this test.
@@ -829,26 +829,26 @@ fn shared_cell_cascade_survives_for_iteration_through_silent_intermediates() {
     // intermediate. Post-fix, every layer's `materialize_wiring_from_outer`
     // forwards the cell as transit even when no slot exists,
     // so the leaf phase's slot picks it up via the cascade.
-    use crate::kernel::GkKernel;
+    use crate::kernel::PolydatKernel;
     use std::sync::Arc;
 
-    let root_kernel = compile_gk(
+    let root_kernel = compile_polydat(
         "input cycle: u64\nshared flag := 0\n"
     ).expect("root compile");
 
     // Scenario: synthesised via for_iteration (the comprehension
     // code path).
-    let scenario_canon = compile_gk(
+    let scenario_canon = compile_polydat(
         "input cycle: u64\nlocal := cycle\n"
     ).expect("scenario compile");
-    let scenario = GkKernel::for_iteration(
+    let scenario = PolydatKernel::for_iteration(
         &Arc::new(scenario_canon),
         &Arc::new(root_kernel),
         &[],
     );
 
     // for_each scope: iter-var only.
-    let foreach_program = compile_gk(
+    let foreach_program = compile_polydat(
         "input cycle: u64\nextern profile: String\n"
     ).expect("for_each compile").program().clone();
     let mut foreach = scenario.materialize_subscope(foreach_program, &[]);
@@ -856,7 +856,7 @@ fn shared_cell_cascade_survives_for_iteration_through_silent_intermediates() {
     foreach.state().set_input(pidx, Value::Str("p0".into()));
 
     // Phase op: writes through the shared cell.
-    let leaf_program = compile_gk(
+    let leaf_program = compile_polydat(
         "input cycle: u64\n\
          extern flag: u64\n\
          __write_flag := 7\n"
@@ -878,7 +878,7 @@ fn shared_cell_cascade_survives_for_iteration_through_silent_intermediates() {
     // chain should observe the write too. This proves the
     // cell handle (not just the local snapshot) carried the
     // value.
-    let reader_program = compile_gk(
+    let reader_program = compile_polydat(
         "input cycle: u64\nextern flag: u64\nseen := flag\n"
     ).expect("reader compile").program().clone();
     let mut reader = foreach.materialize_subscope(reader_program, &[]);
@@ -903,14 +903,14 @@ fn shared_cell_cascade_survives_legacy_bind_program_under_parent_chain() {
     // input slots + transit cells), so the activity layer's
     // existing call sites pick the fix up automatically.
     // Workload root: `shared X := <literal>`.
-    let root_kernel = compile_gk(
+    let root_kernel = compile_polydat(
         "input cycle: u64\nshared counter := 0\n"
     ).expect("root compile");
 
     // Scenario kernel: body never names `counter`. Built via
     // the typed subscope path — exactly how the activity layer
     // builds phase / scenario / for_each kernels.
-    let mid_program = compile_gk("input cycle: u64\nlocal := cycle\n")
+    let mid_program = compile_polydat("input cycle: u64\nlocal := cycle\n")
         .expect("mid compile")
         .program()
         .clone();
@@ -920,7 +920,7 @@ fn shared_cell_cascade_survives_legacy_bind_program_under_parent_chain() {
     // Rule-2-equivalent shape (`extern counter: u64` + write
     // through). The cell cascade must reach this kernel for
     // the write to land.
-    let leaf_program = compile_gk(
+    let leaf_program = compile_polydat(
         "input cycle: u64\n\
          extern counter: u64\n\
          __write_counter := 42\n"
@@ -966,7 +966,7 @@ fn parent_shared_cell_cascades_to_grandchild_through_silent_intermediate() {
     let mid_module = {
         let mut b = root.clone().subcontext_builder();
         b.context(SourceContext::for_phase("mid"));
-        b.body(BodyFragment::GkSource(
+        b.body(BodyFragment::PolydatSource(
             "input cycle: u64\nlocal := cycle\n".to_string(),
         ));
         b.finalize().expect("mid finalize")
@@ -981,7 +981,7 @@ fn parent_shared_cell_cascades_to_grandchild_through_silent_intermediate() {
         let mut b = mid.clone().subcontext_builder();
         b.context(SourceContext::for_phase("leaf"));
         b.export(ExportSpec::shared("flag", crate::ast::PortType::U64));
-        b.body(BodyFragment::GkSource(
+        b.body(BodyFragment::PolydatSource(
             "input cycle: u64\nflag := 9\n".to_string(),
         ));
         b.finalize().expect("leaf finalize — Rule 2 must see root's cell through mid")
@@ -1025,15 +1025,15 @@ fn bind_program_under_parent_rebinds_compiled_program() {
     // template instancing loop. Verify it produces a kernel
     // whose `lookup` resolves a parent constant — the same
     // behaviour the legacy two-call dance produced.
-    let parent_kernel = compile_gk(
+    let parent_kernel = compile_polydat(
         "input cycle: u64\n\
          const n := 7\n",
     )
     .expect("parent compile");
 
     // Compile the child program standalone. The rebind helper
-    // does NOT compile — it takes a pre-compiled `Arc<GkProgram>`.
-    let child_kernel = compile_gk(
+    // does NOT compile — it takes a pre-compiled `Arc<PolydatProgram>`.
+    let child_kernel = compile_polydat(
         "input cycle: u64\n\
          extern n: u64\n\
          passthrough := mul(n, 1)\n",
@@ -1050,25 +1050,25 @@ fn bind_program_under_parent_rebinds_compiled_program() {
 
 #[test]
 fn build_kernel_under_parent_threads_compile_options() {
-    // CompileOptions threads `gk_lib_paths` / `strict` /
+    // CompileOptions threads `polydat_lib_paths` / `strict` /
     // `required_outputs` / `workload_dir` / `context_label`
     // through the bridge so synthesisers that previously called
-    // `compile_gk_with_libs` directly produce byte-identical
+    // `compile_polydat_with_libs` directly produce byte-identical
     // kernels via the builder. Verify the bridge accepts a
     // non-default options struct and produces a working kernel.
-    let parent_kernel = compile_gk("input cycle: u64\nconst n := 5\n")
+    let parent_kernel = compile_polydat("input cycle: u64\nconst n := 5\n")
         .expect("parent compile");
 
     let opts = super::builder::CompileOptions {
         workload_dir: None,
-        gk_lib_paths: Vec::new(),
+        polydat_lib_paths: Vec::new(),
         strict: false,
         required_outputs: Vec::new(),
         context_label: Some("phase-3-options-test".to_string()),
         cursor_limit: None,
         ..Default::default()
     };
-    let matter = super::GkMatter::builder()
+    let matter = super::PolydatMatter::builder()
         .label("phase-3-options-test")
         .source("extern n: u64\ndoubled := mul(n, 2)\n")
         .options(opts)
@@ -1087,7 +1087,7 @@ fn parent_final_export_collision_still_errors() {
     // `const X := ...` on the parent + same-named child binding
     // is an immutable-export violation. Rule 2 routes shared
     // collisions but final collisions remain hard errors.
-    let kernel = compile_gk(
+    let kernel = compile_polydat(
         "input cycle: u64\n\
          const fixed := 42\n",
     )
@@ -1097,7 +1097,7 @@ fn parent_final_export_collision_still_errors() {
     let mut b = parent.clone().subcontext_builder();
     b.context(SourceContext::for_phase("final-shadow"));
     b.export(ExportSpec::local("fixed", crate::ast::PortType::U64));
-    b.body(BodyFragment::GkSource(
+    b.body(BodyFragment::PolydatSource(
         "input cycle: u64\nfixed := 99\n".to_string(),
     ));
     let err = b.finalize().expect_err("final-shadow must error");
@@ -1122,7 +1122,7 @@ fn add_result_bindings_injects_only_referenced_magic_externs() {
     let parent = parent_kernel();
     let mut b = parent.subcontext_builder();
     b.context(SourceContext::new("rb-closure"));
-    b.body(BodyFragment::GkSource("input cycle: u64\n".to_string()));
+    b.body(BodyFragment::PolydatSource("input cycle: u64\n".to_string()));
     b.add_result_bindings("started_with_x := regex_match(body, \"^x\")\n")
         .expect("add_result_bindings");
     let module = b.finalize().expect("finalize");
@@ -1152,7 +1152,7 @@ fn add_result_bindings_diagnostic_force_allocates_unreferenced_magic_externs() {
         kernel_opt: crate::kernel::KernelOptLevel::Diagnostic,
         ..Default::default()
     });
-    b.body(BodyFragment::GkSource("input cycle: u64\n".to_string()));
+    b.body(BodyFragment::PolydatSource("input cycle: u64\n".to_string()));
     b.add_result_bindings("started_with_x := regex_match(body, \"^x\")\n")
         .expect("add_result_bindings");
     let module = b.finalize().expect("finalize");
@@ -1175,12 +1175,12 @@ fn add_result_bindings_rule2_writethrough_to_parent_shared() {
         input cycle: u64\n\
         shared count_seen := 0\n\
     ";
-    let parent_kernel = compile_gk(parent_src).expect("parent compile");
+    let parent_kernel = compile_polydat(parent_src).expect("parent compile");
     let parent = wrap_root_kernel(parent_kernel, "rb-rule2-root");
 
     let mut b = parent.clone().subcontext_builder();
     b.context(SourceContext::new("rb-rule2"));
-    b.body(BodyFragment::GkSource("input cycle: u64\n".to_string()));
+    b.body(BodyFragment::PolydatSource("input cycle: u64\n".to_string()));
     // Use a numeric expression on a magic extern so the test
     // exercises both the closure-binding economy AND Rule 2.
     // RHS uses `count` which the magic-extern injector adds as
@@ -1208,7 +1208,7 @@ fn add_result_bindings_rejects_reassignment_of_magic_wire() {
     let parent = parent_kernel();
     let mut b = parent.subcontext_builder();
     b.context(SourceContext::new("rb-reassign"));
-    b.body(BodyFragment::GkSource("input cycle: u64\n".to_string()));
+    b.body(BodyFragment::PolydatSource("input cycle: u64\n".to_string()));
     let err = match b.add_result_bindings("body := \"oops\"\n") {
         Ok(_) => panic!("reassigning body must error"),
         Err(e) => e,
@@ -1229,7 +1229,7 @@ fn add_result_bindings_empty_source_is_noop() {
     let parent = parent_kernel();
     let mut b = parent.subcontext_builder();
     b.context(SourceContext::new("rb-empty"));
-    b.body(BodyFragment::GkSource("input cycle: u64\n".to_string()));
+    b.body(BodyFragment::PolydatSource("input cycle: u64\n".to_string()));
     b.add_result_bindings("").expect("empty source is a no-op");
     b.add_result_bindings("   \n   \n").expect("whitespace-only source is a no-op");
     let module = b.finalize().expect("finalize");
@@ -1250,13 +1250,13 @@ fn add_result_bindings_empty_source_is_noop() {
 fn l2f_silent_fall_through_when_strict_off() {
     use crate::ast::Value;
     use crate::kernel::Construction;
-    use crate::kernel::subcontext::GkMatter;
-    let outer = compile_gk("input cycle: u64\nconst X := \"outer-value\"\n")
+    use crate::kernel::subcontext::PolydatMatter;
+    let outer = compile_polydat("input cycle: u64\nconst X := \"outer-value\"\n")
         .expect("outer compile");
 
     let opts = super::CompileOptions {
         workload_dir: None,
-        gk_lib_paths: Vec::new(),
+        polydat_lib_paths: Vec::new(),
         strict: false,
         required_outputs: Vec::new(),
         context_label: Some("inner".to_string()),
@@ -1270,7 +1270,7 @@ fn l2f_silent_fall_through_when_strict_off() {
     // get_constant filters; lookup falls through to the auto-
     // emitted extern slot for X, which materialize-wiring fed
     // from outer's const X.
-    let inner_matter = GkMatter::builder()
+    let inner_matter = PolydatMatter::builder()
         .label("inner")
         .source("input cycle: u64\nextern Y: str\nconst X := \"{Y}\"\n".to_string())
         .options(opts)
@@ -1297,20 +1297,20 @@ fn l2f_silent_fall_through_when_strict_off() {
 #[test]
 fn l2f_strict_rejects_silent_fall_through() {
     use crate::kernel::Construction;
-    use crate::kernel::subcontext::GkMatter;
-    let outer = compile_gk("input cycle: u64\nconst X := \"outer-value\"\n")
+    use crate::kernel::subcontext::PolydatMatter;
+    let outer = compile_polydat("input cycle: u64\nconst X := \"outer-value\"\n")
         .expect("outer compile");
 
     let opts = super::CompileOptions {
         workload_dir: None,
-        gk_lib_paths: Vec::new(),
+        polydat_lib_paths: Vec::new(),
         strict: true,  // ← the L2.f hardening trigger
         required_outputs: Vec::new(),
         context_label: Some("inner-strict".to_string()),
         cursor_limit: None,
         ..Default::default()
     };
-    let inner_matter = GkMatter::builder()
+    let inner_matter = PolydatMatter::builder()
         .label("inner-strict")
         .source("input cycle: u64\nextern Y: str\nconst X := \"{Y}\"\n".to_string())
         .options(opts)

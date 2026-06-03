@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! GK DSL: lexer, parser, and AST for `.gk` kernel definition files.
+//! Polydat DSL: lexer, parser, and AST for `.polydat` kernel definition files.
 
 pub mod lexer;
 pub mod ast;
@@ -22,12 +22,12 @@ pub mod factory;
 pub mod factories;
 pub(crate) mod validate;
 
-/// Re-exported for external crates that register GK nodes via `register_nodes!`.
+/// Re-exported for external crates that register Polydat nodes via `register_nodes!`.
 pub use factory::ConstArg;
 mod modules;
 mod binding;
 
-pub use compile::{compile_gk, compile_gk_checked, compile_gk_with_path, compile_gk_strict, compile_gk_with_outputs, compile_gk_with_libs, compile_gk_with_libs_and_limit, eval_const_expr};
+pub use compile::{compile_polydat, compile_polydat_checked, compile_polydat_with_path, compile_polydat_strict, compile_polydat_with_outputs, compile_polydat_with_libs, compile_polydat_with_libs_and_limit, eval_const_expr};
 
 /// Collect identifier references from an `Expr` tree into `out`.
 ///

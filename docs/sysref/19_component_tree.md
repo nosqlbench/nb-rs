@@ -177,10 +177,10 @@ naturally separate pre-index and post-index results because
 
 ## Interaction with Existing Features
 
-### GK Scope Composition
+### Polydat Scope Composition
 
-The label stack parallels the GK scope stack. Each for_each
-level that creates a GK scope also pushes a label. The GK
+The label stack parallels the Polydat scope stack. Each for_each
+level that creates a Polydat scope also pushes a label. The GK
 scope handles variable values; the label stack handles metric
 identity. They are orthogonal but aligned.
 

@@ -23,13 +23,13 @@ The last row of SRD-13d §9 (Implementation phases):
 The runtime consumer of phases 1-8: now that scope-tree nodes
 are marked `materialised: bool` with a `cached_kernel` slot,
 op-dispensers should pick up the right kernel handle and use
-it to evaluate per-cycle GK expressions.
+it to evaluate per-cycle Polydat expressions.
 
 The motivating concrete pain point lives in
 `nbrs-activity/src/wrappers.rs::MetricsDispenser`:
 
 ```rust
-/// SRD-13d Phase 9 will route this through a real GK eval.
+/// SRD-13d Phase 9 will route this through a real Polydat eval.
 value_expr: String,
 ```
 
@@ -46,7 +46,7 @@ What's already in place:
 
 - **Scope-tree plumbing** (Phases 1-7): every `ScopeNode`
   carries `materialised: Option<bool>`, `logical_name: String`,
-  and `cached_kernel: OnceLock<Arc<GkKernel>>`. The
+  and `cached_kernel: OnceLock<Arc<PolydatKernel>>`. The
   scope-flattening pre-walk
   (`nbrs-activity/src/scope_flattening.rs`) sets the marks.
 - **`nearest_materialised()` accessor** is documented in SRD-13d
@@ -65,8 +65,8 @@ What's NOT in place:
 - **No kernel handle reaches `MetricsDispenser::wrap`.** The
   op-template scope's kernel lives in the scope tree;
   `wrap` only sees the metrics decl + the component.
-- **No expression-string GK eval API.** `polydat`
-  exposes `GkAssembler` + `GkKernel`, but compiling and
+- **No expression-string Polydat eval API.** `polydat`
+  exposes `PolydatAssembler` + `PolydatKernel`, but compiling and
   evaluating a free-form expression like `mul(latency_curve, 2)`
   in the context of an existing kernel's outputs is not a
   one-call surface today. The closest infrastructure is
@@ -86,9 +86,9 @@ What's NOT in place:
 | Step | Crate | Surgery |
 |------|-------|---------|
 | 1 | `nbrs-activity::scope_tree` | Expose a `find_op_template(name) -> Option<&ScopeNode>` accessor. Currently the tree knows about op-templates internally; the runtime needs a way to look one up by name + parent-phase context. |
-| 2 | `nbrs-activity::activity` | At op-dispenser construction (line ~1014), look up the scope-tree node for the template, walk to `nearest_materialised()`, get its `cached_kernel.get_or_init(...)` handle. Thread an `Option<Arc<GkKernel>>` into `MetricsDispenser::wrap`. |
+| 2 | `nbrs-activity::activity` | At op-dispenser construction (line ~1014), look up the scope-tree node for the template, walk to `nearest_materialised()`, get its `cached_kernel.get_or_init(...)` handle. Thread an `Option<Arc<PolydatKernel>>` into `MetricsDispenser::wrap`. |
 | 3 | `nbrs-activity::wrappers` | `MetricsDispenser::wrap` signature gets the kernel arg. Slot stores it (or shares one across slots if uniform). |
-| 4 | `polydat` | New API: `GkKernel::eval_expr(expr_str, inputs) -> Result<Value, EvalError>`. Compiles the expression string against the kernel's wire vocabulary, instances on demand (or reuses cached compiled fragments), runs, returns the scalar. |
+| 4 | `polydat` | New API: `PolydatKernel::eval_expr(expr_str, inputs) -> Result<Value, EvalError>`. Compiles the expression string against the kernel's wire vocabulary, instances on demand (or reuses cached compiled fragments), runs, returns the scalar. |
 | 5 | `nbrs-activity::wrappers` | Per-cycle path in `MetricsDispenser::execute`: if `value_expr` parses as a bare name → captures-lookup (existing). Else → `kernel.eval_expr(value_expr, fiber_inputs)`. |
 
 Estimated LOC: ~150 in `polydat` (the `eval_expr` API
@@ -100,8 +100,8 @@ types, single-output extraction, and error reporting), ~80 in
 
 ### Risk surface
 
-- **GK expression-string eval is a new public API.** The current
-  GK consumer model is "compile a program from declared bindings,
+- **Polydat expression-string eval is a new public API.** The current
+  Polydat consumer model is "compile a program from declared bindings,
   instance, run." Free-form expression eval at runtime is
   conceptually different — it's a REPL-style operation. The
   existing `polydat::dsl` parser can probably be reused,
@@ -125,7 +125,7 @@ types, single-output extraction, and error reporting), ~80 in
   from the enclosing phase scope work today via
   `bind_outer_scope` (the kernel handle covers it). No new
   multi-scope coordination needed for Phase 9 itself.
-- **GK kernel sharing across op-templates.** Every
+- **Polydat kernel sharing across op-templates.** Every
   materialised op-template gets its own kernel (per the
   flattening rules). Phase 9 doesn't change that — it just
   picks up whatever the pre-walk decided.
@@ -139,8 +139,8 @@ types, single-output extraction, and error reporting), ~80 in
 
 **Defer to a dedicated push.** The work is contained in
 scope (one feature, three well-bounded crate changes), but
-the GK `eval_expr` API design merits standalone attention
-— it touches the public GK surface and deserves its own SRD
+the Polydat `eval_expr` API design merits standalone attention
+— it touches the public Polydat surface and deserves its own SRD
 note + design conversation before code.
 
 A reasonable two-step landing:

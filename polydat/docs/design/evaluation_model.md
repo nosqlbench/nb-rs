@@ -1,6 +1,6 @@
 # Evaluation Model
 
-The mechanism contract for GK evaluation: program/state split,
+The mechanism contract for Polydat evaluation: program/state split,
 provenance-based invalidation, the two-lifecycle classification
 (effectively-const vs dynamic), the const binding contract
 (Plan A/B compile-time + scope-activation checks), the
@@ -16,9 +16,9 @@ This doc extends axiom-level statements:
 
 The nbrs-side FiberBuilder and Cursor-Driven Evaluation
 (activity-pump details, DataSource API) remain in
-[SRD-11](../../../docs/sysref/11_gk_evaluation.md).
+[SRD-11](../../../docs/sysref/11_polydat_evaluation.md).
 
-The GK evaluation model separates the immutable program
+The Polydat evaluation model separates the immutable program
 (shared) from mutable per-fiber state (private). This
 enables lock-free concurrent evaluation across hundreds of
 fibers.
@@ -42,8 +42,8 @@ GkState (per-fiber, mutable, private)
   └── port_values[]      — external ports (persist across set_inputs)
 ```
 
-`GkProgram` is created once at compilation time and shared via
-`Arc` across all fibers. `GkState` is created per-fiber via
+`PolydatProgram` is created once at compilation time and shared via
+`Arc` across all fibers. `PolydatState` is created per-fiber via
 `program.create_state()`.
 
 ---
@@ -90,12 +90,12 @@ for the broader discussion of provenance-based invalidation.
 
 ## Two Evaluation Lifecycles
 
-A GK node's *lifecycle* is the granularity at which it is
+A Polydat node's *lifecycle* is the granularity at which it is
 re-evaluated. Two are recognised:
 
 | Lifecycle | When evaluated | Re-evaluated when… |
 |-----------|----------------|---------------------|
-| **effectively-const** | Once, for the duration of a scope activation. Two implementation paths: (a) **compile-fold** — evaluated during GK compilation and replaced with a leaf const node; (b) **scope-init pull** — evaluated once after `bind_outer_scope` populates iteration-variable externs, then frozen for the activation. The choice between (a) and (b) is decided by the compiler based on the wire chain; the author writes `const NAME := <expr>` in both cases. | Never within an activation. The enclosing comprehension advancing to its next iteration (polydat comprehension dispense per `polydat/docs/design/comprehension_forms.md` §9.5) triggers a fresh activation, which re-runs scope-init pull (compile-folded leaves are immutable across activations). |
+| **effectively-const** | Once, for the duration of a scope activation. Two implementation paths: (a) **compile-fold** — evaluated during Polydat compilation and replaced with a leaf const node; (b) **scope-init pull** — evaluated once after `bind_outer_scope` populates iteration-variable externs, then frozen for the activation. The choice between (a) and (b) is decided by the compiler based on the wire chain; the author writes `const NAME := <expr>` in both cases. | Never within an activation. The enclosing comprehension advancing to its next iteration (polydat comprehension dispense per `polydat/docs/design/comprehension_forms.md` §9.5) triggers a fresh activation, which re-runs scope-init pull (compile-folded leaves are immutable across activations). |
 | **dynamic** | Once per pull, on demand at execution time | Whenever a transitively dependent input changes (provenance-based invalidation). Includes per-cycle pulls *and* intra-stanza recomputation when external-write ports or `do_while`/`do_until` counters tick. |
 
 The `const` modifier is the single author-facing surface for
@@ -140,7 +140,7 @@ to be a legal const binding inside such a scope.
 ### Compile-Time Constant Folding
 
 Compile-time fold is the compile-fold implementation path for
-the effectively-const lifecycle. It runs once per `GkProgram`
+the effectively-const lifecycle. It runs once per `PolydatProgram`
 build, before the program is wrapped in `Arc` and shared:
 
 ```
@@ -208,7 +208,7 @@ Reference points in the code:
   marks it clean.
 - `nbrs_activity::synthesis::OpBuilder::init_overrides` — the
   per-activation snapshot that fiber state inherits.
-- `polydat::kernel::gkkernel::GkKernel::materialize_wiring_from_outer`
+- `polydat::kernel::polydatkernel::PolydatKernel::materialize_wiring_from_outer`
   Step 3 — the per-const-output pull + non-None verification,
   immediately after the extern-slot bind step.
 
@@ -223,7 +223,7 @@ scope. The compiler and runtime together enforce two checks:
 
 ### Compile-Time Check (Plan A)
 
-During GK compilation, after wire resolution and topological
+During Polydat compilation, after wire resolution and topological
 sort:
 
 > For every binding declared `const`, every node in its upstream
@@ -291,7 +291,7 @@ combined check is the contract.
 Both checks emit the same shape — `const binding '<name>'
 violates the const contract: <reason>`. The reason names the
 offending wire (Plan A) or the runtime failure mode (Plan B).
-Plan B errors carry the executor's `gk_context` prefix
+Plan B errors carry the executor's `polydat_context` prefix
 identifying the phase / scope.
 
 Plan A reasons (compile-time, from
@@ -314,7 +314,7 @@ Plan A reasons (compile-time, from
   through a `do_while` counter).
 
 Plan B reasons (scope-activation, from
-`GkKernel::materialize_wiring_from_outer` Step 3):
+`PolydatKernel::materialize_wiring_from_outer` Step 3):
 
 - **`scope-init pull returned Value::None`** — the eval function
   signaled a fatal failure (e.g. `dataset_prebuffer` couldn't
@@ -357,7 +357,7 @@ executor simple (it just passes `[cycle]`).
 
 ## External-Write Ports
 
-External values may be injected into a `GkState` via
+External values may be injected into a `PolydatState` via
 port-typed input slots. Two persistence variants:
 
 - **Volatile ports**: reset to defaults on `set_inputs()`.

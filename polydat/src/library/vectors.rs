@@ -37,7 +37,7 @@ use std::sync::{Arc, LazyLock};
 
 use crate::library::support::cache::OnceCache;
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use vectordata::TestDataGroup;
 use vectordata::TestDataView;
 use vectordata::io::{VectorReader, VvecReader};
@@ -359,7 +359,7 @@ impl Default for DatasetOpen {
     fn default() -> Self { Self::new() }
 }
 
-impl GkNode for DatasetOpen {
+impl PolydatNode for DatasetOpen {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let source = inputs[0].as_str();
@@ -414,7 +414,7 @@ impl Default for DatasetGroupOpen {
     fn default() -> Self { Self::new() }
 }
 
-impl GkNode for DatasetGroupOpen {
+impl PolydatNode for DatasetGroupOpen {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let source = inputs[0].as_str();
@@ -496,7 +496,7 @@ macro_rules! handle_indexed_node {
             fn default() -> Self { Self::new() }
         }
 
-        impl GkNode for $name {
+        impl PolydatNode for $name {
             fn meta(&self) -> &NodeMeta { &self.meta }
             fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
                 let handle = handle_of(&inputs[0]);
@@ -731,7 +731,7 @@ macro_rules! handle_metadata_node {
             fn default() -> Self { Self::new() }
         }
 
-        impl GkNode for $name {
+        impl PolydatNode for $name {
             fn meta(&self) -> &NodeMeta { &self.meta }
             fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
                 let handle = handle_of(&inputs[0]);
@@ -789,7 +789,7 @@ macro_rules! source_only_node {
             fn default() -> Self { Self::new() }
         }
 
-        impl GkNode for $name {
+        impl PolydatNode for $name {
             fn meta(&self) -> &NodeMeta { &self.meta }
             fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
                 let $src = inputs[0].as_str();
@@ -1047,7 +1047,7 @@ impl Default for MatchingProfiles {
     fn default() -> Self { Self::new() }
 }
 
-impl GkNode for MatchingProfiles {
+impl PolydatNode for MatchingProfiles {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let group = group_of(handle_of(&inputs[0]));
@@ -1145,7 +1145,7 @@ impl Default for DatasetProfileNameAt {
     fn default() -> Self { Self::new() }
 }
 
-impl GkNode for DatasetProfileNameAt {
+impl PolydatNode for DatasetProfileNameAt {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let group = group_of(handle_of(&inputs[0]));
@@ -1185,7 +1185,7 @@ impl Default for ProfileBaseCount {
     fn default() -> Self { Self::new() }
 }
 
-impl GkNode for ProfileBaseCount {
+impl PolydatNode for ProfileBaseCount {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let group = group_of(handle_of(&inputs[0]));
@@ -1230,7 +1230,7 @@ impl Default for ProfileFacets {
     fn default() -> Self { Self::new() }
 }
 
-impl GkNode for ProfileFacets {
+impl PolydatNode for ProfileFacets {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let group = group_of(handle_of(&inputs[0]));
@@ -1750,7 +1750,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Returns `None` if the name is not handled by this module.
 /// All functions in this module are feature-gated on `vectordata`.
 #[cfg(feature = "vectordata")]
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     // Every dataset function in this module now takes its
     // `source` (and any other previously-const string params)
     // as a Wire input, so `consts` is unused — the spec arrives
@@ -1759,33 +1759,33 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef
     // binding compiler; non-literal args (e.g. `printf` from a
     // string-interpolated source spec) wire directly.
     match name {
-        "dataset_open" => Some(Ok(Box::new(DatasetOpen::new()) as Box<dyn crate::ast::GkNode>)),
-        "dataset_group_open" => Some(Ok(Box::new(DatasetGroupOpen::new()) as Box<dyn crate::ast::GkNode>)),
-        "vector_at" => Some(Ok(Box::new(VectorAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "query_vector_at" => Some(Ok(Box::new(QueryVectorAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "neighbor_indices_at" => Some(Ok(Box::new(NeighborIndicesAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "neighbor_distances_at" => Some(Ok(Box::new(NeighborDistancesAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "filtered_neighbor_indices_at" => Some(Ok(Box::new(FilteredNeighborIndicesAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "filtered_neighbor_distances_at" => Some(Ok(Box::new(FilteredNeighborDistancesAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "dataset_distance_function" => Some(Ok(Box::new(DatasetDistanceFunction::new()) as Box<dyn crate::ast::GkNode>)),
-        "vector_dim" => Some(Ok(Box::new(VectorDim::new()) as Box<dyn crate::ast::GkNode>)),
-        "vector_count" => Some(Ok(Box::new(VectorCount::new()) as Box<dyn crate::ast::GkNode>)),
-        "query_count" => Some(Ok(Box::new(QueryCount::new()) as Box<dyn crate::ast::GkNode>)),
-        "neighbor_count" => Some(Ok(Box::new(NeighborCount::new()) as Box<dyn crate::ast::GkNode>)),
-        "metadata_indices_len_at" => Some(Ok(Box::new(MetadataIndicesLenAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "metadata_indices_at" => Some(Ok(Box::new(MetadataIndicesAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "metadata_indices_count" => Some(Ok(Box::new(MetadataIndicesCount::new()) as Box<dyn crate::ast::GkNode>)),
-        "dataset_facets" => Some(Ok(Box::new(DatasetFacets::new()) as Box<dyn crate::ast::GkNode>)),
-        "dataset_profile_count" => Some(Ok(Box::new(DatasetProfileCount::new()) as Box<dyn crate::ast::GkNode>)),
-        "dataset_profile_names" => Some(Ok(Box::new(DatasetProfileNames::new()) as Box<dyn crate::ast::GkNode>)),
-        "matching_profiles" => Some(Ok(Box::new(MatchingProfiles::new()) as Box<dyn crate::ast::GkNode>)),
-        "dataset_profile_name_at" => Some(Ok(Box::new(DatasetProfileNameAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "profile_base_count" => Some(Ok(Box::new(ProfileBaseCount::new()) as Box<dyn crate::ast::GkNode>)),
-        "profile_facets" => Some(Ok(Box::new(ProfileFacets::new()) as Box<dyn crate::ast::GkNode>)),
-        "dataset_prebuffer" => Some(Ok(Box::new(DatasetPrebuffer::new()) as Box<dyn crate::ast::GkNode>)),
-        "metadata_value_at" => Some(Ok(Box::new(MetadataValueAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "predicate_value_at" => Some(Ok(Box::new(PredicateValueAt::new()) as Box<dyn crate::ast::GkNode>)),
-        "metadata_content_count" => Some(Ok(Box::new(MetadataContentCount::new()) as Box<dyn crate::ast::GkNode>)),
+        "dataset_open" => Some(Ok(Box::new(DatasetOpen::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "dataset_group_open" => Some(Ok(Box::new(DatasetGroupOpen::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "vector_at" => Some(Ok(Box::new(VectorAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "query_vector_at" => Some(Ok(Box::new(QueryVectorAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "neighbor_indices_at" => Some(Ok(Box::new(NeighborIndicesAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "neighbor_distances_at" => Some(Ok(Box::new(NeighborDistancesAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "filtered_neighbor_indices_at" => Some(Ok(Box::new(FilteredNeighborIndicesAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "filtered_neighbor_distances_at" => Some(Ok(Box::new(FilteredNeighborDistancesAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "dataset_distance_function" => Some(Ok(Box::new(DatasetDistanceFunction::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "vector_dim" => Some(Ok(Box::new(VectorDim::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "vector_count" => Some(Ok(Box::new(VectorCount::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "query_count" => Some(Ok(Box::new(QueryCount::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "neighbor_count" => Some(Ok(Box::new(NeighborCount::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "metadata_indices_len_at" => Some(Ok(Box::new(MetadataIndicesLenAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "metadata_indices_at" => Some(Ok(Box::new(MetadataIndicesAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "metadata_indices_count" => Some(Ok(Box::new(MetadataIndicesCount::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "dataset_facets" => Some(Ok(Box::new(DatasetFacets::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "dataset_profile_count" => Some(Ok(Box::new(DatasetProfileCount::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "dataset_profile_names" => Some(Ok(Box::new(DatasetProfileNames::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "matching_profiles" => Some(Ok(Box::new(MatchingProfiles::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "dataset_profile_name_at" => Some(Ok(Box::new(DatasetProfileNameAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "profile_base_count" => Some(Ok(Box::new(ProfileBaseCount::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "profile_facets" => Some(Ok(Box::new(ProfileFacets::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "dataset_prebuffer" => Some(Ok(Box::new(DatasetPrebuffer::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "metadata_value_at" => Some(Ok(Box::new(MetadataValueAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "predicate_value_at" => Some(Ok(Box::new(PredicateValueAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "metadata_content_count" => Some(Ok(Box::new(MetadataContentCount::new()) as Box<dyn crate::ast::PolydatNode>)),
         _ => None,
     }
 }

@@ -1,12 +1,12 @@
 # Language Spec
 
-The detailed specification of the GK DSL surface: syntax
+The detailed specification of the Polydat DSL surface: syntax
 productions, type system, node contract, wiring model, and
 compilation pipeline. This doc is the mechanism-level
 companion to [grammar.md](grammar.md), which states the
 axioms (G1-G6); read grammar.md first for the formal
 contract; come here for the operator catalog, precedence
-tables, type-system enum, the `GkNode` trait surface, and
+tables, type-system enum, the `PolydatNode` trait surface, and
 the pipeline-stage breakdown.
 
 This doc extends axiom-level statements across multiple
@@ -17,16 +17,16 @@ substrate docs:
 - [runtime_model.md R2 hybrid push/pull invalidation](runtime_model.md)
 - [expression_engine.md §3.1 const expression evaluation + §5 embedding contract](expression_engine.md)
 
-The nbrs-side framing (why GK exists as the unified access
-surface for nbrs workloads, Output Selection, GK as Unified
+The nbrs-side framing (why Polydat exists as the unified access
+surface for nbrs workloads, Output Selection, Polydat as Unified
 State Holder, Op-Level Bindings, Cursor Declarations) remains
-in [SRD-10](../../../docs/sysref/10_gk_language.md).
+in [SRD-10](../../../docs/sysref/10_polydat_language.md).
 
 ---
 
 ## DSL Syntax
 
-GK programs are written in `.gk` files or inline in workload
+GK programs are written in `.polydat` files or inline in workload
 `bindings:` blocks.
 
 ### Input Declaration
@@ -68,16 +68,16 @@ decomposed via `mixed_radix`) is fine. The engine treats
 ### Coordinate Decomposition
 
 Most workloads use a single `cycle` input. Multi-dimensional
-iteration is modeled inside the GK via mixed_radix decomposition:
+iteration is modeled inside the Polydat via mixed_radix decomposition:
 
     input cycle: u64
     (row, col) := mixed_radix(cycle, 1000, 1000)
 
 This keeps the activity executor simple (it only passes `[cycle]`)
 while enabling N-dimensional access patterns within the DAG.
-Decomposed coordinates are ordinary GK wires — they can feed into
+Decomposed coordinates are ordinary Polydat wires — they can feed into
 hash, interleave, mod, or any other node. Any traversal strategy
-(nested loop, strided, random) is expressed as GK nodes rather
+(nested loop, strided, random) is expressed as Polydat nodes rather
 than activity-layer configuration, keeping domain logic in one place.
 
 ### Bindings
@@ -104,7 +104,7 @@ sum   := "x + y = {x + y}"
 slot  := "row {row.ordinal}"
 ```
 
-The body inside each `{ … }` is parsed as a full GK expression
+The body inside each `{ … }` is parsed as a full Polydat expression
 — bare identifiers, function calls, infix arithmetic, and field
 access all work, exactly the same as on the right-hand side of
 any binding. The compiler:
@@ -122,7 +122,7 @@ any binding. The compiler:
 `{{` and `}}` are printf's own escapes for emitting literal
 braces — they keep their meaning and don't open a placeholder.
 A printf format spec the user wrote by hand
-(`"x={:05}"`, `"{0:.3}"`) isn't a valid GK expression, so the
+(`"x={:05}"`, `"{0:.3}"`) isn't a valid Polydat expression, so the
 literal stays unchanged and the user's format spec reaches
 printf intact. An unbalanced `{` likewise leaves the literal
 alone.
@@ -276,7 +276,7 @@ the narrower operand (u64 → f64 via `to_f64`). This is a safe,
 lossless conversion. The compiler emits an advisory event:
 
 ```
-gk[advisory]: widening u64 → f64 in operator *
+polydat[advisory]: widening u64 → f64 in operator *
 ```
 
 ### Auto-Conversion to String
@@ -312,17 +312,17 @@ The compiler emits tagged diagnostic events at three levels:
 
 | Level | Tag | Meaning |
 |-------|-----|---------|
-| Info | `gk[info]` | Normal compilation steps |
-| Advisory | `gk[advisory]` | Implicit conversions, type widenings — review for module design quality |
-| Warning | `gk[warning]` | Potential performance or correctness issues |
+| Info | `polydat[info]` | Normal compilation steps |
+| Advisory | `polydat[advisory]` | Implicit conversions, type widenings — review for module design quality |
+| Warning | `polydat[warning]` | Potential performance or correctness issues |
 
 Query advisories with `--diagnose` to review all implicit
 conversions in your module:
 
 ```bash
-nbrs bench gk mymodule.gk --explain
-# Shows: gk[advisory]: type adapter U64→F64: cycle → sin
-# Shows: gk[advisory]: widening u64 → f64 in operator *
+nbrs bench Polydat mymodule.gk --explain
+# Shows: polydat[advisory]: type adapter U64→F64: cycle → sin
+# Shows: polydat[advisory]: widening u64 → f64 in operator *
 ```
 
 ---
@@ -383,7 +383,7 @@ are formalised in
 [expression_engine.md §3.1](../design/expression_engine.md);
 the host-side resolution order and param-substitution
 interaction live in
-[SRD-14 Config Expressions](../../../docs/sysref/14_gk_config_expressions.md).
+[SRD-14 Config Expressions](../../../docs/sysref/14_polydat_config_expressions.md).
 
 ---
 
@@ -403,7 +403,7 @@ dispatch table:
 | f64 | any | `&` `\|` `^` `<<` `>>` `!` | **compile error** |
 
 Auto-widening inserts an implicit `to_f64` adapter and emits
-a `gk[advisory]` diagnostic. Narrowing (f64 → u64) is never
+a `polydat[advisory]` diagnostic. Narrowing (f64 → u64) is never
 implicit — use an explicit cast function.
 
 ---
@@ -450,7 +450,7 @@ GkProgram ──────▶ Immutable compiled DAG (shared via Arc)
 The Output Selection step's host-facing details (which
 op fields, params, and extra bindings count as consumers)
 remain in
-[docs/sysref/10_gk_language.md §Output Selection](../../../docs/sysref/10_gk_language.md#output-selection).
+[docs/sysref/10_polydat_language.md §Output Selection](../../../docs/sysref/10_polydat_language.md#output-selection).
 
 ---
 
@@ -514,7 +514,7 @@ separate node family. See
 
 ## Node Contract
 
-Every node implements `GkNode` (defined in `polydat/src/ast.rs`):
+Every node implements `PolydatNode` (defined in `polydat/src/ast.rs`):
 
 ```rust
 pub trait GkNode: Send + Sync {
@@ -563,7 +563,7 @@ pub enum WireSource {
 
 Evaluation proceeds in topological order. Each node reads inputs
 from upstream node output buffers or graph input values, and writes
-to its own output buffer slots in `GkState`.
+to its own output buffer slots in `PolydatState`.
 
 ---
 
@@ -601,7 +601,7 @@ should collapse this section into runtime_model R2.
 
 ---
 
-## GK Scope Model
+## Polydat Scope Model
 
 GK programs exist within a scope hierarchy formed by the
 scenario tree (workload root, phases, `for_each` iterations,
@@ -618,4 +618,4 @@ coverage in
 The language-level surface that intersects scopes — op-level
 bindings (which are syntactic sugar, not new scopes) and
 cursor declarations — remains in
-[docs/sysref/10_gk_language.md](../../../docs/sysref/10_gk_language.md).
+[docs/sysref/10_polydat_language.md](../../../docs/sysref/10_polydat_language.md).

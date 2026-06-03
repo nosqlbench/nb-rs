@@ -25,15 +25,15 @@ touching SRD's role under this declaration.
 
 ## Companion documents
 
-- [SRD-10: GK Language and Compilation](language_spec.md)
+- [SRD-10: Polydat Language and Compilation](language_spec.md)
   — node trait, port-type system, expression grammar. Owns
   the syntactic substrate. This doc references the typed-port
   surface SRD-10 defines.
-- [SRD-11: GK Evaluation Model](evaluation_model.md)
+- [SRD-11: Polydat Evaluation Model](evaluation_model.md)
   — kernel/state split, effectively-const vs dynamic
   classification, const-binding contract. Owns the lifecycle
   mechanism that Pillar 3 (State Layering) builds on.
-- [SRD-13c: GK Scope Model](scope_model.md)
+- [SRD-13c: Polydat Scope Model](scope_model.md)
   — `bind_outer_scope`, `scope_values`, auto-extern, manifest
   extraction. Owns the synthesis mechanisms Pillar 1 (Context
   Synthesis) builds on.
@@ -58,7 +58,7 @@ touching SRD's role under this declaration.
   flow, caching, invalidation) and D-axioms (determinism
   guarantees). The runtime realisation of this doc's
   static contract. L1 (each layer owns its state) maps to
-  per-fiber `GkState` at runtime; T1 (typed slots) gives
+  per-fiber `PolydatState` at runtime; T1 (typed slots) gives
   D1 (typed-return determinism) as a direct consequence.
 - [The Polydat Grammar](grammar.md) — G-axioms. The
   grammar-level commitments that underwrite this doc's
@@ -130,7 +130,7 @@ contract durable across layers, types, and scopes.
 ## 2. The slot contract — the consequence
 
 The substrate's externally-visible product is the **slot
-contract**. A `GkKernel` exposes:
+contract**. A `PolydatKernel` exposes:
 
 ```text
 input_defs:    Vec<InputDef>          // declared slots — name + PortType + InputKind
@@ -190,7 +190,7 @@ references the outer iter-var, and the slot appears.
 
 ### Axiom S2 — Binding-time materialisation as the synthesis fill rule
 
-**At scope-init time, `bind_outer_scope(outer: &GkKernel)`
+**At scope-init time, `bind_outer_scope(outer: &PolydatKernel)`
 (driving `materialize_wiring_from_outer`) iterates the kernel's
 extern slots and for each looks up the corresponding binding
 in the outer chain. Per SRD-13f's gradient, the binding is
@@ -213,7 +213,7 @@ externally-written slots, effectively-const bindings —
 retains its scope-init or last-write value. Per-cycle
 advance is narrow, named, and typed.**
 
-Enforcement: the `GkKernel` API surface — `set_inputs` is the
+Enforcement: the `PolydatKernel` API surface — `set_inputs` is the
 only public method that mutates input slots during a scope's
 lifetime. SRD-11's two-lifecycles classification is what
 distinguishes coordinate inputs (dynamic, per-cycle) from
@@ -507,7 +507,7 @@ layer mean to provide a shadow that happens to compute to
 None, or did it mean to declare an `extern X` and forget
 to? In strict mode (per the `strict` flag on
 `subcontext::CompileOptions`), `build_subscope` queries
-[`GkKernel::find_l2f_violations`] after scope-init and
+[`PolydatKernel::find_l2f_violations`] after scope-init and
 escalates any const output materialised to `Value::None`
 into [`ContractViolation::StrictNonePropagation`]. The
 diagnostic names each offending binding and directs the
@@ -658,7 +658,7 @@ question on how to formalise this within the substrate.
 
 | SRD | Role under this declaration |
 |---|---|
-| [SRD-10](language_spec.md) | Syntactic substrate. Defines `GkNode`, `Value`, `PortType`. The axioms reference types SRD-10 defines. |
+| [SRD-10](language_spec.md) | Syntactic substrate. Defines `PolydatNode`, `Value`, `PortType`. The axioms reference types SRD-10 defines. |
 | [SRD-11](evaluation_model.md) | Two-lifecycle classification — Pillar 3 (L2). Const-binding contract — boundary handler §8.3. |
 | [SRD-13c](scope_model.md) | Auto-extern (S1), `bind_outer_scope` (S2), manifest extraction. The synthesis-mechanism layer. |
 | [SRD-13d](../../../docs/sysref/13d_op_template_scope.md) | Op-template scope tier in the layering (L1). Adds a layer to the taxonomy; the axioms apply transitively. |
@@ -700,7 +700,7 @@ trivial closure property over T2 + L2.
 ### 10.3 Parallel evaluation is safe under the substrate
 
 Per SRD-02, polydat kernels run in concurrent fibers. L1
-(each layer owns its state) + the per-fiber `GkState` rule
+(each layer owns its state) + the per-fiber `PolydatState` rule
 (SRD-11) means there is no shared mutable state at the node
 tier across fibers. The substrate is what makes the parallel
 safety claim cheap — it follows directly from L1 + T1 (typed

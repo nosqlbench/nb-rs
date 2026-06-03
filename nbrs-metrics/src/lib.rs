@@ -31,7 +31,7 @@
 //!   TUI).
 //! - **Controls** ([`controls`]) live next to instruments — same
 //!   tree, same label addressing — but carry mutable typed values
-//!   that GK kernels read at cycle time and the runtime applies
+//!   that Polydat Kernels read at cycle time and the runtime applies
 //!   via `ControlApplier`s. See SRD 23 for the full surface.
 //! - **MetricsQuery** ([`metrics_query::MetricsQuery`]) is the
 //!   read-side handle that consumers (TUI, web, summary reports)

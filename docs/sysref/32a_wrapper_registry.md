@@ -631,7 +631,7 @@ later wrappers and the surrounding runtime:
 
 - **Captures.** `traverse` populates `OpResult.captures`
   from declared `result:` wires. `result` consumes those
-  captures and exposes them to the GK scope so subsequent
+  captures and exposes them to the Polydat scope so subsequent
   wrappers (and the next cycle's bind plan) can read them.
 - **Metrics.** `validate` writes to its `ValidationMetrics`
   handle (count of passes / failures). `poll` writes

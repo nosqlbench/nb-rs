@@ -14,13 +14,13 @@
 
 #![cfg(feature = "vectordata")]
 
-use polydat::dsl::compile_gk;
+use polydat::dsl::compile_polydat;
 use polydat::ast::Value;
 
 #[test]
 #[ignore]
 fn vector_at_produces_100d_vector() {
-    let mut k = compile_gk(r#"
+    let mut k = compile_polydat(r#"
         input cycle: u64
         vec := vector_at("glove-100", cycle)
     "#).expect("compile failed");
@@ -38,7 +38,7 @@ fn vector_at_produces_100d_vector() {
 #[test]
 #[ignore]
 fn vector_at_display_renders_json_array() {
-    let mut k = compile_gk(r#"
+    let mut k = compile_polydat(r#"
         input cycle: u64
         vec := vector_at("glove-100", cycle)
     "#).expect("compile failed");
@@ -55,7 +55,7 @@ fn vector_at_display_renders_json_array() {
 #[test]
 #[ignore]
 fn vector_count_and_dim() {
-    let mut k = compile_gk(r#"
+    let mut k = compile_polydat(r#"
         input cycle: u64
         count := vector_count("glove-100")
         dim := vector_dim("glove-100")
@@ -72,7 +72,7 @@ fn vector_count_and_dim() {
 #[test]
 #[ignore]
 fn query_vector_at_produces_vec_f32() {
-    let mut k = compile_gk(r#"
+    let mut k = compile_polydat(r#"
         input cycle: u64
         qvec := query_vector_at("glove-100", cycle)
     "#).expect("compile failed");
@@ -85,7 +85,7 @@ fn query_vector_at_produces_vec_f32() {
 #[test]
 #[ignore]
 fn neighbor_indices_at_produces_vec_i32() {
-    let mut k = compile_gk(r#"
+    let mut k = compile_polydat(r#"
         input cycle: u64
         neighbors := neighbor_indices_at("glove-100", cycle)
     "#).expect("compile failed");
@@ -103,7 +103,7 @@ fn neighbor_indices_at_produces_vec_i32() {
 #[test]
 #[ignore]
 fn vector_at_deterministic() {
-    let mut k = compile_gk(r#"
+    let mut k = compile_polydat(r#"
         input cycle: u64
         vec := vector_at("glove-100", cycle)
     "#).expect("compile failed");

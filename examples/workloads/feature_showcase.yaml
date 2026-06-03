@@ -2,7 +2,7 @@
 # feature_showcase.yaml — Demonstrates all major nbrs features
 #
 # Features covered:
-#   - Native GK bindings with DAG composition
+#   - Native Polydat bindings with DAG composition
 #   - Infix operators (arithmetic, bitwise)
 #   - String interpolation in GK
 #   - Workload params with CLI override

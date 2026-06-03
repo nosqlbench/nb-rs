@@ -44,7 +44,7 @@ phases:
     # Phase-level bindings — `cycle` is the implicit input,
     # everything else derives from it. Kept simple
     # arithmetic so the demo focuses on metric
-    # declaration, not GK syntax.
+    # declaration, not Polydat syntax.
     bindings: |
       load := add(cycle, 1)
       latency_curve := mul(load, 2)

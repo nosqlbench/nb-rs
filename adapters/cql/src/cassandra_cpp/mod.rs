@@ -8,7 +8,7 @@
 //! Astra.
 //!
 //! The engine-agnostic surface — config parsing, consistency enum,
-//! op-mode dispatch, the `cql_timeuuid` GK node, default status
+//! op-mode dispatch, the `cql_timeuuid` Polydat node, default status
 //! metrics — lives in [`crate::common`]. This module only contains
 //! the cassandra-cpp-specific pieces: connection setup, the three
 //! dispenser shapes, and the type-aware value binders.
@@ -132,25 +132,62 @@ impl CqlResultBody {
     }
 
     /// Extract a single column value as serde_json::Value.
+    ///
+    /// Type accessor order: native numeric / bool first,
+    /// `get_string()` last as a fallback for genuine TEXT
+    /// columns (and as a safety net for any type cassandra-cpp
+    /// happens to stringify). The earlier ordering put
+    /// `get_string()` first, which is fragile: for any
+    /// cassandra-cpp version where `get_string()` succeeds on a
+    /// numeric column (returning the stringified form), our
+    /// numbers would silently land as JSON strings and break
+    /// downstream arithmetic / metric coercion.
+    ///
+    /// On the test cluster (Cassandra-converged 5.x / Jolokia
+    /// 1.7.1) `get_string()` on a DOUBLE column returns Err, so
+    /// the previous order happened to work. The reorder is
+    /// defensive — it removes the type-ambiguous fast path that
+    /// could swallow scientific-notation doubles like
+    /// `9.2178e-07` as `Value::Str("9.2178e-07")` (which polydat
+    /// arithmetic would then mishandle).
+    ///
+    /// For doubles that DO arrive as JSON Number via `get_f64()`,
+    /// the f64 is preserved internally — serde_json's
+    /// `as_f64()` returns the right number regardless of display
+    /// format. Scientific notation only surfaces in the JSON
+    /// serialised form for very small / very large values; the
+    /// in-memory Value::Number stays an f64.
     fn extract_column_value(row: &cass::Row, col_idx: usize) -> serde_json::Value {
-        // Try common types in order of likelihood
-        if let Ok(v) = row.get_column(col_idx).and_then(|c| c.get_string()) {
-            return serde_json::Value::String(v);
+        // Booleans before numeric: cassandra-cpp may coerce
+        // bool to int in get_i64/get_i32, hiding the true type.
+        if let Ok(v) = row.get_column(col_idx).and_then(|c| c.get_bool()) {
+            return serde_json::json!(v);
         }
+        // 64-bit signed (BIGINT, COUNTER, TIMESTAMP-as-i64) first
+        // so a column with a value that fits in i64 doesn't
+        // get coerced down to i32 by an over-eager accessor.
         if let Ok(v) = row.get_column(col_idx).and_then(|c| c.get_i64()) {
             return serde_json::json!(v);
         }
         if let Ok(v) = row.get_column(col_idx).and_then(|c| c.get_i32()) {
             return serde_json::json!(v);
         }
+        // Doubles before floats: f64 has the wider range; trying
+        // f32 first would clip very small values like 9.2178e-39
+        // to 0 if cassandra-cpp coerces the column.
         if let Ok(v) = row.get_column(col_idx).and_then(|c| c.get_f64()) {
             return serde_json::json!(v);
         }
         if let Ok(v) = row.get_column(col_idx).and_then(|c| c.get_f32()) {
             return serde_json::json!(v);
         }
-        if let Ok(v) = row.get_column(col_idx).and_then(|c| c.get_bool()) {
-            return serde_json::json!(v);
+        // get_string LAST — it's the genuine "TEXT / VARCHAR /
+        // ASCII column" accessor + the safety-net for whatever
+        // type the typed accessors above didn't cover (UUID,
+        // INET, etc., which cassandra-cpp typically renders to a
+        // canonical string form).
+        if let Ok(v) = row.get_column(col_idx).and_then(|c| c.get_string()) {
+            return serde_json::Value::String(v);
         }
         // Fallback: null for unsupported types
         serde_json::Value::Null
@@ -712,7 +749,7 @@ impl DriverAdapter for CqlAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<polydat::kernel::GkKernel>,
+        parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
         Box::pin(async move {
         // Find the statement text and determine execution mode from the field name.
@@ -722,7 +759,7 @@ impl DriverAdapter for CqlAdapter {
                 let text = v.as_str()?;
                 Some((text.to_string(), *key))
             })
-            .ok_or_else(|| "CQL op requires a 'poll:', 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string())?;
+            .ok_or_else(|| "CQL op requires a 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string())?;
 
         // SRD-68 Push 5c — construction-time structural resolution
         // for prepared mode. Walk every `{name}` in the statement
@@ -802,7 +839,7 @@ impl DriverAdapter for CqlAdapter {
             .unwrap_or(cass::BatchType::UNLOGGED);
 
         // SRD-68 invariant I-3: dispenser owns its canonical kernel.
-        // For Push 2b, no op-level GK matter is assembled here yet —
+        // For Push 2b, no op-level Polydat matter is assembled here yet —
         // the canonical kernel is the parent (phase scope) directly.
         // Push 3 will fan out per-fiber kernels from this canonical;
         // a follow-up will let CQL ops with their own `bindings:` /
@@ -810,7 +847,7 @@ impl DriverAdapter for CqlAdapter {
         // `parent.build_subscope(matter)`.
         // SRD 73: build the per-op universal-field modifier chain
         // BEFORE we move `parent` into `canonical_kernel`. The chain
-        // captures resolved values out of the GK scope once at
+        // captures resolved values out of the Polydat scope once at
         // initializer time; per-cycle execute() just calls
         // `chain.apply`. Only one match arm below moves `modifiers`
         // into its dispenser.
@@ -1141,7 +1178,7 @@ struct CqlRawDispenser {
     /// `build_subscope` for cycle-time reads through the
     /// narrow `WireSource` trait.
     #[allow(dead_code)]
-    canonical_kernel: std::sync::Arc<polydat::kernel::GkKernel>,
+    canonical_kernel: std::sync::Arc<polydat::kernel::PolydatKernel>,
     /// Live tracing probability (f64 bits). Loaded per execute;
     /// `cql_trace_rate` control writes here.
     trace_rate_bits: Arc<AtomicU64>,
@@ -1180,7 +1217,7 @@ impl OpDispenser for CqlRawDispenser {
             .map(|s| format!("CQL raw: {}", flatten_one_line(&s)))
     }
 
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
@@ -1192,7 +1229,7 @@ impl OpDispenser for CqlRawDispenser {
         let wires = ctx.wires;
         Box::pin(async move {
             // SRD-68 Push 5: cycle-time bind-point resolution
-            // through the dispenser's per-fiber GK kernel via the
+            // through the dispenser's per-fiber Polydat Kernel via the
             // narrow `WireSource` trait. Walks the pristine
             // statement template stored at construction and
             // resolves each `{name}` against the per-fiber kernel
@@ -1336,10 +1373,10 @@ struct CqlPreparedDispenser {
     stmt_text: String,
     /// Names of bind point fields to extract from ResolvedFields.
     bind_names: Vec<String>,
-    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
+    /// SRD-68 invariant I-3: dispenser-owned canonical Polydat Kernel.
     /// See `CqlRawDispenser::canonical_kernel`.
     #[allow(dead_code)]
-    canonical_kernel: std::sync::Arc<polydat::kernel::GkKernel>,
+    canonical_kernel: std::sync::Arc<polydat::kernel::PolydatKernel>,
     /// Pre-prepared statement. Constructed at `map_op` time as part
     /// of the dispenser-init stack frame so the per-cycle path has
     /// no preparation latency.
@@ -1367,7 +1404,7 @@ impl OpDispenser for CqlPreparedDispenser {
         Some(format!("CQL prepared: {}", flatten_one_line(&self.stmt_text)))
     }
 
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
@@ -1426,7 +1463,7 @@ impl OpDispenser for CqlPreparedDispenser {
             self.modifiers.apply(&mut stmt);
 
             // SRD-68 Push 5b: cycle-time `?`-parameter binding
-            // through the dispenser's per-fiber GK kernel via the
+            // through the dispenser's per-fiber Polydat Kernel via the
             // narrow `WireSource` trait. `wires.get(bind_name)`
             // returns the typed `Value` for the position's bind
             // point — same name resolution surface the raw mode
@@ -1574,10 +1611,10 @@ struct CqlBatchDispenser {
     #[allow(dead_code)]
     stmt_field: String,
     bind_names: Vec<String>,
-    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
+    /// SRD-68 invariant I-3: dispenser-owned canonical Polydat Kernel.
     /// See `CqlRawDispenser::canonical_kernel`.
     #[allow(dead_code)]
-    canonical_kernel: std::sync::Arc<polydat::kernel::GkKernel>,
+    canonical_kernel: std::sync::Arc<polydat::kernel::PolydatKernel>,
     /// Batch row count from `batch: N` op param. Per the SRD-68
     /// invariant "batch is an iteration container, each row is
     /// another pull," the dispenser internally advances the
@@ -1617,7 +1654,7 @@ impl OpDispenser for CqlBatchDispenser {
         Some(format!("CQL batch: {}", flatten_one_line(&self.stmt_text)))
     }
 
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
@@ -1854,7 +1891,7 @@ impl OpDispenser for CqlBatchDispenser {
 }
 
 // =========================================================================
-// CqlTimeuuid GK node + its inventory registration moved to
+// CqlTimeuuid Polydat node + its inventory registration moved to
 // `crate::common::nodes`. Every CQL engine that links this
 // adapter gets the node for free regardless of which engine
 // feature is enabled.
@@ -2006,10 +2043,10 @@ fn cass_value_type_from_raw(raw: cassandra_cpp_sys::CassValueType_) -> cass::Val
 
 /// Create a binder function for a given CQL column type.
 ///
-/// The returned closure converts a GK `Value` to the correct CQL
+/// The returned closure converts a Polydat `Value` to the correct CQL
 /// type and binds it at the given position. Built once per `?`
 /// position in a prepared statement; applied per row.
-/// Parse a GK vector string `[0.1, 0.2, ...]` into CQL vector
+/// Parse a Polydat vector string `[0.1, 0.2, ...]` into CQL vector
 /// binary encoding (big-endian IEEE 754 floats, concatenated).
 fn parse_vector_to_bytes(s: &str) -> Vec<u8> {
     let trimmed = s.trim();
@@ -2167,7 +2204,7 @@ fn bind_vector_int(
             stmt.bind_bytes(idx, vec_i32_to_be_bytes(&widened))?;
         }
         polydat::ast::Value::Bytes(le_bytes) => {
-            // GK byte buffers for i32 vectors land LE; CQL wants BE.
+            // Polydat byte buffers for i32 vectors land LE; CQL wants BE.
             let mut be = Vec::with_capacity(le_bytes.len());
             for chunk in le_bytes.chunks(4) {
                 if chunk.len() == 4 {

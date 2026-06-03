@@ -119,7 +119,7 @@ product).
 ## Order taxonomy
 
 Eight orderings cover the typical use cases. Each has a
-canonical name; YAML and GK text use the same name. The
+canonical name; YAML and Polydat text use the same name. The
 default (`lex`) ships today implicitly — every other entry
 is the planned set.
 
@@ -143,7 +143,7 @@ chosen order.
 | `halton` | Halton low-discrepancy sequence | first N tuples | Early-stop coverage |
 | `sobol` | Sobol low-discrepancy sequence | first N tuples | Better high-D coverage than Halton |
 | `lhs` | Latin Hypercube samples | N samples | Stratified random coverage |
-| `custom` | User-supplied GK function | function decides | Bespoke ordering needs |
+| `custom` | User-supplied Polydat function | function decides | Bespoke ordering needs |
 
 Halton, Sobol, and LHS are the three space-filling strategies
 — each appears as its own top-level name (`halton`, `sobol`,
@@ -359,7 +359,7 @@ returns a permutation (or subset).
 order: custom(my_ordering_fn)
 ```
 
-The function signature in GK terms:
+The function signature in Polydat terms:
 
 ```text
 my_ordering_fn(tuples: List<Tuple>) -> List<Tuple>
@@ -441,7 +441,7 @@ their own parameters explicitly.
 
 ---
 
-## GK text grammar
+## Polydat text grammar
 
 The canonical surface. The text form passed to
 `parse_comprehension_text` accepts an optional `order` clause
@@ -482,7 +482,7 @@ YAML accepts the **same forms** in two interchangeable shapes:
 
 ### Inline (one-liner)
 
-The `for:` / `for_each:` value carries the full GK text
+The `for:` / `for_each:` value carries the full Polydat text
 including `where` and `order`. Most concise — useful for
 short specs and to keep parameters together.
 
@@ -637,7 +637,7 @@ stratify the survivors against those.
   phases: [bench]
 ```
 
-`prioritize_by_recall_floor` was a GK stdlib (or workload-local)
+`prioritize_by_recall_floor` was a Polydat stdlib (or workload-local)
 function that took the tuple list and reordered by a domain
 metric — e.g., expected recall floor at each config — pushing
 the riskiest configs first. **No longer supported.**
@@ -658,7 +658,7 @@ fn order_shells(tuples: Vec<Tuple>, sizes: &[usize], origin: ShellOrigin, depth:
 fn order_halton(tuples: Vec<Tuple>, sizes: &[usize], count: Option<usize>) -> Vec<Tuple>;
 fn order_sobol(tuples: Vec<Tuple>, sizes: &[usize], count: Option<usize>) -> Vec<Tuple>;
 fn order_lhs(tuples: Vec<Tuple>, sizes: &[usize], count: Option<usize>, seed: Option<u64>) -> Vec<Tuple>;
-fn order_custom(tuples: Vec<Tuple>, function_name: &str, kernel: &GkKernel) -> Result<Vec<Tuple>, String>;
+fn order_custom(tuples: Vec<Tuple>, function_name: &str, kernel: &PolydatKernel) -> Result<Vec<Tuple>, String>;
 ```
 
 Where `Tuple = Vec<(String, Value)>` and `sizes` is the
@@ -673,7 +673,7 @@ fn apply_order(
     tuples: Vec<Tuple>,
     sizes: &[usize],
     order: &Option<TraversalOrder>,
-    kernel: &GkKernel,
+    kernel: &PolydatKernel,
 ) -> Result<Vec<Tuple>, String> {
     match order {
         None | Some(TraversalOrder::Lex) => Ok(tuples),
@@ -784,7 +784,7 @@ the parallel group's own internal order is fixed (zip order).
 **Order as a separable layer.** Filter and order are
 independent concerns; making order a separate AST field means
 neither has to know about the other. Filter operates on
-values via GK predicate evaluation; order operates on
+values via Polydat predicate evaluation; order operates on
 positions via geometric / sequence functions. The pipeline
 is `enumerate → filter → order → materialize`, with each step
 a pure transform on the tuple stream.
@@ -793,7 +793,7 @@ a pure transform on the tuple stream.
 named orderings cover ~95% of practical needs (DOE, sweep
 testing, coverage testing, fail-fast). The `custom` function
 form takes the rest. No new comprehension machinery is needed
-for `custom` — it's just another GK function call.
+for `custom` — it's just another Polydat function call.
 
 **Geometric reasoning over the index lattice.** All orderings
 operate in **index space** (per-clause integer positions),

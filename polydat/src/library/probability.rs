@@ -4,15 +4,15 @@
 //! Probability modeling nodes.
 //!
 //! Deterministic building blocks for modeling probabilistic behavior in
-//! GK graphs. All nodes are pure functions — "randomness" comes from
+//! Polydat graphs. All nodes are pure functions — "randomness" comes from
 //! hashing the input, not from a stateful RNG. The same input always
 //! produces the same output.
 //!
 //! Primary use cases: model adapter result kernels (simulated latency,
 //! error injection, bimodal distributions), but usable anywhere in a
-//! GK pipeline.
+//! Polydat pipeline.
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 /// Convert a u64 hash to a value in the unit interval [0.0, 1.0).
@@ -56,7 +56,7 @@ impl FairCoin {
     }
 }
 
-impl GkNode for FairCoin {
+impl PolydatNode for FairCoin {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -84,7 +84,7 @@ impl GkNode for FairCoin {
 /// cache miss ratios, slow-path probability. Compose with `select()`
 /// to branch on the outcome:
 ///
-/// ```gk
+/// ```polydat
 /// is_slow := unfair_coin(cycle, 0.1)
 /// latency := select(is_slow, slow_latency, fast_latency)
 /// ```
@@ -120,7 +120,7 @@ impl UnfairCoin {
     }
 }
 
-impl GkNode for UnfairCoin {
+impl PolydatNode for UnfairCoin {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -146,10 +146,10 @@ impl GkNode for UnfairCoin {
 /// Signature: `select(cond: u64, if_true: u64, if_false: u64) -> (u64)`
 ///
 /// Three wire inputs. All inputs are always evaluated (no short-circuit)
-/// because GK is a DAG, not a control flow graph. Use to pick between
+/// because Polydat is a DAG, not a control flow graph. Use to pick between
 /// two pre-computed alternatives based on a boolean signal:
 ///
-/// ```gk
+/// ```polydat
 /// latency := select(is_slow, slow_latency, fast_latency)
 /// ```
 ///
@@ -183,7 +183,7 @@ impl Select {
     }
 }
 
-impl GkNode for Select {
+impl PolydatNode for Select {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -210,7 +210,7 @@ impl GkNode for Select {
 /// u64 output buffer). Use when the result feeds directly into f64
 /// arithmetic without an explicit type conversion step:
 ///
-/// ```gk
+/// ```polydat
 /// surcharge := mul(chance(cycle, 0.3), 0.05)
 /// ```
 ///
@@ -242,7 +242,7 @@ impl Chance {
     }
 }
 
-impl GkNode for Chance {
+impl PolydatNode for Chance {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -280,7 +280,7 @@ impl GkNode for Chance {
 /// Use for precise fraction control: exactly 3 out of every 10 cycles
 /// are "special", exactly 1 out of every 100 is an error, etc.
 ///
-/// ```gk
+/// ```polydat
 /// is_special := n_of(cycle, 3, 10)
 /// ```
 ///
@@ -314,7 +314,7 @@ impl NofM {
     }
 }
 
-impl GkNode for NofM {
+impl PolydatNode for NofM {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -373,7 +373,7 @@ fn n_of_m_eval(input: u64, n: u64, m: u64) -> u64 {
 /// Use for simple uniform selection when all outcomes are equally likely —
 /// data center names, partition keys, categorical labels.
 ///
-/// ```gk
+/// ```polydat
 /// color := one_of(cycle, "red", "green", "blue")
 /// ```
 ///
@@ -400,7 +400,7 @@ impl OneOf {
     }
 }
 
-impl GkNode for OneOf {
+impl PolydatNode for OneOf {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -427,7 +427,7 @@ impl GkNode for OneOf {
 /// realistic frequency distributions, region selection weighted by
 /// traffic share, etc.
 ///
-/// ```gk
+/// ```polydat
 /// status := one_of_weighted(cycle, "200:80,404:10,500:5,503:5")
 /// ```
 ///
@@ -489,7 +489,7 @@ impl OneOfWeighted {
     }
 }
 
-impl GkNode for OneOfWeighted {
+impl PolydatNode for OneOfWeighted {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -520,7 +520,7 @@ impl GkNode for OneOfWeighted {
 /// blending a fast-path latency model with a slow-path model,
 /// interpolating between two noise generators, etc.
 ///
-/// ```gk
+/// ```polydat
 /// blended := blend(fast_latency, slow_latency, 0.3)
 /// ```
 ///
@@ -555,7 +555,7 @@ impl Blend {
     }
 }
 
-impl GkNode for Blend {
+impl PolydatNode for Blend {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -580,11 +580,11 @@ impl GkNode for Blend {
 
 /// Returns the first input if it is not `None`, otherwise the second.
 ///
-/// This is the GK equivalent of SQL's `COALESCE` or Rust's
+/// This is the Polydat equivalent of SQL's `COALESCE` or Rust's
 /// `Option::unwrap_or`. Use it with `extern` inputs (captures)
 /// that may not have been set yet:
 ///
-/// ```gk
+/// ```polydat
 /// extern username: String
 /// greeting := default_or(username, "anonymous")
 /// ```
@@ -610,7 +610,7 @@ impl DefaultOr {
     }
 }
 
-impl GkNode for DefaultOr {
+impl PolydatNode for DefaultOr {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = if matches!(inputs[0], Value::None) {
@@ -775,7 +775,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a probability node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "fair_coin" => Some(Ok(Box::new(FairCoin::new()))),
         "unfair_coin" => Some(Ok(Box::new(UnfairCoin::new(
@@ -1476,12 +1476,12 @@ mod tests {
 
     #[test]
     fn default_or_with_extern_input() {
-        // Full integration: build a GK program with an extern input,
+        // Full integration: build a Polydat program with an extern input,
         // wire through default_or, verify None→fallback and set→value.
-        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::compile::assembly::{PolydatAssembler, WireRef};
         use crate::library::identity::PortPassthrough;
 
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         // Add an extern input (defaults to None)
         asm.add_input("captured_name", Value::None, PortType::Str, crate::kernel::InputKind::ExternalWrite);
         // Passthrough so the input is a node

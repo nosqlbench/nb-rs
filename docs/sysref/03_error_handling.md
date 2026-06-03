@@ -94,7 +94,7 @@ execute(cycle, fields) → Err(Adapter(AdapterError))
 ```
 
 Key properties:
-- Same fields: GK state not re-evaluated on retry
+- Same fields: Polydat state not re-evaluated on retry
 - Same dispenser: same prepared statement, same bind plan
 - Bounded: `max_retries` default 3
 - Scope-gated: only Op errors retryable
@@ -106,7 +106,7 @@ Key properties:
 | Phase | Error Source | Handling |
 |-------|-------------|----------|
 | Parse | YAML syntax | Process exits with message |
-| Compile | GK DSL errors | Process exits with diagnostic |
+| Compile | Polydat DSL errors | Process exits with diagnostic |
 | Init | `map_op()` returns `Err` | Activity aborts |
 | Cycle | `ExecutionError::Op` | Router decides; retryable |
 | Cycle | `ExecutionError::Adapter` | Router decides; not retryable |

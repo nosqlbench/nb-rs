@@ -553,7 +553,7 @@ impl TupleStream for OrderMaterializeStream {
 /// - Literal `true` / `false`.
 ///
 /// Anything else evaluates to `true` (passes through). A
-/// production interpreter would wire polydat's GK expression
+/// production interpreter would wire polydat's Polydat expression
 /// evaluator; this Phase 7 evaluator is sufficient for
 /// algebra-layer tests and the §11 worked examples.
 fn evaluate_predicate(predicate: &str, tuple: &Tuple) -> bool {

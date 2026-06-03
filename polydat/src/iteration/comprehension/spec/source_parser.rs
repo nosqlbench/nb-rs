@@ -95,7 +95,7 @@ pub fn parse_source(text: &str) -> Result<Source, SourceParseError> {
     // Fallback: treat as a Generator expression. The legacy
     // grammar accepts arbitrary expression text (e.g.
     // `pre_{outer}`, `mod_in(cycle, p)`, `range(0, {n})`)
-    // that the runtime evaluator resolves via the GK kernel
+    // that the runtime evaluator resolves via the Polydat Kernel
     // chain. The algebra-layer typing for these is generator
     // (cardinality_hint=None); the bridge back to legacy
     // round-trips them verbatim.
@@ -456,7 +456,7 @@ mod tests {
     fn unrecognized_source_falls_back_to_generator() {
         // Previously: returned Err(Unrecognized). The legacy
         // grammar accepts arbitrary expression text and the
-        // runtime evaluator resolves it via the GK kernel
+        // runtime evaluator resolves it via the Polydat Kernel
         // chain, so unrecognized shapes pass through as a
         // Generator expression rather than failing the parse.
         let s = parse_source("totally nonsense").unwrap();

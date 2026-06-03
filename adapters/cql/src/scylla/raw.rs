@@ -27,7 +27,7 @@ pub(super) struct ScyllaRawDispenser {
     /// wires API (SRD-68 Push 5).
     stmt_template: String,
     /// SRD 73 universal per-op field overrides, built once at
-    /// `map_op` time by walking the GK scope. The session-level
+    /// `map_op` time by walking the Polydat scope. The session-level
     /// `consistency` is set first below; the chain then layers
     /// per-op overrides on top.
     modifiers: ModifierChain<Statement>,

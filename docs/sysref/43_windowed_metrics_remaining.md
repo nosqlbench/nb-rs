@@ -51,7 +51,7 @@ the same diff. Brief recap:
 - **Phase 7** — Cadence reporter is the only store;
   `MetricsQuery` is the only reader. Delete
   `WindowedMetrics` and `InProcessMetricsStore`; rewrite TUI,
-  summary, SQLite, and GK metric nodes against `MetricsQuery`
+  summary, SQLite, and Polydat metric nodes against `MetricsQuery`
   in the same diff.
 - **Phase 8** — Streaming coalesce + async notification dispatch
   replace the current per-tick scheduler coalescing. Delete

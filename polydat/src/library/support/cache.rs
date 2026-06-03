@@ -3,7 +3,7 @@
 
 //! Race-free per-key once-init cache.
 //!
-//! Generalizes the "cached shared resource" pattern that GK node
+//! Generalizes the "cached shared resource" pattern that Polydat node
 //! functions repeatedly need: a global, expensive-to-construct
 //! handle (a vectordata `TestDataGroup`, a typed reader, an HTTP
 //! client, a parsed schema, a compiled regex, …) that should be

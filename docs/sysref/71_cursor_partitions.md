@@ -26,7 +26,7 @@ Three orthogonal pieces:
 2. **Cursor partition specs** — a small spec language for declaring
    partition lists relative to a cursor's domain.
 3. **Cursor metadata wires** — the `<cursor>.cursor.*` projection
-   that exposes partition state to GK matter and op templates, plus
+   that exposes partition state to Polydat matter and op templates, plus
    an explicit comprehension form that drives partition iteration.
 
 ## Naming: `cursor`, not `limit`
@@ -220,7 +220,7 @@ namespace on the wire `q`:
 | `q.cursor.end_ordinal`     | u64    | Absolute ordinal at the partition's end (exclusive). |
 | `q.cursor.partitions`      | list   | Full partition list for iteration. Elements are tuples `(idx, start_pct, end_pct, start_ord, end_ord)`. |
 
-These wires resolve through the standard GK scope chain. They are
+These wires resolve through the standard Polydat scope chain. They are
 visible to bindings, op-template fields, evaluations, and metric
 labels alike — anywhere `{q.cursor.idx}` or `{q.cursor.end_pct}`
 interpolates.
@@ -615,7 +615,7 @@ hard upper bound the policy converges toward. The reservation
 walks within the partition's range; the extension policy still
 makes its time / pass / count decisions but terminates as soon as
 the partition is exhausted, whether or not the time / pass / count
-target was reached. See `## Partition as a first-class GK type`
+target was reached. See `## Partition as a first-class Polydat type`
 below for the type that carries this from spec resolution into
 the cursor's policy.
 
@@ -624,11 +624,11 @@ already accept `start` and `end` parameters; the partition
 narrowing just adjusts them at construction. No new source factory
 required.
 
-## Partition as a first-class GK type
+## Partition as a first-class Polydat type
 
 The partition spec language above lives at the operator surface
 (CLI / YAML strings). Past the parser, partitions flow through GK
-wires as **two first-class value types** that GK nodes can consume
+wires as **two first-class value types** that Polydat nodes can consume
 and produce the same way they handle `U64`, `F64`, `Str`, or
 `VecF32`. This is what lets `until_elapsed` accept a partition's
 cardinality, lets modulo operations stay inside a partition's
@@ -697,7 +697,7 @@ materialisation time when the cursor names a partition via `over`
 ### Functions that consume partitions
 
 A small set of stdlib node functions operates on partition values
-as their primary argument. Each is a first-class GK node — same
+as their primary argument. Each is a first-class Polydat node — same
 P3 JIT eligibility rules as the rest of the stdlib.
 
 | Function                       | Signature                                       | Meaning |
@@ -817,7 +817,7 @@ same as `over`).
 
 ### Composing partitions across cursors
 
-Because `Partition` is a regular GK value, one cursor's partition
+Because `Partition` is a regular Polydat value, one cursor's partition
 can drive another:
 
 ```yaml
@@ -957,7 +957,7 @@ multi-partition is a parse-error pending P2. Phase-level
 `params: { cursor: ... }` plumbing. No glob support.
 
 **P2 — Partition iteration and type system.** Multi-partition
-specs accepted. `Partition` and `PartitionSpec` GK value types
+specs accepted. `Partition` and `PartitionSpec` Polydat value types
 added; `<param>.partitions` projection wire exposed at workload
 scope. `for: "p in <param>.partitions"` comprehension form;
 phase-local cursors bind via `over p`. `<wire>.cursor.*`

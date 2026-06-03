@@ -7,11 +7,11 @@
 //! Same coordinate in → same outputs out, every time, with no shared
 //! state. That property is what lets a multi-thread benchmark generate
 //! billions of distinct reproducible variates in parallel — each
-//! thread gets its own `GkState`, the immutable `GkProgram` is shared
+//! thread gets its own `PolydatState`, the immutable `PolydatProgram` is shared
 //! via `Arc`.
 
 fn main() {
-    let kernel = polydat::dsl::compile_gk(r#"
+    let kernel = polydat::dsl::compile_polydat(r#"
         input cycle: u64
         user_id := mod(hash(cycle), 1000000)
     "#).expect("compile failed");

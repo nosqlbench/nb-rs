@@ -1,12 +1,12 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! The `plot gk` subcommand: evaluate a GK expression or .gk file for N cycles
+//! The `plot polydat` subcommand: evaluate a Polydat expression or .polydat file for N cycles
 //! and render each numeric output as a braille line plot and each string/bool
 //! output as a horizontal-bar histogram.
 
 use std::collections::HashMap;
-use polydat::dsl::compile::compile_gk;
+use polydat::dsl::compile::compile_polydat;
 use polydat::ast::Value;
 
 // ── Terminal helpers ────────────────────────────────────────────
@@ -28,9 +28,9 @@ fn term_size() -> Option<(usize, usize)> {
 
 // ── Argument parsing ────────────────────────────────────────────
 
-/// Parsed arguments for `plot gk`.
+/// Parsed arguments for `plot polydat`.
 struct PlotArgs {
-    /// GK inline expression or `.gk` file path.
+    /// Polydat inline expression or `.polydat` file path.
     expr: String,
     /// Number of evaluation cycles.
     cycles: u64,
@@ -102,16 +102,16 @@ fn parse_plot_args(args: &[String]) -> Result<PlotArgs, String> {
     }
 
     if pa.expr.is_empty() {
-        return Err("missing GK expression or .gk file argument".to_string());
+        return Err("missing Polydat expression or .polydat file argument".to_string());
     }
     Ok(pa)
 }
 
 // ── Source normalization (mirrors bench.rs) ─────────────────────
 
-/// Convert an inline expression or `.gk` file path into full GK source.
+/// Convert an inline expression or `.polydat` file path into full Polydat source.
 fn normalize_source(expr: &str) -> Result<String, String> {
-    if expr.ends_with(".gk") {
+    if expr.ends_with(".polydat") {
         std::fs::read_to_string(expr)
             .map_err(|e| format!("failed to read '{expr}': {e}"))
     } else {
@@ -349,7 +349,7 @@ fn truecolor_fg(idx: usize) -> String {
 
 // ── Collected output data ───────────────────────────────────────
 
-/// Classification of a GK output's data.
+/// Classification of a Polydat output's data.
 enum OutputData {
     /// Collected f64 samples, plus auto-detected min/max.
     Numeric(Vec<f64>),
@@ -359,11 +359,11 @@ enum OutputData {
 
 // ── Public entry point ──────────────────────────────────────────
 
-/// Entry point for `nbrs plot gk <args>`.
+/// Entry point for `nbrs plot wiring <args>`.
 pub fn plot_command(args: &[String]) {
     let topic = args.first().map(|s| s.as_str()).unwrap_or("");
-    if topic != "gk" {
-        eprintln!("Usage: nbrs plot gk <expr|file.gk> [cycles=N] [output=name]");
+    if topic != "wiring" {
+        eprintln!("Usage: nbrs plot wiring <expr|file> [cycles=N] [output=name]");
         eprintln!("       [--width=N] [--height=N] [--max-labels=N] [--no-color]");
         eprintln!("       [--xscale=F] [--yscale=F] [--mode=plot|histogram|parametric]");
         std::process::exit(1);
@@ -385,10 +385,10 @@ pub fn plot_command(args: &[String]) {
         }
     };
 
-    let mut kernel = match compile_gk(&source) {
+    let mut kernel = match compile_polydat(&source) {
         Ok(k) => k,
         Err(e) => {
-            eprintln!("error: failed to compile GK expression: {e}");
+            eprintln!("error: failed to compile Polydat expression: {e}");
             std::process::exit(1);
         }
     };
@@ -661,9 +661,9 @@ pub fn plot_command(args: &[String]) {
 
 // ── cli_spec entry ─────────────────────────────────────────
 
-/// `nbrs gk visualize …` — GK expression visualizer. Modelled
+/// `nbrs Polydat visualize …` — Polydat expression visualizer. Modelled
 /// here (in plot.rs) since `plot_command` is the entry point.
-/// Top-level `gk` is a Command with `visualize` as a leaf; the
+/// Top-level `polydat` is a Command with `visualize` as a leaf; the
 /// leaf's parser stays imperative for now (raw_args=true).
 pub fn spec() -> crate::cli_spec::Command {
     use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
@@ -675,11 +675,11 @@ pub fn spec() -> crate::cli_spec::Command {
         Ok(())
     }
     fn handle_bare(_p: ParsedCommand) -> Result<(), String> {
-        Err("expected `visualize` (try `nbrs gk visualize <expr|file.gk>`)".into())
+        Err("expected `visualize` (try `nbrs wiring visualize <expr|file>`)".into())
     }
     Command {
-        name: "gk",
-        help: "GK toolset (`gk visualize <expr|file.gk>`).",
+        name: "wiring",
+        help: "Wiring toolset (`wiring visualize <expr|file>`).",
         category: Category::Tools,
         level: Level::FullSurface,
         flags: Vec::new(),
@@ -689,7 +689,7 @@ pub fn spec() -> crate::cli_spec::Command {
         completion_override: None,
         subcommands: vec![Command {
             name: "visualize",
-            help: "Render a GK expression to the terminal.",
+            help: "Render a wiring expression to the terminal.",
             category: Category::Tools,
             level: Level::FullSurface,
             flags: Vec::new(),

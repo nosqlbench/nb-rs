@@ -1,10 +1,10 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Basic usage: compile a GK kernel from DSL source and pull values.
+//! Basic usage: compile a Polydat Kernel from DSL source and pull values.
 
 fn main() {
-    let mut kernel = polydat::dsl::compile_gk(r#"
+    let mut kernel = polydat::dsl::compile_polydat(r#"
         input cycle: u64
         hashed := hash(cycle)
         user_id := mod(hashed, 1000000)

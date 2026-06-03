@@ -3,14 +3,14 @@
 
 //! Hybrid kernel tests: mixed JIT + closure nodes in the same graph.
 
-use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::arithmetic::*;
 use polydat::library::hash::Hash64;
 use polydat::library::identity::Identity;
 
 #[test]
 fn hybrid_simple_identity() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
     asm.add_output("out", WireRef::node("id"));
 
@@ -21,7 +21,7 @@ fn hybrid_simple_identity() {
 
 #[test]
 fn hybrid_hash_mod_chain() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("m", Box::new(ModU64::new(1000)), vec![WireRef::node("h")]);
     asm.add_output("out", WireRef::node("m"));
@@ -36,7 +36,7 @@ fn hybrid_hash_mod_chain() {
 fn hybrid_mixed_jit_and_closure() {
     // MixedRadix can't be JIT-compiled (fallback), but Hash and Mod can.
     // The hybrid should handle this: MixedRadix as closure, rest as JIT.
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     // MixedRadix: not JIT-able → closure
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![100, 0])),
@@ -64,7 +64,7 @@ fn hybrid_mixed_jit_and_closure() {
 
 #[test]
 fn hybrid_deterministic() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("m", Box::new(ModU64::new(1000000)), vec![WireRef::node("h")]);
     asm.add_output("out", WireRef::node("m"));
@@ -80,7 +80,7 @@ fn hybrid_deterministic() {
 
 #[test]
 fn hybrid_multi_output() {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     // MixedRadix (closure) → two outputs → each hashed (JIT) → modded (JIT)
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![100, 1000, 0])),
@@ -107,7 +107,7 @@ fn hybrid_multi_output() {
 #[test]
 fn hybrid_interleave_plus_hash() {
     // Interleave is not JIT-able, but Hash and Mod are
-    let mut asm = GkAssembler::new(vec!["a".into(), "b".into()]);
+    let mut asm = PolydatAssembler::new(vec!["a".into(), "b".into()]);
     asm.add_node("mixed", Box::new(Interleave::new()),
         vec![WireRef::input("a"), WireRef::input("b")]);
     asm.add_node("h", Box::new(Hash64::new()),
@@ -130,7 +130,7 @@ fn hybrid_interleave_plus_hash() {
 #[test]
 fn hybrid_long_chain() {
     // add → add → add → hash → mod — mix of JIT-able nodes
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("a1", Box::new(AddU64::new(1)), vec![WireRef::input("cycle")]);
     asm.add_node("a2", Box::new(AddU64::new(2)), vec![WireRef::node("a1")]);
     asm.add_node("a3", Box::new(AddU64::new(3)), vec![WireRef::node("a2")]);

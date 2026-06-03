@@ -24,7 +24,7 @@ service targets using composable data generation kernels.
 │  validation, dispenser wrappers                           │
 ├───────────────┬─────────────────────┬─────────────────────┤
 │  nbrs-workload  │  polydat        │  nbrs-metrics         │
-│  YAML parsing │  GK kernel, nodes,  │  Timers, counters,  │
+│  YAML parsing │  Polydat kernel, nodes,  │  Timers, counters,  │
 │  ParsedOp     │  DSL compiler,      │  HDR histograms,    │
 │  tag filters  │  constant folding   │  frame capture      │
 ├───────────────┴─────────────────────┴─────────────────────┤
@@ -55,7 +55,7 @@ service targets using composable data generation kernels.
 ```
 nb-rs/
 ├── nbrs/                    single user-facing binary
-├── polydat/           GK kernel and node library
+├── polydat/           Polydat kernel and node library
 ├── nbrs-workload/           YAML workload parser
 ├── nbrs-activity/           execution engine
 ├── nbrs-metrics/            metrics instruments and reporters
@@ -92,7 +92,7 @@ engine-cassandra-cpp`.
 ```
 Workload YAML ──▶ nbrs-workload ──▶ ParsedOp[]
                                       │
-                                      ├──▶ polydat (compile GK bindings)
+                                      ├──▶ polydat (compile Polydat bindings)
                                       │        │
                                       │        ▼
                                       │    GkProgram (immutable, shared Arc)
@@ -118,7 +118,7 @@ CLI params ───────────────────────
                     │ Per cycle: │
                     │ 1. Rate    │
                     │ 2. Select  │
-                    │ 3. Resolve │──▶ GK eval (per-fiber state)
+                    │ 3. Resolve │──▶ Polydat eval (per-fiber state)
                     │ 4. Execute │──▶ Adapter (CQL, HTTP, ...)
                     │ 5. Metrics │──▶ Timer, Counter
                     │ 6. Capture │──▶ GkState (ports)
@@ -129,7 +129,7 @@ CLI params ───────────────────────
 
 ## Core Invariant
 
-For a given `(cycle, template)` pair, the GK kernel always produces
+For a given `(cycle, template)` pair, the Polydat kernel always produces
 the same field values. This makes workloads reproducible: the same
 cycle number generates the same request payload regardless of
 concurrency, timing, or execution order.
@@ -166,7 +166,7 @@ model and adapter selection.
 | Boundary | Type | Direction |
 |----------|------|-----------|
 | Workload → Activity | `ParsedOp` | Parsed ops, bindings, params, tags |
-| Variates → Activity | `GkProgram` + `GkState` | Immutable program (includes globals) shared via Arc; per-fiber mutable state |
+| Variates → Activity | `PolydatProgram` + `PolydatState` | Immutable program (includes globals) shared via Arc; per-fiber mutable state |
 | Activity → Adapter | `DriverAdapter` / `OpDispenser` | Scope-init template analysis, dynamic per-cycle execution |
 | Activity → Adapter | `ExecCtx` (`ResolvedFields` + `ResolvedPulls`) | Op-field bind values for the inner adapter, plus wrapper-side handle-indexed pulls (SRD 32) |
 | Adapter → Activity | `OpResult` / `ExecutionError` | Result body + captures, or scoped error |

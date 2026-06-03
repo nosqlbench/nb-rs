@@ -1,8 +1,8 @@
 # Library Catalog
 
-The GK node library provides deterministic, composable functions
+The Polydat node library provides deterministic, composable functions
 for data generation. Nodes are registered in the DSL compiler's
-function registry and available by name in `.gk` source.
+function registry and available by name in `.polydat` source.
 
 This doc is the catalog reference for the polydat library
 (`polydat/src/library/`). The node-metadata contract that every
@@ -200,7 +200,7 @@ documented as workload surface in
 
 #### `pick` — semantics
 
-- Evaluates all 2N inputs (no short-circuit; GK is data-flow).
+- Evaluates all 2N inputs (no short-circuit; Polydat is data-flow).
 - Counts how many of `b0..bN-1` are `true`.
   - Exactly one true → return the corresponding `vi`.
   - Zero true → eval-time error: "pick: no selector matched
@@ -290,7 +290,7 @@ result: |
                             "(?im)^\s*(VIRTUAL\s+)?TABLE\s+system_views\.sai_column_indexes\s*\(")
 ```
 
-**Body type.** The exact GK type of the `body` extern is a
+**Body type.** The exact Polydat type of the `body` extern is a
 structural value wide enough to round-trip through the
 JSON-AST representation that map-shape result wires already
 need (per SRD-66 Surface 1 "Map shape composite wire").
@@ -299,10 +299,10 @@ need (per SRD-66 Surface 1 "Map shape composite wire").
 ### Runtime context nodes
 
 The reification principle (SRD 10 §"GK as the unified access
-surface") makes GK the default way for a workload to read any
+surface") makes Polydat the default way for a workload to read any
 runtime value. The nodes in this category are how reified
 runtime state is named in the DSL. Each one projects a single,
-well-defined runtime surface into a GK wire — no side channels,
+well-defined runtime surface into a Polydat wire — no side channels,
 no templating hooks, no ad-hoc reader APIs.
 
 | Node | Signature | Description |
@@ -342,7 +342,7 @@ the authoring checklist is:
 
 These nodes let a workload compose layered defaults and assert
 preconditions on any value flowing through a binding. They
-operate on the same GK wires everything else does — a
+operate on the same Polydat wires everything else does — a
 `required(...)` on a workload param is the same mechanism as
 `required(...)` on an externally-written wire or a runtime
 control.
@@ -454,16 +454,16 @@ then calls:
 
 This works across crate boundaries — adapter crates can define
 domain-specific nodes (e.g., `cql_timeuuid` in nbrs-adapter-cql) that
-automatically appear in the GK function registry at link time.
+automatically appear in the Polydat function registry at link time.
 
 ---
 
-## GK Modules
+## Polydat Modules
 
-Reusable `.gk` files that define subgraphs:
+Reusable `.polydat` files that define subgraphs:
 
 ```
-// latency_model.gk
+// latency_model.polydat
 input cycle: u64
 base_ns := uniform(hash(cycle), 500000.0, 2000000.0)
 jitter := uniform(hash(add(cycle, 1)), 0.9, 1.1)
@@ -474,7 +474,7 @@ Module interface inferred: graph inputs = unbound references,
 outputs = terminal bindings. Modules inline into the host DAG
 with name prefixing to avoid collision.
 
-Resolution chain: workload directory → `--gk-lib` paths →
+Resolution chain: workload directory → `--polydat-lib` paths →
 bundled stdlib → error.
 
 ---

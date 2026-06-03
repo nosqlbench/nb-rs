@@ -194,9 +194,9 @@ fn render_metricsql_table(
                 String::new()
             } else {
                 group_keys.iter()
-                    .map(|gk| {
+                    .map(|polydat| {
                         s.labels.iter()
-                            .find(|(k, _)| k == gk)
+                            .find(|(k, _)| k == polydat)
                             .map(|(_, v)| v.as_str())
                             .unwrap_or("")
                             .to_string()
@@ -905,7 +905,7 @@ fn parse_args(args: &[String]) -> SummaryOpts {
             // positional.
             "--session" | "--session-name" | "--session-path"
             | "--session-reuse" | "--session-keep" | "--session-shelflife"
-            | "--resume" | "--gk-lib" => { let _ = iter.next(); }
+            | "--resume" | "--polydat-lib" => { let _ = iter.next(); }
             "--strict" | "--no-prompt" | "--resume-latest"
             | "--force-retry-failed" => {}
             other => {

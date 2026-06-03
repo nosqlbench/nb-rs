@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Surface #7 helpers — pure utilities for translating between
-//! typed runtime values and GK source-text form.
+//! typed runtime values and Polydat source-text form.
 //!
-//! These functions encode nbrs-activity's GK source conventions:
+//! These functions encode nbrs-activity's Polydat source conventions:
 //! - how a [`polydat::ast::Value`] becomes a fold-eligible GK
 //!   literal,
 //! - how a workload-param string becomes a quoted-or-numeric GK
@@ -25,7 +25,7 @@ use std::collections::HashSet;
 
 use polydat::ast::{PortType, Value};
 
-/// Pick the GK port type for a workload-param string value.
+/// Pick the Polydat port type for a workload-param string value.
 ///
 /// Numeric values widen to `u64` / `f64`; `true`/`false` →
 /// `bool`; everything else → `String`.
@@ -42,7 +42,7 @@ pub fn workload_param_type_name(value: &str) -> &'static str {
     }
 }
 
-/// Format a typed [`Value`] as a GK source literal — strict
+/// Format a typed [`Value`] as a Polydat source literal — strict
 /// variant. Returns `None` when the value isn't representable as
 /// a literal (`Bytes`, `Json`, `Ext`, `Handle`, vectors). Used
 /// by the for_each scope synthesizer when inlining const-folded
@@ -66,13 +66,13 @@ pub fn format_value_as_final_literal(v: &Value) -> Option<String> {
     }
 }
 
-/// Format a typed [`Value`] as a GK source literal.
+/// Format a typed [`Value`] as a Polydat source literal.
 ///
 /// Used when emitting `final <name> := <literal>` lines for
 /// per-iteration scope synthesis. Falls back to a quoted-display
 /// form for non-scalar variants (acceptable for iter-vars, which
 /// are scalar in practice).
-pub fn format_value_as_gk_literal(v: &Value) -> String {
+pub fn format_value_as_polydat_literal(v: &Value) -> String {
     match v {
         Value::U64(n) => n.to_string(),
         Value::F64(f) => {
@@ -97,14 +97,14 @@ pub fn format_value_as_gk_literal(v: &Value) -> String {
     }
 }
 
-/// Format a workload-param string value as a GK literal.
+/// Format a workload-param string value as a Polydat literal.
 ///
 /// Numeric inputs pass through untouched; non-numeric inputs get
 /// wrapped in double quotes (with `\` / `"` escaping). The lexer
 /// has no boolean token kind, so a bare `false` would parse as
 /// an identifier (wire reference) and break kernel compilation;
 /// this routes through the string path.
-pub fn format_workload_param_as_gk_literal(value: &str) -> String {
+pub fn format_workload_param_as_polydat_literal(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.parse::<u64>().is_ok() || trimmed.parse::<f64>().is_ok() {
         trimmed.to_string()
@@ -129,9 +129,9 @@ pub fn value_to_param_string(v: &Value) -> Option<String> {
     }
 }
 
-/// Map a GK [`PortType`] to the extern declaration's type name
+/// Map a Polydat [`PortType`] to the extern declaration's type name
 /// (`u64`, `f64`, `bool`, `String`, `Ext`). Other variants widen
-/// to `String` — the GK extern grammar accepts only those names.
+/// to `String` — the Polydat extern grammar accepts only those names.
 pub fn port_type_to_extern_name(t: PortType) -> &'static str {
     match t {
         PortType::U64 => "u64",
@@ -220,22 +220,22 @@ mod tests {
     }
 
     #[test]
-    fn format_value_as_gk_literal_renders_scalars() {
-        assert_eq!(format_value_as_gk_literal(&Value::U64(42)), "42");
-        assert_eq!(format_value_as_gk_literal(&Value::Bool(true)), "true");
-        assert_eq!(format_value_as_gk_literal(&Value::Str("x".into())), "\"x\"");
+    fn format_value_as_polydat_literal_renders_scalars() {
+        assert_eq!(format_value_as_polydat_literal(&Value::U64(42)), "42");
+        assert_eq!(format_value_as_polydat_literal(&Value::Bool(true)), "true");
+        assert_eq!(format_value_as_polydat_literal(&Value::Str("x".into())), "\"x\"");
         // f64 with integral value still gets decimal point so the
         // parser doesn't see it as u64.
-        assert_eq!(format_value_as_gk_literal(&Value::F64(2.0)), "2.0");
+        assert_eq!(format_value_as_polydat_literal(&Value::F64(2.0)), "2.0");
     }
 
     #[test]
     fn format_workload_param_quotes_non_numeric() {
-        assert_eq!(format_workload_param_as_gk_literal("42"), "42");
-        assert_eq!(format_workload_param_as_gk_literal("hello"), "\"hello\"");
+        assert_eq!(format_workload_param_as_polydat_literal("42"), "42");
+        assert_eq!(format_workload_param_as_polydat_literal("hello"), "\"hello\"");
         // Bool string routes through quoted path (lexer has no
         // bool keyword).
-        assert_eq!(format_workload_param_as_gk_literal("true"), "\"true\"");
+        assert_eq!(format_workload_param_as_polydat_literal("true"), "\"true\"");
     }
 
     #[test]

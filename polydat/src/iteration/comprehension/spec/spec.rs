@@ -365,7 +365,7 @@ mod tests {
     fn unparseable_source_inside_for_falls_back_to_generator() {
         // parse_source now treats unrecognized text as a
         // Source::Generator that the runtime evaluator resolves
-        // against the GK kernel chain — matching the legacy
+        // against the Polydat Kernel chain — matching the legacy
         // grammar's permissive accept-anything behavior.
         let yaml = r#"
             for: "k in something-weird"

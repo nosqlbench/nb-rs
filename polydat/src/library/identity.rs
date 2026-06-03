@@ -3,7 +3,7 @@
 
 //! Identity and constant nodes.
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// Passthrough: output equals input.
 ///
@@ -13,7 +13,7 @@ use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
 /// during DAG construction, as a debugging tap, or when the raw
 /// sequential ordinal is the desired value (e.g., auto-incrementing
 /// primary keys). Also serves as the simplest reference node for
-/// testing the GkNode trait.
+/// testing the PolydatNode trait.
 ///
 /// JIT level: P2 (compiled_u64 is a trivial copy).
 pub struct Identity {
@@ -38,7 +38,7 @@ impl Identity {
     }
 }
 
-impl GkNode for Identity {
+impl PolydatNode for Identity {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -61,7 +61,7 @@ impl GkNode for Identity {
 /// port's default value type at construction time.
 ///
 /// This node is auto-inserted by the compiler for `extern` port
-/// declarations, making captured values available as GK outputs.
+/// declarations, making captured values available as Polydat outputs.
 pub struct PortPassthrough {
     meta: NodeMeta,
 }
@@ -79,7 +79,7 @@ impl PortPassthrough {
     }
 }
 
-impl GkNode for PortPassthrough {
+impl PolydatNode for PortPassthrough {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -117,7 +117,7 @@ impl ConstU64 {
     }
 }
 
-impl GkNode for ConstU64 {
+impl PolydatNode for ConstU64 {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -168,7 +168,7 @@ impl ConstStr {
     }
 }
 
-impl GkNode for ConstStr {
+impl PolydatNode for ConstStr {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -188,7 +188,7 @@ impl GkNode for ConstStr {
 /// `init prebuffered = dataset_prebuffer(...)`). Without this
 /// replacement, the original side-effect-bearing node would
 /// stay in the program graph with its eval intact, and every
-/// fresh fiber's `GkState` would re-fire the eval at first
+/// fresh fiber's `PolydatState` would re-fire the eval at first
 /// downstream pull — producing a per-fiber stampede that, in
 /// the prebuffer case, exhausts the per-process thread limit
 /// when vectordata's HTTP workers spin up concurrently.
@@ -218,7 +218,7 @@ impl ConstHandle {
     }
 }
 
-impl GkNode for ConstHandle {
+impl PolydatNode for ConstHandle {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -255,7 +255,7 @@ impl ConstExt {
     }
 }
 
-impl GkNode for ConstExt {
+impl PolydatNode for ConstExt {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {

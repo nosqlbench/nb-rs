@@ -614,7 +614,7 @@ fn direct_source_cardinality(c: &Comprehension) -> Option<CardinalityClass> {
 /// Extract `{name}` interpolation references from a predicate
 /// string. Handles only the simple `{name}` form; nested
 /// expressions and escapes are out of scope for V3's parse-time
-/// check (the consumer handles richer GK expression analysis).
+/// check (the consumer handles richer Polydat expression analysis).
 fn extract_interpolated_names(predicate: &str) -> Vec<String> {
     let mut out = Vec::new();
     let bytes = predicate.as_bytes();

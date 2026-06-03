@@ -29,7 +29,7 @@ waiting for capacity.
 (SRD-44)
 
 **Shape.** The current Tier 1 implementation skips wholly-
-completed phases on resume by matching `(yaml_path, gk_hash,
+completed phases on resume by matching `(yaml_path, polydat_hash,
 op_hash)` identity. Tier 2 adds resumption *inside* a phase:
 each cycle source captures an opaque cursor token at
 checkpoint-flush time, the writer persists it alongside the
@@ -74,7 +74,7 @@ data store. Currently `verify` exists as an op kind but
 isn't wired to the resume planner.
 
 **Why deferred.** The skip-by-identity rule (yaml_path +
-gk_hash + op_hash) is sound when the workload and runtime
+polydat_hash + op_hash) is sound when the workload and runtime
 haven't changed between runs. Adding verify is belt-and-
 suspenders for cases where the *underlying data* changed
 between runs (which the identity check can't detect). Most

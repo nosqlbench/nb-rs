@@ -94,7 +94,7 @@ fn install_chain_preserves_partition_iter_var_type_through_phase() {
     // pre-eval correctly classifies `partitions(...)` as a
     // PartitionList; this test exercises the post-pre-eval
     // synthesis chain.
-    let workload_root = polydat::dsl::compile_gk("\n").unwrap();
+    let workload_root = polydat::dsl::compile_polydat("\n").unwrap();
 
     // Comprehension scope: install as the runner does.
     let comp_kernel = nbrs_activity::scope_synth::build_for_each_scope_kernel(
@@ -116,7 +116,7 @@ fn install_chain_preserves_partition_iter_var_type_through_phase() {
     // runner's nearest_installed_ancestor lookup).
     let _arc = Arc::new(comp_kernel);
     let comp_kernel = _arc;
-    let phase_bindings = BindingsDef::GkSource(
+    let phase_bindings = BindingsDef::PolydatSource(
         "n := mod_in(cycle, p)\n".to_string()
     );
     let phase_kernel = build_phase_scope_kernel(
@@ -184,7 +184,7 @@ phases:
 
     // Workload-root install: minimal kernel (empty params).
     let workload_root = Arc::new(
-        polydat::dsl::compile_gk("\n").expect("workload root compile"),
+        polydat::dsl::compile_polydat("\n").expect("workload root compile"),
     );
     scope_tree.install_kernel(scope_tree.root, workload_root.clone());
 

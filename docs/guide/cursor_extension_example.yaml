@@ -188,5 +188,5 @@ phases:
 # `Arc<dyn ExtensionPolicy>`. Workloads currently expose only the
 # two-condition AND/OR forms above (elapsed × passes). For broader
 # composition (e.g. 3-way OR, or AND across all three of elapsed,
-# passes, and count), you'd extend the GK compiler to recognise
+# passes, and count), you'd extend the Polydat compiler to recognise
 # more cursor-function shapes.

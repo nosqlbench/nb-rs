@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ast::{GkNode, NodeMeta, Port, Slot, SlotType, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, Slot, SlotType, Value};
 
 /// Current wall-clock time in epoch milliseconds.
 ///
@@ -39,7 +39,7 @@ impl CurrentEpochMillis {
     }
 }
 
-impl GkNode for CurrentEpochMillis {
+impl PolydatNode for CurrentEpochMillis {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let millis = SystemTime::now()
@@ -86,7 +86,7 @@ impl SessionStartMillis {
     }
 }
 
-impl GkNode for SessionStartMillis {
+impl PolydatNode for SessionStartMillis {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(self.start);
@@ -133,7 +133,7 @@ impl ElapsedMillis {
     }
 }
 
-impl GkNode for ElapsedMillis {
+impl PolydatNode for ElapsedMillis {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let now = SystemTime::now()
@@ -175,7 +175,7 @@ impl ThreadId {
     }
 }
 
-impl GkNode for ThreadId {
+impl PolydatNode for ThreadId {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn purity(&self) -> crate::ast::Purity {
         crate::ast::Purity::Nondeterministic { reason: "OS thread identity varies across fibers" }
@@ -228,7 +228,7 @@ impl Env {
     }
 }
 
-impl GkNode for Env {
+impl PolydatNode for Env {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(self.value.clone().into());
@@ -263,7 +263,7 @@ impl EnvOr {
     }
 }
 
-impl GkNode for EnvOr {
+impl PolydatNode for EnvOr {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(self.value.clone().into());
@@ -303,7 +303,7 @@ impl TmpDir {
     }
 }
 
-impl GkNode for TmpDir {
+impl PolydatNode for TmpDir {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(self.value.clone().into());
@@ -350,7 +350,7 @@ impl Counter {
     }
 }
 
-impl GkNode for Counter {
+impl PolydatNode for Counter {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(self.count.fetch_add(1, Ordering::Relaxed));
@@ -487,7 +487,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Cursor limit node: passes through the input value unchanged.
 ///
 /// Inserted by the compiler when the `limit` activity parameter is present.
-/// The node is a visible, documented passthrough in the GK graph that
+/// The node is a visible, documented passthrough in the Polydat graph that
 /// clamps the cursor's extent. The `max_items` value is used by the
 /// `Cursors` system to determine when to stop advancing.
 ///
@@ -511,7 +511,7 @@ impl CursorLimit {
     }
 }
 
-impl GkNode for CursorLimit {
+impl PolydatNode for CursorLimit {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         // Pure passthrough — the limit is enforced by the cursor system,
@@ -524,7 +524,7 @@ impl GkNode for CursorLimit {
 /// Try to build a context node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "current_epoch_millis" => Some(Ok(Box::new(CurrentEpochMillis::new()))),
         "counter" => Some(Ok(Box::new(Counter::new()))),
@@ -540,7 +540,7 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef
             if var.is_empty() {
                 return Some(Err("env(): missing variable name argument".into()));
             }
-            Some(Env::new(var).map(|n| Box::new(n) as Box<dyn crate::ast::GkNode>))
+            Some(Env::new(var).map(|n| Box::new(n) as Box<dyn crate::ast::PolydatNode>))
         }
         "env_or" => {
             let var = consts.first().map(|c| c.as_str()).unwrap_or("");
@@ -714,7 +714,7 @@ mod tests {
         let src = format!(
             "v := env_or(\"{var}\", \"fallback\")\n",
         );
-        let kernel = crate::dsl::compile_gk(&src).expect("compile env_or");
+        let kernel = crate::dsl::compile_polydat(&src).expect("compile env_or");
         unsafe { std::env::remove_var(&var); }
         // The output should be the captured value. We can't read
         // the kernel's outputs directly without an eval pass; the
@@ -727,11 +727,11 @@ mod tests {
     #[test]
     fn tmp_dir_compiles_through_dsl_in_string_template() {
         // Confirms the existing string-template machinery accepts
-        // function calls like `{tmp_dir()}` in GK string literals
+        // function calls like `{tmp_dir()}` in Polydat string literals
         // — no new syntax needed for the resumable-test-fixture
         // workload's path composition.
         let src = "path := \"{tmp_dir()}/data\"\n";
-        let kernel = crate::dsl::compile_gk(src)
+        let kernel = crate::dsl::compile_polydat(src)
             .expect("compile tmp_dir() interpolated in a string");
         let names = kernel.program().output_names();
         assert!(names.contains(&"path"), "expected output 'path' in {names:?}");

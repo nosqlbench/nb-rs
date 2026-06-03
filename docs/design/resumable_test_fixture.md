@@ -37,7 +37,7 @@ invocations.
 
 ## The fixture: `failure_step(value, t1, t2, …, tN) -> value`
 
-A testkit-provided GK function node, registered via the existing
+A testkit-provided Polydat function node, registered via the existing
 `register_nodes!` inventory mechanism.
 
 **Signature:**
@@ -137,7 +137,7 @@ Net effect:
 - Editing the threshold list IS a workload edit (real YAML change)
   and correctly triggers IdentityMismatch.
 - The state file's contents (next-index counter) are invisible to
-  `hash_const` — it lives outside what GK sees, by design.
+  `hash_const` — it lives outside what Polydat sees, by design.
 
 > Reviewer notes:
 >
@@ -210,7 +210,7 @@ its op-level `iter` field equals `cycle`. The op-level field gets
 layer, surfaces as a normal op error.
 
 **(B) GK-level failure**: `failure_step` itself does the throwing
-(no separate op). Failure originates inside GK eval, surfaces as a
+(no separate op). Failure originates inside Polydat eval, surfaces as a
 binding-eval error.
 
 Both share the same state-file machinery, just differ in where the
@@ -328,12 +328,12 @@ otherwise leave as terminal.
 
 ## Implementation order (once OQs are resolved)
 
-1. Task 167 — `env()` / `env_or()` GK nodes (Pure / const-producing).
+1. Task 167 — `env()` / `env_or()` Polydat nodes (Pure / const-producing).
 2. New: const-fold trait method + `GkProgram::hash_const` + opt-out
    shape (per the just-agreed proposal — separate doc tracking).
-3. Task 168 — `throw_at(value, threshold)` GK node, opting out as
+3. Task 168 — `throw_at(value, threshold)` Polydat node, opting out as
    const-producing/accepting (or folded into `failure_step`, per OQ-1).
-4. New testkit GK node: `failure_step(...)` with state-file machinery
+4. New testkit Polydat node: `failure_step(...)` with state-file machinery
    (per this memo). Ship the reset path alongside per OQ-4.
 5. Task 169 — testkit driver-level fixture op (variant A).
 6. Task 170 — `examples/workloads/resume_test.yaml`.

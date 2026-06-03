@@ -10,7 +10,7 @@
 //! All nodes support P2 (compiled_u64) and P3 (JIT) execution.
 
 use crate::ast::{
-    CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value,
+    CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ macro_rules! binary_u64_node {
             }
         }
 
-        impl GkNode for $struct_name {
+        impl PolydatNode for $struct_name {
             fn meta(&self) -> &NodeMeta { &self.meta }
 
             fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -150,7 +150,7 @@ impl U64Not {
     }
 }
 
-impl GkNode for U64Not {
+impl PolydatNode for U64Not {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -378,7 +378,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a bitwise/two-wire arithmetic node from a function name.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "checked_add" => Some(Ok(Box::new(CheckedAdd::new()))),
         "checked_sub" => Some(Ok(Box::new(CheckedSub::new()))),

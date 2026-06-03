@@ -1,4 +1,4 @@
-# Memo 09: GK Performance Results
+# Memo 09: Polydat Performance Results
 
 Benchmark results with fully monomorphic kernel variants: Raw,
 Push (per-node skip), Pull (cone guard), PushPull (both). Each

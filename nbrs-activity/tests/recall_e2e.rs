@@ -9,7 +9,7 @@
 //!
 //! All ground-truth values flow through the canonical SRD 32 path:
 //! a per-test [`ScopeFixture`] is opened against a synthetic
-//! `GkProgram` that declares `ground_truth` as an input slot;
+//! `PolydatProgram` that declares `ground_truth` as an input slot;
 //! [`ValidatingDispenser::wrap`] registers a `PullHandle` for it;
 //! at execute time, the handle reads from a `ResolvedPulls`
 //! materialized from the program's state. There is no fields-based
@@ -26,8 +26,8 @@ use nbrs_activity::fixture::{PullPlan, ResolvedPulls, ScopeFixture};
 use nbrs_activity::validation::ValidatingDispenser;
 use nbrs_activity::wires::CycleWires;
 use nbrs_metrics::labels::Labels;
-use polydat::dsl::compile::compile_gk;
-use polydat::kernel::GkProgram;
+use polydat::dsl::compile::compile_polydat;
+use polydat::kernel::PolydatProgram;
 use polydat::ast::Value;
 
 /// Result body shaped like `CqlResultBody.to_json()` — a JSON array of
@@ -84,16 +84,16 @@ impl OpDispenser for FixedBodyDispenser {
     }
 }
 
-/// Build a synthetic GkProgram via the DSL that declares `cycle`
+/// Build a synthetic PolydatProgram via the DSL that declares `cycle`
 /// as a coordinate and `ground_truth` as an extern Str input slot.
 /// The fixture's `register_pull("ground_truth")` resolves to that
 /// slot; tests inject the ground-truth value via `set_input` per
 /// cycle.
-fn make_gt_program() -> Arc<GkProgram> {
-    let kernel = compile_gk(
+fn make_gt_program() -> Arc<PolydatProgram> {
+    let kernel = compile_polydat(
         "input cycle: u64\n\
          extern ground_truth: Str = \"\"\n",
-    ).expect("compile_gk extern declaration");
+    ).expect("compile_polydat extern declaration");
     kernel.into_program()
 }
 
@@ -123,10 +123,10 @@ fn snapshot_mean(vm: &Arc<nbrs_activity::validation::ValidationMetrics>, name: &
 /// Build a wrapped `ValidatingDispenser` against the supplied inner
 /// dispenser, returning the wrapper, its metrics handle, and the
 /// sealed PullPlan. The plan must be resolved per-cycle against a
-/// `GkState` that has had `ground_truth` injected via `set_input`.
+/// `PolydatState` that has had `ground_truth` injected via `set_input`.
 fn wrap_with_relevancy(
     inner: Arc<dyn OpDispenser>,
-    program: &Arc<GkProgram>,
+    program: &Arc<PolydatProgram>,
     template: &nbrs_workload::model::ParsedOp,
 ) -> (
     Arc<dyn OpDispenser>,
@@ -147,7 +147,7 @@ fn wrap_with_relevancy(
 /// `ground_truth` input slot, then resolve the plan to produce
 /// `ResolvedPulls` for the cycle.
 fn pulls_with_gt_string(
-    program: &Arc<GkProgram>,
+    program: &Arc<PolydatProgram>,
     plan: &PullPlan,
     gt_csv: &str,
 ) -> ResolvedPulls {
@@ -157,16 +157,16 @@ fn pulls_with_gt_string(
     plan.resolve(&mut state)
 }
 
-/// Build a real `GkKernel` with the `ground_truth` input populated.
+/// Build a real `PolydatKernel` with the `ground_truth` input populated.
 /// Used to bind a `CycleWires` for `ExecCtx::with_wires` so the
 /// validation wrapper's `ctx.wires.get("ground_truth")` read
 /// resolves to the test fixture value. Returns the kernel by value;
 /// the caller wraps `CycleWires` around it for the cycle's duration.
-fn kernel_with_gt_string(gt_csv: &str) -> polydat::kernel::GkKernel {
-    let mut k = compile_gk(
+fn kernel_with_gt_string(gt_csv: &str) -> polydat::kernel::PolydatKernel {
+    let mut k = compile_polydat(
         "input cycle: u64\n\
          extern ground_truth: Str = \"\"\n",
-    ).expect("compile_gk extern declaration");
+    ).expect("compile_polydat extern declaration");
     k.set_inputs(&[0]);
     let idx = k.program().find_input("ground_truth").expect("ground_truth input");
     k.state().set_input(idx, Value::Str(gt_csv.into()));

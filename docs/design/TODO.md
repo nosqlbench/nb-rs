@@ -1,3 +1,9 @@
-
-* Consolidate on the term "driver" instead of "adapter". Clarify this is an op driver, or something less generic than just "driver"
-* 
+* Add bundled workloads
+* generalize execution model
+* start formalizing nbrs runtime
+* include jq streaming operators
+* incorporate JSON serdes standard types
+* define the embedded expr contract 
+* extend op templates to include structural JSON templates
+* audit docs
+* remove status/progress tracking detritous

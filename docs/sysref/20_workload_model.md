@@ -36,7 +36,7 @@ ops:
 |-------|------|-------------|
 | `description` | string | Optional human-readable description |
 | `params` | map | Workload parameters with defaults |
-| `bindings` | string or map | GK source or legacy binding chains |
+| `bindings` | string or map | Polydat source or legacy binding chains |
 | `ops` | map or list | Operation templates |
 | `blocks` | map | Named groups of ops with local overrides |
 | `scenarios` | map | Named command sequences (future) |
@@ -61,7 +61,7 @@ pub struct ParsedOp {
 - `op` — the adapter payload (statement, method, URL, etc.)
 - `params` — adapter config and activity-level settings
 - `tags` — filtering metadata
-- `bindings` — GK source or legacy binding map
+- `bindings` — Polydat source or legacy binding map
 
 ### Normalization
 
@@ -178,7 +178,7 @@ phases:
     tags: "block:read|block:write"
 ```
 
-Phase cycles support GK config expressions for data-driven
+Phase cycles support Polydat config expressions for data-driven
 cycle counts.
 
 ### Backward Compatibility

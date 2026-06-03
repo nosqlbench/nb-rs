@@ -144,7 +144,7 @@ fn upstream_binding_edit_invalidates_idempotent_skip() {
     let workload_path = dir.join("workload.yaml");
     let stdout_path = dir.join("out.txt");
 
-    // GK DSL block bindings at workload root. The phase op
+    // Polydat DSL block bindings at workload root. The phase op
     // template references `{shard}` so the phase's program
     // pulls `shard` in via auto-extern. Editing the modulus
     // changes the workload-root program's const slot, which

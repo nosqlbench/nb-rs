@@ -27,7 +27,7 @@
 //!
 //! Per SRD-44 §"Why hash the compiled program, not the YAML
 //! body", the hash is over the canonical re-emission of the
-//! phase's *compiled `GkProgram`* — incorporating substituted
+//! phase's *compiled `PolydatProgram`* — incorporating substituted
 //! param values, transitively-referenced binding values, and
 //! all fold-able compile-time state. So a phase whose body
 //! references `{dataset}` correctly invalidates when the
@@ -89,7 +89,7 @@ pub struct PhaseIdentity {
     pub yaml_path: Vec<PathSegment>,
     pub coords: String,
     /// SHA-256 of the canonical re-emission of the phase's
-    /// compiled `GkProgram`. `None` when `checkpoint.hashed
+    /// compiled `PolydatProgram`. `None` when `checkpoint.hashed
     /// = false` was declared on the workload (operator
     /// opt-out per SRD-44); resume falls back to
     /// tuple-only match in that case.

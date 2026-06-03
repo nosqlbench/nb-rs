@@ -1,9 +1,9 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Core types for GK nodes: values, ports, metadata, and the evaluation trait.
+//! Core types for Polydat nodes: values, ports, metadata, and the evaluation trait.
 //!
-//! The GK type system has three layers:
+//! The Polydat type system has three layers:
 //!
 //! 1. **Runtime values** ([`Value`]) — the enum that flows through
 //!    the DAG at evaluation time. Every buffer slot holds a `Value`.
@@ -17,7 +17,7 @@
 //!    construction). The DSL compiler uses these to decide whether
 //!    a literal in a function call is a wire promotion or a const arg.
 //!
-//! The [`GkNode`] trait is what every node function implements.
+//! The [`PolydatNode`] trait is what every node function implements.
 //! A node declares its port metadata via [`NodeMeta`] and evaluates
 //! via `eval(&[Value], &mut [Value])`.
 
@@ -153,11 +153,11 @@ impl<T: fmt::Debug + 'static> fmt::Debug for SliceArc<T> {
 
 /// A value flowing through the DAG at runtime.
 ///
-/// This is the universal runtime representation for all GK data.
+/// This is the universal runtime representation for all Polydat data.
 /// Every node input and output is a `Value`. The variant determines
 /// the data type:
 ///
-/// | Variant | Rust type | GK DSL type | Usage |
+/// | Variant | Rust type | Polydat DSL type | Usage |
 /// |---------|-----------|-------------|-------|
 /// | `U64` | `u64` | `u64` | Cycle counters, hashes, IDs, bitwise ops |
 /// | `F64` | `f64` | `f64` | Floating point math, distributions, noise |
@@ -217,7 +217,7 @@ pub enum Value {
     /// Adapter-contributed reflected value. Carries type info and
     /// standard access methods (display, JSON, string, bytes).
     /// Enables protocol-native types (UUIDs, timestamps, inet
-    /// addresses) to flow through GK without boxing to strings.
+    /// addresses) to flow through Polydat without boxing to strings.
     Ext(Box<dyn ReflectedValue>),
     /// Type-erased Arc handle to a resolved resource (dataset,
     /// prepared statement, ...). Cloning during input gather is one
@@ -266,7 +266,7 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             // Arc-backed variants: pointer-eq fast path before
             // any content compare. Hot per-cycle callers
-            // (notably `GkState::reset_inputs_from`'s
+            // (notably `PolydatState::reset_inputs_from`'s
             // "still at default?" probe) typically test a slot
             // against a value that was Arc-cloned from the same
             // source — `Arc::ptr_eq` is O(1) and lets the deep
@@ -292,7 +292,7 @@ impl PartialEq for Value {
 
 /// Trait for adapter-contributed value types.
 ///
-/// Any type that flows through the GK kernel as `Value::Ext` must
+/// Any type that flows through the Polydat Kernel as `Value::Ext` must
 /// implement this. It provides standard access patterns that work
 /// across adapter boundaries — stdout can display it, HTTP can
 /// serialize it, model adapter can capture it — without needing
@@ -703,7 +703,7 @@ impl Value {
     }
 }
 
-/// Compile-time type tag for a port on a GK node.
+/// Compile-time type tag for a port on a Polydat node.
 ///
 /// **Narrow types and runtime storage:**
 ///
@@ -1187,7 +1187,7 @@ pub type CompiledU64Op = Box<dyn Fn(&[u64], &mut [u64]) + Send + Sync>;
 /// [`composition_substrate.md`'s T1+T2 axioms][substrate].
 ///
 /// Every node declares its purity status via
-/// [`GkNode::purity`]. The default is [`Purity::Pure`]; nodes
+/// [`PolydatNode::purity`]. The default is [`Purity::Pure`]; nodes
 /// with observable side channels (logging, file I/O, network)
 /// or eval-call-spanning state override to declare
 /// [`Purity::SideChannel`] or [`Purity::Nondeterministic`].
@@ -1263,13 +1263,13 @@ pub enum SideChannelSink {
     Other,
 }
 
-/// Runtime evaluation interface for a GK node.
+/// Runtime evaluation interface for a Polydat node.
 ///
-/// Phase 1: called via `dyn GkNode` (dynamic dispatch with `Value` enum).
+/// Phase 1: called via `dyn PolydatNode` (dynamic dispatch with `Value` enum).
 /// Phase 2: if all nodes in the DAG are u64-only and provide a
 /// `compiled_u64` implementation, the assembly phase compiles the DAG
 /// into a flat buffer evaluator with direct function calls.
-pub trait GkNode: Send + Sync {
+pub trait PolydatNode: Send + Sync {
     /// Return this node's metadata (port names and types).
     fn meta(&self) -> &NodeMeta;
 
@@ -1365,7 +1365,7 @@ pub trait GkNode: Send + Sync {
 }
 
 /// Determine the compile level of a node (works on trait objects).
-pub fn compile_level_of(node: &dyn GkNode) -> CompileLevel {
+pub fn compile_level_of(node: &dyn PolydatNode) -> CompileLevel {
     #[cfg(feature = "jit")]
     {
         let jit_op = crate::compile::jit::classify_node(node);
@@ -1384,7 +1384,7 @@ pub fn compile_level_of(node: &dyn GkNode) -> CompileLevel {
 /// The maximum compilation level a node supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileLevel {
-    /// Runtime interpreter: `dyn GkNode` + `Value` enum.
+    /// Runtime interpreter: `dyn PolydatNode` + `Value` enum.
     Phase1,
     /// Compiled closure: `Box<dyn Fn(&[u64], &mut [u64])>`.
     Phase2,
@@ -1402,7 +1402,7 @@ mod purity_tests {
         meta: NodeMeta,
     }
 
-    impl GkNode for DefaultPureNode {
+    impl PolydatNode for DefaultPureNode {
         fn meta(&self) -> &NodeMeta { &self.meta }
         fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
             outputs[0] = Value::U64(42);
@@ -1414,7 +1414,7 @@ mod purity_tests {
         meta: NodeMeta,
     }
 
-    impl GkNode for SideChannelNode {
+    impl PolydatNode for SideChannelNode {
         fn meta(&self) -> &NodeMeta { &self.meta }
         fn eval(&self, _inputs: &[Value], _outputs: &mut [Value]) {}
         fn purity(&self) -> Purity {
@@ -1427,7 +1427,7 @@ mod purity_tests {
         meta: NodeMeta,
     }
 
-    impl GkNode for StatefulNode {
+    impl PolydatNode for StatefulNode {
         fn meta(&self) -> &NodeMeta { &self.meta }
         fn eval(&self, _inputs: &[Value], _outputs: &mut [Value]) {}
         fn purity(&self) -> Purity {

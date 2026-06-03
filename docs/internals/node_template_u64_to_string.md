@@ -1,7 +1,7 @@
 # Memo 02: Annotated Implementation of U64ToString
 
 A walkthrough of the `U64ToString` node in `polydat/src/nodes/convert.rs`,
-explaining how a minimal GK node is structured and how it connects to the
+explaining how a minimal Polydat node is structured and how it connects to the
 assembly pipeline.
 
 ---
@@ -14,7 +14,7 @@ pub struct U64ToString {
 }
 ```
 
-Every GK node is a struct that carries a `NodeMeta` describing its
+Every Polydat node is a struct that carries a `NodeMeta` describing its
 interface. `U64ToString` has no parameters — no constants, no
 configuration. It's a pure type conversion. The only field is `meta`,
 which holds the input/output slot declarations.
@@ -149,7 +149,7 @@ output port feeding a `String` input port, it calls
 node is spliced into the graph between the two original nodes, with
 a generated name like `__adapt_0`.
 
-The user's `.gk` source never mentions `__u64_to_string`. The graph:
+The user's `.polydat` source never mentions `__u64_to_string`. The graph:
 
 ```
 hash(cycle) → [u64] → weighted_strings(...)

@@ -1,19 +1,19 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! DSL-to-assembly bridge: compile a parsed GK AST into a runtime kernel.
+//! DSL-to-assembly bridge: compile a parsed Polydat AST into a runtime kernel.
 //!
 //! Walks the AST, resolves function names to node constructors, wires
-//! the `GkAssembler`, and produces a `GkKernel`.
+//! the `PolydatAssembler`, and produces a `PolydatKernel`.
 
 
 use std::path::{Path, PathBuf};
 
-use crate::compile::assembly::{GkAssembler, WireRef};
+use crate::compile::assembly::{PolydatAssembler, WireRef};
 use crate::dsl::ast::*;
 use crate::dsl::lexer;
 use crate::dsl::parser;
-use crate::kernel::GkKernel;
+use crate::kernel::PolydatKernel;
 
 use crate::dsl::error::DiagnosticReport;
 use crate::dsl::validate::{validate_ast, collect_references};
@@ -124,7 +124,7 @@ pub enum EmbeddingError {
         deadline_ms: u64,
     },
 
-    /// The runtime node registry (`GkRuntime`) is in a state
+    /// The runtime node registry (`PolydatRuntime`) is in a state
     /// where required factories were not registered before
     /// the embedding call. Includes the list of node names
     /// the expression referenced but couldn't resolve due to
@@ -160,7 +160,7 @@ impl std::fmt::Display for EmbeddingError {
                 None => write!(
                     f,
                     "unknown function: '{name}' in '{source}'\n\n  \
-                     This function is not registered in the GK function library."
+                     This function is not registered in the Polydat function library."
                 ),
             },
             EmbeddingError::TypeMismatch { from_node, from_type, to_node, to_type, source } => {
@@ -216,17 +216,17 @@ impl From<EmbeddingError> for String {
 ///
 /// Each entry is (filename, source). Multiple modules per file —
 /// each top-level binding is a separate module, resolved by name.
-/// Searched as the final fallback after workload-local and --gk-lib paths.
+/// Searched as the final fallback after workload-local and --polydat-lib paths.
 pub(super) static STDLIB_MODULES: &[(&str, &str)] = &[
-    ("hashing.gk", include_str!("../../stdlib/hashing.gk")),
-    ("strings.gk", include_str!("../../stdlib/strings.gk")),
-    ("identity.gk", include_str!("../../stdlib/identity.gk")),
-    ("distributions.gk", include_str!("../../stdlib/distributions.gk")),
-    ("latency.gk", include_str!("../../stdlib/latency.gk")),
-    ("timeseries.gk", include_str!("../../stdlib/timeseries.gk")),
-    ("waves.gk", include_str!("../../stdlib/waves.gk")),
-    ("fourier.gk", include_str!("../../stdlib/fourier.gk")),
-    ("modeling.gk", include_str!("../../stdlib/modeling.gk")),
+    ("hashing.polydat", include_str!("../../stdlib/hashing.polydat")),
+    ("strings.polydat", include_str!("../../stdlib/strings.polydat")),
+    ("identity.polydat", include_str!("../../stdlib/identity.polydat")),
+    ("distributions.polydat", include_str!("../../stdlib/distributions.polydat")),
+    ("latency.polydat", include_str!("../../stdlib/latency.polydat")),
+    ("timeseries.polydat", include_str!("../../stdlib/timeseries.polydat")),
+    ("waves.polydat", include_str!("../../stdlib/waves.polydat")),
+    ("fourier.polydat", include_str!("../../stdlib/fourier.polydat")),
+    ("modeling.polydat", include_str!("../../stdlib/modeling.polydat")),
 ];
 
 /// Return the embedded standard library module sources.
@@ -234,32 +234,32 @@ pub fn stdlib_sources() -> &'static [(&'static str, &'static str)] {
     STDLIB_MODULES
 }
 
-/// Compile a `.gk` source string into a runtime kernel.
-pub fn compile_gk(source: &str) -> Result<GkKernel, String> {
-    compile_gk_with_path(source, None)
+/// Compile a `.polydat` source string into a runtime kernel.
+pub fn compile_polydat(source: &str) -> Result<PolydatKernel, String> {
+    compile_polydat_with_path(source, None)
 }
 
-/// Compile GK source to an assembler (not yet compiled to a kernel).
+/// Compile Polydat source to an assembler (not yet compiled to a kernel).
 ///
-/// Returns the `GkAssembler` with all nodes and wiring populated,
+/// Returns the `PolydatAssembler` with all nodes and wiring populated,
 /// ready to be compiled at any level: `.compile()` for P1,
 /// `.try_compile()` for P2, `.try_compile_jit()` for P3,
 /// `.compile_hybrid()` for Hybrid.
-pub fn compile_gk_to_assembler(source: &str) -> Result<GkAssembler, String> {
+pub fn compile_polydat_to_assembler(source: &str) -> Result<PolydatAssembler, String> {
     let tokens = super::lexer::lex(source)?;
     let ast = super::parser::parse(tokens)?;
     let mut compiler = Compiler::new(None, false);
     let mut asm = compiler.build_assembler(&ast)?;
-    asm.set_context(source, "(gk source)");
+    asm.set_context(source, "(polydat source)");
     Ok(asm)
 }
 
 /// Compile with a source directory for module resolution.
 ///
 /// When the compiler encounters an unknown function name, it searches
-/// `source_dir` for `.gk` module files that export a matching binding.
-pub fn compile_gk_with_path(source: &str, source_dir: Option<&Path>) -> Result<GkKernel, String> {
-    compile_gk_strict(source, source_dir, false)
+/// `source_dir` for `.polydat` module files that export a matching binding.
+pub fn compile_polydat_with_path(source: &str, source_dir: Option<&Path>) -> Result<PolydatKernel, String> {
+    compile_polydat_strict(source, source_dir, false)
 }
 
 /// Compile with dead code elimination: only outputs named in
@@ -267,15 +267,15 @@ pub fn compile_gk_with_path(source: &str, source_dir: Option<&Path>) -> Result<G
 /// are pruned from the kernel.
 ///
 /// When `required_outputs` is empty, compiles all bindings as outputs
-/// (same as `compile_gk_with_path`).
+/// (same as `compile_polydat_with_path`).
 ///
-/// The `strict` flag enforces the same rules as `compile_gk_strict`.
-pub fn compile_gk_with_outputs(
+/// The `strict` flag enforces the same rules as `compile_polydat_strict`.
+pub fn compile_polydat_with_outputs(
     source: &str,
     source_dir: Option<&Path>,
     required_outputs: &[String],
     strict: bool,
-) -> Result<GkKernel, String> {
+) -> Result<PolydatKernel, String> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
     // Only extend the required-outputs list with init bindings
@@ -319,7 +319,7 @@ pub fn compile_gk_with_outputs(
 /// auto-promoted.
 fn extend_required_with_const_bindings(
     required_outputs: &[String],
-    ast: &crate::dsl::ast::GkFile,
+    ast: &crate::dsl::ast::PolydatFile,
 ) -> Vec<String> {
     let mut out: Vec<String> = required_outputs.to_vec();
     for stmt in &ast.statements {
@@ -338,17 +338,17 @@ fn extend_required_with_const_bindings(
 
 /// Compile with additional library directories for module resolution.
 ///
-/// Resolution order: source_dir, then each gk_lib_path in order,
+/// Resolution order: source_dir, then each polydat_lib_path in order,
 /// then the embedded stdlib.  When `required_outputs` is empty,
 /// compiles all bindings as outputs.
-pub fn compile_gk_with_libs(
+pub fn compile_polydat_with_libs(
     source: &str,
     source_dir: Option<&Path>,
-    gk_lib_paths: Vec<PathBuf>,
+    polydat_lib_paths: Vec<PathBuf>,
     required_outputs: &[String],
     strict: bool,
     context: &str,
-) -> Result<GkKernel, String> {
+) -> Result<PolydatKernel, String> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
     let extended = if required_outputs.is_empty() {
@@ -363,7 +363,7 @@ pub fn compile_gk_with_libs(
     };
     let mut compiler = Compiler::with_lib_paths(
         source_dir.map(|p| p.to_path_buf()),
-        gk_lib_paths,
+        polydat_lib_paths,
         strict,
     );
     compiler.source_text = source.to_string();
@@ -375,15 +375,15 @@ pub fn compile_gk_with_libs(
 ///
 /// When `cursor_limit` is `Some(n)`, the compiler inserts a `limit(cursor, n)`
 /// node after each cursor declaration, clamping its extent.
-pub fn compile_gk_with_libs_and_limit(
+pub fn compile_polydat_with_libs_and_limit(
     source: &str,
     source_dir: Option<&Path>,
-    gk_lib_paths: Vec<PathBuf>,
+    polydat_lib_paths: Vec<PathBuf>,
     required_outputs: &[String],
     strict: bool,
     context: &str,
     cursor_limit: Option<u64>,
-) -> Result<GkKernel, String> {
+) -> Result<PolydatKernel, String> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
     let extended = if required_outputs.is_empty() {
@@ -398,7 +398,7 @@ pub fn compile_gk_with_libs_and_limit(
     };
     let mut compiler = Compiler::with_lib_paths(
         source_dir.map(|p| p.to_path_buf()),
-        gk_lib_paths,
+        polydat_lib_paths,
         strict,
     );
     compiler.source_text = source.to_string();
@@ -413,14 +413,14 @@ pub fn compile_gk_with_libs_and_limit(
 /// - Explicit `input ...: u64` declaration (no inference)
 /// - All module arguments must be named (no positional)
 /// - All module inputs must be provided by the caller (no fallthrough to coordinates)
-pub fn compile_gk_strict(source: &str, source_dir: Option<&Path>, strict: bool) -> Result<GkKernel, String> {
+pub fn compile_polydat_strict(source: &str, source_dir: Option<&Path>, strict: bool) -> Result<PolydatKernel, String> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
     compile_ast_strict_with_source(&ast, source_dir, strict, source)
 }
 
 /// Compile with a compile event log for diagnostic inspection.
-pub fn compile_gk_with_log(source: &str, log: &mut super::events::CompileEventLog) -> Result<GkKernel, String> {
+pub fn compile_polydat_with_log(source: &str, log: &mut super::events::CompileEventLog) -> Result<PolydatKernel, String> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
     let pragmas = super::pragmas::collect_from_ast(&ast);
@@ -440,7 +440,7 @@ pub fn compile_gk_with_log(source: &str, log: &mut super::events::CompileEventLo
 /// - Unrecognised pragmas → `UnknownPragma` (warning) — pragmas are
 ///   forward-compatible, so the compile keeps going.
 ///
-/// Hooked into every `compile_gk_with_log`-shaped entry point. The
+/// Hooked into every `compile_polydat_with_log`-shaped entry point. The
 /// extracted [`PragmaSet`] can also be re-fetched directly via
 /// [`crate::dsl::pragmas::extract_pragmas`] when downstream graph
 /// transforms need it.
@@ -475,7 +475,7 @@ pub(crate) fn record_pragma_events(
 /// Returns `(Ok(kernel), report)` on success with possible warnings,
 /// or `(Err(()), report)` on failure with errors. The report always
 /// contains all diagnostics.
-pub fn compile_gk_checked(source: &str) -> (Result<GkKernel, ()>, DiagnosticReport) {
+pub fn compile_polydat_checked(source: &str) -> (Result<PolydatKernel, ()>, DiagnosticReport) {
     let mut report = DiagnosticReport::new(source);
 
     let tokens = match lexer::lex(source) {
@@ -510,7 +510,7 @@ pub fn compile_gk_checked(source: &str) -> (Result<GkKernel, ()>, DiagnosticRepo
     }
 }
 
-/// Evaluate a GK expression as a compile-time constant.
+/// Evaluate a Polydat expression as a compile-time constant.
 ///
 /// The expression must have no input dependencies. It is compiled
 /// as a zero-input program and constant-folded. Returns the folded
@@ -529,7 +529,7 @@ pub fn compile_gk_checked(source: &str) -> (Result<GkKernel, ()>, DiagnosticRepo
 pub fn eval_const_expr(source: &str) -> Result<crate::ast::Value, EmbeddingError> {
     let wrapped = format!("\nout := {source}");
     let source_owned = source.to_string();
-    // Constant-folding inside `compile_gk` invokes node `eval`
+    // Constant-folding inside `compile_polydat` invokes node `eval`
     // for inputs-free DAGs, so any node that panics on bad data
     // (e.g. `handle_of(&Value::None)` after a failed
     // `dataset_open`) would unwind out past this function and
@@ -540,7 +540,7 @@ pub fn eval_const_expr(source: &str) -> Result<crate::ast::Value, EmbeddingError
     let source_for_panic = source_owned.clone();
     let result = std::panic::catch_unwind(
         std::panic::AssertUnwindSafe(move || -> Result<crate::ast::Value, EmbeddingError> {
-            let kernel = compile_gk(&wrapped).map_err(|msg| classify_compile_error(&source_owned, msg))?;
+            let kernel = compile_polydat(&wrapped).map_err(|msg| classify_compile_error(&source_owned, msg))?;
             kernel.get_constant("out")
                 .cloned()
                 .ok_or_else(|| EmbeddingError::LifecycleMismatch {
@@ -765,7 +765,7 @@ pub fn eval_const_expr_typed<T: HostType>(source: &str) -> Result<T, EmbeddingEr
 /// §3.2 + §5.3.
 pub fn eval_kernel_bound_typed<T: HostType>(
     text: &str,
-    kernel: &crate::kernel::GkKernel,
+    kernel: &crate::kernel::PolydatKernel,
 ) -> Result<T, EmbeddingError> {
     let interpolated = crate::kernel::interp::interpolate_via_kernel(text, kernel)?;
     eval_const_expr_typed::<T>(&interpolated)
@@ -820,7 +820,7 @@ pub fn eval_const_expr_typed_strict<T: HostType>(source: &str) -> Result<T, Embe
 /// [`eval_const_expr_typed_strict`].
 pub fn eval_kernel_bound_typed_strict<T: HostType>(
     text: &str,
-    kernel: &crate::kernel::GkKernel,
+    kernel: &crate::kernel::PolydatKernel,
 ) -> Result<T, EmbeddingError> {
     let interpolated = crate::kernel::interp::interpolate_via_kernel(text, kernel)?;
     eval_const_expr_typed_strict::<T>(&interpolated)
@@ -957,12 +957,12 @@ pub fn positional_str_lit(arg: Option<&crate::dsl::ast::Arg>) -> Option<String> 
 }
 
 /// Compile a parsed AST into a runtime kernel.
-pub fn compile_ast(file: &GkFile) -> Result<GkKernel, String> {
+pub fn compile_ast(file: &PolydatFile) -> Result<PolydatKernel, String> {
     compile_ast_with_path(file, None)
 }
 
 /// Compile a parsed AST with module resolution from a source directory.
-pub fn compile_ast_with_path(file: &GkFile, source_dir: Option<&Path>) -> Result<GkKernel, String> {
+pub fn compile_ast_with_path(file: &PolydatFile, source_dir: Option<&Path>) -> Result<PolydatKernel, String> {
     compile_ast_strict(file, source_dir, false)
 }
 
@@ -972,25 +972,25 @@ pub fn compile_ast_with_path(file: &GkFile, source_dir: Option<&Path>) -> Result
 /// - Explicit `input ...: u64` declaration (no inference)
 /// - All module arguments must be named (no positional)
 /// - All module inputs must be provided by the caller (no fallthrough)
-pub fn compile_ast_strict(file: &GkFile, source_dir: Option<&Path>, strict: bool) -> Result<GkKernel, String> {
+pub fn compile_ast_strict(file: &PolydatFile, source_dir: Option<&Path>, strict: bool) -> Result<PolydatKernel, String> {
     let mut compiler = Compiler::new(source_dir.map(|p| p.to_path_buf()), strict);
     compiler.compile(file)
 }
 
 /// Compile a pre-parsed AST with the same library / strict /
 /// required-outputs / context-label knobs as
-/// [`compile_gk_with_libs`]. Used by SRD-67's
+/// [`compile_polydat_with_libs`]. Used by SRD-67's
 /// [`crate::kernel::subcontext::SubcontextBuilder`] when finalize has
 /// rewritten the AST in-place (Rule 2 write-through) and can
 /// no longer round-trip through the source-string compile path.
 pub fn compile_ast_with_libs(
-    file: &GkFile,
+    file: &PolydatFile,
     source_dir: Option<&Path>,
-    gk_lib_paths: Vec<PathBuf>,
+    polydat_lib_paths: Vec<PathBuf>,
     required_outputs: &[String],
     strict: bool,
     context: &str,
-) -> Result<GkKernel, String> {
+) -> Result<PolydatKernel, String> {
     let extended = if required_outputs.is_empty() {
         Vec::new()
     } else {
@@ -1003,7 +1003,7 @@ pub fn compile_ast_with_libs(
     };
     let mut compiler = Compiler::with_lib_paths(
         source_dir.map(|p| p.to_path_buf()),
-        gk_lib_paths,
+        polydat_lib_paths,
         strict,
     );
     compiler.context_label = context.to_string();
@@ -1018,16 +1018,16 @@ pub fn compile_ast_with_libs(
 /// Same as `compile_ast_strict` but attaches the original source text
 /// to the compiled program for diagnostic inspection.
 fn compile_ast_strict_with_source(
-    file: &GkFile,
+    file: &PolydatFile,
     source_dir: Option<&Path>,
     strict: bool,
     source: &str,
-) -> Result<GkKernel, String> {
+) -> Result<PolydatKernel, String> {
     let mut compiler = Compiler::new(source_dir.map(|p| p.to_path_buf()), strict);
     compiler.source_text = source.to_string();
     // Pragmas affect strict-wire mode even when no event log is
     // supplied — collect them from the AST so library callers
-    // that go through `compile_gk_with_path` still honour them.
+    // that go through `compile_polydat_with_path` still honour them.
     compiler.pragmas = super::pragmas::collect_from_ast(file);
     compiler.compile(file)
 }
@@ -1038,13 +1038,13 @@ pub(super) struct Compiler {
     pub(super) all_names: Vec<String>,
     /// Auto-generated node counter for desugared intermediates.
     pub(super) anon_counter: usize,
-    /// Directory for module resolution (search for .gk files).
+    /// Directory for module resolution (search for .polydat files).
     pub(super) source_dir: Option<PathBuf>,
     /// Additional library directories for module resolution.
     ///
     /// Searched after `source_dir` but before the embedded stdlib.
-    /// Populated via `--gk-lib=path` CLI flags.
-    pub(super) gk_lib_paths: Vec<PathBuf>,
+    /// Populated via `--polydat-lib=path` CLI flags.
+    pub(super) polydat_lib_paths: Vec<PathBuf>,
     /// Cache of already-resolved module ASTs: module_name → (inputs, statements).
     pub(super) module_cache: std::collections::HashMap<String, ResolvedModule>,
     /// When true, enforce strict validation.
@@ -1094,11 +1094,11 @@ impl Compiler {
             all_names: Vec::new(),
             anon_counter: 0,
             source_dir,
-            gk_lib_paths: Vec::new(),
+            polydat_lib_paths: Vec::new(),
             module_cache: std::collections::HashMap::new(),
             strict,
             source_text: String::new(),
-            context_label: "(gk)".into(),
+            context_label: "(polydat)".into(),
             cursor_schemas: Vec::new(),
             deferred_extents: Vec::new(),
             cursor_limit: None,
@@ -1107,17 +1107,17 @@ impl Compiler {
         }
     }
 
-    pub(super) fn with_lib_paths(source_dir: Option<PathBuf>, gk_lib_paths: Vec<PathBuf>, strict: bool) -> Self {
+    pub(super) fn with_lib_paths(source_dir: Option<PathBuf>, polydat_lib_paths: Vec<PathBuf>, strict: bool) -> Self {
         Self {
             input_names: Vec::new(),
             all_names: Vec::new(),
             anon_counter: 0,
             source_dir,
-            gk_lib_paths,
+            polydat_lib_paths,
             module_cache: std::collections::HashMap::new(),
             strict,
             source_text: String::new(),
-            context_label: "(gk)".into(),
+            context_label: "(polydat)".into(),
             cursor_schemas: Vec::new(),
             deferred_extents: Vec::new(),
             cursor_limit: None,
@@ -1128,7 +1128,7 @@ impl Compiler {
 
     /// Process a source declaration: create input ports for projections,
     /// passthrough nodes, and record the schema.
-    fn process_cursor(&mut self, asm: &mut GkAssembler, decl: &crate::dsl::ast::CursorDecl) -> Result<(), String> {
+    fn process_cursor(&mut self, asm: &mut PolydatAssembler, decl: &crate::dsl::ast::CursorDecl) -> Result<(), String> {
         let source_name = &decl.name;
 
         // Cursor-sugar dispatch: any node module can register a
@@ -1472,7 +1472,7 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn compile(&mut self, file: &GkFile) -> Result<GkKernel, String> {
+    pub(super) fn compile(&mut self, file: &PolydatFile) -> Result<PolydatKernel, String> {
         // First pass: collect explicit `input` declarations,
         // deduping by name so re-declaration is a no-op (the slot
         // already exists; the second `input cycle: u64` line is just
@@ -1487,7 +1487,7 @@ impl Compiler {
             }
         }
 
-        // Input declaration check: error in strict mode (modules, .gk files)
+        // Input declaration check: error in strict mode (modules, .polydat files)
         if !has_explicit_inputs && self.strict {
             return Err(
                 "strict mode: no `input` declaration — add `input <name>: <type>` \
@@ -1536,7 +1536,7 @@ impl Compiler {
             self.pragmas = super::pragmas::collect_from_ast(file);
         }
 
-        let mut asm = GkAssembler::new(self.input_names.clone());
+        let mut asm = PolydatAssembler::new(self.input_names.clone());
         // Honour module-level pragmas: a `pragma strict_values` (or
         // `strict`) directive at the source head opts into
         // auto-inserted assertion nodes (SRD 15 §"Module-Level
@@ -1786,7 +1786,7 @@ impl Compiler {
     }
 
     /// Build an assembler with all nodes and wiring, without compiling.
-    pub(super) fn build_assembler(&mut self, file: &GkFile) -> Result<GkAssembler, String> {
+    pub(super) fn build_assembler(&mut self, file: &PolydatFile) -> Result<PolydatAssembler, String> {
         // Reuse the same logic as compile(), but return the assembler
         // instead of calling asm.compile().
 
@@ -1829,7 +1829,7 @@ impl Compiler {
 
         // Zero inferred inputs means all bindings are constants — valid.
 
-        let mut asm = GkAssembler::new(self.input_names.clone());
+        let mut asm = PolydatAssembler::new(self.input_names.clone());
         asm.set_strict_wires(self.pragmas.strict_types(), self.pragmas.strict_values());
 
         for stmt in file.statements.clone() {
@@ -1874,9 +1874,9 @@ impl Compiler {
     /// When `None`, behaves identically to `compile()`.
     pub(super) fn compile_filtered(
         &mut self,
-        file: &GkFile,
+        file: &PolydatFile,
         required_outputs: Option<&[String]>,
-    ) -> Result<GkKernel, String> {
+    ) -> Result<PolydatKernel, String> {
         // First pass: collect explicit `input` declarations, dedup by name.
         for stmt in &file.statements {
             if let Statement::InputDecl(d) = stmt
@@ -1886,7 +1886,7 @@ impl Compiler {
             }
         }
 
-        // Input declaration check: error in strict mode (modules, .gk files)
+        // Input declaration check: error in strict mode (modules, .polydat files)
         if self.input_names.is_empty() && self.strict {
             return Err(
                 "strict mode: no `input` declaration — add `input <name>: <type>` \
@@ -1926,7 +1926,7 @@ impl Compiler {
 
         // Zero inferred inputs means all bindings are constants — valid.
 
-        let mut asm = GkAssembler::new(self.input_names.clone());
+        let mut asm = PolydatAssembler::new(self.input_names.clone());
 
         // Auto-expose every declared input as a passthrough output
         // (parity with `extern`). See `compile()` for the same wiring.
@@ -2335,7 +2335,7 @@ mod tests {
 
     #[test]
     fn typed_strict_kernel_bound() {
-        let kernel = compile_gk("const k := 10\n").unwrap();
+        let kernel = compile_polydat("const k := 10\n").unwrap();
         // Lossless: u64 → f64.
         let v: f64 = eval_kernel_bound_typed_strict("{k} * 2", &kernel).unwrap();
         assert_eq!(v, 20.0);
@@ -2346,7 +2346,7 @@ mod tests {
 
     #[test]
     fn typed_surface_kernel_bound() {
-        let kernel = compile_gk("const k := 10\n").unwrap();
+        let kernel = compile_polydat("const k := 10\n").unwrap();
         let v: bool = eval_kernel_bound_typed("{k} > 5", &kernel).unwrap();
         assert!(v);
         let v: u64 = eval_kernel_bound_typed("{k} * 2", &kernel).unwrap();
@@ -2360,7 +2360,7 @@ mod tests {
             hashed := hash(cycle)
             user_id := mod(hashed, 1000000)
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[42]);
         let uid = kernel.pull("user_id").as_u64();
         assert!(uid < 1_000_000, "user_id={uid}");
@@ -2372,7 +2372,7 @@ mod tests {
             input cycle: u64
             result := mod(hash(cycle), 100)
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[42]);
         assert!(kernel.pull("result").as_u64() < 100);
     }
@@ -2383,7 +2383,7 @@ mod tests {
             input cycle: u64
             h := hash(cycle)
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[42]);
         let v1 = kernel.pull("h").as_u64();
         kernel.set_inputs(&[42]);
@@ -2398,7 +2398,7 @@ mod tests {
             shared counter := 0
             normal := mod(hash(cycle), 100)
         "#;
-        let kernel = compile_gk(src).unwrap();
+        let kernel = compile_polydat(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("counter"),
             crate::dsl::ast::BindingModifier::SHARED
@@ -2420,7 +2420,7 @@ mod tests {
             input cycle: u64
             shared rolling := hash(cycle)
         "#;
-        let err = compile_gk(src).expect_err("non-literal shared const must error");
+        let err = compile_polydat(src).expect_err("non-literal shared const must error");
         assert!(err.contains("shared binding 'rolling'"), "error: {err}");
         assert!(err.contains("literal initial value"), "error: {err}");
     }
@@ -2431,7 +2431,7 @@ mod tests {
             input cycle: u64
             const dim := 128
         "#;
-        let kernel = compile_gk(src).unwrap();
+        let kernel = compile_polydat(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("dim"),
             crate::dsl::ast::BindingModifier::CONST
@@ -2444,7 +2444,7 @@ mod tests {
             input cycle: u64
             shared budget := 100
         "#;
-        let kernel = compile_gk(src).unwrap();
+        let kernel = compile_polydat(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("budget"),
             crate::dsl::ast::BindingModifier::SHARED
@@ -2460,7 +2460,7 @@ mod tests {
             input cycle: u64
             const max_dim := 256
         "#;
-        let kernel = compile_gk(src).unwrap();
+        let kernel = compile_polydat(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("max_dim"),
             crate::dsl::ast::BindingModifier::CONST
@@ -2476,7 +2476,7 @@ mod tests {
             shared budget := 100
             normal := hash(cycle)
         "#;
-        let kernel = compile_gk(src).unwrap();
+        let kernel = compile_polydat(src).unwrap();
         let mut shared = kernel.program().shared_outputs();
         shared.sort();
         assert_eq!(shared, vec!["budget", "counter"]);
@@ -2491,7 +2491,7 @@ mod tests {
             const dataset := "example"
             normal := hash(cycle)
         "#;
-        let kernel = compile_gk(src).unwrap();
+        let kernel = compile_polydat(src).unwrap();
         let mut finals = kernel.program().const_outputs();
         finals.sort();
         assert_eq!(finals, vec!["dataset", "dim"]);
@@ -2505,7 +2505,7 @@ mod tests {
             h := hash(cycle)
             v := mod(h, 100)
         "#;
-        let kernel = compile_gk(src).unwrap();
+        let kernel = compile_polydat(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("h"),
             crate::dsl::ast::BindingModifier::NONE
@@ -2524,7 +2524,7 @@ mod tests {
             tenant_h := hash(tenant)
             tenant_code := mod(tenant_h, 10000)
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[4_201_337]);
         let tc = kernel.pull("tenant_code").as_u64();
         assert!(tc < 10000, "tenant_code={tc}");
@@ -2536,7 +2536,7 @@ mod tests {
             input cycle: u64
             label := "hello world"
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[0]);
         assert_eq!(kernel.pull("label").as_str(), "hello world");
     }
@@ -2547,7 +2547,7 @@ mod tests {
             input cycle: u64
             base := 1710000000000
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[0]);
         assert_eq!(kernel.pull("base").as_u64(), 1_710_000_000_000);
     }
@@ -2560,7 +2560,7 @@ mod tests {
             // Another comment
             h := hash(cycle)
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[1]);
         assert!(kernel.pull("h").as_u64() != 0);
     }
@@ -2570,7 +2570,7 @@ mod tests {
     #[test]
     fn error_unknown_function() {
         let src = "input cycle: u64\nresult := foobar(cycle)";
-        let (_result, report) = compile_gk_checked(src);
+        let (_result, report) = compile_polydat_checked(src);
         assert!(report.has_errors());
         let errors = report.errors();
         assert!(errors.iter().any(|e| e.message.contains("unknown function")));
@@ -2580,7 +2580,7 @@ mod tests {
     #[test]
     fn error_unknown_function_suggests() {
         let src = "input cycle: u64\nresult := hahs(cycle)";
-        let (_, report) = compile_gk_checked(src);
+        let (_, report) = compile_polydat_checked(src);
         let errors = report.errors();
         let err = errors.iter().find(|e| e.message.contains("hahs")).unwrap();
         assert!(err.hint.as_ref().unwrap().contains("hash"),
@@ -2591,7 +2591,7 @@ mod tests {
     fn inferred_coordinates() {
         // Without explicit coordinates, 'cycle' is inferred as a coordinate input
         let src = "h := hash(cycle)";
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         assert_eq!(kernel.input_names(), &["cycle"]);
         kernel.set_inputs(&[42]);
         let h = kernel.pull("h").as_u64();
@@ -2602,7 +2602,7 @@ mod tests {
     fn inferred_multi_coordinates() {
         // Multiple unbound names become multiple coordinate inputs (sorted)
         let src = "h := hash(interleave(row, col))";
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         assert_eq!(kernel.input_names(), &["col", "row"]); // alphabetically sorted
         kernel.set_inputs(&[10, 20]);
         let h = kernel.pull("h").as_u64();
@@ -2613,7 +2613,7 @@ mod tests {
     fn explicit_coordinates_rejects_unbound() {
         // With explicit coordinates, unbound references are errors
         let src = "input cycle: u64\nh := hash(unknown)";
-        let (_, report) = compile_gk_checked(src);
+        let (_, report) = compile_polydat_checked(src);
         assert!(report.has_errors());
         assert!(report.errors().iter().any(|e|
             e.message.contains("undefined") && e.message.contains("unknown")));
@@ -2626,7 +2626,7 @@ mod tests {
             result := mod(h, 100)
             h := hash(cycle)
         "#;
-        let (_, report) = compile_gk_checked(src);
+        let (_, report) = compile_polydat_checked(src);
         let warnings = report.warnings();
         assert!(warnings.iter().any(|w| w.message.contains("forward reference")),
             "should warn about forward ref, got: {:?}", warnings);
@@ -2638,7 +2638,7 @@ mod tests {
             input cycle: u64
             result := hash(nonexistent)
         "#;
-        let (_, report) = compile_gk_checked(src);
+        let (_, report) = compile_polydat_checked(src);
         assert!(report.has_errors());
         assert!(report.errors().iter().any(|e|
             e.message.contains("undefined") && e.message.contains("nonexistent")));
@@ -2647,7 +2647,7 @@ mod tests {
     #[test]
     fn error_report_includes_source_line() {
         let src = "input cycle: u64\nresult := unknown_func(cycle)";
-        let (_, report) = compile_gk_checked(src);
+        let (_, report) = compile_polydat_checked(src);
         let s = report.to_string();
         assert!(s.contains("unknown_func"), "report should include source context");
     }
@@ -2659,7 +2659,7 @@ mod tests {
             h := hash(cycle)
             result := mod(h, 1000)
         "#;
-        let (result, report) = compile_gk_checked(src);
+        let (result, report) = compile_polydat_checked(src);
         assert!(!report.has_errors());
         assert!(result.is_ok());
     }
@@ -2670,7 +2670,7 @@ mod tests {
     fn strict_requires_explicit_inputs() {
         // Without inputs declaration, strict mode should error
         let src = "h := hash(cycle)";
-        let result = compile_gk_strict(src, None, true);
+        let result = compile_polydat_strict(src, None, true);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("strict mode"), "expected strict error, got: {err}");
@@ -2684,7 +2684,7 @@ mod tests {
             input cycle: u64
             h := hash(cycle)
         "#;
-        let mut kernel = compile_gk_strict(src, None, true).unwrap();
+        let mut kernel = compile_polydat_strict(src, None, true).unwrap();
         kernel.set_inputs(&[42]);
         let h = kernel.pull("h").as_u64();
         assert_ne!(h, 42); // hashed, not identity
@@ -2694,7 +2694,7 @@ mod tests {
     fn non_strict_infers_coordinates() {
         // Without strict, coordinate inference works as before
         let src = "h := hash(cycle)";
-        let mut kernel = compile_gk_strict(src, None, false).unwrap();
+        let mut kernel = compile_polydat_strict(src, None, false).unwrap();
         kernel.set_inputs(&[42]);
         assert_ne!(kernel.pull("h").as_u64(), 42);
     }
@@ -2703,7 +2703,7 @@ mod tests {
 
     #[test]
     fn dce_filters_to_required_outputs() {
-        // GK source defines three bindings but we only request one
+        // Polydat source defines three bindings but we only request one
         let src = r#"
             input cycle: u64
             a := hash(cycle)
@@ -2711,7 +2711,7 @@ mod tests {
             c := add(cycle, 1)
         "#;
         let required = vec!["b".to_string()];
-        let mut kernel = compile_gk_with_outputs(src, None, &required, false).unwrap();
+        let mut kernel = compile_polydat_with_outputs(src, None, &required, false).unwrap();
         kernel.set_inputs(&[42]);
 
         // "b" should be available and correct
@@ -2736,7 +2736,7 @@ mod tests {
             unrelated := add(cycle, 999)
         "#;
         let required = vec!["result".to_string()];
-        let mut kernel = compile_gk_with_outputs(src, None, &required, false).unwrap();
+        let mut kernel = compile_polydat_with_outputs(src, None, &required, false).unwrap();
         kernel.set_inputs(&[42]);
 
         let result = kernel.pull("result").as_u64();
@@ -2748,14 +2748,14 @@ mod tests {
 
     #[test]
     fn dce_empty_required_compiles_all() {
-        // Empty required_outputs should produce the same kernel as compile_gk
+        // Empty required_outputs should produce the same kernel as compile_polydat
         let src = r#"
             input cycle: u64
             a := hash(cycle)
             b := mod(a, 100)
         "#;
-        let kernel_all = compile_gk(src).unwrap();
-        let kernel_empty = compile_gk_with_outputs(src, None, &[], false).unwrap();
+        let kernel_all = compile_polydat(src).unwrap();
+        let kernel_empty = compile_polydat_with_outputs(src, None, &[], false).unwrap();
 
         assert_eq!(kernel_all.output_names().len(), kernel_empty.output_names().len());
     }
@@ -2773,7 +2773,7 @@ mod tests {
         // Pre-fix: with `required = ["b"]` and an unconsumed
         // `init side_effect = …` binding, the `side_effect` node
         // (and its constant-fold call) got pruned. Post-fix:
-        // `compile_gk_with_outputs` extends the required list
+        // `compile_polydat_with_outputs` extends the required list
         // with every `const` binding's name, so DCE keeps the
         // node, fold evaluates it, and `kernel.pull("side_effect")`
         // returns the folded result.
@@ -2783,7 +2783,7 @@ mod tests {
             b := mod(hash(cycle), 100)
         "#;
         let required = vec!["b".to_string()];
-        let mut kernel = compile_gk_with_outputs(src, None, &required, false).unwrap();
+        let mut kernel = compile_polydat_with_outputs(src, None, &required, false).unwrap();
         kernel.set_inputs(&[0]);
 
         let outputs = kernel.output_names();
@@ -2802,7 +2802,7 @@ mod tests {
             z := add(cycle, 10)
         "#;
         let required = vec!["y".to_string(), "z".to_string()];
-        let mut kernel = compile_gk_with_outputs(src, None, &required, false).unwrap();
+        let mut kernel = compile_polydat_with_outputs(src, None, &required, false).unwrap();
         kernel.set_inputs(&[5]);
 
         assert!(kernel.pull("y").as_u64() < 50);
@@ -2821,7 +2821,7 @@ mod tests {
     #[test]
     fn strict_rejects_unused_bindings() {
         // "unused" has no downstream consumer and is not an output → strict error
-        // Use compile_gk_strict which exposes all bindings as outputs,
+        // Use compile_polydat_strict which exposes all bindings as outputs,
         // so the kernel sees the full graph and detects the unused node.
         // Actually: when all bindings are outputs, none are "unused".
         // The unused check only applies with DCE (required_outputs filter).
@@ -2833,7 +2833,7 @@ mod tests {
         "#;
         let required = vec!["used".to_string()];
         // Non-strict: DCE prunes "unused" silently
-        let result = compile_gk_with_outputs(src, None, &required, false);
+        let result = compile_polydat_with_outputs(src, None, &required, false);
         assert!(result.is_ok(), "non-strict with DCE should compile");
         // Verify "unused" is actually pruned
         let kernel = result.unwrap();
@@ -2849,7 +2849,7 @@ mod tests {
             h := hash(cycle)
             f := sqrt(h)
         "#;
-        let result = compile_gk_strict(src, None, true);
+        let result = compile_polydat_strict(src, None, true);
         assert!(result.is_err(), "strict should reject implicit coercion");
         let err = result.unwrap_err();
         assert!(err.contains("coercion") || err.contains("__adapt"),
@@ -2863,7 +2863,7 @@ mod tests {
             h := hash(cycle)
             f := sqrt(h)
         "#;
-        let result = compile_gk_strict(src, None, false);
+        let result = compile_polydat_strict(src, None, false);
         assert!(result.is_ok(), "non-strict should allow implicit coercion");
     }
 
@@ -2876,7 +2876,7 @@ mod tests {
             id := mod(h, 1000)
         "#;
         let required = vec!["id".to_string()];
-        let result = compile_gk_with_outputs(src, None, &required, true);
+        let result = compile_polydat_with_outputs(src, None, &required, true);
         assert!(result.is_ok(), "clean program should pass strict: {:?}", result.err());
     }
 
@@ -2886,7 +2886,7 @@ mod tests {
             input cycle: u64
             out := cycle & 0xFF
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[0x1234]);
         assert_eq!(kernel.pull("out").as_u64(), 0x34);
     }
@@ -2897,7 +2897,7 @@ mod tests {
             input cycle: u64
             out := cycle << 8
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[1]);
         assert_eq!(kernel.pull("out").as_u64(), 256);
     }
@@ -2908,7 +2908,7 @@ mod tests {
             input cycle: u64
             out := !cycle
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[0]);
         assert_eq!(kernel.pull("out").as_u64(), u64::MAX);
     }
@@ -2919,7 +2919,7 @@ mod tests {
             input cycle: u64
             out := cycle ^ 0xFF
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[0xF0]);
         assert_eq!(kernel.pull("out").as_u64(), 0x0F);
     }
@@ -2930,7 +2930,7 @@ mod tests {
             input cycle: u64
             out := cycle | 0x0F
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[0xF0]);
         assert_eq!(kernel.pull("out").as_u64(), 0xFF);
     }
@@ -2941,7 +2941,7 @@ mod tests {
             input cycle: u64
             out := cycle >> 4
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[0xFF]);
         assert_eq!(kernel.pull("out").as_u64(), 0x0F);
     }
@@ -2952,7 +2952,7 @@ mod tests {
             input cycle: u64
             out := to_f64(cycle) ** 2.0
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[3]);
         // pow(3.0, 2.0) = 9.0
         let result = kernel.pull("out").as_f64();
@@ -3010,7 +3010,7 @@ mod tests {
         // time; the compiled program's output_map points at a
         // ConstU64 leaf.
         let src = "const dim := 128\n";
-        let kernel = compile_gk(src).expect("init compile-const");
+        let kernel = compile_polydat(src).expect("init compile-const");
         let prog = kernel.program();
         assert!(prog.const_outputs().contains(&"dim"));
         let &(node_idx, _) = prog.output_map_lookup("dim").expect("dim in output map");
@@ -3028,7 +3028,7 @@ mod tests {
         // evaluates it; the compile step just must not reject.
         let src = "extern profile: String\n\
                    const label := format_str(\"label_%s\", profile)\n";
-        let result = compile_gk(src);
+        let result = compile_polydat(src);
         // We don't care if format_str exists in the stdlib — what
         // we're testing is that the contract check itself doesn't
         // fail (any error must be about an unknown function, not
@@ -3047,7 +3047,7 @@ mod tests {
         // hard structural violation. Plan A must reject.
         let src = "input cycle: u64\n\
                    const bad := hash(cycle)\n";
-        let err = compile_gk(src).expect_err(
+        let err = compile_polydat(src).expect_err(
             "Plan A must reject init binding wired to a coordinate input");
         assert!(err.contains("init binding 'bad'") && err.contains("init contract"),
             "diagnostic must name the binding and the contract; got: {err}");
@@ -3061,7 +3061,7 @@ mod tests {
         // init bindings must not depend on one.
         let src = "extern session_id: u64 = 0\n\
                    const derived := mod(session_id, 100)\n";
-        let err = compile_gk(src).expect_err(
+        let err = compile_polydat(src).expect_err(
             "Plan A must reject init binding wired to a external-write port");
         assert!(err.contains("init binding 'derived'") && err.contains("init contract"),
             "diagnostic must name the binding and the contract; got: {err}");
@@ -3074,7 +3074,7 @@ mod tests {
         // `counter()` is non-deterministic; init bindings must not
         // depend on it.
         let src = "const bad := counter()\n";
-        let err = compile_gk(src).expect_err(
+        let err = compile_polydat(src).expect_err(
             "Plan A must reject init binding wired to a non-deterministic source");
         assert!(err.contains("init binding 'bad'") && err.contains("init contract"),
             "diagnostic must name the binding and the contract; got: {err}");
@@ -3087,7 +3087,7 @@ mod tests {
         // butter case and must keep working.
         let src = "input cycle: u64\n\
                    user_id := mod(hash(cycle), 1000)\n";
-        let _kernel = compile_gk(src)
+        let _kernel = compile_polydat(src)
             .expect("non-init bindings wired to cycle must still compile");
     }
 
@@ -3099,7 +3099,7 @@ mod tests {
         let src = "const a := 1\n\
                    const b := 2\n\
                    c := 3\n";
-        let kernel = compile_gk(src).unwrap();
+        let kernel = compile_polydat(src).unwrap();
         let init_set = kernel.program().const_outputs();
         assert!(init_set.contains(&"a"), "const 'a' should be tracked");
         assert!(init_set.contains(&"b"), "const 'b' should be tracked");
@@ -3113,7 +3113,7 @@ mod tests {
             input cycle: u64
             greeting := "hello, " + "world"
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[0]);
         assert_eq!(kernel.pull("greeting").as_str(), "hello, world");
     }
@@ -3130,7 +3130,7 @@ mod tests {
             z := " end"
             out := x + y + z
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[0]);
         assert_eq!(kernel.pull("out").as_str(), "id=42 end");
     }
@@ -3144,7 +3144,7 @@ mod tests {
             n := 7
             out := "n=" + n
         "#;
-        let mut kernel = compile_gk(src).unwrap();
+        let mut kernel = compile_polydat(src).unwrap();
         kernel.set_inputs(&[0]);
         assert_eq!(kernel.pull("out").as_str(), "n=7");
     }

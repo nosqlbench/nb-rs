@@ -3,7 +3,7 @@
 
 //! Type and value assertion nodes.
 //!
-//! GK's runtime contract: node `eval` trusts its inputs. Bad input
+//! Polydat's runtime contract: node `eval` trusts its inputs. Bad input
 //! panics, by design, because the hot path stays branch-free. The
 //! "guarded" version of a node that would otherwise panic is built
 //! as an *assembly* of two functions — the original node, and an
@@ -27,11 +27,11 @@
 //!   and on these nodes.
 //!
 //! Auto-insertion is the compiler's job (M2 §"Strict Wire Mode")
-//! — these nodes are also user-callable from GK source for ad-hoc
+//! — these nodes are also user-callable from Polydat source for ad-hoc
 //! guards.
 
 use crate::dsl::const_constraints::ConstConstraint;
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 // =========================================================================
 // Type assertions: one per PortType
@@ -86,7 +86,7 @@ impl AssertType {
     }
 }
 
-impl GkNode for AssertType {
+impl PolydatNode for AssertType {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -175,7 +175,7 @@ impl AssertValue {
     }
 }
 
-impl GkNode for AssertValue {
+impl PolydatNode for AssertValue {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -206,12 +206,12 @@ impl GkNode for AssertValue {
 // =========================================================================
 
 /// Construct the right type assertion node for a given `PortType`.
-pub fn assert_type_node(typ: PortType) -> Box<dyn GkNode> {
+pub fn assert_type_node(typ: PortType) -> Box<dyn PolydatNode> {
     Box::new(AssertType::new(typ))
 }
 
 /// Construct a value assertion node for the given (type, constraint) pair.
-pub fn assert_value_node(typ: PortType, constraint: ConstConstraint) -> Box<dyn GkNode> {
+pub fn assert_value_node(typ: PortType, constraint: ConstConstraint) -> Box<dyn PolydatNode> {
     Box::new(AssertValue::new(typ, constraint))
 }
 

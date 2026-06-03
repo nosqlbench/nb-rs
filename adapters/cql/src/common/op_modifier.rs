@@ -5,7 +5,7 @@
 //!
 //! Common across both `scylla` and `cassandra-cpp` engines.
 //! Defines the universal field name list and the factory trait
-//! each engine implements to bridge from a resolved GK scope
+//! each engine implements to bridge from a resolved Polydat scope
 //! value into an engine-specific
 //! [`OpFieldModifier`](nbrs_activity::op_modifier::OpFieldModifier).
 //!
@@ -13,12 +13,12 @@
 //! §"CQL universal field superset" for naming rationale.
 
 use nbrs_activity::op_modifier::{ModifierChain, OpFieldModifier};
-use polydat::kernel::GkKernel;
+use polydat::kernel::PolydatKernel;
 use polydat::ast::Value;
 
 /// Universal per-op field names supported by every CQL engine.
 ///
-/// Each name is resolvable from any GK scope by calling
+/// Each name is resolvable from any Polydat scope by calling
 /// `kernel.lookup(name)`. The dispenser-initializer walks this
 /// list once per op-template at `map_op` time, asking the
 /// parent kernel for each name. Names that resolve become
@@ -46,12 +46,12 @@ pub const CQL_UNIVERSAL_FIELDS: &[&str] = &[
     "cql_trace",
 ];
 
-/// Engines implement this to translate a resolved GK [`Value`]
+/// Engines implement this to translate a resolved Polydat [`Value`]
 /// into a typed
 /// [`OpFieldModifier`](nbrs_activity::op_modifier::OpFieldModifier).
 ///
 /// The factory is called once per universal field that the user
-/// bound in the GK scope. Returning `Ok(None)` means "this
+/// bound in the Polydat scope. Returning `Ok(None)` means "this
 /// engine doesn't support this field yet" (deferred per
 /// SRD 73); the universal field surface skips it silently. A
 /// shape mismatch (e.g. wrong `Value` variant) returns `Err`
@@ -71,7 +71,7 @@ pub trait CqlModifierFactory {
     ) -> Result<Option<Box<dyn OpFieldModifier<Self::Statement>>>, String>;
 }
 
-/// Walk [`CQL_UNIVERSAL_FIELDS`], ask the GK scope for each name
+/// Walk [`CQL_UNIVERSAL_FIELDS`], ask the Polydat scope for each name
 /// via `parent.lookup`, and build a typed `ModifierChain`.
 ///
 /// Two-phase contract per SRD 73:
@@ -80,14 +80,14 @@ pub trait CqlModifierFactory {
 ///   (`DriverAdapter::map_op`) — once per op-template per phase.
 /// - The returned chain is stored on the dispenser. Per-cycle
 ///   `execute()` then calls `chain.apply(&mut stmt)` on the
-///   critical path. No further GK access happens at execute time.
+///   critical path. No further Polydat access happens at execute time.
 ///
 /// The session-global trace sink is fetched once via
 /// [`nbrs_activity::op_modifier::session_sink`] and attached to
 /// the chain. Sessions with no sink installed produce chains
 /// that fall through the no-observer hot path.
 pub fn build_cql_modifier_chain<F>(
-    parent: &GkKernel,
+    parent: &PolydatKernel,
     op_label: impl Into<String>,
 ) -> Result<ModifierChain<F::Statement>, String>
 where

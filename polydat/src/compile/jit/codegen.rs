@@ -19,7 +19,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 
-use crate::ast::GkNode;
+use crate::ast::PolydatNode;
 
 use super::kernels::{
     JitCore, JitKernelPull, JitKernelPush, JitKernelPushPull, JitKernelRaw,
@@ -405,11 +405,11 @@ pub(crate) enum JitOp {
 
 // ── Node classification ────────────────────────────────────
 
-/// Classify a GK node into a JIT-able operation.
+/// Classify a Polydat node into a JIT-able operation.
 ///
 /// Uses `jit_constants()` to extract assembly-time constants
 /// directly from the node — no probing hacks needed.
-pub(crate) fn classify_node(node: &dyn GkNode) -> JitOp {
+pub(crate) fn classify_node(node: &dyn PolydatNode) -> JitOp {
     let name = node.meta().name.as_str();
     let consts = node.jit_constants();
 
@@ -603,7 +603,7 @@ pub(crate) fn compile_jit_raw(
     total_slots: usize,
     steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
     output_map: HashMap<String, usize>,
-    nodes: Vec<Box<dyn GkNode>>,
+    nodes: Vec<Box<dyn PolydatNode>>,
 ) -> Result<JitKernelRaw, String> {
     let (raw_fn, _, module) = compile_jit_impl(&steps, false)?;
     Ok(JitKernelRaw {
@@ -618,7 +618,7 @@ pub(crate) fn compile_jit_push(
     total_slots: usize,
     steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
     output_map: HashMap<String, usize>,
-    nodes: Vec<Box<dyn GkNode>>,
+    nodes: Vec<Box<dyn PolydatNode>>,
     input_dependents: Vec<Vec<usize>>,
 ) -> Result<JitKernelPush, String> {
     let step_count = steps.len();
@@ -637,7 +637,7 @@ pub(crate) fn compile_jit_pull(
     total_slots: usize,
     steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
     output_map: HashMap<String, usize>,
-    nodes: Vec<Box<dyn GkNode>>,
+    nodes: Vec<Box<dyn PolydatNode>>,
     input_dependents: &[Vec<usize>],
 ) -> Result<JitKernelPull, String> {
     let step_count = steps.len();
@@ -659,7 +659,7 @@ pub(crate) fn compile_jit_push_pull(
     total_slots: usize,
     steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
     output_map: HashMap<String, usize>,
-    nodes: Vec<Box<dyn GkNode>>,
+    nodes: Vec<Box<dyn PolydatNode>>,
     input_dependents: Vec<Vec<usize>>,
 ) -> Result<JitKernelPushPull, String> {
     let step_count = steps.len();
@@ -846,7 +846,7 @@ fn compile_jit_impl(
     if provenance {
         sig.params.push(AbiParam::new(types::I64)); // clean ptr
     }
-    let func_id = module.declare_function("gk_kernel", Linkage::Local, &sig)
+    let func_id = module.declare_function("polydat_kernel", Linkage::Local, &sig)
         .map_err(|e| format!("declare kernel: {e}"))?;
 
     let mut ctx = module.make_context();
@@ -1587,7 +1587,7 @@ mod tests {
     fn jit_shuffle() {
         // Create a real Shuffle to get its constants
         use crate::library::sampling::metashift::Shuffle;
-        use crate::ast::GkNode;
+        use crate::ast::PolydatNode;
         let node = Shuffle::new(0, 1000);
         let consts = node.jit_constants();
 

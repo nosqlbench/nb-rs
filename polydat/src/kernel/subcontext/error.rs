@@ -67,7 +67,7 @@ impl SourceContext {
 /// Contract violation surfaced at finalize or spawn.
 ///
 /// Variants per SRD-67 §"Cross-binding rules" plus the umbrella
-/// [`Self::Compile`] for errors raised by the GK compiler when
+/// [`Self::Compile`] for errors raised by the Polydat compiler when
 /// the body fragment is converted into a program (typically an
 /// unbound identifier — Rule 1's catch-all under Phase 1
 /// semantics).
@@ -122,7 +122,7 @@ pub enum ContractViolation {
         prior_site: SourceContext,
         this_site: SourceContext,
     },
-    /// GK compile-time error — the body failed to compile (most
+    /// Polydat compile-time error — the body failed to compile (most
     /// commonly: unbound identifier; corresponds to Rule 1's
     /// closure-binding economy detecting a free identifier with
     /// no matching import).

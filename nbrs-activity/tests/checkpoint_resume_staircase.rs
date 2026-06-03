@@ -59,7 +59,7 @@ fn staircase_failures_resume_correctly() {
         // semantics — each `nbrs run` is a fresh process). To
         // simulate the process boundary in-test we clear the
         // sequence cache before each run.
-        nbrs_adapter_testkit::gk_fixtures::clear_sequence_cache_for(
+        nbrs_adapter_testkit::polydat_fixtures::clear_sequence_cache_for(
             statefile.to_str().expect("non-utf8 statefile"),
         );
         let mut args = vec![

@@ -12,8 +12,8 @@
 > | Item | Authoritative home |
 > |------|--------------------|
 > | 1 Binding visibility scope | Retired from `00_index.md` (subsumed by SRD 10 §"GK as the unified access surface"). |
-> | 2 `{gk:name}` qualifier | Retired; GK owns all resolution — no separate qualifier. See SRD 10. |
-> | 3 Per-phase config override | SRD 21 §"Parameter Resolution" + §"Explicit layering with GK helpers". |
+> | 2 `{polydat:name}` qualifier | Retired; Polydat owns all resolution — no separate qualifier. See SRD 10. |
+> | 3 Per-phase config override | SRD 21 §"Parameter Resolution" + §"Explicit layering with Polydat helpers". |
 > | 4 `cycles=train_count` | SRD 10 + SRD 21; `cycles` loses special status, cursors are arbitrary, `train_count` is a GK-folded constant in local/workload scope. |
 > | 5 Adapter vs core field routing | SRD 30 §"Core-first field processing". |
 > | 6 `input cycle: u64` default | SRD 10 §"Input Declaration" — inputs inferred when omitted. |
@@ -43,10 +43,10 @@ decisions back into the authoritative sysref files.
 
 **Status.** Effectively resolved by the new §"GK as the unified
 access surface" in SRD 10 and the runtime-context-node catalog in
-SRD 12. If GK is the assumed access path for any value a workload
-might read, then "who declares which GK outputs get compiled?" has
-one answer: anything referenced through a GK binding (explicit
-`{bind:…}`, param injection into GK source, or op-field bind
+SRD 12. If Polydat is the assumed access path for any value a workload
+might read, then "who declares which Polydat outputs get compiled?" has
+one answer: anything referenced through a Polydat binding (explicit
+`{bind:…}`, param injection into Polydat source, or op-field bind
 point) is in-scope; the binding compiler scanning both op fields
 and params is the right mechanism.
 
@@ -57,7 +57,7 @@ a cross-reference to SRD 10 / 12.
 
 ---
 
-## 2. `{gk:name}` qualifier for GK-constant refs in params
+## 2. `{polydat:name}` qualifier for GK-constant refs in params
 
 **Where.** `00_index.md` tension #2; resolution discussed in
 `21_parameters.md` §"Activity Config from Params".
@@ -65,16 +65,16 @@ a cross-reference to SRD 10 / 12.
 **Context.** Workload params referenced in op templates (e.g.
 `cycles: "{train_count}"`) need to pull from GK-folded constants.
 Today the resolver tries CLI, then workload params, then recurses
-through `resolve_gk_refs` for constant substitution. The
-ambiguity: a bare `{name}` could mean a param or a GK constant.
+through `resolve_polydat_refs` for constant substitution. The
+ambiguity: a bare `{name}` could mean a param or a Polydat constant.
 
 **Options.**
 
 - **A. Keep it implicit.** `{name}` resolves by precedence —
-  GK binding → capture → input → param (the SRD 21 unqualified
+  Polydat binding → capture → input → param (the SRD 21 unqualified
   shorthand). Simple for users; one warning if the name is
   ambiguous. Matches the rule already used in op fields.
-- **B. Add `{gk:name}`.** An explicit qualifier makes
+- **B. Add `{polydat:name}`.** An explicit qualifier makes
   config-from-GK unambiguous and auditable. Costs a new
   top-level qualifier to document and teach; redundant when
   `{bind:name}` already exists (they'd resolve to the same
@@ -88,10 +88,10 @@ ambiguity: a bare `{name}` could mean a param or a GK constant.
 **Recommendation sketch.** C is cheapest: strict already exists,
 and activity config is where the ambiguity hurts (`cycles`,
 `concurrency`, `rate` resolution changes depending on whether
-`{name}` is a GK constant or a param). Option B creates a new
+`{name}` is a Polydat constant or a param). Option B creates a new
 qualifier that duplicates `{bind:…}`.
 
->> Since we are already reifying everything now through gk, doesn't this distinction matter less? There was a time when we wondered about precedence for implicit parameter sources, but gk owns all this now.
+>> Since we are already reifying everything now through polydat, doesn't this distinction matter less? There was a time when we wondered about precedence for implicit parameter sources, but Polydat owns all this now.
 
 ---
 
@@ -112,8 +112,8 @@ fragile and undiscoverable.
   Simple, matches YAML expectations, keeps resolution local.
   Costs: needs a merge rule (shallow? deep?) and a precedence
   story (phase-block > workload > env > CLI? or CLI still wins?).
->> block level params block it is, with the standard "closes first wins" rule working out from the layers, but we also need a gk expression which will let us say "this or the default that", so layering can be done explicitly where desired. We should also have a "required(...)" form to assert a value is defined, and a set of predicates which can be used as assertions on values when needed.
->> Also, since concurrency is a dynamic control, runtime control events may override it, but it if is declared final in a parent GK scope, this should result in a logical error. This is how it should work naturatlly, but it is an important test case which needs to be covered.
+>> block level params block it is, with the standard "closes first wins" rule working out from the layers, but we also need a Polydat expression which will let us say "this or the default that", so layering can be done explicitly where desired. We should also have a "required(...)" form to assert a value is defined, and a set of predicates which can be used as assertions on values when needed.
+>> Also, since concurrency is a dynamic control, runtime control events may override it, but it if is declared final in a parent Polydat scope, this should result in a logical error. This is how it should work naturatlly, but it is an important test case which needs to be covered.
 - **B. Dynamic control at phase scope.** SRD 23 already puts
   `concurrency` at phase scope — have the phase's declared
   control seed from a phase-local YAML field (e.g.
@@ -141,25 +141,25 @@ probably over-engineered for v1 but cheap to add later.
 
 **Context.** Vector workloads want `cycles: "{train_count}"` so
 the cycle count equals the dataset size at init. This requires
-a GK init-time constant to flow into activity config before
+a Polydat init-time constant to flow into activity config before
 the phase starts. Today, no explicit resolution chain exists —
 the value would be a string like `"{train_count}"` seen by the
 runner.
 >> We need to make it very clear that "cycles" is not special and only exists here as a convention because in previous designs it was special. In this design all inputs are arbitrarily specifyable by the user, and if they want to use cycle as a cursor name, so be it. But cursors are they way, and cycle is only a finesse for convenience and familiarity.
->> Further, train_count is an observable parameter which can be resolved at GK kernel instancing and compile times, so long as the lexical scoping of the parameter is in the right place. In other words, it belongs in the local scope where it is used variously. If it is used consistently, then it can be a workload parameter, where it should be reified into the workload-level GK.
+>> Further, train_count is an observable parameter which can be resolved at Polydat kernel instancing and compile times, so long as the lexical scoping of the parameter is in the right place. In other words, it belongs in the local scope where it is used variously. If it is used consistently, then it can be a workload parameter, where it should be reified into the workload-level GK.
 
 **Options.**
 
-- **A. Pre-compile GK constants, then resolve.** Compile the
-  workload's GK program to the constant-folded stage, extract
+- **A. Pre-compile Polydat constants, then resolve.** Compile the
+  workload's Polydat program to the constant-folded stage, extract
   init-time constants into a map, substitute those into param
   values before the runner parses `cycles` / `concurrency` /
   `rate`. Cost: introduces a two-pass init (GK fold, then
   activity config). Already implied by the resolver stub in
-  SRD 21:100–108 (`resolve_param_with_gk`).
-- **B. Reify as GK binding and let the runner read it as a
+  SRD 21:100–108 (`resolve_param_with_polydat`).
+- **B. Reify as Polydat binding and let the runner read it as a
   control.** `cycles` becomes a `Control<u64>` whose initial
-  value comes from the GK fold; phase runner reads it through
+  value comes from the Polydat fold; phase runner reads it through
   the control the same way it reads `rate`. Uniform with SRD
   23, but `cycles` doesn't actually need to be mutable — it's
   set once at launch — so declaring it as a control is
@@ -224,14 +224,14 @@ can contribute their own controls / nodes / ops" story
 
 ## 6. `input cycle: u64` — explicit vs default
 
-**Where.** `00_index.md` tension #6; `10_gk_language.md:18`.
+**Where.** `00_index.md` tension #6; `10_polydat_language.md:18`.
 
-**Context.** Every GK binding block currently requires
+**Context.** Every Polydat binding block currently requires
 `input cycle: u64` at the top, even though 99% of them use
 exactly that one input. The question is whether to make it
 implicit.
 
->> GK system design already identifies implicit input wires and implicit output wires. With no inputs declaration, inference is required. WIth the inferred input and output wires, it is still possible to do strict checking on closures which feed inputs and the effective closure provided by the GK instance which feeds known outputs. Again, cycle is not special.
+>> Polydat system design already identifies implicit input wires and implicit output wires. With no inputs declaration, inference is required. WIth the inferred input and output wires, it is still possible to do strict checking on closures which feed inputs and the effective closure provided by the Polydat instance which feeds known outputs. Again, cycle is not special.
 
 **Options.**
 
@@ -349,7 +349,7 @@ throttle) now flow through the canonical
 in [SRD 32 §"Init-Time Fixture and Consumer Self-Registration"]
 and [SRD 31 §"Pull plan vs bind plan"]. The bind-point scanner
 (`bindings::collect_param_bindings`) was already walking both op
-fields and params, so the GK kernel has always known about every
+fields and params, so the Polydat kernel has always known about every
 referenced name; the side channel was a plumbing artifact that
 this slice retired.
 
@@ -381,7 +381,7 @@ and the 00_index description. But:
 
 - **A. Drop DRAFT now.** Rename headers, update index entries.
   The remaining implementation work (fiber executor resize,
-  `dryrun=controls`, TUI edit affordance, GK control nodes,
+  `dryrun=controls`, TUI edit affordance, Polydat control nodes,
   web API) is integration, not design change — doesn't
   warrant a design-status tag.
 - **B. Keep DRAFT until all implementation lands.** Treats
@@ -424,7 +424,7 @@ doing while we're cleaning up.
 | # | Item | Scope |
 |---|------|-------|
 | 1 | Retire tension #1 from index | Trivial edit |
-| 2 | Pick resolution model for `{gk:name}` | Decision + doc |
+| 2 | Pick resolution model for `{polydat:name}` | Decision + doc |
 | 3 | Pick phase-scope config override mechanism | Decision + small impl |
 | 4 | Specify GK-const → activity config chain | Decision + impl |
 | 5 | Decide adapter-field-routing mechanism | Decision + refactor |

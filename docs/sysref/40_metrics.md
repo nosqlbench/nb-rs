@@ -419,7 +419,7 @@ reporters outside the tick loop.
 
 ---
 
-## GK Metric Functions
+## Polydat Metric Functions
 
 GK programs can read live metrics via two node functions:
 

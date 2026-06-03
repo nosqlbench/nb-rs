@@ -24,7 +24,7 @@
 //! the rest of the run trace. With no sink installed (unit tests,
 //! dryrun, pre-init) lines fall back to stderr.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// One of the four supported log levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +75,7 @@ impl LogPassthrough {
     }
 }
 
-impl GkNode for LogPassthrough {
+impl PolydatNode for LogPassthrough {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -212,7 +212,7 @@ pub(crate) fn build_node(
     _wires: &[crate::compile::assembly::WireRef],
     wire_types: &[crate::ast::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     let level = match name {
         "log_debug" => LogLevel::Debug,
         "log_info" => LogLevel::Info,

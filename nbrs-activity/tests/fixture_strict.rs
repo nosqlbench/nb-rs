@@ -21,23 +21,23 @@ use nbrs_activity::adapter::{
 };
 use nbrs_activity::fixture::ScopeFixture;
 use nbrs_activity::validation::ValidatingDispenser;
-use nbrs_activity::wrappers::{ConditionalDispenser, ThrottleDispenser};
+use nbrs_activity::wrappers::{ConditionalDispenser, DelayDispenser, WhileWrapper};
 use nbrs_metrics::labels::Labels;
-use polydat::dsl::compile::compile_gk;
-use polydat::kernel::GkProgram;
+use polydat::dsl::compile::compile_polydat;
+use polydat::kernel::PolydatProgram;
 
 /// Minimal program with `cycle` + `ground_truth: Str` extern.
-fn program_with_gt() -> Arc<GkProgram> {
-    compile_gk(
+fn program_with_gt() -> Arc<PolydatProgram> {
+    compile_polydat(
         "input cycle: u64\n\
          extern ground_truth: Str = \"\"\n",
-    ).expect("compile_gk").into_program()
+    ).expect("compile_polydat").into_program()
 }
 
 /// Program with no externs — every wrapper that registers any
 /// non-`cycle` name will fail.
-fn program_minimal() -> Arc<GkProgram> {
-    compile_gk("input cycle: u64\n").expect("compile_gk").into_program()
+fn program_minimal() -> Arc<PolydatProgram> {
+    compile_polydat("input cycle: u64\n").expect("compile_polydat").into_program()
 }
 
 /// No-op inner dispenser — we never call execute in these tests.
@@ -128,11 +128,110 @@ fn conditional_unknown_name_errors_loud() {
 }
 
 #[test]
-fn throttle_unknown_name_errors_loud() {
+fn while_without_synthesised_binding_errors_loud() {
+    // WhileWrapper expects `__while` to have been injected by
+    // the op-kernel synthesiser. If the synthesis path didn't
+    // run (or compiled to a different binding name), wrap
+    // surfaces the missing binding instead of papering over it.
+    let program = program_minimal();
+    let mut fx = ScopeFixture::new(program);
+    let inner: Arc<dyn OpDispenser> = Arc::new(NoopDispenser);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let result = WhileWrapper::wrap(inner, stop, &mut fx);
+    let err = match result {
+        Ok(_) => panic!("wrap should have errored: __while is not in the program"),
+        Err(e) => e,
+    };
+    assert!(err.contains("__while"),
+        "while-wrapper error must name the missing binding: {err}");
+    assert!(err.contains("while"),
+        "error must identify the consumer: {err}");
+}
+
+#[test]
+fn while_with_synthesised_binding_succeeds() {
+    // When the op-kernel synthesiser has injected `__while` as
+    // an extern (or as an output), WhileWrapper::wrap registers
+    // the pull cleanly.
+    let program = polydat::dsl::compile::compile_polydat(
+        "input cycle: u64\n\
+         extern __while: bool = false\n",
+    ).expect("compile_polydat").into_program();
+    let mut fx = ScopeFixture::new(program);
+    let inner: Arc<dyn OpDispenser> = Arc::new(NoopDispenser);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    WhileWrapper::wrap(inner, stop, &mut fx)
+        .expect("wrap with synthesised __while should succeed");
+    let plan = fx.seal();
+    assert_eq!(plan.names(), vec!["__while"]);
+}
+
+#[test]
+fn delay_before_after_registers_both_pulls() {
+    // The BeforeAfter form must register a pull handle for each
+    // declared subkey so the dispenser can read independently.
+    let program = polydat::dsl::compile::compile_polydat(
+        "input cycle: u64\n\
+         extern pre: u64 = 0\n\
+         extern post: u64 = 0\n",
+    ).expect("compile_polydat").into_program();
+    let mut fx = ScopeFixture::new(program);
+    let inner: Arc<dyn OpDispenser> = Arc::new(NoopDispenser);
+    DelayDispenser::wrap_before_after(inner, Some("pre"), Some("post"), &mut fx)
+        .expect("both names known → wrap succeeds");
+    let plan = fx.seal();
+    assert_eq!(plan.len(), 2);
+    let names: Vec<&str> = plan.names();
+    assert!(names.contains(&"pre"));
+    assert!(names.contains(&"post"));
+}
+
+#[test]
+fn delay_before_after_only_before_registers_one_pull() {
+    let program = polydat::dsl::compile::compile_polydat(
+        "input cycle: u64\n\
+         extern pre: u64 = 0\n",
+    ).expect("compile_polydat").into_program();
+    let mut fx = ScopeFixture::new(program);
+    let inner: Arc<dyn OpDispenser> = Arc::new(NoopDispenser);
+    DelayDispenser::wrap_before_after(inner, Some("pre"), None, &mut fx)
+        .expect("only before set → wrap succeeds");
+    let plan = fx.seal();
+    assert_eq!(plan.names(), vec!["pre"]);
+}
+
+#[test]
+fn delay_before_after_rejects_empty() {
+    let program = program_minimal();
+    let mut fx = ScopeFixture::new(program);
+    let inner: Arc<dyn OpDispenser> = Arc::new(NoopDispenser);
+    let result = DelayDispenser::wrap_before_after(inner, None, None, &mut fx);
+    let err = match result {
+        Ok(_) => panic!("empty before/after should error"),
+        Err(e) => e,
+    };
+    assert!(err.contains("at least one"));
+}
+
+#[test]
+fn delay_before_after_unknown_before_errors_loud() {
+    let program = program_minimal();
+    let mut fx = ScopeFixture::new(program);
+    let inner: Arc<dyn OpDispenser> = Arc::new(NoopDispenser);
+    let err = match DelayDispenser::wrap_before_after(inner, Some("ghost_pre"), None, &mut fx) {
+        Ok(_) => panic!("ghost_pre is unknown — wrap should error"),
+        Err(e) => e,
+    };
+    assert!(err.contains("ghost_pre"));
+    assert!(err.contains("delay.before"));
+}
+
+#[test]
+fn delay_unknown_name_errors_loud() {
     let program = program_minimal();
     let mut fx = ScopeFixture::new(program.clone());
     let inner: Arc<dyn OpDispenser> = Arc::new(NoopDispenser);
-    let result = ThrottleDispenser::wrap(
+    let result = DelayDispenser::wrap(
         inner, "ghost_delay", &mut fx,
     );
     let err = match result {
@@ -140,8 +239,8 @@ fn throttle_unknown_name_errors_loud() {
         Err(e) => e,
     };
     assert!(err.contains("ghost_delay"),
-        "throttle error must name the missing binding: {err}");
-    assert!(err.contains("throttle"),
+        "delay error must name the missing binding: {err}");
+    assert!(err.contains("delay"),
         "error must identify the consumer: {err}");
 }
 
@@ -160,9 +259,9 @@ fn duplicate_registration_is_idempotent_across_consumers() {
         inner, &template, &labels, Some(program.as_ref()), &mut fx,
     ).unwrap();
 
-    // Throttle hijacks the same name — contrived but the
+    // Delay hijacks the same name — contrived but the
     // idempotency rule must hold regardless of intent.
-    let _throttled = ThrottleDispenser::wrap(
+    let _delayed = DelayDispenser::wrap(
         validated, "ground_truth", &mut fx,
     ).unwrap();
 

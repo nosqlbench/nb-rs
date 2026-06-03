@@ -40,7 +40,7 @@
 //! ([`eval::evaluate_spec`], [`eval::pre_evaluate_clause`]) that
 //! both the scope-walker and the runtime evaluator consume.
 //!
-//! ## Why GK owns it
+//! ## Why Polydat owns it
 //!
 //! Comprehensions cut across three subsystems:
 //!
@@ -48,7 +48,7 @@
 //!   the textual shapes (`for_each`, `for_combinations`,
 //!   `for_each_union`).
 //! - The **scope synthesiser** (`nbrs-activity::scope_synth`)
-//!   needs to emit the GK source for each comprehension's child
+//!   needs to emit the Polydat source for each comprehension's child
 //!   kernel — extern declarations for the coordinates, final
 //!   injections for workload params the spec interpolates, etc.
 //! - The **executor** (`nbrs-activity::executor`) needs to
@@ -102,4 +102,4 @@ pub use validate::{Mode, ValidationError, ValidationReport, ValidationWarning, v
 // private — only `runtime` and `eval` use them internally
 // after the synthesis dissolve. Kept available via
 // `eval::*` for crate-internal callers.
-pub use eval::{evaluate_spec, pre_evaluate_clause, value_to_gk_type_name};
+pub use eval::{evaluate_spec, pre_evaluate_clause, value_to_polydat_type_name};

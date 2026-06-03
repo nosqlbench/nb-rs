@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! End-to-end test: YAML workload → GK kernel → stdout activity.
+//! End-to-end test: YAML workload → Polydat Kernel → stdout activity.
 //!
 //! This is the full pipeline test — the closest thing to running
 //! `nb-rs run workload.yaml driver=stdout`.
@@ -14,13 +14,13 @@ use nbrs_adapter_stdout::{StdoutAdapter, StdoutConfig, StdoutFormat};
 use nbrs_activity::opseq::{OpSequence, SequencerType};
 use nbrs_activity::synthesis::OpBuilder;
 use nbrs_metrics::labels::Labels;
-use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::hash::Hash64;
 use polydat::library::arithmetic::ModU64;
 use polydat::library::identity::Identity;
 use nbrs_workload::parse::parse_ops;
 
-/// Parse a workload YAML, build a GK kernel from bindings that
+/// Parse a workload YAML, build a Polydat Kernel from bindings that
 /// cover all referenced bind points, wire up the activity, and
 /// run it through the stdout adapter via the tiered DriverAdapter interface.
 #[tokio::test]
@@ -37,7 +37,7 @@ ops:
     assert_eq!(ops.len(), 1);
     assert_eq!(ops[0].name, "write_user");
 
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("user_id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
     asm.add_output("user_id", WireRef::node("user_id"));
     let kernel = asm.compile().unwrap();
@@ -89,7 +89,7 @@ ops:
 
     let ops = parse_ops(yaml).unwrap();
 
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("h1", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("user_id", Box::new(ModU64::new(1_000_000)), vec![WireRef::node("h1")]);
     asm.add_node("h2", Box::new(Hash64::new()), vec![WireRef::node("h1")]);
@@ -146,7 +146,7 @@ ops:
 
     let ops = parse_ops(yaml).unwrap();
 
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
     asm.add_output("id", WireRef::node("id"));
     let kernel = asm.compile().unwrap();
@@ -197,7 +197,7 @@ ops:
 
     let ops = parse_ops(yaml).unwrap();
 
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("user_id", Box::new(ModU64::new(10000)), vec![WireRef::node("h")]);
     asm.add_output("user_id", WireRef::node("user_id"));

@@ -66,7 +66,7 @@ inventory::submit! {
         name: WRAPPER_NAME,
         owned_fields: &["verify", "relevancy", "strict"],
         triggers: wrapper_triggers,
-        requires_inner: &[crate::wrappers::traversing::NAME],
+        requires_inner: &[crate::wrappers::traverse::NAME],
         forbids_outer: &[],
         mutually_exclusive_with: &[],
         describe_assignment: wrapper_describe_assignment,
@@ -107,6 +107,13 @@ pub const CORE_OP_PARAMS: &[&str] = &[
     "ratio", "emit",
     // Adapter selection
     "adapter", "driver",
+    // Daemon-op declaration + loop / rate primitives. `daemon`
+    // marks an op for cycle-pool dispatch onto a daemon fiber
+    // (with per-op-name cap); `daemon_cancel_grace_ms` overrides
+    // the phase-exit drain budget; `while` declares a loop
+    // predicate evaluated per-iteration; `rate` paces the loop
+    // (independent of activity-level rate).
+    "daemon", "daemon_cancel_grace_ms", "while", "rate",
 ];
 
 /// Configuration for relevancy measurement on a single op template.
@@ -114,7 +121,7 @@ pub const CORE_OP_PARAMS: &[&str] = &[
 pub struct RelevancyConfig {
     /// Column/field name to extract actual result indices from.
     pub actual_field: String,
-    /// GK binding name that produces ground truth indices.
+    /// Polydat binding name that produces ground truth indices.
     pub expected_binding: String,
     /// Recall window — number of top results used in the @k
     /// metric computation. The first `k` of `actual` are
@@ -420,7 +427,7 @@ impl ValidatingDispenser {
         inner: Arc<dyn OpDispenser>,
         template: &nbrs_workload::model::ParsedOp,
         labels: &Labels,
-        program: Option<&polydat::kernel::GkProgram>,
+        program: Option<&polydat::kernel::PolydatProgram>,
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<(Arc<dyn OpDispenser>, Option<Arc<ValidationMetrics>>), String> {
         // SRD-68 Push 5c-cleanup: validation wrapper does its own
@@ -566,7 +573,7 @@ impl OpDispenser for ValidatingDispenser {
                         message: format!(
                             "relevancy: no ground truth for '{name}'. \
                              Available wires: {available:?}. \
-                             Ensure the binding exists in the GK program.",
+                             Ensure the binding exists in the Polydat program.",
                         ),
                         retryable: false,
                     }));
@@ -943,7 +950,7 @@ const RELEVANCY_VOCAB: &[&str] = &[
 /// ```
 fn parse_relevancy(
     template: &nbrs_workload::model::ParsedOp,
-    _program: Option<&polydat::kernel::GkProgram>,
+    _program: Option<&polydat::kernel::PolydatProgram>,
     wires: Option<&dyn WireSource>,
 ) -> Result<Option<RelevancyConfig>, String> {
     let Some(rel) = template.params.get("relevancy") else { return Ok(None); };
@@ -1117,7 +1124,7 @@ fn parse_count_param(
     }
 }
 
-/// Predicate for a bare GK identifier (single ident-shaped token).
+/// Predicate for a bare Polydat identifier (single ident-shaped token).
 /// Inlined locally to avoid pulling the `crate::wires::is_bare_ident`
 /// pub-but-unexported helper into this file's surface.
 fn is_bare_ident(s: &str) -> bool {
@@ -1693,12 +1700,12 @@ mod tests {
         // against the canonical kernel at wrap time. Same one-shot
         // evaluation as the `{k}` text-template form but without
         // the placeholder braces.
-        use polydat::dsl::compile::compile_gk;
-        let kernel = compile_gk(
+        use polydat::dsl::compile::compile_polydat;
+        let kernel = compile_polydat(
             "input cycle: u64\n\
              const k := 10\n\
              const limit := 100\n",
-        ).expect("compile_gk wires");
+        ).expect("compile_polydat wires");
         let wires: &dyn WireSource = &kernel;
 
         let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT key FROM t");

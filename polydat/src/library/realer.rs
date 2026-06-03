@@ -12,7 +12,7 @@
 //! distribution) and returns a String. Weighted variants select
 //! proportionally to Census frequency data.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use crate::library::sampling::alias::AliasTableU64;
 
 // =================================================================
@@ -110,7 +110,7 @@ impl UniformNameSampler {
 }
 
 // =================================================================
-// GK Nodes
+// Polydat Nodes
 // =================================================================
 
 /// Female first names weighted by Census frequency.
@@ -147,7 +147,7 @@ impl FirstNames {
     }
 }
 
-impl GkNode for FirstNames {
+impl PolydatNode for FirstNames {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
@@ -182,7 +182,7 @@ impl StateCodes {
     }
 }
 
-impl GkNode for StateCodes {
+impl PolydatNode for StateCodes {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
@@ -218,7 +218,7 @@ impl CountryNames {
     }
 }
 
-impl GkNode for CountryNames {
+impl PolydatNode for CountryNames {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
@@ -254,7 +254,7 @@ impl CountryCodes {
     }
 }
 
-impl GkNode for CountryCodes {
+impl PolydatNode for CountryCodes {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
@@ -289,7 +289,7 @@ impl Nationalities {
     }
 }
 
-impl GkNode for Nationalities {
+impl PolydatNode for Nationalities {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
@@ -337,7 +337,7 @@ impl FullNames {
     }
 }
 
-impl GkNode for FullNames {
+impl PolydatNode for FullNames {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         use xxhash_rust::xxh3::xxh3_64;
@@ -416,7 +416,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a real-world data node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "first_names" => Some(Ok(Box::new(FirstNames::female()))),
         "full_names" => Some(Ok(Box::new(FullNames::new()))),

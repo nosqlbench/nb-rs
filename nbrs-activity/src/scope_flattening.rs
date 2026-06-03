@@ -4,7 +4,7 @@
 //! SRD-13d Phase 3 — workload-init scope-flattening pre-walk.
 //!
 //! Pulls together the AST-side classification
-//! ([`nbrs_workload::gk_matter::HasGkMatter`]) and the scope-
+//! ([`nbrs_workload::polydat_matter::HasPolydatMatter`]) and the scope-
 //! tree marking ([`crate::scope_tree::ScopeTree::mark_scope_flattening`])
 //! to produce a fully-marked scope tree before any kernel
 //! instances exist.
@@ -20,7 +20,7 @@
 //!   to walk past flattened tiers safely.
 //!
 //! Today's predicate is **conservative**: any AST node that
-//! classifies as `GkMatter::Definitions` materialises. The
+//! classifies as `PolydatMatter::Definitions` materialises. The
 //! hash-subset refinement (SRD-13d §3.2 step 3.ii — "the
 //! `Definitions` content collapses by hash") is reserved for
 //! Phase 6 (premap descent + per-op-template kernel
@@ -29,12 +29,12 @@
 //!
 //! Even with the conservative predicate, the cheap path
 //! (`None` / `Readonly` → flatten) covers the bulk of real
-//! workloads — most op templates have no GK content beyond
+//! workloads — most op templates have no Polydat content beyond
 //! parent-scope reads.
 
 use std::collections::HashMap;
 
-use nbrs_workload::gk_matter::{GkMatter, HasGkMatter};
+use nbrs_workload::polydat_matter::{PolydatMatter, HasPolydatMatter};
 use nbrs_workload::model::{BindingsDef, ParsedOp, WorkloadPhase};
 
 use crate::scope_tree::{ScopeKind, ScopeNodeIdx, ScopeTree};
@@ -72,7 +72,7 @@ pub fn classify_and_mark(tree: &mut ScopeTree, inputs: &ClassifyInputs<'_>) {
     // not globally unique — two phases can each declare an op
     // called `select_ann` with very different bodies — so the
     // flat `phases.values().flat_map(|p| p.ops)` lookup that used
-    // to live in `scope_kind_gk_matter` could silently pick the
+    // to live in `scope_kind_polydat_matter` could silently pick the
     // wrong phase's op and apply the wrong classification.
     // Mirrors the same disambiguation `runner.rs::InstallSpec::OpTemplate`
     // already does at install time.
@@ -91,13 +91,13 @@ pub fn classify_and_mark(tree: &mut ScopeTree, inputs: &ClassifyInputs<'_>) {
     }
 
     tree.mark_scope_flattening(|kind, idx| {
-        let matter = scope_kind_gk_matter(kind, idx, inputs, &owning_phase);
-        matches!(matter, GkMatter::Definitions)
+        let matter = scope_kind_polydat_matter(kind, idx, inputs, &owning_phase);
+        matches!(matter, PolydatMatter::Definitions)
     });
 }
 
 /// Map a scope-tree `ScopeKind` to the AST node's
-/// `GkMatter` classification.
+/// `PolydatMatter` classification.
 ///
 /// - **Workload root** — consults the top-level `bindings:`
 ///   block and the workload-params map.
@@ -105,7 +105,7 @@ pub fn classify_and_mark(tree: &mut ScopeTree, inputs: &ClassifyInputs<'_>) {
 ///   content of their own; the underlying `ScenarioNode`
 ///   children do.
 /// - **Phase** — looks up the named phase and consults
-///   `WorkloadPhase::gk_matter` (phase-level `bindings:`,
+///   `WorkloadPhase::polydat_matter` (phase-level `bindings:`,
 ///   `for_each:`, `cycles=` parent refs).
 /// - **Comprehension / DoWhile / DoUntil** — Always
 ///   `Definitions`: iteration constructs bind iteration
@@ -113,26 +113,26 @@ pub fn classify_and_mark(tree: &mut ScopeTree, inputs: &ClassifyInputs<'_>) {
 /// - **IncludedScenario** — `None`. The wrapper itself adds
 ///   nothing; the included scenario's children carry the
 ///   classification.
-fn scope_kind_gk_matter(
+fn scope_kind_polydat_matter(
     kind: &ScopeKind,
     idx: ScopeNodeIdx,
     inputs: &ClassifyInputs<'_>,
     owning_phase: &std::collections::HashMap<ScopeNodeIdx, String>,
-) -> GkMatter {
+) -> PolydatMatter {
     match kind {
         ScopeKind::Workload => {
-            // Mirrors `Workload::gk_matter` without requiring
+            // Mirrors `Workload::polydat_matter` without requiring
             // the whole struct.
             if !inputs.bindings.is_empty() || !inputs.params.is_empty() {
-                GkMatter::Definitions
+                PolydatMatter::Definitions
             } else {
-                GkMatter::None
+                PolydatMatter::None
             }
         }
-        ScopeKind::Scenario { .. } => GkMatter::None,
+        ScopeKind::Scenario { .. } => PolydatMatter::None,
         ScopeKind::Phase { name } => inputs.phases.get(name)
-            .map(WorkloadPhase::gk_matter)
-            .unwrap_or(GkMatter::None),
+            .map(WorkloadPhase::polydat_matter)
+            .unwrap_or(PolydatMatter::None),
         ScopeKind::OpTemplate { name } => {
             // SRD-13d §3.1 OpTemplate classification: look up the
             // op against its OWNING phase (resolved via the
@@ -141,26 +141,26 @@ fn scope_kind_gk_matter(
             // phases declare ops with the same name.
             let phase_name = match owning_phase.get(&idx) {
                 Some(n) => n,
-                None => return GkMatter::None,
+                None => return PolydatMatter::None,
             };
             inputs.phases.get(phase_name)
                 .and_then(|p| p.ops.iter().find(|op| op.name == *name))
-                .map(ParsedOp::gk_matter)
-                .unwrap_or(GkMatter::None)
+                .map(ParsedOp::polydat_matter)
+                .unwrap_or(PolydatMatter::None)
         }
         ScopeKind::Comprehension { .. }
         | ScopeKind::DoWhile { .. }
-        | ScopeKind::DoUntil { .. } => GkMatter::Definitions,
-        ScopeKind::IncludedScenario { .. } => GkMatter::None,
+        | ScopeKind::DoUntil { .. } => PolydatMatter::Definitions,
+        ScopeKind::IncludedScenario { .. } => PolydatMatter::None,
         // Scenario-tree-level `bindings:` (and the canonical
-        // lowered form of `set:`) install GK matter — same
+        // lowered form of `set:`) install Polydat matter — same
         // category as the iteration constructs.
-        ScopeKind::Bindings { .. } => GkMatter::Definitions,
+        ScopeKind::Bindings { .. } => PolydatMatter::Definitions,
     }
 }
 
 /// Diagnostic helper: enumerate every scope node's mark and
-/// logical name. Used by `dryrun=op` and `nbrs describe gk`
+/// logical name. Used by `dryrun=op` and `nbrs describe wiring`
 /// (when SRD-13d phases 7 / 8 fully wire those surfaces).
 /// Returns `(idx, depth, materialised, logical_name,
 /// kind_label)` quintuples in DFS order.
@@ -229,7 +229,7 @@ mod tests {
     fn phase_with_bindings_materialises() {
         let mut phases = HashMap::new();
         let mut p1 = empty_phase();
-        p1.bindings = BindingsDef::GkSource("k := 5".into());
+        p1.bindings = BindingsDef::PolydatSource("k := 5".into());
         phases.insert("p1".into(), p1);
         phases.insert("p2".into(), empty_phase());
         let mut tree = ScopeTree::build("default", &[
@@ -248,7 +248,7 @@ mod tests {
     fn workload_with_top_level_bindings_materialises_root() {
         let mut phases = HashMap::new();
         phases.insert("p".into(), empty_phase());
-        let bindings = BindingsDef::GkSource("dataset := \"sift\"".into());
+        let bindings = BindingsDef::PolydatSource("dataset := \"sift\"".into());
         let mut tree = ScopeTree::build("default",
             &[ScenarioNode::Phase("p".into())]);
         mark_with(&mut tree, &bindings, &HashMap::new(), &phases);

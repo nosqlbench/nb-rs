@@ -1,4 +1,4 @@
-# math_and_bitwise.yaml — Demonstrates GK infix operators
+# math_and_bitwise.yaml — Demonstrates Polydat infix operators
 #
 # Covers: arithmetic (+, -, *, /, %, **), bitwise (&, |, ^, <<, >>),
 # type-aware dispatch (u64 vs f64), auto-widening, parenthesized

@@ -19,7 +19,7 @@
 //! `THROTTLE`, …) moved to their respective wrappers as
 //! `pub const NAME: WrapperName`. Code that needs a particular
 //! wrapper's name reaches it via, e.g.,
-//! `crate::wrappers::throttle::NAME` (and
+//! `crate::wrappers::delay::NAME` (and
 //! `crate::validation::WRAPPER_NAME` for the validate layer).
 
 /// Strip the brace wrapping from a substitution-style binding
@@ -75,7 +75,7 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let names: Vec<&str> = r.iter().map(|reg| reg.name.as_str()).collect();
         for expected in [
-            "traverse", "throttle", "validate", "poll",
+            "traverse", "delay", "validate", "poll",
             "if", "emit", "result", "metrics",
         ] {
             assert!(
@@ -196,7 +196,7 @@ mod tests {
     fn cli_default_order_replaces_built_in_tiebreaker() {
         let r = WrapperRegistry::from_inventory();
         let custom = vec![
-            "traverse", "throttle", "validate", "if", "poll",
+            "traverse", "delay", "validate", "if", "poll",
             "emit", "result", "metrics",
         ];
         let resolver = WrapperResolver::from_names(&custom, &r).unwrap();
@@ -270,7 +270,7 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let mut t = empty_template("full");
-        t.delay = Some("rate".into());
+        t.delay = Some(nbrs_workload::model::DelaySpec::Before("rate".into()));
         t.params.insert("verify".into(),
             serde_json::Value::String("ok".into()));
         t.params.insert("poll".into(),
@@ -287,9 +287,15 @@ mod tests {
             });
         let plan = resolver.resolve(&t, &r).unwrap();
         let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
+        // `emit` was moved to the outermost position (after
+        // `dryrun`) to support `dryrun=emit` semantics — emit's
+        // pre-execute render must fire BEFORE DRYRUN's short-
+        // circuit. With no `dryrun:` injected on this op the
+        // stack ends at `emit`; under `dryrun=emit` it becomes
+        // `..., metrics, dryrun, emit`.
         assert_eq!(names, vec![
-            "traverse", "throttle", "validate", "poll",
-            "if", "emit", "result", "metrics",
+            "traverse", "delay", "validate", "poll",
+            "if", "result", "metrics", "emit",
         ]);
     }
 
@@ -317,13 +323,17 @@ mod tests {
     }
 
     /// Variant: when EVERY wrapper activates (full template
-    /// plus injected dryrun marker), DRYRUN remains outermost.
+    /// plus injected dryrun marker), DRYRUN sits just below
+    /// `emit` — the latter is intentionally allowed outer of
+    /// dryrun so `dryrun=emit`'s pre-execute render fires
+    /// before DRYRUN's short-circuit. Every other wrapper
+    /// stays inside DRYRUN.
     #[test]
     fn dryrun_is_outermost_with_full_wrapper_set() {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let mut t = empty_template("full");
-        t.delay = Some("rate".into());
+        t.delay = Some(nbrs_workload::model::DelaySpec::Before("rate".into()));
         t.params.insert("verify".into(),
             serde_json::Value::String("ok".into()));
         t.params.insert("poll".into(),
@@ -345,8 +355,24 @@ mod tests {
         let plan = resolver.resolve(&t, &r).unwrap();
         let names: Vec<&str> = plan.stack.iter()
             .map(|reg| reg.name.as_str()).collect();
-        assert_eq!(*names.last().unwrap(), "dryrun",
-            "dryrun must be outermost regardless of which other \
-             wrappers activate; got {names:?}");
+        // `emit` is the outermost wrapper (intentionally outer
+        // of dryrun); `dryrun` sits second-outermost. Every
+        // other wrapper is inside DRYRUN's short-circuit.
+        assert_eq!(*names.last().unwrap(), "emit",
+            "emit must be outermost — its pre-execute render \
+             must fire before DRYRUN's short-circuit; got {names:?}");
+        let dryrun_idx = names.iter().position(|n| *n == "dryrun")
+            .expect("dryrun triggered by injected dryrun: param");
+        assert_eq!(dryrun_idx, names.len() - 2,
+            "dryrun must sit just below emit (second-outermost); got {names:?}");
+        // Every wrapper inner of dryrun is short-circuited
+        // — assert the non-emit/non-dryrun set lives strictly
+        // inside dryrun.
+        for n in &names {
+            if *n == "emit" || *n == "dryrun" { continue; }
+            let i = names.iter().position(|x| x == n).unwrap();
+            assert!(i < dryrun_idx,
+                "{n} must sit inside dryrun's short-circuit; got {names:?}");
+        }
     }
 }

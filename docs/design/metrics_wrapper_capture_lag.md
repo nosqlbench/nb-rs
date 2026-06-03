@@ -139,7 +139,7 @@ Time flows downward. `═════════` is the boundary between "insi
 
 ## The asymmetry in one sentence
 
-> Result-binding GK code runs at **step 4** (after kernel-write), so
+> Result-binding Polydat code runs at **step 4** (after kernel-write), so
 > `log_info(...)` in a result-binding sees fresh captures. The metrics
 > wrapper runs at **step 2** (inside the stack), so its
 > `ctx.pulls.get(...)` sees the snapshot from step 1.
@@ -177,7 +177,7 @@ if matches!(value, Value::None) {
 ```
 
 **Rejected.** The project's "GK Is Canonical Scope" rule
-(`feedback_gk_canonical_scope` memory) forbids sidecar lookup paths.
+(`feedback_polydat_canonical_scope` memory) forbids sidecar lookup paths.
 Adding a captures-map fallback accumulates as design debt: each future
 caller has to decide whether to consult the kernel, the captures, or both,
 and the rules drift apart. The kernel is the one resolution surface.
@@ -231,4 +231,4 @@ one bug.
   - Step 2 (dispenser.execute): line 2275
   - Step 3 (captures → kernel): line 2369-2382
   - Step 4 (pull result-binding chains): line 2396
-- Memory rule: `feedback_gk_canonical_scope.md`
+- Memory rule: `feedback_polydat_canonical_scope.md`

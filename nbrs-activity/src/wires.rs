@@ -4,15 +4,15 @@
 //! `WireSource` — narrow read trait for op-template name resolution.
 //!
 //! SRD-68 §"The narrow trait" specifies the wall between adapter
-//! code and `polydat::kernel::GkKernel` internals: a dispenser
-//! at cycle time accesses its bound GK context only through this
+//! code and `polydat::kernel::PolydatKernel` internals: a dispenser
+//! at cycle time accesses its bound Polydat context only through this
 //! trait's `get` (value lookup by name) and `names` (declared-name
 //! iteration for diagnostics). No `program()`, no `state()`, no
 //! `scope_coordinates()` — adapter code is sealed off from kernel
 //! mechanics.
 //!
 //! Two implementations ship here:
-//! - `GkKernel` itself, via the kernel's existing `lookup` chain
+//! - `PolydatKernel` itself, via the kernel's existing `lookup` chain
 //!   (input slots, outputs, inherited scope state). Single
 //!   resolution surface — name resolves where SRD-67 places it,
 //!   no fallback (SRD-68 invariant I-1).
@@ -22,11 +22,11 @@
 //!   handle don't break — adapters opt in via
 //!   `ExecCtx::with_wires` once they own a kernel reference.
 //!
-//! See `docs/sysref/68_dispenser_owned_gk_context.md`.
+//! See `docs/sysref/68_dispenser_owned_polydat_context.md`.
 
 use std::sync::OnceLock;
 
-use polydat::kernel::GkKernel;
+use polydat::kernel::PolydatKernel;
 use polydat::ast::{PortType, Value};
 
 /// Cached `NBRS_DIRTY_DEBUG` flag. Per-cycle env reads cost ~30%
@@ -76,7 +76,7 @@ pub enum WriteOutcome {
 }
 
 /// Cycle-time read surface a dispenser uses to resolve names from
-/// its bound GK context.
+/// its bound Polydat context.
 ///
 /// `get(name)` returns the current value of the named wire in the
 /// dispenser's kernel. A `None` return indicates the name isn't
@@ -111,7 +111,7 @@ pub trait WireSource: Send + Sync {
     ///
     /// Default impl returns `NoSlot` — appropriate for read-only
     /// implementations like `NullWireSource` and the bare
-    /// `&GkKernel` baseline (which has no `&mut` handle to mutate
+    /// `&PolydatKernel` baseline (which has no `&mut` handle to mutate
     /// state). `CycleWires` overrides with the real write path
     /// through the wrapped kernel's `set_input`.
     fn write(&self, _name: &str, _value: Value) -> WriteOutcome {
@@ -139,7 +139,7 @@ pub trait WireSource: Send + Sync {
     fn advance(&self, _coord: u64) {}
 }
 
-/// `WireSource` over `&GkKernel` — covers names that the kernel's
+/// `WireSource` over `&PolydatKernel` — covers names that the kernel's
 /// `lookup` API already exposes (inputs, scope-init constants,
 /// shared-cell-backed values). Computed outputs that require a
 /// memoizing `pull(&mut state, …)` evaluation are NOT covered here
@@ -147,11 +147,11 @@ pub trait WireSource: Send + Sync {
 /// richer `WireSource` impl that owns the per-fiber kernel handle
 /// with interior mutability and can pull outputs at cycle time.
 ///
-/// For Push 1 this `&GkKernel` impl is the additive baseline: every
+/// For Push 1 this `&PolydatKernel` impl is the additive baseline: every
 /// existing call site that gets handed a `NullWireSource` continues
 /// working unchanged, and code that wants kernel-side reads via the
 /// trait can use it for the names `lookup` already answers.
-impl WireSource for GkKernel {
+impl WireSource for PolydatKernel {
     fn get(&self, name: &str) -> Option<Value> {
         self.lookup(name)
     }
@@ -176,7 +176,7 @@ impl WireSource for GkKernel {
 /// `WireSource` over a per-fiber kernel handle that supports the
 /// full read surface — inputs, scope-init constants, AND computed
 /// outputs (which need a memoizing `pull(&mut state, …)` to fire
-/// the eval cone). Wraps a `&mut GkKernel` in a `Mutex` so the
+/// the eval cone). Wraps a `&mut PolydatKernel` in a `Mutex` so the
 /// trait stays `&self`-callable (and `Sync`) while still permitting
 /// pull's `&mut` requirement.
 ///
@@ -200,7 +200,7 @@ impl WireSource for GkKernel {
 /// `None` when the name doesn't appear on this kernel — callers
 /// surface as an unresolved-bindpoint error per SRD-68 I-1.
 pub struct CycleWires<'a> {
-    kernel: std::sync::Mutex<&'a mut GkKernel>,
+    kernel: std::sync::Mutex<&'a mut PolydatKernel>,
 }
 
 impl<'a> CycleWires<'a> {
@@ -212,7 +212,7 @@ impl<'a> CycleWires<'a> {
     /// SRD-13f's construction-time wiring + per-cycle refresh
     /// keeps the local view consistent with the owning scope's
     /// kernel without external chain composition.
-    pub fn new(kernel: &'a mut GkKernel) -> Self {
+    pub fn new(kernel: &'a mut PolydatKernel) -> Self {
         Self { kernel: std::sync::Mutex::new(kernel) }
     }
 }
@@ -313,7 +313,7 @@ pub static NULL_WIRES: NullWireSource = NullWireSource;
 /// `nbrs_workload::bindpoints`:
 /// - `\{` / `\}` — literal brace, passes through unchanged.
 /// - `{{...}}` — inline-expression form, reserved for the
-///   `{{<gk-expr>}}` desugar surface; passes through unchanged
+///   `{{<polydat-expr>}}` desugar surface; passes through unchanged
 ///   (compiled into bindings before reaching cycle time).
 /// - Qualifier-prefixed forms (`{bind:name}` / `{capture:name}`
 ///   / `{input:name}`) — the current Push 5 contract is bare
@@ -352,7 +352,7 @@ pub fn substitute_via_wires(
             continue;
         }
         // `{{ ... }}` — inline-expression form. Reserved for the
-        // GK desugar surface; passes through unchanged at cycle
+        // Polydat desugar surface; passes through unchanged at cycle
         // time (compiled into bindings before reaching this
         // path).
         if i + 1 < n && chars[i] == '{' && chars[i + 1] == '{' {
@@ -479,7 +479,7 @@ pub fn substitute_via_wires(
                         return Err(format!(
                             "unresolved bind point `{{{body}}}`: wire \
                              `{body}` resolved to `Value::None` (no value \
-                             bound in the dispenser's GK context chain). \
+                             bound in the dispenser's Polydat context chain). \
                              Set a workload-param default for `{body}`, \
                              bind it via `bindings:` / `set:`, or mark \
                              the bind-point as optional once SRD-74 \
@@ -491,7 +491,7 @@ pub fn substitute_via_wires(
             None => {
                 return Err(format!(
                     "unresolved bind point `{{{body}}}`: no wire named \
-                     `{body}` in the dispenser's GK context"
+                     `{body}` in the dispenser's Polydat context"
                 ));
             }
         }
@@ -535,7 +535,7 @@ pub fn substitute_via_wires(
 ///
 /// **Why not "bare-name as wire reference"?** A workload author
 /// writing `stmt: "SELECT * FROM users"` doesn't expect `users` to
-/// resolve as a GK wire. The pure-token form (case 2) is the
+/// resolve as a Polydat wire. The pure-token form (case 2) is the
 /// explicit opt-in for typed references; bare strings stay
 /// literal. Per-adapter typed-field metadata (a future enhancement)
 /// would let specific fields opt into bare-name-as-reference; the
@@ -577,7 +577,7 @@ pub fn resolve_op_fields_via_wires(
                     None => {
                         return Err(format!(
                             "unresolved bind point `{{{bare}}}` in field '{key}': \
-                             no wire named `{bare}` in the dispenser's GK context"
+                             no wire named `{bare}` in the dispenser's Polydat context"
                         ));
                     }
                 }
@@ -630,15 +630,15 @@ fn is_bare_ident(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polydat::dsl::compile::compile_gk;
+    use polydat::dsl::compile::compile_polydat;
 
     #[test]
-    fn gkkernel_get_resolves_inputs_and_constants() {
+    fn polydatkernel_get_resolves_inputs_and_constants() {
         // `lookup` (and therefore Push 1's WireSource) covers
         // input slots and scope-init constants — the names available
         // without a memoizing pull. `folded := 42` lands as a
         // compile-folded constant; `cycle` is a coordinate input.
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              folded := 42\n",
         ).unwrap();
@@ -649,14 +649,14 @@ mod tests {
     }
 
     #[test]
-    fn gkkernel_get_returns_none_for_pull_only_outputs_in_push_1() {
+    fn polydatkernel_get_returns_none_for_pull_only_outputs_in_push_1() {
         // Push 1 baseline: outputs that require a memoizing
         // `pull(&mut state, …)` evaluation are NOT served by the
-        // `&GkKernel` impl. Push 2 introduces the kernel-owning
+        // `&PolydatKernel` impl. Push 2 introduces the kernel-owning
         // wires impl that can pull outputs. This test pins the
         // current contract so the Push 2 change is visible as a
         // diff.
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              cyc_dep := hash(cycle)\n",
         ).unwrap();
@@ -666,15 +666,15 @@ mod tests {
     }
 
     #[test]
-    fn gkkernel_get_returns_none_for_unknown_name() {
-        let k = compile_gk("input cycle: u64\nx := 1\n").unwrap();
+    fn polydatkernel_get_returns_none_for_unknown_name() {
+        let k = compile_polydat("input cycle: u64\nx := 1\n").unwrap();
         let wires: &dyn WireSource = &k;
         assert!(wires.get("not_a_real_name").is_none());
     }
 
     #[test]
-    fn gkkernel_names_lists_declared_outputs_and_inputs() {
-        let k = compile_gk("input cycle: u64\nfolded := 42\n").unwrap();
+    fn polydatkernel_names_lists_declared_outputs_and_inputs() {
+        let k = compile_polydat("input cycle: u64\nfolded := 42\n").unwrap();
         let wires: &dyn WireSource = &k;
         let names: Vec<String> = wires.names().collect();
         assert!(names.iter().any(|n| n == "folded"), "folded should appear: {names:?}");
@@ -691,10 +691,10 @@ mod tests {
     #[test]
     fn cycle_wires_pulls_outputs() {
         // CycleWires (Push 4) covers the memoizing-pull path that
-        // the bare `&GkKernel` impl can't reach. `cyc_dep` is a
+        // the bare `&PolydatKernel` impl can't reach. `cyc_dep` is a
         // computed output — pulling it requires `&mut state` to
         // fire the eval cone and cache the result.
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              folded := 42\n\
              cyc_dep := hash(cycle)\n",
@@ -713,7 +713,7 @@ mod tests {
 
     #[test]
     fn cycle_wires_returns_none_for_unknown_name() {
-        let mut k = compile_gk("input cycle: u64\nx := 1\n").unwrap();
+        let mut k = compile_polydat("input cycle: u64\nx := 1\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let wires: &dyn WireSource = &cw;
         assert!(wires.get("not_a_real_name").is_none());
@@ -732,10 +732,10 @@ mod tests {
         // adapter cycle time.
         //
         // This unit test simulates the shape directly via
-        // `compile_gk` rather than spinning up the full activity
+        // `compile_polydat` rather than spinning up the full activity
         // pipeline; it pins the contract that `wires.get` answers
         // for any name the program declares as an output.
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"vec_label_00\"\n\
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn substitute_via_wires_resolves_bare_names() {
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"vec_label_00\"\n",
@@ -774,7 +774,7 @@ mod tests {
 
     #[test]
     fn substitute_via_wires_passes_through_literal_braces() {
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              ks := \"baselines\"\n",
         ).unwrap();
@@ -864,7 +864,7 @@ mod tests {
 
     #[test]
     fn substitute_via_wires_errors_on_unresolved_name() {
-        let mut k = compile_gk("input cycle: u64\nx := \"a\"\n").unwrap();
+        let mut k = compile_polydat("input cycle: u64\nx := \"a\"\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let err = substitute_via_wires("hi {nonexistent}", &cw).unwrap_err();
         assert!(err.contains("nonexistent"), "diagnostic should name the wire: {err}");
@@ -881,7 +881,7 @@ mod tests {
         // render as `""`. Empty string is a real value; absent is
         // not the same thing, and conflating them was the
         // wire-protocol corruption class this SRD closes.
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              extern undef: str\n\
              const x := \"{undef}\"\n"
@@ -917,7 +917,7 @@ mod tests {
         // The fix mirrors `nbrs_workload::bindpoints::extract_bind_points`:
         // when `{` is followed by `'` or `"`, treat it as a CQL
         // map opener (emit the brace, continue scanning).
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              optimize_for := \"RECALL\"\n\
              similarity_function := \"EUCLIDEAN\"\n",
@@ -936,7 +936,7 @@ mod tests {
 
     #[test]
     fn substitute_via_wires_errors_on_qualifier_prefix() {
-        let mut k = compile_gk("input cycle: u64\nx := \"a\"\n").unwrap();
+        let mut k = compile_polydat("input cycle: u64\nx := \"a\"\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let err = substitute_via_wires("hi {bind:x}", &cw).unwrap_err();
         assert!(err.contains("bind:x"), "diagnostic should name the qualifier form: {err}");
@@ -944,7 +944,7 @@ mod tests {
 
     #[test]
     fn substitute_via_wires_passes_through_inline_expr() {
-        let mut k = compile_gk("input cycle: u64\nx := \"a\"\n").unwrap();
+        let mut k = compile_polydat("input cycle: u64\nx := \"a\"\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let resolved = substitute_via_wires("v = {{x + 1}}", &cw).unwrap();
         // `{{...}}` is reserved for the inline-expression desugar
@@ -956,7 +956,7 @@ mod tests {
 
     #[test]
     fn cycle_wires_resolves_iter_var_through_subscope_chain() {
-        // SRD-68 invariant from user: "the GK context visible after
+        // SRD-68 invariant from user: "the Polydat context visible after
         // initialization in each scope is designed to and required
         // to provide all of the values which should be visible
         // including those which are populated at logical closure
@@ -974,14 +974,14 @@ mod tests {
         // populated value; child kernel declares the same name;
         // verify the value propagates through `build_subscope`
         // and is visible via `CycleWires::get`.
-        use polydat::dsl::compile::compile_gk;
+        use polydat::dsl::compile::compile_polydat;
         use polydat::ast::Value;
-        use polydat::kernel::subcontext::GkMatter;
+        use polydat::kernel::subcontext::PolydatMatter;
 
         // Parent: declares `optimize_for` as extern + auto-passthrough
         // output via `final` — same pattern the phase synthesizer
         // uses for iter-var cascade.
-        let mut parent = compile_gk(
+        let mut parent = compile_polydat(
             "input cycle: u64\n\
              extern optimize_for: String\n",
         ).unwrap();
@@ -993,13 +993,13 @@ mod tests {
 
         // Child: program declares the same name as an extern.
         // Mimics the per-op canonical the dispenser owns.
-        let child_program = compile_gk(
+        let child_program = compile_polydat(
             "input cycle: u64\n\
              extern optimize_for: String\n",
         ).unwrap().program().clone();
 
         let mut child = parent.build_subscope(
-            GkMatter::builder().program(child_program).build().unwrap(),
+            PolydatMatter::builder().program(child_program).build().unwrap(),
         ).expect("subscope build is infallible");
 
         let cw = CycleWires::new(&mut child);
@@ -1007,7 +1007,7 @@ mod tests {
         // The architectural contract: child's CycleWires resolves
         // `optimize_for` through the inheritance chain. If this
         // assertion fails, the chain isn't propagating iter vars
-        // and we need the gap fix at the GK kernel layer.
+        // and we need the gap fix at the Polydat Kernel layer.
         assert_eq!(
             wires.get("optimize_for").map(|v| v.as_str().to_string()),
             Some("RECALL".to_string()),
@@ -1033,8 +1033,8 @@ mod tests {
         // body) gives materialize_wiring_from_outer something to walk. With ONLY
         // an extern decl, there's no body reference, no auto-passthrough,
         // and the chain breaks.
-        use polydat::dsl::compile::compile_gk;
-        let k = compile_gk(
+        use polydat::dsl::compile::compile_polydat;
+        let k = compile_polydat(
             "input cycle: u64\n\
              extern optimize_for: String\n",
         ).unwrap();
@@ -1052,7 +1052,7 @@ mod tests {
         // underlying kernel's coord input so subsequent `get`
         // calls produce values for that coord. Verify by pulling
         // a coord-dependent output before and after advance.
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              id := format_u64(cycle, 10)\n",
         ).unwrap();
@@ -1085,7 +1085,7 @@ mod tests {
         // input (e.g. `count`), then a later wrapper or the eval
         // cone reads it. `wires.write` lands the value; `wires.get`
         // returns it on the next read.
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              extern count: u64\n\
              extern body: Json\n",
@@ -1106,7 +1106,7 @@ mod tests {
     fn cycle_wires_write_returns_no_slot_for_unknown_name() {
         // The closure-binding economy's DCE signal: no slot, value
         // silently dropped. Caller is unaffected.
-        let mut k = compile_gk("input cycle: u64\nx := 1\n").unwrap();
+        let mut k = compile_polydat("input cycle: u64\nx := 1\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let wires: &dyn WireSource = &cw;
         assert_eq!(wires.write("nope", Value::U64(99)), WriteOutcome::NoSlot);
@@ -1118,7 +1118,7 @@ mod tests {
         // input, read an output that depends on it through the
         // eval cone. This is the metrics-wrapper-reading-row_count
         // scenario from the design memo.
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              extern count: u64\n\
              row_count := count\n",
@@ -1145,7 +1145,7 @@ mod tests {
     fn resolve_op_fields_four_case_dispatch() {
         // Pin the four-case dispatch contract for op-field resolution.
         // See `resolve_op_fields_via_wires` doc for the cases.
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\n\
              table := \"users\"\n\
              count := 42\n",
@@ -1199,7 +1199,7 @@ mod tests {
         // (hash is deterministic per coordinate, but the kernel's
         // dirty-tracking would require a state mutation to
         // re-fire — the property still holds).
-        let mut k = compile_gk(
+        let mut k = compile_polydat(
             "input cycle: u64\nh := hash(cycle)\n"
         ).unwrap();
         k.set_inputs(&[42]);

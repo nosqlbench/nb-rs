@@ -3,7 +3,7 @@
 
 //! String encoding and decoding nodes: HTML entities, URL percent-encoding.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 // =================================================================
 // HTML entity encoding
@@ -36,7 +36,7 @@ impl HtmlEncode {
     }
 }
 
-impl GkNode for HtmlEncode {
+impl PolydatNode for HtmlEncode {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -83,7 +83,7 @@ impl HtmlDecode {
     }
 }
 
-impl GkNode for HtmlDecode {
+impl PolydatNode for HtmlDecode {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -134,7 +134,7 @@ fn is_url_unreserved(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~'
 }
 
-impl GkNode for UrlEncode {
+impl PolydatNode for UrlEncode {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -176,7 +176,7 @@ impl UrlDecode {
     }
 }
 
-impl GkNode for UrlDecode {
+impl PolydatNode for UrlDecode {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -261,7 +261,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build an encoding node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "html_encode" => Some(Ok(Box::new(HtmlEncode::new()))),
         "html_decode" => Some(Ok(Box::new(HtmlDecode::new()))),

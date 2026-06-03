@@ -148,7 +148,7 @@ scenarios:
 
   setop_union:
     # `unique(a, b, ...)` concatenates then dedups — set union
-    # semantics. Sources are GK exprs (ranges, generators, ...).
+    # semantics. Sources are Polydat exprs (ranges, generators, ...).
     - for: "n in unique(1..=3, 3..=5)"
       phases: [emit_n]
 

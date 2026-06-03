@@ -1,7 +1,7 @@
 # Memo 04: Annotated Reference Implementation — WeightedPick
 
 `WeightedPick` in `polydat/src/nodes/weighted.rs` is the reference
-implementation that exercises every GK metadata feature. Use it as a
+implementation that exercises every Polydat metadata feature. Use it as a
 template when building new nodes.
 
 ---
@@ -35,7 +35,7 @@ pub struct WeightedPick {
 
 Four fields:
 
-- `meta` — the node's interface metadata. Every GK node has this.
+- `meta` — the node's interface metadata. Every Polydat node has this.
 - `weights` — the original weight values, kept for `decomposed()`.
   Not needed for evaluation (the alias table subsumes them), but
   the fusion equivalence contract needs to reconstruct the spec.

@@ -5,7 +5,7 @@
 //! partitions".
 //!
 //! Each node takes a [`crate::iteration::cursor_partition::Partition`] value
-//! (carried through GK wires as `Value::Ext`) and projects it
+//! (carried through Polydat wires as `Value::Ext`) and projects it
 //! into the u64 ordinal space the rest of the workload expects.
 //! These are the canonical primitives for "use the active
 //! partition's range in a per-cycle binding":
@@ -27,7 +27,7 @@
 //! is just integer math.
 
 use crate::dsl::registry::{Arity, FuncCategory, FuncSig, OutputType, ParamSpec};
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, SlotType, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, SlotType, Value};
 
 /// Helper: downcast a value to a `Partition`, panicking with a
 /// clear diagnostic when the input isn't partition-typed.
@@ -55,7 +55,7 @@ impl Cardinality {
         } }
     }
 }
-impl GkNode for Cardinality {
+impl PolydatNode for Cardinality {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(expect_partition(&inputs[0], "cardinality").cardinality());
@@ -73,7 +73,7 @@ impl StartOf {
         } }
     }
 }
-impl GkNode for StartOf {
+impl PolydatNode for StartOf {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(expect_partition(&inputs[0], "start_of").start_ord);
@@ -91,7 +91,7 @@ impl EndOf {
         } }
     }
 }
-impl GkNode for EndOf {
+impl PolydatNode for EndOf {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(expect_partition(&inputs[0], "end_of").end_ord);
@@ -109,7 +109,7 @@ impl IdxOf {
         } }
     }
 }
-impl GkNode for IdxOf {
+impl PolydatNode for IdxOf {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(expect_partition(&inputs[0], "idx_of").idx);
@@ -134,7 +134,7 @@ impl ModIn {
         } }
     }
 }
-impl GkNode for ModIn {
+impl PolydatNode for ModIn {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let n = inputs[0].as_u64();
@@ -162,7 +162,7 @@ impl At {
         } }
     }
 }
-impl GkNode for At {
+impl PolydatNode for At {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let p = expect_partition(&inputs[0], "at");
@@ -205,7 +205,7 @@ impl PartitionsOf {
         }
     }
 }
-impl GkNode for PartitionsOf {
+impl PolydatNode for PartitionsOf {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let spec_str = match &inputs[0] {
@@ -242,7 +242,7 @@ impl ClampIn {
         } }
     }
 }
-impl GkNode for ClampIn {
+impl PolydatNode for ClampIn {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let n = inputs[0].as_u64();
@@ -376,7 +376,7 @@ pub(crate) fn build_node(
     _wires: &[crate::compile::assembly::WireRef],
     _wire_types: &[PortType],
     consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn GkNode>, String>> {
+) -> Option<Result<Box<dyn PolydatNode>, String>> {
     match name {
         "cardinality" => Some(Ok(Box::new(Cardinality::new()))),
         "start_of"    => Some(Ok(Box::new(StartOf::new()))),

@@ -15,16 +15,16 @@ use std::fmt;
 // alongside `use nbrs_activity::adapter::{OpDispenser, ResolvedFields, ...}`.
 pub use crate::fixture::ExecCtx;
 
-// Re-export GkKernel so adapter `map_op` impls can name the
-// `parent: &GkKernel` parameter type without each adapter crate
+// Re-export PolydatKernel so adapter `map_op` impls can name the
+// `parent: &PolydatKernel` parameter type without each adapter crate
 // taking a direct polydat dependency. SRD-68 §"Adapter API
 // surface" pins this as the canonical import path for adapters.
-pub use polydat::kernel::GkKernel;
+pub use polydat::kernel::PolydatKernel;
 
 // Re-export the binder API so `binders_for` impls in adapter
 // crates can name `Binder` / `BinderSlot` / `PortType` through
 // the existing `nbrs_activity::adapter` import path, no direct
-// polydat dependency required. Same reason as the GkKernel
+// polydat dependency required. Same reason as the PolydatKernel
 // re-export above.
 pub use polydat::binder::{Binder, BinderSlot};
 pub use polydat::ast::PortType;
@@ -217,14 +217,14 @@ pub trait DriverAdapter: Send + Sync + 'static {
     /// Init-time work: parse the op, prepare statements, pre-compute
     /// bind-point resolution, validate field names, attach metrics.
     ///
-    /// `parent` is the phase scope kernel — the GK context the op
+    /// `parent` is the phase scope kernel — the Polydat context the op
     /// template's matter (phase `bindings:`, `result:` block, etc.)
-    /// should attach to. Adapters that need their own GK context
+    /// should attach to. Adapters that need their own Polydat context
     /// for op-template-scope name resolution clone the Arc and
     /// either retain it directly (no op-level matter) or use it as
     /// the parent in a SRD-67 `build_subscope` call to materialise
     /// their canonical kernel (op-level matter present); adapters
-    /// with no GK needs ignore the parameter. The Arc lets the
+    /// with no Polydat needs ignore the parameter. The Arc lets the
     /// dispenser own a long-lived reference to the canonical
     /// kernel without re-cloning state. See SRD-68 §"Adapter API
     /// surface".
@@ -271,7 +271,7 @@ pub trait DriverAdapter: Send + Sync + 'static {
     fn map_op<'a>(
         &'a self,
         template: &'a nbrs_workload::model::ParsedOp,
-        parent: std::sync::Arc<GkKernel>,
+        parent: std::sync::Arc<PolydatKernel>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>;
 
     /// Default metric names to display on the status line for this adapter.
@@ -408,7 +408,7 @@ pub trait OpDispenser: Send + Sync {
     /// The `ctx` bundle carries:
     /// - `ctx.fields` — op-field substitution view for the inner adapter
     ///   (positional / by-name access matching the prepared statement).
-    /// - `ctx.pulls`  — wrapper-facing handle-indexed view of GK values
+    /// - `ctx.pulls`  — wrapper-facing handle-indexed view of Polydat values
     ///   (used by validation / conditional / throttle wrappers; adapters
     ///   ignore this).
     ///
@@ -474,11 +474,11 @@ pub trait OpDispenser: Send + Sync {
         self.inner_dispenser().and_then(|inner| inner.describe_resolved(wires))
     }
 
-    /// SRD-68 invariant I-3 — the dispenser's canonical GK kernel,
+    /// SRD-68 invariant I-3 — the dispenser's canonical Polydat Kernel,
     /// established at construction by `map_op` from its parent
     /// (with optional matter assembly via `build_subscope`).
     /// Returns `None` for dispensers that don't own a kernel
-    /// (adapters with no GK needs, or wrappers that delegate to
+    /// (adapters with no Polydat needs, or wrappers that delegate to
     /// an inner dispenser).
     ///
     /// The executor walks `Some` returns at fiber spawn to
@@ -489,7 +489,7 @@ pub trait OpDispenser: Send + Sync {
     /// I-1 single resolution surface.
     ///
     /// Default: delegate to inner dispenser if any, else `None`.
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<GkKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<PolydatKernel>> {
         self.inner_dispenser().and_then(|inner| inner.canonical_kernel())
     }
 

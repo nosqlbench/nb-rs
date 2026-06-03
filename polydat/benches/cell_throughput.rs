@@ -46,8 +46,8 @@ use criterion::{
 };
 
 use polydat::ast::Value;
-use polydat::compile::assembly::{GkAssembler, WireRef};
-use polydat::kernel::{GkKernel, SharedCell, SharedCellInner};
+use polydat::compile::assembly::{PolydatAssembler, WireRef};
+use polydat::kernel::{PolydatKernel, SharedCell, SharedCellInner};
 use polydat::library::arithmetic::SumN;
 
 // =================================================================
@@ -78,9 +78,9 @@ fn cell_in_scope(intent_word: Arc<AtomicU64>, bit: u8, initial: Value) -> Shared
 /// `SumN` node whose output is "out". The caller
 /// attaches cells to whichever slots they want to
 /// exercise.
-fn build_n_input_kernel(n_inputs: usize) -> GkKernel {
+fn build_n_input_kernel(n_inputs: usize) -> PolydatKernel {
     let input_names: Vec<String> = (0..n_inputs).map(|i| format!("in{i}")).collect();
-    let mut asm = GkAssembler::new(input_names.clone());
+    let mut asm = PolydatAssembler::new(input_names.clone());
     let refs: Vec<WireRef> = input_names.iter().map(|n| WireRef::input(n)).collect();
     asm.add_node("sum", Box::new(SumN::new(n_inputs)), refs);
     asm.add_output("out", WireRef::node("sum"));
@@ -90,7 +90,7 @@ fn build_n_input_kernel(n_inputs: usize) -> GkKernel {
 /// Warm up a kernel so its cone metadata is built and
 /// `node_clean` is true. Bench loops can then measure
 /// the steady-state hot path.
-fn warm_up(kernel: &mut GkKernel) {
+fn warm_up(kernel: &mut PolydatKernel) {
     black_box(kernel.pull("out")); // first pull: full eval; sets node_clean
     black_box(kernel.pull("out")); // second pull: lazy-builds the cone, returns clean
 }

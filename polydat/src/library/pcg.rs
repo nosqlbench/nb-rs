@@ -16,7 +16,7 @@
 //! - [`PcgStream`] — fixed seed, both position and stream are wire inputs
 //! - [`CycleWalk`] — bijective permutation of `[0, range)` via cycle-walking
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
 
 // =================================================================
 // PCG-RXS-M-XS 64/64 core algorithm
@@ -66,7 +66,7 @@ pub(crate) fn pcg_seek(seed: u64, inc: u64, position: u64) -> u64 {
 }
 
 // =================================================================
-// GK Nodes
+// Polydat Nodes
 // =================================================================
 
 /// PCG-RXS-M-XS 64/64 random number generator with fixed seed and stream.
@@ -113,7 +113,7 @@ impl Pcg {
     }
 }
 
-impl GkNode for Pcg {
+impl PolydatNode for Pcg {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -170,7 +170,7 @@ impl PcgStream {
     }
 }
 
-impl GkNode for PcgStream {
+impl PolydatNode for PcgStream {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -340,7 +340,7 @@ fn cycle_walk_inner(
     }
 }
 
-impl GkNode for CycleWalk {
+impl PolydatNode for CycleWalk {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -447,7 +447,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a PCG or shuffle node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "pcg" => Some(Ok(Box::new(Pcg::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(0),

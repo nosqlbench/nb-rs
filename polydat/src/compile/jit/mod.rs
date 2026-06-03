@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Phase 3: Cranelift JIT compilation of GK kernels.
+//! Phase 3: Cranelift JIT compilation of Polydat Kernels.
 //!
 //! Generates native machine code from the DAG. The entire kernel
 //! becomes a single function: `fn(coords: *const u64, buffer: *mut u64)`.

@@ -1,10 +1,10 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Standard GK function-node library + sampling primitives + library-internal support.
+//! Standard Polydat function-node library + sampling primitives + library-internal support.
 //!
 //! - Function-node modules (`arithmetic`, `string`, `hash`, …):
-//!   the 250+ built-in [`crate::ast::GkNode`] implementations
+//!   the 250+ built-in [`crate::ast::PolydatNode`] implementations
 //!   workload authors compose into kernels.
 //! - [`sampling`]: alias tables, LUT interpolation, ICD —
 //!   variate-sampling building blocks consumed by

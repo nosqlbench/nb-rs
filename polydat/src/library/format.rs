@@ -16,7 +16,7 @@
 //! - `{:b}` — binary (u64)
 //! - `{:o}` — octal (u64)
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// A parsed format segment: either literal text or a placeholder.
 #[derive(Debug, Clone)]
@@ -47,7 +47,7 @@ struct FormatSpec {
 /// `{:05}` (zero-pad), `{:.2}` (precision), `{:x}` (hex), `{:X}` (HEX),
 /// `{:b}` (binary), `{:o}` (octal). Inputs are matched positionally.
 ///
-/// Use for constructing complex formatted strings from multiple GK wires:
+/// Use for constructing complex formatted strings from multiple Polydat wires:
 /// `printf("user-{:05}-score-{:.1}", id, score)` → "user-00042-score-98.6"
 ///
 /// All Value types are accepted at eval time regardless of declared port
@@ -109,7 +109,7 @@ impl Printf {
     }
 }
 
-impl GkNode for Printf {
+impl PolydatNode for Printf {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -122,7 +122,7 @@ impl GkNode for Printf {
         // not Value::Str("").
         //
         // Rationale: Value::None is the canonical "absent"
-        // sentinel. The GK kernel's `lookup` / `get_constant`
+        // sentinel. The Polydat Kernel's `lookup` / `get_constant`
         // already treat None-valued outputs as "not present in
         // this scope" and fall through to the parent scope.
         // String interpolation is the surface where that
@@ -345,7 +345,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a format node from a function name, const args, and wire refs.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "printf" => {
             let fmt = consts.first()
@@ -469,7 +469,7 @@ mod tests {
     // String interpolation evaluates to Value::None when any
     // referenced input is Value::None. Distinguishing the
     // "absent" sentinel from an empty-string-that-is-present
-    // is required for the GK scope chain's fall-through
+    // is required for the Polydat scope chain's fall-through
     // semantics: lookup() filters Value::None out of a scope's
     // outputs, so a const whose RHS interpolation yields None
     // doesn't shadow the parent scope — workload-param defaults

@@ -5,7 +5,7 @@
 
 use crate::ast::{
     CompiledU64Op,
-    GkNode, NodeMeta, Port, Slot, Value,
+    PolydatNode, NodeMeta, Port, Slot, Value,
 };
 use crate::compile::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
 
@@ -45,7 +45,7 @@ impl LerpConst {
     }
 }
 
-impl GkNode for LerpConst {
+impl PolydatNode for LerpConst {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -102,7 +102,7 @@ impl ScaleRange {
     }
 }
 
-impl GkNode for ScaleRange {
+impl PolydatNode for ScaleRange {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -176,7 +176,7 @@ impl InvLerp {
     }
 }
 
-impl GkNode for InvLerp {
+impl PolydatNode for InvLerp {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -231,7 +231,7 @@ impl Remap {
     }
 }
 
-impl GkNode for Remap {
+impl PolydatNode for Remap {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -274,7 +274,7 @@ impl Quantize {
     }
 }
 
-impl GkNode for Quantize {
+impl PolydatNode for Quantize {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -355,7 +355,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a lerp node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "lerp" => Some(Ok(Box::new(LerpConst::new(
             consts.first().map(|c| c.as_f64()).unwrap_or(0.0),

@@ -1,8 +1,8 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! GK evaluation engines: EngineCore (shared eval loop) and the three
-//! P1 engine types — GkState (dependent-list), RawState (no provenance),
+//! Polydat evaluation engines: EngineCore (shared eval loop) and the three
+//! P1 engine types — PolydatState (dependent-list), RawState (no provenance),
 //! and ProvScanState (provenance-scan).
 
 use std::sync::{Arc, Mutex, OnceLock};
@@ -10,10 +10,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ast::Value;
 use super::WireSource;
-use super::program::GkProgram;
+use super::program::PolydatProgram;
 
 /// Cached lookup of the `NBRS_DIRTY_DEBUG` env var. Called from
-/// the per-cycle hot path (`GkState::set_input`); reading the
+/// the per-cycle hot path (`PolydatState::set_input`); reading the
 /// real `std::env::var` on every cycle costs ~30% of CPU on
 /// single-fiber dryrun benches (it walks the libc env table and
 /// formats a fresh CString each call). The OnceLock evaluates
@@ -195,7 +195,7 @@ pub(crate) struct CellConeEntry {
 }
 
 /// One named shared cell propagated through the parent → child
-/// scope chain. Carried on `GkKernel` (and surfaced through
+/// scope chain. Carried on `PolydatKernel` (and surfaced through
 /// `ScopeKernel::shared_cells_in_scope`) so a descendant whose
 /// program declares a matching input slot can attach the cell —
 /// even when intermediate scopes' bodies never name it and so
@@ -221,7 +221,7 @@ pub struct SharedCellEntry {
 /// what the user sees instead of the bare panic payload.
 fn enrich_eval_panic(
     payload: Box<dyn std::any::Any + Send>,
-    program: &GkProgram,
+    program: &PolydatProgram,
     node_idx: usize,
     inputs: &[Value],
 ) -> String {
@@ -278,7 +278,7 @@ fn format_value_for_diag(v: &Value) -> String {
     }
 }
 
-/// Shared evaluation state for all GK engines. Contains the node
+/// Shared evaluation state for all Polydat engines. Contains the node
 /// output buffers, input values, and the eval loop.
 /// Engine types wrap this and provide their own invalidation strategy.
 pub struct EngineCore {
@@ -397,7 +397,7 @@ impl EngineCore {
     /// Read an input slot's current value, transparent to whether
     /// it's a plain slot or backed by a `SharedCell`. The
     /// canonical read path used by both `eval_node` and
-    /// `GkState::get_input` — there's no separate "refresh" step
+    /// `PolydatState::get_input` — there's no separate "refresh" step
     /// the caller must remember; the cell is queried on every
     /// read.
     ///
@@ -419,7 +419,7 @@ impl EngineCore {
     ///
     /// Returns an empty `CellCone { groups: [] }` for nodes
     /// with no cell-bound deps (the common case).
-    fn build_cell_cone(&self, program: &GkProgram, node_idx: usize) -> CellCone {
+    fn build_cell_cone(&self, program: &PolydatProgram, node_idx: usize) -> CellCone {
         let prov = program.input_provenance
             .get(node_idx)
             .copied()
@@ -468,7 +468,7 @@ impl EngineCore {
     /// runs only on set bits.
     fn check_cell_clean(
         &mut self,
-        program: &GkProgram,
+        program: &PolydatProgram,
         node_idx: usize,
     ) -> bool {
         // Lazy build the cone metadata.
@@ -528,7 +528,7 @@ impl EngineCore {
     /// Evaluate a node by index. Shared by all engines.
     /// Checks the clean flag, recursively evaluates upstream, gathers
     /// inputs, calls node.eval(), marks clean.
-    pub fn eval_node(&mut self, program: &GkProgram, node_idx: usize) {
+    pub fn eval_node(&mut self, program: &PolydatProgram, node_idx: usize) {
         if self.node_clean[node_idx] {
             // Memoization hit candidate — confirm cell-bound
             // inputs in this node's cone are still at the
@@ -578,7 +578,7 @@ impl EngineCore {
         // Opt-out: nodes whose semantics explicitly consume
         // `Value::None` (coalesce-style `default_or`, explicit
         // optionality handlers per SRD-74 Rule 2) override
-        // `GkNode::accepts_none_inputs` to skip this guard. Such
+        // `PolydatNode::accepts_none_inputs` to skip this guard. Such
         // nodes handle `None` in their own `eval`.
         let node_ref = &*program.nodes[node_idx];
         if !node_ref.accepts_none_inputs()
@@ -627,7 +627,7 @@ impl EngineCore {
     }
 
     /// Pull a named output.
-    pub fn pull(&mut self, program: &GkProgram, output_name: &str) -> &Value {
+    pub fn pull(&mut self, program: &PolydatProgram, output_name: &str) -> &Value {
         let (node_idx, port_idx) = *program.output_map
             .get(output_name)
             .unwrap_or_else(|| panic!("unknown output variate: {output_name}"));
@@ -661,7 +661,7 @@ impl EngineCore {
     /// `materialize_wiring_from_outer`-style operations that materialize
     /// new descendants — the inner side needs the cell to
     /// exist before it can attach to its input slot.
-    pub(crate) fn seed_output_cells(&mut self, program: &GkProgram) {
+    pub(crate) fn seed_output_cells(&mut self, program: &PolydatProgram) {
         let n = program.output_names().len();
         if self.output_cells.len() == n { return; }
         // Two-pass to avoid borrowing `self` immutably (for
@@ -686,22 +686,22 @@ impl EngineCore {
     }
 
     /// Output broadcast cell for the named output, if seeded.
-    pub(crate) fn output_cell(&self, program: &GkProgram, name: &str) -> Option<SharedCell> {
+    pub(crate) fn output_cell(&self, program: &PolydatProgram, name: &str) -> Option<SharedCell> {
         let idx = program.output_index(name)?;
         self.output_cells.get(idx).and_then(|c| c.clone())
     }
 }
 
 // =================================================================
-// GkState: dependent-list engine (default, O(affected) invalidation)
+// PolydatState: dependent-list engine (default, O(affected) invalidation)
 // =================================================================
 
-/// GK evaluation engine using precomputed per-input dependent lists.
+/// Polydat evaluation engine using precomputed per-input dependent lists.
 ///
 /// On `set_input()`, only nodes that depend on the changed input
 /// are dirtied. O(affected_nodes) per input change.
 /// This is the default engine for production use.
-pub struct GkState {
+pub struct PolydatState {
     /// Shared evaluation core (buffers, clean flags, inputs).
     pub core: EngineCore,
     /// Per-input dependent node lists for O(affected) invalidation.
@@ -714,8 +714,8 @@ pub struct GkState {
     nondeterministic_nodes: Vec<usize>,
 }
 
-impl GkState {
-    /// Construct a GkState from its component parts.
+impl PolydatState {
+    /// Construct a PolydatState from its component parts.
     pub(crate) fn from_parts(
         core: EngineCore,
         input_dependents: Vec<Vec<usize>>,
@@ -754,7 +754,7 @@ impl GkState {
     /// the slot's register.
     ///
     /// Dependents-marking is the dependent-list invalidation
-    /// strategy carried by `GkState`; it's the write-side
+    /// strategy carried by `PolydatState`; it's the write-side
     /// half of the engine's dirty-tracking. Other engines
     /// (`RawState`, `ProvScanState`) implement different
     /// strategies — see their own `set_inputs` impls.
@@ -899,7 +899,7 @@ impl GkState {
     }
 
     /// Pull a named output variate from the program.
-    pub fn pull(&mut self, program: &GkProgram, output_name: &str) -> &Value {
+    pub fn pull(&mut self, program: &PolydatProgram, output_name: &str) -> &Value {
         self.core.pull(program, output_name)
     }
 
@@ -926,14 +926,14 @@ impl GkState {
 
     /// Pull an output by index (declaration order). Only evaluates
     /// the computation cone for this specific output.
-    pub fn pull_by_index(&mut self, program: &GkProgram, output_idx: usize) -> &Value {
+    pub fn pull_by_index(&mut self, program: &PolydatProgram, output_idx: usize) -> &Value {
         let (node_idx, port_idx) = program.resolve_output_by_index(output_idx);
         self.core.eval_node(program, node_idx);
         &self.core.buffers[node_idx][port_idx]
     }
 
     /// Pull all outputs in declaration order.
-    pub fn pull_all<'a>(&'a mut self, program: &GkProgram) -> Vec<&'a Value> {
+    pub fn pull_all<'a>(&'a mut self, program: &PolydatProgram) -> Vec<&'a Value> {
         for i in 0..program.output_count() {
             let (node_idx, _) = program.resolve_output_by_index(i);
             self.core.eval_node(program, node_idx);
@@ -948,22 +948,22 @@ impl GkState {
 
     /// Create a memoized accessor for a named subset of outputs.
     /// Resolves names to indices once; subsequent access uses indices only.
-    pub fn accessor(program: &GkProgram, names: &[&str]) -> OutputAccessor {
+    pub fn accessor(program: &PolydatProgram, names: &[&str]) -> OutputAccessor {
         let indices: Vec<usize> = names.iter()
             .filter_map(|n| program.output_index(n))
             .collect();
         OutputAccessor { indices }
     }
 
-    /// Evaluate a node by index (exposed for constant folding in GkProgram).
-    pub(crate) fn eval_node_public(&mut self, program: &GkProgram, node_idx: usize) {
+    /// Evaluate a node by index (exposed for constant folding in PolydatProgram).
+    pub(crate) fn eval_node_public(&mut self, program: &PolydatProgram, node_idx: usize) {
         self.core.eval_node(program, node_idx);
     }
 }
 
 /// Memoized output accessor for a named subset of outputs.
 ///
-/// Created once from output names via `GkState::accessor()`.
+/// Created once from output names via `PolydatState::accessor()`.
 /// Subsequent pulls use pre-resolved indices — no name lookups.
 pub struct OutputAccessor {
     indices: Vec<usize>,
@@ -971,7 +971,7 @@ pub struct OutputAccessor {
 
 impl OutputAccessor {
     /// Pull all outputs in this accessor from the given state.
-    pub fn pull_all<'a>(&self, state: &'a mut GkState, program: &GkProgram) -> Vec<&'a Value> {
+    pub fn pull_all<'a>(&self, state: &'a mut PolydatState, program: &PolydatProgram) -> Vec<&'a Value> {
         for &idx in &self.indices {
             let (node_idx, _) = program.resolve_output_by_index(idx);
             state.core.eval_node(program, node_idx);
@@ -999,7 +999,7 @@ impl OutputAccessor {
 // RawState: no provenance engine (all nodes dirty every eval)
 // =================================================================
 
-/// GK evaluation engine with no provenance. Every `set_inputs()`
+/// Polydat evaluation engine with no provenance. Every `set_inputs()`
 /// marks all nodes dirty. Baseline for benchmarking provenance overhead.
 pub struct RawState {
     /// Shared evaluation core.
@@ -1018,7 +1018,7 @@ impl RawState {
     }
 
     /// Pull a named output variate from the program.
-    pub fn pull(&mut self, program: &GkProgram, output_name: &str) -> &Value {
+    pub fn pull(&mut self, program: &PolydatProgram, output_name: &str) -> &Value {
         self.core.pull(program, output_name)
     }
 }
@@ -1027,7 +1027,7 @@ impl RawState {
 // ProvScanState: provenance-scan engine (O(all) invalidation)
 // =================================================================
 
-/// GK evaluation engine using provenance bitmask scanning.
+/// Polydat evaluation engine using provenance bitmask scanning.
 ///
 /// On `set_inputs()`, scans ALL nodes and checks each node's
 /// provenance bitmask against the changed-inputs mask.
@@ -1072,7 +1072,7 @@ impl ProvScanState {
     }
 
     /// Pull a named output variate from the program.
-    pub fn pull(&mut self, program: &GkProgram, output_name: &str) -> &Value {
+    pub fn pull(&mut self, program: &PolydatProgram, output_name: &str) -> &Value {
         self.core.pull(program, output_name)
     }
 }
@@ -1083,7 +1083,7 @@ mod panic_enrichment_tests {
     //! when a node panics on a type mismatch (the "expected U64,
     //! got Str" surface that operators see in the wild).
 
-    use crate::dsl::compile::compile_gk_with_libs;
+    use crate::dsl::compile::compile_polydat_with_libs;
 
     #[test]
     fn type_mismatch_panic_carries_node_and_output_context() {
@@ -1091,7 +1091,7 @@ mod panic_enrichment_tests {
         // slot — `mul`'s u64 path will panic on `as_u64()`.
         // The enricher must wrap the message with the node
         // name + output name + program context.
-        let mut k = compile_gk_with_libs(
+        let mut k = compile_polydat_with_libs(
             "extern x: u64\n\
              doubled := mul(x, 2)\n",
             None, vec![], &[], false, "test_workload",

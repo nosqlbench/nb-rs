@@ -1,10 +1,10 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! [`ScopeKernel<M>`] — typed wrapper around [`crate::kernel::GkKernel`].
+//! [`ScopeKernel<M>`] — typed wrapper around [`crate::kernel::PolydatKernel`].
 //!
 //! Per SRD-67 §"Walled-off invariant", `ScopeKernel<M>` is the
-//! typed surface; the underlying `GkKernel` stays public for
+//! typed surface; the underlying `PolydatKernel` stays public for
 //! Phase 1 (legacy call sites still construct it directly), and
 //! becomes `pub(crate)` in Phase 4 once the migration lands.
 //!
@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use crate::kernel::{GkKernel, SharedCell};
+use crate::kernel::{PolydatKernel, SharedCell};
 use crate::ast::{PortType, Value};
 
 use super::builder::SubcontextBuilder;
@@ -54,15 +54,15 @@ struct ChildEntry {
     site: SourceContext,
 }
 
-/// Typed wrapper around an `Arc<GkKernel>`.
+/// Typed wrapper around an `Arc<PolydatKernel>`.
 ///
 /// Construction via this type goes through the SRD-67 protocol
 /// (`subcontext_builder` → `finalize` → `spawn`); direct
-/// construction from a `GkKernel` is `pub(crate)` for the
+/// construction from a `PolydatKernel` is `pub(crate)` for the
 /// Phase 1 internal bridge.
 pub struct ScopeKernel<M> {
     name: ChildName,
-    inner: Arc<Mutex<GkKernel>>,
+    inner: Arc<Mutex<PolydatKernel>>,
     site: SourceContext,
     children: Mutex<HashMap<ChildName, ChildEntry>>,
     consumers: Mutex<Vec<RegisteredPullConsumer>>,
@@ -124,7 +124,7 @@ impl std::fmt::Debug for SharedCellInScope {
 
 impl<M> ScopeKernel<M> {
     /// Enumerate every shared cell visible at this scope.
-    /// Delegates to [`GkKernel::shared_cells_in_scope`] —
+    /// Delegates to [`PolydatKernel::shared_cells_in_scope`] —
     /// the carrier lives at the kernel layer so it survives
     /// any wrap/unwrap dance the activity layer does. The
     /// `SharedCellInScope` re-export is kept for callers in
@@ -149,7 +149,7 @@ impl<M> ScopeKernel<M> {
     /// through the protocol.
     pub(crate) fn new_internal(
         name: ChildName,
-        kernel: GkKernel,
+        kernel: PolydatKernel,
         site: SourceContext,
         consumers: Vec<RegisteredPullConsumer>,
     ) -> Self {
@@ -158,7 +158,7 @@ impl<M> ScopeKernel<M> {
 
     pub(crate) fn new_with_write_throughs(
         name: ChildName,
-        kernel: GkKernel,
+        kernel: PolydatKernel,
         site: SourceContext,
         consumers: Vec<RegisteredPullConsumer>,
         write_throughs: Vec<WriteThroughBinding>,
@@ -185,13 +185,13 @@ impl<M> ScopeKernel<M> {
         &self.site
     }
 
-    /// Borrow the underlying `GkKernel` for read-only
+    /// Borrow the underlying `PolydatKernel` for read-only
     /// operations. The lock is released when the returned guard
     /// is dropped. Phase 1 exposes this so legacy call sites
     /// (and tests) can still drive the kernel via the existing
     /// API; Phase 4 narrows or removes it once the migration
     /// completes.
-    pub fn lock_inner(&self) -> std::sync::MutexGuard<'_, GkKernel> {
+    pub fn lock_inner(&self) -> std::sync::MutexGuard<'_, PolydatKernel> {
         self.inner.lock().expect("ScopeKernel inner kernel poisoned")
     }
 
@@ -346,21 +346,21 @@ impl<M> ScopeKernel<M> {
 }
 
 /// Construct a workload-root [`ScopeKernel<RootMarker>`] from a
-/// pre-compiled [`GkKernel`]. Phase 1 bridge for callers that
+/// pre-compiled [`PolydatKernel`]. Phase 1 bridge for callers that
 /// already have a kernel and want to use it as the parent of a
 /// typed sub-context.
 ///
 /// In Phase 4 once the migration completes, the workload-root
 /// path will produce a `ScopeKernel<RootMarker>` directly from
 /// the workload-load entry point.
-pub(crate) fn wrap_root_kernel(kernel: GkKernel, label: impl Into<String>) -> Arc<ScopeKernel<RootMarker>> {
+pub(crate) fn wrap_root_kernel(kernel: PolydatKernel, label: impl Into<String>) -> Arc<ScopeKernel<RootMarker>> {
     let label = label.into();
     let name = ChildName::from_segments([label.clone()]);
     let site = SourceContext::new(label);
     Arc::new(ScopeKernel::new_internal(name, kernel, site, Vec::new()))
 }
 
-/// SRD-67 Phase 2 — synthesise a [`GkKernel`] under a borrowed
+/// SRD-67 Phase 2 — synthesise a [`PolydatKernel`] under a borrowed
 /// parent kernel via the subcontext-builder protocol. The bridge
 /// migration callers (e.g. `build_do_loop_scope_kernel`) use to
 /// route through `spawn` without changing their call-site
@@ -375,26 +375,26 @@ pub(crate) fn wrap_root_kernel(kernel: GkKernel, label: impl Into<String>) -> Ar
 ///    Rule 2 rewrite (parent `shared X` collision with child
 ///    `X := <expr>`) and `mark_inherited_outputs` are applied
 ///    to the freshly-compiled program.
-/// 3. Construct the child `GkKernel` from the closed program.
+/// 3. Construct the child `PolydatKernel` from the closed program.
 ///    Spawn-time cross-binding (cell attachment via
 ///    `materialize_wiring_from_outer`) is applied against the **original**
 ///    parent kernel so the child's input slots see live outer-
 ///    scope values, not the `from_program` clone's default-zero
 ///    state.
 ///
-/// Typed gk matter accepted by both kernel-construction
+/// Typed Polydat matter accepted by both kernel-construction
 /// paths — root and subscope. Opaque externally: the only way
-/// to obtain a `GkMatter` value is via [`GkMatter::builder`].
+/// to obtain a `PolydatMatter` value is via [`PolydatMatter::builder`].
 ///
 /// Internally carries one of three input forms — fresh source,
 /// pre-parsed statements (the "module parser" output), or a
 /// pre-compiled program. The builder validates that exactly
 /// one form is provided.
-pub struct GkMatter<'a> {
-    pub(crate) inner: GkMatterInner<'a>,
+pub struct PolydatMatter<'a> {
+    pub(crate) inner: PolydatMatterInner<'a>,
 }
 
-pub(crate) enum GkMatterInner<'a> {
+pub(crate) enum PolydatMatterInner<'a> {
     Source(SourceMatter),
     Statements(StatementsMatter),
     Program(ProgramMatter<'a>),
@@ -417,36 +417,36 @@ pub(crate) struct StatementsMatter {
 }
 
 pub(crate) struct ProgramMatter<'a> {
-    pub(crate) program: Arc<crate::kernel::GkProgram>,
+    pub(crate) program: Arc<crate::kernel::PolydatProgram>,
     pub(crate) iter_bindings: &'a [(String, Value)],
 }
 
-impl<'a> GkMatter<'a> {
-    /// Begin building gk matter. The builder is the only
-    /// constructor of `GkMatter`; the variants and their
+impl<'a> PolydatMatter<'a> {
+    /// Begin building Polydat matter. The builder is the only
+    /// constructor of `PolydatMatter`; the variants and their
     /// fields are not exposed.
     #[inline]
-    pub fn builder() -> GkMatterBuilder<'a> {
-        GkMatterBuilder::new()
+    pub fn builder() -> PolydatMatterBuilder<'a> {
+        PolydatMatterBuilder::new()
     }
 }
 
-/// Builder for [`GkMatter`]. Configure exactly one input form
+/// Builder for [`PolydatMatter`]. Configure exactly one input form
 /// (source, pre-parsed statements, or program), plus optional
 /// metadata, then call [`Self::build`].
 #[derive(Default)]
-pub struct GkMatterBuilder<'a> {
+pub struct PolydatMatterBuilder<'a> {
     label: Option<String>,
     body: Option<String>,
     statements: Option<Vec<crate::dsl::ast::Statement>>,
-    program: Option<Arc<crate::kernel::GkProgram>>,
+    program: Option<Arc<crate::kernel::PolydatProgram>>,
     iter_bindings: &'a [(String, Value)],
     result_bindings: Option<String>,
     inherited_outputs: Vec<String>,
     options: super::builder::CompileOptions,
 }
 
-impl<'a> GkMatterBuilder<'a> {
+impl<'a> PolydatMatterBuilder<'a> {
     fn new() -> Self {
         Self::default()
     }
@@ -459,14 +459,14 @@ impl<'a> GkMatterBuilder<'a> {
         self
     }
 
-    /// Provide gk source as a string. Mutually exclusive with
+    /// Provide Polydat source as a string. Mutually exclusive with
     /// [`Self::statements`] and [`Self::program`].
     pub fn source(mut self, body: impl Into<String>) -> Self {
         self.body = Some(body.into());
         self
     }
 
-    /// Provide gk source as pre-parsed AST statements. Mutually
+    /// Provide Polydat source as pre-parsed AST statements. Mutually
     /// exclusive with [`Self::source`] and [`Self::program`].
     /// Use when the caller has already run the module parser
     /// (e.g. when synthesising scope source from a structured
@@ -480,7 +480,7 @@ impl<'a> GkMatterBuilder<'a> {
     /// [`Self::source`] and [`Self::statements`]. Used for per-
     /// fiber state forks, comprehension iteration, and other
     /// call sites that hold a compiled program directly.
-    pub fn program(mut self, program: Arc<crate::kernel::GkProgram>) -> Self {
+    pub fn program(mut self, program: Arc<crate::kernel::PolydatProgram>) -> Self {
         self.program = Some(program);
         self
     }
@@ -517,18 +517,18 @@ impl<'a> GkMatterBuilder<'a> {
 
     /// Validate and produce typed matter. Errors when zero or
     /// more than one input form is configured.
-    pub fn build(self) -> Result<GkMatter<'a>, String> {
+    pub fn build(self) -> Result<PolydatMatter<'a>, String> {
         let forms = [self.body.is_some(), self.statements.is_some(), self.program.is_some()];
         let count = forms.iter().filter(|x| **x).count();
         if count == 0 {
-            return Err("GkMatter::builder: no input form set (use .source / .statements / .program)".into());
+            return Err("PolydatMatter::builder: no input form set (use .source / .statements / .program)".into());
         }
         if count > 1 {
-            return Err("GkMatter::builder: multiple input forms set; choose exactly one".into());
+            return Err("PolydatMatter::builder: multiple input forms set; choose exactly one".into());
         }
         let label = self.label.unwrap_or_else(|| "(matter)".to_string());
         let inner = if let Some(body) = self.body {
-            GkMatterInner::Source(SourceMatter {
+            PolydatMatterInner::Source(SourceMatter {
                 label,
                 body,
                 result_bindings: self.result_bindings,
@@ -536,7 +536,7 @@ impl<'a> GkMatterBuilder<'a> {
                 options: self.options,
             })
         } else if let Some(stmts) = self.statements {
-            GkMatterInner::Statements(StatementsMatter {
+            PolydatMatterInner::Statements(StatementsMatter {
                 label,
                 statements: stmts,
                 result_bindings: self.result_bindings,
@@ -545,19 +545,19 @@ impl<'a> GkMatterBuilder<'a> {
             })
         } else {
             // program
-            GkMatterInner::Program(ProgramMatter {
+            PolydatMatterInner::Program(ProgramMatter {
                 program: self.program.expect("program form set per count above"),
                 iter_bindings: self.iter_bindings,
             })
         };
-        Ok(GkMatter { inner })
+        Ok(PolydatMatter { inner })
     }
 }
 
-impl GkKernel {
+impl PolydatKernel {
     /// THE subscope-construction path. Per the kernel-construction
     /// invariant, this is the ONE method through which a parent
-    /// kernel produces a child. `compile_gk` produces root
+    /// kernel produces a child. `compile_polydat` produces root
     /// kernels; everything else is a subscope and routes here.
     ///
     /// Cell propagation, scope-coordinate plumbing, and Rule 2
@@ -569,14 +569,14 @@ impl GkKernel {
     /// cell).
     pub fn build_subscope(
         &self,
-        matter: GkMatter<'_>,
-    ) -> Result<GkKernel, ContractViolation> {
+        matter: PolydatMatter<'_>,
+    ) -> Result<PolydatKernel, ContractViolation> {
         use super::module::BodyFragment;
         match matter.inner {
-            GkMatterInner::Program(p) => {
+            PolydatMatterInner::Program(p) => {
                 Ok(self.materialize_subscope(p.program, p.iter_bindings))
             }
-            GkMatterInner::Source(s) => {
+            PolydatMatterInner::Source(s) => {
                 let strict = s.options.strict;
                 let label = s.label.clone();
                 let transient = self.transient_typed_parent(&s.label);
@@ -585,7 +585,7 @@ impl GkKernel {
                     .context(SourceContext::new(s.label.clone()))
                     .mark_inherited_outputs(s.inherited_outputs)
                     .with_compile_options(s.options)
-                    .body(BodyFragment::GkSource(s.body));
+                    .body(BodyFragment::PolydatSource(s.body));
                 if let Some(src) = s.result_bindings {
                     builder.add_result_bindings(&src)?;
                 }
@@ -595,7 +595,7 @@ impl GkKernel {
                 enforce_l2f_strict(&child, strict, &label)?;
                 Ok(child)
             }
-            GkMatterInner::Statements(s) => {
+            PolydatMatterInner::Statements(s) => {
                 let strict = s.options.strict;
                 let label = s.label.clone();
                 let transient = self.transient_typed_parent(&s.label);
@@ -637,7 +637,7 @@ impl GkKernel {
 /// remove the binding and declare `extern X` explicitly if
 /// fall-through to outer was intended.
 fn enforce_l2f_strict(
-    child: &GkKernel,
+    child: &PolydatKernel,
     strict: bool,
     label: &str,
 ) -> Result<(), ContractViolation> {
@@ -658,22 +658,22 @@ fn enforce_l2f_strict(
 // family of free-function bridges are removed. Per the kernel-
 // construction invariant, only two paths exist:
 //
-//   1. Root kernel built from source via `compile_gk` (and family).
+//   1. Root kernel built from source via `compile_polydat` (and family).
 //   2. Subscope kernel materialized by a parent kernel via
-//      [`GkKernel::materialize_subscope`] or
-//      [`GkKernel::build_subscope_from_source`] — all methods on
-//      `GkKernel` itself, parent-supervised, typed.
+//      [`PolydatKernel::materialize_subscope`] or
+//      [`PolydatKernel::build_subscope_from_source`] — all methods on
+//      `PolydatKernel` itself, parent-supervised, typed.
 //
-// External callers go through these GkKernel-controlled paths
+// External callers go through these PolydatKernel-controlled paths
 // directly; no free-function bridges remain.
 
 // `instance_program` is removed. The two sanctioned construction
 // paths are:
 //
-//   1. Root kernel built from source via `compile_gk` family.
+//   1. Root kernel built from source via `compile_polydat` family.
 //   2. Subscope kernel materialized by an existing parent
-//      kernel via `GkKernel::materialize_subscope` or
-//      `GkKernel::build_subscope_from_source`.
+//      kernel via `PolydatKernel::materialize_subscope` or
+//      `PolydatKernel::build_subscope_from_source`.
 //
 // Tests that need a kernel from pre-compiled program matter use
-// `GkAssembler::compile()` (which returns a root kernel) directly.
+// `PolydatAssembler::compile()` (which returns a root kernel) directly.

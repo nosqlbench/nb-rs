@@ -47,7 +47,7 @@ pub trait OrderingStrategy {
 **Why deferred.** Three users force a pattern; we have eight
 variants today but they're all internal — the enum is the
 right shape until either:
-- `order: custom(<gk-fn>)` actually ships (Push 12, gated on
+- `order: custom(<polydat-fn>)` actually ships (Push 12, gated on
   `Value::Tuple` — the user-visible plug-in point that
   benefits from a trait), OR
 - a fourth distinct dispatch site appears (e.g. dryrun-time
@@ -130,18 +130,18 @@ implement the bit-reversal recurrence, port the existing
 `order_halton` test pattern. Bounded scope.
 
 ### 2b. Push 11 — Layer 7b destructure clauses
-**Blocker.** GK `Value::Tuple` (or equivalent
+**Blocker.** Polydat `Value::Tuple` (or equivalent
 `Vec<Vec<Value>>` shape).
 **Disposition.** Parser today accepts only the parallel-iter
 LHS form `(a, b) in (e1, e2)`; destructure form
 `(host, port) in pairs_csv()` parse-rejects with a clear
 "requires Value::Tuple" message.
-**Effort estimate.** Bigger than 2a — it crosses the GK type
+**Effort estimate.** Bigger than 2a — it crosses the Polydat type
 boundary. Probably worth a dedicated SRD push when scheduled.
 
-### 2c. Push 12 — `order: custom(<gk-fn>)`
+### 2c. Push 12 — `order: custom(<polydat-fn>)`
 **Blocker.** Same `Value::Tuple` dependency as 2b — the
-user's GK function takes `List<Tuple>` and returns
+user's Polydat function takes `List<Tuple>` and returns
 `List<Tuple>`.
 **Disposition.** Parser accepts; evaluator errors with the
 same Value::Tuple-pointing message.
@@ -186,12 +186,12 @@ These are real, but the cost/benefit isn't right today.
 only at iteration time — a typo or undefined-name reference
 errors per-tuple, not at workload load.
 
-**Why we haven't done it.** The filter is a GK predicate
-expression. Pre-validating means exposing GK's expression
+**Why we haven't done it.** The filter is a Polydat predicate
+expression. Pre-validating means exposing Polydat's expression
 parser to the comprehension layer, which inverts the
 dependency direction (comprehension currently depends on
 GK eval; this would add a parse-time hop the other way).
-The right home is probably a `gk::expr::parse_predicate`
+The right home is probably a `polydat::expr::parse_predicate`
 API that the comprehension validator can call without
 exposing the rest of GK. That's its own design exercise.
 
@@ -229,7 +229,7 @@ When does this memo close out?
   for 1a; a sixth expander or a path-divergence bug for 1b).
 - 2a/2b/2c are scheduled work — they'll get their own pushes.
 - 3a/3b/3c get cleaned up as drive-bys.
-- 4a closes if/when a `gk::expr::parse_predicate` lands; if
+- 4a closes if/when a `polydat::expr::parse_predicate` lands; if
   it doesn't, this stays as documented residue.
 - 4b closes the first time a parser edge case shows up in a
   user workload.

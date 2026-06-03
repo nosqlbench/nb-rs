@@ -127,7 +127,7 @@ Total runtime: ~10 seconds on a modern dev machine.
 This gate is consumed by PR 9c. The PR 9 plan is:
 
 - **PR 9a** (this doc) — gate definition + baseline confirmed.
-- **PR 9b** — `KernelScope for GkKernel` implementation +
+- **PR 9b** — `KernelScope for PolydatKernel` implementation +
   algebra-side adapter layer that bridges nb-rs's existing
   use sites to the new types. Code lands but isn't activated;
   the legacy path remains the default.

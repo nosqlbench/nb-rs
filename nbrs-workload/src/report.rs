@@ -12,7 +12,7 @@
 //!   into items keyed by leading `plot <name>` / `table <name>`.
 //! - The JSON sub-block parser for `series ... {…}` style
 //!   overrides (strict JSON only — relies on the existing rule
-//!   that GK `{...}` is unambiguously not JSON).
+//!   that Polydat `{...}` is unambiguously not JSON).
 //! - Style cascade helpers: `defaults` at workload root,
 //!   `defaults` at group level, then per-item directives.
 //!

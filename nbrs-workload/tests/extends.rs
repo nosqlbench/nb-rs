@@ -463,12 +463,12 @@ phases:
 // Helpers
 // ──────────────────────────────────────────────────────────────
 
-/// Return the GK source string from a Workload's `bindings`
+/// Return the Polydat source string from a Workload's `bindings`
 /// field, regardless of whether it was string-form or map-form
 /// in the YAML.
 fn bindings_source(wl: &nbrs_workload::model::Workload) -> String {
     match &wl.bindings {
-        nbrs_workload::model::BindingsDef::GkSource(s) => s.clone(),
+        nbrs_workload::model::BindingsDef::PolydatSource(s) => s.clone(),
         nbrs_workload::model::BindingsDef::Map(entries) => entries.iter()
             .map(|(k, v)| format!("{k} := {v}"))
             .collect::<Vec<_>>()

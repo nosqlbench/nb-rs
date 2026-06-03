@@ -37,7 +37,7 @@ re-exported, so:
   (its spec text references it).
 - `for_each(k, limit)` did *not* — `{k_values}` and
   `{k_{k}_limits}` are the only references in its spec.
-- `bind_outer_scope` (gkkernel.rs) walks **outer.output_names()**
+- `bind_outer_scope` (polydatkernel.rs) walks **outer.output_names()**
   only — outer's input slots don't propagate down through
   another `bind_outer_scope` call. So even though
   `for_each(table, optimize_for)` had `profile` populated as an
@@ -109,7 +109,7 @@ Companion to `bind_outer_scope`. After the standard outer-output
 → inner-input copy, walk `outer.program().input_names()` and
 copy any non-`Value::None` values into matching inner input
 slots by name. This closes the gap noted in
-`docs/design/m3_followon_gk_factorings.md` §1: chain-inheritance
+`docs/design/m3_followon_polydat_factorings.md` §1: chain-inheritance
 of *input* slots, so a value populated into an ancestor's input
 slot reaches descendants without requiring every intermediate
 scope to re-export it as an output.
@@ -153,7 +153,7 @@ swallowed by `program.rs`'s init-time `catch_unwind`.
 `std::panic::catch_unwind`. A panic at cycle time (this is
 what would have surfaced from any remaining downstream node
 panics fed by `Value::None` etc.) is now classified as a
-`gk_eval_panic` error: `errors_total++`, `stop_flag`, and
+`polydat_eval_panic` error: `errors_total++`, `stop_flag`, and
 `stop_reason` set so the phase summary shows the panic
 message instead of crashing the runtime. The fiber breaks
 out of its cycle loop cleanly. Phase install paths still
@@ -168,7 +168,7 @@ It looks like one general principle ("propagate everything
 through every scope") but the runtime mechanics are split
 across two layers:
 
-- **Compile-time**: the synthesized GK source must declare
+- **Compile-time**: the synthesized Polydat source must declare
   every name that any descendant might need. That's the
   `extern <name>: <type>` cascade in
   `build_for_each_scope_kernel`. Without these declarations,
@@ -220,7 +220,7 @@ dump.
   "wire not in program" from "wire wasn't pulled yet". Matches
   the panic-removal direction of the `dataset_open` change.
 - `bind_outer_scope` could absorb `propagate_parent_inputs`
-  rather than leaving it as a parallel call — gkkernel.rs
+  rather than leaving it as a parallel call — polydatkernel.rs
   becomes the one place "inner sees outer" semantics live.
 - The `referenced` set in `build_scope` and the
   `required_outputs` set in step 6 are now scanning the same

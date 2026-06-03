@@ -42,7 +42,7 @@
 //! assert_eq!(pts.len(), 2);
 //! assert!(matches!(
 //!     &pts[0],
-//!     BindPoint::Reference { name, qualifier: BindQualifier::None } if name == "id",
+//!     BindPoint::Reference { name, qualifier: BindQualifier::None, .. } if name == "id",
 //! ));
 //! assert!(matches!(&pts[1], BindPoint::InlineDefinition(expr) if expr == "hash(cycle)"));
 //! ```
@@ -82,4 +82,4 @@ pub mod spectest;
 pub mod report;
 pub mod edit;
 pub mod metric_format;
-pub mod gk_matter;
+pub mod polydat_matter;

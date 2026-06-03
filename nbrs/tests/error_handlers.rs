@@ -176,14 +176,17 @@ fn warn_logs_and_continues() {
     assert_eq!(stdout_lines, 20,
         "all 20 cycles should have printed before error injection, got {stdout_lines}");
 
-    let warn_lines = stderr.lines().filter(|l| l.contains("WARN error")).count();
-    assert!(warn_lines > 0,
-        "expected at least one WARN line in stderr: {stderr}");
-    // 50% error rate over 20 cycles → somewhere around 10, but the
-    // exact count depends on the hash. Bracket generously so we're
-    // testing the "some errors were warned about" property.
-    assert!((5..=15).contains(&warn_lines),
-        "expected ~10 WARN lines for 50% error rate over 20 cycles, got {warn_lines}");
+    // Per-cycle WARN spam was deferred into the structured
+    // `error_readout` block at PhaseEnd (the normative phase
+    // line renders first; errors are appended below it).
+    // Assert the new shape: the readout block lists the first
+    // ModelError with the `(+N more)` extra-count tail.
+    assert!(stderr.contains("errors:"),
+        "expected error_readout block in stderr: {stderr}");
+    assert!(stderr.contains("[ModelError]"),
+        "expected ModelError class in error_readout block: {stderr}");
+    assert!(stderr.contains("more"),
+        "expected `(+N more)` extra-count tail when several errors fire: {stderr}");
 }
 
 /// `errors=ignore`: errors pass through silently. Every cycle runs
@@ -227,8 +230,12 @@ fn warn_then_counter_chain() {
         "errors=.*:warn,counter",
     ]);
     assert!(ok, "run should have succeeded, stderr={stderr}");
-    let warn_lines = stderr.lines().filter(|l| l.contains("WARN error")).count();
-    assert!(warn_lines > 0, "warn handler in chain should still log: {stderr}");
+    // The `warn` half of the chain no longer floods stderr with
+    // per-cycle lines (deferred into error_readout); the test
+    // verifies the chain ran through to completion by checking
+    // the structured error block surfaces the class.
+    assert!(stderr.contains("[ModelError]"),
+        "warn-then-counter chain should still surface errors via error_readout: {stderr}");
 }
 
 /// Pattern routing: different handlers per error class. `Overload`
@@ -269,11 +276,11 @@ fn overload_warned_other_errors_stopped() {
     ]);
     assert!(ok,
         "Overload warnings should not abort the run, stderr={stderr}");
-    let warn_lines = stderr.lines()
-        .filter(|l| l.contains("WARN error") && l.contains("Overload"))
-        .count();
-    assert!(warn_lines > 0,
-        "at least one Overload WARN line expected: {stderr}");
+    // Per-cycle WARN lines are now collected into the
+    // error_readout block at PhaseEnd. Assert the structured
+    // surface mentions Overload.
+    assert!(stderr.contains("[Overload]"),
+        "at least one Overload error expected in error_readout: {stderr}");
 }
 
 /// Two-class routing: `flaky` errors (ModelError) get ignored,

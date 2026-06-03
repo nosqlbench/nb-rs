@@ -4,13 +4,14 @@ Polydat is a variates construction engine.
 
 More specifically, Polydat is all of:
 
-* a function graph grammar
-* a procedural generation kernel
-* a function library and loader
-* a runtime type-safety reifier
-* a parameter space projection system
-* a context layering API
-* an expression language
+* function graph grammar
+* procedural generation kernel
+* function library and loader
+* runtime type-safety reifier
+* parameter space projection system
+* context layering API
+* expression language
+* workload simulation compiler
 
 ## Why? It's too many things!
 
@@ -40,7 +41,7 @@ simulation are connected through the same substrate with a supporting grammar an
 
 ## Documentation
 
-- [Illustrations](docs/illustrations.md) — runnable examples through the GK DSL and the programmatic Assembler API.
+- [Illustrations](docs/illustrations.md) — runnable examples through the Polydat DSL and the programmatic Assembler API.
 - [Compilation](docs/compilation.md) — Phase 1 / 2 / 3 levels, Hybrid mode, throughput numbers, and the `jit` /
   `vectordata` Cargo features.
 - [Nodes](docs/nodes.md) — the 250+ built-in function nodes.

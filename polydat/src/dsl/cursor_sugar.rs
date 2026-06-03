@@ -38,7 +38,7 @@ pub type CursorSugarFn = fn(source_name: &str, constructor: &Expr)
     -> Result<Option<CursorSugar>, String>;
 
 /// One inventory entry. Handlers self-name for diagnostic
-/// listings (`describe gk cursor-sugar`, future) and so the
+/// listings (`describe wiring cursor-sugar`, future) and so the
 /// dispatcher can attribute errors to the right module.
 pub struct CursorSugarRegistration {
     pub handler: CursorSugarFn,

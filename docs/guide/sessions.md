@@ -201,5 +201,5 @@ shell sessions that want consistent wiring across multiple
 
 - SRD-45 — Sessions (authoritative)
 - SRD-44 — Workload checkpointing (resume / skip / verify)
-- `docs/guide/gk_purity.md` — when to mark wires `volatile`
+- `docs/guide/polydat_purity.md` — when to mark wires `volatile`
   to keep their values out of resume identity

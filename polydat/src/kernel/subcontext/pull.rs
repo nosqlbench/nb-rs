@@ -23,7 +23,7 @@
 
 use std::sync::Arc;
 
-/// Anything that wants to pull GK values at cycle time.
+/// Anything that wants to pull Polydat values at cycle time.
 ///
 /// Implementors expose the names they intend to read; the spawn
 /// path makes those names available on the spawned kernel for
@@ -33,7 +33,7 @@ use std::sync::Arc;
 /// the artifact and may flow across threads with the spawned
 /// kernel.
 pub trait PullConsumer: Send + Sync {
-    /// The GK names this consumer will pull at cycle time.
+    /// The Polydat names this consumer will pull at cycle time.
     /// Returned in registration order so handle indices match the
     /// caller's expected layout.
     fn names(&self) -> &[String];

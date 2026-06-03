@@ -2,7 +2,7 @@
 
 ## Problem
 
-Binding scope composition currently operates on raw GK source strings.
+Binding scope composition currently operates on raw Polydat source strings.
 There is no intermediate model that carries provenance, scope level, or
 semantic identity. Every scope operation — inheritance, init injection,
 auto-extern generation, shadow checking, merging — is implemented as
@@ -19,7 +19,7 @@ string scanning and concatenation. This causes:
 
 2. **String-based name extraction.** `extract_binding_names()` parses
    raw text looking for `name :=` patterns. This is a reimplementation
-   of part of the GK parser, but without its rigor — no span tracking,
+   of part of the Polydat parser, but without its rigor — no span tracking,
    no expression parsing, no awareness of string literals that happen
    to contain `:=`.
 
@@ -32,9 +32,9 @@ string scanning and concatenation. This causes:
    base) strips `inputs`/`coordinates` by string prefix, but doesn't
    strip other duplicates. Adding init or extern stripping is whack-a-mole.
 
-5. **Expansion pipeline order sensitivity.** `expand_gk_bindings()` does
+5. **Expansion pipeline order sensitivity.** `expand_polydat_bindings()` does
    param substitution, param injection, and inline expression extraction
-   as string transforms on GK source. The order matters and the
+   as string transforms on Polydat source. The order matters and the
    interactions are implicit.
 
 ## Current Architecture
@@ -49,7 +49,7 @@ Executor (run_phase)
                             (only first op!)
                ──► generate_auto_externs()  ──► prepend "extern x: T"
                     (scans strings)               (to all ops)
-               ──► expand_gk_bindings()     ──► compile_bindings_...()
+               ──► expand_polydat_bindings()     ──► compile_bindings_...()
                     (string transforms)           (dedup by string eq,
                                                    shadow by name set,
                                                    merge by line append)
@@ -63,7 +63,7 @@ at any intermediate step.
 ### Core Type
 
 A `BindingScope` is a structured, typed representation of all the
-binding contributions that go into compiling a phase's GK kernel. It
+binding contributions that go into compiling a phase's Polydat kernel. It
 replaces the current approach of accumulating strings.
 
 ```rust
@@ -71,7 +71,7 @@ replaces the current approach of accumulating strings.
 pub struct ScopedBinding {
     /// The binding name (LHS of `:=`).
     pub name: String,
-    /// The definition expression (RHS of `:=`), as GK source text.
+    /// The definition expression (RHS of `:=`), as Polydat source text.
     pub definition: String,
     /// Where this binding came from.
     pub origin: BindingOrigin,
@@ -120,7 +120,7 @@ step contributes typed entries to a `BindingScope`:
 4. Param expansion──► add ParamExpansion entries
 5. Inline exprs   ──► add InlineExpr entries
 6. Validation     ──► scope rules checked on typed structure
-7. Emission       ──► single GK source string for compilation
+7. Emission       ──► single Polydat source string for compilation
 ```
 
 ### Scope Rules (checked at step 6)
@@ -149,7 +149,7 @@ The error messages can include provenance context: "op 'X' binding 'Y'
 
 ### Emission (step 7)
 
-After validation, the scope emits a single GK source string by
+After validation, the scope emits a single Polydat source string by
 concatenating entries in a defined order:
 
 ```
@@ -204,13 +204,13 @@ string hacking that happens after.
 
 | Current function | Replacement |
 |---|---|
-| String `{var}` substitution in GK source | `BindingScope::add_iteration_var(name, value)` |
+| String `{var}` substitution in Polydat source | `BindingScope::add_iteration_var(name, value)` |
 | `init var = "val"` prepend to first op | `ScopedBinding { origin: IterationVar, modifier: Init }` |
 | `generate_auto_externs()` string scan | `BindingScope::add_externs_from_manifest(manifest, referenced)` |
-| `expand_gk_bindings()` param injection | `BindingScope::add_param_bindings(params, referenced)` |
+| `expand_polydat_bindings()` param injection | `BindingScope::add_param_bindings(params, referenced)` |
 | `extract_binding_names()` on strings | `scope.names_for_origin(origin)` or `scope.has_name(name)` |
 | Shadow check via name set intersection | `scope.validate()` returns `Result<(), ScopeError>` |
-| Merge by line append + strip | `scope.emit()` produces deduplicated GK source |
+| Merge by line append + strip | `scope.emit()` produces deduplicated Polydat source |
 
 ## Scope of Change
 
@@ -220,19 +220,19 @@ string hacking that happens after.
 |---|---|
 | `nbrs-activity/src/bindings.rs` | Add `BindingScope`, `ScopedBinding`, `BindingOrigin`. Move scope assembly logic from string ops to typed construction. `compile_bindings_with_libs_excluding` accepts `BindingScope` instead of raw ops. |
 | `nbrs-activity/src/executor.rs` | `run_phase()` builds `BindingScope` instead of mutating op bindings strings. Remove init prepend, extern prepend, string dedup/shadow check. |
-| `nbrs-activity/src/runner.rs` | `generate_auto_externs()` returns `Vec<(String, String)>` (name, type) instead of a string. `expand_gk_bindings()` returns param bindings as `Vec<ScopedBinding>` instead of mutating strings. |
+| `nbrs-activity/src/runner.rs` | `generate_auto_externs()` returns `Vec<(String, String)>` (name, type) instead of a string. `expand_polydat_bindings()` returns param bindings as `Vec<ScopedBinding>` instead of mutating strings. |
 
 ### Files Not Modified
 
 - `nbrs-workload/src/parse.rs` — `merge_bindings()` stays as-is
 - `nbrs-workload/src/model.rs` — `BindingsDef`, `ParsedOp` stay as-is
-- `polydat/src/dsl/*` — GK compiler stays as-is (it receives a string)
+- `polydat/src/dsl/*` — Polydat compiler stays as-is (it receives a string)
 
 ### Backward Compatibility
 
-The GK compiler's input is unchanged (a source string). The change is
+The Polydat compiler's input is unchanged (a source string). The change is
 entirely in how that string is assembled. Existing workloads produce
-identical GK source, just via a typed pipeline instead of string hacking.
+identical Polydat source, just via a typed pipeline instead of string hacking.
 
 ## Verification
 

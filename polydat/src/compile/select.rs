@@ -10,8 +10,8 @@
 
 use std::collections::HashMap;
 use crate::compile::closures::{CompiledKernelRaw, CompiledKernelPull, CompiledKernelPushPull};
-use crate::kernel::{GkProgram, WireSource};
-use crate::ast::GkNode;
+use crate::kernel::{PolydatProgram, WireSource};
+use crate::ast::PolydatNode;
 
 /// Which provenance optimization the compiler selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,12 +46,12 @@ pub struct GraphAnalysis {
 
 /// Analyze a resolved DAG to compute structural metrics.
 pub fn analyze_graph(
-    nodes: &[Box<dyn GkNode>],
+    nodes: &[Box<dyn PolydatNode>],
     wiring: &[Vec<WireSource>],
     output_map: &HashMap<String, (usize, usize)>,
 ) -> GraphAnalysis {
     let total_nodes = nodes.len();
-    let node_provenance = GkProgram::compute_provenance(nodes, wiring);
+    let node_provenance = PolydatProgram::compute_provenance(nodes, wiring);
 
     // Compute per-output cone size: count nodes reachable from each output.
     // A node is in the cone if its provenance overlaps with the output's.

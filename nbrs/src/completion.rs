@@ -363,7 +363,7 @@ fn flag_takes_value(cur: &str) -> bool {
         | "--add-to-markdown" | "--format" | "--create"
         | "--session" | "--session-name" | "--session-path"
         | "--session-reuse" | "--session-keep" | "--session-shelflife"
-        | "--resume" | "--gk-lib" | "--pid" | "--socket"
+        | "--resume" | "--polydat-lib" | "--pid" | "--socket"
     )
 }
 
@@ -584,10 +584,10 @@ fn table_node() -> StrictNode<true, true> {
         .with_level(Level::Secondary.rank())
 }
 
-fn gk_node() -> StrictNode<true, true> {
-    // `nbrs gk visualize <expr|file.gk>`. Lone subcommand for
-    // now; sibling slots (`gk functions`, `gk dag`) live under
-    // `describe gk` until a broader gk-subcommand refactor.
+fn polydat_node() -> StrictNode<true, true> {
+    // `nbrs Polydat visualize <expr|file.polydat>`. Lone subcommand for
+    // now; sibling slots (`polydat functions`, `polydat dag`) live under
+    // `describe wiring` until a broader polydat-subcommand refactor.
     StrictNode::leaf_with_flags(&[], &[])
         .with_category(Category::Tools.tag())
         .with_level(Level::FullSurface.rank())
@@ -621,7 +621,26 @@ fn static_metrics_format(partial: &str, _ctx: &[&str]) -> Vec<String> {
 }
 
 fn describe_node() -> StrictNode<true, true> {
-    StrictNode::leaf(&[])
+    // Subcommand tree so TAB walks `describe → wiring →
+    // functions [--verbose]` etc. Each leaf is its own node so
+    // we can attach flag completions appropriate to the
+    // subtopic (e.g. `--verbose` is only meaningful for
+    // `wiring functions`).
+    StrictNode::group(vec![
+        ("adapter", Node::leaf(&[])),
+        ("wiring", Node::group(vec![
+            ("functions",    Node::leaf_with_flags(&[], &["--verbose", "-v"])),
+            ("functions-md", Node::leaf(&[])),
+            ("types",        Node::leaf(&[])),
+            ("types-md",     Node::leaf(&[])),
+            ("stdlib",       Node::leaf(&[])),
+            ("dag",          Node::leaf(&[])),
+            ("modules",      Node::leaf(&[])),
+        ])),
+        ("wrappers", Node::leaf(&[])),
+        ("op", Node::leaf(&[])
+            .with_value_provider("workload=", fn_provider(workload_provider))),
+    ])
         .with_category(Category::Documentation.tag())
         .with_level(Level::FullSurface.rank())
 }

@@ -95,7 +95,7 @@ pub enum ControlOrigin {
     /// Keybind / input in the TUI.
     Tui,
     /// Scripted feedback loop (GK `control_set(...)` node).
-    Gk { binding: String },
+    Polydat { binding: String },
     /// External API — `source` identifies the caller (endpoint, auth id, etc.)
     Api { source: String },
     /// Test harness — never seen in production.
@@ -293,7 +293,7 @@ struct ControlInner<T: Clone + Send + Sync + 'static> {
     /// tree.
     branch_scope: BranchScope,
     /// Optional converter from `f64` to `T`. Enables type-erased
-    /// writes from GK `control_set(name, value)` nodes and the
+    /// writes from Polydat `control_set(name, value)` nodes and the
     /// web API's JSON-number body. Controls that don't declare a
     /// converter reject `f64` writes with `ValidationFailed`.
     from_f64: Option<FromF64<T>>,

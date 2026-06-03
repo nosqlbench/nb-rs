@@ -3,7 +3,7 @@
 
 //! Integration tests that run example workloads end-to-end via the
 //! stdout adapter, verifying that the full pipeline (YAML parsing →
-//! GK compilation → phased execution → adapter output) works correctly.
+//! Polydat compilation → phased execution → adapter output) works correctly.
 //!
 //! Each test runs `nbrs run` as a subprocess and checks the output.
 
@@ -99,8 +99,8 @@ fn basic_workload_runs() {
 }
 
 #[test]
-fn gk_bindings_produces_output() {
-    let (stdout, stderr) = run_workload("examples/workloads/getting_started/gk_bindings.yaml", &["cycles=3"]);
+fn polydat_bindings_produces_output() {
+    let (stdout, stderr) = run_workload("examples/workloads/getting_started/polydat_bindings.yaml", &["cycles=3"]);
     assert!(stderr.contains("done"), "stderr: {stderr}");
     assert!(stdout.contains("INSERT INTO telemetry"), "stdout: {stdout}");
 }
@@ -232,11 +232,11 @@ fn bare_file_invocation() {
     assert_eq!(stdout.lines().count(), 3, "should have 3 lines");
 }
 
-// ─── GK features ───────────────────────────────────────────────
+// ─── Polydat features ───────────────────────────────────────────────
 
 #[test]
 fn const_expression_in_cycles() {
-    // cycles={4*4} should evaluate to 16 via GK const expression
+    // cycles={4*4} should evaluate to 16 via Polydat const expression
     let (stdout, stderr) = run_inline("tick", &["cycles={4*4}"]);
     assert!(stderr.contains("done"), "stderr: {stderr}");
     let lines: Vec<&str> = stdout.lines().collect();
@@ -435,7 +435,7 @@ fn shared_bool_through_for_each_into_consumer_phase_bindings() {
 // canonical surfaces of `set:`: bare-token shadow, multi-key
 // shadow, expression-with-interpolation value, set-wrapping-
 // for_each composition, and nested-set composition. All resolve
-// through the GK scope-chain (no HashMap merges, no synthesizer
+// through the Polydat scope-chain (no HashMap merges, no synthesizer
 // side-channels). Failures surface as the wrong shadow being
 // applied or the shadow being silently dropped.
 
@@ -535,7 +535,7 @@ fn bindings_long_form_equivalent_to_set_sugar() {
     // Direct `bindings: | const NAME := …` body — the canonical
     // form `set:` desugars to. Same shadowing behaviour,
     // same chain semantics, just written explicitly so
-    // authors can mix in any other GK construct (derived
+    // authors can mix in any other Polydat construct (derived
     // bindings, shared cells, `final` for true compile-time
     // constants). This test pins the parity with the
     // sugared form.
@@ -620,7 +620,7 @@ fn json_shaped_workload_param_values_round_trip() {
     // `nbrs_workload::bindpoints::is_literal_content` applies
     // to op-template parsing, also enforced inside the GK
     // string-interpolation desugar (SRD-10 §"String
-    // Interpolation": invalid GK expression bodies leave the
+    // Interpolation": invalid Polydat expression bodies leave the
     // literal alone).
     let (stdout, stderr) = run_workload(
         "examples/workloads/json_param.yaml",

@@ -65,7 +65,7 @@ use std::sync::Arc;
 use crate::iteration::comprehension::cardinality::ProductMeasure;
 use crate::iteration::comprehension::metadata::IndexFn;
 use crate::iteration::comprehension::source::{LiteralValue, Source};
-use crate::kernel::GkKernel;
+use crate::kernel::PolydatKernel;
 use crate::ast::Value;
 
 /// Result of evaluating one clause's source.
@@ -146,12 +146,12 @@ impl std::error::Error for EvalError {}
 /// spec-text and `Source::WorkloadParamList` lookups resolve.
 /// `var_name` lets the source synthesise a useful error
 /// message; `prefix` is the prior-axis bindings the evaluator
-/// installs via `GkKernel::materialize_subscope` so dependent
+/// installs via `PolydatKernel::materialize_subscope` so dependent
 /// sources see earlier-axis values.
 pub struct EvalContext<'a> {
     pub var_name: &'a str,
-    pub parent: &'a Arc<GkKernel>,
-    pub canonical: &'a Arc<GkKernel>,
+    pub parent: &'a Arc<PolydatKernel>,
+    pub canonical: &'a Arc<PolydatKernel>,
     pub prefix: &'a [(String, Value)],
 }
 
@@ -387,8 +387,8 @@ mod tests {
 
     #[test]
     fn generator_with_context_evaluates_to_lattice() {
-        let parent = Arc::new(crate::dsl::compile_gk("\n").unwrap());
-        let canonical = Arc::new(crate::dsl::compile_gk("\n").unwrap());
+        let parent = Arc::new(crate::dsl::compile_polydat("\n").unwrap());
+        let canonical = Arc::new(crate::dsl::compile_polydat("\n").unwrap());
         let s = Source::Generator {
             expr: "1, 2, 3, 4, 5".into(),
             cardinality_hint: Some(5),

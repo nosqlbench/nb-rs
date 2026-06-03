@@ -7,7 +7,7 @@
 //! "enhancer chain" pattern from upstream nosqlbench
 //! (`Cqld4BaseOpDispenser.getEnhancedStmtFunc` →
 //! `ParsedOp.enhanceFuncOptionally`). The dispenser's initializer
-//! resolves universal-field names through the GK scope ONCE,
+//! resolves universal-field names through the Polydat scope ONCE,
 //! captures the resolved values into modifier structs, and stores
 //! the resulting `ModifierChain<T>` on the dispenser. Critical path
 //! is one call: `chain.apply(&mut target)`.
@@ -28,7 +28,7 @@
 //! - **Critical path (per cycle):** the dispenser calls
 //!   `chain.apply(&mut stmt)` on the constructed engine
 //!   statement immediately before binding values / sending. Each
-//!   active modifier applies its captured setter; no GK access,
+//!   active modifier applies its captured setter; no Polydat access,
 //!   no name resolution, no map lookup.
 //!
 //! # Trace sink (optional, lazy)
@@ -62,7 +62,7 @@ use nbrs_metrics::labels::Labels;
 /// A conditional per-op modifier.
 ///
 /// Modifiers are constructed only when the user actually bound
-/// the corresponding field in the GK scope — the chain pre-filters
+/// the corresponding field in the Polydat scope — the chain pre-filters
 /// at build time, so anything reachable through
 /// [`ModifierChain::apply`] is by construction active. There is
 /// no `is_active()` method.

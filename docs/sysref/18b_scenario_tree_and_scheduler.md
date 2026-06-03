@@ -12,7 +12,7 @@ each other. Builds on SRD 13b §"Scope composition" and SRD 18.
 SRD 18 §"Principles" already stated the design intent:
 
 > Loop counters are explicit. If a loop needs an iteration index,
-> it declares a named counter variable. This is a GK scope value
+> it declares a named counter variable. This is a Polydat scope value
 > — visible to all children via the standard scope composition
 > mechanism (auto-externs, `shared`/`final`).
 
@@ -35,8 +35,8 @@ scheduler that decides when those scopes run.
 
 | Tree | What it is | Source of truth |
 |------|-----------|-----------------|
-| **Scenario tree** | The static structure of the workload as authored: scenarios, `Comprehension` nodes (each wrapping a polydat-defined comprehension AST per polydat spec §3; surface forms include `for_each`, `for_combinations`, `for_each_union`), `do_while`, `do_until`, phases. Each node is a kind. | `nbrs-workload` parses YAML / `.gk` into this. |
-| **Scope tree** | The runtime hierarchy of GK scopes (one `GkProgram` per non-trivial node) plus their pragma chains and extern wiring. Mirrors the scenario tree 1:1 for control-flow and phase nodes. | `nbrs-activity` builds this from the scenario tree at compile time. |
+| **Scenario tree** | The static structure of the workload as authored: scenarios, `Comprehension` nodes (each wrapping a polydat-defined comprehension AST per polydat spec §3; surface forms include `for_each`, `for_combinations`, `for_each_union`), `do_while`, `do_until`, phases. Each node is a kind. | `nbrs-workload` parses YAML / `.polydat` into this. |
+| **Scope tree** | The runtime hierarchy of Polydat scopes (one `PolydatProgram` per non-trivial node) plus their pragma chains and extern wiring. Mirrors the scenario tree 1:1 for control-flow and phase nodes. | `nbrs-activity` builds this from the scenario tree at compile time. |
 
 ### The Comprehension model
 
@@ -84,7 +84,7 @@ walker uses those surfaces* to construct per-iteration scoped
 kernels, not what those surfaces mean.
 
 The ergonomic one-call API used by the scenario-tree walker
-materializes the iteration as a stream of scoped GK kernels:
+materializes the iteration as a stream of scoped Polydat kernels:
 
 ```rust
 // Equivalent to polydat::Comprehension::scoped_kernel_stream(&parent)
@@ -92,10 +92,10 @@ materializes the iteration as a stream of scoped GK kernels:
 // nb-rs-specific kernel-construction context.
 let iter = polydat::comprehension::iterate(
     &comprehension, &parent_kernel,
-    &workload_params, gk_lib_paths, workload_dir, strict, "context",
+    &workload_params, polydat_lib_paths, workload_dir, strict, "context",
 )?;
 for child_kernel in iter {
-    // Each yielded GkKernel is a polydat ScopedKernelInstance<GkKernel>:
+    // Each yielded PolydatKernel is a polydat ScopedKernelInstance<PolydatKernel>:
     // the iteration's coordinate values bound on input slots and
     // parent-scope wiring already done. The streamer's cursor and
     // working-set are scoped to this `iter` — multiple `iter` handles
@@ -104,8 +104,8 @@ for child_kernel in iter {
 }
 ```
 
-`ComprehensionIter` (today) is an `ExactSizeIterator<Item = GkKernel>`
-backed by a polydat `ScopedKernelStream<GkKernel>` (after
+`ComprehensionIter` (today) is an `ExactSizeIterator<Item = PolydatKernel>`
+backed by a polydat `ScopedKernelStream<PolydatKernel>` (after
 SRD-78's audit Phase B5 lands the §9.5 surfaces) that
 synthesizes the canonical kernel once, shares its
 `Arc<GkProgram>` across iterations, and materializes a fresh
@@ -132,7 +132,7 @@ Each scenario node maps to a scope as follows:
 | Node kind | Scope semantics |
 |-----------|-----------------|
 | Scenario root | The outermost scope under the workload scope. Carries scenario-name and any scenario-level pragmas. |
-| Phase | A leaf scope. Compiles its own `GkProgram` if it has its own bindings or extern needs; otherwise reuses the parent. |
+| Phase | A leaf scope. Compiles its own `PolydatProgram` if it has its own bindings or extern needs; otherwise reuses the parent. |
 | `Comprehension` (polydat `clause` / single-axis `cartesian`, surface `for_each`) | Its own scope. The dispensed values are *iteration values*; the clause's `var` is a binding *output* of this scope (one value per iteration). Children see `var` as an extern. Polydat spec §3.1 owns the clause semantics. |
 | `Comprehension` (polydat multi-axis `cartesian`, surface `for_combinations`) | One scope carrying every axis. Each clause's variable is a binding output visible to its child scopes and the leaf. The cross product enumerates per polydat spec §3.2. |
 | `Comprehension` (polydat `union`, surface `for_each_union`) | Its own scope. Each child contributes a sub-stream of tuples; children see the (V2-required identical) coordinate set as externs regardless of which sub-space the current tuple came from. Polydat spec §3.4 + §5 V2 own the semantics. |
@@ -166,7 +166,7 @@ contract.
 The current "text-substitute `{var}` then recompile" pattern is
 replaced by:
 
-1. The `for_each var in expr` scope is a `GkProgram` whose
+1. The `for_each var in expr` scope is a `PolydatProgram` whose
    *output manifest* contains `var` (typed by the value list's
    element type).
 2. Its kernel computes the value for the current iteration. For a
@@ -193,7 +193,7 @@ start; iteration is just rebinding extern inputs.
 ## Scope coordinates
 
 The iteration variables a kernel sits under form a structured
-position the GK model formalises as the kernel's **scope
+position the Polydat model formalises as the kernel's **scope
 coordinates**. Two definitions:
 
 - A **scope coordinate set** for a single scope is the
@@ -215,7 +215,7 @@ coordinates**. Two definitions:
 ### Invariant
 
 Every kernel that has been initialised in its scope —
-constructed through any of the standard `GkKernel` constructors
+constructed through any of the standard `PolydatKernel` constructors
 or via `bind_outer_scope` — has its scope coordinate path
 populated. Concretely:
 
@@ -225,7 +225,7 @@ populated. Concretely:
   the path is `[own] ++ outer.scope_coordinates()`.
 
 Consumers — presentation layer, inspector, scope-aware
-diagnostics — call [`GkKernel::scope_coordinates`] and get
+diagnostics — call [`PolydatKernel::scope_coordinates`] and get
 the full path back without walking the scope tree themselves.
 The kernel is the source of truth.
 
@@ -234,7 +234,7 @@ The kernel is the source of truth.
 The structural data model carries the rule:
 `InputKind::IterationExtern` (set by the DSL compiler when
 processing `Statement::ExternPort` with no default — see
-[SRD 11 §"Effectively-Const Nodes"](11_gk_evaluation.md))
+[SRD 11 §"Effectively-Const Nodes"](11_polydat_evaluation.md))
 combined with `program.is_inherited(name)` returning `false`.
 Both checks come from the program metadata; no string parsing
 of the for_each spec, no heuristics. Workload-param injections
@@ -415,7 +415,7 @@ expression of the single-walker contract:
 1. Parse the scenario tree from the workload model.
 2. Run the walker at `depth=Phase`, building the scope tree
    along the way: at each node, construct the inner scope by
-   attaching the parent. Compile its GK kernel (extern wiring +
+   attaching the parent. Compile its Polydat kernel (extern wiring +
    pragma attach). Record the scope as a child of its parent.
 3. Result: a fully-compiled tree where every leaf is ready to
    execute. No further compilation happens at runtime — only
@@ -573,7 +573,7 @@ migration is incremental:
      extern; `run_phase` populates the extern's value per
      iteration). *Done — pure architectural change with the
      same observable behavior.*
-   - **Cache-and-rebind**: each phase scope's `GkProgram`
+   - **Cache-and-rebind**: each phase scope's `PolydatProgram`
      compiles once and caches in the scope tree node;
      subsequent iterations build a fresh state from the
      cached program, set outer-scope and iteration-variable
@@ -587,8 +587,8 @@ Each phase scope node owns a `OnceLock<Arc<GkProgram>>`. It's
 empty at scope-tree construction; the first `run_phase` call
 that builds a kernel populates it via the existing
 `compile_from_scope` path. Subsequent calls retrieve the cached
-`Arc<GkProgram>`, instantiate a fresh `GkState` via
-`GkProgram::create_state()`, wrap them in a `GkKernel`, set
+`Arc<GkProgram>`, instantiate a fresh `PolydatState` via
+`GkProgram::create_state()`, wrap them in a `PolydatKernel`, set
 outer-scope and iteration-variable externs, and proceed exactly
 as before.
 
@@ -599,7 +599,7 @@ Properties:
   compiles `P`'s kernel once, regardless of `|xs|`. Same when
   the iter chain is deeper.
 - **Independent state per call.** Each `run_phase` call gets
-  its own `GkState` from the cached program. Concurrent calls
+  its own `PolydatState` from the cached program. Concurrent calls
   (when the scheduler eventually allows) don't contend on
   state; the program is `Arc`-shared, immutable after fold.
 - **Cache lifetime = session.** No invalidation needed —
@@ -611,7 +611,7 @@ Properties:
   touching the cache. The cache is opt-in by virtue of going
   through the inner-kernel path.
 
-Public API extension: `GkKernel::from_program(Arc<GkProgram>)`
+Public API extension: `PolydatKernel::from_program(Arc<GkProgram>)`
 makes the cache-and-rebind path expressible without
 internal-only constructors.
 
@@ -683,17 +683,17 @@ composition (`bind_outer_scope`, auto-extern, `from_program`).
 Phases:
 
 - **M3.1 — `cached_kernel` slot promotion + install primitive.**
-  `ScopeNode::cached_kernel: OnceLock<Arc<GkKernel>>` (was
+  `ScopeNode::cached_kernel: OnceLock<Arc<PolydatKernel>>` (was
   `Arc<GkProgram>`). The canonical kernel carries its
   folded-constant-seeded state so `get_constant(name)` is a
   straight `&self` read. `ScopeTree::install_kernel(idx, kernel)`
   installs lock-free; the workload kernel installs at the root
   immediately after `populate_pragmas`. Per-execution kernels
-  still come from `GkKernel::from_program(program.clone())` for
+  still come from `PolydatKernel::from_program(program.clone())` for
   mutable state.
 
 - **M3.2 — Per-scope kernel synthesis.**
-  `scope::build_for_each_scope_kernel` generates a `GkProgram`
+  `scope::build_for_each_scope_kernel` generates a `PolydatProgram`
   for each `ForEach` / `ForCombinations` scope at pre-map time:
 
   ```text
@@ -708,7 +708,7 @@ Phases:
                                          # pre-evaluation
   ```
 
-  GK's `extern` declaration auto-installs a passthrough node
+  Polydat's `extern` declaration auto-installs a passthrough node
   (`__port_<name>` in `compile.rs`), so each name appears as
   both an input *and* an output of the kernel. Children's
   standard `bind_outer_scope(parent)` chains inheritance through
@@ -730,7 +730,7 @@ Phases:
   `executor::dispatch_dependent_tuples` drives a single
   for_each scope through its installed kernel. The recursion
   creates a *fresh per-branch kernel* via the cache-and-rebind
-  primitive (`GkKernel::from_program(canonical.program().clone())`)
+  primitive (`PolydatKernel::from_program(canonical.program().clone())`)
   at every recursive descent — one way of instancing for
   logical subspaces, no exceptions. Each branch:
 
@@ -821,7 +821,7 @@ Phases:
   appear in the parent-kernel manifest like any other folded
   constant. The pre-M3.6 `substitute_workload_params` text pass
   is replaced by `rewrite_workload_param_idents_in_bindings`,
-  which substitutes the *literal value* into GK source (so
+  which substitutes the *literal value* into Polydat source (so
   `mod(hash(cycle), {user_count})` resolves the const-divisor
   slot directly without a wire-vs-const ambiguity). Op-template
   fields (`raw:`, `stmt:`, `prepared:`) keep `{name}`
@@ -831,7 +831,7 @@ Phases:
   The runner at the boundary filters `workload.params` by
   `workload.declared_params` before passing to the kernel
   compiler — ad-hoc CLI params (`cycles=`, `workload=`,
-  `tags=`) stay out of the GK identifier space.
+  `tags=`) stay out of the Polydat identifier space.
 
 ### M3.4 — unified comprehension dispatch
 
@@ -868,7 +868,7 @@ comprehension, terminal, depth, sequential_only)` drives each
 iteration. `TerminalAction::Children` descends into nested
 scenario nodes; `TerminalAction::Phase(name)` runs the phase
 itself (phase-level for_each). Per-branch kernel instancing
-preserved across all kinds — `GkKernel::from_program` per
+preserved across all kinds — `PolydatKernel::from_program` per
 iteration, `bind_outer_scope(parent_kernel)` for inheritance,
 `set_input` for the iteration's typed values, then either
 `execute_tree_at` or `run_phase` under that kernel as
@@ -915,7 +915,7 @@ current draining pre-computes the entire counter sequence
 before any child runs, so condition flips driven by child
 effects can't terminate the loop.
 
-##### Mechanism: one kernel for the whole loop, GK handles the rest
+##### Mechanism: one kernel for the whole loop, Polydat handles the rest
 
 A do-loop is **one logical context** evaluated repeatedly. It's
 not a set of independent sub-spaces (those are tuple
@@ -933,7 +933,7 @@ So:
   kernel; condition evaluates against the same kernel each
   time; `bind_outer_scope` from this kernel into children's
   scopes feeds them the live state.
-- **Shared write-back is built into GK's sub-context API**, not
+- **Shared write-back is built into Polydat's sub-context API**, not
   a runner-side helper. SRD 13c §"Mutability Rules: Shared
   Mutable" already commits to this:
   > the runner maps `error_budget` to a shared input slot.
@@ -946,7 +946,7 @@ So:
   writes through to the outer kernel's slot transparently. The
   do-loop dispatcher does no special work — it just uses the
   same kernel across iterations and child writes propagate via
-  GK's standard sub-context plumbing.
+  Polydat's standard sub-context plumbing.
 
 This collapses the design to a single mechanism alignment:
 
@@ -978,7 +978,7 @@ trait Comprehension: Send {
 
     /// `true` when iterations share a single persistent kernel
     /// (do-loops). The dispatcher passes the same `&mut
-    /// GkKernel` to `next()` instead of forking via
+    /// PolydatKernel` to `next()` instead of forking via
     /// `from_program`. `false` (default) means
     /// kernel-per-branch via `from_program` — the M3.4 model.
     fn shares_kernel_across_iterations(&self) -> bool { false }
@@ -998,14 +998,14 @@ automatically. Condition evaluation reads via standard
 
 - **Per-branch instancing** (tuple comprehensions, current
   M3.4 behavior): drain into Vec, fork
-  `GkKernel::from_program(canonical.program().clone())` per
+  `PolydatKernel::from_program(canonical.program().clone())` per
   iteration, walk serially or concurrently per `schedule=`.
 - **Shared-kernel** (do-loops): build one canonical kernel
   instance from `cached_kernel.from_program(...)` at loop
   entry, hold it for the loop's duration, drive `next()`
   against it sequentially. Children `bind_outer_scope` from
   this same canonical at each iteration; their shared writes
-  flow back via the GK API.
+  flow back via the Polydat API.
 
 Concurrency at the do-loop iteration level is structurally
 unavailable — sequential kernel evolution is the model, not a
@@ -1027,13 +1027,13 @@ collapse cleanly:
 
 ##### What this depends on
 
-The clean version of this design is contingent on GK's sub-
+The clean version of this design is contingent on Polydat's sub-
 context API delivering the SRD 13c contract — `set_input` on
 inner kernels with `shared`-modifier wires writes through to
 the outer kernel's state. If that's not yet implemented in GK
 proper, this milestone is split:
 
-1. **GK side**: implement `bind_outer_scope` such that subsequent
+1. **Polydat side**: implement `bind_outer_scope` such that subsequent
    `set_input` on the inner kernel for `shared`-modifier wires
    propagates to the outer kernel's slot. Subject to its own
    SRD 13c review.
@@ -1071,7 +1071,7 @@ retiring. Better to land (1) first and keep the runner thin.
 - `nbrs/tests/workload_examples.rs` — fourteen integration
   tests covering the full M3.4-3.6 surface end-to-end:
   phased + non-phased workloads, scenario filtering, workload
-  param overrides via CLI, GK / legacy / inline binding modes,
+  param overrides via CLI, Polydat / legacy / inline binding modes,
   conditional ops, ratio weighting, deterministic output. The
   `feature_showcase_*`, `service_model_mixed_ops`, and
   `basic_workload_runs` cases specifically exercise workload
@@ -1177,8 +1177,8 @@ struct VisitCtx {
     /// Currently-bound iter vars and their possible values
     /// at this depth. `for_each "k in 1,10"` adds `k → [1, 10]`.
     iter_vars: Vec<(String, IterValues)>,
-    /// Workload-scope GK kernel for evaluating spec expressions.
-    parent_kernel: Arc<GkKernel>,
+    /// Workload-scope Polydat kernel for evaluating spec expressions.
+    parent_kernel: Arc<PolydatKernel>,
     /// Accumulated label path (for dryrun rendering).
     label_path: Vec<String>,
 }
@@ -1225,7 +1225,7 @@ estimation).
 | Term | Meaning |
 |------|---------|
 | Scenario tree | Static authored structure (YAML → AST). |
-| Scope tree | Runtime hierarchy of GK scopes — same shape as scenario tree, but compiled. |
+| Scope tree | Runtime hierarchy of Polydat scopes — same shape as scenario tree, but compiled. |
 | Pre-mapping | Build the scope tree at session start; no further compilation at runtime. |
 | Iteration variable | A `for_each` / `do_while` counter, exposed as the scope's output binding (not a text substitution). |
 | Scheduler | The component that walks the scope tree at runtime and decides concurrency. |

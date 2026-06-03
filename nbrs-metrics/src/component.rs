@@ -3,7 +3,7 @@
 
 //! Runtime component tree for metrics ownership and dimensional labels.
 //!
-//! Every GK context layer (session, scenario, phase, dispenser) is a
+//! Every Polydat context layer (session, scenario, phase, dispenser) is a
 //! [`Component`] in a parent-child tree. Labels inherit downward —
 //! a phase component's effective labels include all ancestor labels.
 //! Properties walk upward — a child can query a prop set on any ancestor.

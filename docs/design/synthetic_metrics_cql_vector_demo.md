@@ -5,7 +5,7 @@ mechanism). Mortal — intended to be subsumed by the implementation
 PR's commit messages once the demo lands.
 
 **Companion SRD:** [SRD-40b — Synthetic metrics declared by op
-templates](../sysref/40b_synthetic_metrics_from_gk.md). This memo
+templates](../sysref/40b_synthetic_metrics_from_polydat.md). This memo
 assumes the SRD has been implemented (phases A–E); it covers only
 the workload-author surface needed to demonstrate the mechanism.
 
@@ -39,7 +39,7 @@ formula applies. No other dimensions feed the value.
 
 A new phase, `pvs_predict`, that mirrors the existing query
 phase's iteration so dimensional alignment (SRD-40b §5) is exact.
-The query phase reads workload-level GK names — `k_values`, the
+The query phase reads workload-level Polydat names — `k_values`, the
 per-`k` `k_<n>_limits` lists, and `optimize_for_modes` — to
 produce one op per `(k, limit, optimize_for)` cell. The predict
 phase reads the **same** names.
@@ -47,7 +47,7 @@ phase reads the **same** names.
 ```yaml
 phases:
   pvs_predict:
-    # Re-read the workload-level GK comprehension. Conceptual
+    # Re-read the workload-level Polydat comprehension. Conceptual
     # shape; the exact for_each chaining follows SRD-18b.
     for_each:
       - "k in k_values"
@@ -55,7 +55,7 @@ phases:
       - "optimize_for in optimize_for_modes"
     cycles: 1
 
-    # Phase-level GK module: the two formulas, named so the
+    # Phase-level Polydat module: the two formulas, named so the
     # `value:` expression below is one if(...) call.
     bindings: |
       latency_factor := 0.979 + 4.021 * pow(limit, -0.761)
@@ -84,7 +84,7 @@ Notes:
   the metric declaration tight, and the formula library
   (`bindings:` block) reusable if other phases want it.
 - **No new comprehension**. The `for_each` block reads the same
-  GK names the query phase reads. If the workload reorganises
+  Polydat names the query phase reads. If the workload reorganises
   `k_values` or `k_n_limits[k]`, both phases follow.
 
 ---

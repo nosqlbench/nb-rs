@@ -6,7 +6,7 @@
 # Demonstrates scenario-tree-level bindings — the canonical
 # mechanism for publishing a scope-local layer of bound names
 # over any subtree. Authors can write the full form (`bindings:`,
-# carrying arbitrary GK matter) or the convenience sugar (`set:`,
+# carrying arbitrary Polydat matter) or the convenience sugar (`set:`,
 # desugared to a `bindings:` block of `const NAME := <value>`
 # lines).
 #
@@ -31,14 +31,14 @@
 # Semantics
 # ---------
 # - `set: { name: value }` is parser sugar that emits a
-#   `const NAME := <gk-literal>` body and produces a `Bindings`
+#   `const NAME := <polydat-literal>` body and produces a `Bindings`
 #   scope-tree node. The `const` modifier defines a single
 #   effectively-const lifecycle: try compile-time fold first,
 #   fall back to scope-init materialization once
 #   materialize-wiring has populated extern slots, then freeze
 #   for the scope's lifetime. So `{name}` interpolation inside
 #   string values resolves through the in-scope chain.
-# - `bindings: |` lets authors write GK matter directly when
+# - `bindings: |` lets authors write Polydat matter directly when
 #   they need beyond `const NAME := <value>` (e.g. derived
 #   bindings or shared cells).
 # - Multiple keys in one `set:` map produce multiple `const`
@@ -62,7 +62,7 @@ scenarios:
   # 2. Single shadow. `mode` is overridden over the inner
   #    `phases:` subtree; `size` keeps its workload-root
   #    default. Bare tokens (no quotes) are emitted as
-  #    quoted GK string literals.
+  #    quoted Polydat string literals.
   single_shadow:
     - set: { mode: verbose }
       phases:
@@ -76,7 +76,7 @@ scenarios:
       phases:
         - announce
 
-  # 4. Expression value. The value goes through GK's
+  # 4. Expression value. The value goes through Polydat's
   #    string-interpolation surface — `"mode_for_{size}"`
   #    desugars to `printf("mode_for_{}", size)` at compile
   #    time, evaluated at scope-init when `size` is wired
@@ -109,7 +109,7 @@ scenarios:
             - announce
 
   # 7. Long-form `bindings:` block. Equivalent to the
-  #    multi-key set above, but written as direct GK matter
+  #    multi-key set above, but written as direct Polydat matter
   #    — useful when the body needs a feature `set:`'s
   #    sugar doesn't cover (derived bindings, shared cells).
   long_form:

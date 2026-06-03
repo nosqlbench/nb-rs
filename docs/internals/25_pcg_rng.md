@@ -2,7 +2,7 @@
 
 ## Motivation
 
-The current GK function library relies on hash functions (xxHash3) for
+The current Polydat function library relies on hash functions (xxHash3) for
 deterministic value generation. Hash is excellent for independent
 cycle→value mappings, but it cannot produce **correlated sequences** —
 a stream of values where consecutive positions come from the same
@@ -272,7 +272,7 @@ For most workloads hash is fine, but PCG gives a formal guarantee.
 
 ### Phase 1 (Value interpreter)
 
-Standard `GkNode` trait implementation. The `eval()` method calls the
+Standard `PolydatNode` trait implementation. The `eval()` method calls the
 seek function directly. ~120ns per call (dominated by the O(log N)
 seek loop).
 

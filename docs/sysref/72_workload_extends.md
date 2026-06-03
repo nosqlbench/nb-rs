@@ -74,7 +74,7 @@ appear in the merged workload**.
 | `extends` | string | Stripped from merged result (already consumed). |
 | `description` | string | Child wins if present; otherwise parent's. |
 | `params` | map<str, val> | Per-key merge; child wins on conflict; new keys added. |
-| `bindings` | string \| map | **Concat: parent first, child appended.** Child can reference parent-bound names; child can re-bind to shadow per GK's lexical-scoping rule (SRD-13c, SRD-13f). |
+| `bindings` | string \| map | **Concat: parent first, child appended.** Child can reference parent-bound names; child can re-bind to shadow per Polydat's lexical-scoping rule (SRD-13c, SRD-13f). |
 | `status_metrics` | list<str> | **Union of parent + child** (concat then dedup, preserving first-occurrence order). |
 | `report` | map<str, section> | **Per-section merge.** Child entry replaces parent's entry of the same name; new entries added; entries the child doesn't mention inherit unchanged. |
 | `scenarios` | map<str, tree> | **Per-name whole-entry replace.** Child entry replaces parent's by name; new entries added; entries the child doesn't mention inherit unchanged. The child cannot replace a *sub-node* of a parent scenario — it replaces the whole scenario or leaves it alone. |
@@ -87,12 +87,12 @@ appear in the merged workload**.
 
 For fields that concat (`bindings`, `status_metrics`):
 
-- `bindings:` — parent's GK source is emitted into the
+- `bindings:` — parent's Polydat source is emitted into the
   workload-root kernel **first**, child's source **after**. This
   matches the lexical order a user would get if they manually
   concatenated the two files: parent declarations are in scope
   for child code, and child rebindings shadow parent ones per
-  GK's existing scope semantics. No special "super" reference.
+  Polydat's existing scope semantics. No special "super" reference.
 
 - `status_metrics:` — union semantics, first-occurrence order.
   `[a, b, c]` (parent) + `[b, d]` (child) = `[a, b, c, d]`. The
@@ -254,7 +254,7 @@ Test file: `nbrs-workload/tests/extends.rs` (new).
 - **Deep-merge inside phases or scenarios.** Whole-entry replace
   only. If you want to vary one op within a parent phase, define
   a new phase that copies the parent's ops and modifies the one
-  you want; SRD-71 cursor partitions and SRD-67 GK subcontext
+  you want; SRD-71 cursor partitions and SRD-67 Polydat subcontext
   construction give you the GK-level tools to share kernels
   without sharing YAML structure.
 - **Super-reference syntax.** No `super:` or `parent:` token.

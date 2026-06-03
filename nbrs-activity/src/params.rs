@@ -1,39 +1,39 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Workload parameters as a GK module.
+//! Workload parameters as a Polydat module.
 //!
 //! Workload params arrive as `(name → string)` pairs from
 //! the YAML `params:` block plus any CLI overrides. Rather
 //! than text-substituting their values into op bindings or
 //! patching them as folded constants on every kernel that
 //! happens to need them, we compile them once into a
-//! standalone GK kernel — the **workload-params kernel** —
+//! standalone Polydat Kernel — the **workload-params kernel** —
 //! which sits at the root of the scope chain. Every kernel
 //! built downstream (workload-level bindings, phase ops,
 //! comprehensions, leaf phases) `materialize_wiring_from_outer`s through
 //! it, so `{name}` references in any descendant resolve via
-//! standard GK name resolution.
+//! standard Polydat name resolution.
 //!
 //! ## Why a kernel instead of a string-substitution pass
 //!
 //! Text replacement of `{name}` placeholders into op binding
 //! sources is fundamentally ambiguous: a placeholder can sit
 //! inside a string literal (`"{dataset}:{profile}"`) where
-//! it's GK string-interpolation, or as a standalone expression
+//! it's Polydat string-interpolation, or as a standalone expression
 //! where it's an identifier reference. A blind text pass
 //! rewrites both, double-quotes the string-literal cases, and
-//! produces broken GK source.
+//! produces broken Polydat source.
 //!
 //! The params-kernel approach is unambiguous — `final name :=
-//! <literal>` is just a normal GK binding. GK's parser knows
+//! <literal>` is just a normal Polydat binding. Polydat's parser knows
 //! string-interpolation from identifier reference; both
 //! resolve correctly.
 //!
 //! ## Type detection
 //!
-//! Since workload params arrive as strings, we infer GK types
-//! the same way the legacy [`crate::scope::format_workload_param_as_gk_literal`]
+//! Since workload params arrive as strings, we infer Polydat types
+//! the same way the legacy [`crate::scope::format_workload_param_as_polydat_literal`]
 //! does:
 //!
 //! - Integer-parseable → `u64`
@@ -49,8 +49,8 @@
 
 use std::collections::HashMap;
 
-use polydat::dsl::compile::compile_gk;
-use polydat::kernel::GkKernel;
+use polydat::dsl::compile::compile_polydat;
+use polydat::kernel::PolydatKernel;
 
 /// Build the workload-params kernel from a params map. The
 /// resulting kernel exposes one `final <name> := <literal>`
@@ -63,14 +63,14 @@ use polydat::kernel::GkKernel;
 /// special case.
 pub fn build_workload_params_kernel(
     params: &HashMap<String, String>,
-) -> Result<GkKernel, String> {
+) -> Result<PolydatKernel, String> {
     let source = render_workload_params_source(params);
-    compile_gk(&source).map_err(|e| format!(
+    compile_polydat(&source).map_err(|e| format!(
         "workload params kernel: {e}\n--- generated source ---\n{source}"
     ))
 }
 
-/// Render the GK source for the workload-params kernel. Public
+/// Render the Polydat source for the workload-params kernel. Public
 /// so tests and diagnostics can inspect the synthesized module
 /// without compiling it.
 pub fn render_workload_params_source(
@@ -87,18 +87,18 @@ pub fn render_workload_params_source(
     let mut out = String::new();
     for name in keys {
         let value = &params[name];
-        let literal = format_value_as_gk_literal(value);
+        let literal = format_value_as_polydat_literal(value);
         out.push_str(&format!("const {name} := {literal}\n"));
     }
     out
 }
 
-/// Format a workload-param string as a GK literal, detecting
+/// Format a workload-param string as a Polydat literal, detecting
 /// the natural type. Integers parse as `IntLit`, floats as
 /// `FloatLit`; everything else is emitted as a quoted string
-/// literal so the GK lexer always has a token kind to read.
+/// literal so the Polydat lexer always has a token kind to read.
 ///
-/// `true` / `false` are NOT special-cased: GK's lexer has no
+/// `true` / `false` are NOT special-cased: Polydat's lexer has no
 /// boolean token kind, so a bare `false` would parse as an
 /// identifier (wire reference) and fail kernel compilation.
 /// Workload params carrying boolean-looking strings are
@@ -107,11 +107,11 @@ pub fn render_workload_params_source(
 /// CQL `WITH OPTIONS` interpolation path already wants string
 /// values inside the single-quoted clause.
 ///
-/// Mirrors `crate::scope::format_workload_param_as_gk_literal`
+/// Mirrors `crate::scope::format_workload_param_as_polydat_literal`
 /// — kept private here for the params-kernel path so this
 /// module is self-contained and the legacy text-substitution
 /// pass can eventually be retired without affecting it.
-fn format_value_as_gk_literal(value: &str) -> String {
+fn format_value_as_polydat_literal(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.parse::<u64>().is_ok() {
         return trimmed.to_string();
@@ -120,7 +120,7 @@ fn format_value_as_gk_literal(value: &str) -> String {
         return trimmed.to_string();
     }
     // Embed as a quoted string. Escape any embedded backslash
-    // and quote so the GK source remains parsable. The original
+    // and quote so the Polydat source remains parsable. The original
     // (un-trimmed) value is preserved — leading/trailing space
     // can be meaningful for some param values.
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
@@ -152,7 +152,7 @@ mod tests {
         ]));
         // Sorted by name: count, dataset, k_values, ratio, strict.
         // Numbers pass through as bare literals; booleans round-
-        // trip as quoted strings because GK has no bool token kind
+        // trip as quoted strings because Polydat has no bool token kind
         // (a bare `true` would parse as an identifier).
         let expected = "const count := 100\n\
                         const dataset := \"sift1m\"\n\
@@ -167,7 +167,7 @@ mod tests {
         // Regression: workload params like
         //   enable_hierarchy: "false"
         // used to emit `const enable_hierarchy := false`, which
-        // GK rejected as an unknown wire. They must round-trip as
+        // Polydat rejected as an unknown wire. They must round-trip as
         // quoted strings so the params-kernel compiles.
         let kernel = build_workload_params_kernel(&h(&[
             ("enable_hierarchy", "false"),
@@ -214,7 +214,7 @@ mod tests {
             ("dataset", "sift1m"),
             ("count", "100"),
         ])).unwrap();
-        // Both params are reachable as GK constants.
+        // Both params are reachable as Polydat constants.
         let dataset = kernel.lookup("dataset")
             .expect("dataset must resolve");
         let count = kernel.lookup("count")
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn boolean_values_emit_quoted_strings() {
-        // GK's lexer has no boolean token kind, so bare `true` /
+        // Polydat's lexer has no boolean token kind, so bare `true` /
         // `false` would parse as identifiers (wire references)
         // and fail kernel compilation. The formatter therefore
         // emits boolean-looking strings as quoted string

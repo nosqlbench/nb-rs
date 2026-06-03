@@ -1,9 +1,9 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Lexer for the GK DSL.
+//! Lexer for the Polydat DSL.
 //!
-//! Tokenizes `.gk` source text into a flat token stream. The grammar
+//! Tokenizes `.polydat` source text into a flat token stream. The grammar
 //! is line-oriented but the lexer doesn't enforce line structure —
 //! that's the parser's job.
 
@@ -33,7 +33,7 @@ pub enum TokenKind {
     /// scope's lifetime. Independent of provenance: a `const`
     /// binding's RHS may reference workload params, iter-vars
     /// bound by an enclosing comprehension, or other in-scope
-    /// names — whatever the GK compiler can resolve.
+    /// names — whatever the Polydat compiler can resolve.
     Const,
     /// `input` keyword — declares one per-cycle kernel input slot.
     /// Surface: `input <name>[: <type>]` (single) or

@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! CQL-specific GK nodes.
+//! CQL-specific Polydat nodes.
 //!
 //! Currently just [`CqlTimeuuid`] — a deterministic RFC 4122
 //! version-1 UUID generator suited for `timeuuid` columns. Lives
@@ -10,7 +10,7 @@
 //! `cql_timeuuid(...)` are portable across engines.
 
 use polydat::ast::{
-    Commutativity, GkNode, NodeMeta, Port, PortType, Slot, SlotType, Value,
+    Commutativity, PolydatNode, NodeMeta, Port, PortType, Slot, SlotType, Value,
 };
 use polydat::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
 
@@ -45,7 +45,7 @@ impl CqlTimeuuid {
     }
 }
 
-impl GkNode for CqlTimeuuid {
+impl PolydatNode for CqlTimeuuid {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     /// Derive UUID bits from two xxhash3 passes over the seed.
@@ -68,7 +68,7 @@ impl GkNode for CqlTimeuuid {
 }
 
 // ---------------------------------------------------------------------------
-// GK registry integration
+// Polydat registry integration
 // ---------------------------------------------------------------------------
 
 pub fn cql_signatures() -> &'static [FuncSig] {
@@ -104,7 +104,7 @@ pub(crate) fn cql_build_node(
     _wires: &[polydat::compile::assembly::WireRef],
     _wire_types: &[polydat::ast::PortType],
     _consts: &[polydat::dsl::ConstArg],
-) -> Option<Result<Box<dyn GkNode>, String>> {
+) -> Option<Result<Box<dyn PolydatNode>, String>> {
     match name {
         "cql_timeuuid" => Some(Ok(Box::new(CqlTimeuuid::new()))),
         _ => None,

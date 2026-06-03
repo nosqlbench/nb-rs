@@ -14,7 +14,7 @@
 
 use std::cell::RefCell;
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 // =================================================================
@@ -90,7 +90,7 @@ impl RandomRange {
     }
 }
 
-impl GkNode for RandomRange {
+impl PolydatNode for RandomRange {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(self.min + (next_u64() % self.range));
@@ -120,7 +120,7 @@ impl RandomF64 {
     }
 }
 
-impl GkNode for RandomF64 {
+impl PolydatNode for RandomF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::F64(self.min + next_f64() * self.range);
@@ -148,7 +148,7 @@ impl RandomBytes {
     }
 }
 
-impl GkNode for RandomBytes {
+impl PolydatNode for RandomBytes {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let mut buf = Vec::with_capacity(self.size);
@@ -187,7 +187,7 @@ impl RandomString {
     }
 }
 
-impl GkNode for RandomString {
+impl PolydatNode for RandomString {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let s: String = (0..self.length)
@@ -218,7 +218,7 @@ impl RandomBool {
     }
 }
 
-impl GkNode for RandomBool {
+impl PolydatNode for RandomBool {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Bool(next_u64() < self.threshold);
@@ -256,7 +256,7 @@ impl HashedLoremExtract {
     }
 }
 
-impl GkNode for HashedLoremExtract {
+impl PolydatNode for HashedLoremExtract {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let h = inputs[0].as_u64();
@@ -312,7 +312,7 @@ impl HashedLineToString {
     pub fn companies() -> Self { Self::new(COMPANIES) }
 }
 
-impl GkNode for HashedLineToString {
+impl PolydatNode for HashedLineToString {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let h = inputs[0].as_u64();

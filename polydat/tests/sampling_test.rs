@@ -1,25 +1,25 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Living tests for the distribution and sampling .gk examples.
+//! Living tests for the distribution and sampling .polydat examples.
 //!
 //! These demonstrate how ICD sampling, alias tables, and library kernel
-//! patterns compose in the GK — matching the literate examples in
+//! patterns compose in the Polydat — matching the literate examples in
 //! tests/examples/.
 
-use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::arithmetic::{AddU64, Interleave, MixedRadix, ModU64};
 use polydat::library::hash::Hash64;
 use polydat::library::sampling::alias::AliasSample;
 use polydat::library::sampling::icd::{ClampF64, IcdSample, UnitInterval};
 
 // =================================================================
-// distributions.gk — Decomposed ICD pipeline
+// distributions.polydat — Decomposed ICD pipeline
 // =================================================================
 
 /// Build: hash → unit_interval → icd_normal(72, 5)
-fn build_normal_pipeline() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn build_normal_pipeline() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("seed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("quantile", Box::new(UnitInterval::new()), vec![WireRef::node("seed")]);
     asm.add_node("temperature", Box::new(IcdSample::normal(72.0, 5.0)),
@@ -55,11 +55,11 @@ fn normal_pipeline_deterministic() {
 }
 
 // =================================================================
-// distributions.gk — Shared quantile (correlated samples)
+// distributions.polydat — Shared quantile (correlated samples)
 // =================================================================
 
-fn build_correlated_pipeline() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn build_correlated_pipeline() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("seed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("quantile", Box::new(UnitInterval::new()), vec![WireRef::node("seed")]);
     asm.add_node("temp", Box::new(IcdSample::normal(72.0, 5.0)),
@@ -96,11 +96,11 @@ fn correlated_samples_move_together() {
 }
 
 // =================================================================
-// independent_samples.gk — Chained hashes for independence
+// independent_samples.polydat — Chained hashes for independence
 // =================================================================
 
-fn build_independent_pipeline() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn build_independent_pipeline() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     // Chained hashes
     asm.add_node("h0", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
@@ -177,11 +177,11 @@ fn independent_samples_each_has_correct_stats() {
 }
 
 // =================================================================
-// weighted_entity.gk — Alias sampling + identity derivation
+// weighted_entity.polydat — Alias sampling + identity derivation
 // =================================================================
 
-fn build_weighted_entity_pipeline() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn build_weighted_entity_pipeline() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![1000, 0])),
         vec![WireRef::input("cycle")]);
@@ -255,11 +255,11 @@ fn weighted_entity_device_type_uniform() {
 }
 
 // =================================================================
-// sensor_workload.gk — Full composed workload
+// sensor_workload.polydat — Full composed workload
 // =================================================================
 
-fn build_sensor_workload() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn build_sensor_workload() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     // Coordinate decomposition: 100 sites × 500 sensors × readings
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![100, 500, 0])),

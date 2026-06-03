@@ -3,7 +3,7 @@
 
 //! Graph-level node fusion optimization pass.
 //!
-//! Recognizes subgraph patterns in the GK DAG and replaces them with
+//! Recognizes subgraph patterns in the Polydat DAG and replaces them with
 //! semantically equivalent fused nodes that are computationally cheaper.
 //! Runs during assembly after wiring resolution, before dead code
 //! elimination and topological sort.
@@ -11,13 +11,13 @@
 //! See SRD 36 (docs/design/36_node_fusion.md) for the full design.
 
 use crate::kernel::WireSource;
-use crate::ast::{Commutativity, ConstValue, GkNode};
+use crate::ast::{Commutativity, ConstValue, PolydatNode};
 
 // ---------------------------------------------------------------------------
 // Pattern types
 // ---------------------------------------------------------------------------
 
-/// A structural pattern that matches a subgraph of the GK DAG.
+/// A structural pattern that matches a subgraph of the Polydat DAG.
 ///
 /// Patterns are trees — each sub-pattern matches exactly one node.
 /// Diamond shapes (two pattern leaves matching the same upstream node)
@@ -179,7 +179,7 @@ pub struct FusionRule {
     pub pattern: FusionPattern,
 
     /// Factory: given the match result, produce the replacement fused node.
-    pub replacement: fn(&MatchResult) -> Box<dyn GkNode>,
+    pub replacement: fn(&MatchResult) -> Box<dyn PolydatNode>,
 
     /// Binding names for the fused node's inputs, in order.
     /// Each name must correspond to an `Any` leaf in the pattern.
@@ -193,7 +193,7 @@ pub struct FusionRule {
 /// Intermediate node representation used during fusion — borrows from
 /// the pending node list to avoid cloning.
 struct NodeView<'a> {
-    nodes: &'a [Option<Box<dyn GkNode>>],
+    nodes: &'a [Option<Box<dyn PolydatNode>>],
     wiring: &'a [Vec<WireSource>],
 }
 
@@ -448,7 +448,7 @@ fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
 /// `output_nodes` lists node indices that are directly referenced by
 /// named outputs — these must not be consumed as interior nodes.
 pub fn apply_fusions(
-    nodes: &mut Vec<Option<Box<dyn GkNode>>>,
+    nodes: &mut Vec<Option<Box<dyn PolydatNode>>>,
     wiring: &mut Vec<Vec<WireSource>>,
     name_to_idx: &mut std::collections::HashMap<String, usize>,
     rules: &[FusionRule],
@@ -551,7 +551,7 @@ fn check_consumer_guard(
 
 /// Compute how many downstream nodes consume each node's output.
 fn compute_consumer_counts(
-    nodes: &[Option<Box<dyn GkNode>>],
+    nodes: &[Option<Box<dyn PolydatNode>>],
     wiring: &[Vec<WireSource>],
 ) -> Vec<usize> {
     let mut counts = vec![0usize; nodes.len()];
@@ -573,7 +573,7 @@ fn apply_single_fusion(
     root_idx: usize,
     result: &MatchResult,
     rule: &FusionRule,
-    nodes: &mut Vec<Option<Box<dyn GkNode>>>,
+    nodes: &mut Vec<Option<Box<dyn PolydatNode>>>,
     wiring: &mut Vec<Vec<WireSource>>,
     name_to_idx: &mut std::collections::HashMap<String, usize>,
 ) {
@@ -715,7 +715,7 @@ pub fn default_rules() -> Vec<FusionRule> {
 /// Not used at runtime — only in tests.
 pub struct DecomposedGraph {
     pub input_count: usize,
-    pub nodes: Vec<(Box<dyn GkNode>, Vec<DecomposedWire>)>,
+    pub nodes: Vec<(Box<dyn PolydatNode>, Vec<DecomposedWire>)>,
     pub output_wires: Vec<DecomposedWire>,
 }
 
@@ -740,7 +740,7 @@ impl DecomposedGraph {
     /// Add a node and return its index.
     pub fn add_node(
         &mut self,
-        node: Box<dyn GkNode>,
+        node: Box<dyn PolydatNode>,
         wires: Vec<DecomposedWire>,
     ) -> usize {
         let idx = self.nodes.len();
@@ -792,7 +792,7 @@ impl DecomposedGraph {
 ///
 /// Any node produced by a fusion rule's `replacement` factory should
 /// implement this to enable automated equivalence testing.
-pub trait FusedNode: GkNode {
+pub trait FusedNode: PolydatNode {
     /// Build the decomposed (unfused) subgraph that this node is
     /// semantically equivalent to.
     fn decomposed(&self) -> DecomposedGraph;
@@ -805,14 +805,14 @@ pub trait FusedNode: GkNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compile::assembly::{GkAssembler, WireRef};
+    use crate::compile::assembly::{PolydatAssembler, WireRef};
     use crate::ast::Value;
     use crate::library::arithmetic::ModU64;
     use crate::library::hash::Hash64;
 
     #[test]
     fn hash_mod_fuses_to_hash_range() {
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
         asm.add_node("m", Box::new(ModU64::new(100)), vec![WireRef::node("h")]);
         asm.add_output("out", WireRef::node("m"));
@@ -831,7 +831,7 @@ mod tests {
 
     #[test]
     fn fusion_skipped_when_intermediate_has_consumers() {
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
         asm.add_node("m", Box::new(ModU64::new(100)), vec![WireRef::node("h")]);
         // Also wire hash output to a second consumer.
@@ -995,7 +995,7 @@ mod tests {
         use crate::library::arithmetic::SumN;
 
         // Build a graph: sum(a, b, c) where a, b, c are coordinates
-        let mut asm = GkAssembler::new(vec!["a".into(), "b".into(), "c".into()]);
+        let mut asm = PolydatAssembler::new(vec!["a".into(), "b".into(), "c".into()]);
         asm.add_node("s", Box::new(SumN::new(3)), vec![
             WireRef::input("a"), WireRef::input("b"), WireRef::input("c"),
         ]);
@@ -1014,7 +1014,7 @@ mod tests {
         use crate::ast::ConstValue;
 
         // Build: hash_range(cycle, 100)
-        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("hr", Box::new(HashRange::new(100)), vec![WireRef::input("cycle")]);
         asm.add_output("out", WireRef::node("hr"));
 

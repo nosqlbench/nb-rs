@@ -95,7 +95,7 @@ Replace with:
 /// captured at registration time and never looks up by name
 /// per cycle. Name lookup (`find_instrument(name)`) is a
 /// linear scan and is **expected to be rare** — used by
-/// diagnostics (`dryrun=op`, `nbrs describe gk`),
+/// diagnostics (`dryrun=op`, `nbrs describe polydat`),
 /// introspection tooling, and ad-hoc tests. If we ever find
 /// a hot path that does name lookup per cycle, that's a
 /// design bug in the caller, not a reason to add a HashMap.
@@ -179,7 +179,7 @@ Concretely:
   per tick. The walk is sequential by definition; HashMap
   iteration order isn't useful here.
 - `find_instrument(name)` exists for diagnostics
-  (`dryrun=op` summaries, `nbrs describe gk` introspection,
+  (`dryrun=op` summaries, `nbrs describe polydat` introspection,
   ad-hoc test queries). These paths run at most once per
   workload load, not per cycle.
 

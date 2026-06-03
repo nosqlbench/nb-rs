@@ -3,7 +3,7 @@
 
 //! Cryptographic digest and base encoding nodes.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use sha2::{Sha256, Digest as Sha2Digest};
 use md5::Md5;
 
@@ -33,7 +33,7 @@ impl DigestSha256 {
     }
 }
 
-impl GkNode for DigestSha256 {
+impl PolydatNode for DigestSha256 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let mut hasher = Sha256::new();
@@ -68,7 +68,7 @@ impl DigestMd5 {
     }
 }
 
-impl GkNode for DigestMd5 {
+impl PolydatNode for DigestMd5 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let mut hasher = Md5::new();
@@ -102,7 +102,7 @@ impl ToBase64 {
     }
 }
 
-impl GkNode for ToBase64 {
+impl PolydatNode for ToBase64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         use base64::Engine;
@@ -135,7 +135,7 @@ impl FromBase64 {
     }
 }
 
-impl GkNode for FromBase64 {
+impl PolydatNode for FromBase64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         use base64::Engine;
@@ -171,7 +171,7 @@ impl ToBase32 {
     }
 }
 
-impl GkNode for ToBase32 {
+impl PolydatNode for ToBase32 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(data_encoding::BASE32.encode(inputs[0].as_bytes()).into());
@@ -203,7 +203,7 @@ impl FromBase32 {
     }
 }
 
-impl GkNode for FromBase32 {
+impl PolydatNode for FromBase32 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let bytes = data_encoding::BASE32
@@ -278,7 +278,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a digest or base64 node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "sha256" => Some(Ok(Box::new(DigestSha256::new()))),
         "md5" => Some(Ok(Box::new(DigestMd5::new()))),

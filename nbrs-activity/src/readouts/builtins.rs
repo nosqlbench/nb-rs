@@ -4,6 +4,7 @@
 //! Built-in readout implementations.
 
 pub mod each_close;
+pub mod error_readout;
 pub mod metric;
 pub mod phase_outcome;
 pub mod phase_starting;

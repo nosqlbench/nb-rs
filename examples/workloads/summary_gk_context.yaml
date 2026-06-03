@@ -1,24 +1,24 @@
 #!/usr/bin/env nbrs
-# Summary Report — GK Context and Dimensional Labels
+# Summary Report — Polydat Context and Dimensional Labels
 #
 # Demonstrates how for_each iteration variables automatically become
 # dimensional metric labels in the summary report. Each combination
 # of (algorithm, dataset, k) appears as a separate row with aligned
 # label columns.
 #
-# The GK bindings use the iteration variables to drive different
+# The Polydat bindings use the iteration variables to drive different
 # data generation patterns per combination, simulating a parameter
 # sweep over algorithm configurations.
 #
 # Also demonstrates:
 # - Nested for_each producing a cross-product of labels
-# - GK context on compilation errors (try introducing a typo to see
+# - Polydat context on compilation errors (try introducing a typo to see
 #   the phase-qualified error message)
 # - Multiple aggregate expressions comparing algorithm families
 #
 # Usage:
-#   nbrs run workload=examples/summary_gk_context.yaml
-#   nbrs run workload=examples/summary_gk_context.yaml \
+#   nbrs run workload=examples/summary_polydat_context.yaml
+#   nbrs run workload=examples/summary_polydat_context.yaml \
 #     summary="recall; mean(recall) over algorithm~hnsw; mean(recall) over algorithm~ivf; details=hide"
 
 params:

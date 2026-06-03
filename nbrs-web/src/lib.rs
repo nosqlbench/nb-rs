@@ -4,7 +4,7 @@
 //! # nbrs-web
 //!
 //! Axum + htmx web dashboard for nb-rs. Provides a browser-based
-//! UI for monitoring running workloads, browsing GK functions
+//! UI for monitoring running workloads, browsing Polydat functions
 //! and stdlib modules, interacting with dynamic controls, and
 //! viewing DAG visualizations.
 //!
@@ -35,8 +35,8 @@
 //! | Path | Purpose |
 //! |------|---------|
 //! | `GET /` | Dashboard page (htmx-driven) |
-//! | `GET /functions` | GK function reference |
-//! | `GET /stdlib` | Stdlib `.gk` module browser |
+//! | `GET /functions` | Polydat function reference |
+//! | `GET /stdlib` | Stdlib `.polydat` module browser |
 //! | `GET /dag` | DAG visualization page |
 //! | `GET /graph` | Interactive graph editor |
 //! | `GET /api/controls` | List dynamic controls (SRD 23) |

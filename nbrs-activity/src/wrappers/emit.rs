@@ -1,10 +1,21 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Emit wrapper — prints the inner op's result body (as JSON)
-//! plus the op-template kernel's wire snapshot, after each
-//! cycle. Adapter-agnostic; activated either by `emit: true` on
-//! the op template or by the workload's external display path.
+//! Emit wrapper — prints the rendered op text per cycle.
+//!
+//! Two modes, distinguished by whether op_fields are attached at
+//! wrap time:
+//! - **Adapter-agnostic emit** (`emit: true` on op template):
+//!   resolves the op_fields the template carries via the
+//!   per-fiber wires, prints each value verbatim, then forwards
+//!   the call to inner. This is the canonical "emit what the
+//!   adapter would send" surface — under `dryrun=emit` the
+//!   DRYRUN wrapper short-circuits inner, so emit is the only
+//!   surface that prints.
+//! - **Body+wire dump** (no op_fields at wrap): falls back to
+//!   the inner result body + wire snapshot. Kept as the
+//!   historical surface for callers that want post-execute
+//!   introspection rather than pre-execute rendering.
 
 use std::sync::Arc;
 
@@ -61,6 +72,13 @@ inventory::submit! {
 pub struct EmitDispenser {
     inner: Arc<dyn OpDispenser>,
     op_name: String,
+    /// Op-field key/value pairs cloned from the op template at
+    /// wrap time. When non-empty, emit resolves them via wires
+    /// at each cycle and prints the value strings — that's the
+    /// pre-execute "render what would have been sent" surface.
+    /// When empty, emit falls back to the post-execute body
+    /// + wires dump for callers that want introspection only.
+    op_fields: Vec<(String, serde_json::Value)>,
 }
 
 impl EmitDispenser {
@@ -68,6 +86,24 @@ impl EmitDispenser {
         Arc::new(Self {
             inner,
             op_name: op_name.to_string(),
+            op_fields: Vec::new(),
+        })
+    }
+
+    /// Same as [`Self::wrap`], but seeds the dispenser with the
+    /// op_fields it should resolve + print on each cycle. Used
+    /// at activity init when the op template's `op:` map is
+    /// known and we want the rendered op text on stdout (e.g.
+    /// under `dryrun=emit`).
+    pub fn wrap_with_op_fields(
+        inner: Arc<dyn OpDispenser>,
+        op_name: &str,
+        op_fields: Vec<(String, serde_json::Value)>,
+    ) -> Arc<dyn OpDispenser> {
+        Arc::new(Self {
+            inner,
+            op_name: op_name.to_string(),
+            op_fields,
         })
     }
 }
@@ -75,37 +111,61 @@ impl EmitDispenser {
 impl WrappingDispenser for EmitDispenser {}
 
 impl OpDispenser for EmitDispenser {
-    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
     fn execute<'a>(
         &'a self,
         cycle: u64,
         ctx: &'a crate::fixture::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         Box::pin(async move {
-            let result = self.inner.execute(cycle, ctx).await?;
-
-            // Print result body as JSON
-            if let Some(ref body) = result.body {
-                let json = body.to_json();
-                println!("[{}@{}] {} rows: {}",
-                    self.op_name, cycle,
-                    body.element_count(),
-                    serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string()));
-            } else {
-                println!("[{}@{}] (no result body)", self.op_name, cycle);
+            // Pre-execute rendering mode — resolve the
+            // captured op_fields and print their rendered
+            // values. This runs BEFORE inner.execute so the
+            // surface lands the rendered op text whether or
+            // not inner short-circuits (DRYRUN under
+            // dryrun=emit, etc).
+            if !self.op_fields.is_empty() {
+                match crate::wires::resolve_op_fields_via_wires(
+                    &self.op_fields, ctx.wires,
+                ) {
+                    Ok(resolved) => {
+                        for s in resolved.strings().iter() {
+                            println!("{s}");
+                        }
+                    }
+                    Err(msg) => {
+                        eprintln!("[{}@{}] emit-render failed: {msg}",
+                            self.op_name, cycle);
+                    }
+                }
             }
 
-            // Print every wire the op-template kernel knows about
-            // alongside its current value. Replaces the prior
-            // result.captures dump now that captures live on the
-            // kernel rather than a sidecar HashMap.
-            for name in ctx.wires.names() {
-                if let Some(value) = ctx.wires.get(&name) {
-                    println!("  wire {name} = {}", value.to_display_string());
+            let result = self.inner.execute(cycle, ctx).await?;
+
+            // Post-execute introspection — only fires when
+            // emit was wrapped without op_fields (the
+            // body+wires fallback surface). With op_fields the
+            // pre-execute render is the authoritative surface
+            // and the post-execute dump is omitted to keep
+            // stdout terse.
+            if self.op_fields.is_empty() {
+                if let Some(ref body) = result.body {
+                    let json = body.to_json();
+                    println!("[{}@{}] {} rows: {}",
+                        self.op_name, cycle,
+                        body.element_count(),
+                        serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string()));
+                } else {
+                    println!("[{}@{}] (no result body)", self.op_name, cycle);
+                }
+                for name in ctx.wires.names() {
+                    if let Some(value) = ctx.wires.get(&name) {
+                        println!("  wire {name} = {}", value.to_display_string());
+                    }
                 }
             }
 
             Ok(result)
         })
     }
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
 }

@@ -39,7 +39,7 @@ Datasets are loaded once globally:
 static DATASET_CACHE: LazyLock<Mutex<HashMap<String, Arc<TestDataGroup>>>> = ...;
 ```
 
-Multiple GK nodes referencing the same dataset share the cached
+Multiple Polydat nodes referencing the same dataset share the cached
 `TestDataGroup`. Each dataset logs "resolved" once on first load.
 
 The cache exists for *one-time bootstrap* — to make the first
@@ -80,7 +80,7 @@ and two `HashMap` lookups (`DATASET_CACHE`, `FACET_CACHE`) —
 *every cycle*, even when the source string was identical for
 millions of cycles in a row.
 
-This violates the GK design contract:
+This violates the Polydat design contract:
 
 - **SRD 11 §"Provenance-Based Invalidation"** says nodes whose
   provenance is bounded by *unchanged* inputs stay clean and
@@ -127,7 +127,7 @@ a `Value::Handle` during input gather is exactly one
 `Arc::clone()` — a single atomic increment, zero allocations.
 `PartialEq` is `Arc::ptr_eq` (same handle ⇔ same resource).
 
-The handle is opaque to the GK core. Reader nodes downcast via
+The handle is opaque to the Polydat core. Reader nodes downcast via
 `arc.downcast_ref::<UniformDataset<f32>>()` etc. — the concrete
 types live in the vectordata module; the kernel only ever sees
 `Arc<dyn Any>`.
@@ -153,7 +153,7 @@ Provenance is `(source, facet)`. When both are scope-extern
 constants (the iter-var case), the node evaluates once at
 iteration entry and stays clean for every subsequent cycle in
 that iteration. When one or both come from dynamic inputs
-(unusual — and per the [SRD 11](11_gk_evaluation.md) const-binding
+(unusual — and per the [SRD 11](11_polydat_evaluation.md) const-binding
 contract, illegal for an `const` declaration), the node re-evaluates
 accordingly.
 
@@ -237,7 +237,7 @@ string allocation on the source side.
 The `vectordata_base("{dataset}", "{profile}")` and
 `vectordata_query(...)` cursor-constructor sugars (SRD-defined
 shorthand for the open + count + accessor pattern) accept any
-GK expression for the dataset and profile arguments — string
+Polydat expression for the dataset and profile arguments — string
 literals, scope externs, or composite expressions. They emit:
 
 1. An `const` binding for the implicit handle
@@ -273,7 +273,7 @@ port. The mechanism is the standard wire-type adapter pattern
    each `Handle`-typed input port. If the wire is `Str`-producing
    and `default_resolver` is set, it splices the resolver in
    between.
-3. The synthesized resolver is an ordinary GK node — provenance
+3. The synthesized resolver is an ordinary Polydat node — provenance
    bounded by `(source, facet)` (or `(source)` for the group
    case), cached once per iteration via the engine's standard
    per-node memoization.
@@ -319,7 +319,7 @@ flows on a wire, downcast, read at index, no string lookup.
 
 ---
 
-## GK Node Functions
+## Polydat Node Functions
 
 All feature-gated behind `vectordata` in polydat.
 
@@ -329,7 +329,7 @@ All feature-gated behind `vectordata` in polydat.
 |------|-----------|-------------|
 | `dataset_open(source, facet)` | `str, str → handle` | Resolve catalog/cache, open facet reader, return typed facet handle. Scope-init relative to its inputs. |
 | `dataset_group_open(source)` | `str → handle` | Resolve catalog/cache, return a group handle (TestDataGroup) — used by group-level metadata accessors below. Scope-init relative to its inputs. |
-| `dataset_prebuffer(source)` | `str → handle` | Download all facets to local cache (scope-init). Returns a `Handle` carrying the prebuffered group. Bound to a name via `const prebuffered := dataset_prebuffer(...)`; consumers like `query_count(prebuffered)` and `query_vector_at(prebuffered, q)` take the handle as their first wire (see [SRD 11 §"Const Binding Contract"](11_gk_evaluation.md)). |
+| `dataset_prebuffer(source)` | `str → handle` | Download all facets to local cache (scope-init). Returns a `Handle` carrying the prebuffered group. Bound to a name via `const prebuffered := dataset_prebuffer(...)`; consumers like `query_count(prebuffered)` and `query_vector_at(prebuffered, q)` take the handle as their first wire (see [SRD 11 §"Const Binding Contract"](11_polydat_evaluation.md)). |
 
 ### Vector Access
 

@@ -7,7 +7,7 @@
 //! or `scale_range` to transform normalized values into waveforms,
 //! angles, or other mathematical shapes.
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
 
 macro_rules! unary_f64_node {
     ($struct_name:ident, $func_name:expr, $op:expr) => {
@@ -27,7 +27,7 @@ macro_rules! unary_f64_node {
             }
         }
 
-        impl GkNode for $struct_name {
+        impl PolydatNode for $struct_name {
             fn meta(&self) -> &NodeMeta { &self.meta }
 
             fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -86,7 +86,7 @@ macro_rules! binary_f64_node {
             }
         }
 
-        impl GkNode for $struct_name {
+        impl PolydatNode for $struct_name {
             fn meta(&self) -> &NodeMeta { &self.meta }
 
             fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -152,7 +152,7 @@ impl Atan2 {
     }
 }
 
-impl GkNode for Atan2 {
+impl PolydatNode for Atan2 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -200,7 +200,7 @@ impl Pow {
     }
 }
 
-impl GkNode for Pow {
+impl PolydatNode for Pow {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -443,7 +443,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a math (trig/elementary) node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "sin" => Some(Ok(Box::new(Sin::new()))),
         "cos" => Some(Ok(Box::new(Cos::new()))),

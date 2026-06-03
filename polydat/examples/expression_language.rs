@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Illustration: the `:=` lines in GK are full expressions, not just
+//! Illustration: the `:=` lines in Polydat are full expressions, not just
 //! direct node calls.
 //!
 //! You can nest, chain, and combine without naming every intermediate
@@ -9,7 +9,7 @@
 //! intermediate would just be noise.
 
 fn main() {
-    let mut kernel = polydat::dsl::compile_gk(r#"
+    let mut kernel = polydat::dsl::compile_polydat(r#"
         input cycle: u64
 
         // Nested expressions — no named intermediates needed.

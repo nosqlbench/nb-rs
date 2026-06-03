@@ -14,7 +14,7 @@
 >   component at `attach_component` time.
 > - `polydat/src/nodes/runtime_context.rs` — `control`,
 >   `control_u64`, `control_bool`, `control_str`, `control_set`,
->   `rate`, `concurrency`, `phase`, `cycle`. The GK compiler
+>   `rate`, `concurrency`, `phase`, `cycle`. The Polydat compiler
 >   threads the enclosing DSL binding name into `ControlSet`
 >   for attribution (`ControlOrigin::Gk { binding }`).
 > - `nbrs-activity/src/runner.rs` — `dryrun=controls` renders the
@@ -57,7 +57,7 @@ North stars:
 - **Safe under concurrent writers**. Two sources trying to set
   the same control converge on a well-defined last-write-wins
   order with a monotonic revision number.
-- **Reactive-friendly**. A GK feedback loop that reads
+- **Reactive-friendly**. A Polydat feedback loop that reads
   `metric("error_rate")` and writes `control("rate")` is a
   first-class use case, not an add-on.
 - **Idiomatic Rust**. Leverages `tokio::watch`, `Arc<Atomic*>`,
@@ -220,7 +220,7 @@ pub enum ControlOrigin {
     Launch,                       // initial seed from params
     Cli,                          // `nbrs ctl ...` (future)
     Tui,                          // keybind / input
-    Gk { binding: String },       // scripted feedback loop
+    Polydat { binding: String },       // scripted feedback loop
     Api { source: String },       // web endpoint caller id
 }
 ```
@@ -272,7 +272,7 @@ Non-goals for v1:
 
 - Changing `workload=` / `scenario=` — these are startup-only
   identity decisions, not controls.
-- Changing GK kernel program source — immutable per phase
+- Changing Polydat kernel program source — immutable per phase
   (dispenser compiles once at phase start). If a control affects
   something inside the kernel, the kernel re-reads via a
   `control(name)` node, not by recompilation.
@@ -297,14 +297,14 @@ Five prospective writers, each with its own
    each phase's live controls will be surfaced.
 
 3. **GK-driven feedback loops
-   (`ControlOrigin::Gk { binding }`).** A new GK node family —
+   (`ControlOrigin::Gk { binding }`).** A new Polydat node family —
    `control_set(name, value)` and `control_get(name)` — lets a
    binding reach into the active phase's control registry.
    Combined with the existing metric-reading nodes
    (`metric()`, `metric_window()`), this is the path for
    self-adjusting scenarios:
 
-   ```gk
+   ```polydat
    err_rate := metric("errors/s") / metric("cycles/s")
    target_rate := control_get("rate") * if(err_rate > 0.05, 0.8, 1.05)
    capture nonce = control_set("rate", target_rate)
@@ -312,7 +312,7 @@ Five prospective writers, each with its own
 
    Needs a guard against the loop: control writes are
    rate-limited per GK-node invocation, and a kill-switch
-   disables GK writes if the runner detects thrash.
+   disables Polydat writes if the runner detects thrash.
 
 4. **Web API (`ControlOrigin::Api`).** When `nbrs-web` is built
    in, `POST /control/:path/:name { value, origin }`. Mirrors
@@ -405,7 +405,7 @@ applier walks.
 
 ### Final declarations — "this scope fixes the value"
 
-A control can be declared `const` at a parent GK scope. A
+A control can be declared `const` at a parent Polydat scope. A
 final declaration pins the committed value for the scope and
 **rejects runtime writes targeting descendants of that scope
 with a logical error**, not a silent drop. The write surfaces
@@ -413,7 +413,7 @@ as `SetError::FinalViolation` (parallel to `ValidationFailed`
 and `ApplyFailed`) and the writer sees the scope where the
 final declaration lives.
 
-This is the counterpart to GK's existing compile-time
+This is the counterpart to Polydat's existing compile-time
 strictness for workload params: if an author says "this
 phase runs at `concurrency=1`, period", a runtime control
 write that tries to override it is an operator error, not a

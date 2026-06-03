@@ -5,7 +5,7 @@
 
 use crate::ast::{
     CompiledU64Op,
-    GkNode, NodeMeta, Port, Slot, Value,
+    PolydatNode, NodeMeta, Port, Slot, Value,
 };
 use crate::compile::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
 use xxhash_rust::xxh3::xxh3_64;
@@ -43,7 +43,7 @@ impl Hash64 {
     }
 }
 
-impl GkNode for Hash64 {
+impl PolydatNode for Hash64 {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -92,7 +92,7 @@ impl HashRange {
     }
 }
 
-impl GkNode for HashRange {
+impl PolydatNode for HashRange {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -159,7 +159,7 @@ impl HashInterval {
     }
 }
 
-impl GkNode for HashInterval {
+impl PolydatNode for HashInterval {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -220,7 +220,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a hash node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "hash" => Some(Ok(Box::new(Hash64::new()))),
         _ => None,

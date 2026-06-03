@@ -24,7 +24,7 @@
 //! - **Cartesian is dependent-tuple, not independent.** Clause
 //!   N's spec text may reference iter-vars from clauses
 //!   1..N-1. Per-branch kernels (via
-//!   [`GkKernel::materialize_subscope`]) carry the prior
+//!   [`PolydatKernel::materialize_subscope`]) carry the prior
 //!   values forward so each clause evaluates against the
 //!   correct context. This is SRD-18b §"Dependent Tuple
 //!   Iteration".
@@ -43,7 +43,7 @@
 //! `(algebra AST + parent kernel + canonical kernel +
 //! workload params) → Vec<RuntimeTuple>`. The returned tuples
 //! carry polydat [`Value`]s ready for per-iteration kernel
-//! construction via [`GkKernel::for_iteration`].
+//! construction via [`PolydatKernel::for_iteration`].
 //!
 //! Order modifiers route through the unified
 //! [`Strategy::apply`] (spec §10.7.8): each node returns its
@@ -56,7 +56,7 @@
 //!
 //! - Per-iteration kernel construction. The evaluator returns
 //!   tuples; the caller (executor or stream surface) builds
-//!   the per-iter kernel via `GkKernel::for_iteration`.
+//!   the per-iter kernel via `PolydatKernel::for_iteration`.
 //! - Empty-clause policy (strict / warn). The caller passes
 //!   an `on_empty` callback the same way `enumerate_tuples`
 //!   does today.
@@ -71,7 +71,7 @@ use crate::iteration::comprehension::source::Source;
 use crate::iteration::comprehension::strategies::{EvaluatedInput, Tuple, TupleValue};
 use crate::iteration::comprehension::strategy::StrategyName;
 use crate::dsl::compile::eval_const_expr;
-use crate::kernel::GkKernel;
+use crate::kernel::PolydatKernel;
 use crate::kernel::interp::interpolate_via_kernel;
 use crate::ast::Value;
 
@@ -80,7 +80,7 @@ use crate::ast::Value;
 /// pipeline. The algebra layer's [`Tuple`] uses
 /// [`TupleValue`] which is scalar-only; this `RuntimeTuple`
 /// is what the executor actually wants for per-iteration
-/// kernel binding via [`GkKernel::for_iteration`].
+/// kernel binding via [`PolydatKernel::for_iteration`].
 pub type RuntimeTuple = Vec<(String, Value)>;
 
 /// Per-node result of the runtime walker.
@@ -170,8 +170,8 @@ impl std::error::Error for RuntimeError {}
 /// `enumerate_tuples`'s callback.
 pub fn evaluate_for_iteration<F>(
     comp: &Comprehension,
-    parent: &Arc<GkKernel>,
-    canonical: &Arc<GkKernel>,
+    parent: &Arc<PolydatKernel>,
+    canonical: &Arc<PolydatKernel>,
     workload_params: &HashMap<String, String>,
     on_empty: F,
 ) -> Result<Vec<RuntimeTuple>, RuntimeError>
@@ -191,8 +191,8 @@ where
 /// references so the recursive walker doesn't have to thread
 /// them through every call.
 struct EvalState<'a, F> {
-    parent: Arc<GkKernel>,
-    canonical: Arc<GkKernel>,
+    parent: Arc<PolydatKernel>,
+    canonical: Arc<PolydatKernel>,
     /// Workload-param fallback. The polydat-owned
     /// `evaluate_spec` already routes through the parent
     /// kernel chain for shadow-aware resolution (SRD-21),
@@ -625,16 +625,16 @@ mod tests {
     use super::*;
     use crate::iteration::comprehension::source::LiteralValue;
 
-    fn empty_kernel() -> Arc<GkKernel> {
-        Arc::new(crate::dsl::compile_gk("\n").unwrap())
+    fn empty_kernel() -> Arc<PolydatKernel> {
+        Arc::new(crate::dsl::compile_polydat("\n").unwrap())
     }
 
     /// Canonical kernel with `extern k: u64` so the runtime
     /// evaluator can install per-clause `k` values via
     /// materialize_subscope — matches the shape
     /// `build_for_each_scope_kernel` produces in production.
-    fn canonical_with_k() -> Arc<GkKernel> {
-        Arc::new(crate::dsl::compile_gk("extern k: u64\n").unwrap())
+    fn canonical_with_k() -> Arc<PolydatKernel> {
+        Arc::new(crate::dsl::compile_polydat("extern k: u64\n").unwrap())
     }
 
     #[test]

@@ -488,13 +488,13 @@ readouts:
 
 The keyword is `readouts:`, not `templates:` — these are
 readouts; the term `template` is overloaded with `report:`
-(SRD-46) and GK templating, so we drop it.
+(SRD-46) and Polydat templating, so we drop it.
 
 ### 5.1 Body grammar — unbraced
 
 Readout bodies do not use `{…}`. Curly braces collide
-with both GK syntax and JSON parsing rules; a third
-brace grammar would be attempted by GK first and produce
+with both Polydat syntax and JSON parsing rules; a third
+brace grammar would be attempted by Polydat first and produce
 confusing diagnostics. Instead the body is a sequence of
 whitespace-separated **items**, with no surrounding
 sigil:

@@ -6,7 +6,7 @@
 //! Parses an inline op template string into a [`Workload`] — the same
 //! type that [`parse_workload()`](crate::parse::parse_workload) returns
 //! from YAML. Inline `{{expr}}` bindings are extracted, assigned
-//! synthetic GK output names, and compiled to a GK source block.
+//! synthetic Polydat output names, and compiled to a Polydat source block.
 //!
 //! See SRD 35 for design details.
 
@@ -18,9 +18,9 @@ use crate::model::{BindingsDef, ParsedOp, Workload};
 ///
 /// # Inline binding syntax
 ///
-/// - `{{expr}}` — inline GK expression. Compiled into the GK
+/// - `{{expr}}` — inline Polydat expression. Compiled into the GK
 ///   kernel at init time, then invoked per cycle like any other
-///   GK output. Extracted and replaced with `{__inline_N}`.
+///   Polydat output. Extracted and replaced with `{__inline_N}`.
 /// - `{name}` — reference bind point, resolved by the standard
 ///   bind point pipeline (GK output, coordinate, capture).
 ///
@@ -51,7 +51,7 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
     let segments = split_ops(op_template);
 
     // Collect all inline expressions across all segments to build
-    // a single shared GK source block.
+    // a single shared Polydat source block.
     let mut inline_exprs: Vec<String> = Vec::new();
     let mut expr_index: HashMap<String, usize> = HashMap::new();
 
@@ -79,16 +79,16 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         }
     }
 
-    // Build GK source. The `input cycle: u64` line is always emitted
+    // Build Polydat source. The `input cycle: u64` line is always emitted
     // for inline mode: `cycle` is the wire name CLI users reference
     // (via `{cycle}` placeholders) without writing any explicit
     // bindings block, so the inline parser makes that convention
     // explicit in the generated model. Without this declaration the
     // workload-level placeholder validator can't see `cycle` as a
     // known wire name and rejects `{cycle}` as undeclared.
-    let mut gk_source = String::from("input cycle: u64\n");
+    let mut polydat_source = String::from("input cycle: u64\n");
     for (i, expr) in inline_exprs.iter().enumerate() {
-        gk_source.push_str(&format!("__inline_{i} := {expr}\n"));
+        polydat_source.push_str(&format!("__inline_{i} := {expr}\n"));
     }
 
     // Second pass: rewrite templates and build ParsedOps.
@@ -109,7 +109,7 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         op.tags.insert("op".to_string(), op.name.clone());
         op.tags.insert("block".to_string(), "inline".to_string());
 
-        op.bindings = BindingsDef::GkSource(gk_source.clone());
+        op.bindings = BindingsDef::PolydatSource(polydat_source.clone());
 
         ops.push(op);
     }
@@ -362,11 +362,11 @@ mod tests {
         let stmt = w.ops[0].op.get("stmt").unwrap().as_str().unwrap();
         assert_eq!(stmt, "hello {__inline_0}");
         match &w.ops[0].bindings {
-            BindingsDef::GkSource(src) => {
+            BindingsDef::PolydatSource(src) => {
                 assert!(src.contains("input cycle: u64"));
                 assert!(src.contains("__inline_0 := cycle"));
             }
-            _ => panic!("expected GkSource bindings"),
+            _ => panic!("expected PolydatSource bindings"),
         }
     }
 
@@ -379,11 +379,11 @@ mod tests {
         let stmt = w.ops[0].op.get("stmt").unwrap().as_str().unwrap();
         assert_eq!(stmt, "id={__inline_0} name={__inline_1}");
         match &w.ops[0].bindings {
-            BindingsDef::GkSource(src) => {
+            BindingsDef::PolydatSource(src) => {
                 assert!(src.contains("__inline_0 := mod(hash(cycle), 100000)"));
                 assert!(src.contains("__inline_1 := number_to_words(cycle)"));
             }
-            _ => panic!("expected GkSource bindings"),
+            _ => panic!("expected PolydatSource bindings"),
         }
     }
 
@@ -398,8 +398,8 @@ mod tests {
         // inline expressions the bindings carry just that declaration
         // and nothing else.
         let bindings = match &w.ops[0].bindings {
-            crate::model::BindingsDef::GkSource(s) => s.clone(),
-            _ => panic!("expected GkSource"),
+            crate::model::BindingsDef::PolydatSource(s) => s.clone(),
+            _ => panic!("expected PolydatSource"),
         };
         assert_eq!(bindings, "input cycle: u64\n");
     }
@@ -416,8 +416,8 @@ mod tests {
         // the workload-level placeholder validator recognises the
         // wire name.
         let bindings = match &w.ops[0].bindings {
-            crate::model::BindingsDef::GkSource(s) => s.clone(),
-            _ => panic!("expected GkSource"),
+            crate::model::BindingsDef::PolydatSource(s) => s.clone(),
+            _ => panic!("expected PolydatSource"),
         };
         assert_eq!(bindings, "input cycle: u64\n");
     }
@@ -459,12 +459,12 @@ mod tests {
         assert_eq!(stmt0, "a={__inline_0}");
         assert_eq!(stmt1, "b={__inline_0}");
         match &w.ops[0].bindings {
-            BindingsDef::GkSource(src) => {
+            BindingsDef::PolydatSource(src) => {
                 // Only one output for hash(cycle).
                 let count = src.matches("__inline_").count();
                 assert_eq!(count, 1);
             }
-            _ => panic!("expected GkSource"),
+            _ => panic!("expected PolydatSource"),
         }
     }
 

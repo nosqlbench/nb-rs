@@ -5,7 +5,7 @@
 //!
 //! Implements SRD 32 §"Init-Time Fixture and Consumer Self-
 //! Registration". Each op-template consumer (validation,
-//! conditional, throttle, …) registers the GK names it will read
+//! conditional, throttle, …) registers the Polydat names it will read
 //! at cycle time into a shared [`ScopeFixture`]. The fixture is
 //! sealed once construction completes and yields a [`PullPlan`]
 //! whose entries are materialized per cycle into a [`ResolvedPulls`]
@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use polydat::kernel::{GkKernel, GkProgram, GkState};
+use polydat::kernel::{PolydatKernel, PolydatProgram, PolydatState};
 use polydat::ast::Value;
 
 /// What the kernel reports a registered name resolves to.
@@ -48,7 +48,7 @@ impl PlanEntry {
 
 /// Init-time accumulator for consumer-declared pulls.
 ///
-/// Holds an `Arc<GkProgram>` clone of the per-template canonical
+/// Holds an `Arc<PolydatProgram>` clone of the per-template canonical
 /// kernel's program (SRD 16 §"Per-Scope Canonical Kernel Cache").
 /// The program carries every fact this fixture needs at
 /// registration time — the output map, input definitions, and
@@ -60,7 +60,7 @@ impl PlanEntry {
 ///
 /// [`register_pull`]: ScopeFixture::register_pull
 pub struct ScopeFixture {
-    program: Arc<GkProgram>,
+    program: Arc<PolydatProgram>,
     handles: HashMap<String, PullHandle>,
     plan:    Vec<PlanEntry>,
 }
@@ -70,7 +70,7 @@ impl ScopeFixture {
     /// program. The Arc clone is cheap; the activity construction
     /// loop typically already holds the program for adapter
     /// dispatch and bind-plan synthesis.
-    pub fn new(program: Arc<GkProgram>) -> Self {
+    pub fn new(program: Arc<PolydatProgram>) -> Self {
         Self {
             program,
             handles: HashMap::new(),
@@ -81,7 +81,7 @@ impl ScopeFixture {
     /// The program this fixture is scoped against. Useful for
     /// consumers that need to inspect the manifest (e.g. type-
     /// aware strict parsing).
-    pub fn program(&self) -> &Arc<GkProgram> {
+    pub fn program(&self) -> &Arc<PolydatProgram> {
         &self.program
     }
 
@@ -93,7 +93,7 @@ impl ScopeFixture {
     /// returns the existing handle — registrations are idempotent.
     ///
     /// **Errors** when the program does not know the name. The
-    /// GK compiler is responsible for provisioning every name
+    /// Polydat compiler is responsible for provisioning every name
     /// referenced anywhere in the op template (op fields and
     /// params; SRD 16 §"Auto-Extern Generation"). An unknown
     /// name here therefore signals a workload bug — typically a
@@ -119,7 +119,7 @@ impl ScopeFixture {
         } else {
             return Err(format!(
                 "fixture: name '{name}' is not known to the program — neither \
-                 a declared output nor an input slot. The GK compiler should \
+                 a declared output nor an input slot. The Polydat compiler should \
                  have provisioned it from a bind-point reference somewhere in \
                  the op template; if it didn't, the workload is referencing a \
                  binding that doesn't exist. Available outputs: [{outs}]; \
@@ -135,7 +135,7 @@ impl ScopeFixture {
     }
 
     /// Seal and yield the immutable plan. The plan owns its own
-    /// `Arc<GkProgram>` clone, so cycle-time `resolve` only needs
+    /// `Arc<PolydatProgram>` clone, so cycle-time `resolve` only needs
     /// the per-fiber state.
     pub fn seal(self) -> PullPlan {
         PullPlan { program: self.program, entries: self.plan }
@@ -157,10 +157,10 @@ impl PullHandle {
 }
 
 /// Sealed init-time plan. One entry per unique name registered.
-/// Owns an `Arc<GkProgram>` so cycle-time resolve only needs the
+/// Owns an `Arc<PolydatProgram>` so cycle-time resolve only needs the
 /// per-fiber state.
 pub struct PullPlan {
-    program: Arc<GkProgram>,
+    program: Arc<PolydatProgram>,
     entries: Vec<PlanEntry>,
 }
 
@@ -181,17 +181,17 @@ impl PullPlan {
     }
 
     /// The program this plan was sealed against.
-    pub fn program(&self) -> &Arc<GkProgram> {
+    pub fn program(&self) -> &Arc<PolydatProgram> {
         &self.program
     }
 
-    /// Materialize every entry against the given GkState. Output
+    /// Materialize every entry against the given PolydatState. Output
     /// entries go through `state.pull_by_index` (eval cone if
     /// dirty); input entries go through `state.read_input_value`
     /// (cell-aware read for shared slots).
     ///
     /// O(plan_len) on the hot path — no name hashing.
-    pub fn resolve(&self, state: &mut GkState) -> ResolvedPulls {
+    pub fn resolve(&self, state: &mut PolydatState) -> ResolvedPulls {
         let mut values = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
             let v = match entry {
@@ -211,7 +211,7 @@ impl PullPlan {
     /// `plan.resolve(kernel.state())`. Provided so test
     /// scaffolding and other ergonomic call sites don't have to
     /// dig out the state.
-    pub fn resolve_with(&self, kernel: &mut GkKernel) -> ResolvedPulls {
+    pub fn resolve_with(&self, kernel: &mut PolydatKernel) -> ResolvedPulls {
         self.resolve(kernel.state())
     }
 }
@@ -220,7 +220,7 @@ impl PullPlan {
 ///
 /// Read-only, indexed by [`PullHandle`]. Created once per cycle
 /// during the resolve phase (SRD 31 §"Cycle-Time Pipeline"); the
-/// values inside reflect the GkState snapshot at the moment of
+/// values inside reflect the PolydatState snapshot at the moment of
 /// resolution and are not invalidated by subsequent state changes.
 pub struct ResolvedPulls {
     values: Vec<Value>,
@@ -254,7 +254,7 @@ impl ResolvedPulls {
     }
 }
 
-/// Trait every cross-cutting wrapper that reads GK values must
+/// Trait every cross-cutting wrapper that reads Polydat values must
 /// implement. The activity construction loop calls `fixture` once
 /// per template per consumer; failures (closed-vocab violation,
 /// missing required field, unresolvable name) are returned as
@@ -281,7 +281,7 @@ pub struct ExecCtx<'a> {
     pub fields: &'a crate::adapter::ResolvedFields,
     pub pulls:  &'a ResolvedPulls,
     /// Narrow read surface for op-template name resolution against
-    /// the dispenser's bound GK context (SRD-68 invariants I-1 + I-2).
+    /// the dispenser's bound Polydat context (SRD-68 invariants I-1 + I-2).
     /// During the SRD-68 migration this defaults to a no-op
     /// `NullWireSource` for legacy call sites; adapters that own a
     /// kernel construct via [`Self::with_wires`].
@@ -304,7 +304,7 @@ impl<'a> ExecCtx<'a> {
     /// Construct an `ExecCtx` with an explicit `WireSource` — the
     /// SRD-68 path. The `wires` value should be the per-fiber
     /// kernel slot for the firing dispenser, narrowed to the
-    /// `WireSource` trait so adapter code never sees `GkKernel`
+    /// `WireSource` trait so adapter code never sees `PolydatKernel`
     /// internals.
     pub fn with_wires(
         fields: &'a crate::adapter::ResolvedFields,
@@ -318,14 +318,14 @@ impl<'a> ExecCtx<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polydat::dsl::compile::compile_gk;
+    use polydat::dsl::compile::compile_polydat;
 
-    fn k() -> GkKernel {
-        compile_gk(
+    fn k() -> PolydatKernel {
+        compile_polydat(
             "input cycle: u64\n\
              folded := 42\n\
              cyc_dep := hash(cycle)\n",
-        ).expect("compile_gk")
+        ).expect("compile_polydat")
     }
 
     #[test]

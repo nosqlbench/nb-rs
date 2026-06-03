@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! `{name}`-style template interpolation against a GK kernel.
+//! `{name}`-style template interpolation against a Polydat Kernel.
 //!
 //! Surface #5 home (per `polydat/docs/design/comprehension_cutover_contact_surfaces.md`).
 //! Previously lived in `polydat::iteration::comprehension::eval`; relocated
@@ -15,7 +15,7 @@
 //!
 //! - [`interpolate_via_kernel`] — looks up `{name}` placeholders
 //!   against the kernel's chain-aware bindings via
-//!   [`GkKernel::lookup`].
+//!   [`PolydatKernel::lookup`].
 //! - [`interpolate_with_lookup`] — the generic engine; the
 //!   `lookup` closure decides where each leaf's value comes
 //!   from. Used by callers that compose their own lookup over
@@ -44,7 +44,7 @@
 
 use std::collections::HashSet;
 
-use crate::kernel::GkKernel;
+use crate::kernel::PolydatKernel;
 
 /// Round count at which we warn about possible cycles in the
 /// substitution stream.
@@ -68,7 +68,7 @@ const ROUND_HARD: usize = 1000;
 /// typed-error overhead.
 pub fn interpolate_via_kernel(
     text: &str,
-    kernel: &GkKernel,
+    kernel: &PolydatKernel,
 ) -> Result<String, crate::dsl::compile::EmbeddingError> {
     interpolate_with_lookup(text, |name| {
         kernel.lookup(name).map(|v| v.to_display_string())
@@ -145,7 +145,7 @@ where
 ///
 /// Used by the synthesiser to discover names the body
 /// references via `{name}` interpolation that don't appear as
-/// bare identifiers in the GK source. The detection is
+/// bare identifiers in the Polydat source. The detection is
 /// quote-aware: leading non-identifier chars (`'`, `"`) skip
 /// the placeholder, matching the binding compiler's
 /// `string_lit_has_real_placeholder` disambiguation.

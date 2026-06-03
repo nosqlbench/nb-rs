@@ -59,12 +59,12 @@ $ ./service.yaml cycles=100 threads=4 rate=1000
 
 ## Features
 
-**Generation Kernel (GK)** — A DAG-based data generation engine with:
+**Generation Kernel (Polydat)** — A DAG-based data generation engine with:
 - Infix operators (`+`, `-`, `*`, `/`, `%`, `**`, `&`, `|`, `^`, `<<`, `>>`)
 - 100+ node functions: hash, distributions, noise, strings, vectors, CSV/JSONL
 - Type-aware dispatch with auto-widening (u64/f64/string)
 - Constant folding, provenance-based invalidation, JIT compilation
-- Module system with composable `.gk` files and stdlib
+- Module system with composable `.polydat` files and stdlib
 
 **Workload Engine** — Flexible execution with:
 - Phased workloads (schema → rampup → steady-state)
@@ -72,7 +72,7 @@ $ ./service.yaml cycles=100 threads=4 rate=1000
 - Latency injection (`delay:` field for GK-driven think time)
 - Ratio-weighted op sequencing
 - Capture flow between ops within a stanza
-- GK expressions in config (`cycles="{vector_count("example")}"`)
+- Polydat expressions in config (`cycles="{vector_count("example")}"`)
 
 **Adapters** — Protocol drivers for:
 - stdout (debugging, dry-run, format=json/csv/stmt)
@@ -102,26 +102,26 @@ eval "$(nbrs completions)"
 ```
 nbrs run workload=file.yaml cycles=1M threads=8 rate=10000
 nbrs run op='hello {{hash(cycle)}}' cycles=10
-nbrs bench gk 'hash(cycle)' --compare-modes iters=5
-nbrs plot gk 'sin(to_f64(cycle) * 0.01)' cycles=1000
-nbrs describe gk functions
+nbrs bench Polydat 'hash(cycle)' --compare-modes iters=5
+nbrs plot Polydat 'sin(to_f64(cycle) * 0.01)' cycles=1000
+nbrs describe Polydat functions
 nbrs web --daemon
 ```
 
 ## Examples
 
 See [`examples/`](examples/) for categorized workload examples:
-- `getting_started/` — First workloads, GK bindings, inline ops
-- `gk_language/` — Operators, bitwise, coordinate decomposition
+- `getting_started/` — First workloads, Polydat bindings, inline ops
+- `polydat_language/` — Operators, bitwise, coordinate decomposition
 - `workloads/` — Phases, conditions, delays, scenarios
 - `signals/` — FFT analysis, LFSR, fractal noise
 - `visual/` — Random maze generator
-- `modules/` — GK module system
+- `modules/` — Polydat module system
 
 ## Architecture
 
 ```
-polydat     GK engine: DAG compilation, node functions, JIT, provenance
+polydat     Polydat engine: DAG compilation, node functions, JIT, provenance
 nbrs-workload     YAML parsing, bind points, inline expressions, phasing
 nbrs-activity     Async execution engine, dispenser wrappers, capture flow
 nbrs-metrics      HDR histograms, frame capture, OpenMetrics export

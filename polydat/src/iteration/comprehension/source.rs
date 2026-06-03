@@ -39,7 +39,7 @@ pub enum Source {
     /// Default step is 1.
     IntRange { lo: i64, hi: i64, step: i64 },
 
-    /// Generator function call expressed as a GK source string.
+    /// Generator function call expressed as a Polydat source string.
     /// Resolved at clause construction; cardinality may be
     /// `Unbounded` if the generator is open-ended.
     Generator { expr: String, cardinality_hint: Option<u64> },

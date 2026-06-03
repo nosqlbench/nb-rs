@@ -218,7 +218,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
 /// Minimal duration parser: `5m`, `1h30m`, `500ms`, `2.5s`,
 /// `30`. Bare numbers are seconds. Mirrors the eval-side
 /// parser's unit set; doesn't need step-relative `i` here
-/// (no GK execution context to inherit from).
+/// (no Polydat execution context to inherit from).
 fn parse_duration_ms(s: &str) -> Result<i64, String> {
     let s = s.trim();
     if let Ok(n) = s.parse::<f64>() {

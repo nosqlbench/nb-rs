@@ -223,12 +223,12 @@ impl AliasTableU64 {
 }
 
 // -----------------------------------------------------------------
-// GK node wrapping the alias table
+// Polydat node wrapping the alias table
 // -----------------------------------------------------------------
 
-use crate::ast::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
 
-/// GK node that samples from a pre-built alias table.
+/// Polydat node that samples from a pre-built alias table.
 ///
 /// Signature: `(input: u64) -> (u64)`
 ///
@@ -258,7 +258,7 @@ impl AliasSample {
     }
 }
 
-impl GkNode for AliasSample {
+impl PolydatNode for AliasSample {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -314,7 +314,7 @@ mod tests {
 
         // Heavily weighted: outcome 0 should dominate.
         // Inputs must be well-distributed (hashed), matching how the
-        // GK uses alias tables — hash is always upstream.
+        // Polydat uses alias tables — hash is always upstream.
         let table = AliasTableU64::from_weights(&[100.0, 1.0, 1.0]);
         let mut counts = [0u64; 3];
         let n = 100_000u64;
@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn gk_node_eval() {
+    fn polydat_node_eval() {
         let node = AliasSample::from_weights(&[1.0, 1.0, 1.0, 1.0]);
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
@@ -370,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn gk_node_compiled() {
+    fn polydat_node_compiled() {
         let node = AliasSample::from_weights(&[1.0, 1.0, 1.0, 1.0]);
         let op = node.compiled_u64().expect("should compile");
         let mut out = [0u64];

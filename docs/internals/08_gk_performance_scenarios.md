@@ -1,6 +1,6 @@
-# Memo 08: GK Performance Test Scenarios
+# Memo 08: Polydat Performance Test Scenarios
 
-A canonical set of `.gk` files for benchmarking the GK evaluation
+A canonical set of `.polydat` files for benchmarking the Polydat evaluation
 engine across the dimensions that actually matter for performance.
 
 ---
@@ -111,10 +111,10 @@ These test when provenance helps vs hurts.
 
 | File | Inputs | Stable | Topology | Nodes | Key Question |
 |------|--------|--------|----------|-------|-------------|
-| `a1_single_input.gk` | 1 (cycle) | 0 | chain | 50 | Baseline: provenance overhead with no benefit |
-| `a2_stable_params.gk` | 3 (cycle, ks, ds) | 2 | multi-root | 50 | Provenance payoff: 2 stable subgraphs |
-| `a3_all_changing.gk` | 3 (a, b, c) | 0 | layered | 50 | Worst case: provenance cost, no caching |
-| `a4_mostly_stable.gk` | 5 (cycle + 4 params) | 4 | multi-root | 100 | Best case: 80% of graph cached |
+| `a1_single_input.polydat` | 1 (cycle) | 0 | chain | 50 | Baseline: provenance overhead with no benefit |
+| `a2_stable_params.polydat` | 3 (cycle, ks, ds) | 2 | multi-root | 50 | Provenance payoff: 2 stable subgraphs |
+| `a3_all_changing.polydat` | 3 (a, b, c) | 0 | layered | 50 | Worst case: provenance cost, no caching |
+| `a4_mostly_stable.polydat` | 5 (cycle + 4 params) | 4 | multi-root | 100 | Best case: 80% of graph cached |
 
 ### Group B: Output Access Patterns
 
@@ -122,9 +122,9 @@ These test pull-on-demand vs evaluate-everything.
 
 | File | Inputs | Outputs Pulled | Total Nodes | Key Question |
 |------|--------|---------------|-------------|-------------|
-| `b1_single_output.gk` | 1 | 1 (end of chain) | 100 | Only upstream cone evaluates |
-| `b2_partial_cone.gk` | 2 | 1 (from input-1 subgraph) | 100 | Only input-1 subgraph evaluates |
-| `b3_all_outputs.gk` | 1 | all | 100 | Everything evaluates |
+| `b1_single_output.polydat` | 1 | 1 (end of chain) | 100 | Only upstream cone evaluates |
+| `b2_partial_cone.polydat` | 2 | 1 (from input-1 subgraph) | 100 | Only input-1 subgraph evaluates |
+| `b3_all_outputs.polydat` | 1 | all | 100 | Everything evaluates |
 
 ### Group C: Topology Scaling
 
@@ -132,11 +132,11 @@ These test how topology interacts with scale.
 
 | File | Topology | Nodes | Degree | Key Question |
 |------|----------|-------|--------|-------------|
-| `c1_deep_chain.gk` | chain | 200 | 1 | Depth scaling |
-| `c2_wide_parallel.gk` | parallel | 200 | 1 | Breadth scaling, no sharing |
-| `c3_fan_out.gk` | fan-out | 200 | 6 out | One root feeds many |
-| `c4_diamond.gk` | diamond | 200 | 2 | Shared predecessors |
-| `c5_multi_root.gk` | multi-root | 200 | 1 | Separate subgraphs per input |
+| `c1_deep_chain.polydat` | chain | 200 | 1 | Depth scaling |
+| `c2_wide_parallel.polydat` | parallel | 200 | 1 | Breadth scaling, no sharing |
+| `c3_fan_out.polydat` | fan-out | 200 | 6 out | One root feeds many |
+| `c4_diamond.polydat` | diamond | 200 | 2 | Shared predecessors |
+| `c5_multi_root.polydat` | multi-root | 200 | 1 | Separate subgraphs per input |
 
 ### Group D: Realistic Workloads
 
@@ -144,10 +144,10 @@ These approximate real nb-rs workload binding patterns.
 
 | File | Pattern | Nodes | Description |
 |------|---------|-------|-------------|
-| `d1_keyvalue.gk` | key-value rampup | ~10 | hash → mod → format (typical INSERT) |
-| `d2_vector_search.gk` | ANN workload | ~15 | hash, vector_at*, format, ground_truth |
-| `d3_service_model.gk` | bimodal latency | ~20 | pcg, icd_normal, select, format |
-| `d4_multi_table.gk` | multi-table workload | ~40 | 4 independent table generators sharing cycle |
+| `d1_keyvalue.polydat` | key-value rampup | ~10 | hash → mod → format (typical INSERT) |
+| `d2_vector_search.polydat` | ANN workload | ~15 | hash, vector_at*, format, ground_truth |
+| `d3_service_model.polydat` | bimodal latency | ~20 | pcg, icd_normal, select, format |
+| `d4_multi_table.polydat` | multi-table workload | ~40 | 4 independent table generators sharing cycle |
 
 ---
 
@@ -176,14 +176,14 @@ the isolated findings translate to reality.
 
 ```bash
 # Full suite with provenance comparison
-nbrs bench gk perf_tests/a*.gk --provenance iters=10
-nbrs bench gk perf_tests/a*.gk --no-provenance iters=10
+nbrs bench Polydat perf_tests/a*.gk --provenance iters=10
+nbrs bench Polydat perf_tests/a*.gk --no-provenance iters=10
 
 # Topology scaling
-nbrs bench gk perf_tests/c*.gk iters=10
+nbrs bench Polydat perf_tests/c*.gk iters=10
 
 # Realistic workloads
-nbrs bench gk perf_tests/d*.gk iters=10
+nbrs bench Polydat perf_tests/d*.gk iters=10
 ```
 
 The comparison table shows all files side-by-side with

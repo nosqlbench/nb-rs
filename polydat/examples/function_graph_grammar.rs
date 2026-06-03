@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Illustration: GK source IS a grammar for declaring function graphs.
+//! Illustration: Polydat source IS a grammar for declaring function graphs.
 //!
 //! Each `name := expr` line is a graph node; expressions reference
 //! other nodes by name, forming directed edges. The compiler
@@ -10,7 +10,7 @@
 //! contracts between every wire connection.
 
 fn main() {
-    let mut kernel = polydat::dsl::compile_gk(r#"
+    let mut kernel = polydat::dsl::compile_polydat(r#"
         input cycle: u64
 
         // Decompose one coordinate into two dimensions (device, reading).

@@ -105,7 +105,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<polydat::kernel::GkKernel>,
+        parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
         Box::pin(async move {
         let (stmt_text, stmt_field) = STMT_FIELD_NAMES.iter()
@@ -148,7 +148,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
 
         // SRD 73 — build the per-op modifier chain at dispenser
         // initializer time. The chain captures any universal CQL
-        // field the user bound in the GK scope (workload params,
+        // field the user bound in the Polydat scope (workload params,
         // scenario-tree `set:` shadows, op-template fields); names
         // the scope doesn't bind contribute nothing. Critical-path
         // execute() just calls `chain.apply(&mut stmt)` — no

@@ -18,7 +18,7 @@
 #          dryrun=controls`   ← lists every declared control
 #       - TUI `e` keybind     ← inline edit prompt (SRD 23 §"TUI surface")
 #       - Web API             ← POST /api/control/concurrency {"value": 16}
-#       - GK `control_set`    ← scripted feedback loop in a binding
+#       - Polydat `control_set`    ← scripted feedback loop in a binding
 #
 #   * The bulk phase's `insert` op uses testkit's saturation knobs
 #     (`result-capacity`, `result-overload`) to model a backend

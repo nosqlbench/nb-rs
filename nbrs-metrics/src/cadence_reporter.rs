@@ -655,7 +655,7 @@ impl CadenceReporter {
     ///
     /// This is the canonical API for short-lived components (phases
     /// shorter than the smallest cadence, op-dispensers torn down
-    /// between cycles, scope-bounded GK kernels). The legacy idiom
+    /// between cycles, scope-bounded Polydat Kernels). The legacy idiom
     /// — manual `ingest(delta)` + `close_path(labels)` — still
     /// works; this helper just packages the recipe and adds the
     /// `partial=true` annotation that SRD-42 mandates.

@@ -73,16 +73,16 @@ The component tree is the **canonical name index** for all metrics. Label-patter
 
 >> We need to be specific about which types of components will be promoted to components in the tree. As long as the runtime cost is minimal it can span from the session all the way to the dispenser layer. But it would be too wasteful to make ops or stanzas components.
 
-**Resolution**: Every GK context layer gets a component. This means phases ARE components, since each phase has its own GK compilation scope. The component tree spans:
+**Resolution**: Every Polydat context layer gets a component. This means phases ARE components, since each phase has its own Polydat compilation scope. The component tree spans:
 
 ```
 Session
  └─ Scenario
-     └─ Phase (one per phase execution, carries dimensional labels, owns GK context)
+     └─ Phase (one per phase execution, carries dimensional labels, owns Polydat context)
          └─ Dispenser (adapter execution layer)
 ```
 
-Ops and stanzas (individual cycles) are NOT components — they are the hot path and should be zero-overhead. The phase is the natural boundary because it's where GK bindings are compiled and where dimensional labels (profile, k, etc.) are established. The dispenser hangs off the phase for adapter-specific instrumentation.
+Ops and stanzas (individual cycles) are NOT components — they are the hot path and should be zero-overhead. The phase is the natural boundary because it's where Polydat bindings are compiled and where dimensional labels (profile, k, etc.) are established. The dispenser hangs off the phase for adapter-specific instrumentation.
 
 ### 2. Instruments and Accumulation
 
@@ -156,7 +156,7 @@ impl InProcessMetricsStore {
 }
 ```
 
-The in-process store is the **only** place cumulative and last-window state is maintained. External reporters (SQLite, CSV) receive their cadence-appropriate snapshots and persist them — they don't maintain queryable state. The summary report, GK `metric()`/`metric_window()` functions, and any future TUI or web dashboard all read from the in-process store.
+The in-process store is the **only** place cumulative and last-window state is maintained. External reporters (SQLite, CSV) receive their cadence-appropriate snapshots and persist them — they don't maintain queryable state. The summary report, Polydat `metric()`/`metric_window()` functions, and any future TUI or web dashboard all read from the in-process store.
 
 This avoids duplicating accumulation state. The in-process store does the same `combine()` work that the schedule tree does for longer-cadence reporters, but it holds on to the result rather than discarding it after emission.
 
@@ -231,18 +231,18 @@ All in-process metrics reading goes through the `InProcessMetricsStore`:
 // Summary report at end of run
 let cumulative = store.query_cumulative(&tag_filter);
 
-// GK metric() node — reads cumulative
+// Polydat metric() node — reads cumulative
 let p99 = store.query_cumulative(&pattern)
     .first()
     .and_then(|(_, view)| view.summary("cycles_servicetime").map(|s| s.p99));
 
-// GK metric_window() node — reads last delta
+// Polydat metric_window() node — reads last delta
 let current_rate = store.query_last_window(&pattern)
     .first()
     .and_then(|(_, view)| view.summary("cycles_servicetime").map(|s| s.rate));
 ```
 
-The store is `Arc<RwLock<...>>` — reads are concurrent, writes happen only on the scheduler thread at base cadence. GK evaluation and reporters never contend with each other; they both read the store's immutable view references.
+The store is `Arc<RwLock<...>>` — reads are concurrent, writes happen only on the scheduler thread at base cadence. Polydat evaluation and reporters never contend with each other; they both read the store's immutable view references.
 
 ### 8. Configurable Cadences
 
@@ -266,13 +266,13 @@ The scheduler builds the divisor tree automatically. The in-process store is alw
 
 ## Migration Path
 
-1. **Phase 1**: Introduce the Component struct with props, labels, lifecycle states. Attach to Session → Scenario → Phase → Dispenser hierarchy. Every GK context layer becomes a component.
+1. **Phase 1**: Introduce the Component struct with props, labels, lifecycle states. Attach to Session → Scenario → Phase → Dispenser hierarchy. Every Polydat context layer becomes a component.
 
 2. **Phase 2**: Build the SnapshotScheduler with per-component cumulative views and last-window caching. Implement MetricsView capture and combine. Add lifecycle flush on component retirement.
 
 3. **Phase 3**: Route reporters (SQLite, console, CSV) through the snapshot pipeline as consumers at configurable cadences. Summary report queries scheduler's cumulative views. SQLite becomes optional archival, not source of truth.
 
-4. **Phase 4**: Add GK `metric()` and `metric_window()` node functions. Enable live metrics access for reactive control, reporting expressions, and interactive side-effects on the component tree.
+4. **Phase 4**: Add Polydat `metric()` and `metric_window()` node functions. Enable live metrics access for reactive control, reporting expressions, and interactive side-effects on the component tree.
 
 ## Key Differences from NoSQLBench
 
@@ -318,11 +318,11 @@ This same walk-up mechanism supports any inheritable configuration: base interva
 
 **Resolution**: Two-tier design. The component tree uses `RwLock` (read-heavy, write-rare — structure changes only at phase boundaries). Instrument recording uses lock-free atomics and the hdrhistogram crate's `Recorder` (which provides a lock-free `record()` + synchronized `snapshot()`). The tree is the slow control plane; instruments are the fast data plane. Future signaling (sync/async messages, option propagation, sparse events) operates at tree-change frequency, not per-op frequency, so `RwLock` is appropriate.
 
-3. **GK integration**: Should GK nodes be able to read live metrics from the component tree? This would enable expressions like `mean_latency := metric("cycles_servicetime", "phase=rampup").mean` for adaptive workloads.
+3. **Polydat integration**: Should Polydat nodes be able to read live metrics from the component tree? This would enable expressions like `mean_latency := metric("cycles_servicetime", "phase=rampup").mean` for adaptive workloads.
 
->> Yes, we should be able to use gk as a metrics scripting and expression language for the purposes of live analysis and reporting expressions, etc. There will be a live evaluation context for some GK instances which are used in the future for reactive and interactive side-effects within the component tree, like signaling the session to shut down when an error condition is found by an asynchronous polling component, for example.
+>> Yes, we should be able to use Polydat as a metrics scripting and expression language for the purposes of live analysis and reporting expressions, etc. There will be a live evaluation context for some Polydat instances which are used in the future for reactive and interactive side-effects within the component tree, like signaling the session to shut down when an error condition is found by an asynchronous polling component, for example.
 
-**Resolution**: GK gets two node functions for metrics access — one for each view:
+**Resolution**: Polydat gets two node functions for metrics access — one for each view:
 
 - **`metric(pattern, stat)`** — reads the **cumulative** view. Total lifetime data for the matched component. Use for summary expressions, final reports, threshold checks.
 - **`metric_window(pattern, stat)`** — reads the **last non-cumulative window** (most recent delta). Use for rate-of-change detection, live dashboards, adaptive control.
@@ -334,6 +334,6 @@ This enables:
 - **Reporting expressions**: `mean_latency := metric("cycles_servicetime", "phase=rampup").p99` for computed summary columns.
 - **Reactive control**: `do_until` condition like `metric("errors_total").count > 100` that polls the cumulative view each iteration.
 - **Rate detection**: `metric_window("cycles_servicetime", "phase=rampup").rate` to see current throughput in the last capture interval.
-- **Live GK evaluation context**: Some GK programs (watchdogs, polling conditions, adaptive rate limiters) run on a separate evaluation cadence, reading the component tree as input. These are not per-cycle bindings — they're component-level reactive expressions attached to the tree.
+- **Live Polydat evaluation context**: Some Polydat programs (watchdogs, polling conditions, adaptive rate limiters) run on a separate evaluation cadence, reading the component tree as input. These are not per-cycle bindings — they're component-level reactive expressions attached to the tree.
 
 Both are read-only non-deterministic nodes (like `elapsed_millis`) — they must be explicitly acknowledged in strict mode.

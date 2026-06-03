@@ -58,7 +58,7 @@ that needs the union of two selectors issues two queries and
 unions the results. Keeps the grammar small, the parser easy,
 and the evaluation fast against each candidate's `Labels`.
 
-**Text form** (used by CLI, YAML, REST paths, and GK nodes):
+**Text form** (used by CLI, YAML, REST paths, and Polydat nodes):
 
 ```
 type=phase,name=rampup,profile~=label_*,optimize_for=RECALL
@@ -212,7 +212,7 @@ language.
   users know what's mutable before trying to set it.
 - **Web API routing:** `POST /controls?sel=type=phase,name=rampup`
   parses the query string directly into a `Selector`.
-- **GK scripting:** Control-targeting GK nodes
+- **Polydat scripting:** Control-targeting Polydat nodes
   (`control_set(selector, name, value)`) accept text-form
   selectors so scenarios can write against other phases.
 

@@ -15,7 +15,7 @@
 //! a missing pair surfaces as "odd total args" at compile time. See
 //! SRD-66 §"Why not pair-wise `(b, v)` interleaving?" for rationale.
 
-use crate::ast::{Commutativity, GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{Commutativity, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// Variadic boolean-selector branch node.
 ///
@@ -68,7 +68,7 @@ const PICK_HINT: &str =
 this phase? Check scenario-tree DFS order or declare a `detect_*` \
 phase ahead of consumers.";
 
-impl GkNode for PickN {
+impl PolydatNode for PickN {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -217,7 +217,7 @@ pub(crate) fn build_node(
     name: &str,
     wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     if name != "pick" {
         return None;
     }

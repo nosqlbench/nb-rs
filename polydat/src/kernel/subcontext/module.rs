@@ -14,7 +14,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::dsl::ast::Statement;
-use crate::kernel::GkProgram;
+use crate::kernel::PolydatProgram;
 
 use super::error::SourceContext;
 use super::pull::RegisteredPullConsumer;
@@ -23,17 +23,17 @@ use super::spec::{ExportSpec, ImportSpec};
 /// Body fragment — what the builder accepts via
 /// [`super::SubcontextBuilder::body`].
 ///
-/// Per SRD-67 §"Decision 4". `GkSource` is for user-facing
+/// Per SRD-67 §"Decision 4". `PolydatSource` is for user-facing
 /// `bindings:` / `result:` content (parsed at finalize);
 /// `Statements` is for synthesisers that already produce GK
 /// programmatically.
 #[derive(Debug, Clone)]
 pub enum BodyFragment {
-    /// User-facing GK source. Parsed via the existing
+    /// User-facing Polydat source. Parsed via the existing
     /// `lexer + parser` pipeline at finalize.
-    GkSource(String),
+    PolydatSource(String),
     /// Pre-parsed statements — submitted directly without
-    /// round-tripping through GK source strings. Reuses
+    /// round-tripping through Polydat source strings. Reuses
     /// [`Statement`] from the existing AST, so synthesisers
     /// don't carry a parallel enum.
     Statements(Vec<Statement>),
@@ -161,7 +161,7 @@ pub struct WriteThroughBinding {
 pub struct ScopeModule<M> {
     pub(crate) imports: Vec<ImportSpec>,
     pub(crate) exports: Vec<ExportSpec>,
-    pub(crate) program: Arc<GkProgram>,
+    pub(crate) program: Arc<PolydatProgram>,
     pub(crate) contract: ScopeContract<M>,
     pub(crate) context: SourceContext,
     pub(crate) consumers: Vec<RegisteredPullConsumer>,
@@ -185,7 +185,7 @@ impl<M> ScopeModule<M> {
         &self.exports
     }
 
-    pub fn program(&self) -> &Arc<GkProgram> {
+    pub fn program(&self) -> &Arc<PolydatProgram> {
         &self.program
     }
 

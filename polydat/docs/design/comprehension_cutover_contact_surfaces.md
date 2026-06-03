@@ -32,11 +32,11 @@ Per-surface outcome:
 |---|---------|---------------|
 | 1 | Text → AST parsing | `ComprehensionSpec` / `parse_text` is the public surface (PR 9c-1a). Legacy `parse` module retained internally; output converted to algebra via `legacy_to_algebra`. |
 | 2 | AST data types | Workload model and scope tree hold `algebra::Comprehension` (now `polydat::comprehension::Comprehension`) — PR 9c-2. |
-| 3 | GK source synthesis | Shared cascade walker in `nbrs-activity/src/scope_synth/` drives the polydat `SubcontextBuilder`. Three of four sister scope builders (phase / do_loop / for_each) refactored onto the shared walker; op_template kept its narrow-cascade policy. `polydat::comprehension::synthesis` dissolved — PR 9c-1b. |
+| 3 | Polydat source synthesis | Shared cascade walker in `nbrs-activity/src/scope_synth/` drives the polydat `SubcontextBuilder`. Three of four sister scope builders (phase / do_loop / for_each) refactored onto the shared walker; op_template kept its narrow-cascade policy. `polydat::comprehension::synthesis` dissolved — PR 9c-1b. |
 | 4 | Iteration driver | Executor calls `polydat::comprehension::runtime::evaluate_for_iteration` directly. Algebra IR's static interpreter (`ir/interpreter.rs`) serves the §9.5 consumption surfaces; the runtime evaluator handles dependent-product semantics for executor use. `iteration` module deleted — PR 9c-4. |
 | 5 | String interpolation | Relocated to `polydat::kernel::interp` — PR 9c-3. |
 | 6 | Order application | Algebra strategies own ordering. `order` module deleted — PR 9c-4b. |
-| 7 | GK literal formatters | `nbrs-activity/src/scope_synth/helpers.rs` — PR 9c-1b. |
+| 7 | Polydat literal formatters | `nbrs-activity/src/scope_synth/helpers.rs` — PR 9c-1b. |
 
 Plus a spec amendment ([comprehension_forms.md](comprehension_forms.md)
 §3.2): Cartesian was reformulated as dependent product (Σ),
@@ -55,7 +55,7 @@ failures at every intermediate push.
 ## Why this doc existed
 
 PR 9a and PR 9b landed the **algebra layer**: the operator-tree AST,
-strategies, optimizer, IR, consumption surfaces, the `GkKernelScope`
+strategies, optimizer, IR, consumption surfaces, the `PolydatKernelScope`
 adapter, and the `ComprehensionSpec` friendly surface. The algebra
 layer is feature-complete as a *data model* and *streaming consumer*.
 
@@ -69,7 +69,7 @@ too compact:
 - ~48 external call sites across 7 files in `nbrs-activity` and
   `nbrs-workload`.
 - The legacy modules carry responsibilities the algebra layer does
-  **not** yet replicate (notably **GK source synthesis for child
+  **not** yet replicate (notably **Polydat source synthesis for child
   kernels** — 2,288 lines in `synthesis.rs`).
 
 A monolithic delete is not viable. Before we can stage the cutover
@@ -90,11 +90,11 @@ implementation begins.
 |---|---------|---------------|--------------------|-------------|
 | 1 | Text → AST parsing | polydat (legacy) | polydat | `ComprehensionSpec` + `parse_text` |
 | 2 | AST data types | polydat (legacy) | polydat | `algebra::Comprehension` (operator-tree) |
-| 3 | GK source synthesis for child kernels | polydat (legacy) | **shared** | polydat: `SubcontextBuilder`; activity: scope-walker |
-| 4 | Iteration driver | polydat (legacy) | polydat | `algebra::surfaces::ScopedKernelStream<GkKernelScope>` |
+| 3 | Polydat source synthesis for child kernels | polydat (legacy) | **shared** | polydat: `SubcontextBuilder`; activity: scope-walker |
+| 4 | Iteration driver | polydat (legacy) | polydat | `algebra::surfaces::ScopedKernelStream<PolydatKernelScope>` |
 | 5 | String interpolation against a kernel | polydat (legacy) | polydat (relocated) | `polydat::kernel::interp::*` |
 | 6 | Order application | polydat (internal only) | — (deleted) | (absorbed into algebra strategies) |
-| 7 | GK literal formatters | polydat (legacy) | **nbrs-activity** | walker-side helpers |
+| 7 | Polydat literal formatters | polydat (legacy) | **nbrs-activity** | walker-side helpers |
 
 Surface **#3** is the shared-responsibility surface: polydat owns the
 builder, activity owns the walker that drives it (see Surface 3 below
@@ -260,11 +260,11 @@ already isolated to one crate, narrowing the search radius.
 
 ---
 
-## Surface 3 — GK source synthesis for child kernels
+## Surface 3 — Polydat source synthesis for child kernels
 
 ### What it does
 
-Generates the GK source text for a child kernel that participates in
+Generates the Polydat source text for a child kernel that participates in
 a comprehension. For each iteration variable, emits an extern
 declaration with the right type; for each workload parameter the
 comprehension interpolates, emits a `final` injection; propagates
@@ -345,13 +345,13 @@ speculative methods.
 
 The query primitives the walker needs (`output_names`,
 `output_modifier`, `local_inclusion_chain`, `input_port_type`,
-`coord_count`, `input_names`, etc.) already exist on `GkKernel` and
+`coord_count`, `input_names`, etc.) already exist on `PolydatKernel` and
 `Program`. Some are `pub(crate)` or undocumented because the legacy
 synthesis function was the only caller; promoting them to a
 deliberate public surface is part of this push.
 
 The cache-and-rehydrate primitive (`from_program` / `for_iteration`
-on `GkKernel`) is the existing pattern that makes "compile once,
+on `PolydatKernel`) is the existing pattern that makes "compile once,
 hydrate many per-instance contexts" work. It functions today; what's
 missing is making it a first-class documented surface rather than a
 pattern synthesisers stumble into.
@@ -367,19 +367,19 @@ appropriate layer, some dissolves entirely. Per-function mapping:
 |---|---|---|
 | `synthesize_for_each_scope` | 12 (1 prod, 11 test) | **Dissolves** into (a) the shared cascade walker (activity, new) + (b) for-each-specific iter-var emission in a new `build_for_each_scope_kernel` (activity) |
 | `synthesize_for_each_iteration` | 0 | **Dissolves entirely** (no external callers) |
-| `propagate_parent_inputs` | 3 | **Stays in polydat** but relocates to a `GkKernel` method (`outer.propagate_inputs_into(&mut child)`). It's a kernel-chain operation, not a comprehension concern. |
+| `propagate_parent_inputs` | 3 | **Stays in polydat** but relocates to a `PolydatKernel` method (`outer.propagate_inputs_into(&mut child)`). It's a kernel-chain operation, not a comprehension concern. |
 | `emit_workload_param_chain_aware` | 3 | **Splits**: chain-walking part → polydat kernel query method; source-emission part → activity-side cascade-walker helper (Surface #7) |
 | `workload_param_type_name` | 3 | **Activity** (Surface #7, walker helper) |
 | `collect_leaf_placeholders` | 1 | **Activity** (walker helper) |
 | `scan_one` | 0 (internal) | **Activity** (walker helper, with `collect_leaf_placeholders`) |
-| `format_value_as_gk_literal` | 1 | **Activity** (Surface #7) |
-| `format_workload_param_as_gk_literal` | 2 | **Activity** (Surface #7) |
+| `format_value_as_polydat_literal` | 1 | **Activity** (Surface #7) |
+| `format_workload_param_as_polydat_literal` | 2 | **Activity** (Surface #7) |
 | `value_to_param_string` | 3 | **Activity** (Surface #7) |
 | `iterate` | 3 | **Activity** as transitional bridge; replaced by algebra surfaces (Surface #4) in PR 9c-3 |
 | `ComprehensionIter` | 0 | **Dissolves with `iterate`** |
 
 Net effect for polydat: loses ~2,000 lines of synthesis substance to
-activity (walker + Surface #7); gains a handful of `GkKernel`
+activity (walker + Surface #7); gains a handful of `PolydatKernel`
 methods that lift kernel-chain operations out of the synthesis
 module to where they actually belong; gains rustdoc on existing
 query primitives that the walker consumes.
@@ -405,7 +405,7 @@ for-each.
    exist; just exposing them cleanly.
 4. **Kernel-chain operations**: `propagate_parent_inputs` and the
    chain-walking parts of `emit_workload_param_chain_aware` land on
-   `GkKernel` as methods. Same substance, more honest layer.
+   `PolydatKernel` as methods. Same substance, more honest layer.
 5. **Cache-and-rehydrate** (`from_program` / `for_iteration`):
    gain comprehensive rustdoc naming the pattern, documenting the
    use case, and linking from this cutover doc.
@@ -475,7 +475,7 @@ The legacy public surface:
 - `nbrs-activity/src/executor.rs` — `iterate_scope` is the runtime
   driver; `IterationStep` is the executor's per-iteration record.
 
-### Recommendation: **polydat owns; surface is `algebra::surfaces::ScopedKernelStream<GkKernelScope>`**
+### Recommendation: **polydat owns; surface is `algebra::surfaces::ScopedKernelStream<PolydatKernelScope>`**
 
 The algebra layer already has the canonical replacement:
 
@@ -483,15 +483,15 @@ The algebra layer already has the canonical replacement:
 - `ScopedKernelStream<K>` — second-order surface yielding scoped
   kernel instances; `K: KernelScope` chooses the kernel-adaptation
   policy.
-- `GkKernelScope` — the implementor that calls
-  `GkKernel::for_iteration` to produce a per-iteration child kernel.
+- `PolydatKernelScope` — the implementor that calls
+  `PolydatKernel::for_iteration` to produce a per-iteration child kernel.
 
-The executor consumes a `ScopedKernelStream<GkKernelScope>`. Per-
-iteration, it receives a `ScopedKernelInstance` whose `kernel: Arc<GkKernel>`
+The executor consumes a `ScopedKernelStream<PolydatKernelScope>`. Per-
+iteration, it receives a `ScopedKernelInstance` whose `kernel: Arc<PolydatKernel>`
 field is the child kernel ready to use. The synthesis pre-stage
 (now in nbrs-activity) produces the parent kernel; per-iter
-`GkKernelScope` does the rebind via the existing
-`GkKernel::for_iteration` primitive.
+`PolydatKernelScope` does the rebind via the existing
+`PolydatKernel::for_iteration` primitive.
 
 The legacy `IterationStep` type retires. The executor's per-iter
 record becomes a `ScopedKernelInstance` (algebra type) or a thin
@@ -514,7 +514,7 @@ already have parity tests so the API contract is solid.
 ### What it does
 
 `{var}`-style template interpolation where placeholders are resolved
-by reading from a GK kernel. Used by:
+by reading from a Polydat kernel. Used by:
 
 - `interpolate_via_kernel(text, &kernel)` — looks up `{var}` against
   the kernel's bindings.
@@ -600,7 +600,7 @@ preservation needed; the algebra strategies are the canonical
 implementation and have their own test coverage.
 
 Special note: legacy `TraversalOrder::Custom { function }`
-(user-supplied GK function as the ordering) is **removed** per spec
+(user-supplied Polydat function as the ordering) is **removed** per spec
 §3.6 — already handled by `legacy_to_algebra` which raises
 `ConvertError::CustomOrderingRemoved`. Custom orderings are not
 forward-supported; documented as a breaking change.
@@ -611,15 +611,15 @@ None — pure deletion of internal code with no external callers.
 
 ---
 
-## Surface 7 — GK literal formatters
+## Surface 7 — Polydat literal formatters
 
 ### What it does
 
-Small utility functions for emitting GK source literals:
+Small utility functions for emitting Polydat source literals:
 
-- `format_value_as_gk_literal(&Value) -> String` — generic Value → GK
+- `format_value_as_polydat_literal(&Value) -> String` — generic Value → GK
   literal.
-- `format_workload_param_as_gk_literal(&str) -> String` — workload-
+- `format_workload_param_as_polydat_literal(&str) -> String` — workload-
   param-specific formatter (handles string quoting rules).
 - `value_to_param_string(&Value) -> Option<String>` — for inserting
   values into placeholder slots.
@@ -637,14 +637,14 @@ module).
 
 ### Recommendation: **nbrs-activity owns as walker-side helpers**
 
-These are GK code-generator details — what the walker (Surface #3)
+These are Polydat code-generator details — what the walker (Surface #3)
 needs to emit `import` / `body` declarations into the builder. They
 live in `nbrs-activity` alongside the scope walker that calls them.
 Activity-side because the output shape is governed by
-nbrs-activity's GK source conventions, not by polydat's algebra; and
+nbrs-activity's Polydat source conventions, not by polydat's algebra; and
 because the only callers are the walker and its peers.
 
-If a polydat-internal need for "format a Value as a GK literal"
+If a polydat-internal need for "format a Value as a Polydat literal"
 later emerges (e.g., for diagnostic dumps), polydat can grow its
 own simple formatter — the rules are well-defined and the
 implementation is small.
@@ -677,7 +677,7 @@ outside polydat. 93 baseline tests green.
   reference walk, and the parent-program walk (via polydat's public
   query API). The walker drives `SubcontextBuilder` to accumulate
   matter and calls `finalize()` at the end.
-- **Polydat query API (clean-up):** promote whatever `GkKernel` /
+- **Polydat query API (clean-up):** promote whatever `PolydatKernel` /
   `Program` query methods the walker needs from `pub(crate)` /
   undocumented to deliberate public surface with rustdoc. No new
   primitives expected — these already exist; just exposing them
@@ -692,7 +692,7 @@ outside polydat. 93 baseline tests green.
   single non-test caller), then test fixtures. Each migration
   preserves semantics; the walker output must be byte-equivalent
   to the legacy `synthesize_for_each_scope` output for the same
-  inputs, since downstream consumers depend on the GK source shape.
+  inputs, since downstream consumers depend on the Polydat source shape.
 - **Remove** `polydat::comprehension::synthesis` once the walker
   has taken over all call sites.
 - Initially the walker consumes the **legacy** `Comprehension` AST
@@ -719,7 +719,7 @@ outside polydat. 93 baseline tests green.
 ### PR 9c-3: Final delete (surfaces #1, #4, #5, #6)
 
 - Replace executor's `iterate_scope` calls with
-  `ScopedKernelStream<GkKernelScope>`.
+  `ScopedKernelStream<PolydatKernelScope>`.
 - Move `interpolate_via_kernel` to `polydat::kernel::interp`.
 - Delete legacy modules: `ast`, `parse`, `eval`, `order`,
   `iteration`.
@@ -775,8 +775,8 @@ Each push is independently reviewable, has its own acceptance bar
 
 4. **Surface #5 (interpolation relocation).** The relocated
    functions land at `polydat::kernel::interp`. Interpolation IS
-   against a GK kernel (`interpolate_via_kernel` takes
-   `&GkKernel`); putting it under `kernel::` makes the coupling
+   against a Polydat kernel (`interpolate_via_kernel` takes
+   `&PolydatKernel`); putting it under `kernel::` makes the coupling
    visible in the path.
 
 5. **Push 9c-3 atomicity.** Bundled: 9c-3 ships executor migration

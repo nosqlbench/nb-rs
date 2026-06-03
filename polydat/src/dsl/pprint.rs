@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! AST → `.gk` source pretty-printer.
+//! AST → `.polydat` source pretty-printer.
 //!
 //! Used by the subscope synthesizer (SRD-13f §"Wire-reference
 //! classification") to re-emit retained AST statements pulled
@@ -30,13 +30,13 @@
 //! concern.
 
 use crate::dsl::ast::{
-    Arg, BindingModifier, CallExpr, Binding, Expr, GkFile,
+    Arg, BindingModifier, CallExpr, Binding, Expr, PolydatFile,
     ModuleDef, Statement, BinOpKind, ExternPort, CursorDecl, WireModifier,
 };
 
 /// Pretty-print a full file: every statement, separated by
 /// newlines.
-pub fn pp_file(file: &GkFile) -> String {
+pub fn pp_file(file: &PolydatFile) -> String {
     let mut out = String::new();
     for stmt in &file.statements {
         out.push_str(&pp_statement(stmt));
@@ -194,7 +194,7 @@ mod tests {
     use super::*;
     use crate::dsl::{lexer, parser};
 
-    fn parse(src: &str) -> GkFile {
+    fn parse(src: &str) -> PolydatFile {
         let tokens = lexer::lex(src).expect("lex");
         parser::parse(tokens).expect("parse")
     }

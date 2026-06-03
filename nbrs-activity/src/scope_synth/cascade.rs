@@ -3,7 +3,7 @@
 
 //! Shared cascade walker — the single implementation of "given
 //! a parent kernel, decide what cascade-extern and inline-const
-//! lines to emit for a child scope's GK source."
+//! lines to emit for a child scope's Polydat source."
 //!
 //! Pre-walker, each of the four sister scope builders
 //! (`build_phase_scope_kernel`, `build_do_loop_scope_kernel`,
@@ -78,7 +78,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use polydat::kernel::{GkKernel, ManifestEntry};
+use polydat::kernel::{PolydatKernel, ManifestEntry};
 
 use super::helpers::{
     format_value_as_final_literal, port_type_to_extern_name, workload_param_type_name,
@@ -91,7 +91,7 @@ use super::helpers::{
 /// set, then passes it through to the walker.
 pub struct CascadeInputs<'a> {
     /// Parent kernel — the chain root for all walks.
-    pub parent_kernel: &'a GkKernel,
+    pub parent_kernel: &'a PolydatKernel,
     /// Workload params (CLI / params: block defaults).
     pub workload_params: &'a HashMap<String, String>,
     /// Typed manifest of the parent's outputs — used to look up
@@ -100,7 +100,7 @@ pub struct CascadeInputs<'a> {
     /// passing it in saves a re-walk.
     pub parent_manifest: &'a [ManifestEntry],
     /// Names referenced in the scope's body / spec exprs (the
-    /// `{name}` placeholders + identifier scan of GK body
+    /// `{name}` placeholders + identifier scan of Polydat body
     /// source). Drives steps 2 + 3 of the walker.
     pub referenced: &'a HashSet<String>,
     /// Names already declared by the per-scope builder before
@@ -118,7 +118,7 @@ pub struct CascadeInputs<'a> {
     /// their bodies are tightly scoped (a condition expression
     /// or a comprehension spec) where every referenced name is
     /// expected to flow in as an extern. phase opts out: its
-    /// body is arbitrary GK source that may already declare
+    /// body is arbitrary Polydat source that may already declare
     /// the same names as `input` / `extern`, and a step-3
     /// emission would collide.
     pub include_referenced_cascade: bool,
@@ -126,7 +126,7 @@ pub struct CascadeInputs<'a> {
 
 /// Per-scope outputs the walker mutates.
 pub struct CascadeOutputs<'a> {
-    /// GK source string the walker appends to.
+    /// Polydat source string the walker appends to.
     pub source: &'a mut String,
     /// Names the walker has emitted, including any pre-emitted
     /// names that flowed in via [`CascadeInputs::pre_emitted`].
@@ -134,7 +134,7 @@ pub struct CascadeOutputs<'a> {
     pub emitted: &'a mut HashSet<String>,
     /// Names whose outputs are inherited from a parent (cascade-
     /// extern'd, not this scope's own iter-coord). The per-scope
-    /// builder threads this into `GkMatter::inherited_outputs`
+    /// builder threads this into `PolydatMatter::inherited_outputs`
     /// so `compute_own_coordinates` excludes them when reporting
     /// this scope's own iteration position.
     pub inherited_names: &'a mut Vec<String>,

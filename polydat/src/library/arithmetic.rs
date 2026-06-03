@@ -3,14 +3,14 @@
 
 //! Arithmetic function nodes.
 //!
-//! Core integer operations for the GK DAG. These are the building blocks
+//! Core integer operations for the Polydat DAG. These are the building blocks
 //! that most workloads compose: hash → mod → add for bounded IDs,
 //! mixed_radix for coordinate decomposition, interleave for combining
 //! independent dimensions.
 
 use crate::ast::{
     Commutativity, CompiledU64Op,
-    GkNode, NodeMeta, Port, Slot, Value,
+    PolydatNode, NodeMeta, Port, Slot, Value,
 };
 
 /// Add a constant to a u64 value (wrapping).
@@ -43,7 +43,7 @@ impl AddU64 {
     }
 }
 
-impl GkNode for AddU64 {
+impl PolydatNode for AddU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_u64().wrapping_add(self.addend));
@@ -84,7 +84,7 @@ impl MulU64 {
     }
 }
 
-impl GkNode for MulU64 {
+impl PolydatNode for MulU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_u64().wrapping_mul(self.factor));
@@ -126,7 +126,7 @@ impl DivU64 {
     }
 }
 
-impl GkNode for DivU64 {
+impl PolydatNode for DivU64 {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -173,7 +173,7 @@ impl ModU64 {
     }
 }
 
-impl GkNode for ModU64 {
+impl PolydatNode for ModU64 {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -242,7 +242,7 @@ impl ModWireU64 {
     }
 }
 
-impl GkNode for ModWireU64 {
+impl PolydatNode for ModWireU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let divisor = inputs[1].as_u64();
@@ -291,7 +291,7 @@ impl DivWireU64 {
     }
 }
 
-impl GkNode for DivWireU64 {
+impl PolydatNode for DivWireU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_u64() / inputs[1].as_u64());
@@ -344,7 +344,7 @@ impl CeilToMultipleU64 {
     }
 }
 
-impl GkNode for CeilToMultipleU64 {
+impl PolydatNode for CeilToMultipleU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let value = inputs[0].as_u64();
@@ -413,7 +413,7 @@ impl MultiplesAtLeastU64 {
     }
 }
 
-impl GkNode for MultiplesAtLeastU64 {
+impl PolydatNode for MultiplesAtLeastU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let value = inputs[0].as_u64();
@@ -485,7 +485,7 @@ impl SetOrGetU64 {
     }
 }
 
-impl GkNode for SetOrGetU64 {
+impl PolydatNode for SetOrGetU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let current = inputs[0].as_u64();
@@ -533,7 +533,7 @@ impl ClampU64 {
     }
 }
 
-impl GkNode for ClampU64 {
+impl PolydatNode for ClampU64 {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -593,7 +593,7 @@ impl MixedRadix {
     }
 }
 
-impl GkNode for MixedRadix {
+impl PolydatNode for MixedRadix {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -659,7 +659,7 @@ impl SumN {
     }
 }
 
-impl GkNode for SumN {
+impl PolydatNode for SumN {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -712,7 +712,7 @@ impl ProductN {
     }
 }
 
-impl GkNode for ProductN {
+impl PolydatNode for ProductN {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
@@ -761,7 +761,7 @@ impl MinN {
     }
 }
 
-impl GkNode for MinN {
+impl PolydatNode for MinN {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
@@ -810,7 +810,7 @@ impl MaxN {
     }
 }
 
-impl GkNode for MaxN {
+impl PolydatNode for MaxN {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
@@ -868,7 +868,7 @@ impl Interleave {
     }
 }
 
-impl GkNode for Interleave {
+impl PolydatNode for Interleave {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
@@ -1148,7 +1148,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build an arithmetic node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "add" => Some(Ok(Box::new(AddU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(0))))),
         "mul" => Some(Ok(Box::new(MulU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
@@ -1348,9 +1348,9 @@ mod tests {
     /// `jit_constants()` for all arithmetic nodes with constants.
     #[test]
     fn slot_constants_match_jit_constants() {
-        use crate::ast::GkNode;
+        use crate::ast::PolydatNode;
 
-        let nodes: Vec<Box<dyn GkNode>> = vec![
+        let nodes: Vec<Box<dyn PolydatNode>> = vec![
             Box::new(AddU64::new(42)),
             Box::new(MulU64::new(7)),
             Box::new(DivU64::new(100)),
@@ -1372,7 +1372,7 @@ mod tests {
 
     // ── ceil_to_multiple ──────────────────────────────────
 
-    fn run_binary(node: &dyn GkNode, a: u64, b: u64) -> u64 {
+    fn run_binary(node: &dyn PolydatNode, a: u64, b: u64) -> u64 {
         let mut out = [Value::None];
         node.eval(&[Value::U64(a), Value::U64(b)], &mut out);
         out[0].as_u64()
@@ -1495,9 +1495,9 @@ mod tests {
     /// Verify wire_inputs() returns correct count for all arithmetic nodes.
     #[test]
     fn slot_wire_inputs_match_inputs() {
-        use crate::ast::GkNode;
+        use crate::ast::PolydatNode;
 
-        let nodes: Vec<Box<dyn GkNode>> = vec![
+        let nodes: Vec<Box<dyn PolydatNode>> = vec![
             Box::new(AddU64::new(0)),
             Box::new(ModU64::new(1)),
             Box::new(SumN::new(3)),

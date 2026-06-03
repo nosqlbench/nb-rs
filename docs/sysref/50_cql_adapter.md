@@ -68,7 +68,7 @@ model carries the field names as-is — no `stmt_type` in
 
 Reads the fully-interpolated statement text from `ResolvedFields`
 and executes it directly. All bind points are resolved to text
-by the GK synthesis pipeline before the adapter sees them.
+by the Polydat synthesis pipeline before the adapter sees them.
 
 Used for: DDL (`CREATE TABLE`, `DROP INDEX`), simple queries.
 

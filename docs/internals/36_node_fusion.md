@@ -1,7 +1,7 @@
 # Node Fusion — Graph Optimization Pass
 
 An assembly-time optimization pass that recognizes subgraph patterns
-in the GK DAG and replaces them with single fused nodes that are
+in the Polydat DAG and replaces them with single fused nodes that are
 semantically equivalent but computationally cheaper.
 
 ---
@@ -140,7 +140,7 @@ A fusion pattern is a structural template describing a subgraph
 shape to match.
 
 ```rust
-/// A structural pattern that matches a subgraph of the GK DAG.
+/// A structural pattern that matches a subgraph of the Polydat DAG.
 ///
 /// Patterns are trees (not DAGs) — each sub-pattern matches exactly
 /// one node. Diamond shapes (two pattern leaves matching the same
@@ -564,7 +564,7 @@ FusionPattern::NodeWithGuard {
 
 ### Cross-Boundary Fusion
 
-Currently fusion only operates within a single GK kernel. A future
+Currently fusion only operates within a single Polydat kernel. A future
 extension could fuse across the kernel boundary — for example,
 recognizing that the coordinate transform + the first kernel node
 form a fusible pattern.

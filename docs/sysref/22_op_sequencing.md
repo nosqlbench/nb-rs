@@ -146,7 +146,7 @@ reads with no writes.
 
 A workload can define multiple **phases** — sequential execution
 stages with independent cycle counts, concurrency, and op sets.
-Phases share a single compiled GK program.
+Phases share a single compiled Polydat program.
 
 ### YAML Structure
 
@@ -205,26 +205,26 @@ in YAML definition order.
 
 ### Phase Fields
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `cycles` | u64 or `"{gk_const}"` | stanza length | Total stanzas to execute |
-| `concurrency` | usize | 1 | Async fibers |
-| `rate` | f64 | unlimited | Ops/sec rate limit |
-| `adapter` | string | inherited from CLI | Override adapter |
-| `errors` | string | `".*:warn,counter"` | Error routing spec |
-| `tags` | string | — | Tag filter to select from top-level ops |
-| `ops` | map | — | Inline ops for this phase |
+| Field | Type                       | Default | Description |
+|-------|----------------------------|---------|-------------|
+| `cycles` | u64 or `"{polydat_const}"` | stanza length | Total stanzas to execute |
+| `concurrency` | usize                      | 1 | Async fibers |
+| `rate` | f64                        | unlimited | Ops/sec rate limit |
+| `adapter` | string                     | inherited from CLI | Override adapter |
+| `errors` | string                     | `".*:warn,counter"` | Error routing spec |
+| `tags` | string                     | — | Tag filter to select from top-level ops |
+| `ops` | map                        | — | Inline ops for this phase |
 
 Phases can define ops **inline** or select from top-level ops
 via **tag filter**. Inline ops take precedence.
 
-### GK Program Sharing
+### Polydat Program Sharing
 
-All phases share one compiled GK program. Benefits:
+All phases share one compiled Polydat program. Benefits:
 - Dataset handles loaded once
 - Constant folding computed once
 - Output namespace unified across phases
-- GK config expressions (`cycles: "{train_count}"`) resolve
+- Polydat config expressions (`cycles: "{train_count}"`) resolve
   from the shared program's folded constants
 
 ### Execution Model
@@ -257,7 +257,7 @@ implicit phase with all ops — identical to the non-phased model.
 
 ## Cursor-Driven Sequencing
 
-When a phase declares `cursor` bindings in its GK graph, the
+When a phase declares `cursor` bindings in its Polydat graph, the
 sequencing model shifts from counter-driven to cursor-driven:
 
 - **Phase extent** is determined by cursor exhaustion, not `cycles:`
@@ -274,9 +274,9 @@ No user configuration needed.
 ### Cursors Provenance Tracing
 
 At phase setup, the executor builds a `Cursors` instance by
-tracing GK provenance from the op template's referenced fields
+tracing Polydat provenance from the op template's referenced fields
 back to root cursor nodes. Each cursor target is a `DataSource`
-reader paired with its GK input index. Only cursors whose
+reader paired with its Polydat input index. Only cursors whose
 ordinals transitively feed the requested output fields are
 advanced on each iteration. This means:
 
@@ -349,7 +349,7 @@ progress for oversized rows.
 Per-op-template artifacts are built once at activity setup and
 cached (no per-cycle reconstruction):
 
-- `BindPlan` — memoized name → GK output index map
+- `BindPlan` — memoized name → Polydat output index map
 - `BatchConfig` — parsed `batch` / `max_batch_size` / `max_rows`
 
 Per-cycle resolution invokes `BindPlan::pull_to_budget(...)`

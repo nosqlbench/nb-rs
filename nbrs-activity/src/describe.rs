@@ -12,7 +12,7 @@
 //! representation.
 
 use std::sync::Arc;
-use polydat::kernel::GkProgram;
+use polydat::kernel::PolydatProgram;
 
 /// Print wiring analysis for a phase/iteration scope.
 ///
@@ -22,7 +22,7 @@ use polydat::kernel::GkProgram;
 pub fn print_wiring_analysis(
     phase_name: &str,
     iter_note: &str,
-    program: &Arc<GkProgram>,
+    program: &Arc<PolydatProgram>,
 ) {
     let input_names = program.input_names();
     let coord_count = program.coord_count();

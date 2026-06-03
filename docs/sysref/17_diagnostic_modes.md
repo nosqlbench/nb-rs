@@ -18,9 +18,9 @@ without (or with controlled) execution.
    by execution depth (how far to go) and diagnostic output
    (what to explain). These are independent.
 
-3. **The GK subsystem is the sole authority.** Provenance,
+3. **The Polydat subsystem is the sole authority.** Provenance,
    data flow, const-folding, scope composition — all
-   explanations come from the compiled GK kernel's
+   explanations come from the compiled Polydat kernel's
    introspection APIs, not from re-analysis of source text.
 
 ---
@@ -168,5 +168,5 @@ For each scope (workload, phase, for_each iteration):
 - **Scope composition**: which names are auto-externed from
   outer scope, which are shadowed
 
-The explanation comes from the compiled `GkProgram`'s
+The explanation comes from the compiled `PolydatProgram`'s
 introspection APIs — the same data structures used at runtime.

@@ -29,7 +29,7 @@ This SRD introduces:
 2. A **GK-scoped initializer-time resolution** pattern that mirrors
    the upstream nosqlbench `enhanceFuncOptionally` (a.k.a.
    "enhance function" / monadic compose) approach: the dispenser's
-   initializer queries the live GK scope chain once per name in
+   initializer queries the live Polydat scope chain once per name in
    its universal-field selector list, captures the resolved value
    into a modifier struct, and stores the resulting chain on the
    dispenser. Per-cycle execution is just `chain.apply(&mut stmt)`
@@ -128,7 +128,7 @@ pub struct ModifierChain<T> {
 impl<T> ModifierChain<T> {
     /// Built once in the dispenser initializer. Inactive modifiers
     /// (those where the user did not bind the corresponding name in
-    /// the GK scope) are NOT included — caller dropped them before
+    /// the Polydat scope) are NOT included — caller dropped them before
     /// pushing.
     pub fn new(
         op_label: impl Into<String>,
@@ -201,12 +201,12 @@ Sessions install at most one sink at construction. (Composition
 sinks — fan-out to multiple — are a trivial wrapper; deferred unless
 demanded.)
 
-### GK as the single name-resolution path
+### Polydat as the single name-resolution path
 
 The dispenser initializer resolves universal-field names through the
 GK scope chain. **No reach-around** — the `params:` block, scenario-
 tree `set:` shadows, `bindings:`, and per-op fields all surface
-through the existing `GkKernel::lookup` chokepoint (see SRD 13c,
+through the existing `PolydatKernel::lookup` chokepoint (see SRD 13c,
 13f, 67). This SRD adds no new resolution layer.
 
 The dispenser's initializer:
@@ -214,7 +214,7 @@ The dispenser's initializer:
 ```rust
 // In adapters/cql/src/<engine>/<dispenser>.rs, inside map_op:
 fn build_cql_modifier_chain<S>(
-    parent: &GkKernel,
+    parent: &PolydatKernel,
     op_label: &str,
     sink:     Option<Arc<dyn ModifierTraceSink>>,
 ) -> Result<ModifierChain<S>, String>
@@ -234,7 +234,7 @@ where
 }
 ```
 
-`GkKernel::lookup` (already shipped, gkkernel.rs:491) walks folded
+`PolydatKernel::lookup` (already shipped, polydatkernel.rs:491) walks folded
 outputs → extern auto-passthrough → shared cells, returning
 `Option<Value>`. It is THE name-resolution chokepoint; this SRD
 re-uses it as-is.
@@ -323,7 +323,7 @@ phases:
 What happens:
 
 1. Workload-parser routes the per-op `request_timeout_ms` field into
-   the op-template's GK matter (via the standard SRD-13d op-template
+   the op-template's Polydat matter (via the standard SRD-13d op-template
    scope synthesis).
 2. At adapter `map_op` time, the dispenser initializer calls
    `parent.lookup("request_timeout_ms")` for each universal field.
@@ -331,7 +331,7 @@ What happens:
    that don't set it, it returns `None`.
 3. The dispenser pushes a `RequestTimeoutMod { timeout: 5min }`
    onto the chain. Other modifiers — `consistency`, `page_size`,
-   etc. — are not added because the GK scope doesn't bind them.
+   etc. — are not added because the Polydat scope doesn't bind them.
 4. Per cycle, `chain.apply(&mut stmt)` calls
    `stmt.set_request_timeout(Some(5min))` and nothing else.
 
@@ -352,7 +352,7 @@ phases:
 ```
 
 The workload-param sets up a folded-output binding visible to all
-phases via the GK scope chain. The per-op field shadows it inside
+phases via the Polydat scope chain. The per-op field shadows it inside
 that op's scope. Both reach the dispenser via `lookup`.
 
 ## Internal model
@@ -396,7 +396,7 @@ specific setter calls.
 
 ### Op-template field plumbing
 
-For the per-op fields to reach the GK scope, the workload parser
+For the per-op fields to reach the Polydat scope, the workload parser
 must route them as op-template matter, not adapter sidecar. SRD 13d
 already specifies the op-template scope synthesis path — universal
 fields fall under that umbrella naturally. The workload-parser
@@ -415,7 +415,7 @@ the table above.
 | Workload `params: { request_timeout_ms: 60000 }`   | session connect             | overrides default   |
 | Per-op field on op template                         | per-statement                | wins over both      |
 
-This is NOT a new precedence machine. It's the existing GK scope-
+This is NOT a new precedence machine. It's the existing Polydat scope-
 chain `lookup` resolution order (folded outputs → extern auto-
 passthrough → shared cells; SRD 13c §"Visibility Rules"). Per-op
 fields land deepest in the scope chain because the op-template is
@@ -447,7 +447,7 @@ No adapter changes.
 `CQL_UNIVERSAL_FIELDS` selector list in `adapters/cql/src/common/
 op_modifier.rs`. Per-engine modifier impls. Dispenser-initializer
 wiring (`map_op` builds the chain via `parent.lookup`). Op-template
-field plumbing so per-op fields reach GK scope. `known_op_fields()`
+field plumbing so per-op fields reach Polydat scope. `known_op_fields()`
 extension.
 
 **P3 — Workload migration**. `idx_sweep` cleanup ops switch to per-
@@ -461,11 +461,11 @@ field list.
 - **Per-op vs op-template-level bindings:** the worked example
   writes `request_timeout_ms: 300000` as an op-field. Should the
   same name also be accepted inside an op-template `bindings:`
-  block (allowing cycle-dependent timeouts via GK expressions)?
+  block (allowing cycle-dependent timeouts via Polydat expressions)?
   Proposed: yes — `bindings:` already lands in the op-template GK
   scope, so `lookup` finds it the same way. The modifier is built
   from whatever value the scope yields at initializer time; if the
-  GK binding is effectively-const (the usual case) the dispenser
+  Polydat binding is effectively-const (the usual case) the dispenser
   captures the constant. Per-cycle-dynamic timeouts are deferred
   to a future SRD if and when a real use case appears.
 - **Sink composition (fan-out):** for now, sessions install at
@@ -501,9 +501,9 @@ field list.
 
 - [SRD 30](30_adapter_interface.md) — `DriverAdapter` / `OpDispenser`
   contract; `map_op` is the initializer entry point.
-- [SRD 13c](13c_gk_scope_model.md) — `bind_outer_scope`, manifest
+- [SRD 13c](13c_polydat_scope_model.md) — `bind_outer_scope`, manifest
   extraction, visibility rules. `lookup` is documented here.
-- [SRD 13d](13d_op_template_scope.md) — op-template GK scope
+- [SRD 13d](13d_op_template_scope.md) — op-template Polydat scope
   synthesis; the path by which per-op fields enter the scope chain.
 - [SRD 13f](13f_cross_scope_wire_materialization.md) — read
   invariant + matter-AST classification; per-op fields are an

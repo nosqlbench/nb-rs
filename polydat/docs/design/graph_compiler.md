@@ -42,25 +42,25 @@ this document is authoritative.
   compose into H1 (classification totality) + H2
   (monotonicity); G1 (auto-extern discovery) underwrites
   CF1 (synthesis surface completeness).
-- [SRD-10: GK Language and Compilation](language_spec.md)
+- [SRD-10: Polydat Language and Compilation](language_spec.md)
   — DSL syntax, compiler pipeline overview. Owns the
   language; this doc owns the compiler's scope-aware passes.
-- [SRD-11: GK Evaluation Model](evaluation_model.md)
+- [SRD-11: Polydat Evaluation Model](evaluation_model.md)
   — two-lifecycle classification, const-binding contract.
   Hoisting eligibility (§3.3) is a direct function of SRD-11's
   classification.
-- [SRD-13c: GK Scope Model](scope_model.md)
+- [SRD-13c: Polydat Scope Model](scope_model.md)
   — auto-extern, `bind_outer_scope`, manifest extraction.
   Context Fusion (§4) is the runtime fulfilment of SRD-13c's
   scope-init mechanism.
 - [SRD-13f: Cross-Scope Wire Materialization](wire_materialization.md)
   — value-only vs shared-cell classification. Context Fusion
   (§4.4) honours SRD-13f's gradient at synthesis time.
-- [SRD-16: GK Engines](engines.md)
+- [SRD-16: Polydat Engines](engines.md)
   — P1/P2/P3 execution engines, auto-selection heuristic.
   Owns execution-time engine variants; this doc owns the
   construction-time pipeline that produces them.
-- [SRD-16b: GK JIT Wiring](jit_boundary.md)
+- [SRD-16b: Polydat JIT Wiring](jit_boundary.md)
   — Cranelift boundary semantics. Node Fusion (§5.5)
   interacts with JIT eligibility at fusion-time.
 - [SRD-67: Parent-gated Subcontext Construction](subcontext_construction.md)
@@ -153,8 +153,8 @@ The full compiler pipeline, in dependency order:
 | Topological sort | DAG → ordered DAG | Cycle detection, evaluation order | structural |
 | **Hoisting analysis** | Ordered DAG → annotated DAG | Lifecycle classification of every wire | L2 (lifecycle) |
 | Engine selection | Annotated DAG → engine choice | Heuristic over graph shape (SRD-16) | T3 (JIT preserves type) |
-| Emit | Annotated DAG + engine → `GkProgram` | Final program structure | all three pillars |
-| **Context Fusion** | `GkProgram` + outer scope → ready kernel | Slot synthesis at scope-init (SRD-13c, SRD-13f) | S1+S2 (synthesis) |
+| Emit | Annotated DAG + engine → `PolydatProgram` | Final program structure | all three pillars |
+| **Context Fusion** | `PolydatProgram` + outer scope → ready kernel | Slot synthesis at scope-init (SRD-13c, SRD-13f) | S1+S2 (synthesis) |
 
 The bold rows are owned by this document. The rest are
 covered by other SRDs and treated here only insofar as their
@@ -174,7 +174,7 @@ meaning:
 > **Hoisting is the per-wire lifecycle classification within
 > a single kernel's program, used to partition the program's
 > execution into two code paths emitted in the same
-> `GkProgram`: a scope-init buffer evaluation that runs once
+> `PolydatProgram`: a scope-init buffer evaluation that runs once
 > when the kernel materialises, and a per-cycle dispatch
 > that runs each `set_inputs` advance.**
 
@@ -228,7 +228,7 @@ sorted DAG suffices.
 The hoisting boundary in a kernel is the set of wires that
 mark "everything upstream is Effectively-const; everything
 downstream is Dynamic." The compiler emits two evaluation
-codepaths in the `GkProgram`:
+codepaths in the `PolydatProgram`:
 
 - **Scope-init path**: evaluate every Effectively-const wire
   exactly once at scope-init, store in slot or buffer.
@@ -309,15 +309,15 @@ applies the lifecycle's promise.
 ### 3.5 Caching: `from_program` and `instance_program`
 
 Per SRD-67, the typed construction surface exposes
-`from_program(Arc<GkProgram>) -> GkKernel` as the
+`from_program(Arc<GkProgram>) -> PolydatKernel` as the
 cache-and-rebind primitive: the same compiled program is
 instanced freshly per execution context, with new
-`GkState` per fiber.
+`PolydatState` per fiber.
 
 Hoisting interacts with caching critically: because the
-scope-init path is part of the compiled `GkProgram`, the
+scope-init path is part of the compiled `PolydatProgram`, the
 *work* of evaluating Effectively-const wires is incurred
-once per kernel instance (not per `GkProgram` compilation,
+once per kernel instance (not per `PolydatProgram` compilation,
 since a program is reused). The program is shared; the state
 (holding the post-hoisting Effectively-const buffer values)
 is per-instance.
@@ -350,7 +350,7 @@ The synthesis surface is encoded in the kernel's
 
 ### 4.2 The synthesis act
 
-Per S2, `bind_outer_scope(outer: &GkKernel)` walks the
+Per S2, `bind_outer_scope(outer: &PolydatKernel)` walks the
 synthesis surface (driving the internal
 `materialize_wiring_from_outer` pass). For each declared
 slot in `self`, the synthesis act:
@@ -400,7 +400,7 @@ gates ensure no alternative synthesis path exists.
 
 #### Axiom CF2 — Deterministic synthesis
 
-**For a fixed outer scope state and a fixed `GkProgram`,
+**For a fixed outer scope state and a fixed `PolydatProgram`,
 Context Fusion produces the same slot values every time.
 There is no nondeterministic ordering, no synthesis-time
 random choice, no implicit context not derivable from the
@@ -659,7 +659,7 @@ both source and consumer typed correctly; the substrate's T1
                   │   - Slot filling per S2/S5  │
                   │   - Scope-init buffer eval  │
                   └─────────────┬───────────────┘
-                                │ ready GkKernel
+                                │ ready PolydatKernel
                                 ▼
                        --- READY KERNEL ---
                        (slot contract held)
@@ -714,7 +714,7 @@ is needed.
 
 Per H1 + H2 + H3, hoisting moves work from per-cycle to
 scope-init. The compiler does the analysis once per
-`GkProgram`; the runtime executes the partitioned code paths
+`PolydatProgram`; the runtime executes the partitioned code paths
 straight-line. There is no per-cycle "is this value still
 the same?" check — the lifecycle classification carries the
 proof.

@@ -19,7 +19,7 @@ phases:
     cycles: 1
     concurrency: 1
     poll:
-      # GK comparison operators return u64 (0/1) and there is
+      # Polydat comparison operators return u64 (0/1) and there is
       # no `&&` — boolean clauses are combined via bitwise `&`
       # with explicit parens (operator precedence puts `&`
       # above `==`). SRD-75 documents this in the workload-

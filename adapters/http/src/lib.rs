@@ -140,7 +140,7 @@ impl DriverAdapter for HttpAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+        parent: std::sync::Arc<nbrs_activity::adapter::PolydatKernel>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
         Box::pin(async move {
         // Extract static method from template (default GET)
@@ -157,7 +157,7 @@ impl DriverAdapter for HttpAdapter {
 
         // SRD-68 Push 5: snapshot the per-cycle field templates at
         // map_op. Each is rendered through `substitute_via_wires`
-        // at execute — the generic GK API resolves bind points by
+        // at execute — the generic Polydat API resolves bind points by
         // name, no synthesis-layer ResolvedFields involvement.
         // `url` is an alias for `uri`; honour whichever appears.
         let uri_template = template.op.get("uri")
@@ -224,8 +224,8 @@ struct HttpDispenser {
     base_url: Option<String>,
     method: String,
     content_type: String,
-    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
-    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+    /// SRD-68 invariant I-3: dispenser-owned canonical Polydat Kernel.
+    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::PolydatKernel>,
     /// Cycle-time templates rendered through `substitute_via_wires`.
     /// `uri` is mandatory; `body` and `headers` are optional.
     uri_template: Option<String>,
@@ -251,7 +251,7 @@ struct HttpDispenser {
 
 
 impl OpDispenser for HttpDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
@@ -528,9 +528,9 @@ mod tests {
         port
     }
 
-    fn test_kernel() -> std::sync::Arc<polydat::kernel::GkKernel> {
+    fn test_kernel() -> std::sync::Arc<polydat::kernel::PolydatKernel> {
         std::sync::Arc::new(
-            polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap()
+            polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap()
         )
     }
 
@@ -575,10 +575,10 @@ mod tests {
             Some("100"),       // 100ms request timeout
             Some("accept"),    // swallow client-side timeout
         );
-        let dispenser = adapter.map_op(&template, test_kernel())
+        let dispenser = adapter.map_op(&template, test_kernel()).await
             .expect("map_op");
 
-        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = nbrs_activity::adapter::ResolvedFields::new(Vec::new(), Vec::new());
@@ -606,10 +606,10 @@ mod tests {
             Some("100"),
             None,
         );
-        let dispenser = adapter.map_op(&template, test_kernel())
+        let dispenser = adapter.map_op(&template, test_kernel()).await
             .expect("map_op");
 
-        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = nbrs_activity::adapter::ResolvedFields::new(Vec::new(), Vec::new());
@@ -665,10 +665,10 @@ mod tests {
             None,    // no per-op timeout
             None,    // no on_timeout
         );
-        let dispenser = adapter.map_op(&template, test_kernel())
+        let dispenser = adapter.map_op(&template, test_kernel()).await
             .expect("map_op");
 
-        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = nbrs_activity::adapter::ResolvedFields::new(Vec::new(), Vec::new());

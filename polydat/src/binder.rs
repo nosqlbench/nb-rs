@@ -104,7 +104,7 @@ pub enum Binder {
 ///
 /// `wire` names the polydat wire that supplies the value at
 /// execute time (bare wire name, resolved through the kernel's
-/// GK context). `lvalue_type` is what the protocol expects at
+/// Polydat context). `lvalue_type` is what the protocol expects at
 /// this binding site — typically obtained from adapter-side
 /// introspection (CQL: column type from prepared-statement
 /// metadata).
@@ -184,12 +184,12 @@ pub struct BinderViolation {
 /// Returns every violation found (not just the first) so the
 /// operator fixes them in one pass.
 ///
-/// Why a closure instead of `&GkProgram`: the verifier
+/// Why a closure instead of `&PolydatProgram`: the verifier
 /// shouldn't be coupled to one program/kernel surface. Callers
 /// supply whatever lookup matches their wire-resolution
 /// context — kernel program output table, scope-init constants,
 /// auto-externed parent-scope wires, or test fixtures.
-/// Verify binders against a [`crate::kernel::GkKernel`] directly,
+/// Verify binders against a [`crate::kernel::PolydatKernel`] directly,
 /// returning `Ok(())` when every slot's rvalue→lvalue check
 /// passes and `Err(Vec<BinderViolation>)` listing every failure
 /// otherwise.
@@ -210,7 +210,7 @@ pub struct BinderViolation {
 /// violation rather than silent passthrough.
 pub fn verify_against_kernel(
     binders: &[Binder],
-    kernel: &crate::kernel::GkKernel,
+    kernel: &crate::kernel::PolydatKernel,
 ) -> Result<(), Vec<BinderViolation>> {
     use crate::kernel::Metadata;
     let violations = verify_binders(binders, |name: &str| {
@@ -284,7 +284,7 @@ fn check_compatibility(
         // caller would tolerate type fusion at that slot.
         return Some(format!(
             "binder names wire `{wire}` (lvalue type {lvalue}) but the \
-             wire is not declared in the kernel's GK context — this \
+             wire is not declared in the kernel's Polydat context — this \
              binder names a wire that doesn't exist."));
     };
 

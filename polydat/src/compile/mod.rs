@@ -4,11 +4,11 @@
 //! Kernel compilation: assembled DAG → fast executable kernel.
 //!
 //! Everything in this module is on the path between
-//! [`assembly::GkAssembler`] and an executable kernel. The
+//! [`assembly::PolydatAssembler`] and an executable kernel. The
 //! pipeline:
 //!
 //! ```text
-//! GkAssembler  ──(fusion pass)──▶  fused DAG
+//! PolydatAssembler  ──(fusion pass)──▶  fused DAG
 //!                                       │
 //!                            (select::choose_kernel)
 //!                                       │
@@ -19,7 +19,7 @@
 //! ```
 //!
 //! - [`assembly`]: the public construction surface
-//!   ([`assembly::GkAssembler`] + [`assembly::WireRef`]).
+//!   ([`assembly::PolydatAssembler`] + [`assembly::WireRef`]).
 //! - [`fusion`]: graph-level subgraph fusion pass; runs during
 //!   assembly after wiring resolution.
 //! - [`select`]: variant-selection heuristic; chooses the

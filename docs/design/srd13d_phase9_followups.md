@@ -95,7 +95,7 @@ binding the same way the list form does:
 
 The op-template kernel naturally compiles the new binding;
 runtime resolution goes through the existing
-`MetricsDispenser` GK pull plan. No `compile_expr` runtime
+`MetricsDispenser` Polydat pull plan. No `compile_expr` runtime
 API needed. SRD-13b §"Inline" is the relevant combination
 mode — the expression splices into the op-template kernel's
 DAG at compile time, exactly like a user-written binding.
@@ -114,7 +114,7 @@ DAG at compile time, exactly like a user-written binding.
   source line (the `value:` text), not a synthesised
   sub-program with no location.
 - **Diagnostics consistent.** `dryrun=op` and `nbrs describe
-  gk` already render op-level bindings; injected ones show up
+  polydat` already render op-level bindings; injected ones show up
   identically.
 
 ### Implementation notes
@@ -447,14 +447,14 @@ don't share much code surface beyond `parse.rs` (§1) and
 
 ## Pre-existing bug surfaced during §2 implementation
 
-`HasGkMatter::gk_matter()` for `ParsedOp` reads
+`HasGkMatter::polydat_matter()` for `ParsedOp` reads
 `self.bindings`, which is the **post-parser-merge** view —
 the parser splices each phase's `bindings:` block into every
 op's `bindings` field at parse time (the legacy
 `parse_phases` behaviour, documented on
 `WorkloadPhase::bindings`'s doc comment). Result: every op
-ends up with non-empty `bindings`, so `gk_matter()` returns
-`Definitions` even for ops that have no own GK content. The
+ends up with non-empty `bindings`, so `polydat_matter()` returns
+`Definitions` even for ops that have no own Polydat content. The
 scope-flattening pre-walk then marks every op-template
 scope as materialised, the install loop builds a kernel for
 each, and the contract check from §2 passes vacuously
@@ -465,7 +465,7 @@ GK pull plan against its own kernel), but they're wasted
 compile work and they prevent the flatten optimisation from
 firing the way SRD-13d §3 designed it.
 
-The SRD-13d §3.1 docstring on `gk_matter.rs` already calls
+The SRD-13d §3.1 docstring on `polydat_matter` already calls
 this out:
 
 > Today's parser also legacy-merges this into per-op

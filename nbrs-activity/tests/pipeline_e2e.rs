@@ -18,7 +18,7 @@ use nbrs_activity::adapter::{
 };
 use nbrs_activity::opseq::{OpSequence, SequencerType};
 use nbrs_metrics::labels::Labels;
-use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::identity::Identity;
 
 // =========================================================================
@@ -49,7 +49,7 @@ impl DriverAdapter for RecordingAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a nbrs_workload::model::ParsedOp,
-        _parent: std::sync::Arc<polydat::kernel::GkKernel>,
+        _parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>
     {
         let stmt_template = template.op.get("stmt")
@@ -74,7 +74,7 @@ struct RecordingDispenser {
     log: Arc<Mutex<Vec<String>>>,
     call_count: Arc<AtomicU64>,
     /// Cached `stmt:` template — rendered per cycle through the
-    /// generic GK wires API so the test exercises the same
+    /// generic Polydat wires API so the test exercises the same
     /// resolution surface production code uses.
     stmt_template: Option<String>,
 }
@@ -151,11 +151,11 @@ impl OpDispenser for RecordingDispenser {
 }
 
 // =========================================================================
-// Helper: minimal GK program
+// Helper: minimal Polydat program
 // =========================================================================
 
-fn test_kernel() -> polydat::kernel::GkKernel {
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+fn test_kernel() -> polydat::kernel::PolydatKernel {
+    let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
     asm.add_output("id", WireRef::node("id"));
     asm.compile().unwrap()

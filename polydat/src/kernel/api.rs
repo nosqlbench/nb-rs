@@ -1,22 +1,22 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! GK context API — the public-facing surface of a GK context
+//! Polydat context API — the public-facing surface of a Polydat context
 //! (compiled program + per-fiber evaluation state, fused as
 //! one thing for callers).
 //!
 //! ## Architecture
 //!
-//! A "context" is the user's view of a GK kernel. Internally it
+//! A "context" is the user's view of a Polydat Kernel. Internally it
 //! splits into:
 //!
 //! - **Compiled context** — the program (immutable, shared
-//!   across fibers via `Arc<GkProgram>`).
+//!   across fibers via `Arc<PolydatProgram>`).
 //! - **Context state** — the per-fiber evaluation state (input
 //!   buffers, node output buffers, dirty flags). Each fiber has
 //!   its own state instance; the program is shared.
 //!
-//! Externally there is one type ([`GkKernel`]) and three
+//! Externally there is one type ([`PolydatKernel`]) and three
 //! traits that partition its surface:
 //!
 //! - [`Dataflow`] — write inputs / read wires. Four core
@@ -26,13 +26,13 @@
 //!   should build on these.
 //! - [`Metadata`] — read-only diagnostic and structural data
 //!   about the context: input/output names and types, scope
-//!   layering, GK graph matter, init-binding sets, scope
+//!   layering, Polydat graph matter, init-binding sets, scope
 //!   coordinates. No data flow.
 //! - [`Construction`] — the two sanctioned construction paths:
 //!   root from source matter, and subscope built against this
-//!   context with new gk matter.
+//!   context with new Polydat matter.
 //!
-//! [`GkKernel`]: super::GkKernel
+//! [`PolydatKernel`]: super::PolydatKernel
 
 use crate::ast::{PortType, Value};
 
@@ -167,7 +167,7 @@ impl WireKey for &String {
     fn describe(&self) -> String { (*self).clone() }
 }
 
-/// Read-only metadata about a GK context: structural shape,
+/// Read-only metadata about a Polydat context: structural shape,
 /// types, names, scope layering. Everything that's a property
 /// of the compiled program (or fiber-state instance) but
 /// isn't itself a runtime value.
@@ -203,7 +203,7 @@ pub trait Metadata {
     fn output_port_type(&self, name: &str) -> Option<PortType>;
 }
 
-/// Data interface to a GK context: write inputs, read wires.
+/// Data interface to a Polydat context: write inputs, read wires.
 ///
 /// Four core methods. The indexed pair is the fast path;
 /// the named pair resolves against the context's metadata
@@ -262,29 +262,29 @@ pub trait Dataflow: Metadata {
 /// Construction interface — the two sanctioned construction
 /// paths. Per the kernel-construction invariant:
 ///
-/// 1. **Root** — built from gk matter, no parent.
-/// 2. **Subscope** — built from gk matter against an existing
+/// 1. **Root** — built from Polydat matter, no parent.
+/// 2. **Subscope** — built from Polydat matter against an existing
 ///    context.
 ///
-/// Both paths take the same typed gk matter
-/// ([`super::subcontext::GkMatter`]). The only
+/// Both paths take the same typed Polydat matter
+/// ([`super::subcontext::PolydatMatter`]). The only
 /// difference is whether a parent context supervises
 /// construction. Nothing else is allowed.
 pub trait Construction: Sized {
     /// Construction error type.
     type Error;
 
-    /// Path 1: build a root context from gk matter. No parent.
+    /// Path 1: build a root context from Polydat matter. No parent.
     /// Subscope-only fields on the matter (result-binding
     /// rewrites, inherited-output cascade, finalize-time
     /// contract checks) are not applicable here and are
     /// ignored.
-    fn root(matter: super::subcontext::GkMatter<'_>) -> Result<Self, Self::Error>;
+    fn root(matter: super::subcontext::PolydatMatter<'_>) -> Result<Self, Self::Error>;
 
     /// Path 2: build a subscope context against `self` from
-    /// gk matter. The parent supervises: cell cascade, Rule 2
+    /// Polydat matter. The parent supervises: cell cascade, Rule 2
     /// rewrites, scope-coordinate threading, init-binding
     /// contract checks all flow from `self` into the child.
-    fn subscope(&self, matter: super::subcontext::GkMatter<'_>)
+    fn subscope(&self, matter: super::subcontext::PolydatMatter<'_>)
         -> Result<Self, Self::Error>;
 }

@@ -1,4 +1,4 @@
-# Parent-Gated GK Sub-Context Construction
+# Parent-Gated Polydat Sub-Context Construction
 
 The walled-off construction protocol that enforces the
 chokepoint
@@ -40,7 +40,7 @@ outer-scope `shared` wires)
 
 ## What this SRD specifies
 
-The **construction protocol** for GK sub-contexts: how a
+The **construction protocol** for Polydat sub-contexts: how a
 child kernel comes into existence as a function of a parent
 kernel.
 
@@ -54,7 +54,7 @@ instead of at use time.
 
 The load-bearing rule:
 
-> **A GK sub-context instance can only come into existence
+> **A Polydat sub-context instance can only come into existence
 > through its parent. The parent gates construction by
 > handing out a builder, accepting a closed module-matter
 > artifact, and producing the child kernel as the single
@@ -110,7 +110,7 @@ motivated 13e:
    never sees the mismatch.
 
 3. **Multiple paths to inner-kernel creation.** The
-   activity layer calls `compile_gk_*` directly; the SRD-13d
+   activity layer calls `compile_polydat_*` directly; the SRD-13d
    Phase 9 op-template synthesisers build their own
    strings; polydat's comprehension synthesis path (the
    surface backing polydat spec §9.5's `scope_once`) does
@@ -127,7 +127,7 @@ The construction protocol below collapses all three into
 ## Vocabulary
 
 - **Parent context.** A `ScopeKernel` (in SRD-13e terms) or
-  `GkKernel` (today) that owns a compiled program and a
+  `PolydatKernel` (today) that owns a compiled program and a
   state. It has `outputs` (named values it exposes) and
   `imports` (named values it expects from its own parent,
   recursively).
@@ -213,7 +213,7 @@ impl<P> SubcontextBuilder<P> {
     pub fn context(&mut self, ctx: SourceContext) -> &mut Self;
 
     /// Register a wrapper / dispenser consumer that pulls
-    /// named GK values at runtime. Equivalent to the
+    /// named Polydat values at runtime. Equivalent to the
     /// pre-SRD-67 `ScopeFixture::register_consumer` —
     /// folded into the builder so init-time pull-plan
     /// accumulation goes through the same single surface
@@ -235,13 +235,13 @@ impl<P> SubcontextBuilder<P> {
 
 /// Body fragments — the two shapes a builder accepts.
 pub enum BodyFragment {
-    /// User-facing GK source (the content of `bindings:`
+    /// User-facing Polydat source (the content of `bindings:`
     /// / `result:` block strings). Parsed into
     /// `Vec<Statement>` at finalize.
     GkSource(String),
 
     /// Pre-parsed statements, for synthesisers that
-    /// construct GK programmatically (the activity-layer
+    /// construct Polydat programmatically (the activity-layer
     /// scope synthesisers under SRD-13d, polydat's
     /// comprehension synthesis path, etc.).
     Statements(Vec<crate::dsl::ast::Statement>),
@@ -253,7 +253,7 @@ Notes:
 - `Statement` is reused from `polydat/src/dsl/ast.rs`
   — no parallel enum. Synthesisers that already produce
   `Statement`s can submit them directly without round-
-  tripping through GK source strings.
+  tripping through Polydat source strings.
 - `Child<P>` is a phantom-marker type that brands the
   resulting `ScopeModule`'s identity as "a child of `P`."
   Spawn returns `ScopeKernel<Child<P>>`, distinct from any
@@ -357,7 +357,7 @@ impl<P> ScopeKernel<P> {
     /// the workload yaml's phase / op-template / scope
     /// label. It's the unit at which "spawn this once"
     /// applies. Per-fiber GkState cloning happens via the
-    /// existing GK API on the returned `ScopeKernel`, NOT
+    /// existing Polydat API on the returned `ScopeKernel`, NOT
     /// via re-spawn (see §"Compile once, spawn once,
     /// fiber-state separately").
     ///
@@ -400,11 +400,11 @@ API:
 |-----------------------|----------------------------------|------------------------------------|
 | Compile               | Once per logical scope           | `SubcontextBuilder::finalize()`    |
 | Spawn                 | Once per (parent, named-child)   | `ScopeKernel::spawn(name, module)` |
-| Per-fiber GkState     | Once per (fiber, kernel)         | Existing GK state-clone on the returned `ScopeKernel<M>` |
+| Per-fiber GkState     | Once per (fiber, kernel)         | Existing Polydat state-clone on the returned `ScopeKernel<M>` |
 
 Spawn is NOT called per fiber. The spawned `ScopeKernel<M>`
 carries an `Arc<GkProgram>` (the compiled program — shared
-freely across fibers) plus a "canonical" `GkState`; each
+freely across fibers) plus a "canonical" `PolydatState`; each
 fiber receives its own state clone via the existing
 per-fiber clone machinery, not via a fresh spawn.
 
@@ -610,7 +610,7 @@ slot ONLY if the artifact's body actually references it.
 The compiler walks the body's free identifiers; unused
 imports are dropped at spawn (not ignored — dropped, with
 no slot, no per-cycle write). This is the
-"closure bindings only where gk module matter detects
+"closure bindings only where Polydat module matter detects
 linkages" rule from SRD-66 §"Compilation lifecycle."
 
 ---
@@ -633,7 +633,7 @@ The `polydat` crate's public API exposes ONLY:
 
 It does **NOT** expose:
 
-- `GkKernel::new` / `GkKernel::compile` style direct
+- `PolydatKernel::new` / `PolydatKernel::compile` style direct
   constructors that bypass the builder.
 - `bind_outer_scope` as public surface (becomes
   `pub(crate)`, called only from `spawn`).
@@ -646,7 +646,7 @@ The crate's tests can use the internal surfaces; consumers
 (including `nbrs-activity`) can't. This is the "walled-off"
 property the user's guidelines call for.
 
-Direct compile-from-string (`compile_gk(src)`) stays as a
+Direct compile-from-string (`compile_polydat(src)`) stays as a
 test / scratch utility but produces a kernel with no
 parent — the result can't be used as a child. To use it
 as a parent, you call `subcontext_builder()` on it like
@@ -720,7 +720,7 @@ construction:
 |----------------------|-------------------------------------------------------|-------------------------------------------------------|
 | Parent active        | Implicit (no relationship)                            | Explicit — builder borrows `&parent`                  |
 | Module matter open   | While string is being built up                        | While builder exists                                  |
-| Module matter closed | When `compile_gk` returns                             | At `builder.finalize()`                               |
+| Module matter closed | When `compile_polydat` returns                             | At `builder.finalize()`                               |
 | Child constructed    | Some time after compile, after `bind_outer_scope`     | At `parent.spawn(artifact)`                           |
 | Cross-bindings live  | After `bind_outer_scope` (and later `set_input` calls)| At spawn return — single moment                       |
 | Child handles valid  | While the program object exists                       | While the parent and child kernels both exist (typed) |
@@ -813,7 +813,7 @@ can flow between them via the parent's exports.
   the parent's named-child registry, `ScopeKernel<P>
   ::subcontext_builder`, `ScopeKernel<P>::spawn`,
   `ScopeKernel<P>::release_child` in `polydat`.
-- The implementation reuses the existing `compile_gk`,
+- The implementation reuses the existing `compile_polydat`,
   `bind_outer_scope`, `from_program` machinery internally.
   No semantic change; the builder is a typed shim.
 - `bind_outer_scope` and friends stay public temporarily
@@ -838,11 +838,11 @@ suites.
 
 ### Phase 4 — Lock the door
 
-`bind_outer_scope`, `from_program`, direct `compile_gk`
+`bind_outer_scope`, `from_program`, direct `compile_polydat`
 become `pub(crate)`. The `nbrs-activity` crate compiles
 only against the new public surface.
 
-### Phase 5 — Wire SRD-66's gk-call form
+### Phase 5 — Wire SRD-66's polydat-call form
 
 With the protocol in place, the result-wire kernel-driven
 path is a small additional builder method —
@@ -893,8 +893,8 @@ Always-error, strict-independent:
   child is impossible by construction. If a workload needs
   a child to bind against a different parent, it spawns a
   fresh child from a fresh artifact under the new parent.
-- **Direct GK source compilation as a public surface.**
-  `compile_gk(src)` stays for tests, but produces a parent-
+- **Direct Polydat source compilation as a public surface.**
+  `compile_polydat(src)` stays for tests, but produces a parent-
   less kernel that can only be used as a parent (via
   `subcontext_builder()`), never a child. Workload
   consumers always go through the builder.
@@ -904,7 +904,7 @@ Always-error, strict-independent:
 ## Decisions made
 
 1. **Builder pattern stays.** The user's original
-   guidelines explicitly named "get a GK sub-context
+   guidelines explicitly named "get a Polydat sub-context
    builder from the parent" as step 1 — the fluent
    construction surface IS the design, not a wrapper. The
    builder lets imports / exports / body fragments be
@@ -928,7 +928,7 @@ Always-error, strict-independent:
    `GkSource(String)` for user-facing `bindings:` /
    `result:` content (parsed at finalize), and
    `Statements(Vec<Statement>)` for synthesisers that
-   produce GK programmatically (the existing comprehension
+   produce Polydat programmatically (the existing comprehension
    synthesis path, do-loop walker, op-template walker).
    Reuses polydat's public `Statement` type directly — no
    parallel enum.
@@ -964,8 +964,8 @@ Always-error, strict-independent:
 8. **Compile once, spawn once, fiber-state separate.**
    `ScopeModule<M>` is compiled exactly once per logical
    scope; `spawn` is exactly once per (parent, named-
-   child); per-fiber `GkState` cloning happens via the
-   existing GK API on the spawned kernel, NOT via re-
+   child); per-fiber `PolydatState` cloning happens via the
+   existing Polydat API on the spawned kernel, NOT via re-
    spawn. Conflating these would re-run cross-binding
    work per fiber — wasteful and risk-prone if the parent
    shifted between spawns. See §"Compile once, spawn
@@ -1003,8 +1003,8 @@ trail.)
    `ScopeModule<M>` is compiled once per logical scope.
    Spawn is the per-scope-instance step that produces a
    `ScopeKernel<M>`. Per-fiber concerns are orthogonal —
-   they're handled by GK's existing program / state
-   separation (`GkProgram` shared, `GkState` cloned per
+   they're handled by Polydat's existing program / state
+   separation (`PolydatProgram` shared, `PolydatState` cloned per
    fiber); spawn is NOT called per fiber. See §"Compile
    once, spawn once, fiber-state separately" for the
    load-bearing rule.
@@ -1018,7 +1018,7 @@ trail.)
 
 ## See also
 
-- SRD-11 — GK evaluation lifecycles (the
+- SRD-11 — Polydat evaluation lifecycles (the
   `compile-const` / `scope-init` / `dynamic` taxonomy).
 - SRD-13c — Scope model (today's `bind_outer_scope`
   surface).

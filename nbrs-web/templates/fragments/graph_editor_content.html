@@ -31,7 +31,7 @@
         letter-spacing: 1px;
         margin: 0;
     }
-    #gk-source-output {
+    #polydat-source-output {
         width: 100%;
         min-height: 120px;
         background: var(--bg);
@@ -146,7 +146,7 @@
     <div id="graph-sidebar">
         <div>
             <h3>GK Source</h3>
-            <textarea id="gk-source-output" readonly></textarea>
+            <textarea id="polydat-source-output" readonly></textarea>
         </div>
         <div id="compile-error"></div>
         <div>
@@ -185,7 +185,7 @@
 
 <script>
 (function() {
-    // Clear all built-in Litegraph node types — we only want GK nodes.
+    // Clear all built-in Litegraph node types — we only want Polydat nodes.
     LiteGraph.registered_node_types = {};
     LiteGraph.Nodes = {};
 
@@ -277,7 +277,7 @@
 
     helpTexts["coordinates"] = {
         description: "Source node providing cycle coordinates to the graph.",
-        help: "The entry point for all GK graphs. Outputs a u64 cycle value\n" +
+        help: "The entry point for all Polydat graphs. Outputs a u64 cycle value\n" +
               "that drives downstream nodes.\n\n" +
               "Widgets:\n" +
               "  cycle       — the specific cycle to evaluate (shown on ports)\n" +
@@ -306,7 +306,7 @@
         if (origCoordDraw) origCoordDraw.call(this, ctx);
     };
 
-    LiteGraph.registerNodeType("gk/coordinates", CoordinatesNode);
+    LiteGraph.registerNodeType("polydat/coordinates", CoordinatesNode);
 
     // Output node (sink)
     function OutputNode() {
@@ -336,7 +336,7 @@
 
     helpTexts["output"] = {
         description: "Sink node that names a graph output.",
-        help: "Marks a value as a named output of the GK kernel.\n\n" +
+        help: "Marks a value as a named output of the Polydat kernel.\n\n" +
               "Widgets:\n" +
               "  name  — the output variable name (used in op templates\n" +
               "          as {bind:name} and shown in sample output)\n\n" +
@@ -361,7 +361,7 @@
         if (origOutputDraw) origOutputDraw.call(this, ctx);
     };
 
-    LiteGraph.registerNodeType("gk/output", OutputNode);
+    LiteGraph.registerNodeType("polydat/output", OutputNode);
 
     // Plotter node — renders a Plotly chart inline on the canvas
     function PlotterNode() {
@@ -430,7 +430,7 @@
               "from the Coordinates node.",
     };
 
-    LiteGraph.registerNodeType("gk/plotter", PlotterNode);
+    LiteGraph.registerNodeType("polydat/plotter", PlotterNode);
 
     // ─── Register function nodes from palette ───────
 
@@ -555,7 +555,7 @@
 
 
     // Add default Coordinates node
-    const coordNode = LiteGraph.createNode("gk/coordinates");
+    const coordNode = LiteGraph.createNode("polydat/coordinates");
     coordNode.pos = [100, 200];
     graph.add(coordNode);
 
@@ -592,7 +592,7 @@
     // Extract coordinate values from the Coordinates node
     function getCoordNode() {
         for (const node of graph._nodes) {
-            if (node.type === "gk/coordinates" && node.widgets) return node;
+            if (node.type === "polydat/coordinates" && node.widgets) return node;
         }
         return null;
     }
@@ -609,15 +609,15 @@
             });
             const result = await resp.json();
 
-            document.getElementById("gk-source-output").value = result.gk_source || "";
+            document.getElementById("polydat-source-output").value = result.polydat_source || "";
             // Update interface panel: coordinates and outputs
-            updateInterfacePanel(result.gk_source || "");
+            updateInterfacePanel(result.polydat_source || "");
             document.getElementById("sample-output").textContent = result.sample || "No sample";
             document.getElementById("compile-error").textContent = result.error || "";
             updateNodeValues(result.node_values || {});
 
             // Auto-update plot whenever there are outputs to show
-            if (result.gk_source && !result.error) {
+            if (result.polydat_source && !result.error) {
                 invalidatePlotCache();
                 doPlot(true);
             }
@@ -643,32 +643,32 @@
 
     // ─── Interface panel ─────────────────────────────
 
-    function updateInterfacePanel(gkSource) {
+    function updateInterfacePanel(polydatSource) {
         // Extract coordinate names from "coordinates := (a, b, c)"
-        const coordMatch = gkSource.match(/coordinates\s*:=\s*\(([^)]+)\)/);
+        const coordMatch = polydatSource.match(/coordinates\s*:=\s*\(([^)]+)\)/);
         const coords = coordMatch
             ? coordMatch[1].split(',').map(s => s.trim()).filter(s => s)
             : ['cycle'];
 
         // Determine which bindings are terminal outputs:
         // A binding is terminal if its producing node has at least one
-        // unconnected output port, or if it feeds a gk/output sink node.
+        // unconnected output port, or if it feeds a polydat/output sink node.
         // Intermediate nodes whose outputs are all consumed are NOT terminal.
         const terminalNames = new Set();
 
-        // Collect all names from gk/output sink nodes
+        // Collect all names from polydat/output sink nodes
         for (const node of graph._nodes) {
-            if (node.type === "gk/output") {
+            if (node.type === "polydat/output") {
                 terminalNames.add(node.properties?.name || "result");
             }
         }
 
         // Find nodes with unconnected output ports (leaf nodes).
-        // Derive variable names the same way graph_to_gk does:
+        // Derive variable names the same way graph_to_polydat does:
         //   single output: output_name property or funcname_nodeid
         //   multi output: slotname_nodeid
         for (const node of graph._nodes) {
-            if (node.type === "gk/coordinates" || node.type === "gk/output" || node.type === "gk/plotter") continue;
+            if (node.type === "polydat/coordinates" || node.type === "polydat/output" || node.type === "polydat/plotter") continue;
             if (!node.outputs) continue;
             const funcName = node.type.split('/').pop();
             for (let i = 0; i < node.outputs.length; i++) {
@@ -687,9 +687,9 @@
             }
         }
 
-        // Parse all bindings from GK source, then filter to terminal only
+        // Parse all bindings from Polydat source, then filter to terminal only
         const allBindings = [];
-        for (const line of gkSource.split('\n')) {
+        for (const line of polydatSource.split('\n')) {
             const m = line.match(/^(\(?.+?\)?)\s*:=\s*/);
             if (m && !line.startsWith('coordinates')) {
                 const targets = m[1].replace(/[()]/g, '').split(',').map(s => s.trim());
@@ -909,7 +909,7 @@
         const colors = ["#4da6ff", "#4ecca3", "#e94560"];
 
         for (const node of graph._nodes) {
-            if (node.type !== "gk/plotter") continue;
+            if (node.type !== "polydat/plotter") continue;
 
             // Resolve which variable name is wired to each port (x, y, z)
             const portData = {}; // "x" → series array, "y" → series array, "z" → series array

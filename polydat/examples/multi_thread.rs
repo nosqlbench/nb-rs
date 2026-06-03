@@ -1,10 +1,10 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Multi-threaded usage: shared GkProgram, per-thread GkState.
+//! Multi-threaded usage: shared PolydatProgram, per-thread PolydatState.
 
 fn main() {
-    let kernel = polydat::dsl::compile_gk(r#"
+    let kernel = polydat::dsl::compile_polydat(r#"
         input cycle: u64
         user_id := mod(hash(cycle), 1000000)
     "#).expect("compile failed");

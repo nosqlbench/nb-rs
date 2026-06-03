@@ -4,7 +4,7 @@
 //! Benchmark DAG graph generators.
 //!
 //! 3x3 matrix: {10, 100, 1000} nodes × {low, medium, high} connectivity.
-//! Each generates a GK source string that compiles to a DAG of the
+//! Each generates a Polydat source string that compiles to a DAG of the
 //! specified size and connectivity pattern.
 //!
 //! Nodes use hash() and mod(x, K) — both single-wire-input nodes.
@@ -173,7 +173,7 @@ pub fn generate_all() {
 
     for (size, topo, genfn) in configs {
         let source = genfn(size);
-        let filename = format!("{topo}_{size}.gk");
+        let filename = format!("{topo}_{size}.polydat");
         let path = dir.join(&filename);
         std::fs::write(&path, &source).unwrap();
         let line_count = source.lines().count();
@@ -186,7 +186,7 @@ mod tests {
     use super::*;
 
     fn compile_and_verify(src: &str, expected_min_nodes: usize) {
-        let k = polydat::dsl::compile::compile_gk(src)
+        let k = polydat::dsl::compile::compile_polydat(src)
             .unwrap_or_else(|e| panic!("compile failed: {e}"));
         let p = k.program();
         assert!(p.output_names().contains(&"out"),
@@ -197,7 +197,7 @@ mod tests {
     }
 
     fn compile_and_eval(src: &str) {
-        let k = polydat::dsl::compile::compile_gk(src).unwrap();
+        let k = polydat::dsl::compile::compile_polydat(src).unwrap();
         let p = k.into_program();
         let mut state = p.create_state();
         // Evaluate at a few different inputs

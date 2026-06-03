@@ -1,7 +1,7 @@
-# GK Performance Tests
+# Polydat Performance Tests
 
-Canonical benchmark scenarios for the GK evaluation engine.
-Each `.gk` file is a self-describing test that specifies the
+Canonical benchmark scenarios for the Polydat evaluation engine.
+Each `.polydat` file is a self-describing test that specifies the
 graph under test, how its inputs are driven, and which outputs
 are pulled.
 
@@ -9,25 +9,25 @@ are pulled.
 
 ```bash
 # Full suite with provenance comparison
-nbrs bench gk "polydat/tests/perf_tests/*.gk" --compare iters=5
+nbrs bench Polydat "polydat/tests/perf_tests/*.polydat" --compare iters=5
 
 # Single scenario
-nbrs bench gk polydat/tests/perf_tests/a2_stable_params.gk --compare iters=7
+nbrs bench Polydat polydat/tests/perf_tests/a2_stable_params.gk --compare iters=7
 
 # Without provenance (raw engine baseline)
-nbrs bench gk polydat/tests/perf_tests/a1_single_input.gk --no-provenance iters=5
+nbrs bench Polydat polydat/tests/perf_tests/a1_single_input.gk --no-provenance iters=5
 
 # With flamegraph profiling
-nbrs bench gk polydat/tests/perf_tests/c5_multi_root.gk --profile
+nbrs bench Polydat polydat/tests/perf_tests/c5_multi_root.gk --profile
 ```
 
 ## File Format
 
-Each `.gk` file has three sections marked by `/// @` headers.
+Each `.polydat` file has three sections marked by `/// @` headers.
 
 ### @driver
 
-A GK program (commented with `///`) that generates input values
+A Polydat program (commented with `///`) that generates input values
 for the test graph. The bench harness strips the `///` prefix,
 prepends `input meta: u64`, compiles it, and evaluates it per
 cycle with `meta = cycle_number`.
@@ -62,13 +62,13 @@ The bench selects one output per cycle by weighted random
 /// cold_out: 5
 ```
 
-**@selector** is a GK program (not yet compiled by the harness —
+**@selector** is a Polydat program (not yet compiled by the harness —
 currently informational). Future: the harness will compile and
 run it to select outputs dynamically.
 
 ### @graph
 
-The actual GK program under test. Standard `.gk` syntax.
+The actual Polydat program under test. Standard `.polydat` syntax.
 Everything after `/// @graph` (or the first uncommented line)
 is the test graph.
 
@@ -139,12 +139,12 @@ per-cycle cost, and subtracts it from all results.
 
 ## Adding Scenarios
 
-1. Create a `.gk` file with `@driver`, `@pull_weights`, and
+1. Create a `.polydat` file with `@driver`, `@pull_weights`, and
    `@graph` sections
 2. The driver outputs must match the graph's input names in
    order
-3. Run with `nbrs bench gk <file> --compare` to verify
+3. Run with `nbrs bench Polydat <file> --compare` to verify
 4. Commit to this directory
 
-The driver is real GK — any expression the compiler supports
+The driver is real Polydat — any expression the compiler supports
 can be used to generate input patterns.

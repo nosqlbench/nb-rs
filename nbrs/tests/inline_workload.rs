@@ -5,7 +5,7 @@
 //!
 //! These tests invoke the `nbrs` binary with `op=` parameters and
 //! verify the output. They exercise the full pipeline: inline
-//! synthesis → GK compilation → op assembly → adapter execution.
+//! synthesis → Polydat compilation → op assembly → adapter execution.
 
 use std::process::Command;
 

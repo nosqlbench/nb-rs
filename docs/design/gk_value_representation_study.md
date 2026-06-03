@@ -1,11 +1,11 @@
-# GK Value Representation — Ecosystem Study
+# Polydat Value Representation — Ecosystem Study
 
 **Status:** Design study, 2026-05-14. Not a decision; an inventory and
 trade-off map for the project to evaluate.
 
 ## Question
 
-Today GK uses a custom `Value` enum with a parallel `PortType` enum
+Today Polydat uses a custom `Value` enum with a parallel `PortType` enum
 for static type metadata. The variants are emulative of common
 runtime types — `U64`, `F64`, `Str`, `Bool`, typed slices (`VecF32`,
 `VecI32`), opaque carriers (`Json`, `Ext`, `Handle`), `Bytes`, a
@@ -13,11 +13,11 @@ runtime types — `U64`, `F64`, `Str`, `Bool`, typed slices (`VecF32`,
 
 Would we be better served by adopting an established
 value/type-representation library? What does each candidate buy us,
-what does it cost, and what would folding GK's
+what does it cost, and what would folding Polydat's
 non-representational metadata (port types, lifecycle, wire cost)
 onto one of these look like?
 
-## Current GK shape (baseline)
+## Current Polydat shape (baseline)
 
 ```rust
 pub enum Value {                  // ~10 variants
@@ -60,7 +60,7 @@ library's metadata layer to hold them.
 
 Two architectural commitments frame the rest of this study:
 
-**Stance 1 — Co-opt, don't surrender.** GK's `Value` + `PortType`
+**Stance 1 — Co-opt, don't surrender.** Polydat's `Value` + `PortType`
 remain the authoritative type surface. Where an ecosystem library
 offers an obvious one-to-one representation that costs us nothing
 on performance / semantics / tooling, we use it (today: serde_json
@@ -70,7 +70,7 @@ surface; we absorb pieces of it via NewType-shaped variants when
 the expressivity buys real ground.
 
 **Stance 2 — Non-representational axes stay ours.** `Lifecycle`,
-`WireCost`, commutativity, variadicity — these are GK's own
+`WireCost`, commutativity, variadicity — these are Polydat's own
 metadata. They sit external to the representational type system
 and decorate ports in our layer. We don't fold them into an
 ecosystem library's metadata bag (e.g. Arrow's `Field` metadata
@@ -120,7 +120,7 @@ and that fraction needs design work no library short-cuts.
 
 ### 2. Tooling (specific operations, with honest scope)
 
-Concrete tools and what they'd do on GK output, if we projected
+Concrete tools and what they'd do on Polydat output, if we projected
 state to a standard format:
 
 - **jq / jaq over JSON snapshots.** Given a per-cycle JSON state
@@ -151,7 +151,7 @@ state to a standard format:
   needing the workload yaml + nbrs binary at the other end.
 
 What this DOESN'T add: nothing about hot-path execution. None of
-these tools operate on live in-flight GK state; they all consume
+these tools operate on live in-flight Polydat state; they all consume
 exports at the boundary.
 
 ### 3. Schema as artifact — what's actually new
@@ -203,7 +203,7 @@ gap that actually matters for nb-rs workloads:
 Of those, `FixedSizeList(Float32, 768)` is genuinely interesting
 for the vector workloads we care about — it carries embedding
 dimension as static metadata. `Decimal128` and `Timestamp(unit)`
-would let CQL adapter columns flow through GK without lossy
+would let CQL adapter columns flow through Polydat without lossy
 casts.
 
 **Performance trade-off of going wider.** Three real costs to
@@ -306,7 +306,7 @@ pub enum Value {
   extension tag.
 - **Tooling:** broadest. jaq, jql, gron, JSON Schema (schemars),
   every HTTP/web framework, web inspectors.
-- **Hot-path cost:** ~equal to GK Value for scalars (enum dispatch);
+- **Hot-path cost:** ~equal to Polydat Value for scalars (enum dispatch);
   Object/Array allocate via Vec + HashMap, so structured values
   cost more.
 - **Typed-slice story:** none. `Vec<f32>` would become
@@ -330,11 +330,11 @@ pub enum Value {
 }
 ```
 
-- **Vocab:** close to GK's shape. Typed floats. Native binary.
+- **Vocab:** close to Polydat's shape. Typed floats. Native binary.
   Tagged extension types via `(tag: i8, payload: Vec<u8>)`.
 - **Tooling:** smaller than JSON. `msgpack-cli`, `msgpack-tools`,
   some IoT analyzers. Less web/dev-tool support.
-- **Hot-path cost:** comparable to GK Value. Integer is tagged
+- **Hot-path cost:** comparable to Polydat Value. Integer is tagged
   internally.
 - **Typed-slice story:** would have to encode as `Ext` (with our own
   tag), then zero-copy reads need custom paths — same as today.
@@ -359,7 +359,7 @@ pub enum Value {
 ```
 
 - **Vocab:** middle ground. `i128` ambitiously holds any integer
-  size; floats are unified to `f64` (slight regression from GK's
+  size; floats are unified to `f64` (slight regression from Polydat's
   F32/F64 separation). Bytes native. Tagged values for extensions.
 - **Tooling:** standards-blessed (RFC 8949, IETF). Growing — used
   in COSE, WebAuthn, IoT. `cbor-diag`, `cbor.me`. Less dev-tool
@@ -468,7 +468,7 @@ pub enum DataType {
 
 ## Dimensions of fit
 
-| Dimension | GK today | serde_json | rmpv (msgpack) | ciborium (cbor) | bson | Arrow |
+| Dimension | Polydat today | serde_json | rmpv (msgpack) | ciborium (cbor) | bson | Arrow |
 |---|---|---|---|---|---|---|
 | Hot-path scalar cost | ★★★ | ★★★ | ★★★ | ★★★ | ★★ | ★ |
 | Typed-slice zero-copy | ★★★ | ✗ | tag | tag | tag | ★★★ |
@@ -495,7 +495,7 @@ Different costs, both functional.
 
 ## Approach archetypes
 
-### A — Keep GK Value; layer in serde
+### A — Keep Polydat Value; layer in serde
 
 Add `Serialize` / `Deserialize` for `Value` and `PortType` via
 serde, with a conventional JSON projection (e.g. `{type: "VecF32",
@@ -557,7 +557,7 @@ genuine use for, and stop. Arrow stays at the export boundary.
 
 ### C — Adopt CBOR/MessagePack as the snapshot/replay format
 
-Keep GK Value internal. For SNAPSHOTS (checkpoint state, replay
+Keep Polydat Value internal. For SNAPSHOTS (checkpoint state, replay
 logs, metric persistence), serialize Value via ciborium (CBOR) or
 rmpv (MessagePack). Use tagged extension types for VecF32 / VecI32
 / Handle / Ext (with documented private-use tag numbers). Cost:
@@ -575,7 +575,7 @@ integration, zero-copy across the data stack, schemas everywhere.
 Risks: per-cell scalar access regression; downstream node API
 becomes columnar-aware; major refactor.
 
-### E — Hybrid: GK Value + Arrow interop trait
+### E — Hybrid: Polydat Value + Arrow interop trait
 
 Keep current `Value` for hot path. Add `From<Value> for arrow::Scalar`
 and `From<Value> for arrow::ArrayRef` (for the columnar shapes —
@@ -628,7 +628,7 @@ gain; the surface we control doesn't grow under us; we serialize
 out to Arrow's vocabulary at the boundary (archetype E).
 
 Note that we deliberately do NOT fold our `Lifecycle` / `WireCost`
-into the absorbed types' metadata bag. Stance 2: those are GK's
+into the absorbed types' metadata bag. Stance 2: those are Polydat's
 own axes; they stay external as the logical layer that decorates
 ports, not as opaque entries in someone else's metadata HashMap.
 

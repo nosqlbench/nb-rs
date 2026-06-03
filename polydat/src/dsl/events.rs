@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! GK compiler diagnostic event stream.
+//! Polydat compiler diagnostic event stream.
 //!
 //! The compiler emits typed events for each step: parsing, binding
 //! resolution, module inlining, type adaptation, constant folding,
@@ -26,7 +26,7 @@ pub enum EventLevel {
     Warning,
 }
 
-/// A diagnostic event from the GK compilation pipeline.
+/// A diagnostic event from the Polydat compilation pipeline.
 #[derive(Debug, Clone)]
 pub enum CompileEvent {
     /// DSL source parsed into AST.
@@ -35,8 +35,8 @@ pub enum CompileEvent {
     BindingResolved { name: String, node_type: String },
     /// A module was loaded and inlined.
     ModuleInlined { name: String, nodes_added: usize },
-    /// A legacy binding chain was translated to GK source.
-    LegacyTranslated { name: String, gk_expr: String },
+    /// A legacy binding chain was translated to Polydat source.
+    LegacyTranslated { name: String, polydat_expr: String },
     /// Type adapter inserted between mismatched ports.
     TypeAdapterInserted { from_node: String, to_node: String, adapter: String },
     /// Init-time constant folded (SRD 44).
@@ -165,8 +165,8 @@ impl CompileEventLog {
                 format!("resolved '{name}' → {node_type}"),
             CompileEvent::ModuleInlined { name, nodes_added } =>
                 format!("module '{name}' inlined ({nodes_added} nodes)"),
-            CompileEvent::LegacyTranslated { name, gk_expr } =>
-                format!("legacy '{name}' → {gk_expr}"),
+            CompileEvent::LegacyTranslated { name, polydat_expr } =>
+                format!("legacy '{name}' → {polydat_expr}"),
             CompileEvent::TypeAdapterInserted { from_node, to_node, adapter } =>
                 format!("type adapter {adapter}: {from_node} → {to_node}"),
             CompileEvent::ConstantFolded { node, value } =>
@@ -196,7 +196,7 @@ impl CompileEventLog {
             CompileEvent::AssertionSkipped { from_node, to_node, reason } =>
                 format!("assertion skipped: {from_node} → {to_node} ({reason})"),
             };
-            format!("gk[{tag}]: {msg}")
+            format!("polydat[{tag}]: {msg}")
         }).collect::<Vec<_>>().join("\n")
     }
 }

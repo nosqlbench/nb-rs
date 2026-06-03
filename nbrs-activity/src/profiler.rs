@@ -7,7 +7,7 @@
 //!
 //! - **`profiler=flamegraph`** — Rust-native sampling via `pprof` crate.
 //!   Fast, no external tools needed, but only captures Rust frames.
-//!   Good for profiling GK resolution, scope composition, and other
+//!   Good for profiling Polydat resolution, scope composition, and other
 //!   pure-Rust hot paths.
 //!
 //! - **`profiler=perf`** — Full-system profiling via Linux `perf record`.

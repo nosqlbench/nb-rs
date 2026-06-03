@@ -1710,7 +1710,7 @@ mod tests {
         fn map_op<'a>(
             &'a self,
             _template: &'a nbrs_workload::model::ParsedOp,
-            _parent: std::sync::Arc<polydat::kernel::GkKernel>,
+            _parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn crate::adapter::OpDispenser>, String>> + Send + 'a>>
         { Box::pin(async move { Err("dummy".into()) }) }
     }

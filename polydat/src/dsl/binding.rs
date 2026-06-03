@@ -1,7 +1,7 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-statement compilation for the GK DSL compiler.
+//! Per-statement compilation for the Polydat DSL compiler.
 //!
 //! `compile_binding` maps each AST statement to assembler operations:
 //! function calls become nodes, literals become constant nodes, and
@@ -14,7 +14,7 @@
 //! write `pow(x, 3.0)` or `f64_mul(x, 0.1)` directly without first
 //! binding the constant to a name.
 
-use crate::compile::assembly::{GkAssembler, WireRef};
+use crate::compile::assembly::{PolydatAssembler, WireRef};
 use crate::dsl::ast::*;
 use crate::dsl::factory::{build_node, ConstArg};
 use crate::dsl::registry;
@@ -108,7 +108,7 @@ fn flatten_str_add(expr: &Expr, out: &mut Vec<Expr>) {
 /// For unknown cases, defaults to `PortType::U64`.
 fn infer_expr_type(
     expr: &Expr,
-    asm: &GkAssembler,
+    asm: &PolydatAssembler,
     input_names: &[String],
 ) -> PortType {
     match expr {
@@ -185,7 +185,7 @@ impl Compiler {
     /// `Identity` node per target that fans out each output port.
     pub(super) fn compile_binding(
         &mut self,
-        asm: &mut GkAssembler,
+        asm: &mut PolydatAssembler,
         targets: &[String],
         value: &Expr,
     ) -> Result<(), String> {
@@ -202,7 +202,7 @@ impl Compiler {
 
     fn compile_binding_inner(
         &mut self,
-        asm: &mut GkAssembler,
+        asm: &mut PolydatAssembler,
         targets: &[String],
         value: &Expr,
     ) -> Result<(), String> {
@@ -835,7 +835,7 @@ impl Compiler {
     /// are compiled into anonymous intermediate nodes.
     fn compile_binop_operand(
         &mut self,
-        asm: &mut GkAssembler,
+        asm: &mut PolydatAssembler,
         expr: &Expr,
     ) -> Result<WireRef, String> {
         match expr {

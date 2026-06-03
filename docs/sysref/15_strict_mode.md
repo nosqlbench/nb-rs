@@ -10,7 +10,7 @@ implicitly must be stated explicitly in strict mode.
 ## Scope
 
 Strict mode applies to:
-- GK source compilation (`.gk` files and inline `bindings:`)
+- Polydat source compilation (`.polydat` files and inline `bindings:`)
 - Op template bind point resolution (future)
 
 It does NOT apply to:
@@ -27,7 +27,7 @@ Strict mode is intended for reusable library modules and
 production workloads. Non-strict mode is the default for
 interactive development and ad-hoc testing.
 
-Enable via: `compile_gk_strict(source, path, true)` or
+Enable via: `compile_polydat_strict(source, path, true)` or
 `--strict` on the CLI.
 
 ---
@@ -52,7 +52,7 @@ A clean non-strict compile (no warnings) will also pass strict.
 
 Config wire inputs (ports marked `WireCost::Config`) must be
 connected to effectively-const sources in strict mode (per
-[SRD 11 §"Effectively-Const Nodes"](11_gk_evaluation.md): a
+[SRD 11 §"Effectively-Const Nodes"](11_polydat_evaluation.md): a
 compile-const, scope-init, or iteration-extern producer).
 
 | Mode | Config wire ← dynamic source |
@@ -196,7 +196,7 @@ Two things enable this split:
      `assert_u64_nonzero(x)` which panics on zero and otherwise
      passes through.
 
-Both assertion families are ordinary GK nodes — they participate
+Both assertion families are ordinary Polydat nodes — they participate
 in the same graph, the same JIT lowering, the same diagnostics.
 They're distinguished only by being *auto-wired* by the compiler
 when strict wire mode is enabled.
@@ -303,7 +303,7 @@ constructor fallible.
 ## Type and Value Assertion Nodes
 
 Assertion nodes are pass-through guards the compiler can splice
-between a source and a sink. Each is an ordinary GK node. Naming
+between a source and a sink. Each is an ordinary Polydat node. Naming
 convention: `assert_<type>[_<constraint>]`.
 
 ### Type assertions (one per `PortType`)
@@ -348,11 +348,11 @@ whether an assertion is needed.
 
 ## Module-Level Pragmas
 
-A module author can opt the whole `.gk` file into compile-time
+A module author can opt the whole `.polydat` file into compile-time
 graph transforms with first-class `pragma` directives at the head
 of the source:
 
-```gk
+```polydat
 pragma strict_values
 pragma strict_types
 
@@ -367,7 +367,7 @@ id := mod(hash(cycle), 1000)
 
 ### Syntax
 
-`pragma` is a reserved keyword in the GK grammar. The directive
+`pragma` is a reserved keyword in the Polydat grammar. The directive
 form is:
 
 ```
@@ -398,7 +398,7 @@ pragmas emit `CompileEvent::PragmaAcknowledged` (advisory) so
 
 ### Pragmas vs. CLI strict mode
 
-The `--strict` CLI flag (and `compile_gk_strict(...)`) and the
+The `--strict` CLI flag (and `compile_polydat_strict(...)`) and the
 existing checks above (config wire, input declaration, named
 arguments…) are session-level: every module compiled in that
 session sees them. Pragmas are module-level: a library module
@@ -415,14 +415,14 @@ applies.
 
 ### What a "scope" is
 
-Pragmas attach to a GK **scope composition** boundary, not to
+Pragmas attach to a Polydat **scope composition** boundary, not to
 inline boundaries. Module inlining (SRD 13b §"Inline") flattens
 the inner module's pragmas into the host's `PragmaSet` — they are
 additive contributions to the same scope, not a child scope.
 Scope composition (SRD 13b §"Scope composition") creates a real
 parent/child relationship: workload → phase → `for_each`
 iteration. Each compose step is its own [`PragmaSet`], its own
-`GkProgram`, its own state.
+`PolydatProgram`, its own state.
 
 [`PragmaSet`]: ../../polydat/src/dsl/pragmas.rs
 
@@ -610,7 +610,7 @@ assertion variant.
 ## Unqualified Bind Points (design target)
 
 In op templates, `{name}` tries multiple resolution sources in
-order: GK binding → capture context → graph input.
+order: Polydat binding → capture context → graph input.
 
 | Mode | Unqualified `{name}` in op field |
 |------|--------------------------------|
@@ -685,7 +685,7 @@ the meaning of each parameter.
 | Undeclared string refs | Design target | Requires string template resolution changes |
 | Named function arguments | Implemented | Already enforced in module calls |
 | Const constraint metadata | Implemented | `ConstConstraint` field on `ParamSpec`; factory walks each owning `FuncSig.params` and rejects with `bad constant <func>: <reason>`. Cross-param relational rules use the per-module `validate_node` hook on `register_nodes!`. |
-| Module-level pragmas (grammar) | Implemented | `pragma <name>` is a first-class GK statement (`Statement::Pragma`). Replaces the earlier `// @pragma:` comment-scrape form. |
+| Module-level pragmas (grammar) | Implemented | `pragma <name>` is a first-class Polydat statement (`Statement::Pragma`). Replaces the earlier `// @pragma:` comment-scrape form. |
 | Pragma `PragmaAcknowledged` / `UnknownPragma` events | Implemented | Recognised pragmas emit advisory events; unknown pragmas emit warnings, never blocking compile. |
 | Type assertion nodes | Implemented | `AssertType` (one per `PortType`) in `nodes::assertions`. Pass-through with runtime variant check; panic on mismatch. |
 | Value assertion nodes | Implemented | `AssertValue` parameterised by `ConstConstraint`. Reuses the const-constraint vocabulary on a `Port`'s wire-input contract. |
