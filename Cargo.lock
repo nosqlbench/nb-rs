@@ -3515,6 +3515,7 @@ dependencies = [
  "layout-rs",
  "md-5",
  "petgraph",
+ "rayon",
  "regex",
  "serde",
  "serde_json",

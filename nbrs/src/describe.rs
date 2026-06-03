@@ -370,11 +370,28 @@ fn probe_node_meta(
     func_name: &str,
     params: &[polydat::dsl::registry::ParamSpec],
 ) -> Option<polydat::ast::NodeMeta> {
+    use std::collections::BTreeSet;
     let parts: Vec<String> = params.iter().map(|p| p.example.to_string()).collect();
+    // Collect every wire-slot example so the synthesized source
+    // can declare them as inputs. Without this, functions whose
+    // wire example isn't `cycle` (e.g. `limit(input: wire,
+    // example="row")`) fail the probe with "unknown identifier
+    // `row`" and the verbose surface falls back to "wire"/"?"
+    // placeholders.
+    let mut wire_examples: BTreeSet<&str> = BTreeSet::new();
+    wire_examples.insert("cycle");
+    for p in params {
+        if p.slot_type.is_wire() {
+            wire_examples.insert(p.example);
+        }
+    }
+    let input_decls: String = wire_examples.iter()
+        .map(|name| format!("input {name}: u64\n"))
+        .collect();
     let source = if parts.is_empty() {
-        format!("input cycle: u64\nout := {func_name}()")
+        format!("{input_decls}out := {func_name}()")
     } else {
-        format!("input cycle: u64\nout := {func_name}({})", parts.join(", "))
+        format!("{input_decls}out := {func_name}({})", parts.join(", "))
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || polydat::dsl::compile_polydat(&source),

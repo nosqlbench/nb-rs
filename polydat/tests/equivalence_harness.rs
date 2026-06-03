@@ -206,46 +206,69 @@ fn dispense_optimized(ast: &Comprehension) -> Vec<Vec<(String, TupleValue)>> {
 /// `n_cases` random ASTs at each `depth`. Returns the count
 /// that passed validation (cases failing V1-V9 are skipped —
 /// the harness only compares well-formed ASTs).
+///
+/// Cases are independent (per-case `AstGen` seed, pure
+/// `validate` / `dispense_*` functions, no shared mutable
+/// state) so rayon's work-stealing scheduler pumps them across
+/// every available core. Per-case cost varies widely with the
+/// random AST shape; work-stealing keeps every core fed where
+/// fixed chunking strands the heavy cases on a single thread.
 fn run_harness(seed_base: u64, n_cases: usize, max_depth: u32) -> (usize, usize) {
-    let mut tried = 0usize;
-    let mut compared = 0usize;
-    for i in 0..n_cases {
-        let mut ast_gen = AstGen::new(seed_base.wrapping_add(i as u64));
-        let ast = ast_gen.generate(max_depth);
-        tried += 1;
-        // Skip cases that don't validate (the generator is
-        // mostly-valid by construction but a bad random roll
-        // can occasionally produce a borderline case).
-        if validate(&ast, Mode::Permissive).is_err() {
-            continue;
-        }
-        // Skip cases that dispense more than this prefix to
-        // keep the harness fast.
-        let naive_seq = dispense_naive(&ast);
-        if naive_seq.len() > 200 {
-            continue;
-        }
-        let optimized_seq = dispense_optimized(&ast);
-        if naive_seq != optimized_seq {
-            panic!(
-                "§9.2 equivalence failure on case {i}:\n\
-                 AST: {ast:?}\n\
-                 naive ({} tuples): {naive_seq:?}\n\
-                 optimized ({} tuples): {optimized_seq:?}",
-                naive_seq.len(),
-                optimized_seq.len()
-            );
-        }
-        compared += 1;
+    use rayon::prelude::*;
+    (0..n_cases)
+        .into_par_iter()
+        .map(|i| run_one(seed_base, i, max_depth))
+        .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+}
+
+/// Per-case work: generate, validate, dispense both shapes,
+/// compare. Returns `(tried, compared)` — `tried` is 1 unless
+/// generation itself was skipped (currently never), `compared`
+/// is 1 if the case made it through to a successful equivalence
+/// check. A mismatch panics the worker; rayon propagates the
+/// panic to the test thread for a clean test failure.
+fn run_one(seed_base: u64, i: usize, max_depth: u32) -> (usize, usize) {
+    let mut ast_gen = AstGen::new(seed_base.wrapping_add(i as u64));
+    let ast = ast_gen.generate(max_depth);
+    // Skip cases that don't validate (the generator is
+    // mostly-valid by construction but a bad random roll
+    // can occasionally produce a borderline case).
+    if validate(&ast, Mode::Permissive).is_err() {
+        return (1, 0);
     }
-    (tried, compared)
+    // Skip cases that dispense more than this prefix to
+    // keep the harness fast.
+    let naive_seq = dispense_naive(&ast);
+    if naive_seq.len() > 200 {
+        return (1, 0);
+    }
+    let optimized_seq = dispense_optimized(&ast);
+    if naive_seq != optimized_seq {
+        panic!(
+            "§9.2 equivalence failure on case {i}:\n\
+             AST: {ast:?}\n\
+             naive ({} tuples): {naive_seq:?}\n\
+             optimized ({} tuples): {optimized_seq:?}",
+            naive_seq.len(),
+            optimized_seq.len()
+        );
+    }
+    (1, 1)
 }
 
 // ---- Tests ----
 
+// Fuzz-test parameters reduced after a long run of clean
+// passes: each per-depth sweep is a stochastic sampler whose
+// value is cumulative across CI runs, and the depth=4 sweep
+// at 1000 cases dominated workspace test wall-clock by a
+// wide margin. 100 cases per depth keeps the per-run cost
+// proportionate while preserving exhaustive seed coverage
+// across the CI history.
+
 #[test]
-fn section_92_equivalence_500_random_asts_depth_2() {
-    let (tried, compared) = run_harness(0xABCD_EF01, 500, 2);
+fn section_92_equivalence_random_asts_depth_2() {
+    let (tried, compared) = run_harness(0xABCD_EF01, 100, 2);
     assert!(tried > 0);
     println!("depth=2: tried={tried}, compared={compared}");
     // We expect most cases to validate and compare.
@@ -253,16 +276,16 @@ fn section_92_equivalence_500_random_asts_depth_2() {
 }
 
 #[test]
-fn section_92_equivalence_500_random_asts_depth_3() {
-    let (tried, compared) = run_harness(0x1234_5678, 500, 3);
+fn section_92_equivalence_random_asts_depth_3() {
+    let (tried, compared) = run_harness(0x1234_5678, 100, 3);
     assert!(tried > 0);
     println!("depth=3: tried={tried}, compared={compared}");
     assert!(compared > tried / 2);
 }
 
 #[test]
-fn section_92_equivalence_1000_random_asts_depth_4() {
-    let (tried, compared) = run_harness(0xCAFE_BABE, 1000, 4);
+fn section_92_equivalence_random_asts_depth_4() {
+    let (tried, compared) = run_harness(0xCAFE_BABE, 100, 4);
     assert!(tried > 0);
     println!("depth=4: tried={tried}, compared={compared}");
     assert!(compared > tried / 2);

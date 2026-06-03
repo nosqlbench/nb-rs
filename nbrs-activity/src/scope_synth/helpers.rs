@@ -129,18 +129,13 @@ pub fn value_to_param_string(v: &Value) -> Option<String> {
     }
 }
 
-/// Map a Polydat [`PortType`] to the extern declaration's type name
-/// (`u64`, `f64`, `bool`, `String`, `Ext`). Other variants widen
-/// to `String` — the Polydat extern grammar accepts only those names.
+/// Map a Polydat [`PortType`] to the extern declaration's type
+/// keyword. Thin wrapper over [`PortType::to_keyword`] — the
+/// canonical str↔PortType table on the enum itself — so every
+/// synthesized `extern <name>: <keyword>` round-trips byte-cleanly
+/// back through the DSL parser.
 pub fn port_type_to_extern_name(t: PortType) -> &'static str {
-    match t {
-        PortType::U64 => "u64",
-        PortType::F64 => "f64",
-        PortType::Str => "String",
-        PortType::Bool => "bool",
-        PortType::Ext => "Ext",
-        _ => "String",
-    }
+    t.to_keyword()
 }
 
 /// Collect every leaf `{name}` placeholder from a list of clause

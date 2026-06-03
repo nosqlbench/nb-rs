@@ -1688,17 +1688,13 @@ impl Compiler {
                     // (effectively-const, populated by
                     // `materialize_wiring_from_outer` from a parent for_each /
                     // for_combinations clause).
-                    let port_type = match port.typ.as_str() {
-                        "u64" => crate::ast::PortType::U64,
-                        "f64" => crate::ast::PortType::F64,
-                        "bool" => crate::ast::PortType::Bool,
-                        "json" | "Json" => crate::ast::PortType::Json,
-                        // SRD 71: adapter-contributed reflected types
-                        // (Partition, PartitionSpec, PartitionList,
-                        // and any future ReflectedValue impl).
-                        "Ext" | "ext" => crate::ast::PortType::Ext,
-                        _ => crate::ast::PortType::Str,
-                    };
+                    let port_type = crate::ast::PortType::from_keyword(port.typ.as_str())
+                        .ok_or_else(|| format!(
+                            "extern '{}': unknown polydat type keyword '{}'. \
+                             Canonical keywords are emitted by PortType::to_keyword \
+                             (one per PortType variant).",
+                            port.name, port.typ,
+                        ))?;
                     let (default_value, kind) = match &port.default {
                         Some(expr) => {
                             let v = evaluate_default_expr(expr, port_type)
@@ -2017,17 +2013,13 @@ impl Compiler {
                     // port (dynamic); no default marks it as an
                     // iteration extern (effectively-const at
                     // scope-init time).
-                    let port_type = match port.typ.as_str() {
-                        "u64" => crate::ast::PortType::U64,
-                        "f64" => crate::ast::PortType::F64,
-                        "bool" => crate::ast::PortType::Bool,
-                        "json" | "Json" => crate::ast::PortType::Json,
-                        // SRD 71: adapter-contributed reflected types
-                        // (Partition, PartitionSpec, PartitionList,
-                        // and any future ReflectedValue impl).
-                        "Ext" | "ext" => crate::ast::PortType::Ext,
-                        _ => crate::ast::PortType::Str,
-                    };
+                    let port_type = crate::ast::PortType::from_keyword(port.typ.as_str())
+                        .ok_or_else(|| format!(
+                            "extern '{}': unknown polydat type keyword '{}'. \
+                             Canonical keywords are emitted by PortType::to_keyword \
+                             (one per PortType variant).",
+                            port.name, port.typ,
+                        ))?;
                     let (default_value, kind) = match &port.default {
                         Some(expr) => {
                             let v = evaluate_default_expr(expr, port_type)

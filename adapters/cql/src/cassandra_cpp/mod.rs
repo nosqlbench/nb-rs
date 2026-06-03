@@ -949,7 +949,7 @@ impl DriverAdapter for CqlAdapter {
                             } else {
                                 None
                             };
-                            let (cluster_lvalue, fallback) =
+                            let (cluster_lvalue, policy) =
                                 binder_meta::cass_to_polydat(vt, class_name.as_deref());
                             let (lvalue_type, allow_fusion) =
                                 match lvalue_specs.get(i).and_then(|s| s.as_ref()) {
@@ -986,7 +986,8 @@ impl DriverAdapter for CqlAdapter {
                                                      wire `{name}`: unknown polydat type name \
                                                      `{type_name}` in lvalue spec `:{type_name}`. \
                                                      Accepted names: u64, f64, u32, i32, i64, f32, \
-                                                     bool, str, bytes, json, vec_f32, vec_i32.",
+                                                     bool, str, bytes, json, vec_f32, vec_i32, \
+                                                     vec_f64, vec_i64, vec_f16, vec_i16.",
                                                     op = template.name,
                                                 ));
                                                 (cluster_lvalue, false)
@@ -994,7 +995,16 @@ impl DriverAdapter for CqlAdapter {
                                         }
                                     }
                                     None => {
-                                        if let Some(cql_label) = fallback {
+                                        // Honest verifier-policy split from
+                                        // `cass_to_polydat`: Strict slots reject
+                                        // rvalue mismatches; TextNatural slots
+                                        // (CQL TEXT/VARCHAR/ASCII) permit text
+                                        // coercion as the protocol's intended
+                                        // carrier; Fallback slots permit fusion
+                                        // and emit a WARN naming the unmapped
+                                        // CQL type so operators can promote it
+                                        // to a precise arm.
+                                        if let Some(cql_label) = policy.fallback_label() {
                                             let class_hint = match class_name.as_deref() {
                                                 Some(cn) if !cn.is_empty() =>
                                                     format!(" (class_name=`{cn}`)"),
@@ -1017,12 +1027,7 @@ impl DriverAdapter for CqlAdapter {
                                                 op = template.name,
                                             );
                                         }
-                                        // Non-strict default: auto-permit fusion for
-                                        // text-natural lvalues. See the scylla
-                                        // sibling for the full rationale.
-                                        let allow_fusion = matches!(
-                                            cluster_lvalue, polydat::ast::PortType::Str);
-                                        (cluster_lvalue, allow_fusion)
+                                        (cluster_lvalue, policy.allow_fusion())
                                     }
                                 };
                             polydat::binder::BinderSlot {

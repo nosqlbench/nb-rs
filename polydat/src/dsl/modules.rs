@@ -330,7 +330,13 @@ impl Compiler {
             // from the module's prefixed output. This makes `target`
             // available as a node name for downstream wiring.
             // Use PortPassthrough which accepts any port type (f64, u64, Str).
-            let out_type = self.output_type_of(asm, &prefixed);
+            let out_type = self.output_type_of(asm, &prefixed)
+                .ok_or_else(|| format!(
+                    "module '{func_name}': declared output '{output_name}' \
+                     resolves to internal node '{prefixed}' but that node \
+                     is not present in the assembler — module body did not \
+                     produce the declared output."
+                ))?;
             asm.add_node(
                 target,
                 Box::new(crate::library::identity::PortPassthrough::new(target, out_type)),
@@ -343,7 +349,10 @@ impl Compiler {
     }
 
     /// Query the output type of a named node in the assembler.
-    fn output_type_of(&self, asm: &PolydatAssembler, name: &str) -> crate::ast::PortType {
+    /// Returns `None` when the named node is absent or has no
+    /// output ports; the caller surfaces the absence as a loud
+    /// diagnostic.
+    fn output_type_of(&self, asm: &PolydatAssembler, name: &str) -> Option<crate::ast::PortType> {
         asm.node_output_type(name)
     }
 

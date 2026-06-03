@@ -811,40 +811,88 @@ impl fmt::Display for PortType {
 }
 
 impl PortType {
-    /// Parse a workload-facing type name (lower-snake-case) into
-    /// a [`PortType`]. Used by the op-template lvalue-spec
-    /// surface (`{name:<type>}` in bind-point templates) — the
-    /// adapter reads the spec and asks polydat to map the name
-    /// to a typed enum variant.
+    /// The canonical lowercase keyword for this `PortType`.
     ///
-    /// Accepts the user-facing variants only (`u64`, `f64`,
-    /// `u32`, `i32`, `i64`, `f32`, `bool`, `str`, `bytes`,
-    /// `json`, `vec_f32`, `vec_i32`, `vec_f64`, `vec_i64`,
-    /// `vec_f16`, `vec_i16`). `handle`, `ext`, and `none` are
-    /// intentionally rejected — they're internal-only types that
-    /// a workload author should never assert.
+    /// This is the single source of truth for the str↔PortType
+    /// mapping used by every synthesizer and parser in the
+    /// workspace — synthesized polydat source (`extern <name>:
+    /// <keyword>`), the workload-author `{name:<keyword>}` lvalue
+    /// spec, and reverse parsing via [`Self::from_keyword`].
+    /// Inverse of [`Self::from_keyword`].
     ///
-    /// Returns `None` for any unknown name; the caller surfaces
-    /// the unknown spec as a workload-shape diagnostic.
-    pub fn from_workload_name(name: &str) -> Option<Self> {
+    /// Exhaustive over the enum — adding a new `PortType` variant
+    /// is a compile error here, forcing the addition of its
+    /// canonical keyword and the round-trip closure to update.
+    pub fn to_keyword(&self) -> &'static str {
+        match self {
+            Self::U64    => "u64",
+            Self::F64    => "f64",
+            Self::U32    => "u32",
+            Self::I32    => "i32",
+            Self::I64    => "i64",
+            Self::F32    => "f32",
+            Self::Bool   => "bool",
+            Self::Str    => "str",
+            Self::Bytes  => "bytes",
+            Self::Json   => "json",
+            Self::Ext    => "ext",
+            Self::Handle => "handle",
+            Self::VecF32 => "vec_f32",
+            Self::VecI32 => "vec_i32",
+            Self::VecF64 => "vec_f64",
+            Self::VecI64 => "vec_i64",
+            Self::VecF16 => "vec_f16",
+            Self::VecI16 => "vec_i16",
+        }
+    }
+
+    /// Parse a polydat type keyword into a `PortType`.
+    ///
+    /// Inverse of [`Self::to_keyword`]: accepts every keyword
+    /// that `to_keyword` emits, plus a small set of legacy aliases
+    /// (`"String"`, `"Json"`, `"Ext"`) that survive in older
+    /// hand-written workload source. Returns `None` for any
+    /// unrecognized keyword so callers can surface a loud
+    /// diagnostic rather than silently coercing to a default.
+    ///
+    /// Used by the DSL `extern <name>: <keyword>` parser
+    /// (`polydat/src/dsl/compile.rs`). Round-trips cleanly with
+    /// any source `to_keyword` emits.
+    pub fn from_keyword(name: &str) -> Option<Self> {
         match name {
-            "u64"     => Some(Self::U64),
-            "f64"     => Some(Self::F64),
-            "u32"     => Some(Self::U32),
-            "i32"     => Some(Self::I32),
-            "i64"     => Some(Self::I64),
-            "f32"     => Some(Self::F32),
-            "bool"    => Some(Self::Bool),
-            "str"     => Some(Self::Str),
-            "bytes"   => Some(Self::Bytes),
-            "json"    => Some(Self::Json),
-            "vec_f32" => Some(Self::VecF32),
-            "vec_i32" => Some(Self::VecI32),
-            "vec_f64" => Some(Self::VecF64),
-            "vec_i64" => Some(Self::VecI64),
-            "vec_f16" => Some(Self::VecF16),
-            "vec_i16" => Some(Self::VecI16),
+            "u64"                 => Some(Self::U64),
+            "f64"                 => Some(Self::F64),
+            "u32"                 => Some(Self::U32),
+            "i32"                 => Some(Self::I32),
+            "i64"                 => Some(Self::I64),
+            "f32"                 => Some(Self::F32),
+            "bool"                => Some(Self::Bool),
+            "str" | "Str" | "String" => Some(Self::Str),
+            "bytes"               => Some(Self::Bytes),
+            "json" | "Json"       => Some(Self::Json),
+            "ext"  | "Ext"        => Some(Self::Ext),
+            "handle"              => Some(Self::Handle),
+            "vec_f32"             => Some(Self::VecF32),
+            "vec_i32"             => Some(Self::VecI32),
+            "vec_f64"             => Some(Self::VecF64),
+            "vec_i64"             => Some(Self::VecI64),
+            "vec_f16"             => Some(Self::VecF16),
+            "vec_i16"             => Some(Self::VecI16),
             _ => None,
+        }
+    }
+
+    /// Workload-author-facing parser for the `{name:<keyword>}`
+    /// lvalue-spec surface. Strict subset of [`Self::from_keyword`]
+    /// — `handle`, `ext`, and `none` are rejected because they're
+    /// internal-only types a workload author should never assert.
+    ///
+    /// Returns `None` for any unrecognized name; the caller
+    /// surfaces the unknown spec as a workload-shape diagnostic.
+    pub fn from_workload_name(name: &str) -> Option<Self> {
+        match Self::from_keyword(name)? {
+            Self::Handle | Self::Ext => None,
+            pt => Some(pt),
         }
     }
 }

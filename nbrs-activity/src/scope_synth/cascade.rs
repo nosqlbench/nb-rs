@@ -333,10 +333,13 @@ pub fn cascade_parent_into_source(inputs: CascadeInputs<'_>, outputs: CascadeOut
         if shadow_names.contains(&name) {
             continue;
         }
+        // input_names() returns names that exist as inputs;
+        // input_port_type on the same name therefore can't be
+        // None unless the kernel's program shape is broken.
         let port_type = parent_program
             .input_port_type(&name)
-            .unwrap_or(polydat::ast::PortType::Str);
-        let type_name = port_type_to_extern_name(port_type);
+            .expect("input_names() returned a name with no port type");
+        let type_name = port_type.to_keyword();
         outputs
             .source
             .push_str(&format!("extern {name}: {type_name}\n"));

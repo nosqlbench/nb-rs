@@ -223,10 +223,16 @@ pub(crate) fn build_node(
     // SRD: per FuncSig.output_type = SameAsInput(0), the
     // output port type tracks the input wire's type. The
     // dispatch path passes the resolved input wire type via
-    // `wire_types[0]`. Default to U64 if the wire is unresolved
-    // (forward reference, dangling — rare, surfaces upstream as
-    // a separate compile error).
-    let typ = wire_types.first().copied().unwrap_or(PortType::U64);
+    // `wire_types[0]`. A missing slot is an upstream-resolution
+    // bug — surface it loudly here rather than fabricating a
+    // U64 placeholder that masks the real fault.
+    let Some(typ) = wire_types.first().copied() else {
+        return Some(Err(format!(
+            "{name}: input wire type unresolved at node-build time \
+             (no entries in wire_types). The dispatch path must \
+             resolve the input wire before constructing this node."
+        )));
+    };
     Some(Ok(Box::new(LogPassthrough::new(level, typ))))
 }
 
@@ -294,12 +300,33 @@ mod tests {
 
     #[test]
     fn build_node_recognises_all_four_levels() {
+        // SameAsInput(0) requires an actual input wire-type at
+        // dispatch — log_* nodes track the input's PortType. Pass
+        // a representative U64 so the node-build path doesn't
+        // surface its unresolved-input diagnostic here.
         for name in &["log_debug", "log_info", "log_warn", "log_error"] {
-            let result = build_node(name, &[], &[], &[]);
+            let result = build_node(name, &[], &[PortType::U64], &[]);
             let node = result
                 .unwrap_or_else(|| panic!("name {name} not handled"))
                 .unwrap_or_else(|e| panic!("build failed for {name}: {e}"));
             assert_eq!(node.meta().name, *name);
         }
+    }
+
+    #[test]
+    fn build_node_surfaces_unresolved_input_wire_type() {
+        // Empty `wire_types` means the dispatch path couldn't
+        // resolve the input wire — log_* must surface this loudly
+        // rather than fabricating a U64 placeholder.
+        let result = build_node("log_info", &[], &[], &[])
+            .expect("log_info is a recognised name");
+        let err = match result {
+            Ok(_) => panic!("empty wire_types must surface as a build error"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("unresolved"),
+            "diagnostic should call out the unresolved input: {err}"
+        );
     }
 }

@@ -37,7 +37,7 @@ categorically avoids this problem, since all the values used in a workload simul
 
 What this means in practice is that a single set of rules applies everywhere, and since everything is owned by the same
 subsystem, you can always ask it exactly where a value comes from or how it is computed. All variables used in a
-simulation are connected through the same substrate with a supporting grammar and a consistent set of rules.
+simulation are connected through the same substrate with a supporting grammar and a consistent set of precedence and referencing rules.
 
 ## Documentation
 

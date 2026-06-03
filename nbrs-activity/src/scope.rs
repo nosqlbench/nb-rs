@@ -1519,13 +1519,7 @@ pub fn build_op_template_scope_kernel(
                 name, value, parent_kernel, &mut source, &mut emitted, None,
             );
         } else if let Some(entry) = manifest_by_name.get(name.as_str()) {
-            let type_name = match entry.port_type {
-                polydat::ast::PortType::U64 => "u64",
-                polydat::ast::PortType::F64 => "f64",
-                polydat::ast::PortType::Str => "String",
-                polydat::ast::PortType::Bool => "bool",
-                _ => "String",
-            };
+            let type_name = entry.port_type.to_keyword();
             source.push_str(&format!("extern {name}: {type_name}\n"));
             emitted.insert(name.clone());
             inherited_names.push(name.clone());
@@ -1543,14 +1537,14 @@ pub fn build_op_template_scope_kernel(
             let kind = parent_kernel.program().input_kind(parent_idx);
             if !matches!(kind, Some(polydat::kernel::InputKind::Coordinate)) {
                 let port_type = parent_kernel.program().input_port_type(name)
-                    .unwrap_or(polydat::ast::PortType::U64);
-                let type_name = match port_type {
-                    polydat::ast::PortType::U64 => "u64",
-                    polydat::ast::PortType::F64 => "f64",
-                    polydat::ast::PortType::Str => "String",
-                    polydat::ast::PortType::Bool => "bool",
-                    _ => "String",
-                };
+                    .ok_or_else(|| format!(
+                        "scope synthesis: parent input '{name}' has no \
+                         declared PortType (find_input returned index {parent_idx} \
+                         but input_port_type returned None — kernel program shape \
+                         broken)"
+                    ))
+                    .expect("input index just resolved must have a port type");
+                let type_name = port_type.to_keyword();
                 source.push_str(&format!("extern {name}: {type_name}\n"));
                 emitted.insert(name.clone());
                 inherited_names.push(name.clone());
@@ -2130,13 +2124,7 @@ pub fn build_scope(
             && !extern_names.contains(&entry.name)
             && !is_iter_var
         {
-            let type_name = match entry.port_type {
-                polydat::ast::PortType::U64 => "u64",
-                polydat::ast::PortType::F64 => "f64",
-                polydat::ast::PortType::Str => "String",
-                polydat::ast::PortType::Bool => "bool",
-                _ => "String",
-            };
+            let type_name = entry.port_type.to_keyword();
             scope.add_extern(&entry.name, type_name);
         }
     }

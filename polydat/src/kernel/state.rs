@@ -862,11 +862,14 @@ impl PolydatKernel {
             let outer_is_const = outer.program.output_modifier(name)
                 == crate::dsl::ast::BindingModifier::CONST;
             // Slot's declared port type — needed for γ-5
-            // boundary-adapter dispatch.
+            // boundary-adapter dispatch. `find_input` returned
+            // `Some(inner_idx)` above, so `input_port_type` on
+            // the same name is a program-shape invariant; a
+            // `None` here means the program is malformed.
             let inner_slot_type = self
                 .program
                 .input_port_type(name)
-                .unwrap_or(crate::ast::PortType::U64);
+                .expect("input index resolved but no declared port type");
             if outer_has_slot {
                 if let Some(value) = outer.lookup(name) {
                     let adapted = adapt_boundary_value(name, inner_slot_type, value);
@@ -1026,10 +1029,12 @@ impl PolydatKernel {
         for name in self.program.input_names() {
             let Some(idx) = self.program.find_input(&name) else { continue };
             let Some(cell) = self.state.shared_cell(idx) else { continue };
+            // `find_input` just returned `Some(idx)`; the program
+            // shape guarantees a declared port type for that idx.
             let port_type = self
                 .program
                 .input_port_type(&name)
-                .unwrap_or(crate::ast::PortType::Str);
+                .expect("input index resolved but no declared port type");
             by_name.insert(name.clone(), SharedCellEntry { name, port_type, cell });
         }
         by_name.into_values().collect()

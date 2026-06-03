@@ -71,6 +71,11 @@ jit = ["dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-codegen", "de
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Work-stealing parallelism for tests with uneven per-case cost
+# (the §9.2 equivalence harness sweeps random ASTs whose dispense
+# time varies widely; rayon's stealing scheduler keeps every core
+# fed where fixed chunking leaves stragglers).
+rayon = "1"
 
 [[bench]]
 name = "polydat_throughput"

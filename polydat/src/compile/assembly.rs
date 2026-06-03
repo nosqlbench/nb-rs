@@ -303,13 +303,14 @@ impl PolydatAssembler {
     }
 
     /// Query the output port type of a named node (first output).
-    /// Returns U64 if the node is not found.
-    pub fn node_output_type(&self, name: &str) -> crate::ast::PortType {
+    /// Returns `None` if the node is not found or has no output
+    /// ports; callers surface the absence as a loud diagnostic
+    /// rather than silently substituting a default.
+    pub fn node_output_type(&self, name: &str) -> Option<crate::ast::PortType> {
         self.nodes.iter()
             .find(|n| n.name == name)
             .and_then(|n| n.node.meta().outs.first())
             .map(|p| p.typ)
-            .unwrap_or(crate::ast::PortType::U64)
     }
 
     /// Return the names of declared outputs.

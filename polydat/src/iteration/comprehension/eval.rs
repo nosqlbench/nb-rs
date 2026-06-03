@@ -1176,24 +1176,17 @@ fn seq_interval(items: &[Value], ratios: &[usize]) -> Vec<Value> {
     out
 }
 
-/// Map a `Value` variant to the Polydat extern type name string the
-/// parser accepts (`u64`, `f64`, `bool`, `String`).
+/// Map a `Value` to the canonical polydat extern type keyword.
 ///
-/// The Polydat parser today accepts only `u64`, `f64`, and
-/// anything-else-as-Str for extern declarations, so Bytes /
-/// Json / Ext / Handle / VecF32 / VecI32 / Str / None all map
-/// to "String". The runtime spec evaluator surfaces the actual
-/// typed value via interpolation regardless.
+/// Delegates to [`Value::port_type`] + [`PortType::to_keyword`] —
+/// the single source of truth for the str↔PortType table. The
+/// returned keyword round-trips byte-cleanly through
+/// [`PortType::from_keyword`] in the DSL extern parser, so every
+/// typed `Value` variant (including `VecF32`, `Bytes`, `Json`,
+/// `Handle`) becomes a precisely-typed input on the synthesized
+/// inner kernel.
 pub fn value_to_polydat_type_name(v: &Value) -> &'static str {
-    match v {
-        Value::U64(_) => "u64",
-        Value::F64(_) => "f64",
-        Value::Bool(_) => "bool",
-        // SRD 71: adapter-contributed reflected types (Partition,
-        // PartitionSpec, PartitionList, …) declare as `Ext`.
-        Value::Ext(_) => "Ext",
-        _ => "String",
-    }
+    v.port_type().to_keyword()
 }
 
 /// Enumerate the typed tuples a Cartesian comprehension produces.
@@ -1797,9 +1790,9 @@ mod tests {
     #[test]
     fn value_to_polydat_type_name_returns_ext_for_partition_value() {
         // The for_each scope synthesizer uses this to emit
-        // `extern <var>: <type>` for each iter-var. Ext-typed
+        // `extern <var>: <keyword>` for each iter-var. Ext-typed
         // values (Partition, PartitionSpec, PartitionList) must
-        // declare as `Ext` so the resulting input port is
+        // declare as `ext` so the resulting input port is
         // PortType::Ext and downstream `over <iter-var>` clauses
         // see the right shape.
         let p = crate::iteration::cursor_partition::Partition {
@@ -1807,7 +1800,7 @@ mod tests {
             start_pct: 0.0, end_pct: 100.0, base_extent: 10,
         };
         let v = Value::from_partition(p);
-        assert_eq!(value_to_polydat_type_name(&v), "Ext");
+        assert_eq!(value_to_polydat_type_name(&v), "ext");
     }
 
     // ── SRD-18c Layer 2 / SRD-18e Push 3: range operator ──
