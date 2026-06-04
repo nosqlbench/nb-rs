@@ -3,12 +3,15 @@
 
 //! Inverse CDF distribution builders.
 //!
-//! Each function builds a [`LutF64`] containing the precomputed inverse
-//! CDF for a specific distribution. The returned LUT is used with a
-//! [`LutSample`] node for runtime evaluation.
+//! Each `dist_*` helper builds a [`LutF64`] containing the precomputed
+//! inverse CDF for a specific distribution. The DSL surface
+//! (`#[polydat_node]` form below) wraps each helper in a node that
+//! caches the LUT at construction via `#[poly_const]` and samples on
+//! every cycle.
 //!
-//! This module also provides the [`UnitInterval`] and [`ClampF64`] GK
-//! nodes that are typically composed with LUT sampling in a DAG.
+//! This module also provides the [`UnitInterval`] and [`ClampF64`]
+//! conversion nodes that are typically composed with LUT sampling in
+//! a DAG.
 //!
 //! # Supported Distributions
 //!
@@ -19,8 +22,8 @@
 //! **Discrete:**
 //! Zipf, Poisson, Binomial, Geometric
 
-use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
-use crate::library::sampling::lut::{LutF64, LutSample};
+use crate::derive_support::Const;
+use crate::library::sampling::lut::LutF64;
 
 /// Default interpolation table resolution.
 pub const DEFAULT_RESOLUTION: usize = 1000;
@@ -39,44 +42,11 @@ pub const DEFAULT_RESOLUTION: usize = 1000;
 /// `inv_lerp`. The mapping is `input as f64 / u64::MAX as f64`, so
 /// 0 maps to 0.0 and u64::MAX maps to ~1.0.
 ///
-/// JIT level: P2 (compiled_u64 closure; single division).
-pub struct UnitInterval {
-    meta: NodeMeta,
-}
-
-impl Default for UnitInterval {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl UnitInterval {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "unit_interval".into(),
-                outs: vec![Port::new("output", PortType::F64)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for UnitInterval {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::F64(inputs[0].as_u64() as f64 / u64::MAX as f64);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let v = inputs[0] as f64 / u64::MAX as f64;
-            outputs[0] = v.to_bits();
-        }))
-    }
+/// JIT level: P2 (auto-emitted `compiled_u64` from the body via
+/// the `#[polydat_node]` macro; single division).
+#[crate::polydat_node(category = Conversions)]
+fn unit_interval(input: u64) -> f64 {
+    input as f64 / u64::MAX as f64
 }
 
 // =================================================================
@@ -93,155 +63,16 @@ impl PolydatNode for UnitInterval {
 /// negative scores. Also useful for guarding against non-finite LUT
 /// edge values before downstream arithmetic.
 ///
-/// JIT level: P3 (compiled_u64 with jit_constants for min and max).
-pub struct ClampF64 {
-    meta: NodeMeta,
-    min: f64,
-    max: f64,
-}
-
-impl ClampF64 {
-    pub fn new(min: f64, max: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "clamp_f64".into(),
-                outs: vec![Port::new("output", PortType::F64)],
-                ins: vec![
-                    Slot::Wire(Port::new("input", PortType::F64)),
-                    Slot::const_f64("min", min),
-                    Slot::const_f64("max", max),
-                ],
-            },
-            min,
-            max,
-        }
-    }
-}
-
-impl PolydatNode for ClampF64 {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::F64(inputs[0].as_f64().clamp(self.min, self.max));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let min = self.min;
-        let max = self.max;
-        Some(Box::new(move |inputs, outputs| {
-            let v = f64::from_bits(inputs[0]).clamp(min, max);
-            outputs[0] = v.to_bits();
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> { vec![self.min.to_bits(), self.max.to_bits()] }
-}
-
-// =================================================================
-// Convenience: IcdSample node (wraps LutSample with distribution builder)
-// =================================================================
-
-/// A distribution-sampling Polydat node backed by a LUT.
-///
-/// Signature: `icd_sample(input: f64) -> (f64)`
-///
-/// This is a convenience wrapper -- it builds the LUT at construction
-/// time and delegates to `LutSample` for evaluation. It exists so
-/// callers can write `IcdSample::normal(72.0, 5.0)` without manually
-/// constructing and wiring a LUT.
-///
-/// Use for any statistical distribution sampling where the input is a
-/// uniform [0,1) value (typically from `unit_interval`) and the output
-/// is a distribution-shaped f64. Supports Normal, Exponential, Uniform,
-/// Pareto, LogNormal, Weibull, Cauchy, Laplace, Beta, Gamma, Zipf,
-/// Poisson, Binomial, and Geometric via named constructors.
-///
-/// JIT level: P2 (delegates to LutSample compiled_u64; O(1) table
-/// lookup with linear interpolation).
-pub struct IcdSample {
-    inner: LutSample,
-}
-
-impl IcdSample {
-    pub fn from_lut(lut: LutF64) -> Self {
-        Self { inner: LutSample::new(lut) }
-    }
-
-    pub fn normal(mean: f64, stddev: f64) -> Self {
-        Self::from_lut(dist_normal(mean, stddev, DEFAULT_RESOLUTION))
-    }
-
-    pub fn exponential(rate: f64) -> Self {
-        Self::from_lut(dist_exponential(rate, DEFAULT_RESOLUTION))
-    }
-
-    pub fn uniform(min: f64, max: f64) -> Self {
-        Self::from_lut(dist_uniform(min, max, DEFAULT_RESOLUTION))
-    }
-
-    pub fn pareto(scale: f64, shape: f64) -> Self {
-        Self::from_lut(dist_pareto(scale, shape, DEFAULT_RESOLUTION))
-    }
-
-    pub fn lognormal(mean: f64, stddev: f64) -> Self {
-        Self::from_lut(dist_lognormal(mean, stddev, DEFAULT_RESOLUTION))
-    }
-
-    pub fn weibull(shape: f64, scale: f64) -> Self {
-        Self::from_lut(dist_weibull(shape, scale, DEFAULT_RESOLUTION))
-    }
-
-    pub fn cauchy(location: f64, scale: f64) -> Self {
-        Self::from_lut(dist_cauchy(location, scale, DEFAULT_RESOLUTION))
-    }
-
-    pub fn laplace(location: f64, scale: f64) -> Self {
-        Self::from_lut(dist_laplace(location, scale, DEFAULT_RESOLUTION))
-    }
-
-    pub fn beta(alpha: f64, beta: f64) -> Self {
-        Self::from_lut(dist_beta(alpha, beta, DEFAULT_RESOLUTION))
-    }
-
-    pub fn gamma(shape: f64, scale: f64) -> Self {
-        Self::from_lut(dist_gamma(shape, scale, DEFAULT_RESOLUTION))
-    }
-
-    pub fn zipf(n: u64, exponent: f64) -> Self {
-        Self::from_lut(dist_zipf(n, exponent, DEFAULT_RESOLUTION))
-    }
-
-    pub fn poisson(lambda: f64) -> Self {
-        Self::from_lut(dist_poisson(lambda, DEFAULT_RESOLUTION))
-    }
-
-    pub fn binomial(trials: u64, p: f64) -> Self {
-        Self::from_lut(dist_binomial(trials, p, DEFAULT_RESOLUTION))
-    }
-
-    pub fn geometric(p: f64) -> Self {
-        Self::from_lut(dist_geometric(p, DEFAULT_RESOLUTION))
-    }
-}
-
-impl PolydatNode for IcdSample {
-    fn meta(&self) -> &NodeMeta {
-        self.inner.meta()
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        self.inner.eval(inputs, outputs);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        self.inner.compiled_u64()
-    }
-
-    fn jit_constants(&self) -> Vec<u64> {
-        self.inner.jit_constants()
-    }
+/// JIT level: P3 (auto-emitted `compiled_u64` + `jit_constants`
+/// via the `#[polydat_node]` macro — the two `Const<f64>` fields
+/// are folded into the JIT constant pool as bit-encoded f64s).
+#[crate::polydat_node(category = Conversions)]
+fn clamp_f64(
+    input: f64,
+    #[poly_default(f64::MIN)] min: Const<f64>,
+    #[poly_default(f64::MAX)] max: Const<f64>,
+) -> f64 {
+    input.clamp(*min, *max)
 }
 
 // =================================================================
@@ -394,41 +225,41 @@ fn inv_regularized_gamma_p(p: f64, a: f64) -> f64 {
 }
 
 // =================================================================
-// Continuous distribution LUT builders
+// Continuous distribution LUT builders (free fns reused by nodes)
 // =================================================================
 
 /// Normal distribution: N(mean, stddev).
-pub fn dist_normal(mean: f64, stddev: f64, resolution: usize) -> LutF64 {
+pub fn dist_normal_lut(mean: f64, stddev: f64, resolution: usize) -> LutF64 {
     LutF64::from_fn(|p| mean + stddev * probit(p), resolution)
 }
 
 /// Exponential distribution: Exp(rate). Support: [0, +∞).
-pub fn dist_exponential(rate: f64, resolution: usize) -> LutF64 {
+pub fn dist_exponential_lut(rate: f64, resolution: usize) -> LutF64 {
     LutF64::from_fn(|p| -(1.0 - p).ln() / rate, resolution)
 }
 
 /// Uniform continuous distribution: U(min, max).
-pub fn dist_uniform(min: f64, max: f64, resolution: usize) -> LutF64 {
+pub fn dist_uniform_lut(min: f64, max: f64, resolution: usize) -> LutF64 {
     LutF64::from_fn(|p| min + p * (max - min), resolution)
 }
 
 /// Pareto distribution: Pareto(scale, shape). Support: [scale, +∞).
-pub fn dist_pareto(scale: f64, shape: f64, resolution: usize) -> LutF64 {
+pub fn dist_pareto_lut(scale: f64, shape: f64, resolution: usize) -> LutF64 {
     LutF64::from_fn(|p| scale / (1.0 - p).powf(1.0 / shape), resolution)
 }
 
 /// Log-normal distribution: LogN(mean, stddev). Support: (0, +∞).
-pub fn dist_lognormal(mean: f64, stddev: f64, resolution: usize) -> LutF64 {
+pub fn dist_lognormal_lut(mean: f64, stddev: f64, resolution: usize) -> LutF64 {
     LutF64::from_fn(|p| (mean + stddev * probit(p)).exp(), resolution)
 }
 
 /// Weibull distribution: Weibull(shape, scale). Support: [0, +∞).
-pub fn dist_weibull(shape: f64, scale: f64, resolution: usize) -> LutF64 {
+pub fn dist_weibull_lut(shape: f64, scale: f64, resolution: usize) -> LutF64 {
     LutF64::from_fn(|p| scale * (-(1.0 - p).ln()).powf(1.0 / shape), resolution)
 }
 
 /// Cauchy distribution: Cauchy(location, scale). Support: (-∞, +∞).
-pub fn dist_cauchy(location: f64, scale: f64, resolution: usize) -> LutF64 {
+pub fn dist_cauchy_lut(location: f64, scale: f64, resolution: usize) -> LutF64 {
     LutF64::from_fn(
         |p| location + scale * (std::f64::consts::PI * (p - 0.5)).tan(),
         resolution,
@@ -436,7 +267,7 @@ pub fn dist_cauchy(location: f64, scale: f64, resolution: usize) -> LutF64 {
 }
 
 /// Laplace distribution: Laplace(location, scale). Support: (-∞, +∞).
-pub fn dist_laplace(location: f64, scale: f64, resolution: usize) -> LutF64 {
+pub fn dist_laplace_lut(location: f64, scale: f64, resolution: usize) -> LutF64 {
     LutF64::from_fn(
         |p| {
             if p <= 0.5 {
@@ -450,12 +281,12 @@ pub fn dist_laplace(location: f64, scale: f64, resolution: usize) -> LutF64 {
 }
 
 /// Beta distribution: Beta(alpha, beta). Support: [0, 1].
-pub fn dist_beta(alpha: f64, beta: f64, resolution: usize) -> LutF64 {
+pub fn dist_beta_lut(alpha: f64, beta: f64, resolution: usize) -> LutF64 {
     LutF64::from_fn(|p| inv_regularized_beta(p, alpha, beta), resolution)
 }
 
 /// Gamma distribution: Gamma(shape, scale). Support: (0, +∞).
-pub fn dist_gamma(shape: f64, scale: f64, resolution: usize) -> LutF64 {
+pub fn dist_gamma_lut(shape: f64, scale: f64, resolution: usize) -> LutF64 {
     LutF64::from_fn(|p| scale * inv_regularized_gamma_p(p, shape), resolution)
 }
 
@@ -468,7 +299,7 @@ pub fn dist_gamma(shape: f64, scale: f64, resolution: usize) -> LutF64 {
 /// The LUT maps [0, 1] → float, which is then truncated to an integer
 /// by the caller. The CDF is computed from the PMF:
 ///   P(k) = (1/k^s) / H(n,s)  where H(n,s) = sum_{i=1}^{n} 1/i^s
-pub fn dist_zipf(n: u64, exponent: f64, resolution: usize) -> LutF64 {
+pub fn dist_zipf_lut(n: u64, exponent: f64, resolution: usize) -> LutF64 {
     // Precompute CDF
     let harmonic: f64 = (1..=n).map(|k| 1.0 / (k as f64).powf(exponent)).sum();
     let mut cdf = Vec::with_capacity(n as usize + 1);
@@ -495,7 +326,7 @@ pub fn dist_zipf(n: u64, exponent: f64, resolution: usize) -> LutF64 {
 /// Poisson distribution: Poisson(lambda). Support: [0, +∞).
 ///
 /// Precompute CDF up to a reasonable upper bound, then invert.
-pub fn dist_poisson(lambda: f64, resolution: usize) -> LutF64 {
+pub fn dist_poisson_lut(lambda: f64, resolution: usize) -> LutF64 {
     let upper = (lambda + 6.0 * lambda.sqrt() + 10.0).ceil() as usize;
 
     // Precompute CDF via PMF: P(k) = e^(-λ) * λ^k / k!
@@ -522,7 +353,7 @@ pub fn dist_poisson(lambda: f64, resolution: usize) -> LutF64 {
 }
 
 /// Binomial distribution: Binomial(trials, p). Support: [0, trials].
-pub fn dist_binomial(trials: u64, prob: f64, resolution: usize) -> LutF64 {
+pub fn dist_binomial_lut(trials: u64, prob: f64, resolution: usize) -> LutF64 {
     let n = trials as usize;
 
     // Precompute CDF via PMF
@@ -553,7 +384,7 @@ pub fn dist_binomial(trials: u64, prob: f64, resolution: usize) -> LutF64 {
 /// Geometric distribution: Geometric(p). Support: [1, +∞).
 ///
 /// P(X=k) = (1-p)^(k-1) * p, inverse CDF: ceil(ln(1-u) / ln(1-p)).
-pub fn dist_geometric(prob: f64, resolution: usize) -> LutF64 {
+pub fn dist_geometric_lut(prob: f64, resolution: usize) -> LutF64 {
     let ln_q = (1.0 - prob).ln();
     LutF64::from_fn(
         |p| {
@@ -566,92 +397,15 @@ pub fn dist_geometric(prob: f64, resolution: usize) -> LutF64 {
 }
 
 // =================================================================
-// Discrete u64 sampler (avoids f64 round-trip)
-// =================================================================
-
-/// Polydat node for discrete distribution sampling with direct u64 output.
-///
-/// Signature: `(input: u64) -> (u64)`
-///
-/// Takes a uniform u64 input (hashed), samples from the discrete
-/// distribution, and returns a u64 outcome. No f64 intermediate.
-/// This enables Phase 2 AOT compilation for discrete distribution
-/// paths.
-pub struct DiscreteSample {
-    meta: NodeMeta,
-    /// Precomputed outcomes indexed by input quantization.
-    /// Length = resolution. Entry i is the discrete outcome for
-    /// inputs mapping to quantile i/resolution.
-    outcomes: Vec<u64>,
-}
-
-impl DiscreteSample {
-    /// Build from a LUT of f64 values by rounding each to u64.
-    pub fn from_lut(lut: &LutF64) -> Self {
-        let outcomes: Vec<u64> = (0..lut.len())
-            .map(|i| {
-                let u = i as f64 / (lut.len() - 1) as f64;
-                lut.sample(u).round().max(0.0) as u64
-            })
-            .collect();
-        Self {
-            meta: NodeMeta {
-                name: "discrete_sample".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            outcomes,
-        }
-    }
-
-    /// Convenience: Zipf distribution.
-    pub fn zipf(n: u64, exponent: f64) -> Self {
-        Self::from_lut(&dist_zipf(n, exponent, DEFAULT_RESOLUTION))
-    }
-
-    /// Convenience: Poisson distribution.
-    pub fn poisson(lambda: f64) -> Self {
-        Self::from_lut(&dist_poisson(lambda, DEFAULT_RESOLUTION))
-    }
-
-    /// Convenience: Binomial distribution.
-    pub fn binomial(trials: u64, p: f64) -> Self {
-        Self::from_lut(&dist_binomial(trials, p, DEFAULT_RESOLUTION))
-    }
-
-    /// Convenience: Geometric distribution.
-    pub fn geometric(p: f64) -> Self {
-        Self::from_lut(&dist_geometric(p, DEFAULT_RESOLUTION))
-    }
-}
-
-impl PolydatNode for DiscreteSample {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let n = self.outcomes.len();
-        let idx = (inputs[0].as_u64() as usize) % n;
-        outputs[0] = Value::U64(self.outcomes[idx]);
-    }
-
-    fn compiled_u64(&self) -> Option<crate::ast::CompiledU64Op> {
-        let outcomes = self.outcomes.clone();
-        let n = outcomes.len();
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = outcomes[(inputs[0] as usize) % n];
-        }))
-    }
-}
-
-// =================================================================
-// Empirical distribution builders
+// Empirical distribution builders (Rust helpers; the DSL surface for
+// `dist_empirical` lives in `crate::library::sampling::lut`).
 // =================================================================
 
 /// Build a LUT from raw data points (continuous empirical distribution).
 ///
 /// The data points are sorted and used directly as the inverse CDF.
 /// Linear interpolation between observed values.
-pub fn dist_empirical(data: &[f64], resolution: usize) -> LutF64 {
+pub fn dist_empirical_lut(data: &[f64], resolution: usize) -> LutF64 {
     assert!(!data.is_empty(), "data must not be empty");
     let mut sorted = data.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -671,7 +425,7 @@ pub fn dist_empirical(data: &[f64], resolution: usize) -> LutF64 {
 /// Build a LUT from weighted value-frequency pairs.
 ///
 /// Each (value, weight) pair contributes proportionally to the CDF.
-pub fn dist_empirical_weighted(values: &[f64], weights: &[f64], resolution: usize) -> LutF64 {
+pub fn dist_empirical_weighted_lut(values: &[f64], weights: &[f64], resolution: usize) -> LutF64 {
     assert_eq!(values.len(), weights.len());
     assert!(!values.is_empty());
 
@@ -705,178 +459,145 @@ pub fn dist_empirical_weighted(values: &[f64], weights: &[f64], resolution: usiz
     )
 }
 
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
+// =================================================================
+// DSL nodes: each dist_* / icd_* function caches a LUT via
+// `#[poly_const]` and samples on every cycle. The `PolydatSetup`
+// impl for `LutF64` lives in the `lut` module alongside the type.
+// =================================================================
 
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for distribution and sampling nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "dist_normal", category: C::Distributions,
-            outputs: 1, description: "build normal distribution LUT",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "mean", slot_type: SlotType::ConstF64, required: true, example: "0.0", constraint: None },
-                ParamSpec { name: "stddev", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Build a normal (Gaussian) distribution lookup table.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  mean   — center of the distribution\n  stddev — standard deviation (must be > 0)\nExample: dist_normal(50.0, 10.0) -> lut_sample(hash(cycle))\nTheory: pre-computes the inverse CDF into a table for O(1) sampling.",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "dist_exponential", category: C::Distributions,
-            outputs: 1, description: "build exponential distribution LUT",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "rate", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Build an exponential distribution lookup table.\nModels time between events (inter-arrival times, latencies).\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  rate — rate parameter lambda (mean = 1/rate, must be > 0)\nExample: dist_exponential(0.5) -> lut_sample(hash(cycle))",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "dist_uniform", category: C::Distributions,
-            outputs: 1, description: "build uniform distribution LUT",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "min", slot_type: SlotType::ConstF64, required: true, example: "0.0", constraint: None },
-                ParamSpec { name: "max", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Build a uniform distribution lookup table over [min, max].\nEvery value in the range is equally likely.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  min — lower bound (inclusive, f64)\n  max — upper bound (exclusive, f64)\nExample: dist_uniform(0.0, 1000.0) -> lut_sample(hash(cycle))",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "dist_pareto", category: C::Distributions,
-            outputs: 1, description: "build Pareto distribution LUT",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "scale", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-                ParamSpec { name: "shape", slot_type: SlotType::ConstF64, required: true, example: "2.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Build a Pareto (power-law) distribution lookup table.\nModels heavy-tailed phenomena: wealth, file sizes, city populations.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  scale — minimum value (x_m, must be > 0)\n  shape — tail index (alpha, larger = thinner tail)\nExample: dist_pareto(1.0, 2.0) -> lut_sample(hash(cycle))",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "dist_zipf", category: C::Distributions,
-            outputs: 1, description: "build Zipf distribution LUT",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "n", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
-                ParamSpec { name: "exponent", slot_type: SlotType::ConstF64, required: true, example: "1.5", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Build a Zipf distribution lookup table over ranks [1, n].\nModels rank-frequency phenomena: word frequency, cache access patterns.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  n        — number of elements (u64, must be > 0)\n  exponent — Zipf exponent s (f64, typically 1.0-2.0; higher = more skewed)\nExample: dist_zipf(1000, 1.07) -> lut_sample(hash(cycle))",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "lut_sample", category: C::Distributions,
-            outputs: 1, description: "interpolating lookup table sample",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Sample from a precomputed lookup table via linear interpolation.\nInput is an f64 in [0, 1]; output is the interpolated table value.\nThis is the runtime half of distribution sampling: build the table\nwith dist_normal/dist_zipf/etc, then sample with lut_sample.\nParameters:\n  input — f64 wire in [0.0, 1.0] (typically from unit_interval)\nExample: lut_sample(unit_interval(hash(cycle)))  // wired to a dist_* LUT",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "icd_normal", category: C::Distributions,
-            outputs: 1, description: "sample from normal distribution",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "mean", slot_type: SlotType::ConstF64, required: true, example: "0.0", constraint: None },
-                ParamSpec { name: "stddev", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "One-step normal distribution sampling (builds LUT + samples internally).\nConvenience wrapper: equivalent to dist_normal -> lut_sample but\ncombined into a single node for simpler graph construction.\nParameters:\n  input  — u64 wire input (typically hashed)\n  mean   — center of the distribution (f64)\n  stddev — standard deviation (f64, must be > 0)\nExample: icd_normal(hash(cycle), 100.0, 15.0)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "icd_exponential", category: C::Distributions,
-            outputs: 1, description: "sample from exponential distribution",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "rate", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "One-step exponential distribution sampling (builds LUT + samples).\nConvenience wrapper for modeling inter-arrival times and latencies.\nParameters:\n  input — u64 wire input (typically hashed)\n  rate  — rate parameter lambda (f64, mean = 1/rate)\nExample: icd_exponential(hash(cycle), 0.1)  // mean = 10.0",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "histribution", category: C::Distributions,
-            outputs: 1, description: "discrete histogram distribution",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Sample from a discrete histogram distribution.\nParse an inline frequency spec into an alias table at init time.\nTwo formats:\n  Implicit labels: histribution(hash(cycle), \"50 25 13 12\") → outcomes 0-3\n  Explicit labels: histribution(hash(cycle), \"234:50 33:25 17:13 3:12\")\nDelimiters: space, comma, or semicolon.\nOutput is a u64 label.",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "dist_empirical", category: C::Distributions,
-            outputs: 1, description: "empirical distribution from data points",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "data", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Sample from an empirical distribution defined by observed data points.\nThe data string is a space/comma/semicolon-separated list of f64 values.\nAt init time, values are sorted and used as the inverse CDF directly.\nThe input is an f64 in [0,1] (from unit_interval); output is interpolated.\nExample: dist_empirical(unit_interval(hash(cycle)), \"1.2 3.5 5.0 7.8 12.1\")",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
+fn build_normal_lut(mean: f64, stddev: f64) -> LutF64 {
+    dist_normal_lut(mean, stddev, DEFAULT_RESOLUTION)
 }
 
-/// Sampling nodes have no dedicated builder here — construction is handled
-/// by the sampling fallback in `dsl::factory`.
+/// Sample from a normal distribution `N(mean, stddev)`.
 ///
-/// This stub satisfies the `NodeRegistration::build` signature so the
-/// signatures can still be collected via inventory without duplicating the
-/// builder logic.
-pub(crate) fn build_node(
-    _name: &str,
-    _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType],
-    _consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    None
+/// Signature: `dist_normal(input: f64, mean: f64, stddev: f64) -> f64`
+///
+/// `input` is a uniform value in `[0, 1)` (typically from
+/// `unit_interval(hash(cycle))`). The LUT is precomputed at
+/// construction; the per-cycle cost is one LUT sample.
+#[crate::polydat_node(category = Distributions)]
+fn dist_normal(
+    input: f64,
+    mean: Const<f64>,
+    stddev: Const<f64>,
+    #[poly_const(build_normal_lut, from = (mean, stddev))]
+    lut: &LutF64,
+) -> f64 {
+    let _ = mean;
+    let _ = stddev;
+    lut.sample(input)
 }
 
-crate::register_nodes!(signatures, build_node);
+/// Alias of [`dist_normal`]. Preserved because workload examples
+/// and the `nbrs-activity` distribution binding both surface
+/// `icd_normal` as the public DSL name.
+#[crate::polydat_node(category = Distributions)]
+fn icd_normal(
+    input: f64,
+    mean: Const<f64>,
+    stddev: Const<f64>,
+    #[poly_const(build_normal_lut, from = (mean, stddev))]
+    lut: &LutF64,
+) -> f64 {
+    let _ = mean;
+    let _ = stddev;
+    lut.sample(input)
+}
+
+fn build_exponential_lut(rate: f64) -> LutF64 {
+    dist_exponential_lut(rate, DEFAULT_RESOLUTION)
+}
+
+/// Sample from an exponential distribution `Exp(rate)`.
+#[crate::polydat_node(category = Distributions)]
+fn dist_exponential(
+    input: f64,
+    rate: Const<f64>,
+    #[poly_const(build_exponential_lut, from = rate)]
+    lut: &LutF64,
+) -> f64 {
+    let _ = rate;
+    lut.sample(input)
+}
+
+/// Alias of [`dist_exponential`].
+#[crate::polydat_node(category = Distributions)]
+fn icd_exponential(
+    input: f64,
+    rate: Const<f64>,
+    #[poly_const(build_exponential_lut, from = rate)]
+    lut: &LutF64,
+) -> f64 {
+    let _ = rate;
+    lut.sample(input)
+}
+
+fn build_uniform_lut(min: f64, max: f64) -> LutF64 {
+    dist_uniform_lut(min, max, DEFAULT_RESOLUTION)
+}
+
+/// Sample from a continuous uniform distribution `U(min, max)`.
+#[crate::polydat_node(category = Distributions)]
+fn dist_uniform(
+    input: f64,
+    min: Const<f64>,
+    max: Const<f64>,
+    #[poly_const(build_uniform_lut, from = (min, max))]
+    lut: &LutF64,
+) -> f64 {
+    let _ = min;
+    let _ = max;
+    lut.sample(input)
+}
+
+fn build_pareto_lut(scale: f64, shape: f64) -> LutF64 {
+    dist_pareto_lut(scale, shape, DEFAULT_RESOLUTION)
+}
+
+/// Sample from a Pareto distribution `Pareto(scale, shape)`.
+#[crate::polydat_node(category = Distributions)]
+fn dist_pareto(
+    input: f64,
+    scale: Const<f64>,
+    shape: Const<f64>,
+    #[poly_const(build_pareto_lut, from = (scale, shape))]
+    lut: &LutF64,
+) -> f64 {
+    let _ = scale;
+    let _ = shape;
+    lut.sample(input)
+}
+
+fn build_zipf_lut(n: u64, exponent: f64) -> LutF64 {
+    dist_zipf_lut(n, exponent, DEFAULT_RESOLUTION)
+}
+
+/// Sample from a Zipf distribution `Zipf(n, exponent)`.
+#[crate::polydat_node(category = Distributions)]
+fn dist_zipf(
+    input: f64,
+    n: Const<u64>,
+    exponent: Const<f64>,
+    #[poly_const(build_zipf_lut, from = (n, exponent))]
+    lut: &LutF64,
+) -> f64 {
+    let _ = n;
+    let _ = exponent;
+    lut.sample(input)
+}
+
+// ---------------------------------------------------------------------------
+// Inventory stub: histribution / dist_empirical / lut_sample register
+// themselves via their own modules (histribution.rs and lut.rs). This
+// module no longer hand-rolls a signatures() vec — every DSL node here
+// self-registers via `#[polydat_node]`.
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn unit_interval_range() {
@@ -890,26 +611,26 @@ mod tests {
 
     #[test]
     fn normal_symmetry() {
-        let lut = dist_normal(0.0, 1.0, 1000);
+        let lut = dist_normal_lut(0.0, 1.0, 1000);
         assert!(lut.sample(0.5).abs() < 0.01);
         assert!((lut.sample(0.25) + lut.sample(0.75)).abs() < 0.01);
     }
 
     #[test]
     fn normal_mean_stddev() {
-        let lut = dist_normal(100.0, 10.0, 1000);
+        let lut = dist_normal_lut(100.0, 10.0, 1000);
         assert!((lut.sample(0.5) - 100.0).abs() < 0.5);
     }
 
     #[test]
     fn exponential_median() {
-        let lut = dist_exponential(1.0, 1000);
+        let lut = dist_exponential_lut(1.0, 1000);
         assert!((lut.sample(0.5) - 0.693).abs() < 0.01);
     }
 
     #[test]
     fn exponential_positive() {
-        let lut = dist_exponential(1.0, 1000);
+        let lut = dist_exponential_lut(1.0, 1000);
         for i in 1..1000 {
             assert!(lut.sample(i as f64 / 1000.0) >= 0.0);
         }
@@ -917,7 +638,7 @@ mod tests {
 
     #[test]
     fn uniform_linear() {
-        let lut = dist_uniform(10.0, 20.0, 1000);
+        let lut = dist_uniform_lut(10.0, 20.0, 1000);
         assert!((lut.sample(0.0) - 10.0).abs() < 0.1);
         assert!((lut.sample(0.5) - 15.0).abs() < 0.1);
         assert!((lut.sample(0.999) - 20.0).abs() < 0.1);
@@ -925,27 +646,27 @@ mod tests {
 
     #[test]
     fn pareto_heavy_tail() {
-        let lut = dist_pareto(1.0, 1.0, 1000);
+        let lut = dist_pareto_lut(1.0, 1.0, 1000);
         assert!((lut.sample(0.5) - 2.0).abs() < 0.1);
         assert!(lut.sample(0.99) > 50.0);
     }
 
     #[test]
     fn cauchy_symmetric() {
-        let lut = dist_cauchy(0.0, 1.0, 1000);
+        let lut = dist_cauchy_lut(0.0, 1.0, 1000);
         assert!(lut.sample(0.5).abs() < 0.1);
         assert!((lut.sample(0.25) + lut.sample(0.75)).abs() < 0.1);
     }
 
     #[test]
     fn laplace_symmetric() {
-        let lut = dist_laplace(5.0, 2.0, 1000);
+        let lut = dist_laplace_lut(5.0, 2.0, 1000);
         assert!((lut.sample(0.5) - 5.0).abs() < 0.1);
     }
 
     #[test]
     fn beta_bounded_01() {
-        let lut = dist_beta(2.0, 5.0, 1000);
+        let lut = dist_beta_lut(2.0, 5.0, 1000);
         for i in 0..=1000 {
             let v = lut.sample(i as f64 / 1000.0);
             assert!((0.0..=1.0).contains(&v), "beta out of [0,1]: {v}");
@@ -955,14 +676,14 @@ mod tests {
     #[test]
     fn beta_symmetric_at_half() {
         // Beta(2, 2) is symmetric around 0.5
-        let lut = dist_beta(2.0, 2.0, 1000);
+        let lut = dist_beta_lut(2.0, 2.0, 1000);
         assert!((lut.sample(0.5) - 0.5).abs() < 0.1,
             "beta(2,2) median={}, expected ~0.5", lut.sample(0.5));
     }
 
     #[test]
     fn gamma_positive() {
-        let lut = dist_gamma(2.0, 1.0, 1000);
+        let lut = dist_gamma_lut(2.0, 1.0, 1000);
         for i in 1..1000 {
             assert!(lut.sample(i as f64 / 1000.0) > 0.0);
         }
@@ -971,13 +692,13 @@ mod tests {
     #[test]
     fn gamma_mean() {
         // Gamma(shape=3, scale=2) has mean = shape * scale = 6
-        let lut = dist_gamma(3.0, 2.0, 1000);
+        let lut = dist_gamma_lut(3.0, 2.0, 1000);
         assert!((lut.sample(0.5) - 5.0).abs() < 1.5); // median ≈ mean for shape>1
     }
 
     #[test]
     fn weibull_positive() {
-        let lut = dist_weibull(2.0, 1.0, 1000);
+        let lut = dist_weibull_lut(2.0, 1.0, 1000);
         for i in 1..1000 {
             assert!(lut.sample(i as f64 / 1000.0) >= 0.0);
         }
@@ -985,7 +706,7 @@ mod tests {
 
     #[test]
     fn zipf_range() {
-        let lut = dist_zipf(100, 1.0, 1000);
+        let lut = dist_zipf_lut(100, 1.0, 1000);
         for i in 1..1000 {
             let v = lut.sample(i as f64 / 1000.0);
             assert!(v >= 1.0 && v <= 100.0, "zipf out of [1,100]: {v}");
@@ -995,7 +716,7 @@ mod tests {
     #[test]
     fn zipf_skewed() {
         // Low ranks should be much more common
-        let lut = dist_zipf(100, 1.0, 1000);
+        let lut = dist_zipf_lut(100, 1.0, 1000);
         let low_quantile = lut.sample(0.5);
         assert!(low_quantile < 20.0, "median of Zipf(100,1) should be low, got {low_quantile}");
     }
@@ -1003,14 +724,14 @@ mod tests {
     #[test]
     fn poisson_mean() {
         // Poisson(5): mean and median ≈ 5
-        let lut = dist_poisson(5.0, 1000);
+        let lut = dist_poisson_lut(5.0, 1000);
         let median = lut.sample(0.5);
         assert!((median - 5.0).abs() < 1.0, "poisson median={median}, expected ~5");
     }
 
     #[test]
     fn poisson_nonnegative() {
-        let lut = dist_poisson(3.0, 1000);
+        let lut = dist_poisson_lut(3.0, 1000);
         for i in 0..=1000 {
             assert!(lut.sample(i as f64 / 1000.0) >= 0.0);
         }
@@ -1018,7 +739,7 @@ mod tests {
 
     #[test]
     fn binomial_range() {
-        let lut = dist_binomial(20, 0.5, 1000);
+        let lut = dist_binomial_lut(20, 0.5, 1000);
         for i in 0..=1000 {
             let v = lut.sample(i as f64 / 1000.0);
             assert!(v >= 0.0 && v <= 20.0, "binomial out of [0,20]: {v}");
@@ -1028,28 +749,28 @@ mod tests {
     #[test]
     fn binomial_mean() {
         // Binomial(20, 0.5): mean = 10
-        let lut = dist_binomial(20, 0.5, 1000);
+        let lut = dist_binomial_lut(20, 0.5, 1000);
         let median = lut.sample(0.5);
         assert!((median - 10.0).abs() < 1.5, "binomial median={median}, expected ~10");
     }
 
     #[test]
     fn geometric_starts_at_one() {
-        let lut = dist_geometric(0.5, 1000);
+        let lut = dist_geometric_lut(0.5, 1000);
         assert!(lut.sample(0.001) >= 1.0);
     }
 
     #[test]
     fn geometric_mean() {
         // Geometric(0.5): mean = 1/p = 2
-        let lut = dist_geometric(0.5, 1000);
+        let lut = dist_geometric_lut(0.5, 1000);
         let median = lut.sample(0.5);
         assert!((median - 1.0).abs() < 1.0, "geometric median={median}, expected ~1-2");
     }
 
     #[test]
-    fn icd_sample_convenience() {
-        let node = IcdSample::normal(0.0, 1.0);
+    fn dist_normal_node_eval() {
+        let node = DistNormal::new(0.0, 1.0);
         let mut out = [Value::None];
         node.eval(&[Value::F64(0.5)], &mut out);
         assert!(out[0].as_f64().abs() < 0.01);
@@ -1059,7 +780,7 @@ mod tests {
     fn full_pipeline_hash_normalize_sample() {
         use xxhash_rust::xxh3::xxh3_64;
 
-        let lut = dist_normal(72.0, 5.0, 1000);
+        let lut = dist_normal_lut(72.0, 5.0, 1000);
         let mut values = Vec::new();
         for i in 0..10_000u64 {
             let hashed = xxh3_64(&i.to_le_bytes());

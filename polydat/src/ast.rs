@@ -1017,6 +1017,13 @@ impl Port {
         self.wire_cost = WireCost::Config;
         self
     }
+
+    /// Set the wire cost directly. Used by the macro to thread
+    /// `Wire::WIRE_COST` from the trait through to the slot.
+    pub fn with_cost(mut self, cost: WireCost) -> Self {
+        self.wire_cost = cost;
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,6 +1049,12 @@ pub enum SlotType {
     ConstVecU64,
     /// A `Vec<f64>` constant (from array literal).
     ConstVecF64,
+    /// SRD-80b Phase C — typed-element variadic-const slot for
+    /// `Const<Vec<C>>` operator-side shape. Element type
+    /// discrimination rides through the `<C as ConstSource>::extract`
+    /// trait dispatch at the build-closure call site; the slot tag
+    /// only signals "this is a list" to the DSL type-checker.
+    ConstVec,
 }
 
 impl SlotType {
@@ -1054,6 +1067,22 @@ impl SlotType {
     pub fn is_wire(self) -> bool {
         matches!(self, SlotType::Wire)
     }
+}
+
+/// JIT-compatible primitive carriers.
+///
+/// The three Rust types that can ride in the Phase-2 `u64` buffer
+/// without lossy conversion: `u64` as-is, `f64` via bit-reinterpret,
+/// `bool` as 0/1. Every other wire/const shape is JIT-ineligible
+/// and falls through to the Phase-1 typed-eval path.
+///
+/// Referenced by `polydat::derive_support::Wire::JIT` to tag each
+/// Wire-typed Rust value with its JIT carrier (or `None`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JitType {
+    U64,
+    F64,
+    Bool,
 }
 
 /// A concrete constant value stored in node metadata.
@@ -1517,7 +1546,7 @@ mod purity_tests {
 
     #[test]
     fn inspect_node_declares_stderr_side_channel() {
-        let n = crate::library::diagnostic::Inspect::u64("x");
+        let n = crate::library::diagnostic::Inspect::new(PortType::U64, "x".to_string());
         match n.purity() {
             Purity::SideChannel { sink } => assert_eq!(sink, SideChannelSink::Stderr),
             other => panic!("inspect should declare Stderr SideChannel, got {other:?}"),
@@ -1526,10 +1555,7 @@ mod purity_tests {
 
     #[test]
     fn log_passthrough_declares_log_buffer_side_channel() {
-        let n = crate::library::log_levels::LogPassthrough::new(
-            crate::library::log_levels::LogLevel::Info,
-            PortType::U64,
-        );
+        let n = crate::library::log_levels::LogInfo::new(PortType::U64);
         match n.purity() {
             Purity::SideChannel { sink } => assert_eq!(sink, SideChannelSink::LogBuffer),
             other => panic!("log_passthrough should declare LogBuffer SideChannel, got {other:?}"),

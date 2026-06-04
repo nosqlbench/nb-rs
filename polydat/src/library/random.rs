@@ -14,7 +14,6 @@
 
 use std::cell::RefCell;
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 // =================================================================
@@ -66,162 +65,89 @@ fn next_f64() -> f64 {
 // Non-deterministic random nodes (0→1)
 // =================================================================
 
-/// Random u64 in [min, max).
-///
-/// Signature: `() -> (u64)`
-pub struct RandomRange {
-    meta: NodeMeta,
-    min: u64,
-    range: u64,
+/// Random u64 in [min, max). SRD-80 PR B.13 migration —
+/// inline-compute `range = max - min` per call (non-det node,
+/// per-call subtraction is noise).
+#[crate::polydat_node(
+    category = Probability,
+    purity = Nondeterministic("thread-local PRNG"),
+)]
+fn random_range(
+    #[poly_default(0u64)] min: crate::derive_support::Const<u64>,
+    #[poly_default(100u64)] max: crate::derive_support::Const<u64>,
+) -> u64 {
+    // Saturate the range to a non-zero value so a misconfigured
+    // workload (min == max, or min > max) doesn't trap on the
+    // modulus. `max.saturating_sub(min)` is 0 when min >= max.
+    let range = max.saturating_sub(*min).max(1);
+    *min + (next_u64() % range)
 }
 
-impl RandomRange {
-    pub fn new(min: u64, max: u64) -> Self {
-        assert!(max > min);
-        Self {
-            meta: NodeMeta {
-                name: "random_range".into(),
-                outs: vec![Port::u64("output")],
-                ins: Vec::new(),
-            },
-            min,
-            range: max - min,
-        }
+/// Random f64 in [min, max). SRD-80 PR B.13 migration.
+#[crate::polydat_node(
+    category = Probability,
+    purity = Nondeterministic("thread-local PRNG"),
+)]
+fn random_f64(
+    #[poly_default(0.0f64)] min: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] max: crate::derive_support::Const<f64>,
+) -> f64 {
+    *min + next_f64() * (*max - *min)
+}
+
+/// Random byte buffer. SRD-80 PR B.13 migration.
+#[crate::polydat_node(
+    category = Probability,
+    purity = Nondeterministic("thread-local PRNG"),
+)]
+fn random_bytes(
+    #[poly_default(8u64)] size: crate::derive_support::Const<u64>,
+) -> Vec<u8> {
+    let sz = *size as usize;
+    let mut buf = Vec::with_capacity(sz);
+    while buf.len() < sz {
+        let take = (sz - buf.len()).min(8);
+        buf.extend_from_slice(&next_u64().to_le_bytes()[..take]);
     }
+    buf
 }
 
-impl PolydatNode for RandomRange {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(self.min + (next_u64() % self.range));
+/// Random string from a character set. Charset parsed each
+/// call — for hot-path use, prefer the deterministic
+/// `combinations` node which precompiles the charset.
+/// SRD-80 PR B.13 migration.
+#[crate::polydat_node(
+    category = Probability,
+    purity = Nondeterministic("thread-local PRNG"),
+)]
+fn random_string(
+    #[poly_default("A-Za-z0-9")] charset: crate::derive_support::Const<&str>,
+    #[poly_default(8u64)] length: crate::derive_support::Const<u64>,
+) -> String {
+    let chars = parse_charset(&charset);
+    if chars.is_empty() {
+        return String::new();
     }
+    (0..*length)
+        .map(|_| chars[(next_u64() as usize) % chars.len()])
+        .collect()
 }
 
-/// Random f64 in [min, max).
-///
-/// Signature: `() -> (f64)`
-pub struct RandomF64 {
-    meta: NodeMeta,
-    min: f64,
-    range: f64,
-}
-
-impl RandomF64 {
-    pub fn new(min: f64, max: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "random_f64".into(),
-                outs: vec![Port::f64("output")],
-                ins: Vec::new(),
-            },
-            min,
-            range: max - min,
-        }
-    }
-}
-
-impl PolydatNode for RandomF64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::F64(self.min + next_f64() * self.range);
-    }
-}
-
-/// Random byte buffer of a fixed size.
-///
-/// Signature: `() -> (bytes)`
-pub struct RandomBytes {
-    meta: NodeMeta,
-    size: usize,
-}
-
-impl RandomBytes {
-    pub fn new(size: usize) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "random_bytes".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: Vec::new(),
-            },
-            size,
-        }
-    }
-}
-
-impl PolydatNode for RandomBytes {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let mut buf = Vec::with_capacity(self.size);
-        while buf.len() < self.size {
-            let take = (self.size - buf.len()).min(8);
-            buf.extend_from_slice(&next_u64().to_le_bytes()[..take]);
-        }
-        outputs[0] = Value::Bytes(buf.into());
-    }
-}
-
-/// Random string from a character set.
-///
-/// Signature: `() -> (String)`
-pub struct RandomString {
-    meta: NodeMeta,
-    chars: Vec<char>,
-    length: usize,
+/// Random boolean with probability of true. SRD-80 PR B.13.
+#[crate::polydat_node(
+    category = Probability,
+    purity = Nondeterministic("thread-local PRNG"),
+)]
+fn random_bool(
+    #[poly_default(0.5f64)] probability: crate::derive_support::Const<f64>,
+) -> bool {
+    let threshold = (probability.clamp(0.0, 1.0) * u64::MAX as f64) as u64;
+    next_u64() < threshold
 }
 
 impl RandomString {
-    pub fn alphanumeric(length: usize) -> Self {
-        Self::from_charset("A-Za-z0-9", length)
-    }
-
-    pub fn from_charset(spec: &str, length: usize) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "random_string".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: Vec::new(),
-            },
-            chars: parse_charset(spec),
-            length,
-        }
-    }
-}
-
-impl PolydatNode for RandomString {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let s: String = (0..self.length)
-            .map(|_| self.chars[(next_u64() as usize) % self.chars.len()])
-            .collect();
-        outputs[0] = Value::Str(s.into());
-    }
-}
-
-/// Random boolean with a given probability of true.
-///
-/// Signature: `() -> (bool)`
-pub struct RandomBool {
-    meta: NodeMeta,
-    threshold: u64,
-}
-
-impl RandomBool {
-    pub fn new(probability: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "random_bool".into(),
-                outs: vec![Port::bool("output")],
-                ins: Vec::new(),
-            },
-            threshold: (probability.clamp(0.0, 1.0) * u64::MAX as f64) as u64,
-        }
-    }
-}
-
-impl PolydatNode for RandomBool {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Bool(next_u64() < self.threshold);
+    pub fn alphanumeric(length: u64) -> Self {
+        Self::new("A-Za-z0-9".to_string(), length)
     }
 }
 
@@ -232,93 +158,80 @@ impl PolydatNode for RandomBool {
 /// Extract a substring from bundled lorem ipsum text using a hash-based
 /// offset. Deterministic: same input → same extract.
 ///
-/// Signature: `(input: u64) -> (String)`
+/// Signature: `hashed_lorem_extract(input: u64, min_len: u64, max_len: u64) -> String`
 ///
-/// This is the equivalent of nosqlbench's `HashedLoremExtractToString`.
-pub struct HashedLoremExtract {
-    meta: NodeMeta,
-    min_len: usize,
-    max_len: usize,
+/// SRD-80b Phase E migration — equivalent to nosqlbench's
+/// `HashedLoremExtractToString`.
+#[crate::polydat_node(category = String)]
+fn hashed_lorem_extract(
+    input: u64,
+    min_len: crate::derive_support::Const<u64>,
+    max_len: crate::derive_support::Const<u64>,
+) -> String {
+    let min_len = *min_len as usize;
+    let max_len = *max_len as usize;
+    let len_range = max_len.saturating_sub(min_len) + 1;
+    let extract_len = min_len + ((input as usize) % len_range);
+    let max_offset = LOREM_IPSUM.len().saturating_sub(extract_len);
+    let h2 = xxh3_64(&input.to_le_bytes());
+    let offset = if max_offset > 0 { (h2 as usize) % (max_offset + 1) } else { 0 };
+    let end = (offset + extract_len).min(LOREM_IPSUM.len());
+    // Align to char boundaries
+    let start = LOREM_IPSUM.floor_char_boundary(offset);
+    let end = LOREM_IPSUM.ceil_char_boundary(end);
+    LOREM_IPSUM[start..end].to_string()
 }
 
-impl HashedLoremExtract {
-    pub fn new(min_len: usize, max_len: usize) -> Self {
-        assert!(max_len >= min_len);
-        Self {
-            meta: NodeMeta {
-                name: "hashed_lorem_extract".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            min_len,
-            max_len,
-        }
-    }
-}
+/// Pre-split list of non-empty lines from a bundled text source.
+/// SRD-80b Phase E — derived state for `hashed_line_to_string`,
+/// computed once per node instance via `split_lines`.
+pub struct HashedLines(pub Vec<String>);
 
-impl PolydatNode for HashedLoremExtract {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let h = inputs[0].as_u64();
-        let len_range = self.max_len - self.min_len + 1;
-        let extract_len = self.min_len + ((h as usize) % len_range);
-        let max_offset = LOREM_IPSUM.len().saturating_sub(extract_len);
-        let h2 = xxh3_64(&h.to_le_bytes());
-        let offset = if max_offset > 0 { (h2 as usize) % (max_offset + 1) } else { 0 };
-        let end = (offset + extract_len).min(LOREM_IPSUM.len());
-        // Align to char boundaries
-        let start = LOREM_IPSUM.floor_char_boundary(offset);
-        let end = LOREM_IPSUM.ceil_char_boundary(end);
-        outputs[0] = Value::Str(LOREM_IPSUM[start..end].to_string().into());
-    }
-}
+impl crate::derive_support::PolydatSetup for HashedLines {}
 
-/// Select a deterministic line from a bundled text file using hash.
-///
-/// Signature: `(input: u64) -> (String)`
-///
-/// Equivalent to nosqlbench's `HashedLineToString`. The text file is
-/// pre-split into lines at init time.
-pub struct HashedLineToString {
-    meta: NodeMeta,
-    lines: Vec<String>,
-}
-
-impl HashedLineToString {
-    /// Create from a bundled text source.
-    pub fn new(text: &str) -> Self {
-        let lines: Vec<String> = text.lines()
+impl HashedLines {
+    /// Single-call setup. The `#[polydat_node]` macro invokes
+    /// this exactly once in the generated `HashedLineToString::new()`.
+    pub fn split_lines(text: &str) -> Self {
+        let lines: Vec<String> = text
+            .lines()
             .map(|l| l.to_string())
             .filter(|l| !l.is_empty())
             .collect();
         assert!(!lines.is_empty(), "text source must have at least one line");
-        Self {
-            meta: NodeMeta {
-                name: "hashed_line_to_string".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            lines,
-        }
+        Self(lines)
     }
-
-    /// From bundled first names.
-    pub fn names() -> Self { Self::new(NAMES) }
-    /// From bundled last names.
-    pub fn lastnames() -> Self { Self::new(LASTNAMES) }
-    /// From bundled careers.
-    pub fn careers() -> Self { Self::new(CAREERS) }
-    /// From bundled company names.
-    pub fn companies() -> Self { Self::new(COMPANIES) }
 }
 
-impl PolydatNode for HashedLineToString {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let h = inputs[0].as_u64();
-        let idx = (h as usize) % self.lines.len();
-        outputs[0] = Value::Str(self.lines[idx].clone().into());
-    }
+/// Select a deterministic line from a bundled text source using
+/// the input hash as an index. Deterministic: same input → same line.
+///
+/// Signature: `hashed_line_to_string(input: u64, source: &str) -> String`
+///
+/// SRD-80b Phase E migration — equivalent to nosqlbench's
+/// `HashedLineToString`. The text source is split into lines at
+/// node-construction time (setup-derived state).
+#[crate::polydat_node(category = String)]
+fn hashed_line_to_string(
+    input: u64,
+    source: crate::derive_support::Const<&str>,
+    #[poly_const(HashedLines::split_lines, from = source)]
+    lines: &HashedLines,
+) -> String {
+    let _ = source;
+    let idx = (input as usize) % lines.0.len();
+    lines.0[idx].clone()
+}
+
+impl HashedLineToString {
+    /// From bundled first names.
+    pub fn names() -> Self { Self::new(NAMES.to_string()) }
+    /// From bundled last names.
+    pub fn lastnames() -> Self { Self::new(LASTNAMES.to_string()) }
+    /// From bundled careers.
+    pub fn careers() -> Self { Self::new(CAREERS.to_string()) }
+    /// From bundled company names.
+    pub fn companies() -> Self { Self::new(COMPANIES.to_string()) }
 }
 
 fn parse_charset(spec: &str) -> Vec<char> {
@@ -340,6 +253,7 @@ fn parse_charset(spec: &str) -> Vec<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn lorem_ipsum_bundled() {

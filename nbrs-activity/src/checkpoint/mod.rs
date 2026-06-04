@@ -26,7 +26,7 @@ pub mod resume;
 
 pub use identity::{PathSegment, PhaseIdentity};
 pub use storage::{Checkpoint, OpCounts, PhaseEntry, PhaseStatus};
-pub use events::CheckpointEvent;
+pub use events::CheckpointData;
 pub use writer::CheckpointWriter;
 pub use resume::{ResumePlan, ResumeAction};
 

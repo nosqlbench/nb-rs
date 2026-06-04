@@ -1,0 +1,23 @@
+# Copyright 2024-2026 Jonathan Shook
+# SPDX-License-Identifier: Apache-2.0
+#
+# `polydat-derive` — proc-macro crate that derives polydat node
+# metadata (struct, NodeMeta, impl PolydatNode, FuncSig
+# registration) from a single typed Rust function signature.
+# See docs/sysref/80_node_function_macro_collapse.md for the
+# design and migration plan.
+
+[package]
+name = "polydat-derive"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Proc-macro support for polydat — derive node metadata from typed function signatures"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits", "visit-mut"] }

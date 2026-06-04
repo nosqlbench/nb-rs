@@ -12,8 +12,9 @@
 
 use std::fmt::Write as _;
 
+use crate::lifecycle::SubjectKind;
 use crate::readouts::buf::ReadoutBuf;
-use crate::readouts::context::{ReadoutContext, SubjectKind};
+use crate::readouts::context::ReadoutContext;
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
 pub struct SessionSummary;
@@ -166,7 +167,7 @@ mod tests {
         fn status_metric_chips(&self) -> String { String::new() }
         fn depth_indent(&self) -> &str { "" }
         fn use_color(&self) -> bool { false }
-        fn event(&self) -> crate::readouts::Event { crate::readouts::Event::SessionEnd }
+        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::SessionEnd }
         fn session_phases_completed(&self) -> usize { self.completed }
         fn session_phases_failed(&self) -> usize { self.failed }
         fn session_phases_pending(&self) -> usize { self.pending }

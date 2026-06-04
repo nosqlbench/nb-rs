@@ -1,10 +1,10 @@
-* Add bundled workloads
-* generalize execution model
-* start formalizing nbrs runtime
-* include jq streaming operators
-* incorporate JSON serdes standard types
-* define the embedded expr contract 
-* extend op templates to include structural JSON templates
-* audit docs
-* remove status/progress tracking detritous
-* fully decouple inventory shared components from runtime, no static lists or preconfigs
+* (5) Add bundled workloads
+* (4) start formalizing nbrs runtime & generalize execution model
+  * (4) define the embedded expr contract
+* (4) finalize http driver op template forms and capabilities
+* (3) incorporate (standardize) JSON serdes standard types and into template forms
+* (3) audit docs
+* (2) include jq streaming operators
+* (2) include curl operators
+* (2) remove status/progress tracking detritous (cleaning up agentic logs/side comments)
+* (2) fully decouple inventory shared components from runtime, no static lists or preconfigs

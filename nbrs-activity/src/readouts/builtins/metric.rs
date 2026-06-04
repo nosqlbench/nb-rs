@@ -20,8 +20,9 @@
 //! For now this is a thin shim that exists so the body
 //! grammar can reference `metric` without errors.
 
+use crate::lifecycle::SubjectKind;
 use crate::readouts::buf::ReadoutBuf;
-use crate::readouts::context::{ReadoutContext, SubjectKind};
+use crate::readouts::context::ReadoutContext;
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
 pub struct Metric;
@@ -145,7 +146,7 @@ mod tests {
         fn status_metric_chips(&self) -> String { self.chips.clone() }
         fn depth_indent(&self) -> &str { "" }
         fn use_color(&self) -> bool { false }
-        fn event(&self) -> crate::readouts::Event { crate::readouts::Event::Update }
+        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::Update }
     }
 
     #[test]

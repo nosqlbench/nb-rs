@@ -12,8 +12,9 @@
 
 use std::fmt::Write as _;
 
+use crate::lifecycle::SubjectKind;
 use crate::readouts::buf::ReadoutBuf;
-use crate::readouts::context::{ReadoutContext, SubjectKind};
+use crate::readouts::context::ReadoutContext;
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
 pub struct PhaseStarting;
@@ -181,7 +182,7 @@ mod tests {
         fn status_metric_chips(&self) -> String { String::new() }
         fn depth_indent(&self) -> &str { "" }
         fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> crate::readouts::Event { crate::readouts::Event::PhaseStart }
+        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::PhaseStart }
     }
 
     fn render(ctx: &TestCtx, lod: Lod) -> String {

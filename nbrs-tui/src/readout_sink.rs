@@ -403,7 +403,7 @@ mod tests {
             fn elapsed_secs(&self) -> f64 { 0.01 }
             fn consumed(&self) -> u64 { 3 }
             fn use_color(&self) -> bool { true }
-            fn event(&self) -> ro::Event { ro::Event::PhaseEnd }
+            fn event(&self) -> nbrs_activity::lifecycle::EventType { nbrs_activity::lifecycle::EventType::PhaseEnd }
         }
         let mut sink = TuiReadoutSink::new();
         let phase_outcome = ro::Registry::lookup("phase_outcome").unwrap();

@@ -48,7 +48,7 @@ use criterion::{
 use polydat::ast::Value;
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::kernel::{PolydatKernel, SharedCell, SharedCellInner};
-use polydat::library::arithmetic::SumN;
+use polydat::library::arithmetic::Sum;
 
 // =================================================================
 // Helpers
@@ -75,14 +75,14 @@ fn cell_in_scope(intent_word: Arc<AtomicU64>, bit: u8, initial: Value) -> Shared
 
 /// Build a kernel with `n_inputs` cell-attachable input
 /// slots (named `in0`…`in{n-1}`) feeding a single
-/// `SumN` node whose output is "out". The caller
+/// `Sum` node whose output is "out". The caller
 /// attaches cells to whichever slots they want to
 /// exercise.
 fn build_n_input_kernel(n_inputs: usize) -> PolydatKernel {
     let input_names: Vec<String> = (0..n_inputs).map(|i| format!("in{i}")).collect();
     let mut asm = PolydatAssembler::new(input_names.clone());
     let refs: Vec<WireRef> = input_names.iter().map(|n| WireRef::input(n)).collect();
-    asm.add_node("sum", Box::new(SumN::new(n_inputs)), refs);
+    asm.add_node("sum", Box::new(Sum::new(n_inputs)), refs);
     asm.add_output("out", WireRef::node("sum"));
     asm.compile().unwrap()
 }

@@ -27,5 +27,6 @@ local/
 **/*.db
 **/*.db-journal
 **/logs
+**/sessions
 **/tmp
 /.cl*

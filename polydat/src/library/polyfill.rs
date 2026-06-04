@@ -27,64 +27,17 @@
 //! assembler couldn't verify (range, parse, shape) lives in
 //! `boundary_adapter` only; lossless widenings live in both
 //! via the `boundary_adapter` superset relation.
+//!
+//! Every cell is authored as an individual `#[polydat_node]`
+//! free function per SRD-80b §S14 — the macro emits the
+//! matching PascalCase struct (e.g. `__u64_to_i32` → `U64ToI32`),
+//! the `impl PolydatNode`, and the inventory registration. The
+//! `__` prefix on the function identifier carries through to
+//! the DSL/NodeMeta name, which is the convention assembly's
+//! adapter-detection passes use to identify auto-inserted
+//! type-coercion bridges (`name.starts_with("__")`).
 
 use std::sync::Arc;
-
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, SliceArc, Slot, Value};
-
-// =================================================================
-// Adapter macro
-// =================================================================
-
-/// Generate an edge-adapter struct + `Default` + `new` +
-/// `PolydatNode` impl from (name, node_name, from_port, to_port,
-/// eval closure) tuple. Every adapter in this module follows
-/// the same shape: one input slot of `from_port` type, one
-/// output port of `to_port` type, eval is a single-input
-/// `|v: &Value| -> Value` closure.
-macro_rules! polyfill_adapter {
-    (
-        $name:ident,
-        $node_name:literal,
-        $from:ident,
-        $to:ident,
-        $eval:expr $(,)?
-    ) => {
-        pub struct $name {
-            meta: NodeMeta,
-        }
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-
-        impl $name {
-            pub fn new() -> Self {
-                Self {
-                    meta: NodeMeta {
-                        name: $node_name.into(),
-                        outs: vec![Port::new("output", PortType::$to)],
-                        ins: vec![Slot::Wire(Port::new("input", PortType::$from))],
-                    },
-                }
-            }
-        }
-
-        impl PolydatNode for $name {
-            fn meta(&self) -> &NodeMeta {
-                &self.meta
-            }
-
-            fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-                #[allow(clippy::redundant_closure_call)]
-                let f: fn(&Value) -> Value = $eval;
-                outputs[0] = f(&inputs[0]);
-            }
-        }
-    };
-}
 
 // =================================================================
 // 1. Numeric → numeric (narrowings + non-widening casts)
@@ -93,78 +46,78 @@ macro_rules! polyfill_adapter {
 // Bit-stuffing convention (`type_system.md` §1):
 //   - U64/U32/I64/I32 share `Value::U64` storage. Narrow ints
 //     occupy the low bits with sign extension for signed types.
-//   - F64/F32 share `Value::F64` storage; F32 carries the
-//     materialised float value (not bit-stuffed) per the
-//     existing F32ToF64 widening's convention.
+//   - F64/F32 share `Value::U64` storage via `f32::to_bits()`;
+//     the macro-generated `IntoValue for f32` performs the
+//     bit-stuffing.
 //
 // Range-check panics keep silent truncation/saturation out of
 // the substrate. Authors who want saturating or wrapping
 // narrowing use explicit `*_to_*_wrapping` / `_saturating`
 // nodes (not provided by polyfill).
 
-polyfill_adapter!(U64ToU32, "__u64_to_u32", U64, U32, |v| {
-    let n = v.as_u64();
+#[crate::polydat_node(category = Conversions)]
+fn __u64_to_u32(n: u64) -> u32 {
     if n > u32::MAX as u64 {
         panic!("__u64_to_u32: value {n} exceeds u32::MAX ({})", u32::MAX);
     }
-    Value::U64(n)
-});
+    n as u32
+}
 
-polyfill_adapter!(U64ToI64, "__u64_to_i64", U64, I64, |v| {
-    let n = v.as_u64();
+#[crate::polydat_node(category = Conversions)]
+fn __u64_to_i64(n: u64) -> i64 {
     if n > i64::MAX as u64 {
         panic!("__u64_to_i64: value {n} exceeds i64::MAX ({})", i64::MAX);
     }
-    Value::U64(n)
-});
+    n as i64
+}
 
-polyfill_adapter!(U64ToI32, "__u64_to_i32", U64, I32, |v| {
-    let n = v.as_u64();
+#[crate::polydat_node(category = Conversions)]
+fn __u64_to_i32(n: u64) -> i32 {
     if n > i32::MAX as u64 {
         panic!("__u64_to_i32: value {n} exceeds i32::MAX ({})", i32::MAX);
     }
-    Value::U64(n as i32 as i64 as u64)
-});
+    n as i32
+}
 
-polyfill_adapter!(U64ToF32, "__u64_to_f32", U64, F32, |v| {
-    let n = v.as_u64();
+#[crate::polydat_node(category = Conversions)]
+fn __u64_to_f32(n: u64) -> f32 {
     // u64 → f32 always succeeds (saturates to f32::INFINITY for
     // very large values) but loses precision; that's the
     // expected lossy-narrowing semantic.
-    Value::F64(n as f32 as f64)
-});
+    n as f32
+}
 
-polyfill_adapter!(U32ToI32, "__u32_to_i32", U32, I32, |v| {
-    let n = v.as_u64() & 0xFFFF_FFFF;
-    if n > i32::MAX as u64 {
+#[crate::polydat_node(category = Conversions)]
+fn __u32_to_i32(n: u32) -> i32 {
+    if n > i32::MAX as u32 {
         panic!("__u32_to_i32: value {n} exceeds i32::MAX ({})", i32::MAX);
     }
-    Value::U64(n as i32 as i64 as u64)
-});
+    n as i32
+}
 
-polyfill_adapter!(U32ToF32, "__u32_to_f32", U32, F32, |v| {
-    let n = (v.as_u64() & 0xFFFF_FFFF) as u32;
-    Value::F64(n as f32 as f64)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __u32_to_f32(n: u32) -> f32 {
+    n as f32
+}
 
-polyfill_adapter!(I64ToU64, "__i64_to_u64", I64, U64, |v| {
-    let n = v.as_u64() as i64;
+#[crate::polydat_node(category = Conversions)]
+fn __i64_to_u64(n: i64) -> u64 {
     if n < 0 {
         panic!("__i64_to_u64: negative value {n} cannot be represented as u64");
     }
-    Value::U64(n as u64)
-});
+    n as u64
+}
 
-polyfill_adapter!(I64ToU32, "__i64_to_u32", I64, U32, |v| {
-    let n = v.as_u64() as i64;
+#[crate::polydat_node(category = Conversions)]
+fn __i64_to_u32(n: i64) -> u32 {
     if n < 0 || n > u32::MAX as i64 {
         panic!("__i64_to_u32: value {n} out of u32 range [0, {}]", u32::MAX);
     }
-    Value::U64(n as u64)
-});
+    n as u32
+}
 
-polyfill_adapter!(I64ToI32, "__i64_to_i32", I64, I32, |v| {
-    let n = v.as_u64() as i64;
+#[crate::polydat_node(category = Conversions)]
+fn __i64_to_i32(n: i64) -> i32 {
     if n < i32::MIN as i64 || n > i32::MAX as i64 {
         panic!(
             "__i64_to_i32: value {n} out of i32 range [{}, {}]",
@@ -172,37 +125,37 @@ polyfill_adapter!(I64ToI32, "__i64_to_i32", I64, I32, |v| {
             i32::MAX
         );
     }
-    Value::U64(n as i32 as i64 as u64)
-});
+    n as i32
+}
 
-polyfill_adapter!(I64ToF32, "__i64_to_f32", I64, F32, |v| {
-    let n = v.as_u64() as i64;
-    Value::F64(n as f32 as f64)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __i64_to_f32(n: i64) -> f32 {
+    n as f32
+}
 
-polyfill_adapter!(I32ToU64, "__i32_to_u64", I32, U64, |v| {
-    let n = v.as_u64() as i32;
+#[crate::polydat_node(category = Conversions)]
+fn __i32_to_u64(n: i32) -> u64 {
     if n < 0 {
         panic!("__i32_to_u64: negative value {n} cannot be represented as u64");
     }
-    Value::U64(n as u64)
-});
+    n as u64
+}
 
-polyfill_adapter!(I32ToU32, "__i32_to_u32", I32, U32, |v| {
-    let n = v.as_u64() as i32;
+#[crate::polydat_node(category = Conversions)]
+fn __i32_to_u32(n: i32) -> u32 {
     if n < 0 {
         panic!("__i32_to_u32: negative value {n} cannot be represented as u32");
     }
-    Value::U64(n as u64)
-});
+    n as u32
+}
 
-polyfill_adapter!(I32ToF32, "__i32_to_f32", I32, F32, |v| {
-    let n = v.as_u64() as i32;
-    Value::F64(n as f32 as f64)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __i32_to_f32(n: i32) -> f32 {
+    n as f32
+}
 
-polyfill_adapter!(F64ToU64, "__f64_to_u64_checked", F64, U64, |v| {
-    let f = v.as_f64();
+#[crate::polydat_node(category = Conversions)]
+fn __f64_to_u64_checked(f: f64) -> u64 {
     if !f.is_finite() {
         panic!("__f64_to_u64_checked: non-finite value {f} cannot be represented as u64");
     }
@@ -210,11 +163,11 @@ polyfill_adapter!(F64ToU64, "__f64_to_u64_checked", F64, U64, |v| {
     if n < 0.0 || n > u64::MAX as f64 {
         panic!("__f64_to_u64_checked: value {f} out of u64 range [0, {}]", u64::MAX);
     }
-    Value::U64(n as u64)
-});
+    n as u64
+}
 
-polyfill_adapter!(F64ToU32, "__f64_to_u32", F64, U32, |v| {
-    let f = v.as_f64();
+#[crate::polydat_node(category = Conversions)]
+fn __f64_to_u32(f: f64) -> u32 {
     if !f.is_finite() {
         panic!("__f64_to_u32: non-finite value {f} cannot be represented as u32");
     }
@@ -222,11 +175,11 @@ polyfill_adapter!(F64ToU32, "__f64_to_u32", F64, U32, |v| {
     if n < 0.0 || n > u32::MAX as f64 {
         panic!("__f64_to_u32: value {f} out of u32 range [0, {}]", u32::MAX);
     }
-    Value::U64(n as u64)
-});
+    n as u32
+}
 
-polyfill_adapter!(F64ToI64, "__f64_to_i64", F64, I64, |v| {
-    let f = v.as_f64();
+#[crate::polydat_node(category = Conversions)]
+fn __f64_to_i64(f: f64) -> i64 {
     if !f.is_finite() {
         panic!("__f64_to_i64: non-finite value {f} cannot be represented as i64");
     }
@@ -238,11 +191,11 @@ polyfill_adapter!(F64ToI64, "__f64_to_i64", F64, I64, |v| {
             i64::MAX
         );
     }
-    Value::U64(n as i64 as u64)
-});
+    n as i64
+}
 
-polyfill_adapter!(F64ToI32, "__f64_to_i32", F64, I32, |v| {
-    let f = v.as_f64();
+#[crate::polydat_node(category = Conversions)]
+fn __f64_to_i32(f: f64) -> i32 {
     if !f.is_finite() {
         panic!("__f64_to_i32: non-finite value {f} cannot be represented as i32");
     }
@@ -254,18 +207,18 @@ polyfill_adapter!(F64ToI32, "__f64_to_i32", F64, I32, |v| {
             i32::MAX
         );
     }
-    Value::U64(n as i32 as i64 as u64)
-});
+    n as i32
+}
 
-polyfill_adapter!(F64ToF32, "__f64_to_f32", F64, F32, |v| {
-    let f = v.as_f64();
+#[crate::polydat_node(category = Conversions)]
+fn __f64_to_f32(f: f64) -> f32 {
     // f64 → f32 always succeeds (saturates to ±INFINITY for
     // very large magnitudes) but loses precision.
-    Value::F64(f as f32 as f64)
-});
+    f as f32
+}
 
-polyfill_adapter!(F32ToU64, "__f32_to_u64", F32, U64, |v| {
-    let f = v.as_f64() as f32;
+#[crate::polydat_node(category = Conversions)]
+fn __f32_to_u64(f: f32) -> u64 {
     if !f.is_finite() {
         panic!("__f32_to_u64: non-finite value {f} cannot be represented as u64");
     }
@@ -273,11 +226,11 @@ polyfill_adapter!(F32ToU64, "__f32_to_u64", F32, U64, |v| {
     if n < 0.0 || n > u64::MAX as f32 {
         panic!("__f32_to_u64: value {f} out of u64 range [0, {}]", u64::MAX);
     }
-    Value::U64(n as u64)
-});
+    n as u64
+}
 
-polyfill_adapter!(F32ToU32, "__f32_to_u32", F32, U32, |v| {
-    let f = v.as_f64() as f32;
+#[crate::polydat_node(category = Conversions)]
+fn __f32_to_u32(f: f32) -> u32 {
     if !f.is_finite() {
         panic!("__f32_to_u32: non-finite value {f} cannot be represented as u32");
     }
@@ -285,11 +238,11 @@ polyfill_adapter!(F32ToU32, "__f32_to_u32", F32, U32, |v| {
     if n < 0.0 || n > u32::MAX as f32 {
         panic!("__f32_to_u32: value {f} out of u32 range [0, {}]", u32::MAX);
     }
-    Value::U64(n as u64)
-});
+    n as u32
+}
 
-polyfill_adapter!(F32ToI64, "__f32_to_i64", F32, I64, |v| {
-    let f = v.as_f64() as f32;
+#[crate::polydat_node(category = Conversions)]
+fn __f32_to_i64(f: f32) -> i64 {
     if !f.is_finite() {
         panic!("__f32_to_i64: non-finite value {f} cannot be represented as i64");
     }
@@ -301,11 +254,11 @@ polyfill_adapter!(F32ToI64, "__f32_to_i64", F32, I64, |v| {
             i64::MAX
         );
     }
-    Value::U64(n as i64 as u64)
-});
+    n as i64
+}
 
-polyfill_adapter!(F32ToI32, "__f32_to_i32", F32, I32, |v| {
-    let f = v.as_f64() as f32;
+#[crate::polydat_node(category = Conversions)]
+fn __f32_to_i32(f: f32) -> i32 {
     if !f.is_finite() {
         panic!("__f32_to_i32: non-finite value {f} cannot be represented as i32");
     }
@@ -317,54 +270,42 @@ polyfill_adapter!(F32ToI32, "__f32_to_i32", F32, I32, |v| {
             i32::MAX
         );
     }
-    Value::U64(n as i32 as i64 as u64)
-});
+    n as i32
+}
 
 // =================================================================
 // 2. Bool ↔ numeric (beyond Bool↔U64 in convert.rs)
 // =================================================================
 
-polyfill_adapter!(BoolToU32, "__bool_to_u32", Bool, U32, |v| {
-    Value::U64(if v.as_bool() { 1 } else { 0 })
-});
+#[crate::polydat_node(category = Conversions)]
+fn __bool_to_u32(b: bool) -> u32 { if b { 1 } else { 0 } }
 
-polyfill_adapter!(BoolToI64, "__bool_to_i64", Bool, I64, |v| {
-    Value::U64(if v.as_bool() { 1 } else { 0 })
-});
+#[crate::polydat_node(category = Conversions)]
+fn __bool_to_i64(b: bool) -> i64 { if b { 1 } else { 0 } }
 
-polyfill_adapter!(BoolToI32, "__bool_to_i32", Bool, I32, |v| {
-    Value::U64(if v.as_bool() { 1 } else { 0 })
-});
+#[crate::polydat_node(category = Conversions)]
+fn __bool_to_i32(b: bool) -> i32 { if b { 1 } else { 0 } }
 
-polyfill_adapter!(BoolToF64, "__bool_to_f64", Bool, F64, |v| {
-    Value::F64(if v.as_bool() { 1.0 } else { 0.0 })
-});
+#[crate::polydat_node(category = Conversions)]
+fn __bool_to_f64(b: bool) -> f64 { if b { 1.0 } else { 0.0 } }
 
-polyfill_adapter!(BoolToF32, "__bool_to_f32", Bool, F32, |v| {
-    Value::F64(if v.as_bool() { 1.0 } else { 0.0 })
-});
+#[crate::polydat_node(category = Conversions)]
+fn __bool_to_f32(b: bool) -> f32 { if b { 1.0 } else { 0.0 } }
 
-polyfill_adapter!(U32ToBool, "__u32_to_bool", U32, Bool, |v| {
-    Value::Bool((v.as_u64() & 0xFFFF_FFFF) != 0)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __u32_to_bool(n: u32) -> bool { n != 0 }
 
-polyfill_adapter!(I64ToBool, "__i64_to_bool", I64, Bool, |v| {
-    Value::Bool((v.as_u64() as i64) != 0)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __i64_to_bool(n: i64) -> bool { n != 0 }
 
-polyfill_adapter!(I32ToBool, "__i32_to_bool", I32, Bool, |v| {
-    Value::Bool((v.as_u64() as i32) != 0)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __i32_to_bool(n: i32) -> bool { n != 0 }
 
-polyfill_adapter!(F64ToBool, "__f64_to_bool", F64, Bool, |v| {
-    let f = v.as_f64();
-    Value::Bool(f != 0.0 && !f.is_nan())
-});
+#[crate::polydat_node(category = Conversions)]
+fn __f64_to_bool(f: f64) -> bool { f != 0.0 && !f.is_nan() }
 
-polyfill_adapter!(F32ToBool, "__f32_to_bool", F32, Bool, |v| {
-    let f = v.as_f64() as f32;
-    Value::Bool(f != 0.0 && !f.is_nan())
-});
+#[crate::polydat_node(category = Conversions)]
+fn __f32_to_bool(f: f32) -> bool { f != 0.0 && !f.is_nan() }
 
 // =================================================================
 // 3. Str → narrow numerics + collections (parsers)
@@ -374,95 +315,90 @@ polyfill_adapter!(F32ToBool, "__f32_to_bool", F32, Bool, |v| {
 // input. Trims whitespace before parsing. Out-of-range
 // inputs panic with the diagnostic name + offending value.
 
-polyfill_adapter!(StrToU32, "__str_to_u32", Str, U32, |v| {
-    let raw = v.as_str().trim();
-    let n = raw
-        .parse::<u32>()
-        .unwrap_or_else(|e| panic!("__str_to_u32: cannot parse {raw:?} as u32: {e}"));
-    Value::U64(n as u64)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __str_to_u32(input: &str) -> u32 {
+    let raw = input.trim();
+    raw.parse::<u32>()
+        .unwrap_or_else(|e| panic!("__str_to_u32: cannot parse {raw:?} as u32: {e}"))
+}
 
-polyfill_adapter!(StrToI64, "__str_to_i64", Str, I64, |v| {
-    let raw = v.as_str().trim();
-    let n = raw
-        .parse::<i64>()
-        .unwrap_or_else(|e| panic!("__str_to_i64: cannot parse {raw:?} as i64: {e}"));
-    Value::U64(n as u64)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __str_to_i64(input: &str) -> i64 {
+    let raw = input.trim();
+    raw.parse::<i64>()
+        .unwrap_or_else(|e| panic!("__str_to_i64: cannot parse {raw:?} as i64: {e}"))
+}
 
-polyfill_adapter!(StrToI32, "__str_to_i32", Str, I32, |v| {
-    let raw = v.as_str().trim();
-    let n = raw
-        .parse::<i32>()
-        .unwrap_or_else(|e| panic!("__str_to_i32: cannot parse {raw:?} as i32: {e}"));
-    Value::U64(n as i64 as u64)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __str_to_i32(input: &str) -> i32 {
+    let raw = input.trim();
+    raw.parse::<i32>()
+        .unwrap_or_else(|e| panic!("__str_to_i32: cannot parse {raw:?} as i32: {e}"))
+}
 
-polyfill_adapter!(StrToF32, "__str_to_f32", Str, F32, |v| {
-    let raw = v.as_str().trim();
-    let n = raw
-        .parse::<f32>()
-        .unwrap_or_else(|e| panic!("__str_to_f32: cannot parse {raw:?} as f32: {e}"));
-    Value::F64(n as f64)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __str_to_f32(input: &str) -> f32 {
+    let raw = input.trim();
+    raw.parse::<f32>()
+        .unwrap_or_else(|e| panic!("__str_to_f32: cannot parse {raw:?} as f32: {e}"))
+}
 
-polyfill_adapter!(StrToBytes, "__str_to_bytes", Str, Bytes, |v| {
-    let raw = v.as_str().trim();
-    let bytes = data_encoding::HEXLOWER_PERMISSIVE
+#[crate::polydat_node(category = Conversions)]
+fn __str_to_bytes(input: &str) -> Vec<u8> {
+    let raw = input.trim();
+    data_encoding::HEXLOWER_PERMISSIVE
         .decode(raw.as_bytes())
-        .unwrap_or_else(|e| panic!("__str_to_bytes: cannot hex-decode {raw:?}: {e}"));
-    Value::Bytes(Arc::from(bytes.as_slice()))
-});
+        .unwrap_or_else(|e| panic!("__str_to_bytes: cannot hex-decode {raw:?}: {e}"))
+}
 
-polyfill_adapter!(StrToJson, "__str_to_json", Str, Json, |v| {
-    let raw = v.as_str();
+#[crate::polydat_node(category = Conversions)]
+fn __str_to_json(input: &str) -> Arc<serde_json::Value> {
     // Try-parse-or-error-wrap: well-formed JSON parses through;
     // malformed JSON wraps as a structured error so the substrate
     // never silently loses the original content. Workload authors
     // see the wrapped error when they pull the resulting Json
     // value downstream.
-    match serde_json::from_str::<serde_json::Value>(raw) {
-        Ok(parsed) => Value::Json(Arc::new(parsed)),
+    match serde_json::from_str::<serde_json::Value>(input) {
+        Ok(parsed) => Arc::new(parsed),
         Err(e) => {
             let wrapped = serde_json::json!({
                 "error": "invalid JSON",
                 "message": e.to_string(),
-                "raw": raw,
+                "raw": input,
             });
-            Value::Json(Arc::new(wrapped))
+            Arc::new(wrapped)
         }
     }
-});
+}
 
-polyfill_adapter!(StrToVecF32, "__str_to_vec_f32", Str, VecF32, |v| {
-    let raw = v.as_str().trim();
+#[crate::polydat_node(category = Conversions)]
+fn __str_to_vec_f32(input: &str) -> Vec<f32> {
+    let raw = input.trim();
     let parsed: serde_json::Value = serde_json::from_str(raw).unwrap_or_else(|e| {
         panic!("__str_to_vec_f32: cannot parse {raw:?} as JSON array: {e}")
     });
     let arr = parsed.as_array().unwrap_or_else(|| {
         panic!("__str_to_vec_f32: parsed JSON is not an array: {raw:?}")
     });
-    let elems: Vec<f32> = arr
-        .iter()
+    arr.iter()
         .map(|j| {
             j.as_f64().unwrap_or_else(|| {
                 panic!("__str_to_vec_f32: element {j:?} is not a number in {raw:?}")
             }) as f32
         })
-        .collect();
-    Value::VecF32(SliceArc::from_vec(elems))
-});
+        .collect()
+}
 
-polyfill_adapter!(StrToVecI32, "__str_to_vec_i32", Str, VecI32, |v| {
-    let raw = v.as_str().trim();
+#[crate::polydat_node(category = Conversions)]
+fn __str_to_vec_i32(input: &str) -> Vec<i32> {
+    let raw = input.trim();
     let parsed: serde_json::Value = serde_json::from_str(raw).unwrap_or_else(|e| {
         panic!("__str_to_vec_i32: cannot parse {raw:?} as JSON array: {e}")
     });
     let arr = parsed.as_array().unwrap_or_else(|| {
         panic!("__str_to_vec_i32: parsed JSON is not an array: {raw:?}")
     });
-    let elems: Vec<i32> = arr
-        .iter()
+    arr.iter()
         .map(|j| {
             let n = j.as_i64().unwrap_or_else(|| {
                 panic!("__str_to_vec_i32: element {j:?} is not an integer in {raw:?}")
@@ -476,9 +412,8 @@ polyfill_adapter!(StrToVecI32, "__str_to_vec_i32", Str, VecI32, |v| {
             }
             n as i32
         })
-        .collect();
-    Value::VecI32(SliceArc::from_vec(elems))
-});
+        .collect()
+}
 
 // =================================================================
 // 4. Bytes ↔ {numerics, Bool, Str, Json, Vec}
@@ -495,157 +430,140 @@ polyfill_adapter!(StrToVecI32, "__str_to_vec_i32", Str, VecI32, |v| {
 //   - Bytes ↔ Str: **lowercase hex** (`data_encoding::HEXLOWER`).
 //     Roundtrip-lossless, unambiguous, JSON-safe.
 
-polyfill_adapter!(U64ToBytes, "__u64_to_bytes", U64, Bytes, |v| {
-    let bytes = v.as_u64().to_le_bytes();
-    Value::Bytes(Arc::from(&bytes[..]))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __u64_to_bytes(n: u64) -> Vec<u8> { n.to_le_bytes().to_vec() }
 
-polyfill_adapter!(U32ToBytes, "__u32_to_bytes", U32, Bytes, |v| {
-    let bytes = ((v.as_u64() & 0xFFFF_FFFF) as u32).to_le_bytes();
-    Value::Bytes(Arc::from(&bytes[..]))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __u32_to_bytes(n: u32) -> Vec<u8> { n.to_le_bytes().to_vec() }
 
-polyfill_adapter!(I64ToBytes, "__i64_to_bytes", I64, Bytes, |v| {
-    let bytes = (v.as_u64() as i64).to_le_bytes();
-    Value::Bytes(Arc::from(&bytes[..]))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __i64_to_bytes(n: i64) -> Vec<u8> { n.to_le_bytes().to_vec() }
 
-polyfill_adapter!(I32ToBytes, "__i32_to_bytes", I32, Bytes, |v| {
-    let bytes = (v.as_u64() as i32).to_le_bytes();
-    Value::Bytes(Arc::from(&bytes[..]))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __i32_to_bytes(n: i32) -> Vec<u8> { n.to_le_bytes().to_vec() }
 
-polyfill_adapter!(F64ToBytes, "__f64_to_bytes", F64, Bytes, |v| {
-    let bytes = v.as_f64().to_le_bytes();
-    Value::Bytes(Arc::from(&bytes[..]))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __f64_to_bytes(f: f64) -> Vec<u8> { f.to_le_bytes().to_vec() }
 
-polyfill_adapter!(F32ToBytes, "__f32_to_bytes", F32, Bytes, |v| {
-    let bytes = (v.as_f64() as f32).to_le_bytes();
-    Value::Bytes(Arc::from(&bytes[..]))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __f32_to_bytes(f: f32) -> Vec<u8> { f.to_le_bytes().to_vec() }
 
-polyfill_adapter!(BoolToBytes, "__bool_to_bytes", Bool, Bytes, |v| {
-    let byte: u8 = if v.as_bool() { 1 } else { 0 };
-    Value::Bytes(Arc::from(&[byte][..]))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __bool_to_bytes(b: bool) -> Vec<u8> { vec![if b { 1 } else { 0 }] }
 
-polyfill_adapter!(BytesToU64, "__bytes_to_u64", Bytes, U64, |v| {
-    let b = v.as_bytes();
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_u64(b: &[u8]) -> u64 {
     if b.len() != 8 {
         panic!(
             "__bytes_to_u64: expected exactly 8 bytes for u64, got {}",
             b.len()
         );
     }
-    Value::U64(u64::from_le_bytes(b.try_into().unwrap()))
-});
+    u64::from_le_bytes(b.try_into().unwrap())
+}
 
-polyfill_adapter!(BytesToU32, "__bytes_to_u32", Bytes, U32, |v| {
-    let b = v.as_bytes();
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_u32(b: &[u8]) -> u32 {
     if b.len() != 4 {
         panic!(
             "__bytes_to_u32: expected exactly 4 bytes for u32, got {}",
             b.len()
         );
     }
-    Value::U64(u32::from_le_bytes(b.try_into().unwrap()) as u64)
-});
+    u32::from_le_bytes(b.try_into().unwrap())
+}
 
-polyfill_adapter!(BytesToI64, "__bytes_to_i64", Bytes, I64, |v| {
-    let b = v.as_bytes();
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_i64(b: &[u8]) -> i64 {
     if b.len() != 8 {
         panic!(
             "__bytes_to_i64: expected exactly 8 bytes for i64, got {}",
             b.len()
         );
     }
-    Value::U64(i64::from_le_bytes(b.try_into().unwrap()) as u64)
-});
+    i64::from_le_bytes(b.try_into().unwrap())
+}
 
-polyfill_adapter!(BytesToI32, "__bytes_to_i32", Bytes, I32, |v| {
-    let b = v.as_bytes();
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_i32(b: &[u8]) -> i32 {
     if b.len() != 4 {
         panic!(
             "__bytes_to_i32: expected exactly 4 bytes for i32, got {}",
             b.len()
         );
     }
-    Value::U64(i32::from_le_bytes(b.try_into().unwrap()) as i64 as u64)
-});
+    i32::from_le_bytes(b.try_into().unwrap())
+}
 
-polyfill_adapter!(BytesToF64, "__bytes_to_f64", Bytes, F64, |v| {
-    let b = v.as_bytes();
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_f64(b: &[u8]) -> f64 {
     if b.len() != 8 {
         panic!(
             "__bytes_to_f64: expected exactly 8 bytes for f64, got {}",
             b.len()
         );
     }
-    Value::F64(f64::from_le_bytes(b.try_into().unwrap()))
-});
+    f64::from_le_bytes(b.try_into().unwrap())
+}
 
-polyfill_adapter!(BytesToF32, "__bytes_to_f32", Bytes, F32, |v| {
-    let b = v.as_bytes();
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_f32(b: &[u8]) -> f32 {
     if b.len() != 4 {
         panic!(
             "__bytes_to_f32: expected exactly 4 bytes for f32, got {}",
             b.len()
         );
     }
-    Value::F64(f32::from_le_bytes(b.try_into().unwrap()) as f64)
-});
+    f32::from_le_bytes(b.try_into().unwrap())
+}
 
-polyfill_adapter!(BytesToBool, "__bytes_to_bool", Bytes, Bool, |v| {
-    let b = v.as_bytes();
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_bool(b: &[u8]) -> bool {
     if b.len() != 1 {
         panic!(
             "__bytes_to_bool: expected exactly 1 byte for bool, got {}",
             b.len()
         );
     }
-    Value::Bool(b[0] != 0)
-});
+    b[0] != 0
+}
 
-polyfill_adapter!(BytesToStr, "__bytes_to_str", Bytes, Str, |v| {
-    let hex = data_encoding::HEXLOWER.encode(v.as_bytes());
-    Value::Str(Arc::from(hex))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_str(b: &[u8]) -> String {
+    data_encoding::HEXLOWER.encode(b)
+}
 
-polyfill_adapter!(BytesToJson, "__bytes_to_json", Bytes, Json, |v| {
-    let hex = data_encoding::HEXLOWER.encode(v.as_bytes());
-    Value::Json(Arc::new(serde_json::Value::String(hex)))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_json(b: &[u8]) -> Arc<serde_json::Value> {
+    let hex = data_encoding::HEXLOWER.encode(b);
+    Arc::new(serde_json::Value::String(hex))
+}
 
-polyfill_adapter!(BytesToVecF32, "__bytes_to_vec_f32", Bytes, VecF32, |v| {
-    let b = v.as_bytes();
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_vec_f32(b: &[u8]) -> Vec<f32> {
     if !b.len().is_multiple_of(4) {
         panic!(
             "__bytes_to_vec_f32: byte length {} is not a multiple of 4 (f32 size)",
             b.len()
         );
     }
-    let elems: Vec<f32> = b
-        .chunks_exact(4)
+    b.chunks_exact(4)
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-        .collect();
-    Value::VecF32(SliceArc::from_vec(elems))
-});
+        .collect()
+}
 
-polyfill_adapter!(BytesToVecI32, "__bytes_to_vec_i32", Bytes, VecI32, |v| {
-    let b = v.as_bytes();
+#[crate::polydat_node(category = Conversions)]
+fn __bytes_to_vec_i32(b: &[u8]) -> Vec<i32> {
     if !b.len().is_multiple_of(4) {
         panic!(
             "__bytes_to_vec_i32: byte length {} is not a multiple of 4 (i32 size)",
             b.len()
         );
     }
-    let elems: Vec<i32> = b
-        .chunks_exact(4)
+    b.chunks_exact(4)
         .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-        .collect();
-    Value::VecI32(SliceArc::from_vec(elems))
-});
+        .collect()
+}
 
 // =================================================================
 // 5. Json ↔ {numerics, Bool, Bytes, Vec}
@@ -655,73 +573,72 @@ polyfill_adapter!(BytesToVecI32, "__bytes_to_vec_i32", Bytes, VecI32, |v| {
 // otherwise. X→Json wraps in the corresponding Json variant.
 // Bytes round-trips through Json::String of hex per §4.
 
-polyfill_adapter!(U64ToJson, "__u64_to_json", U64, Json, |v| {
-    Value::Json(Arc::new(serde_json::Value::from(v.as_u64())))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __u64_to_json(n: u64) -> Arc<serde_json::Value> {
+    Arc::new(serde_json::Value::from(n))
+}
 
-polyfill_adapter!(U32ToJson, "__u32_to_json", U32, Json, |v| {
-    Value::Json(Arc::new(serde_json::Value::from(
-        (v.as_u64() & 0xFFFF_FFFF) as u32,
-    )))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __u32_to_json(n: u32) -> Arc<serde_json::Value> {
+    Arc::new(serde_json::Value::from(n))
+}
 
-polyfill_adapter!(I64ToJson, "__i64_to_json", I64, Json, |v| {
-    Value::Json(Arc::new(serde_json::Value::from(v.as_u64() as i64)))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __i64_to_json(n: i64) -> Arc<serde_json::Value> {
+    Arc::new(serde_json::Value::from(n))
+}
 
-polyfill_adapter!(I32ToJson, "__i32_to_json", I32, Json, |v| {
-    Value::Json(Arc::new(serde_json::Value::from(v.as_u64() as i32)))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __i32_to_json(n: i32) -> Arc<serde_json::Value> {
+    Arc::new(serde_json::Value::from(n))
+}
 
-polyfill_adapter!(F64ToJson, "__f64_to_json", F64, Json, |v| {
-    let f = v.as_f64();
+#[crate::polydat_node(category = Conversions)]
+fn __f64_to_json(f: f64) -> Arc<serde_json::Value> {
     let n = serde_json::Number::from_f64(f).unwrap_or_else(|| {
         panic!("__f64_to_json: non-finite f64 {f} not representable as JSON number")
     });
-    Value::Json(Arc::new(serde_json::Value::Number(n)))
-});
+    Arc::new(serde_json::Value::Number(n))
+}
 
-polyfill_adapter!(F32ToJson, "__f32_to_json", F32, Json, |v| {
-    let f = v.as_f64() as f32;
+#[crate::polydat_node(category = Conversions)]
+fn __f32_to_json(f: f32) -> Arc<serde_json::Value> {
     let n = serde_json::Number::from_f64(f as f64).unwrap_or_else(|| {
         panic!("__f32_to_json: non-finite f32 {f} not representable as JSON number")
     });
-    Value::Json(Arc::new(serde_json::Value::Number(n)))
-});
+    Arc::new(serde_json::Value::Number(n))
+}
 
-polyfill_adapter!(BoolToJson, "__bool_to_json", Bool, Json, |v| {
-    Value::Json(Arc::new(serde_json::Value::Bool(v.as_bool())))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __bool_to_json(b: bool) -> Arc<serde_json::Value> {
+    Arc::new(serde_json::Value::Bool(b))
+}
 
-polyfill_adapter!(JsonToU64, "__json_to_u64", Json, U64, |v| {
-    let j = v.as_json();
-    let n = j
-        .as_u64()
-        .unwrap_or_else(|| panic!("__json_to_u64: JSON value {j} is not a u64"));
-    Value::U64(n)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __json_to_u64(j: &serde_json::Value) -> u64 {
+    j.as_u64()
+        .unwrap_or_else(|| panic!("__json_to_u64: JSON value {j} is not a u64"))
+}
 
-polyfill_adapter!(JsonToU32, "__json_to_u32", Json, U32, |v| {
-    let j = v.as_json();
+#[crate::polydat_node(category = Conversions)]
+fn __json_to_u32(j: &serde_json::Value) -> u32 {
     let n = j
         .as_u64()
         .unwrap_or_else(|| panic!("__json_to_u32: JSON value {j} is not a u64"));
     if n > u32::MAX as u64 {
         panic!("__json_to_u32: value {n} exceeds u32::MAX ({})", u32::MAX);
     }
-    Value::U64(n)
-});
+    n as u32
+}
 
-polyfill_adapter!(JsonToI64, "__json_to_i64", Json, I64, |v| {
-    let j = v.as_json();
-    let n = j
-        .as_i64()
-        .unwrap_or_else(|| panic!("__json_to_i64: JSON value {j} is not an i64"));
-    Value::U64(n as u64)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __json_to_i64(j: &serde_json::Value) -> i64 {
+    j.as_i64()
+        .unwrap_or_else(|| panic!("__json_to_i64: JSON value {j} is not an i64"))
+}
 
-polyfill_adapter!(JsonToI32, "__json_to_i32", Json, I32, |v| {
-    let j = v.as_json();
+#[crate::polydat_node(category = Conversions)]
+fn __json_to_i32(j: &serde_json::Value) -> i32 {
     let n = j
         .as_i64()
         .unwrap_or_else(|| panic!("__json_to_i32: JSON value {j} is not an i64"));
@@ -732,67 +649,59 @@ polyfill_adapter!(JsonToI32, "__json_to_i32", Json, I32, |v| {
             i32::MAX
         );
     }
-    Value::U64(n as i32 as i64 as u64)
-});
+    n as i32
+}
 
-polyfill_adapter!(JsonToF64, "__json_to_f64", Json, F64, |v| {
-    let j = v.as_json();
-    let f = j
-        .as_f64()
-        .unwrap_or_else(|| panic!("__json_to_f64: JSON value {j} is not an f64"));
-    Value::F64(f)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __json_to_f64(j: &serde_json::Value) -> f64 {
+    j.as_f64()
+        .unwrap_or_else(|| panic!("__json_to_f64: JSON value {j} is not an f64"))
+}
 
-polyfill_adapter!(JsonToF32, "__json_to_f32", Json, F32, |v| {
-    let j = v.as_json();
+#[crate::polydat_node(category = Conversions)]
+fn __json_to_f32(j: &serde_json::Value) -> f32 {
     let f = j
         .as_f64()
         .unwrap_or_else(|| panic!("__json_to_f32: JSON value {j} is not an f64"));
-    Value::F64(f as f32 as f64)
-});
+    f as f32
+}
 
-polyfill_adapter!(JsonToBool, "__json_to_bool", Json, Bool, |v| {
-    let j = v.as_json();
-    let b = j
-        .as_bool()
-        .unwrap_or_else(|| panic!("__json_to_bool: JSON value {j} is not a bool"));
-    Value::Bool(b)
-});
+#[crate::polydat_node(category = Conversions)]
+fn __json_to_bool(j: &serde_json::Value) -> bool {
+    j.as_bool()
+        .unwrap_or_else(|| panic!("__json_to_bool: JSON value {j} is not a bool"))
+}
 
-polyfill_adapter!(JsonToBytes, "__json_to_bytes", Json, Bytes, |v| {
-    let j = v.as_json();
+#[crate::polydat_node(category = Conversions)]
+fn __json_to_bytes(j: &serde_json::Value) -> Vec<u8> {
     let s = j
         .as_str()
         .unwrap_or_else(|| panic!("__json_to_bytes: JSON value {j} is not a string (expected hex)"));
-    let bytes = data_encoding::HEXLOWER_PERMISSIVE
+    data_encoding::HEXLOWER_PERMISSIVE
         .decode(s.as_bytes())
-        .unwrap_or_else(|e| panic!("__json_to_bytes: cannot hex-decode {s:?}: {e}"));
-    Value::Bytes(Arc::from(bytes.as_slice()))
-});
+        .unwrap_or_else(|e| panic!("__json_to_bytes: cannot hex-decode {s:?}: {e}"))
+}
 
-polyfill_adapter!(JsonToVecF32, "__json_to_vec_f32", Json, VecF32, |v| {
-    let j = v.as_json();
+#[crate::polydat_node(category = Conversions)]
+fn __json_to_vec_f32(j: &serde_json::Value) -> Vec<f32> {
     let arr = j
         .as_array()
         .unwrap_or_else(|| panic!("__json_to_vec_f32: JSON value {j} is not an array"));
-    let elems: Vec<f32> = arr
-        .iter()
+    arr.iter()
         .map(|x| {
             x.as_f64()
                 .unwrap_or_else(|| panic!("__json_to_vec_f32: element {x} is not a number"))
                 as f32
         })
-        .collect();
-    Value::VecF32(SliceArc::from_vec(elems))
-});
+        .collect()
+}
 
-polyfill_adapter!(JsonToVecI32, "__json_to_vec_i32", Json, VecI32, |v| {
-    let j = v.as_json();
+#[crate::polydat_node(category = Conversions)]
+fn __json_to_vec_i32(j: &serde_json::Value) -> Vec<i32> {
     let arr = j
         .as_array()
         .unwrap_or_else(|| panic!("__json_to_vec_i32: JSON value {j} is not an array"));
-    let elems: Vec<i32> = arr
-        .iter()
+    arr.iter()
         .map(|x| {
             let n = x
                 .as_i64()
@@ -806,9 +715,8 @@ polyfill_adapter!(JsonToVecI32, "__json_to_vec_i32", Json, VecI32, |v| {
             }
             n as i32
         })
-        .collect();
-    Value::VecI32(SliceArc::from_vec(elems))
-});
+        .collect()
+}
 
 // =================================================================
 // 6. Vec → {Str, Bytes, Json}, Vec ↔ Vec
@@ -821,9 +729,9 @@ polyfill_adapter!(JsonToVecI32, "__json_to_vec_i32", Json, VecI32, |v| {
 // stdlib node; first element uses `vec_first(v)`, etc.
 // (See type_system.md §4 for the exclusion rationale.)
 
-polyfill_adapter!(VecF32ToStr, "__vec_f32_to_str", VecF32, Str, |v| {
-    let arr: Vec<serde_json::Value> = v
-        .as_vec_f32()
+#[crate::polydat_node(category = Conversions)]
+fn __vec_f32_to_str(elems: &[f32]) -> String {
+    let arr: Vec<serde_json::Value> = elems
         .iter()
         .map(|&f| {
             serde_json::Value::Number(
@@ -832,39 +740,39 @@ polyfill_adapter!(VecF32ToStr, "__vec_f32_to_str", VecF32, Str, |v| {
             )
         })
         .collect();
-    Value::Str(Arc::from(serde_json::Value::Array(arr).to_string()))
-});
+    serde_json::Value::Array(arr).to_string()
+}
 
-polyfill_adapter!(VecI32ToStr, "__vec_i32_to_str", VecI32, Str, |v| {
-    let arr: Vec<serde_json::Value> = v
-        .as_vec_i32()
+#[crate::polydat_node(category = Conversions)]
+fn __vec_i32_to_str(elems: &[i32]) -> String {
+    let arr: Vec<serde_json::Value> = elems
         .iter()
         .map(|&n| serde_json::Value::Number(serde_json::Number::from(n)))
         .collect();
-    Value::Str(Arc::from(serde_json::Value::Array(arr).to_string()))
-});
+    serde_json::Value::Array(arr).to_string()
+}
 
-polyfill_adapter!(VecF32ToBytes, "__vec_f32_to_bytes", VecF32, Bytes, |v| {
-    let elems = v.as_vec_f32();
+#[crate::polydat_node(category = Conversions)]
+fn __vec_f32_to_bytes(elems: &[f32]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(elems.len() * 4);
     for &f in elems {
         buf.extend_from_slice(&f.to_le_bytes());
     }
-    Value::Bytes(Arc::from(buf.as_slice()))
-});
+    buf
+}
 
-polyfill_adapter!(VecI32ToBytes, "__vec_i32_to_bytes", VecI32, Bytes, |v| {
-    let elems = v.as_vec_i32();
+#[crate::polydat_node(category = Conversions)]
+fn __vec_i32_to_bytes(elems: &[i32]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(elems.len() * 4);
     for &n in elems {
         buf.extend_from_slice(&n.to_le_bytes());
     }
-    Value::Bytes(Arc::from(buf.as_slice()))
-});
+    buf
+}
 
-polyfill_adapter!(VecF32ToJson, "__vec_f32_to_json", VecF32, Json, |v| {
-    let arr: Vec<serde_json::Value> = v
-        .as_vec_f32()
+#[crate::polydat_node(category = Conversions)]
+fn __vec_f32_to_json(elems: &[f32]) -> Arc<serde_json::Value> {
+    let arr: Vec<serde_json::Value> = elems
         .iter()
         .map(|&f| {
             serde_json::Value::Number(
@@ -873,26 +781,26 @@ polyfill_adapter!(VecF32ToJson, "__vec_f32_to_json", VecF32, Json, |v| {
             )
         })
         .collect();
-    Value::Json(Arc::new(serde_json::Value::Array(arr)))
-});
+    Arc::new(serde_json::Value::Array(arr))
+}
 
-polyfill_adapter!(VecI32ToJson, "__vec_i32_to_json", VecI32, Json, |v| {
-    let arr: Vec<serde_json::Value> = v
-        .as_vec_i32()
+#[crate::polydat_node(category = Conversions)]
+fn __vec_i32_to_json(elems: &[i32]) -> Arc<serde_json::Value> {
+    let arr: Vec<serde_json::Value> = elems
         .iter()
         .map(|&n| serde_json::Value::Number(serde_json::Number::from(n)))
         .collect();
-    Value::Json(Arc::new(serde_json::Value::Array(arr)))
-});
+    Arc::new(serde_json::Value::Array(arr))
+}
 
-polyfill_adapter!(VecI32ToVecF32, "__vec_i32_to_vec_f32", VecI32, VecF32, |v| {
-    let elems: Vec<f32> = v.as_vec_i32().iter().map(|&n| n as f32).collect();
-    Value::VecF32(SliceArc::from_vec(elems))
-});
+#[crate::polydat_node(category = Conversions)]
+fn __vec_i32_to_vec_f32(elems: &[i32]) -> Vec<f32> {
+    elems.iter().map(|&n| n as f32).collect()
+}
 
-polyfill_adapter!(VecF32ToVecI32, "__vec_f32_to_vec_i32", VecF32, VecI32, |v| {
-    let elems: Vec<i32> = v
-        .as_vec_f32()
+#[crate::polydat_node(category = Conversions)]
+fn __vec_f32_to_vec_i32(elems: &[f32]) -> Vec<i32> {
+    elems
         .iter()
         .map(|&f| {
             if !f.is_finite() {
@@ -908,9 +816,8 @@ polyfill_adapter!(VecF32ToVecI32, "__vec_f32_to_vec_i32", VecF32, VecI32, |v| {
             }
             rounded as i32
         })
-        .collect();
-    Value::VecI32(SliceArc::from_vec(elems))
-});
+        .collect()
+}
 
 // =================================================================
 // Tests
@@ -919,6 +826,7 @@ polyfill_adapter!(VecF32ToVecI32, "__vec_f32_to_vec_i32", VecF32, VecI32, |v| {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, SliceArc, Value};
 
     fn check<N: PolydatNode>(node: &N, input: Value, expected: Value) {
         let mut out = [Value::None];
@@ -954,6 +862,14 @@ mod tests {
         }
     }
 
+    // Bit-stuffed-f32 helper: macro `IntoValue for f32` produces
+    // `Value::U64(self.to_bits() as u64)`. The polyfill family's
+    // F32-targeting nodes all return through this convention, so
+    // the test expectations construct the same shape.
+    fn f32_value(f: f32) -> Value {
+        Value::U64(f.to_bits() as u64)
+    }
+
     // -----------------------------------------------------------
     // Numeric → numeric (happy path)
     // -----------------------------------------------------------
@@ -963,17 +879,9 @@ mod tests {
         check(&U64ToU32::new(), Value::U64(42), Value::U64(42));
         check(&U64ToI64::new(), Value::U64(100), Value::U64(100));
         check(&U64ToI32::new(), Value::U64(100), Value::U64(100));
-        check(
-            &U64ToF32::new(),
-            Value::U64(7),
-            Value::F64(7.0_f32 as f64),
-        );
+        check(&U64ToF32::new(), Value::U64(7), f32_value(7.0));
         check(&U32ToI32::new(), Value::U64(50), Value::U64(50));
-        check(
-            &U32ToF32::new(),
-            Value::U64(3),
-            Value::F64(3.0_f32 as f64),
-        );
+        check(&U32ToF32::new(), Value::U64(3), f32_value(3.0));
         check(&I64ToU64::new(), Value::U64(42_i64 as u64), Value::U64(42));
         check(&I64ToU32::new(), Value::U64(42_i64 as u64), Value::U64(42));
         check(
@@ -983,11 +891,7 @@ mod tests {
         );
         check(&I32ToU64::new(), Value::U64(7), Value::U64(7));
         check(&I32ToU32::new(), Value::U64(7), Value::U64(7));
-        check(
-            &F64ToF32::new(),
-            Value::F64(1.5),
-            Value::F64(1.5_f32 as f64),
-        );
+        check(&F64ToF32::new(), Value::F64(1.5), f32_value(1.5));
         check(&F64ToU32::new(), Value::F64(42.7), Value::U64(42));
         check(&F64ToI64::new(), Value::F64(-5.9), Value::U64(-5_i64 as u64));
         check(
@@ -1020,12 +924,12 @@ mod tests {
             "out of i32 range",
         );
         check_panics(
-            &F64ToU64::new(),
+            &F64ToU64Checked::new(),
             Value::F64(f64::NAN),
             "non-finite",
         );
         check_panics(
-            &F64ToU64::new(),
+            &F64ToU64Checked::new(),
             Value::F64(-1.0),
             "out of u64 range",
         );
@@ -1046,7 +950,7 @@ mod tests {
         check(&BoolToI64::new(), Value::Bool(false), Value::U64(0));
         check(&BoolToI32::new(), Value::Bool(true), Value::U64(1));
         check(&BoolToF64::new(), Value::Bool(true), Value::F64(1.0));
-        check(&BoolToF32::new(), Value::Bool(false), Value::F64(0.0));
+        check(&BoolToF32::new(), Value::Bool(false), f32_value(0.0));
         check(&U32ToBool::new(), Value::U64(7), Value::Bool(true));
         check(&U32ToBool::new(), Value::U64(0), Value::Bool(false));
         check(
@@ -1060,7 +964,7 @@ mod tests {
         check(&F64ToBool::new(), Value::F64(f64::NAN), Value::Bool(false));
         check(
             &F32ToBool::new(),
-            Value::F64(2.5_f32 as f64),
+            f32_value(2.5),
             Value::Bool(true),
         );
     }
@@ -1085,7 +989,7 @@ mod tests {
         check(
             &StrToF32::new(),
             Value::Str("1.5".into()),
-            Value::F64(1.5_f32 as f64),
+            f32_value(1.5),
         );
         check_panics(
             &StrToU32::new(),
@@ -1385,4 +1289,3 @@ mod tests {
         }
     }
 }
-

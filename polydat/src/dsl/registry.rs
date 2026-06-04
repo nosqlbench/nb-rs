@@ -589,8 +589,17 @@ mod tests {
 
     #[test]
     fn printf_has_const_str_param() {
+        // SRD-80b Phase E: printf migrated to `#[polydat_node]` with
+        // a `Const<&str> format` arg + `&[Value] parts` variadic.
+        // The macro lists both in `params` (the variadic arg appears
+        // as a SlotType::Wire entry whose count is governed by the
+        // node's `Arity::VariadicWires`); the pre-migration
+        // hand-written FuncSig listed only the const. The
+        // load-bearing assertion is that the FIRST param is the
+        // format ConstStr and the arity is variadic — both still
+        // hold.
         let sig = lookup("printf").unwrap();
-        assert_eq!(sig.params.len(), 1);
+        assert!(sig.params.len() >= 1, "printf must have at least the format param");
         assert!(matches!(sig.params[0].slot_type, SlotType::ConstStr));
         assert!(matches!(sig.arity, Arity::VariadicWires { .. }));
     }

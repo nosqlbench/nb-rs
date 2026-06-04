@@ -455,6 +455,7 @@ fn slot_type_label(slot: polydat::ast::SlotType) -> &'static str {
         SlotType::ConstStr    => "const str",
         SlotType::ConstVecU64 => "const [u64]",
         SlotType::ConstVecF64 => "const [f64]",
+        SlotType::ConstVec    => "const [T]",
     }
 }
 
@@ -589,6 +590,9 @@ fn describe_wiring_functions_md(path: &str) {
                     }
                     polydat::ast::SlotType::ConstVecF64 => {
                         all_params.push(format!("{}: vec<f64>", p.name));
+                    }
+                    polydat::ast::SlotType::ConstVec => {
+                        all_params.push(format!("{}: vec<T>", p.name));
                     }
                 }
             }

@@ -162,12 +162,10 @@ pub async fn run_command(args: &[String]) {
         max_retries: 3,
         stanza_concurrency: params.get("stanza_concurrency")
             .and_then(|s| s.parse().ok()).unwrap_or(1),
-        source_factory: None,
-        suppress_status_line: false,
+        ..Default::default()
     };
 
     let builder = Arc::new(OpBuilder::new(kernel));
-    let program = builder.program();
     let activity = Activity::new(config, &Labels::of("session", "openapi"), op_sequence);
 
     eprintln!("openapi: {cycles} cycles, {threads} threads");
@@ -216,6 +214,54 @@ pub async fn run_command(args: &[String]) {
         }
     };
 
-    activity.run_with_driver(adapter, program).await;
+    activity.run_with_driver(adapter, builder).await;
     eprintln!("openapi: done.");
+}
+
+/// CLI spec wrapper for `nbrs describe-openapi`. Bridges the
+/// historical `describe_command(args)` arg-style entry point
+/// into the [`crate::cli_spec::Command`] surface used by the
+/// rest of the CLI (see `cli_spec/root.rs`).
+pub fn describe_spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        describe_command(&p.raw);
+        Ok(())
+    }
+    Command {
+        name: "describe-openapi",
+        help: "Inspect an OpenAPI spec: operations and tag summary.",
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: true,
+        completion_override: None,
+    }
+}
+
+/// CLI spec wrapper for `nbrs run-openapi`. Same bridging
+/// pattern as [`describe_spec`].
+pub fn run_spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("openapi: failed to create tokio runtime: {e}"))?;
+        rt.block_on(run_command(&p.raw));
+        Ok(())
+    }
+    Command {
+        name: "run-openapi",
+        help: "Synthesize ops from an OpenAPI spec and run against the chosen adapter.",
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: true,
+        completion_override: None,
+    }
 }

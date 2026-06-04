@@ -906,13 +906,13 @@ impl FiberBuilder {
 mod tests {
     use super::*;
     use polydat::compile::assembly::{PolydatAssembler, WireRef};
-    use polydat::library::hash::Hash64;
-    use polydat::library::arithmetic::ModU64;
+    use polydat::library::hash::Hash;
+    use polydat::library::arithmetic::Mod;
 
     fn make_kernel() -> PolydatKernel {
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
-        asm.add_node("user_id", Box::new(ModU64::new(1_000_000)), vec![WireRef::node("hashed")]);
+        asm.add_node("hashed", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("user_id", Box::new(Mod::new(1_000_000)), vec![WireRef::node("hashed")]);
         asm.add_output("user_id", WireRef::node("user_id"));
         asm.add_output("hashed", WireRef::node("hashed"));
         asm.compile().unwrap()

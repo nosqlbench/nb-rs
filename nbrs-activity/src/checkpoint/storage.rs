@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use super::events::{CheckpointEvent, hex_to_hash};
+use super::events::{CheckpointData, hex_to_hash};
 use super::identity::PhaseIdentity;
 
 /// In-memory checkpoint state — the fold of an append-only
@@ -166,7 +166,7 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 }
 
 /// Stream events from the JSONL log at `path`. Returns an
-/// iterator over `CheckpointEvent` records; malformed lines
+/// iterator over `CheckpointData` records; malformed lines
 /// surface as `Err` items so the caller decides whether to
 /// stop or continue. Truncated-tail recovery is handled by
 /// [`read`]'s fold; this function is the lower-level building
@@ -184,14 +184,14 @@ pub fn iter_events(
     }
 }
 
-/// Iterator over [`CheckpointEvent`] records from a JSONL log.
+/// Iterator over [`CheckpointData`] records from a JSONL log.
 pub struct EventIter {
     lines: std::io::Lines<BufReader<std::fs::File>>,
     path: std::path::PathBuf,
 }
 
 impl Iterator for EventIter {
-    type Item = Result<CheckpointEvent, String>;
+    type Item = Result<CheckpointData, String>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -246,11 +246,11 @@ pub fn read(path: &Path) -> Result<Option<Checkpoint>, String> {
         Some(l) => l,
         None => return Ok(None), // empty log — treat as fresh
     };
-    let first_event: CheckpointEvent = serde_json::from_str(first_line)
+    let first_event: CheckpointData = serde_json::from_str(first_line)
         .map_err(|e| format!("checkpoint log {}: malformed first record: {e}", path.display()))?;
 
     let mut doc = match first_event {
-        CheckpointEvent::SessionStart { version, session, started_at, invocation, at, .. } => {
+        CheckpointData::SessionStart { version, session, started_at, invocation, at, .. } => {
             if version != 1 {
                 return Err(format!(
                     "checkpoint {}: unsupported version {version} (this build supports v1)",
@@ -275,7 +275,7 @@ pub fn read(path: &Path) -> Result<Option<Checkpoint>, String> {
     let mut index: HashMap<String, usize> = HashMap::new();
 
     for line in lines {
-        let event: CheckpointEvent = match serde_json::from_str(line) {
+        let event: CheckpointData = match serde_json::from_str(line) {
             Ok(e) => e,
             Err(e) => {
                 // Per SRD-44a forward-compat: unknown event
@@ -299,28 +299,28 @@ pub fn read(path: &Path) -> Result<Option<Checkpoint>, String> {
     Ok(Some(doc))
 }
 
-fn discriminator(e: &CheckpointEvent) -> &'static str {
+fn discriminator(e: &CheckpointData) -> &'static str {
     match e {
-        CheckpointEvent::SessionStart { .. } => "session_start",
-        CheckpointEvent::SessionEnd { .. } => "session_end",
-        CheckpointEvent::PhaseDeclared { .. } => "phase_declared",
-        CheckpointEvent::PhaseStarted { .. } => "phase_started",
-        CheckpointEvent::PhaseProgress { .. } => "phase_progress",
-        CheckpointEvent::PhaseCompleted { .. } => "phase_completed",
-        CheckpointEvent::PhaseFailed { .. } => "phase_failed",
-        CheckpointEvent::PhaseHash { .. } => "phase_hash",
-        CheckpointEvent::ScopeEnter { .. } => "scope_enter",
-        CheckpointEvent::ScopeExit { .. } => "scope_exit",
+        CheckpointData::SessionStart { .. } => "session_start",
+        CheckpointData::SessionEnd { .. } => "session_end",
+        CheckpointData::PhaseDeclared { .. } => "phase_declared",
+        CheckpointData::PhaseStarted { .. } => "phase_started",
+        CheckpointData::PhaseProgress { .. } => "phase_progress",
+        CheckpointData::PhaseCompleted { .. } => "phase_completed",
+        CheckpointData::PhaseFailed { .. } => "phase_failed",
+        CheckpointData::PhaseHash { .. } => "phase_hash",
+        CheckpointData::ScopeEnter { .. } => "scope_enter",
+        CheckpointData::ScopeExit { .. } => "scope_exit",
     }
 }
 
 fn apply_event(
     doc: &mut Checkpoint,
     index: &mut std::collections::HashMap<String, usize>,
-    event: CheckpointEvent,
+    event: CheckpointData,
 ) {
     match event {
-        CheckpointEvent::SessionStart { invocation, at, started_at, session, .. } => {
+        CheckpointData::SessionStart { invocation, at, started_at, session, .. } => {
             // Resume continuation: bump the invocation and
             // refresh the per-flush timestamps. The phase list
             // built so far stays as-is (fold semantics).
@@ -329,10 +329,10 @@ fn apply_event(
             doc.started_at = started_at;
             doc.session = session;
         }
-        CheckpointEvent::SessionEnd { at, .. } => {
+        CheckpointData::SessionEnd { at, .. } => {
             doc.checkpoint_at = at;
         }
-        CheckpointEvent::PhaseDeclared { at, identity, skip_eligible } => {
+        CheckpointData::PhaseDeclared { at, identity, skip_eligible } => {
             let key = super::writer::identity_key(&identity);
             if !index.contains_key(&key) {
                 doc.phases.push(PhaseEntry {
@@ -348,14 +348,14 @@ fn apply_event(
             }
             doc.checkpoint_at = at;
         }
-        CheckpointEvent::PhaseStarted { at, identity } => {
+        CheckpointData::PhaseStarted { at, identity } => {
             if let Some(entry) = lookup_mut(doc, index, &identity) {
                 entry.status = PhaseStatus::Running;
                 entry.error = None;
             }
             doc.checkpoint_at = at;
         }
-        CheckpointEvent::PhaseProgress { at, identity, op_counts, cursor_state } => {
+        CheckpointData::PhaseProgress { at, identity, op_counts, cursor_state } => {
             if let Some(entry) = lookup_mut(doc, index, &identity) {
                 entry.op_counts = Some(op_counts);
                 if cursor_state.is_some() {
@@ -364,7 +364,7 @@ fn apply_event(
             }
             doc.checkpoint_at = at;
         }
-        CheckpointEvent::PhaseCompleted { at, identity, duration_secs, op_counts } => {
+        CheckpointData::PhaseCompleted { at, identity, duration_secs, op_counts } => {
             if let Some(entry) = lookup_mut(doc, index, &identity) {
                 entry.status = PhaseStatus::Completed;
                 entry.duration_secs = Some(duration_secs);
@@ -374,7 +374,7 @@ fn apply_event(
             }
             doc.checkpoint_at = at;
         }
-        CheckpointEvent::PhaseFailed { at, identity, error, op_counts } => {
+        CheckpointData::PhaseFailed { at, identity, error, op_counts } => {
             if let Some(entry) = lookup_mut(doc, index, &identity) {
                 entry.status = PhaseStatus::Failed;
                 entry.error = Some(error);
@@ -385,7 +385,7 @@ fn apply_event(
             }
             doc.checkpoint_at = at;
         }
-        CheckpointEvent::PhaseHash { at, identity, hash_hex } => {
+        CheckpointData::PhaseHash { at, identity, hash_hex } => {
             if let Some(entry) = lookup_mut(doc, index, &identity)
                 && let Some(h) = hex_to_hash(&hash_hex)
             {
@@ -393,7 +393,7 @@ fn apply_event(
             }
             doc.checkpoint_at = at;
         }
-        CheckpointEvent::ScopeEnter { at, .. } | CheckpointEvent::ScopeExit { at, .. } => {
+        CheckpointData::ScopeEnter { at, .. } | CheckpointData::ScopeExit { at, .. } => {
             // Push 3 territory — fold to nothing today; the
             // event lives on disk for forensic replay.
             doc.checkpoint_at = at;

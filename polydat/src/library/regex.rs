@@ -3,117 +3,71 @@
 
 //! Regex processing nodes.
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use regex::Regex;
 
-/// Regex replace: substitute all matches of a pattern.
-///
-/// Signature: `(input: String) -> (String)`
-/// Init params: `pattern`, `replacement`
-pub struct RegexReplace {
-    meta: NodeMeta,
-    re: Regex,
-    replacement: String,
+impl crate::derive_support::PolydatSetup for Regex {}
+
+/// Regex replace: substitute all matches of a pattern with the
+/// replacement string. SRD-80b Phase E migration via two
+/// Const<&str> args + cached compiled Regex.
+#[crate::polydat_node(category = Regex)]
+fn regex_replace(
+    input: &str,
+    pattern: crate::derive_support::Const<&str>,
+    replacement: crate::derive_support::Const<&str>,
+    #[poly_const(compile_regex, from = pattern)]
+    re: &Regex,
+) -> String {
+    let _ = pattern;
+    re.replace_all(input, replacement.0).into_owned()
 }
 
-impl RegexReplace {
-    pub fn new(pattern: &str, replacement: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "regex_replace".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-            re: Regex::new(pattern).expect("invalid regex"),
-            replacement: replacement.to_string(),
-        }
-    }
-}
-
-impl PolydatNode for RegexReplace {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let result = self.re.replace_all(inputs[0].as_str(), &self.replacement);
-        outputs[0] = Value::Str(result.into_owned().into());
-    }
+/// Build a Regex from a pattern. Panics on invalid pattern;
+/// the const-arg constraint (registered in the FuncSig the
+/// macro emits is forthcoming) catches malformed patterns at
+/// workload-compile-time, so the panic here is a true bug
+/// indicator only.
+fn compile_regex(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("invalid regex")
 }
 
 /// Regex match: test if input matches a pattern.
-///
-/// Signature: `(input: String) -> (bool)`
-pub struct RegexMatch {
-    meta: NodeMeta,
-    re: Regex,
-}
-
-impl RegexMatch {
-    pub fn new(pattern: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "regex_match".into(),
-                outs: vec![Port::bool("output")],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-            re: Regex::new(pattern).expect("invalid regex"),
-        }
+/// SRD-80 PR B.6 migration.
+#[crate::polydat_node(category = Regex)]
+fn regex_match(
+    input: &str,
+    pattern: crate::derive_support::Const<&str>,
+    #[poly_const(compile_regex, from = pattern)]
+    re: &Regex,
+) -> bool {
+    let matched = re.is_match(input);
+    if crate::library::debug_nodes_enabled() {
+        let snippet: String = input.chars().take(200).collect();
+        let ellipsis = if input.len() > snippet.len() { "…" } else { "" };
+        crate::library::support::audit::debug(&format!(
+            "regex_match: pattern={:?} input.len={} matched={matched} input.snippet={:?}{ellipsis}",
+            re.as_str(), input.len(), snippet,
+        ));
     }
-}
-
-impl PolydatNode for RegexMatch {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let input = inputs[0].as_str();
-        let matched = self.re.is_match(input);
-        if crate::library::debug_nodes_enabled() {
-            // Snippet trims to the first 200 chars so describe-keyspace
-            // bodies don't flood stderr; full length is reported alongside.
-            let snippet: String = input.chars().take(200).collect();
-            let ellipsis = if input.len() > snippet.len() { "…" } else { "" };
-            crate::library::support::audit::debug(&format!(
-                "regex_match: pattern={:?} input.len={} matched={matched} input.snippet={:?}{ellipsis}",
-                self.re.as_str(),
-                input.len(),
-                snippet,
-            ));
-        }
-        outputs[0] = Value::Bool(matched);
-    }
+    matched
 }
 
 /// Regex extract: extract the first capture group (or full match).
-///
-/// Signature: `(input: String) -> (String)`
-pub struct RegexExtract {
-    meta: NodeMeta,
-    re: Regex,
-}
-
-impl RegexExtract {
-    pub fn new(pattern: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "regex_extract".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-            re: Regex::new(pattern).expect("invalid regex"),
-        }
-    }
-}
-
-impl PolydatNode for RegexExtract {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let s = inputs[0].as_str();
-        let result = if let Some(caps) = self.re.captures(s) {
-            caps.get(1)
-                .or_else(|| caps.get(0))
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        outputs[0] = Value::Str(result.into());
+/// SRD-80 PR B.6 migration.
+#[crate::polydat_node(category = Regex)]
+fn regex_extract(
+    input: &str,
+    pattern: crate::derive_support::Const<&str>,
+    #[poly_const(compile_regex, from = pattern)]
+    re: &Regex,
+) -> String {
+    if let Some(caps) = re.captures(input) {
+        caps.get(1)
+            .or_else(|| caps.get(0))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
     }
 }
 
@@ -144,38 +98,19 @@ pub fn signatures() -> &'static [FuncSig] {
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
         },
-        FuncSig {
-            name: "regex_match", category: C::Regex,
-            outputs: 1, description: "test if string matches regex",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"[a-z]+\"",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_regex_pattern)) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Test if a string matches a regex pattern. Returns 1 (match) or 0 (no match).\nThe regex is compiled at init time. Tests for a partial match\n(use ^...$ anchors for a full match).\nParameters:\n  input   — String wire input\n  pattern — regex pattern (Rust regex syntax)\nExample: regex_match(email, \"^[^@]+@[^@]+$\")",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `regex_match` migrated to `#[polydat_node]` per
+        // SRD-80 PR B.6. Const-constraint registration is
+        // forthcoming via a future macro attribute pass.
     ]
 }
 
 /// Try to build a regex node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "regex_replace" => Some(Ok(Box::new(RegexReplace::new(
-            consts.first().map(|c| c.as_str()).unwrap_or(""),
-            consts.get(1).map(|c| c.as_str()).unwrap_or(""),
-        )))),
-        "regex_match" => Some(Ok(Box::new(RegexMatch::new(
-            consts.first().map(|c| c.as_str()).unwrap_or(".*"),
-        )))),
-        _ => None,
-    }
+pub(crate) fn build_node(_name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
+    // All regex nodes route via proc-macro-emitted NodeRegistration
+    // (regex_match, regex_extract, regex_replace).
+    None
 }
 
 
@@ -189,10 +124,11 @@ crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn regex_replace_basic() {
-        let node = RegexReplace::new(r"\d+", "NUM");
+        let node = RegexReplace::new(r"\d+".to_string(), "NUM".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Str("abc 123 def 456".into())], &mut out);
         assert_eq!(out[0].as_str(), "abc NUM def NUM");
@@ -200,7 +136,7 @@ mod tests {
 
     #[test]
     fn regex_replace_no_match() {
-        let node = RegexReplace::new(r"\d+", "NUM");
+        let node = RegexReplace::new(r"\d+".to_string(), "NUM".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Str("no numbers here".into())], &mut out);
         assert_eq!(out[0].as_str(), "no numbers here");
@@ -208,7 +144,7 @@ mod tests {
 
     #[test]
     fn regex_match_true() {
-        let node = RegexMatch::new(r"^\d{3}-\d{4}$");
+        let node = RegexMatch::new(r"^\d{3}-\d{4}$".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Str("123-4567".into())], &mut out);
         assert!(out[0].as_bool());
@@ -216,7 +152,7 @@ mod tests {
 
     #[test]
     fn regex_match_false() {
-        let node = RegexMatch::new(r"^\d{3}-\d{4}$");
+        let node = RegexMatch::new(r"^\d{3}-\d{4}$".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Str("hello".into())], &mut out);
         assert!(!out[0].as_bool());
@@ -224,7 +160,7 @@ mod tests {
 
     #[test]
     fn regex_extract_capture_group() {
-        let node = RegexExtract::new(r"name=(\w+)");
+        let node = RegexExtract::new(r"name=(\w+)".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Str("name=Alice age=30".into())], &mut out);
         assert_eq!(out[0].as_str(), "Alice");
@@ -232,7 +168,7 @@ mod tests {
 
     #[test]
     fn regex_extract_no_group() {
-        let node = RegexExtract::new(r"\d+");
+        let node = RegexExtract::new(r"\d+".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Str("abc 42 def".into())], &mut out);
         assert_eq!(out[0].as_str(), "42");
@@ -240,7 +176,7 @@ mod tests {
 
     #[test]
     fn regex_extract_no_match() {
-        let node = RegexExtract::new(r"\d+");
+        let node = RegexExtract::new(r"\d+".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Str("no digits".into())], &mut out);
         assert_eq!(out[0].as_str(), "");

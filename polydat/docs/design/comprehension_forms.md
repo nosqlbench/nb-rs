@@ -23,6 +23,14 @@ names each touching SRD's role under this declaration.
   parser-layer surface grammar (clause sources, ranges,
   generators, SI suffixes). Owns parsing; does not own
   semantics.
+- [SRD-18f](../../../docs/sysref/18f_comprehension_source_forms.md)
+  — parser-/resolver-layer surface for the **source position** of
+  a clause (the expression right of `in`): list-comprehension
+  sugar `[…]`, string comprehension `"…"`/`'…'`, the relaxed bare
+  form, the `…` spread operator, bare-word→reference. Owns that
+  surface; §3.1.1–§3.1.4 above own the resolution semantics it
+  maps to (the bound sequence, the `iteration_interior` predicate,
+  peel-one-level).
 - [SRD-18d](../../../docs/sysref/18d_comprehension_traversal_order.md)
   — per-strategy algorithmic detail (Halton recurrence, Sobol
   direction numbers, Lhs construction). Owns mathematical
@@ -167,6 +175,141 @@ be `Bounded(n)`, `BoundedAtMost(n)`, `Unbounded`, or
 `Continuous { interval, measure }` (see §6.1).
 **Per-tuple memory:** O(1) above the source's own per-tuple
 state. No buffering at the clause level.
+
+#### 3.1.1 Source resolution — the bound sequence (SRD-18f)
+
+A clause's `source` is resolved into a **bound sequence** — the
+ordered `Vec<Value>` the clause iterates, binding `name` to each
+element — by `iteration::comprehension::eval::evaluate_spec`
+against the enclosing kernel scope. The only structural operation
+resolution performs is **peeling exactly one level**:
+
+- A *sequence form* (`[…]` list, `a..b` range, a generator, a
+  set-op, a sequencer, a cursor) is already a sequence; iterating
+  it binds each top-level element.
+- A resolved *value* `V` either has an **iteration interior**
+  (§3.1.2) — peeling binds each interior element, one level deep —
+  or it does not, in which case the whole value is bound as a
+  single element.
+
+One-level peeling is the invariant that keeps "iterate the
+interior of `V`" and "pass `V` whole" from conflating: a
+list-of-vectors peels to *vectors* (each bound as-such); a single
+vector peels to *scalars*. Nothing flattens twice; no form
+flattens more than another.
+
+The parser-/resolver-layer **surface** for the source position —
+which syntactic forms exist and how an author selects peel vs.
+no-peel — is owned by
+[SRD-18f](../../../docs/sysref/18f_comprehension_source_forms.md);
+this section owns the resolution **semantics** that surface maps
+to. (SRD-18f is the source-position companion to SRD-18c, which
+owns the rest of the comprehension parse surface.)
+
+#### 3.1.2 The `iteration_interior` predicate
+
+The peel/wrap decision is made in exactly one place —
+`iteration::comprehension::source::iteration_interior(&Value) ->
+Option<Vec<Value>>` — replacing the former scattered per-type arms
+(`PartitionList`-unpack / `Str`-split / `Ok(other)`-wrap) in the
+evaluator. `Some(interior)` ⇒ iterable, peel one level; `None` ⇒
+iteration scalar, wrap as a singleton.
+
+| `Value` | interior |
+|---|---|
+| `VecF32` / `VecF64` / `VecF16` / `VecI16` / `VecI32` / `VecI64` (native vectors) | the element values (numeric) |
+| `Json` that is an array | the element values (each carried as `Json`) |
+| `Ext` exposing a `PartitionList` (SRD-71) | the partition entries |
+| `Str` | its **string-comprehension tokens** (§3.1.3) |
+| `U64` / `F64` / `Bool` / `Bytes` / `Handle` / `None` / non-array `Json` / opaque `Ext` | none (scalar) |
+
+**Implementation note — string position is resolved at parse, not
+in the predicate.** SRD-18f's draft gave `iteration_interior` a
+positional argument so a single-quoted *atomic* string would
+report `None`. The implementation instead resolves quote-kind at
+the **source-text layer**: the parser turns a single-quoted source
+into a one-element literal, so by the time a bare `Value::Str`
+reaches `iteration_interior` the intent is always "iterate it" and
+the predicate is a pure function of the value. A whole-string
+binding is reached via the no-peel form `x in [s]` or a
+single-quoted source (§3.1.3), both resolved before the predicate
+runs.
+
+#### 3.1.3 Source forms
+
+| Form | Resolves to | Peel-one-level binds `x` to |
+|---|---|---|
+| `x in [S]` | `[S]` | `S`, whole (no-peel) |
+| `x in [S…]` / `[S...]` | `S`'s interior | each interior element (spread; a non-iterable `S` is a hard error) |
+| `x in [a, S…, b]` | `a`, `S`'s interior…, `b` | each, in order |
+| `x in [a, b, c]` | the element values | each element |
+| `x in "a, b; c"` (double-quoted) | tokens `["a","b","c"]` | each token |
+| `x in 'a, b; c'` (single-quoted) | `["a, b; c"]` | the whole string, once (atomic) |
+| `x in S` (relaxed / bare) | infers: if `S` has an iteration interior → as `[S…]`; else → as `[S]` | each interior element, or `S` whole |
+
+**String-comprehension striping** (`source::split_string_comprehension`
+/ `strip_string_tokens`, double-quoted only): split on runs of
+**comma, semicolon, and ASCII whitespace**; every other character
+— notably `:` (k:v tuples), `.` (floats), `-`, `/` — stays inside
+the token. Each token is typed like a literal-list element
+(`u64` / `f64` / `bool` / else `Str`), so `"1, 2, 3"` yields
+numeric values and `"a:1, b:2"` yields `:`-tuple strings for the
+next layer to peel. A single-token double-quoted string
+degenerates to the no-peel singleton for free (`"OTHER"` →
+`["OTHER"]`). The one separator rule is shared by the parse-time
+(`source_parser`) and runtime (`eval`) paths so the two can never
+drift.
+
+`{name}` interpolation is **orthogonal to quote-kind**: it runs on
+both quote kinds in both positions, so interpolate-and-atomic
+(`t in 'table_{region}'`) and interpolate-then-strip
+(`t in "a_{x}, b_{x}"`) both work. Quote-kind selects *only* the
+iteration interior of a source-position string.
+
+#### 3.1.4 Bare identifiers are references; parse-bake vs. eval-defer
+
+List-comprehension-sugar elements and bare sources are parsed by
+the **core Polydat expression grammar** — the same grammar used
+for bindings and read by `polydat::dsl::refs` — with no bespoke
+list-element dialect. One consequence is load-bearing: a **bare
+identifier in source position is a wire/param/const reference**,
+not a string literal. `mnc in mnc_values` resolves `mnc_values`
+against the kernel exactly as `mnc in {mnc_values}` would, then
+peels/wraps via `iteration_interior`. The only string literal is a
+quoted string. This **retires** the pre-18f rule that coerced a
+bare word to a string.
+
+A single bare-identifier source that resolves to no
+wire/const/param/outer-iter-var is a **hard error** with a quoting
+hint (`… did not resolve … if you meant the literal string "X",
+quote it: "X"`), not a silent self-name binding. The broader
+cutover — e.g. an unbracketed bare *label list* `a, b, c`, which
+still falls back to string-token striping for backward
+compatibility — is staged behind the
+[comprehension migration gate](comprehension_migration_gate.md).
+
+**Where the work happens (parse vs. eval).** `source_parser`
+splits the `[…]` form into two compilation paths:
+
+- A **pure-literal** bracket list (numbers / bools / quoted
+  strings, no spread, no bare reference) bakes to `Source::Literal`
+  at parse time with a static cardinality — the historical fast
+  path, unchanged.
+- Any bracket list with a **bare-identifier reference** element or
+  a `…` / `...` **spread** defers to `Source::Generator` carrying
+  the bracket text verbatim. The runtime evaluator
+  (`eval::try_eval_bracket_list`) resolves each element against the
+  kernel and applies one-level spread peeling. This is what lets a
+  list element reference a wire, or splice a list-valued param,
+  that isn't known until scope-init.
+
+**Validator support.** `Comprehension::referenced_source_names()`
+(`ast.rs`) walks every leaf `Source` and returns the free names
+its specs reference — `WorkloadParamList` names directly, and for
+a `Generator` spec both the grammar-parsed free identifiers
+(`concat(foo)` → `foo`) and `{name}` interpolation placeholders —
+so the workload validator's declared-but-unreferenced check sees a
+bare source reference exactly as the kernel compiler resolves it.
 
 ### 3.2 `cartesian(c1, c2, ..., cN)` — dependent product combinator
 
@@ -983,6 +1126,13 @@ The trailing modifiers append `filter` and `order` nodes:
 
 `where` and `order` chain in source order, producing nested
 filter/order nodes per F1/O1 chaining rules.
+
+The `source` on the right of `in` is itself a small surface — list
+sugar `[…]`, string comprehension `"…"`/`'…'`, the relaxed bare
+form, spreads — resolved to the clause's bound sequence by the
+rules in §3.1.1–§3.1.4 (semantics) and
+[SRD-18f](../../../docs/sysref/18f_comprehension_source_forms.md)
+(surface).
 
 ### 8.2 Recursive composition
 
@@ -3325,6 +3475,21 @@ names each SRD's role relative to this document.
   push lands, this document is the reference for continuous-
   source text representation and SRD-18c is the parser
   reference only for discrete sources.
+
+- **SRD-18f (Comprehension Source Forms)** — **owns the parser-/
+  resolver-layer surface for a clause's source position** (the
+  expression right of `in`): list-comprehension sugar `[…]`, the
+  string comprehension `"…"`/`'…'` distinction, the relaxed bare
+  form, the `…` spread operator, and the bare-word→reference rule.
+  It does **not** own the resolution semantics — §3.1.1–§3.1.4 own
+  the bound-sequence model, the `iteration_interior` predicate, and
+  peel-exactly-one-level. SRD-18f is to the source position what
+  SRD-18c is to the rest of the parse surface; its draft predates
+  the implementation, which moved the single-quoted/atomic decision
+  to the parse layer (so `iteration_interior` is value-only) and
+  staged the breaking bare-word cutover behind
+  [`comprehension_migration_gate.md`](comprehension_migration_gate.md)
+  — §3.1.2 and §3.1.4 record those deltas.
 
 - **SRD-18d (Traversal Order)** — **owns per-strategy
   algorithmic detail** (Halton recurrence, Sobol direction

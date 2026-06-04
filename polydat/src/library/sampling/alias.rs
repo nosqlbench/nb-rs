@@ -225,71 +225,43 @@ impl AliasTableU64 {
 // -----------------------------------------------------------------
 // Polydat node wrapping the alias table
 // -----------------------------------------------------------------
+//
+// SRD-80b Phase C migration: `AliasSample` flows through the
+// `Const<Vec<f64>>` workload-list combinator (weights) and the
+// `#[poly_const]` setup pattern (cached `AliasTableU64`). The
+// node is JIT-ineligible by the Const<Vec<_>> design — the JIT
+// u64 buffer has no slot shape for the variable-length table
+// captured in the struct field.
 
-use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
+use crate::derive_support::PolydatSetup;
 
-/// Polydat node that samples from a pre-built alias table.
-///
-/// Signature: `(input: u64) -> (u64)`
-///
-/// The input is a uniform u64 (hash upstream for pseudo-random
-/// dispersion). The output is an outcome index.
-pub struct AliasSample {
-    meta: NodeMeta,
-    table: AliasTableU64,
+impl PolydatSetup for AliasTableU64 {}
+
+/// Build the alias table from raw weights. Single-call setup
+/// invoked by the macro at construction time.
+fn build_alias_table(weights: &Vec<f64>) -> AliasTableU64 {
+    AliasTableU64::from_weights(weights)
 }
 
-impl AliasSample {
-    /// Create from explicit weights. Outcomes are 0..weights.len().
-    pub fn from_weights(weights: &[f64]) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "alias_sample".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            table: AliasTableU64::from_weights(weights),
-        }
-    }
-
-    /// Create a uniform sampler over 0..n.
-    pub fn uniform(n: usize) -> Self {
-        Self::from_weights(&vec![1.0; n])
-    }
-}
-
-impl PolydatNode for AliasSample {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(self.table.sample(inputs[0].as_u64()));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        // Build a standalone table for the closure to capture
-        let biases = self.table.biases.clone();
-        let primaries = self.table.primaries.clone();
-        let aliases = self.table.aliases.clone();
-
-        let n_usize = biases.len();
-        Some(Box::new(move |inputs, outputs| {
-            let input = inputs[0];
-            let slot_idx = (input as usize) % n_usize;
-            let frac = (input >> 32) as f64 / u32::MAX as f64;
-            if frac < biases[slot_idx] {
-                outputs[0] = primaries[slot_idx];
-            } else {
-                outputs[0] = aliases[slot_idx];
-            }
-        }))
-    }
+/// Sample an outcome index from a pre-built alias table over
+/// `weights`. The input is a uniform u64 (hash upstream for
+/// pseudo-random dispersion); the output is the chosen outcome
+/// index.
+#[crate::polydat_node(category = Probability)]
+fn alias_sample(
+    input: u64,
+    weights: Const<Vec<f64>>,
+    #[poly_const(build_alias_table, from = weights)]
+    table: &AliasTableU64,
+) -> u64 {
+    let _ = weights;
+    table.sample(input)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::Value;
 
     #[test]
     fn uniform_table_all_outcomes_reachable() {
@@ -363,25 +335,17 @@ mod tests {
 
     #[test]
     fn polydat_node_eval() {
-        let node = AliasSample::from_weights(&[1.0, 1.0, 1.0, 1.0]);
+        use crate::ast::PolydatNode;
+        let node = AliasSample::new(vec![1.0, 1.0, 1.0, 1.0]);
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
         assert!(out[0].as_u64() < 4);
     }
 
-    #[test]
-    fn polydat_node_compiled() {
-        let node = AliasSample::from_weights(&[1.0, 1.0, 1.0, 1.0]);
-        let op = node.compiled_u64().expect("should compile");
-        let mut out = [0u64];
-        op(&[42], &mut out);
-        assert!(out[0] < 4);
-
-        // Deterministic
-        let mut out2 = [0u64];
-        op(&[42], &mut out2);
-        assert_eq!(out[0], out2[0]);
-    }
+    // SRD-80b Phase C — `alias_sample` is JIT-ineligible by the
+    // `Const<Vec<C>>` design; the typed-eval path above covers
+    // correctness. A future `compiled_u64_override` could
+    // reinstate the closure form if perf demands it.
 
     #[test]
     fn single_outcome() {

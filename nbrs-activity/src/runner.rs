@@ -1242,41 +1242,24 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     crate::diag!(crate::observer::LogLevel::Info, "session: {} ({})",
         session.id, session.output_dir.display());
 
-    // Workload-emitted audit channel: route to
-    // <session>/audit.log. See the comment near the top
-    // of run() for the design rationale (session.log is
-    // lifecycle-only; metric data goes to
-    // <session>/metrics/*.jsonl; bulk workload diagnostic
-    // dumps via `log_info` and friends land here).
-    let audit_log_path = session.output_dir.join("audit.log");
-    match std::fs::OpenOptions::new()
-        .create(true).append(true).open(&audit_log_path)
-    {
-        Ok(file) => {
-            let handle = std::sync::Arc::new(std::sync::Mutex::new(file));
-            polydat::library::support::audit::set_log_fn(move |level, msg| {
-                use std::io::Write;
-                let tag = match level {
-                    polydat::library::support::audit::LogLevel::Trace => "TRC",
-                    polydat::library::support::audit::LogLevel::Debug => "DBG",
-                    polydat::library::support::audit::LogLevel::Info  => "INF",
-                    polydat::library::support::audit::LogLevel::Warn  => "WRN",
-                    polydat::library::support::audit::LogLevel::Error => "ERR",
-                };
-                if let Ok(mut f) = handle.lock() {
-                    let _ = writeln!(f, "{tag} {msg}");
-                }
-            });
-            crate::diag!(crate::observer::LogLevel::Info,
-                "audit log: {}", audit_log_path.display());
-        }
-        Err(e) => {
-            crate::diag!(crate::observer::LogLevel::Warn,
-                "audit log: failed to open '{}': {e} (audit messages dropped)",
-                audit_log_path.display());
-            polydat::library::support::audit::set_log_fn(|_level, _msg| {});
-        }
-    }
+    // Polydat library audit channel: route polydat's
+    // `audit::log/info/warn/...` calls through this
+    // process's observer so they land in `session.log`
+    // alongside every other diagnostic line, with a
+    // `[lib]` subsystem tag so the operator can filter them
+    // out if they're noisy. Replaces the standalone
+    // `<session>/audit.log` file — same content, one fewer
+    // place to look.
+    polydat::library::support::audit::set_log_fn(|level, msg| {
+        use polydat::library::support::audit::LogLevel as AuditLevel;
+        let mapped = match level {
+            AuditLevel::Trace | AuditLevel::Debug => crate::observer::LogLevel::Debug,
+            AuditLevel::Info  => crate::observer::LogLevel::Info,
+            AuditLevel::Warn  => crate::observer::LogLevel::Warn,
+            AuditLevel::Error => crate::observer::LogLevel::Error,
+        };
+        crate::observer::log(mapped, &format!("[lib] {msg}"));
+    });
 
     // SQLite metrics in session directory
     let sqlite_path = session.metrics_path();
@@ -1413,7 +1396,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         });
     }
 
-    // SRD-63 Push 9a: fire `Event::SessionStart` once at the
+    // SRD-63 Push 9a: fire `EventType::SessionStart` once at the
     // workload root. Workloads bind structural rows to
     // this slot via `readouts: { on_session_start: … }`;
     // unbound slots stay quiet (no built-in default
@@ -1421,14 +1404,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // phased or single-activity branch below.
     {
         let session_ctx = crate::readout_context::LifecycleContext {
-            event: crate::readouts::Event::SessionStart,
+            event: crate::lifecycle::EventType::SessionStart,
             subject_name: session.id.clone(),
             subject_labels: String::new(),
             depth_indent: String::new(),
             use_color: crate::observer::use_color(),
         };
         crate::readout_context::fire_lifecycle(
-            crate::readouts::Event::SessionStart,
+            crate::lifecycle::EventType::SessionStart,
             &workload_readouts,
             None,
             &session_ctx,
@@ -1545,8 +1528,12 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // of patching params into multiple places (per-op binding
     // text substitution, per-kernel `final` injection in
     // `build_scope`). See `nbrs-activity::params`.
-    let params_kernel = crate::params::build_workload_params_kernel(&workload_params)
-        .map_err(|e| format!("workload params kernel: {e}"))?;
+    // `build_workload_params_kernel` already prefixes its error
+    // with "workload params kernel:" and appends the generated
+    // source for diagnosis — propagate it verbatim rather than
+    // re-wrapping (which doubled the prefix and dropped the
+    // source dump).
+    let params_kernel = crate::params::build_workload_params_kernel(&workload_params)?;
 
     // Build the workload kernel directly as a subscope of the
     // params kernel via the typed PolydatKernel-controlled
@@ -2101,6 +2088,26 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     //      pass-through).
                     let phase = phases.get(name.as_str())?;
                     if let Some(spec) = phase.for_each.as_ref() {
+                        if !phase.metrics.is_empty() {
+                            // Phase-level `metrics:` + phase-level
+                            // `for_each:` isn't supported in the
+                            // initial ship: the for_each scope
+                            // synthesiser doesn't yet thread the
+                            // metric-binding augmentation through, and
+                            // the per-iteration completion-pull
+                            // semantics want their own design pass.
+                            // Reject loudly rather than silently
+                            // dropping the metrics.
+                            crate::diag!(
+                                crate::observer::LogLevel::Error,
+                                "phase '{name}': phase-level `metrics:` + phase-level \
+                                 `for_each:` is not supported yet. Move the for_each to \
+                                 scenario-tree level (so each iteration is its own phase \
+                                 activation, each with its own metrics), or drop one. \
+                                 Phase will be skipped.",
+                            );
+                            return None;
+                        }
                         if phase.poll.is_some() {
                             // SRD-75: phase-poll + phase-level
                             // for_each isn't supported in the
@@ -2151,7 +2158,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         // any other phase-level bindings; phase-
                         // poll has no synthesizer-specific code
                         // path.
-                        let synth = match crate::scope::synthesize_phase_bindings_with_poll(phase) {
+                        let synth = match crate::scope::synthesize_phase_scope_bindings(phase) {
                             Ok(b) => b,
                             Err(e) => {
                                 crate::diag!(
@@ -2461,6 +2468,15 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 d.depth = ExecDepth::Phase;
                 d
             },
+            // The pre-map pass walks at depth=Phase but is NOT
+            // execution: the structural-only sentinel that fires
+            // `set_phase_running` + `_completed` in the walker
+            // (intended for the dryrun=phase summary) is
+            // suppressed via this flag so the TUI's scene tree
+            // doesn't start life with every phase already
+            // Completed. Flipped back to false at line ~2675
+            // before the real execution pass.
+            pre_map_only: true,
             openmetrics_url: openmetrics_url.clone(),
             seq_type,
             concurrency,
@@ -2693,6 +2709,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         exec_ctx.scene_tree_parent_id = 0;
         exec_ctx.scene_tree_path = initial_scene_tree_path.clone();
         exec_ctx.current_scope_idx = 0;
+        // Pre-map pass is done — the real execution starts now.
+        // dryrun=phase still walks at depth=Phase but with this
+        // flag false, so the sentinel set_phase_completed in the
+        // walker fires as the dryrun=phase summary needs.
+        exec_ctx.pre_map_only = false;
 
         let scheduler = crate::scheduler::build(&schedule_spec);
         let scheduler_result = scheduler.run(
@@ -2767,26 +2788,41 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // rows because their data is still sitting in an unclosed window.
     cadence_reporter.shutdown();
 
-    // SRD-63 Push 9a: fire `Event::SessionEnd` once after
+    // SRD-63 Push 9a: fire `EventType::SessionEnd` once after
     // the cadence shutdown but before `run_finished()`.
     // Both branches (phased + single-activity) converge
     // here, so a single fire covers every run shape.
     {
         let session_ctx = crate::readout_context::LifecycleContext {
-            event: crate::readouts::Event::SessionEnd,
+            event: crate::lifecycle::EventType::SessionEnd,
             subject_name: session.id.clone(),
             subject_labels: String::new(),
             depth_indent: String::new(),
             use_color: crate::observer::use_color(),
         };
         crate::readout_context::fire_lifecycle(
-            crate::readouts::Event::SessionEnd,
+            crate::lifecycle::EventType::SessionEnd,
             &workload_readouts,
             None,
             &session_ctx,
             Some(&sqlite_reporter),
         );
     }
+
+    // Clean shutdown WAL consolidation: route the "shutting
+    // down" / "shutdown complete" notice through the observer
+    // so it lands in the proper log-row stream (with the
+    // session-elapsed margin) instead of as raw `eprintln!`
+    // that punches through whatever the active sink is
+    // currently rendering. Consume the guard so its drop-time
+    // fallback is a no-op for the clean path — the drop-time
+    // `eprintln!` only fires now on unclean exits (panic, …)
+    // where the observer log channel isn't trustworthy.
+    crate::diag!(crate::observer::LogLevel::Info,
+        "shutting down — consolidating metrics.db WAL");
+    _sqlite_shutdown_guard.consume();
+    crate::diag!(crate::observer::LogLevel::Info,
+        "shutdown complete");
 
     observer.run_finished();
 
@@ -3542,22 +3578,37 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             match node {
                 nbrs_workload::model::ScenarioNode::Phase(_) => {}
                 nbrs_workload::model::ScenarioNode::Comprehension { comprehension, children } => {
-                    let mut deferred = ParamRefs::default();
-                    // Walk the algebra AST's (var, spec_expr)
-                    // pairs and scan each spec_expr for
-                    // `{name}` references.
-                    for (_, spec_expr) in comprehension.coordinate_specs() {
-                        scan_param_refs(&spec_expr, &mut deferred);
-                    }
-                    // Comprehension `{name}` placeholders resolve at
-                    // runtime, not at workload-validation time —
-                    // route them through `runtime_only_placeholders`
-                    // so they count as references (for the
+                    // Grammar-based source-reference extraction.
+                    // A comprehension clause `eh in eh_values`
+                    // carries `eh_values` as a *bare* source
+                    // reference (a `Generator`/`WorkloadParamList`
+                    // spec), and `(v) in (concat(foo))` carries
+                    // `foo` inside a function call. Byte-scanning
+                    // for `{name}` misses both. `referenced_source_names`
+                    // parses each spec with the Polydat expression
+                    // grammar (via `polydat::dsl::refs`) and returns
+                    // the free names structurally. These resolve at
+                    // runtime, so they count as references (for the
                     // declared-but-unreferenced check) but bypass
                     // the strict undeclared-placeholder guard.
-                    refs.runtime_only_placeholders.extend(deferred.placeholders);
-                    refs.expression_idents.extend(deferred.expression_idents);
-                    refs.templates.extend(deferred.templates);
+                    //
+                    // A dynamic param-list reference like
+                    // `limit in {k_{k}_limits}` surfaces as the
+                    // composite name `k_{k}_limits` (the inner
+                    // `{k}` is an iter-var hole filled at runtime).
+                    // Route composite names — those still carrying
+                    // a `{` — into `templates` so the structured
+                    // `template_matches` name-composition grammar
+                    // resolves them against `k_10_limits` /
+                    // `k_100_limits` / …; plain names go to the
+                    // runtime-placeholder set.
+                    for name in comprehension.referenced_source_names() {
+                        if name.contains('{') {
+                            refs.templates.push(name);
+                        } else {
+                            refs.runtime_only_placeholders.insert(name);
+                        }
+                    }
                     scan_scenario_nodes(children, refs);
                 }
                 nbrs_workload::model::ScenarioNode::DoWhile { condition, children, .. }
@@ -3926,6 +3977,16 @@ fn scan_polydat_binding_lhs(
             scan_input_decl_names(out, rest.trim());
             continue;
         }
+        // `extern` declarations (`extern name: type [= default]`,
+        // `extern (a: u64, b: f64)`) declare wire names just like
+        // `input` — same `name: type` shape. Without this, a
+        // `{name}` placeholder referencing an extern-declared wire
+        // (e.g. a same-op capture target) trips the
+        // undeclared-placeholder guard.
+        if let Some(rest) = line.strip_prefix("extern ") {
+            scan_input_decl_names(out, rest.trim());
+            continue;
+        }
         // Strip leading modifier (`const `, `cursor `, `shared `,
         // `volatile `); body is what follows. Modifiers can be
         // combined in a few cases (e.g. `shared const`,
@@ -4102,6 +4163,74 @@ fn format_scenario_tree(
     out
 }
 
+/// Render a multi-coord comprehension's `[vars] in [specs]`
+/// in two column-aligned lines. Column `i` is padded to the
+/// widest of `vars[i]` and `specs[i]` so corresponding entries
+/// stack vertically:
+///
+/// ```text
+/// for [sm,          mnc,          bw,          eh,           alf_label]
+///  in [{sm_values}, {mnc_values}, {bw_values}, {eh_values}, concat({alf_label_values})]
+/// ```
+///
+/// `for ` and ` in ` are 4 chars (padding `in` with a leading
+/// space) so the `[` brackets and every column thereafter
+/// share the same vertical line. Color highlights the
+/// keywords when the active terminal supports it; on a
+/// piped/no-color stderr the output stays plain.
+///
+/// `indent_prefix` is the per-depth indent at the call site
+/// — applied to the second line so it sits at the same depth
+/// as the first.
+fn format_for_combinations(
+    pairs: &[(String, String)],
+    indent_prefix: &str,
+    color: bool,
+) -> String {
+    let kw_open  = if color { "\x1b[1;36m" } else { "" };
+    let kw_close = if color { "\x1b[0m"    } else { "" };
+    let bracket_open  = if color { "\x1b[2m" } else { "" };
+    let bracket_close = if color { "\x1b[0m" } else { "" };
+
+    let widths: Vec<usize> = pairs.iter()
+        .map(|(v, s)| v.chars().count().max(s.chars().count()))
+        .collect();
+
+    let pad = |entry: &str, idx: usize, last: bool| -> String {
+        // Last column gets no trailing comma + no padding —
+        // the closing `]` lands flush against the final token.
+        if last {
+            entry.to_string()
+        } else {
+            // `<entry>,` then pad to `widths[idx] + 1` so the
+            // next column begins at a constant offset.
+            let with_comma = format!("{entry},");
+            let width_target = widths[idx] + 1; // +1 for the comma
+            let visible = with_comma.chars().count();
+            if visible >= width_target {
+                with_comma
+            } else {
+                format!("{with_comma}{:<pad$}", "", pad = width_target - visible)
+            }
+        }
+    };
+
+    let last_idx = pairs.len().saturating_sub(1);
+    let vars_line: String = pairs.iter().enumerate()
+        .map(|(i, (v, _))| pad(v, i, i == last_idx))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let specs_line: String = pairs.iter().enumerate()
+        .map(|(i, (_, s))| pad(s, i, i == last_idx))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    format!(
+        "{kw_open}for{kw_close} {bracket_open}[{bracket_close}{vars_line}{bracket_open}]{bracket_close}\n\
+         {indent_prefix} {kw_open}in{kw_close} {bracket_open}[{bracket_close}{specs_line}{bracket_open}]{bracket_close}"
+    )
+}
+
 fn format_scenario_nodes(
     nodes: &[nbrs_workload::model::ScenarioNode],
     phases: &std::collections::HashMap<String, nbrs_workload::model::WorkloadPhase>,
@@ -4158,10 +4287,17 @@ fn format_scenario_nodes(
                             let (var, spec) = &pairs[0];
                             format!("for_each {var} in {spec}")
                         } else {
-                            let vars: Vec<&str> = pairs.iter().map(|(v, _)| v.as_str()).collect();
-                            let specs: Vec<&str> = pairs.iter().map(|(_, s)| s.as_str()).collect();
-                            format!("for_combinations [{}] in [{}]",
-                                vars.join(", "), specs.join(", "))
+                            // Two-line column-aligned form for
+                            // multi-coord comprehensions: variable
+                            // names on the first line, source
+                            // expressions on the second, each
+                            // column padded to its widest
+                            // (var, spec) pair so the columns
+                            // line up vertically. Keywords
+                            // `for` / ` in` are right-aligned
+                            // so the `[` brackets land in the
+                            // same column.
+                            format_for_combinations(&pairs, &indent, crate::observer::use_color())
                         }
                     }
                 };
@@ -4741,6 +4877,21 @@ mod tests {
     }
 
     #[test]
+    fn scan_polydat_binding_lhs_picks_up_extern_decl() {
+        // `extern name: type [= default]` declares a wire just like
+        // `input` — a same-op capture target referenced via `{name}`
+        // must not trip the undeclared-placeholder guard.
+        let names = scan_to_set(
+            "extern active_compactions: u64 = 0\n\
+             extern completion_ratio: f64 = 0.0\n\
+             extern (a: u64, b: f64)\n");
+        assert!(names.contains("active_compactions"));
+        assert!(names.contains("completion_ratio"));
+        assert!(names.contains("a"));
+        assert!(names.contains("b"));
+    }
+
+    #[test]
     fn parse_dryrun_controls_sets_list_flag() {
         let cfg = DiagnosticConfig::parse("controls");
         assert!(cfg.list_controls);
@@ -4844,7 +4995,7 @@ mod tests {
             adapter: None, errors: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![],
+            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
         };
@@ -4984,6 +5135,53 @@ mod tests {
         ]));
         assert!(!out.iter().any(|a| a.starts_with("scenario=")),
             "readout body misread as scenario: {out:?}");
+    }
+
+    /// `format_for_combinations` lays out vars and specs in
+    /// column-aligned pairs. Each column is padded to the
+    /// widest of its (var, spec) so corresponding entries
+    /// stack vertically. The `color = false` argument forces
+    /// the no-ANSI branch so the assertion can pattern-match
+    /// the raw text — no dependency on the process's ambient
+    /// TTY / `NO_COLOR` state (which `observer::use_color()`
+    /// caches process-wide on first call and can't be undone
+    /// per-test).
+    #[test]
+    fn format_for_combinations_aligns_columns() {
+        let pairs = vec![
+            ("sm".to_string(),  "{sm_values}".to_string()),
+            ("mnc".to_string(), "{mnc_values}".to_string()),
+            ("alf_label".to_string(), "concat({alf_label_values})".to_string()),
+        ];
+        let out = format_for_combinations(&pairs, "", false);
+        let lines: Vec<&str> = out.split('\n').collect();
+        assert_eq!(lines.len(), 2, "MUST produce exactly 2 lines: {out:?}");
+        assert!(lines[0].starts_with("for ["),
+            "first line MUST start with `for [`: {:?}", lines[0]);
+        assert!(lines[1].starts_with(" in ["),
+            "second line MUST start with ` in [`: {:?}", lines[1]);
+        // Bracket columns align: the `[` after `for` and the
+        // `[` after `in ` should be at the same column index.
+        let l0_bracket = lines[0].find('[').unwrap();
+        let l1_bracket = lines[1].find('[').unwrap();
+        assert_eq!(l0_bracket, l1_bracket,
+            "`[` brackets MUST align: line0={l0_bracket}, line1={l1_bracket}");
+        // Column alignment: the comma after `sm,` on line 0
+        // sits at the same column as the comma after the
+        // `{sm_values},` on line 1 — except padded so that
+        // `mnc` on line 0 starts at the same column as
+        // `{mnc_values}` on line 1.
+        let mnc_pos = lines[0].find("mnc").unwrap();
+        let mnc_values_pos = lines[1].find("{mnc_values}").unwrap();
+        assert_eq!(mnc_pos, mnc_values_pos,
+            "column 2 MUST align: `mnc`@{mnc_pos} vs `{{mnc_values}}`@{mnc_values_pos}\n{out}");
+        let alf_pos = lines[0].find("alf_label").unwrap();
+        let alf_concat_pos = lines[1].find("concat(").unwrap();
+        assert_eq!(alf_pos, alf_concat_pos,
+            "column 3 MUST align: `alf_label`@{alf_pos} vs `concat(...)`@{alf_concat_pos}\n{out}");
+        // Closing brackets present on both lines.
+        assert!(lines[0].ends_with(']'));
+        assert!(lines[1].ends_with(']'));
     }
 }
 

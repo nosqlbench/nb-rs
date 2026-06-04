@@ -14,8 +14,9 @@
 
 use std::fmt::Write as _;
 
+use crate::lifecycle::SubjectKind;
 use crate::readouts::buf::ReadoutBuf;
-use crate::readouts::context::{ReadoutContext, SubjectKind};
+use crate::readouts::context::ReadoutContext;
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
 pub struct SessionBanner;
@@ -136,7 +137,7 @@ mod tests {
         fn status_metric_chips(&self) -> String { String::new() }
         fn depth_indent(&self) -> &str { "" }
         fn use_color(&self) -> bool { false }
-        fn event(&self) -> crate::readouts::Event { crate::readouts::Event::SessionStart }
+        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::SessionStart }
         fn session_scenario_name(&self) -> &str { &self.scenario }
         fn session_workload_file(&self) -> &str { &self.workload }
     }

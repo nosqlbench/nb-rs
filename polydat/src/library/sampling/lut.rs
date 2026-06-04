@@ -177,67 +177,36 @@ impl PolydatNode for LutSample {
     }
 }
 
-/// Polydat node that samples from an empirical distribution.
-///
-/// The data points define the distribution's inverse CDF directly:
-/// sorted values become the LUT entries, and linear interpolation
-/// between them gives continuous sampling.
-///
-/// Signature: `(input: f64) -> (f64)`
-///
-/// Input should be in [0, 1] (from unit_interval). Output is
-/// an interpolated value from the empirical data.
-pub struct EmpiricalSample {
-    meta: NodeMeta,
-    table: LutF64,
+// `EmpiricalSample` migrated to `#[polydat_node]` via the
+// `#[poly_const]` setup pattern. Parses the spec at construction
+// time into a `LutF64`; eval samples from the cached table.
+
+impl crate::derive_support::PolydatSetup for LutF64 {}
+
+/// Parse a free-form spec ("1.0 2.5 7" or "1.0,2.5,7") into a
+/// sorted `LutF64`. Single-call setup invoked by the macro.
+fn parse_empirical_lut(spec: &str) -> LutF64 {
+    let mut values: Vec<f64> = spec.split([' ', ',', ';'])
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().parse::<f64>().expect("invalid empirical data point"))
+        .collect();
+    assert!(values.len() >= 2, "empirical distribution needs at least 2 data points");
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    LutF64::from_values(&values)
 }
 
-impl EmpiricalSample {
-    /// Create from a spec string of space/comma/semicolon-separated f64 values.
-    pub fn from_spec(spec: &str) -> Self {
-        let mut values: Vec<f64> = spec.split([' ', ',', ';'])
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().parse::<f64>().expect("invalid empirical data point"))
-            .collect();
-        assert!(values.len() >= 2, "empirical distribution needs at least 2 data points");
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let table = LutF64::from_values(&values);
-        Self {
-            meta: NodeMeta {
-                name: "dist_empirical".into(),
-                outs: vec![Port::new("output", PortType::F64)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::F64))],
-            },
-            table,
-        }
-    }
-}
-
-impl PolydatNode for EmpiricalSample {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::F64(self.table.sample(inputs[0].as_f64()));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let lut_addr = self.table.as_ptr() as usize;
-        let lut_len = self.table.len();
-        Some(Box::new(move |inputs, outputs| {
-            let u = f64::from_bits(inputs[0]).clamp(0.0, 1.0);
-            let n = (lut_len - 1) as f64;
-            let pos = u * n;
-            let idx = (pos as usize).min(lut_len - 2);
-            let frac = pos - idx as f64;
-            let result = unsafe {
-                let ptr = lut_addr as *const f64;
-                let a = *ptr.add(idx);
-                let b = *ptr.add(idx + 1);
-                a * (1.0 - frac) + b * frac
-            };
-            outputs[0] = result.to_bits();
-        }))
-    }
+/// Sample from an empirical distribution defined by a list of
+/// data points. The data points become the LUT entries
+/// (sorted); linear interpolation gives continuous sampling.
+/// Input should be in `[0, 1]` (from `unit_interval`).
+#[crate::polydat_node(category = Probability)]
+fn dist_empirical(
+    input: f64,
+    spec: crate::derive_support::Const<&str>,
+    #[poly_const(parse_empirical_lut, from = spec)]
+    table: &LutF64,
+) -> f64 {
+    table.sample(input)
 }
 
 #[cfg(test)]

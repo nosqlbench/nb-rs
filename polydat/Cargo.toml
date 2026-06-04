@@ -29,6 +29,11 @@ exclude = [
 ]
 
 [dependencies]
+# SRD-80 — proc-macro derive crate ( `#[polydat_node]` ).
+# `inventory` (used for link-time FuncSig registration) is
+# already a polydat dep further down — used by the existing
+# kernel-tracking infrastructure too.
+polydat-derive = { path = "../polydat-derive", version = "0.1.0" }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 sha2 = "0.10"
 md-5 = "0.10"

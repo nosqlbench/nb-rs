@@ -27,8 +27,9 @@
 
 use std::fmt::Write as _;
 
+use crate::lifecycle::SubjectKind;
 use crate::readouts::buf::ReadoutBuf;
-use crate::readouts::context::{ReadoutContext, SubjectKind};
+use crate::readouts::context::ReadoutContext;
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
 pub struct Trace;
@@ -197,12 +198,12 @@ use_color: surface accepts ANSI styling"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::readouts::Event;
+    use crate::lifecycle::EventType;
     use crate::readouts::buf::StringBuf;
 
     #[derive(Default)]
     struct TestCtx {
-        event: Option<Event>,
+        event: Option<EventType>,
         refresh_tick: u64,
         phase_name: String,
         activity_name: Option<String>,
@@ -247,7 +248,7 @@ mod tests {
         fn batch_info_text(&self) -> String { self.batch.clone() }
         fn depth_indent(&self) -> &str { &self.depth_indent }
         fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> Event { self.event.unwrap_or(Event::PhaseEnd) }
+        fn event(&self) -> EventType { self.event.unwrap_or(EventType::PhaseEnd) }
         fn refresh_tick(&self) -> u64 { self.refresh_tick }
     }
 
@@ -267,11 +268,11 @@ mod tests {
         // header. If a future Event variant gets added and
         // the reverse-mapping forgets it, this test fails.
         for ev in [
-            Event::SessionStart, Event::SessionEnd,
-            Event::PhaseStart,   Event::PhaseEnd,
-            Event::EachStart,    Event::EachEnd,
-            Event::ScopeStart,   Event::ScopeEnd,
-            Event::Update,
+            EventType::SessionStart, EventType::SessionEnd,
+            EventType::PhaseStart,   EventType::PhaseEnd,
+            EventType::EachStart,    EventType::EachEnd,
+            EventType::ScopeStart,   EventType::ScopeEnd,
+            EventType::Update,
         ] {
             let ctx = TestCtx {
                 event: Some(ev),
@@ -287,7 +288,7 @@ mod tests {
     #[test]
     fn dumps_all_listed_fields() {
         let ctx = TestCtx {
-            event: Some(Event::PhaseEnd),
+            event: Some(EventType::PhaseEnd),
             refresh_tick: 7,
             phase_name: "ann_query".into(),
             activity_name: Some("ann_query (k=10)".into()),

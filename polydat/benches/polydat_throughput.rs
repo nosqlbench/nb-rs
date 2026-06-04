@@ -12,7 +12,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main, black_box};
 
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
-use polydat::library::arithmetic::SumN;
+use polydat::library::arithmetic::Sum;
 use polydat::library::identity::Identity;
 
 // =================================================================
@@ -21,18 +21,18 @@ use polydat::library::identity::Identity;
 
 fn asm_single_identity() -> PolydatAssembler {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("id", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
     asm.add_output("out", WireRef::node("id"));
     asm
 }
 
 fn asm_identity_chain(depth: usize) -> PolydatAssembler {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("id_0", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("id_0", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
     for i in 1..depth {
         let name = format!("id_{i}");
         let prev = format!("id_{}", i - 1);
-        asm.add_node(&name, Box::new(Identity::new()), vec![WireRef::node(prev)]);
+        asm.add_node(&name, Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::node(prev)]);
     }
     let last = format!("id_{}", depth - 1);
     asm.add_output("out", WireRef::node(last));
@@ -43,7 +43,7 @@ fn asm_wide_sum(width: usize) -> PolydatAssembler {
     let coord_names: Vec<String> = (0..width).map(|i| format!("c{i}")).collect();
     let mut asm = PolydatAssembler::new(coord_names.clone());
     let inputs: Vec<WireRef> = coord_names.iter().map(|n| WireRef::input(n)).collect();
-    asm.add_node("sum", Box::new(SumN::new(width)), inputs);
+    asm.add_node("sum", Box::new(Sum::new(width)), inputs);
     asm.add_output("out", WireRef::node("sum"));
     asm
 }
@@ -229,16 +229,16 @@ fn bench_hybrid_identity_chain(c: &mut Criterion) {
 // Invalidation strategy benchmarks
 // =================================================================
 
-use polydat::library::hash::Hash64;
-use polydat::library::arithmetic::ModU64;
+use polydat::library::hash::Hash;
+use polydat::library::arithmetic::Mod;
 
 fn asm_hash_chain(depth: usize) -> PolydatAssembler {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("h0", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("h0", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
     for i in 1..depth {
         let name = format!("h{i}");
         let prev = format!("h{}", i - 1);
-        asm.add_node(&name, Box::new(ModU64::new(1_000_000)), vec![WireRef::node(prev)]);
+        asm.add_node(&name, Box::new(Mod::new(1_000_000)), vec![WireRef::node(prev)]);
     }
     let last = format!("h{}", depth - 1);
     asm.add_output("out", WireRef::node(last));

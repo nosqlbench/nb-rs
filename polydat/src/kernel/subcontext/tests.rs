@@ -462,7 +462,11 @@ fn describe_keyspace_body_is_multirow_not_unary() {
          "create_statement": "CREATE VIRTUAL TABLE system_views.indexes (..."},
     ])));
 
-    let node = ExactlyOneValue::new();
+    // SRD-80b: ExactlyOneValue is now a PolyWire node; the macro
+    // emits `new(input_type)` taking the runtime port type of the
+    // upstream wire. We pass the body's own port type so the node's
+    // declared output type matches the test fixture.
+    let node = ExactlyOneValue::new(multi_row_body.port_type());
     let mut out = [Value::None];
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         node.eval(&[multi_row_body], &mut out);
@@ -1249,7 +1253,6 @@ fn add_result_bindings_empty_source_is_noop() {
 #[test]
 fn l2f_silent_fall_through_when_strict_off() {
     use crate::ast::Value;
-    use crate::kernel::Construction;
     use crate::kernel::subcontext::PolydatMatter;
     let outer = compile_polydat("input cycle: u64\nconst X := \"outer-value\"\n")
         .expect("outer compile");
@@ -1296,7 +1299,6 @@ fn l2f_silent_fall_through_when_strict_off() {
 /// is what this test exercises.
 #[test]
 fn l2f_strict_rejects_silent_fall_through() {
-    use crate::kernel::Construction;
     use crate::kernel::subcontext::PolydatMatter;
     let outer = compile_polydat("input cycle: u64\nconst X := \"outer-value\"\n")
         .expect("outer compile");

@@ -867,19 +867,35 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     // lifetime — author doesn't need to think
                     // about which path the runtime takes.
                     //
-                    // Literal-format rules:
-                    //   - numeric-parseable → bare (no quotes)
-                    //   - "true" / "false" → bare boolean
-                    //   - everything else → quoted Polydat string
-                    //     literal, with `\` / `"` escaped
+                    // Literal-format rules — same classifier the
+                    // workload-root `add_param_binding` uses, so
+                    // `set: { … }` block bindings carry the same
+                    // bare-identifier / array-literal / quoted-
+                    // string surface as workload params:
+                    //
+                    //   - bare numeric / `true` / `false` → emit as-is
+                    //   - polydat array literal `[…]`     → emit as-is
+                    //   - polydat-quoted string `"…"`      → emit as-is
+                    //   - identifier-shaped                → emit as
+                    //     a polydat wire reference (this is the
+                    //     `set: { source_model: sm }` path —
+                    //     `sm` becomes a reference, not a Str
+                    //     literal `"sm"`)
+                    //   - anything else                    → wrap as
+                    //     polydat string literal
                     let mut source = String::new();
                     for (name, value) in &pairs {
                         let trimmed = value.trim();
                         let literal = if trimmed.parse::<u64>().is_ok()
                             || trimmed.parse::<f64>().is_ok()
+                            || trimmed == "true"
+                            || trimmed == "false"
                         {
                             trimmed.to_string()
-                        } else if trimmed == "true" || trimmed == "false" {
+                        } else if is_polydat_quoted_string(trimmed)
+                            || is_polydat_array_literal(trimmed)
+                            || is_bare_identifier(trimmed)
+                        {
                             trimmed.to_string()
                         } else {
                             let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
@@ -1344,6 +1360,16 @@ fn parse_phases(
             )),
         };
 
+        // Phase-level `metrics:` — same schema as op `metrics:`,
+        // but evaluated once at phase completion. Raw `value:`
+        // expressions are preserved (no auto-inject into bindings):
+        // the phase synthesiser emits `volatile __metric_<name> :=
+        // <value>` directly, so a nondeterministic value such as
+        // `phase_elapsed(phase_start)` is volatility-acknowledged
+        // for strict mode in one place.
+        let metrics = parse_phase_metrics_field(phase_obj.get("metrics"), &phase_name)
+            .map_err(|e| format!("phase '{phase_name}' metrics: {e}"))?;
+
         phases.insert(phase_name.clone(), WorkloadPhase {
             cycles,
             concurrency,
@@ -1358,6 +1384,7 @@ fn parse_phases(
             checkpoint,
             status_metrics,
             bindings: phase_bindings_only,
+            metrics,
             poll: phase_poll,
         });
         phase_order.push(phase_name.clone());
@@ -2067,6 +2094,77 @@ fn parse_metrics_field(
     Ok(out)
 }
 
+/// Parse a phase-level `metrics:` field. Same three YAML shapes as
+/// the op-level [`parse_metrics_field`] (scalar / sequence / mapping)
+/// and the same [`MetricSpec`] schema, with one deliberate
+/// difference: phase metrics do **not** auto-inject non-bare value
+/// expressions into a `bindings:` block. Op metrics inject so the
+/// closure-binding-economy walker can allocate magic-extern slots
+/// (`body`/`count`/`ok`) for the value expression; phase metrics have
+/// no result body and are pulled directly by the executor from
+/// `__metric_<name>`, so the phase synthesiser emits
+/// `volatile __metric_<name> := <value>` straight from the raw
+/// `value:` expression preserved here.
+fn parse_phase_metrics_field(
+    val: Option<&JVal>,
+    phase_name: &str,
+) -> Result<HashMap<String, MetricSpec>, String> {
+    use crate::model::MetricSpec;
+    let Some(v) = val else { return Ok(HashMap::new()); };
+    let mut out: HashMap<String, MetricSpec> = HashMap::new();
+    match v {
+        JVal::String(s) => {
+            // Scalar: a bare wire name used as both family and value.
+            let name = s.trim().to_string();
+            if name.is_empty() {
+                return Err("scalar form requires a metric name".into());
+            }
+            out.insert(name.clone(), MetricSpec {
+                value: name, family: None, kind: None, unit: None, format: None,
+            });
+        }
+        JVal::Array(items) => {
+            // Sequence: bare wire names only (no `name := expr` form —
+            // phase metrics don't inject bindings).
+            for (idx, item) in items.iter().enumerate() {
+                let raw = item.as_str().ok_or_else(|| format!(
+                    "metrics list entry {idx}: must be a bare wire name"))?;
+                let name = raw.trim();
+                if name.is_empty() {
+                    return Err(format!("metrics list entry {idx}: empty name"));
+                }
+                if name.contains(":=") {
+                    return Err(format!(
+                        "metrics list entry {idx} '{raw}': the `name := expr` \
+                         form is op-only; for a phase, declare the wire in the \
+                         phase `bindings:` block and list its bare name here, \
+                         or use the mapping form `{{ {name}: {{ value: <expr> }} }}`"));
+                }
+                if out.contains_key(name) {
+                    return Err(format!("duplicate metric '{name}' in metrics list"));
+                }
+                out.insert(name.to_string(), MetricSpec {
+                    value: name.to_string(), family: None, kind: None,
+                    unit: None, format: None,
+                });
+            }
+        }
+        JVal::Object(map) => {
+            // Mapping: canonical full-shape form. Raw `value:` kept.
+            for (key, val) in map {
+                if out.contains_key(key) {
+                    return Err(format!("duplicate metric key '{key}' in metrics map"));
+                }
+                out.insert(key.clone(), parse_metric_spec_value(val, key)?);
+            }
+        }
+        _ => return Err(format!(
+            "phase '{phase_name}' metrics: expected scalar, sequence, or \
+             mapping; got {v:?}")),
+    }
+    Ok(out)
+}
+
 /// Parse one entry under the mapping form of `metrics:`.
 /// Accepts a bare string (treated as `value:`) or a full
 /// `MetricSpec` object.
@@ -2078,6 +2176,26 @@ fn parse_metric_spec_value(v: &JVal, key: &str) -> Result<crate::model::MetricSp
             unit: None, format: None,
         }),
         JVal::Object(map) => {
+            // SRD-30 unknown-field hygiene: reject any key outside the
+            // MetricSpec surface rather than silently dropping it (a
+            // dropped `kind:` would let a counter/histogram silently
+            // default to gauge). The instrument-type discriminator is
+            // `kind`, not `type` — `type` is the word OpenMetrics /
+            // Prometheus use, so it's the predictable mistake; give it
+            // a targeted hint.
+            const KNOWN: &[&str] = &["value", "family", "kind", "unit", "format"];
+            for k in map.keys() {
+                if KNOWN.contains(&k.as_str()) { continue; }
+                let hint = if k == "type" {
+                    " — the instrument-type discriminator is `kind` \
+                     (gauge | histogram | counter)"
+                } else {
+                    ""
+                };
+                return Err(format!(
+                    "metric '{key}': unknown field `{k}`{hint}. Recognised \
+                     fields: value, family, kind, unit, format"));
+            }
             let value = map.get("value")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| format!(
@@ -2331,18 +2449,134 @@ fn inline_block_sugar_into_op(block_sugar: &BindingsDef, op_own: &BindingsDef) -
     }
 }
 
+/// Render a YAML/JSON param value as the text form
+/// `add_param_binding` expects.
+///
+/// Scalar shapes pass through RAW (no extra quoting): a YAML
+/// `iter_count: "3"` and a YAML `iter_count: 3` BOTH come out as
+/// the string `"3"` here — the downstream classifier sees
+/// numeric-shape and emits a bare U64 binding either way. YAML's
+/// quotes are presentation, not semantic, for scalars.
+///
+/// Array shape gets the polydat array literal form
+/// (`[v1, v2, v3]`) — that's the new convention the workload
+/// surface needs to support. Array ELEMENTS are formatted with
+/// polydat literal grammar (strings explicitly quoted) since
+/// polydat's parser requires quotes inside array literals;
+/// `format_jval_in_array_context` handles the recursion.
+///
+/// Object shape (rare for params) falls back to JSON
+/// serialization — there's no polydat literal form for objects,
+/// so the value passes through whatever-it-is for callers
+/// downstream to handle.
+pub(crate) fn format_jval_as_polydat_literal(v: &JVal) -> String {
+    match v {
+        JVal::Null => String::new(),
+        JVal::Bool(b) => b.to_string(),
+        JVal::Number(n) => n.to_string(),
+        // Scalar strings pass through unquoted to preserve the
+        // legacy "YAML quotes are presentation" behavior. The
+        // downstream classifier (`add_param_binding`) figures
+        // out the actual type from the content — numeric-shape
+        // becomes U64/F64, identifier-shape becomes a reference,
+        // string-shape becomes a polydat-quoted Str.
+        JVal::String(s) => s.clone(),
+        JVal::Array(items) => {
+            let elts: Vec<String> = items.iter()
+                .map(format_jval_in_array_context)
+                .collect();
+            format!("[{}]", elts.join(", "))
+        }
+        JVal::Object(_) => v.to_string(),
+    }
+}
+
+/// Element-context formatter: polydat array literals require
+/// explicit quotes around string elements (`["a", "b"]`), unlike
+/// the scalar-context formatter which leaves strings unquoted.
+fn format_jval_in_array_context(v: &JVal) -> String {
+    match v {
+        JVal::String(s) => {
+            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("\"{escaped}\"")
+        }
+        JVal::Array(items) => {
+            let elts: Vec<String> = items.iter()
+                .map(format_jval_in_array_context)
+                .collect();
+            format!("[{}]", elts.join(", "))
+        }
+        _ => format_jval_as_polydat_literal(v),
+    }
+}
+
 fn extract_string_map(val: Option<&JVal>) -> HashMap<String, String> {
     let mut map = HashMap::new();
     if let Some(JVal::Object(obj)) = val {
         for (k, v) in obj {
-            if let Some(s) = v.as_str() {
-                map.insert(k.clone(), s.to_string());
-            } else {
-                map.insert(k.clone(), v.to_string());
-            }
+            // Format every YAML value as polydat-native source.
+            // Strings come out quote-wrapped, arrays as
+            // `[a, b, c]`, numbers / bools bare. The downstream
+            // `add_param_binding` classifier reads this and emits
+            // the const binding without re-quoting.
+            map.insert(k.clone(), format_jval_as_polydat_literal(v));
         }
     }
     map
+}
+
+/// Shared classifier helpers — `set:` block parser and the
+/// scope-level `add_param_binding` route every value through
+/// the same shape detection so the bare-identifier / array-
+/// literal / quoted-string surface is consistent across both
+/// param entry points.
+
+fn is_bare_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn is_polydat_quoted_string(s: &str) -> bool {
+    if s.len() < 2 { return false; }
+    if !s.starts_with('"') || !s.ends_with('"') { return false; }
+    let bytes = s.as_bytes();
+    let mut i = 1;
+    let last = bytes.len() - 1;
+    while i < last {
+        if bytes[i] == b'\\' { i += 2; continue; }
+        if bytes[i] == b'"' { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn is_polydat_array_literal(s: &str) -> bool {
+    if !s.starts_with('[') || !s.ends_with(']') { return false; }
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    for c in s.chars() {
+        if escape { escape = false; continue; }
+        if in_string {
+            if c == '\\' { escape = true; }
+            else if c == '"' { in_string = false; }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth < 0 { return false; }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
 }
 
 fn extract_value_map(val: Option<&JVal>) -> HashMap<String, JVal> {
@@ -2374,6 +2608,114 @@ fn merge_value_maps(parent: &HashMap<String, JVal>, child: &HashMap<String, JVal
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phase_metrics_mapping_form_preserves_raw_value() {
+        // Phase-level `metrics:` keeps the raw `value:` expression
+        // (no bare-key injection into bindings — the phase synthesiser
+        // emits `volatile __metric_<name> := <value>` directly).
+        let yaml = r#"
+phases:
+  build_index:
+    metrics:
+      time_to_index: { value: "current_epoch_millis() - phase_start", kind: gauge }
+    ops:
+      work: { stmt: "op" }
+scenarios:
+  default: [build_index]
+"#;
+        let wl = parse_workload(yaml, &HashMap::new()).expect("parse");
+        let phase = wl.phases.get("build_index").expect("phase build_index");
+        let m = phase.metrics.get("time_to_index").expect("time_to_index metric");
+        assert_eq!(m.value, "current_epoch_millis() - phase_start",
+            "raw value must be preserved verbatim");
+        assert_eq!(m.kind, Some(crate::model::MetricKind::Gauge));
+        assert!(phase.bindings.is_empty(),
+            "phase metrics must NOT auto-inject into bindings: {:?}", phase.bindings);
+    }
+
+    #[test]
+    fn metric_spec_rejects_unknown_field_type_with_hint() {
+        // `type:` is the OpenMetrics word; ours is `kind`. Reject it
+        // loudly with a hint rather than silently dropping it (which
+        // would default the metric to gauge).
+        let yaml = r#"
+phases:
+  p:
+    metrics:
+      m: { type: counter, value: "x" }
+    ops:
+      work: { stmt: "op" }
+scenarios:
+  default: [p]
+"#;
+        let err = parse_workload(yaml, &HashMap::new())
+            .expect_err("unknown metric field `type` must be rejected");
+        assert!(err.contains("unknown field `type`"),
+            "must name the offending field; got: {err}");
+        assert!(err.contains("kind"),
+            "must hint at the canonical `kind` field; got: {err}");
+    }
+
+    #[test]
+    fn metric_spec_rejects_arbitrary_unknown_field() {
+        let yaml = r#"
+phases:
+  p:
+    metrics:
+      m: { value: "x", flavour: gauge }
+    ops:
+      work: { stmt: "op" }
+scenarios:
+  default: [p]
+"#;
+        let err = parse_workload(yaml, &HashMap::new())
+            .expect_err("arbitrary unknown metric field must be rejected");
+        assert!(err.contains("unknown field `flavour`"),
+            "must name the offending field; got: {err}");
+    }
+
+    #[test]
+    fn metric_spec_accepts_all_known_fields() {
+        // Regression guard: the unknown-field check must not reject any
+        // legitimate field.
+        let yaml = r#"
+phases:
+  p:
+    metrics:
+      m: { value: "x", family: fam, kind: counter, unit: bytes, format: "0.00" }
+    ops:
+      work: { stmt: "op" }
+scenarios:
+  default: [p]
+"#;
+        let wl = parse_workload(yaml, &HashMap::new()).expect("all known fields accepted");
+        let m = wl.phases.get("p").unwrap().metrics.get("m").unwrap();
+        assert_eq!(m.kind, Some(crate::model::MetricKind::Counter));
+        assert_eq!(m.unit.as_deref(), Some("bytes"));
+        assert_eq!(m.family.as_deref(), Some("fam"));
+    }
+
+    #[test]
+    fn phase_metrics_list_form_rejects_wire_expression() {
+        // The `name := expr` list form is op-only; for a phase the
+        // author must use the phase `bindings:` block + a bare name,
+        // or the mapping form. Reject loudly rather than silently.
+        let yaml = r#"
+phases:
+  p:
+    metrics:
+      - "te := current_epoch_millis() - phase_start"
+    ops:
+      work: { stmt: "op" }
+scenarios:
+  default: [p]
+"#;
+        let err = parse_workload(yaml, &HashMap::new())
+            .expect_err("list `name := expr` form must be rejected for phases");
+        assert!(err.contains("op-only") || err.contains("mapping form"),
+            "diagnostic should point at the op-only form; got: {err}");
+    }
 
     #[test]
     fn readouts_block_form_a_scalar_binds_on_update() {

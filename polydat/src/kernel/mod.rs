@@ -294,12 +294,12 @@ mod tests {
         // Config wire fed by init-time constant → no warning
         use crate::compile::assembly::{PolydatAssembler, WireRef};
         use crate::library::identity::ConstU64;
-        use crate::library::hash::Hash64;
+        use crate::library::hash::Hash;
         use crate::dsl::events::CompileEventLog;
 
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
         asm.add_node("config_val", Box::new(ConstU64::new(42)), vec![]);
-        asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("hashed", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
         asm.add_node("test_node", Box::new(ConfigWireTestNode::new()), vec![
             WireRef::node("config_val"),
             WireRef::node("hashed"),
@@ -323,11 +323,11 @@ mod tests {
         //      cycle → config_test.data_input
         // Config wire fed by cycle-time node → should warn
         use crate::compile::assembly::{PolydatAssembler, WireRef};
-        use crate::library::hash::Hash64;
+        use crate::library::hash::Hash;
         use crate::dsl::events::CompileEventLog;
 
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("hashed", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
         asm.add_node("test_node", Box::new(ConfigWireTestNode::new()), vec![
             WireRef::node("hashed"),   // config_param ← cycle-time!
             WireRef::input("cycle"),   // data_input ← cycle
@@ -401,7 +401,7 @@ mod tests {
         // inner is fully init-time → its output feeds outer's config wire → no warning
         use crate::compile::assembly::{PolydatAssembler, WireRef};
         use crate::library::identity::ConstU64;
-        use crate::library::hash::Hash64;
+        use crate::library::hash::Hash;
         use crate::dsl::events::CompileEventLog;
 
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
@@ -410,7 +410,7 @@ mod tests {
         asm.add_node("inner", Box::new(ConfigWireTestNode::new()), vec![
             WireRef::node("a"), WireRef::node("b"),
         ]);
-        asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("hashed", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
         asm.add_node("outer", Box::new(ConfigWireTestNode::new()), vec![
             WireRef::node("inner"),  // config_param ← init-time (5+3)
             WireRef::node("hashed"), // data_input ← cycle-time

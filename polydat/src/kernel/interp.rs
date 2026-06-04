@@ -269,8 +269,20 @@ where
             replaced_any = true;
             continue;
         }
-        out.push(c as char);
-        i += 1;
+        // Passthrough. ASCII bytes copy directly; a non-ASCII
+        // lead byte starts a multi-byte UTF-8 char that must be
+        // copied whole (`c as char` would split it into mojibake).
+        // `i` is always at a char boundary here — the scanner only
+        // advances past ASCII specials (`{` `}` `\`) or whole
+        // placeholders.
+        if c < 0x80 {
+            out.push(c as char);
+            i += 1;
+        } else {
+            let ch = s[i..].chars().next().expect("byte index at char boundary");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
     }
     *s = out;
     Ok(replaced_any)
@@ -315,19 +327,23 @@ fn first_unresolved(s: &str) -> Option<String> {
 /// untouched so the substituted text doesn't gain newlines or
 /// other surprises the user didn't ask for.
 fn unescape(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = String::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len()
-            && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}')
-        {
-            out.push(bytes[i + 1] as char);
-            i += 2;
-            continue;
+    // Char-based, not byte-based: `bytes[i] as char` would split
+    // any multi-byte UTF-8 sequence (e.g. `…` U+2026) into
+    // mojibake. Only `\{` and `\}` are unescaped; every other
+    // character — ASCII or not — passes through intact.
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                if next == '{' || next == '}' {
+                    out.push(next);
+                    chars.next();
+                    continue;
+                }
+            }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        out.push(c);
     }
     out
 }

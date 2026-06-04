@@ -752,6 +752,37 @@ pub struct WorkloadPhase {
     /// phase bindings via the Polydat scope chain.
     #[serde(default, skip_serializing_if = "BindingsDef::is_empty")]
     pub bindings: BindingsDef,
+    /// Phase-level synthetic-metric declarations. Mirror of
+    /// [`ParsedOp::metrics`] (same [`MetricSpec`] schema and YAML
+    /// shapes), but evaluated **once at phase completion** against
+    /// the phase scope kernel rather than per-cycle. Each entry's
+    /// `value:` is a Polydat expression over phase-scope wires
+    /// (bindings, captures, params, iter-vars) plus the
+    /// executor-injected `phase_start` wire (epoch millis at phase
+    /// start). The canonical phase-duration metric reads a clock via
+    /// a `volatile` phase binding and subtracts the injected origin:
+    /// ```yaml
+    /// bindings: |
+    ///   volatile now_ms := current_epoch_millis()
+    /// metrics:
+    ///   time_to_index: { value: now_ms - phase_start }
+    /// ```
+    /// yielding the phase's wall-clock duration in millis. Empty when
+    /// absent. No dedicated clock node is needed: `current_epoch_millis()`
+    /// is a single read, and `phase_start` arrives as plain data, so the
+    /// expression re-evaluates correctly at the completion-time pull.
+    /// Declaring the clock read as its own `volatile` binding (rather
+    /// than nesting it in the metric value) explicitly acknowledges the
+    /// non-deterministic node, so the phase kernel stays clean under
+    /// `--strict`.
+    ///
+    /// The synthesiser emits `volatile __metric_<name> := <value>`
+    /// onto the phase kernel (see
+    /// `nbrs_activity::scope::synthesize_metric_binding_name`); the
+    /// executor pulls each at completion and records it on the
+    /// phase component as the declared instrument (gauge by default).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metrics: HashMap<String, MetricSpec>,
     /// Phase-level poll spec — when present, the phase's
     /// cycle execution runs in a wall-clock loop until a GK
     /// predicate over captures returns `true`. SRD-75.

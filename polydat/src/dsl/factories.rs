@@ -155,6 +155,12 @@ impl PolydatRuntime {
     }
 
     /// Return the unified function registry: built-in + all factories.
+    ///
+    /// SRD-80 — `#[polydat_node]`-generated nodes route through
+    /// the same `crate::dsl::registry::registry()` channel
+    /// (they submit `NodeRegistration` entries link-time, same
+    /// as `register_nodes!`-using modules), so no separate
+    /// merge step is needed here.
     pub fn registry(&self) -> Vec<FuncSig> {
         let mut sigs = crate::dsl::registry::registry();
         for factory in &self.factories {
@@ -304,7 +310,7 @@ mod tests {
             }
             fn build(&self, _name: &str, _wc: usize, _consts: &[FactoryArg])
                 -> Result<Box<dyn PolydatNode>, String> {
-                Ok(Box::new(crate::library::identity::Identity::new()))
+                Ok(Box::new(crate::library::identity::Identity::new(crate::ast::PortType::U64)))
             }
         }
 
@@ -343,7 +349,7 @@ mod tests {
             fn build(&self, name: &str, _wc: usize, _consts: &[FactoryArg])
                 -> Result<Box<dyn PolydatNode>, String> {
                 match name {
-                    "custom_identity" => Ok(Box::new(crate::library::identity::Identity::new())),
+                    "custom_identity" => Ok(Box::new(crate::library::identity::Identity::new(crate::ast::PortType::U64))),
                     _ => Err(format!("unknown: {name}")),
                 }
             }
@@ -386,7 +392,7 @@ mod tests {
             }
             fn build(&self, _: &str, _: usize, _: &[FactoryArg])
                 -> Result<Box<dyn PolydatNode>, String> {
-                Ok(Box::new(crate::library::identity::Identity::new()))
+                Ok(Box::new(crate::library::identity::Identity::new(crate::ast::PortType::U64)))
             }
         }
 

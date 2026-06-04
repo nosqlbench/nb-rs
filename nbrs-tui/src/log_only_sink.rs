@@ -60,7 +60,7 @@
 //! see SRD 02 §"Display and Diagnostic Decoupling").
 
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -75,6 +75,27 @@ use crate::state::LogSeverity;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOG_RING_CAPACITY: u64 = 200;
+
+/// Sentinel `resume_from` value meaning "fresh start": the sink
+/// seeds `last_seen` from the live `log_seq_total` so it doesn't
+/// re-emit anything the observer already printed. Any other value
+/// is a swap re-entry — the sink resumes from that exact seq so the
+/// log lines that scrolled while the TUI owned the alternate screen
+/// are re-printed into the restored scrollback (terminal history IS
+/// the log stream, reliable across mode swaps, with no managed
+/// screen-buffer to reconstruct).
+pub(crate) const RESUME_FRESH: u64 = u64::MAX;
+
+/// A fresh cross-swap resume cursor to share across a sink's
+/// lifetime — starts at [`RESUME_FRESH`] so the first sink seeds
+/// from the live log position and each post-swap sink resumes from
+/// the prior sink's final cursor. Used by the supervisor and the
+/// `tui_display_harness` example (which simulates a Ctrl-T swap by
+/// tearing a sink down and starting a fresh one on the same cursor).
+/// See [`LogOnlySink::with_resume`].
+pub fn fresh_resume_cursor() -> Arc<AtomicU64> {
+    Arc::new(AtomicU64::new(RESUME_FRESH))
+}
 
 /// `tui=off` log-stream sink.
 pub struct LogOnlySink {
@@ -99,6 +120,14 @@ pub struct LogOnlySink {
     /// commands can write controls. `None` disables the `set`
     /// command at the prompt (everything else still works).
     runtime: Option<tokio::runtime::Handle>,
+    /// Cross-swap log cursor shared with the supervisor. The sink
+    /// seeds `last_seen` from it on `start` (unless it holds
+    /// [`RESUME_FRESH`]) and writes its final `last_seen` back to it
+    /// on shutdown, so the next terminal-mode sink the supervisor
+    /// brings up after a TUI swap re-emits exactly the lines that
+    /// scrolled while the alternate screen was up. `None` for
+    /// standalone (non-supervised) sinks, which always start fresh.
+    resume_from: Option<Arc<AtomicU64>>,
 }
 
 impl LogOnlySink {
@@ -108,7 +137,17 @@ impl LogOnlySink {
             sink_active,
             key_rx: None,
             runtime: None,
+            resume_from: None,
         }
+    }
+
+    /// Share a cross-swap log cursor with the supervisor so this
+    /// sink re-emits the lines that scrolled while a TUI swap held
+    /// the alternate screen, instead of skipping them (see
+    /// [`RESUME_FRESH`]).
+    pub fn with_resume(mut self, resume_from: Arc<AtomicU64>) -> Self {
+        self.resume_from = Some(resume_from);
+        self
     }
 
     /// Wire an interactive prompt into this sink. The receiver
@@ -128,6 +167,21 @@ impl LogOnlySink {
     }
 }
 
+/// Choose the initial log cursor for a (re)started terminal-mode
+/// sink. With no shared cursor, or one still holding
+/// [`RESUME_FRESH`], the sink seeds from the live `current`
+/// `log_seq_total` so it skips history the observer already
+/// printed. Any other shared value is a swap re-entry: the sink
+/// resumes from that exact prior cursor so the lines that scrolled
+/// while the TUI's alternate screen was up get re-emitted into the
+/// restored scrollback.
+fn seed_last_seen(resume: Option<u64>, current: u64) -> u64 {
+    match resume {
+        Some(v) if v != RESUME_FRESH => v,
+        _ => current,
+    }
+}
+
 fn severity_to_level(s: LogSeverity) -> LogLevel {
     match s {
         LogSeverity::Debug => LogLevel::Debug,
@@ -140,11 +194,19 @@ fn severity_to_level(s: LogSeverity) -> LogLevel {
 impl DisplaySink for LogOnlySink {
     fn start(self: Box<Self>, inputs: DisplayInputs) -> Box<dyn SinkHandle> {
         let DisplayInputs { state, frame_rx, metrics_query: _ } = inputs;
-        let LogOnlySink { min_level, sink_active, key_rx, runtime } = *self;
+        let LogOnlySink { min_level, sink_active, key_rx, runtime, resume_from } = *self;
 
-        // Snapshot once before claiming the surface so we don't
-        // re-emit anything the observer already printed pre-flag.
-        let initial_seq = state.load().log_seq_total;
+        // Seed the log cursor. A fresh sink snapshots the current
+        // `log_seq_total` so it doesn't re-emit anything the observer
+        // already printed pre-flag. A swap re-entry (the supervisor's
+        // `resume_from` holds the prior sink's final cursor, not
+        // `RESUME_FRESH`) resumes from that exact seq so the lines
+        // that scrolled under the TUI's alternate screen are
+        // re-printed into the restored scrollback.
+        let initial_seq = seed_last_seen(
+            resume_from.as_ref().map(|a| a.load(Ordering::Acquire)),
+            state.load().log_seq_total,
+        );
         sink_active.store(true, Ordering::Release);
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -163,6 +225,7 @@ impl DisplaySink for LogOnlySink {
                     stop_for_thread,
                     key_rx,
                     runtime,
+                    resume_from,
                 );
                 // Render thread exited (stop signaled or channel
                 // disconnected). Clear the flag so the observer
@@ -188,6 +251,7 @@ fn run_render_loop(
     stop: Arc<AtomicBool>,
     key_rx: Option<mpsc::Receiver<WatcherSignal>>,
     runtime: Option<tokio::runtime::Handle>,
+    resume_from: Option<Arc<AtomicU64>>,
 ) {
     let mut stderr = io::stderr();
     // The raw status string most recently published by the
@@ -195,21 +259,49 @@ fn run_render_loop(
     // *this* (not the clamped form actually written to the
     // surface) so identity checks are stable across ticks.
     let mut status_published: Option<String> = None;
-    // The clamped, per-line-truncated text actually drawn at
-    // the bottom of the surface. Tracked so the next clear
-    // knows how many rows to climb past. `None` means nothing
-    // is drawn.
-    let mut status_drawn: Option<String> = None;
+    // True until this sink's first footer paint commits. The
+    // return-to-footer-top + clear in step (A) must NOT run on the
+    // first paint: no footer is drawn yet and the cursor sits just
+    // after the last emitted log (or on a freshly restored surface),
+    // so the first paint just emits logs and draws the footer in
+    // place. On a fresh surface there is nothing above the cursor to
+    // clear; clearing to end-of-screen from a higher cursor would
+    // wipe live content.
+    let mut first_paint = true;
+    // Follow-the-log sticky footer: rows the cursor sits BELOW the
+    // footer's first row after a committed redraw (the prompt input
+    // row when an inline bar is shown, else the last status row). The
+    // next tick climbs back up by this much to reach the footer top
+    // before clearing it. The terminal's `?1049` cursor save/restore
+    // keeps this valid across a console alt-screen excursion, so it
+    // needs no separate save/restore.
+    let mut footer_return_up: u16 = 0;
     // nb-shell prompt — owned by the render thread when a key
     // channel is wired in. Tracks line buffer, history, window
     // rows, and help overlay. `None` falls back to the legacy
     // log-only behaviour.
     let mut prompt: Option<PromptState> = key_rx.as_ref().map(|_| PromptState::new());
-    // Last rendered prompt window row count — must match
-    // `prompt.window_rows()` plus any side-effects of the help
-    // overlay; the renderer recomputes it each tick.
-    let mut prompt_drawn_rows: u16 = 0;
     let mut prompt_dirty = prompt.is_some();
+    // Tracks the REPL visibility that the last redraw committed
+    // to. Drives a redraw on the tick after a `~` / `Ctrl-~`
+    // toggle so the prompt show/hide takes effect promptly.
+    let mut repl_visibility_drawn = crate::repl_state::current();
+    // Console-on-alternate-screen state. While the REPL is visible
+    // (Bar or Window) the console renders on the alternate screen,
+    // exactly like the Ctrl-T TUI: the terminal saves the primary
+    // surface (logs + status block + scrollback) on enter and
+    // restores it byte-exact on leave — including the cursor, so the
+    // follow-the-log `footer_return_up` stays valid across the
+    // excursion. Opening / closing the console can't scroll the
+    // primary or leave a residual gap.
+    let mut console_alt = false;
+    // Force a fresh REPL paint on the alt-screen (set on enter and
+    // on a Bar<->Window change).
+    let mut repl_alt_dirty = false;
+    // Transcript line count last painted on the alt-screen console.
+    // A change (from a dispatched command, a completion row, or any
+    // other source) triggers a console repaint.
+    let mut transcript_len_drawn: usize = 0;
     while !stop.load(Ordering::Acquire) {
         // Drain any metrics frames that arrived since the last
         // tick — only when a frame channel was actually wired in.
@@ -282,43 +374,92 @@ fn run_render_loop(
         let need_log_emit = total > last_seen;
         let status_changed = next_status != status_published;
 
-        // Render completion lists as ephemeral log-style rows
-        // above the prompt. They scroll past on the next
-        // render tick (same lifetime as a command response),
-        // which is the conventional shell completion UX.
+        // Console (REPL) output is CONTAINED in the frame: it
+        // goes into the transcript ring, never to stderr
+        // scrollback, so a command's echo/response/completions
+        // can't scroll the terminal state. The frame (Bar grown
+        // or Window) renders the transcript tail in its bounded
+        // region with internal scrollback. `dispatched_lines`
+        // still flags a redraw so the frame picks the new lines
+        // up this tick.
         let dispatched_lines = !submitted_commands.is_empty()
             || !completion_lists.is_empty();
         for list in &completion_lists {
-            // Pretty-print as a single space-separated row;
-            // grouping into columns is a future polish.
-            let _ = write!(stderr, "{}\r\n", list.join("  "));
+            // One space-separated suggestion row into the frame;
+            // column grouping is a future polish.
+            crate::repl_state::push_transcript_line(&list.join("  "));
         }
-
-        // Dispatch any submitted commands through the
-        // inspector handler. Each response becomes a synthetic
-        // log entry (one log emit per line) so the scrollback
-        // discipline above carries them past the status region
-        // identically to any other diag! line.
+        // Dispatch any submitted commands through the inspector
+        // handler. Command echo + each response line land in the
+        // transcript ring; the frame renders them. Nothing is
+        // written to the shared stderr stream here.
         for line in &submitted_commands {
             let response = crate::inspector_server::dispatch(
                 line, &state, runtime.as_ref());
-            // Echo the command then its response so the user
-            // sees what they typed.
-            for row in std::iter::once(format!("> {line}").as_str())
-                .chain(response.split('\n'))
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-            {
-                // Push directly to stderr — bypassing the
-                // observer route since this is the same
-                // render thread and the actor's log_messages
-                // ring is only for diag!/observer-originated
-                // entries.
-                let _ = write!(stderr, "{row}\r\n");
-            }
+            crate::repl_state::push_transcript(line, &response);
         }
-        if dispatched_lines {
+
+        // === Console on the alternate screen ===
+        // When the REPL is visible (Bar or Window) the console
+        // renders on the alternate screen, exactly like the Ctrl-T
+        // TUI: entering saves the primary surface (logs + managed
+        // region + scrollback); leaving restores it byte-exact.
+        // This is the "backing buffer" — opening / closing the
+        // console can't scroll the primary or leave a residual gap,
+        // and there's no incremental re-stream on close. While the
+        // console is up the log drain is frozen (logs accumulate in
+        // the ring) and flushed on leave.
+        let repl_now = crate::repl_state::current();
+        let console_visible = !matches!(repl_now,
+            crate::repl_state::ReplVisibility::Hidden);
+
+        if console_visible && !console_alt {
+            // Enter: switch to the alternate screen (the terminal saves
+            // the primary surface AND cursor — so `footer_return_up`
+            // stays valid for the post-close redraw).
+            let _ = write!(stderr, "\x1b[?1049h\x1b[2J\x1b[H");
             let _ = stderr.flush();
+            console_alt = true;
+            repl_alt_dirty = true;
+        } else if !console_visible && console_alt {
+            // Leave: restore the primary surface (the terminal brings
+            // back logs + status block + scrollback + cursor byte-
+            // exact). Sync `repl_visibility_drawn` to the now-current
+            // Hidden state so the primary path does NOT treat this as a
+            // visibility change — when nothing else changed the
+            // restored surface is left untouched (byte-exact, no
+            // re-stream). Real catch-up (logs buffered during the
+            // console, phase progress, the session timer) flows through
+            // the normal dirty signals below: `need_log_emit`
+            // (last_seen was frozen) and `status_changed`.
+            let _ = write!(stderr, "\x1b[?1049l");
+            let _ = stderr.flush();
+            repl_visibility_drawn = repl_now;
+            console_alt = false;
+        }
+
+        if console_alt {
+            // Render the console full-screen on the alternate
+            // surface. Redraw only on change (a key edit, a
+            // dispatched command, a Bar<->Window switch, or first
+            // entry). The log drain below is skipped — `last_seen`
+            // stays put so buffered logs flush after we leave.
+            let repl_switch = repl_now != repl_visibility_drawn;
+            repl_visibility_drawn = repl_now;
+            let tlen = crate::repl_state::transcript_len();
+            let transcript_changed = tlen != transcript_len_drawn;
+            if repl_alt_dirty || prompt_dirty || dispatched_lines
+                || repl_switch || transcript_changed
+            {
+                let (cols, rows) = terminal_size_via_ioctl().unwrap_or((200, 50));
+                redraw_console_altscreen(&mut stderr, prompt.as_ref(), cols, rows);
+                repl_alt_dirty = false;
+                prompt_dirty = false;
+                transcript_len_drawn = tlen;
+            }
+            status_published = next_status;
+            std::thread::sleep(POLL_INTERVAL);
+            continue;
         }
 
         // Region anchored at the bottom of the terminal:
@@ -337,111 +478,250 @@ fn run_render_loop(
         // with no changes leaves the cursor and screen alone —
         // critical fix to keep the prompt from drifting down
         // the screen as `\r\n` separators stack up.
-        let region_dirty = need_log_emit || status_changed
-            || dispatched_lines || prompt_dirty;
-        let prompt_first_render = prompt.is_some() && prompt_drawn_rows == 0;
-        let must_redraw = region_dirty || prompt_first_render;
+        // REPL visibility transitions drive a redraw too —
+        // toggling `~` flips whether the prompt row exists,
+        // shifting the status block's absolute position; the
+        // existing dirty signals can't catch it because they're
+        // all derived from log/prompt content, not visibility.
+        // Reached only when the console is Hidden — a visible
+        // console renders on the alternate screen above and
+        // `continue`s — so `repl_now` is `Hidden` here and the
+        // prompt / window branches below collapse to the plain
+        // logs + status layout. On the tick right after leaving the
+        // console `repl_visibility_drawn` was already synced to
+        // Hidden, so `repl_changed` is false and an unchanged
+        // restored surface is left byte-exact.
+        let repl_changed = repl_now != repl_visibility_drawn;
+        repl_visibility_drawn = repl_now;
+        let must_redraw = need_log_emit || status_changed
+            || dispatched_lines || prompt_dirty || repl_changed;
 
         if must_redraw {
-            // Step 1: clear the existing region. No-op if
-            // nothing was drawn.
-            if status_drawn.is_some() || prompt_drawn_rows > 0 {
-                clear_combined_region(
-                    &mut stderr,
-                    status_drawn.as_deref(),
-                    prompt_drawn_rows,
-                );
-                status_drawn = None;
-                prompt_drawn_rows = 0;
-            }
-        }
+            // Compute the new footer content + geometry, then run the
+            // follow-the-log pass below: return to the footer top,
+            // clear, emit new logs (they scroll), redraw the footer
+            // just beneath them. A steady-state tick with no changes
+            // never reaches here, so nothing drifts down the screen.
+            let (cols, rows) = terminal_size_via_ioctl().unwrap_or((200, 50));
 
-        if need_log_emit {
-            let new_count = total - last_seen;
-            let take = new_count.min(LOG_RING_CAPACITY) as usize;
-            let ring = &snap.log_messages;
-            let start_idx = ring.len().saturating_sub(take);
-
-            // Note any drop. The session-log sink still has
-            // every entry; this is a render-side warning only.
-            if new_count > LOG_RING_CAPACITY {
-                let dropped = new_count - LOG_RING_CAPACITY;
-                let _ = write!(
-                    stderr,
-                    "log-only-sink: dropped {dropped} log line(s) (renderer too slow); see session.log\r\n",
-                );
-            }
-
-            // Left-margin prefix carrying session elapsed +
-            // current phase index. Computed once per tick from
-            // the snapshot; prepended to every emitted log row
-            // so the operator's eye can track wall-clock and
-            // scenario progress against the log stream without
-            // scrolling up to find the most recent phase
-            // header. Color is dim so the margin reads as a
-            // gutter rather than competing with content.
-            let margin = format_margin_prefix(&snap,
+            // Re-format the margin at draw time so the session
+            // timer + phase counter tick along with the running
+            // phase, matching the log lines above.
+            let status_margin = format_margin_prefix(&snap,
                 nbrs_activity::observer::use_color());
+            let margin_visible_width = visible_width(&status_margin) as u16;
+            // Row-2 margin for the running-phase status block:
+            // progress bar + ETA + spinner replacing the `│`
+            // divider, padded to the row-1 margin width so the
+            // divider columns align. Empty when no phase runs.
+            let row2_margin = format_running_phase_row2_margin(
+                &snap,
+                margin_visible_width,
+                nbrs_activity::observer::use_color(),
+            );
+            let status_cols = (cols as usize)
+                .saturating_sub(margin_visible_width as usize);
 
-            for entry in &ring[start_idx..] {
-                let entry_level = severity_to_level(entry.severity);
-                if entry_level < min_level {
-                    continue;
-                }
-                // Match the observer's cosmetic blank line before
-                // the Ctrl-C / force-exit banners.
-                if entry.message.starts_with("session: graceful shutdown requested")
-                    || entry.message.starts_with("session: force-exit on second")
-                {
-                    let _ = write!(stderr, "\r\n");
-                }
-                // Colorize by severity. `colorize_log_line` is
-                // a no-op on non-tty / NO_COLOR so log captures
-                // stay clean.
-                let painted = nbrs_activity::observer::colorize_log_line(
-                    entry_level, &entry.message);
-                // Split on embedded `\n` so multi-line log
-                // messages (e.g. the two-line phase_outcome
-                // render) get `\r\n` after every row. Raw mode
-                // needs explicit `\r` to return to col 0; a
-                // bare `\n` leaves the cursor under the
-                // previous row's last character. Each row gets
-                // the same margin prefix.
-                for row in painted.split('\n') {
-                    let _ = write!(stderr, "{margin}{row}\r\n");
+            // REPL visibility (sampled once this tick as `repl_now`):
+            // - Hidden: no prompt; status fills the bottom region.
+            // - Bar: single-row prompt; status block above it.
+            // - Window: full-screen console — the prompt expands,
+            //   the live status is swapped for a one-line REPL
+            //   header, and the phase-history region is suppressed
+            //   (the console owns the surface; closing it repaints
+            //   the region via the `repl_changed` redraw).
+            let window_mode = matches!(repl_now,
+                crate::repl_state::ReplVisibility::Window);
+            let repl_visible = !matches!(repl_now,
+                crate::repl_state::ReplVisibility::Hidden);
+
+            let new_status_text: Option<String> = if window_mode {
+                let color = nbrs_activity::observer::use_color();
+                let dim   = if color { "\x1b[2m" } else { "" };
+                let reset = if color { "\x1b[0m" } else { "" };
+                Some(format!(
+                    "{dim}REPL · ` close · ~ hide{reset}"
+                ))
+            } else {
+                next_status.as_ref().map(|s| {
+                    clamp_multiline(s, status_cols.saturating_sub(1))
+                })
+            };
+            // Window mode expands the prompt to fill the screen
+            // minus the header row. `set_window_rows` is the single
+            // geometry chokepoint; re-applied each tick so the
+            // REPL-mode override wins over Alt-Up / Alt-Down.
+            if window_mode {
+                if let Some(p) = prompt.as_mut() {
+                    let target = rows.saturating_sub(2).max(1);
+                    if p.window_rows() != target {
+                        p.set_window_rows(target);
+                    }
                 }
             }
-            let _ = stderr.flush();
-            last_seen = total;
-        }
+            let prompt_input = if repl_visible {
+                prompt.as_ref().map(|p| {
+                    let win_rows = p.window_rows() as usize;
+                    // Any multi-row console frame (Window, or a Bar
+                    // grown past one row) composes its `rendered`
+                    // bytes by hand: the top rows are the contained
+                    // transcript tail (oldest at top, newest just
+                    // above the input) with internal scrollback; the
+                    // bottom row is the standard prompt-input render.
+                    // A single-row Bar falls through to the plain
+                    // input render (its output lives in the ring,
+                    // viewable by growing the bar or opening the
+                    // window — it never scrolls the terminal).
+                    let rendered = if win_rows > 1 {
+                        let transcript_rows = win_rows.saturating_sub(1);
+                        let tail = crate::repl_state::transcript_tail(transcript_rows);
+                        let cols_usize = cols as usize;
+                        let mut composed = String::with_capacity(cols_usize * win_rows);
+                        // Top-pad with blanks when the transcript is
+                        // shorter than the window so the input stays
+                        // anchored at the bottom row rather than
+                        // rising as history grows.
+                        let blanks = transcript_rows.saturating_sub(tail.len());
+                        for _ in 0..blanks {
+                            composed.push_str("\r\n");
+                        }
+                        for line in tail.iter() {
+                            let row = nbrs_activity::activity::truncate_to_width(
+                                line, cols_usize);
+                            composed.push_str(&row);
+                            composed.push_str("\r\n");
+                        }
+                        // Final row: the prompt's own single-row
+                        // render of the input buffer (`❯ <buffer>`
+                        // plus cursor) — the last row of its
+                        // multi-row render is what we want.
+                        let mut input_row = String::with_capacity(128);
+                        p.render(&mut input_row, cols_usize, true);
+                        let last = input_row.split('\n').last().unwrap_or("");
+                        composed.push_str(last.strip_suffix('\r').unwrap_or(last));
+                        composed
+                    } else {
+                        let mut f = String::with_capacity(128);
+                        p.render(&mut f, cols as usize, true);
+                        f
+                    };
+                    PromptInput {
+                        rendered,
+                        window_rows: p.window_rows(),
+                        cursor_col: p.cursor_col() as u16,
+                    }
+                })
+            } else {
+                None
+            };
 
-        // Redraw the status + prompt at absolute positions
-        // anchored to the bottom of the terminal. Only fires
-        // when must_redraw is true — steady-state ticks leave
-        // the screen alone.
-        let (cols, rows) = terminal_size_via_ioctl().unwrap_or((200, 50));
-        if must_redraw {
-            let new_status_text: Option<String> = next_status.as_ref().map(|s| {
-                clamp_multiline(s, (cols as usize).saturating_sub(1))
-            });
-            let prompt_input = prompt.as_ref().map(|p| PromptInput {
-                rendered: {
-                    let mut f = String::with_capacity(128);
-                    p.render(&mut f, cols as usize, true);
-                    f
-                },
-                window_rows: p.window_rows(),
-                cursor_col: p.cursor_col() as u16,
-            });
-            redraw_bottom_region(
+            // FOLLOW-THE-LOG sticky footer.
+            //
+            // The status block floats at the bottom by being cleared
+            // and reprinted just below the log stream every tick; the
+            // log stream owns everything above it and scrolls
+            // naturally. There is no absolute positioning and no
+            // scroll-on-growth — a height change is absorbed by the
+            // terminal's own scroll as the footer is reprinted, so a
+            // blank is never stranded between the logs and the status.
+            // (The absolute-positioned approach left the cursor on a
+            // trailing blank line after the last log; the moment a
+            // status appeared or changed height that blank got scrolled
+            // up and baked in, accumulating one gap per status op —
+            // and a log emit colliding with a height change could even
+            // drop the log. See the `tui_display_harness` tests.)
+            //
+            // Invariant across ticks: after a committed redraw the
+            // cursor sits `footer_return_up` rows BELOW the footer's
+            // first row.
+
+            // (A) Return to the footer top and clear it plus anything
+            //     below. Skipped on the first paint: no footer is
+            //     drawn yet and the cursor sits just after the last
+            //     emitted log (or on a freshly restored surface), so a
+            //     clear-to-end-of-screen from there is correct.
+            if !first_paint {
+                if footer_return_up > 0 {
+                    let _ = write!(stderr, "\x1b[{footer_return_up}A");
+                }
+                let _ = write!(stderr, "\r\x1b[J");
+            }
+
+            // (B) Emit any new log lines. Each ends with `\r\n`, so it
+            //     scrolls the surface up and leaves the cursor on the
+            //     next fresh line — exactly where the footer begins,
+            //     so the footer's first row reclaims that line with no
+            //     gap.
+            if need_log_emit {
+                let new_count = total - last_seen;
+                let take = new_count.min(LOG_RING_CAPACITY) as usize;
+                let ring = &snap.log_messages;
+                let start_idx = ring.len().saturating_sub(take);
+                // Note any drop. The session-log sink still has
+                // every entry; this is a render-side warning only.
+                if new_count > LOG_RING_CAPACITY {
+                    let dropped = new_count - LOG_RING_CAPACITY;
+                    let _ = write!(
+                        stderr,
+                        "log-only-sink: dropped {dropped} log line(s) (renderer too slow); see session.log\r\n",
+                    );
+                }
+                let margin = format_margin_prefix(&snap,
+                    nbrs_activity::observer::use_color());
+                for entry in &ring[start_idx..] {
+                    let entry_level = severity_to_level(entry.severity);
+                    if entry_level < min_level {
+                        continue;
+                    }
+                    // Phase-START lifecycle lines are suppressed from
+                    // scrollback: the live status block already shows
+                    // the running phase, and the rich per-phase ✓
+                    // summary (a Diagnostic log, not tagged here) is
+                    // the completion marker — a phase-start line on
+                    // top would be redundant noise. All entries are
+                    // kept in session.log unconditionally.
+                    if entry.category == crate::state::LogCategory::PhaseLifecycle {
+                        continue;
+                    }
+                    // Match the observer's cosmetic blank line before
+                    // the Ctrl-C / force-exit banners.
+                    if entry.message.starts_with("session: graceful shutdown requested")
+                        || entry.message.starts_with("session: force-exit on second")
+                    {
+                        let _ = write!(stderr, "\r\n");
+                    }
+                    // Colorize by severity. `colorize_log_line` is a
+                    // no-op on non-tty / NO_COLOR so log captures stay
+                    // clean. Split on embedded `\n` so multi-line
+                    // messages get `\r\n` (raw mode needs the explicit
+                    // `\r`); each row gets the margin and a trailing
+                    // newline so it scrolls the surface.
+                    let painted = nbrs_activity::observer::colorize_log_line(
+                        entry_level, &entry.message);
+                    for row in painted.split('\n') {
+                        let _ = write!(stderr, "{margin}{row}\r\n");
+                    }
+                }
+                last_seen = total;
+            }
+
+            // (C) Draw the footer (status [+ inline prompt]) at the
+            //     cursor the log emit left us on, top-aligned and with
+            //     NO trailing newline. It returns how far below the
+            //     footer top the cursor was left, for the next tick's
+            //     climb-back in (A).
+            let (_drawn_rows, cursor_below_top) = draw_footer_at_cursor(
                 &mut stderr,
                 new_status_text.as_deref(),
                 prompt_input.as_ref(),
                 cols,
-                rows,
+                &status_margin,
+                margin_visible_width,
+                &row2_margin,
             );
-            status_drawn = new_status_text;
-            prompt_drawn_rows = prompt_input.map(|p| p.window_rows).unwrap_or(0);
+            footer_return_up = cursor_below_top;
+            let _ = _drawn_rows;
+            first_paint = false;
             let _ = stderr.flush();
             prompt_dirty = false;
         }
@@ -452,105 +732,38 @@ fn run_render_loop(
         std::thread::sleep(POLL_INTERVAL);
     }
 
-    // Sink shutting down — wipe the regions we own so the
-    // post-run terminal state isn't littered with our final
-    // tick's text. The signal-handler cleanup path uses
-    // `\x1b[999;1H` to park the cursor at the bottom of the
-    // viewport regardless of where we left it, so no atomic
-    // row count needs to be tracked.
-    if prompt_drawn_rows > 0 {
-        clear_combined_region(&mut stderr, status_drawn.as_deref(), prompt_drawn_rows);
-    } else if status_drawn.is_some() {
-        clear_status_region(&mut stderr, status_drawn.as_deref());
+    // Sink shutting down. If the console was up we're on the
+    // alternate screen — leave it first so the terminal isn't
+    // stranded there. The terminal restores the primary surface AND
+    // cursor, so `footer_return_up` still describes where the footer
+    // sits for the clear below.
+    if console_alt {
+        let _ = write!(stderr, "\x1b[?1049l");
+        let _ = stderr.flush();
     }
-}
-
-/// Clear the combined `[status + prompt]` region anchored at
-/// the bottom of the terminal. Computes the absolute row of
-/// the region's first cell from the terminal height and the
-/// prior region's row counts, then erases from there to end
-/// of screen.
-///
-/// `status_rows` is computed from the prior status text's
-/// embedded `\n` count + 1. The region's layout (used at
-/// redraw time) puts status directly above prompt with no
-/// separator row, so the climb math is just
-/// `status_rows + prompt_rows`.
-fn clear_combined_region<W: Write>(
-    out: &mut W,
-    prior_status: Option<&str>,
-    prompt_rows: u16,
-) {
-    let status_rows = prior_status
-        .map(|s| s.matches('\n').count() as u16 + 1)
-        .unwrap_or(0);
-    let total_rows = status_rows + prompt_rows;
-    if total_rows == 0 {
-        let _ = out.flush();
-        return;
+    // Wipe the footer we own so the post-run terminal state isn't
+    // littered with our final tick's text. Follow-the-log left the
+    // cursor `footer_return_up` rows below the footer's first row (the
+    // `?1049` cursor save/restore preserved this across any console
+    // excursion above), so climb back to the footer top and clear to
+    // end of screen. The signal-handler cleanup path in `crate::app`
+    // instead uses `\x1b[999;1H` to park at the viewport bottom, so it
+    // needs no row count of ours.
+    if footer_return_up > 0 {
+        let _ = write!(stderr, "\x1b[{footer_return_up}A");
     }
-    // Move cursor to the region's first row at column 0 using
-    // absolute positioning relative to the terminal bottom, so
-    // a previous scroll doesn't drift the climb math.
-    let (_, term_rows) = crossterm::terminal::size().unwrap_or((200, 50));
-    let region_top = term_rows.saturating_sub(total_rows.saturating_sub(1));
-    let _ = write!(out, "\x1b[{region_top};1H\x1b[J");
-    let _ = out.flush();
-}
+    let _ = write!(stderr, "\r\x1b[J");
+    let _ = stderr.flush();
 
-/// Clear the status region drawn by [`draw_status_region`].
-/// Counts the embedded `\n`s in the prior render so a multi-
-/// line status (future expansion) clears all of its rows, not
-/// just the bottom one. Single-line callers see `\r\x1b[K`
-/// (the legacy in-place clear).
-///
-/// Uses relative cursor movement (`\x1b[<N>A`) rather than
-/// absolute save/restore (DECSC/DECRC): the latter doesn't
-/// survive the screen-scroll that happens when status is
-/// rendered at the bottom of the terminal (which is the
-/// normal case for an inline log+status sink).
-fn clear_status_region<W: Write>(out: &mut W, prior: Option<&str>) {
-    let lines = prior.map(|s| s.matches('\n').count() as u16 + 1).unwrap_or(1);
-    if lines > 1 {
-        // Cursor sits at end of the prior render's last row;
-        // climb back to the first row, then `\x1b[J` wipes
-        // from the cursor through end of screen.
-        let _ = write!(out, "\r\x1b[{}A\x1b[J", lines - 1);
-    } else {
-        let _ = write!(out, "\r\x1b[K");
+    // Hand our final log cursor to the supervisor. The next
+    // terminal-mode sink it brings up after a TUI swap seeds
+    // `last_seen` from here and re-emits the lines that scrolled
+    // while the alternate screen was up, so the restored scrollback
+    // catches up to the full phase history. Harmless at run-end —
+    // no successor sink reads it.
+    if let Some(a) = &resume_from {
+        a.store(last_seen, Ordering::Release);
     }
-    let _ = out.flush();
-}
-
-/// Write the status region. Caller has ensured the cursor is
-/// on a clean row (either freshly cleared by
-/// [`clear_status_region`] or just after a log line's `\r\n`).
-/// No trailing newline so the cursor stays at the end of the
-/// final status row — the next [`clear_status_region`] call
-/// computes its climb from there. Emitting an extra `\r\n` to
-/// "park" the cursor below the region would force a scroll on
-/// every render when the status sits at the bottom of the
-/// terminal, which is unworkable for an inline sink.
-///
-/// Embedded `\n` row breaks are upgraded to `\r\n` so the
-/// cursor returns to column 0 even when the sink supervisor
-/// has stdin in raw mode for the Ctrl-T watcher.
-fn draw_status_region<W: Write>(out: &mut W, status: &str) {
-    let mut first = true;
-    for row in status.split('\n') {
-        if !first { let _ = write!(out, "\r\n"); }
-        let _ = write!(out, "{row}");
-        first = false;
-    }
-    let _ = out.flush();
-}
-
-/// Row count a multi-line status string would render to (the
-/// number of `\n`-separated rows). Zero when there's nothing
-/// drawn.
-#[allow(dead_code)]
-fn status_rows(prior: Option<&str>) -> u16 {
-    prior.map(|s| s.matches('\n').count() as u16 + 1).unwrap_or(0)
 }
 
 /// Build the left-margin prefix carrying the session timer
@@ -579,24 +792,48 @@ fn format_margin_prefix(
 
     // Count phases only — scope nodes (for_each / do_while
     // wrappers) live in `snap.phases` but they're not what
-    // the operator wants in the step counter. Otherwise a
-    // scenario with 53 phases inside 57 scope nodes shows
-    // "110" in the denominator and the running index jumps
-    // non-monotonically as scope iterations switch.
+    // the operator wants in the step counter.
+    //
+    // Denominator: `expected_total_phases`, pinned by
+    // `install_tree` from the pre-map walk. Stable across
+    // the run regardless of whether the executor materializes
+    // additional phases at runtime (param-driven `for_each`
+    // expansion the structural pass couldn't resolve).
+    //
+    // Numerator: the pre-mapped `seq` of the currently-running
+    // phase (or the latest-completed phase when nothing is
+    // running). `seq` is the 1-based pre-map sequence number
+    // assigned at SceneTree::push time — STABLE under runtime
+    // mutation. The previous logic used `phase_only.iter()
+    // .position(running)`, which silently drifted as the live
+    // phase list grew (auto-extern materialization appended new
+    // pending phases, shifting the running one's index even
+    // though its pre-mapped slot hadn't moved).
+    //
+    // Runtime-materialized phases (no `seq`) report `None`
+    // here; we fall back to a sequential count among the
+    // non-pending phases so the operator still sees forward
+    // progress in that edge case.
     let phase_only: Vec<_> = snap.phases.iter()
         .filter(|p| matches!(p.kind, crate::state::EntryKind::Phase))
         .collect();
-    let total = phase_only.len();
-    let active_pos = phase_only.iter().position(|p| {
-        matches!(p.status, crate::state::PhaseStatus::Running)
-    });
-    let phase_str = match (active_pos, total) {
-        (Some(i), n) if n > 0 => format!("{:>3}/{}", i + 1, n),
-        (None,    n) if n > 0 => {
-            let done = phase_only.iter().filter(|p|
-                !matches!(p.status, crate::state::PhaseStatus::Pending)).count();
-            format!("{:>3}/{}", done, n)
-        }
+    let total = snap.expected_total_phases;
+    let running_seq = phase_only.iter()
+        .find(|p| matches!(p.status, crate::state::PhaseStatus::Running))
+        .and_then(|p| p.seq);
+    let latest_done_seq = phase_only.iter()
+        .filter(|p| !matches!(p.status, crate::state::PhaseStatus::Pending))
+        .filter_map(|p| p.seq)
+        .max();
+    let fallback_done = phase_only.iter()
+        .filter(|p| !matches!(p.status, crate::state::PhaseStatus::Pending))
+        .count();
+    let phase_str = match (running_seq, latest_done_seq, total) {
+        (Some(s), _, n) if n > 0 => format!("{s:>3}/{n}"),
+        (None, Some(s), n) if n > 0 => format!("{s:>3}/{n}"),
+        (None, None, n) if n > 0 && fallback_done > 0 =>
+            format!("{fallback_done:>3}/{n}"),
+        (_, _, n) if n > 0 => format!("  0/{n}"),
         _ => "   /  ".to_string(),
     };
 
@@ -635,65 +872,221 @@ pub(crate) struct PromptInput {
     pub cursor_col: u16,
 }
 
-/// Redraw the status + prompt block anchored to the bottom of
-/// the terminal at absolute positions. Pure-ish helper — takes
-/// terminal size + region content explicitly so the call is
-/// trivial to unit-test against a `Vec<u8>` writer.
+/// Draw the bottom "footer" — the live status block, plus the inline
+/// console prompt when one is shown — starting at the CURRENT cursor
+/// row (wherever the log emit left it), top-aligned, joining rows with
+/// `\r\n` and leaving NO trailing newline. Returns
+/// `(rows_drawn, cursor_rows_below_footer_top)`; the caller climbs back
+/// up by the latter on the next tick to reach the footer top.
 ///
-/// Layout (rows are 1-indexed; `term_rows` is the bottom):
+/// This is the follow-the-log counterpart to the absolute-positioned
+/// [`redraw_bottom_region`]: drawing relative to where the log stream
+/// left the cursor keeps the footer contiguous with the logs above it,
+/// and a height change is absorbed by the terminal's own scroll as the
+/// footer is reprinted — never stranding a blank row between the logs
+/// and the status. Each row is `\r`-homed and erase-to-EOL'd so residue
+/// from a wider prior render is scrubbed.
 ///
-/// ```text
-///   [log area]                rows 1 .. status_top - 1
-///   [status region]           rows status_top .. status_top + status_rows - 1
-///   [prompt region]           rows prompt_top .. term_rows
-/// ```
-///
-/// Cursor on return is at `(term_rows, prompt.cursor_col + 1)`
-/// — the prompt's input row at the buffer's cursor column.
-pub(crate) fn redraw_bottom_region<W: Write>(
+/// Row 0 of the status carries `status_margin` (timer + phase counter +
+/// `│ ` divider); rows 1+ carry `row2_margin` (the running-phase
+/// progress/ETA/spinner variant, padded so the divider column aligns)
+/// when present, else the standard margin.
+pub(crate) fn draw_footer_at_cursor<W: Write>(
     out: &mut W,
     status_text: Option<&str>,
     prompt: Option<&PromptInput>,
     term_cols: u16,
-    term_rows: u16,
-) {
+    status_margin: &str,
+    margin_width: u16,
+    row2_margin: &str,
+) -> (u16, u16) {
     let _ = term_cols;
     let status_lines: Vec<&str> = status_text
         .map(|s| s.split('\n').collect())
         .unwrap_or_default();
     let status_rows_n = status_lines.len() as u16;
     let prompt_rows = prompt.map(|p| p.window_rows).unwrap_or(0);
-
-    // The combined region's first row is `term_rows -
-    // (total - 1)`. Status sits at the top of the region;
-    // prompt follows directly below. No separator row.
     let total = status_rows_n + prompt_rows;
-    let region_top = term_rows.saturating_sub(total.saturating_sub(1));
-    let status_top = region_top;
-    let prompt_top = region_top + status_rows_n;
-
-    // Status — position-per-line with erase-to-end-of-line so
-    // residue from a wider prior render is scrubbed.
-    for (i, row) in status_lines.iter().enumerate() {
-        let row_abs = status_top + i as u16;
-        let _ = write!(out, "\x1b[{row_abs};1H\x1b[K{row}");
+    if total == 0 {
+        return (0, 0);
     }
 
-    // Prompt — same discipline. `rendered` is the prompt's own
-    // render() output; split on `\n` and strip stray `\r`
-    // (the prompt's renderer separates rows with `\r\n`).
+    let mut first = true;
+    for (i, row) in status_lines.iter().enumerate() {
+        if !first {
+            let _ = write!(out, "\r\n");
+        }
+        first = false;
+        let margin = if i == 0 || row2_margin.is_empty() {
+            status_margin
+        } else {
+            row2_margin
+        };
+        let _ = write!(out, "\r\x1b[K{margin}{row}");
+    }
+    // Prompt rows — present only for the inline console bar (the full
+    // console renders on the alternate screen, not here). The prompt's
+    // `>` sits at the same column as the log content (right of the
+    // margin) so the operator reads the input row as the bottom of the
+    // same column.
     if let Some(p) = prompt {
-        for (i, row) in p.rendered.split('\n').enumerate() {
-            let row_abs = prompt_top + i as u16;
+        for row in p.rendered.split('\n') {
+            if !first {
+                let _ = write!(out, "\r\n");
+            }
+            first = false;
             let row = row.strip_suffix('\r').unwrap_or(row);
             let row = row.strip_prefix('\r').unwrap_or(row);
-            let _ = write!(out, "\x1b[{row_abs};1H\x1b[K{row}");
+            let _ = write!(out, "\r\x1b[K{status_margin}{row}");
         }
-        // Place the cursor at the prompt's input row + cursor
-        // column. Always absolute.
-        let target_col = p.cursor_col + 1;
-        let _ = write!(out, "\x1b[{term_rows};{target_col}H");
+        // Park the cursor at the prompt's input column on the last
+        // (current) row for typing — `margin_width` shifts it past the
+        // margin into the content area. `\x1b[NG` is column-absolute.
+        let target_col = margin_width + p.cursor_col + 1;
+        let _ = write!(out, "\x1b[{target_col}G");
     }
+    (total, total.saturating_sub(1))
+}
+
+/// Render the console (REPL) full-screen on the alternate screen.
+///
+/// Layout: a one-line header at the top, the transcript tail
+/// filling the middle (oldest at top, newest just above the
+/// input), and the prompt input on the bottom row. Each row is
+/// absolutely positioned and erase-to-EOL'd so residue from a
+/// prior, wider paint is scrubbed. The cursor parks at the input
+/// column. The caller owns the alternate-screen enter/leave (the
+/// terminal saves / restores the primary surface), so this only
+/// composes the console surface itself.
+fn redraw_console_altscreen<W: Write>(
+    out: &mut W,
+    prompt: Option<&PromptState>,
+    cols: u16,
+    rows: u16,
+) {
+    let color = nbrs_activity::observer::use_color();
+    let dim   = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let cols_usize = cols as usize;
+
+    // Header (row 1).
+    let _ = write!(out,
+        "\x1b[1;1H\x1b[K{dim}REPL · ~ or ` to close · ↑↓ history{reset}");
+
+    // Transcript tail fills rows 2 ..= rows-1 — oldest at the top,
+    // top-padded with blanks so the newest line sits just above the
+    // input even when the history is short.
+    let body_rows = (rows as usize).saturating_sub(2);
+    let tail = crate::repl_state::transcript_tail(body_rows);
+    let blanks = body_rows.saturating_sub(tail.len());
+    let mut row: u16 = 2;
+    for _ in 0..blanks {
+        let _ = write!(out, "\x1b[{row};1H\x1b[K");
+        row += 1;
+    }
+    for line in &tail {
+        let painted = nbrs_activity::activity::truncate_to_width(line, cols_usize);
+        let _ = write!(out, "\x1b[{row};1H\x1b[K{painted}");
+        row += 1;
+    }
+
+    // Input row (bottom): the prompt's own single-line input
+    // render (last row of its multi-row render).
+    let mut cursor_col: u16 = 0;
+    if let Some(p) = prompt {
+        let mut input = String::with_capacity(128);
+        p.render(&mut input, cols_usize, true);
+        let last = input.split('\n').last().unwrap_or("");
+        let last = last.strip_suffix('\r').unwrap_or(last);
+        let _ = write!(out, "\x1b[{rows};1H\x1b[K{last}");
+        cursor_col = p.cursor_col() as u16;
+    } else {
+        let _ = write!(out, "\x1b[{rows};1H\x1b[K");
+    }
+    // Park the cursor at the input column (1-based).
+    let _ = write!(out, "\x1b[{rows};{}H", cursor_col + 1);
+    let _ = out.flush();
+}
+
+/// Build the row-2 margin for a running-phase status block.
+/// Layout: `<bar><eta-padded><spinner>` so the bar reads as
+/// "progress" and the spinner replaces the standard `│`
+/// divider as a still-ticking indicator. Padded with spaces
+/// so its visible width matches `target_width` — the row-1
+/// margin width — making the divider columns line up
+/// vertically across rows.
+///
+/// Returns an empty string when no phase is currently running
+/// — the caller falls back to the standard margin.
+fn format_running_phase_row2_margin(
+    snap: &std::sync::Arc<crate::state::RunState>,
+    target_width: u16,
+    color: bool,
+) -> String {
+    use nbrs_activity::readouts::format::{
+        braille_bar, format_eta, spinner_frame,
+    };
+    let Some(active) = snap.active_phases.values().next() else {
+        return String::new();
+    };
+    let dim   = if color { "\x1b[2m"  } else { "" };
+    let cyan  = if color { "\x1b[36m" } else { "" };
+    let reset = if color { "\x1b[0m"  } else { "" };
+    let elapsed = active.started_at.elapsed().as_secs_f64();
+    let pct = if active.cursor_extent > 0 {
+        (active.ops_finished as f64) * 100.0 / (active.cursor_extent as f64)
+    } else { 0.0 };
+    let bar = braille_bar(pct, 10);
+    let eta_str = if active.cursor_extent > 0 && active.ops_per_sec > 0.0 {
+        let remaining = active.cursor_extent.saturating_sub(active.ops_finished) as f64;
+        format_eta(remaining / active.ops_per_sec)
+    } else {
+        format_eta(elapsed)
+    };
+    // Spinner ticks once per render. Use elapsed-secs * 10 so
+    // the frame advances at ~10 Hz independent of redraw cadence.
+    let tick = (elapsed * 10.0) as u64;
+    let spinner = spinner_frame(tick);
+    // Pad the ETA out so the whole margin is exactly `target_width`
+    // visible columns and the spinner lands under the row-1 `│`.
+    let pad = row2_margin_pad(eta_str.chars().count(), target_width as usize);
+    format!("{bar} {dim}{eta_str}{reset}{:<pad$}{cyan}{spinner}{reset} ", "", pad = pad)
+}
+
+/// Spaces between the ETA and the spinner-divider in the running-
+/// phase row-2 margin, sized so the full margin is exactly
+/// `target_width` visible columns and the spinner sits under the
+/// row-1 `│` divider.
+///
+/// Layout: `bar(10) " "(1) eta(E) <pad> spinner(1) " "(1)`, so the
+/// total is `13 + E + pad` and the spinner (the column before the
+/// trailing space) must land at `target_width - 1` — i.e.
+/// `pad = target_width - 13 - E`. (The previous code counted a
+/// non-existent space after the ETA, leaving the spinner one
+/// column shy of the divider except when `saturating_sub` happened
+/// to clamp the pad to zero.)
+fn row2_margin_pad(eta_visible: usize, target_width: usize) -> usize {
+    // 10 (bar) + 1 (space) + eta + pad + 1 (spinner) + 1 (space)
+    target_width.saturating_sub(10 + 1 + eta_visible + 1 + 1)
+}
+
+/// Approximate visible width of a string with ANSI SGR escape
+/// codes stripped. SGR sequences (`\x1b[...m`) carry no
+/// columns; everything else counts as one column per char.
+/// Good enough for the margin prefix, which has no
+/// double-width glyphs.
+fn visible_width(s: &str) -> usize {
+    let mut width = 0;
+    let mut in_escape = false;
+    for ch in s.chars() {
+        if in_escape {
+            if ch == 'm' { in_escape = false; }
+            continue;
+        }
+        if ch == '\x1b' { in_escape = true; continue; }
+        width += 1;
+    }
+    width
 }
 
 /// Clamp each `\n`-delimited row of `s` to `max_cols` columns
@@ -742,15 +1135,18 @@ mod redraw_tests {
     //! "stacked status snapshots" bug.
     use super::*;
 
-    /// One simulated render tick: status text + prompt.
-    fn render_tick(
+    /// One simulated render tick with a left margin: draw the footer
+    /// at the cursor and capture the bytes. 80-col terminal; the
+    /// follow-the-log footer is relative-positioned so no row count is
+    /// needed.
+    fn render_tick_with_margin(
         status: Option<&str>,
         prompt: Option<&PromptInput>,
+        margin: &str,
     ) -> String {
         let mut out: Vec<u8> = Vec::new();
-        // 24-row × 80-col terminal — small enough to make the
-        // absolute row arithmetic auditable by eye.
-        redraw_bottom_region(&mut out, status, prompt, 80, 24);
+        let width = super::visible_width(margin) as u16;
+        draw_footer_at_cursor(&mut out, status, prompt, 80, margin, width, "");
         String::from_utf8(out).expect("rendered bytes are utf-8")
     }
 
@@ -765,105 +1161,145 @@ mod redraw_tests {
         }
     }
 
-    /// Every status row writes to its own absolute terminal
-    /// row with `\x1b[K` first to scrub leftovers from a wider
-    /// prior tick. Status sits directly above the prompt; no
-    /// `\r\n` cursor-advance between regions.
+    /// Each footer row is `\r`-homed and erase-to-EOL'd (`\x1b[K`) to
+    /// scrub residue from a wider prior tick, rows are joined with
+    /// `\r\n`, and the LAST row leaves no trailing newline so the log
+    /// stream below isn't pushed down. The returned offset is the
+    /// cursor's row distance below the footer top.
     #[test]
-    fn two_line_status_plus_prompt_uses_absolute_positions_at_bottom() {
-        let status = "head row\ntail row";
-        let prompt = one_row_prompt("");
-        let out = render_tick(Some(status), Some(&prompt));
-        // Status head at row 22, tail at row 23, prompt at
-        // row 24 (terminal is 24 rows; prompt_top = 24 -
-        // (1-1) = 24; status_top = 24 - 2 = 22).
-        assert!(out.contains("\x1b[22;1H\x1b[Khead row"),
-            "status head should anchor at row 22: {out:?}");
-        assert!(out.contains("\x1b[23;1H\x1b[Ktail row"),
-            "status tail should anchor at row 23: {out:?}");
-        assert!(out.contains("\x1b[24;1H\x1b[K\x1b[36m❯\x1b[0m "),
-            "prompt should anchor at row 24: {out:?}");
-        // Cursor parks at (term_rows, cursor_col + 1).
-        assert!(out.contains("\x1b[24;3H"),
-            "cursor home should target (24, 3): {out:?}");
+    fn footer_rows_home_erase_and_have_no_trailing_newline() {
+        let mut out: Vec<u8> = Vec::new();
+        let (rows, below) = draw_footer_at_cursor(
+            &mut out, Some("head row\ntail row"), None, 80, "", 0, "");
+        let s = String::from_utf8(out).expect("utf-8");
+        assert_eq!((rows, below), (2, 1), "two rows, cursor 1 below the top");
+        assert!(s.contains("\r\x1b[Khead row"), "head row homed + erased: {s:?}");
+        assert!(s.contains("\r\x1b[Ktail row"), "tail row homed + erased: {s:?}");
+        // Exactly one `\r\n` separates the two rows; none trails.
+        assert_eq!(s.matches("\r\n").count(), 1, "one separator only: {s:?}");
+        assert!(!s.ends_with("\r\n"), "no trailing newline: {s:?}");
     }
 
-    /// Successive status updates each write to the SAME
-    /// absolute rows — they don't drift downward across ticks.
-    /// This is the invariant the original bug violated (the
-    /// user saw status snapshots stacking up in scrollback).
+    /// An empty footer (no status, no prompt) draws nothing and
+    /// reports a zero offset.
     #[test]
-    fn repeated_status_updates_target_identical_absolute_rows() {
-        let prompt = one_row_prompt("");
-        let mut head_anchors: Vec<bool> = Vec::new();
-        for spinner in &["⠙", "⠸", "⠼", "⠏"] {
-            let status = format!("{spinner} head row\n      tail row");
-            let out = render_tick(Some(&status), Some(&prompt));
-            head_anchors.push(
-                out.contains(&format!("\x1b[22;1H\x1b[K{spinner} head row"))
-            );
+    fn empty_footer_draws_nothing() {
+        let mut out: Vec<u8> = Vec::new();
+        let (rows, below) = draw_footer_at_cursor(&mut out, None, None, 80, "", 0, "");
+        assert_eq!((rows, below), (0, 0));
+        assert!(out.is_empty(), "empty footer emits no bytes: {out:?}");
+    }
+
+    /// Status + prompt rows are prefixed with the same margin the log
+    /// lines above carry, so content columns line up across the
+    /// log/status divide. The cursor lands in the prompt's content
+    /// area (past the margin), set with a column-absolute `\x1b[NG`.
+    #[test]
+    fn footer_rows_carry_log_margin_for_column_alignment() {
+        let margin = "12.34s 5/9 │ ";
+        let status = "running";
+        let prompt = one_row_prompt("hi");
+        let out = render_tick_with_margin(Some(status), Some(&prompt), margin);
+        assert!(out.contains(&format!("\r\x1b[K{margin}running")),
+            "status row must carry the margin: {out:?}");
+        assert!(out.contains(&format!("\r\x1b[K{margin}\x1b[36m❯\x1b[0m hi")),
+            "prompt row must carry the margin: {out:?}");
+        // Column = margin_width + cursor_col + 1.
+        // margin is 13 visible; "❯ hi" puts cursor_col at 4 → 13+4+1=18.
+        assert!(out.contains("\x1b[18G"),
+            "cursor must skip past the margin width: {out:?}");
+    }
+
+    /// When the running-phase row-2 margin is supplied (the
+    /// bar+ETA+spinner gutter), line 0 of the status inherits the
+    /// standard row-1 margin and lines 1+ inherit the row-2 margin.
+    #[test]
+    fn row2_margin_applies_to_line_two_only() {
+        let row1 = "12.34s 5/9 │ ";
+        let row2 = "⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ 3s   │ ";
+        let status = "running\nstats line";
+        let mut out: Vec<u8> = Vec::new();
+        draw_footer_at_cursor(
+            &mut out, Some(status), None,
+            80, row1, super::visible_width(row1) as u16, row2);
+        let out = String::from_utf8(out).expect("utf-8");
+        assert!(out.contains(&format!("\r\x1b[K{row1}running")),
+            "line 0 MUST carry row1 margin: {out:?}");
+        assert!(out.contains(&format!("\r\x1b[K{row2}stats line")),
+            "line 1 MUST carry row2 margin: {out:?}");
+    }
+
+    /// Empty row2 margin → every line falls back to row1 (the
+    /// no-active-phase baseline path).
+    #[test]
+    fn empty_row2_margin_uses_row1_for_every_line() {
+        let row1 = "12.34s 5/9 │ ";
+        let status = "first\nsecond";
+        let mut out: Vec<u8> = Vec::new();
+        draw_footer_at_cursor(
+            &mut out, Some(status), None,
+            80, row1, super::visible_width(row1) as u16, "");
+        let out = String::from_utf8(out).expect("utf-8");
+        assert!(out.contains(&format!("\r\x1b[K{row1}first")),
+            "line 0 MUST carry row1 margin: {out:?}");
+        assert!(out.contains(&format!("\r\x1b[K{row1}second")),
+            "line 1 MUST also carry row1 margin when row2 is empty: {out:?}");
+    }
+
+    /// The running-phase row-2 margin pads the ETA so the spinner-
+    /// divider lands under the row-1 `│` — for EVERY ETA width that
+    /// fits, not just the one width where the old off-by-one
+    /// happened to cancel out. Margin layout:
+    /// `bar(10) " " eta <pad> spinner(1) " "`; the spinner column
+    /// (1-based) must equal `target - 1` (the `│` column).
+    #[test]
+    fn row2_margin_spinner_aligns_under_divider_for_all_eta_widths() {
+        // e.g. row-1 margin "21.3901s   3/53 │ " is 18 wide; `│`
+        // at column 17, trailing space at 18.
+        let target = 18;
+        for eta in 1..=5 {
+            let pad = super::row2_margin_pad(eta, target);
+            let total = 10 + 1 + eta + pad + 1 + 1;
+            assert_eq!(total, target,
+                "margin width must equal target (eta={eta})");
+            let spinner_col = 10 + 1 + eta + pad + 1; // 1-based
+            assert_eq!(spinner_col, target - 1,
+                "spinner must sit under the `│` divider (eta={eta})");
         }
-        assert!(head_anchors.iter().all(|&ok| ok),
-            "every tick must anchor at row 22: {head_anchors:?}");
+        // The reported case: eta "1s" (2 cols) → pad 3, not 2.
+        assert_eq!(super::row2_margin_pad(2, 18), 3);
     }
 
-    /// Status-only render (no prompt). prompt_top falls
-    /// through to term_rows, status_top to (term_rows -
-    /// status_rows).
+    /// A fresh sink (no shared cursor, or one still holding the
+    /// `RESUME_FRESH` sentinel) seeds from the live `log_seq_total`
+    /// so it doesn't re-print history the observer already wrote.
     #[test]
-    fn status_only_anchors_two_rows_above_bottom() {
-        let status = "a\nb";
-        let out = render_tick(Some(status), None);
-        assert!(out.contains("\x1b[23;1H\x1b[Ka"));
-        assert!(out.contains("\x1b[24;1H\x1b[Kb"));
-        // No prompt → no final cursor home escape.
-        assert!(!out.contains("\x1b[24;3H"),
-            "no prompt → no cursor home: {out:?}");
+    fn seed_last_seen_fresh_uses_current() {
+        assert_eq!(super::seed_last_seen(None, 42), 42);
+        assert_eq!(super::seed_last_seen(Some(super::RESUME_FRESH), 42), 42);
     }
 
-    /// Prompt-only render (no status). Prompt sits at the
-    /// bottom row; nothing above it.
+    /// A swap re-entry (the supervisor's shared cursor holds the
+    /// prior sink's final `last_seen`, not the sentinel) resumes
+    /// from that cursor so the lines that scrolled under the TUI's
+    /// alternate screen are re-emitted into the restored scrollback.
     #[test]
-    fn prompt_only_anchors_at_bottom_row() {
-        let prompt = one_row_prompt("ls");
-        let out = render_tick(None, Some(&prompt));
-        assert!(out.contains("\x1b[24;1H\x1b[K\x1b[36m❯\x1b[0m ls"),
-            "prompt should anchor at row 24: {out:?}");
-        // Cursor at column 5 (`❯ ls` = 5 visible cells).
-        assert!(out.contains("\x1b[24;5H"),
-            "cursor home should target (24, 5): {out:?}");
+    fn seed_last_seen_resume_uses_stored_cursor() {
+        assert_eq!(super::seed_last_seen(Some(10), 42), 10);
+        assert_eq!(super::seed_last_seen(Some(0), 42), 0);
     }
 
-    // Session-elapsed formatting is now owned by
-    // `nbrs_activity::readouts::format::format_compact_session_elapsed`
-    // — width invariance and bucket boundaries are pinned by
-    // the tests in that module's `tests` mod.
-
-    /// When status shrinks (e.g., a memo header goes away),
-    /// the renderer writes the NEW (shorter) status at the
-    /// new absolute row. Erase-line on each row scrubs any
-    /// leftover content; nothing accumulates above.
+    /// `visible_width` strips ANSI SGR sequences so the
+    /// margin-offset arithmetic still lines up when the margin
+    /// is color-painted.
     #[test]
-    fn status_shrink_writes_new_rows_at_new_absolute_positions() {
-        // Tick 1: 3-row status.
-        let big = "memo\nhead\ntail";
-        let prompt = one_row_prompt("");
-        let out = render_tick(Some(big), Some(&prompt));
-        assert!(out.contains("\x1b[21;1H\x1b[Kmemo"));
-        assert!(out.contains("\x1b[22;1H\x1b[Khead"));
-        assert!(out.contains("\x1b[23;1H\x1b[Ktail"));
-        assert!(out.contains("\x1b[24;1H\x1b[K\x1b[36m❯\x1b[0m "));
-
-        // Tick 2: 2-row status.
-        let small = "head2\ntail2";
-        let out = render_tick(Some(small), Some(&prompt));
-        assert!(out.contains("\x1b[22;1H\x1b[Khead2"));
-        assert!(out.contains("\x1b[23;1H\x1b[Ktail2"));
-        assert!(out.contains("\x1b[24;1H\x1b[K\x1b[36m❯\x1b[0m "));
-        // The OLD memo row (was at row 21) is NOT touched
-        // here — clearing the stale row is the caller's job
-        // via `clear_combined_region`. This test only pins
-        // the absolute-positioning invariant for the new
-        // content; the prior-region clear has its own test.
+    fn visible_width_strips_sgr_sequences() {
+        assert_eq!(super::visible_width(""), 0);
+        assert_eq!(super::visible_width("plain text"), 10);
+        // `\x1b[2m...\x1b[0m` carries no columns.
+        assert_eq!(super::visible_width("\x1b[2mdim\x1b[0m text"), 8);
+        // Nested / multiple escapes.
+        assert_eq!(super::visible_width("\x1b[1;31mAB\x1b[0m\x1b[32mCD\x1b[0m"),
+            4);
     }
 }

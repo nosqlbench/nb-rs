@@ -94,9 +94,47 @@ fn evaluate_spec_internal(
     if let Some(values) = try_eval_all_cursor(spec_text, kernel)? {
         return Ok(values);
     }
+    // SRD-18f Stage 2 (non-breaking core): a *bare identifier*
+    // source is a direct wire/param/const reference. Resolve it
+    // against the kernel chain — the same `kernel.lookup` the
+    // `{name}` interpolation path uses — and peel/wrap its value
+    // via `iteration_interior`. This makes `mnc in mnc_values`
+    // work identically to `mnc in {mnc_values}`.
+    //
+    // If the bare name does NOT resolve, fall through to the
+    // legacy path, which treats it as a label string
+    // (`y in z` → ["z"]). The strict "unresolved bare ident is
+    // an error" enforcement (SRD-18f §6) is deferred to the
+    // breaking part of Stage 2 along with its test/workload
+    // migration.
+    if is_single_bare_ident(spec_text) {
+        // SRD-18f §6: a bare identifier source is a reference. It
+        // resolves against the kernel, or it's a hard error — it
+        // is NOT silently bound as its own name-string.
+        return match kernel.lookup(spec_text.trim()) {
+            Some(v) => Ok(match crate::iteration::comprehension::source::iteration_interior(&v) {
+                Some(interior) => interior,
+                None => vec![v],
+            }),
+            None => Err(format!(
+                "comprehension source `{src}` did not resolve to a value — no \
+                 wire, const, param, or outer iter-var by that name is in scope \
+                 here. If you meant the literal string \"{src}\", quote it: \
+                 `\"{src}\"`.",
+                src = spec_text.trim(),
+            )),
+        };
+    }
     let interpolated = crate::kernel::interp::interpolate_with_lookup(spec_text, |name| {
         kernel.lookup(name).map(|v| v.to_display_string())
     })?;
+    // SRD-18f Stage 2: list comprehension sugar `[e1, e2…, e3]`.
+    // Resolved after interpolation so `{name}` placeholders inside
+    // elements expand first; before the const-eval fallthrough so
+    // bracket structure isn't misparsed as an array-literal expr.
+    if let Some(values) = try_eval_bracket_list(&interpolated, kernel)? {
+        return Ok(values);
+    }
     // SRD-18c Layer 2 / SRD-18e Push 3: range operator
     // (`a..b`, `a..=b`, `a..b..s`, `a..=b..s`). Bounds and
     // step are Polydat const expressions evaluated at this
@@ -117,20 +155,21 @@ fn evaluate_spec_internal(
     if let Some(values) = try_eval_sequencer(&interpolated, kernel)? {
         return Ok(values);
     }
-    let value_str = match crate::dsl::compile::eval_const_expr(&interpolated) {
-        Ok(Value::Str(s)) => s.to_string(),
-        // SRD 71: `<param>.partitions` and `partitions(spec, ...)`
-        // both evaluate to a `PartitionList` Ext value. Unpack
-        // its entries into a vec of individual `Partition`
-        // values so the for-clause iterates partition-by-
-        // partition.
-        Ok(ref v) if v.as_partition_list().is_some() => {
-            let list = v.as_partition_list().unwrap();
-            return Ok(list.as_slice().iter()
-                .map(|p| Value::from_partition(*p))
-                .collect());
+    match crate::dsl::compile::eval_const_expr(&interpolated) {
+        // SRD-18f relaxed source resolution: a resolved value is
+        // peeled one level if it has an iteration interior
+        // (native vector, JSON array, PartitionList per SRD-71,
+        // or a string → its comprehension tokens), else wrapped
+        // as a singleton. `iteration_interior` is the single
+        // canonical place that decision is made — this replaces
+        // the former per-type arms (Str→comma-split,
+        // PartitionList→unpack, other→wrap).
+        Ok(v) => {
+            Ok(match crate::iteration::comprehension::source::iteration_interior(&v) {
+                Some(interior) => interior,
+                None => vec![v],
+            })
         }
-        Ok(other) => return Ok(vec![other]),
         // Fall back to the literal-list parse only when the text
         // is unambiguously a comma-separated list of literals
         // (e.g. `1, 10, 100` — `eval_const_expr` doesn't accept
@@ -138,27 +177,38 @@ fn evaluate_spec_internal(
         // Anything that looks like an expression (parens, GK
         // operators, identifiers other than `true`/`false`) was
         // *meant* to evaluate; if it failed, we MUST surface the
-        // failure rather than silently splitting on `,` and
+        // failure rather than silently splitting and
         // handing the workload an iter-var like
         // `matching_profiles('x'` (truncated). The latter
         // produces malformed downstream output six steps removed
         // from the actual fault — a Push-2 kind of bad UX.
         Err(eval_err) => {
+            // NOTE: SRD-18f §6 specifies that a single bare
+            // identifier that fails to evaluate is an *unresolved
+            // reference* and should be a hard error (with a
+            // quoting hint), not silently bound as its own
+            // name-string. That enforcement is **Stage 2** (the
+            // bare-word→reference change) because it flips every
+            // existing bare-label source (`y in z` meaning the
+            // string "z") and requires migrating those to quoted
+            // form. Until Stage 2, the legacy literal-list
+            // fallback below preserves bare-label-as-string.
             if looks_like_literal_list(&interpolated) {
-                interpolated
+                // A bare unquoted token list strips on the same
+                // separator rule as a string comprehension.
+                Ok(crate::iteration::comprehension::source::strip_string_tokens(&interpolated))
             } else {
-                return Err(format!(
+                Err(format!(
                     "for_each clause expression failed to evaluate: {eval_err}\n\
                      spec: {interpolated}\n\
                      If this was meant as a literal list (e.g. `1, 10, 100`), \
                      it should contain only literal values separated by commas. \
                      If it was meant as an expression, fix the underlying \
                      evaluation error."
-                ));
+                ))
             }
         }
-    };
-    Ok(parse_list_with_types(&value_str))
+    }
 }
 
 /// Heuristic: does this interpolated spec text look like a
@@ -177,6 +227,98 @@ fn evaluate_spec_internal(
 /// like `matching_profiles('x', 'y')`. A wrong call on a
 /// borderline case here is cheap — it just produces a clearer
 /// error from the eval layer instead of swallowed garbage.
+/// SRD-18f Stage 2 — list comprehension sugar. Evaluate a
+/// bracketed source `[e1, e2…, e3]` to its bound sequence,
+/// peeling exactly one level:
+///   - a plain element contributes its value, whole (no peel);
+///   - a spread element `S…` / `S...` contributes `S`'s
+///     iteration interior (peel one level); a non-iterable `S`
+///     under spread is a hard error.
+/// Elements are parsed by the core expression grammar: a bare
+/// identifier is a wire/param reference (resolved against the
+/// kernel), a quoted token is a string, numbers/bools are
+/// literals. Returns `Ok(None)` when `text` is not a bracketed
+/// list (so the caller falls through to the other source forms).
+fn try_eval_bracket_list(
+    text: &str,
+    kernel: &PolydatKernel,
+) -> Result<Option<Vec<Value>>, String> {
+    let t = text.trim();
+    if !(t.starts_with('[') && t.ends_with(']') && t.len() >= 2) {
+        return Ok(None);
+    }
+    let inner = &t[1..t.len() - 1];
+    if inner.trim().is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let mut out = Vec::new();
+    for elem in split_args_top_level(inner) {
+        let elem = elem.trim();
+        // Spread suffix: `…` (U+2026) or `...`.
+        let (expr, spread) = if let Some(stripped) = elem.strip_suffix('…') {
+            (stripped.trim(), true)
+        } else if let Some(stripped) = elem.strip_suffix("...") {
+            (stripped.trim(), true)
+        } else {
+            (elem, false)
+        };
+        if expr.is_empty() {
+            return Err("empty element in list comprehension `[...]`".to_string());
+        }
+        let value = eval_element_value(expr, kernel)?;
+        if spread {
+            match crate::iteration::comprehension::source::iteration_interior(&value) {
+                Some(interior) => out.extend(interior),
+                None => return Err(format!(
+                    "list comprehension spread `{expr}…` requires an iterable \
+                     source, but `{expr}` resolved to a scalar \
+                     {ty:?}. Use `[{expr}]` to pass it as a single element, \
+                     or supply a list.",
+                    ty = value.port_type(),
+                )),
+            }
+        } else {
+            out.push(value);
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Resolve one list-comprehension element to a single value (no
+/// peeling). A bare identifier is a wire/param/const reference
+/// resolved against the kernel; anything else (quoted string,
+/// number, bool, expression) goes through the const evaluator.
+/// SRD-18f §6: an unresolved bare reference is a hard error with
+/// a quoting hint, not a silent literal-name binding.
+fn eval_element_value(expr: &str, kernel: &PolydatKernel) -> Result<Value, String> {
+    let e = expr.trim();
+    if is_single_bare_ident(e) {
+        return kernel.lookup(e).ok_or_else(|| format!(
+            "list element `{e}` did not resolve to a value — no wire, const, \
+             param, or outer iter-var by that name is in scope here. \
+             If you meant the literal string \"{e}\", quote it: `\"{e}\"`."
+        ));
+    }
+    crate::dsl::compile::eval_const_expr(e).map_err(|err| format!(
+        "list element `{e}` failed to evaluate: {err}"
+    ))
+}
+
+/// True when `text` is exactly one bare identifier
+/// (`[A-Za-z_][A-Za-z0-9_]*`), excluding `true`/`false`. A bare
+/// identifier source is a direct reference resolved against the
+/// kernel (SRD-18f Stage 2); the keyword literals are values.
+fn is_single_bare_ident(text: &str) -> bool {
+    let t = text.trim();
+    if t == "true" || t == "false" { return false; }
+    let mut chars = t.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 fn looks_like_literal_list(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() { return false; }
@@ -209,6 +351,38 @@ pub fn pre_evaluate_clause(
     // intercepted here too — same as `evaluate_spec`.
     if let Some(values) = try_eval_all_cursor(spec_text, parent_kernel)? {
         return Ok(values);
+    }
+    // SRD-18f Stage 2: a bare identifier source is a direct
+    // reference. Resolve it at synthesis the same way the runtime
+    // `evaluate_spec` does — against a prior iter-var probe, then
+    // the parent kernel, then the workload params — so a dependent
+    // clause (e.g. `limit in {k_{k}_limits}`) sees the *typed*
+    // prior value and infers the right extern type. Without this,
+    // `k in k_values` left `k`'s probe as the literal name and the
+    // dependent `limit` defaulted to String (the query_sweep bug
+    // the scenario-synthesis coverage gap was hiding).
+    if is_single_bare_ident(spec_text) {
+        let name = spec_text.trim();
+        if let Some(pv) = probes.get(name) {
+            return Ok(crate::iteration::comprehension::source::strip_string_tokens(pv));
+        }
+        if let Some(v) = parent_kernel.get_constant(name).cloned()
+            .or_else(|| parent_kernel.get_input(name))
+            .filter(|v| !matches!(v, Value::None))
+        {
+            return Ok(match crate::iteration::comprehension::source::iteration_interior(&v) {
+                Some(interior) => interior,
+                None => vec![v],
+            });
+        }
+        if let Some(s) = workload_params.get(name) {
+            return Ok(crate::iteration::comprehension::source::strip_string_tokens(s));
+        }
+        return Err(format!(
+            "comprehension source `{name}` did not resolve to a value — no wire, \
+             const, param, or outer iter-var by that name is in scope here. \
+             If you meant the literal string \"{name}\", quote it: `\"{name}\"`."
+        ));
     }
     let mut text = spec_text.to_string();
     for (var, probe_value) in probes {
@@ -1736,6 +1910,57 @@ mod tests {
         ).unwrap();
         let v = evaluate_spec("{k_values}", &kernel).unwrap();
         assert_eq!(v, vec![Value::U64(1), Value::U64(10), Value::U64(100)]);
+    }
+
+    #[test]
+    fn evaluate_spec_bare_ident_resolves_like_braced() {
+        // SRD-18f Stage 2: a bare identifier source is a direct
+        // wire/param reference — resolves identically to the
+        // braced `{name}` interpolation form.
+        let kernel = crate::dsl::compile::compile_polydat(
+            "const k_values := \"1, 10, 100\"\n"
+        ).unwrap();
+        let bare = evaluate_spec("k_values", &kernel).unwrap();
+        let braced = evaluate_spec("{k_values}", &kernel).unwrap();
+        assert_eq!(bare, braced);
+        assert_eq!(bare, vec![Value::U64(1), Value::U64(10), Value::U64(100)]);
+    }
+
+    #[test]
+    fn evaluate_spec_unresolved_bare_is_error_with_quoting_hint() {
+        // SRD-18f §6: a bare identifier source that doesn't
+        // resolve is a hard error (not silently bound as its own
+        // name-string), and the message points at the fix.
+        let kernel = crate::dsl::compile::compile_polydat("\n").unwrap();
+        let err = evaluate_spec("nonexistent", &kernel).unwrap_err().to_string();
+        assert!(err.contains("did not resolve"), "got: {err}");
+        assert!(err.contains("quote it"), "should hint quoting: {err}");
+    }
+
+    #[test]
+    fn bracket_list_spread_and_no_peel() {
+        // `[xs…]` destructures (peels one level); `[xs]` binds the
+        // whole value once.
+        let kernel = crate::dsl::compile::compile_polydat(
+            "const xs := \"1, 2, 3\"\n"
+        ).unwrap();
+        // spread → peel the string's tokens
+        let spread = evaluate_spec("[xs…]", &kernel).unwrap();
+        assert_eq!(spread, vec![Value::U64(1), Value::U64(2), Value::U64(3)]);
+        // no-peel → the whole value once (the string, un-striped)
+        let whole = evaluate_spec("[xs]", &kernel).unwrap();
+        assert_eq!(whole, vec![Value::Str("1, 2, 3".into())]);
+    }
+
+    #[test]
+    fn bracket_list_mixes_refs_literals_and_spread() {
+        let kernel = crate::dsl::compile::compile_polydat(
+            "const mid := \"7, 8\"\n"
+        ).unwrap();
+        let v = evaluate_spec("[1, mid…, \"x\"]", &kernel).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(7), Value::U64(8), Value::Str("x".into()),
+        ]);
     }
 
     // ── SRD-71: partition-list unpacking ─────────────────────

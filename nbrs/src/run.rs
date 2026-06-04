@@ -115,6 +115,14 @@ pub async fn run_command(args: &[String]) {
         // actually rendered. Early-exit display dryruns
         // (`phase`, `op`, `controls`) fall through to `off`.
         "terminal"
+    } else if !dryrun_is_early_exit {
+        // Stderr is NOT a tty (piped / redirected) but this
+        // is still a cycle-running session. Emit periodic
+        // status snapshots via the FormattedLineSink so a
+        // long-running workload tailing its log shows forward
+        // progress, not just per-event log lines. No cursor
+        // positioning, no escapes — append-only.
+        "formatted"
     } else {
         "off"
     };
@@ -279,6 +287,26 @@ pub async fn run_command(args: &[String]) {
             None
         };
 
+        // `tui=formatted`: append-only status snapshots
+        // alongside the observer's synchronous log stream.
+        // No supervisor (no key handling, no swap-to-tui), no
+        // cursor positioning — just a periodic snapshot line
+        // per `STATUS_CADENCE`. Started directly here because
+        // the supervisor's machinery is overkill for the
+        // single-sink, no-watcher case.
+        let formatted_handle = if tui_mode == "formatted" {
+            use nbrs_tui::display_sink::{DisplayInputs, DisplaySink};
+            let sink = nbrs_tui::formatted_line_sink::FormattedLineSink;
+            let handle = Box::new(sink).start(DisplayInputs {
+                state: run_state.clone(),
+                frame_rx: None,
+                metrics_query: None,
+            });
+            Some(handle)
+        } else {
+            None
+        };
+
         let run_result = nbrs_activity::runner::run_with_observer(args, observer).await;
 
         if let Some(s) = supervisor {
@@ -304,6 +332,13 @@ pub async fn run_command(args: &[String]) {
             // are the only legal in-run output channel.
             std::thread::sleep(std::time::Duration::from_millis(150));
             s.shutdown();
+        }
+
+        // Tear down the formatted-line sink (if up) before
+        // post-run reports fire so its final cadence-driven
+        // line doesn't interleave with the report banner.
+        if let Some(h) = formatted_handle {
+            h.shutdown();
         }
 
         // From here down the terminal is back in cooked mode

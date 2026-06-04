@@ -411,7 +411,7 @@ mod tests {
         use polydat::compile::assembly::{PolydatAssembler, WireRef};
         use polydat::library::identity::Identity;
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("cycle_id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("cycle_id", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
         asm.add_output("cycle_id", WireRef::node("cycle_id"));
         let kernel = asm.compile().expect("test fixture asm.compile");
         crate::fixture::ScopeFixture::new(kernel.program().clone())

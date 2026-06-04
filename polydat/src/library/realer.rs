@@ -11,9 +11,24 @@
 //! Each node takes a u64 input (should be hashed for uniform
 //! distribution) and returns a String. Weighted variants select
 //! proportionally to Census frequency data.
+//!
+//! SRD-80b Phase E: migrated to `#[polydat_node]`. The bundled
+//! datasets are parsed once into process-global `OnceLock`s
+//! (the samplers are stateless after construction and the data
+//! is `include_str!`-baked, so there's nothing per-instance to
+//! configure). Hand-written `impl PolydatNode for X` blocks and
+//! the `signatures()` / `build_node` / `register_nodes!` trio
+//! deleted; the macro emits the registry entries directly.
+//!
+//! Naming change: the previous `FirstNames` struct had two Rust
+//! constructors `female()` / `male()` but the DSL registry only
+//! exposed the female variant. After migration, `first_names`
+//! (struct `FirstNames`) keeps the female-by-default behaviour
+//! (no regression) and `first_names_male` (struct `FirstNamesMale`)
+//! makes the male variant a first-class DSL node.
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use crate::library::sampling::alias::AliasTableU64;
+use std::sync::OnceLock;
 
 // =================================================================
 // Bundled CSV data
@@ -76,7 +91,7 @@ fn parse_code_name_csv(csv: &str) -> Vec<(String, String)> {
 // =================================================================
 
 /// A weighted name sampler backed by an alias table.
-struct WeightedNameSampler {
+pub struct WeightedNameSampler {
     names: Vec<String>,
     table: AliasTableU64,
 }
@@ -94,7 +109,7 @@ impl WeightedNameSampler {
 }
 
 /// A uniform name sampler (no weights, just mod index).
-struct UniformNameSampler {
+pub struct UniformNameSampler {
     names: Vec<String>,
 }
 
@@ -110,332 +125,139 @@ impl UniformNameSampler {
 }
 
 // =================================================================
+// Process-global sampler caches (`include_str!` data is static —
+// the samplers are stateless after parse — so one global instance
+// per dataset is the right cache granularity).
+// =================================================================
+
+fn female_first_names() -> &'static WeightedNameSampler {
+    static CELL: OnceLock<WeightedNameSampler> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let (names, weights) = parse_name_weight_csv(FEMALE_FIRSTNAMES_CSV);
+        WeightedNameSampler::new(names, weights)
+    })
+}
+
+fn male_first_names() -> &'static WeightedNameSampler {
+    static CELL: OnceLock<WeightedNameSampler> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let (names, weights) = parse_name_weight_csv(MALE_FIRSTNAMES_CSV);
+        WeightedNameSampler::new(names, weights)
+    })
+}
+
+fn state_codes_data() -> &'static UniformNameSampler {
+    static CELL: OnceLock<UniformNameSampler> = OnceLock::new();
+    CELL.get_or_init(|| UniformNameSampler::new(parse_single_column_csv(STATES_CSV)))
+}
+
+fn country_names_data() -> &'static UniformNameSampler {
+    static CELL: OnceLock<UniformNameSampler> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let pairs = parse_code_name_csv(COUNTRIES_CSV);
+        UniformNameSampler::new(pairs.into_iter().map(|(_, name)| name).collect())
+    })
+}
+
+fn country_codes_data() -> &'static UniformNameSampler {
+    static CELL: OnceLock<UniformNameSampler> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let pairs = parse_code_name_csv(COUNTRIES_CSV);
+        UniformNameSampler::new(pairs.into_iter().map(|(code, _)| code).collect())
+    })
+}
+
+fn nationalities_data() -> &'static UniformNameSampler {
+    static CELL: OnceLock<UniformNameSampler> = OnceLock::new();
+    CELL.get_or_init(|| UniformNameSampler::new(parse_single_column_csv(NATIONALITIES_CSV)))
+}
+
+fn last_names_data() -> &'static UniformNameSampler {
+    static CELL: OnceLock<UniformNameSampler> = OnceLock::new();
+    CELL.get_or_init(|| {
+        UniformNameSampler::new(
+            crate::library::random::LASTNAMES.lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect(),
+        )
+    })
+}
+
+// =================================================================
 // Polydat Nodes
 // =================================================================
 
-/// Female first names weighted by Census frequency.
-///
-/// Signature: `(input: u64) -> (String)`
-pub struct FirstNames {
-    meta: NodeMeta,
-    sampler: WeightedNameSampler,
+/// `first_names(input) -> String` — Census female first name,
+/// weighted by frequency.
+#[crate::polydat_node(category = RealData)]
+fn first_names(input: u64) -> String {
+    female_first_names().sample(input).to_string()
 }
 
-impl FirstNames {
-    pub fn female() -> Self {
-        let (names, weights) = parse_name_weight_csv(FEMALE_FIRSTNAMES_CSV);
-        Self {
-            meta: NodeMeta {
-                name: "first_names".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            sampler: WeightedNameSampler::new(names, weights),
-        }
-    }
-
-    pub fn male() -> Self {
-        let (names, weights) = parse_name_weight_csv(MALE_FIRSTNAMES_CSV);
-        Self {
-            meta: NodeMeta {
-                name: "first_names".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            sampler: WeightedNameSampler::new(names, weights),
-        }
-    }
+/// `first_names_male(input) -> String` — Census male first name,
+/// weighted by frequency. Companion to `first_names` (female).
+#[crate::polydat_node(category = RealData)]
+fn first_names_male(input: u64) -> String {
+    male_first_names().sample(input).to_string()
 }
 
-impl PolydatNode for FirstNames {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
-    }
+/// `state_codes(input) -> String` — US state abbreviation
+/// (uniform selection).
+#[crate::polydat_node(category = RealData)]
+fn state_codes(input: u64) -> String {
+    state_codes_data().sample(input).to_string()
 }
 
-/// US state abbreviations (uniform selection).
-///
-/// Signature: `(input: u64) -> (String)`
-pub struct StateCodes {
-    meta: NodeMeta,
-    sampler: UniformNameSampler,
+/// `country_names(input) -> String` — country name (uniform
+/// selection over the full ISO list).
+#[crate::polydat_node(category = RealData)]
+fn country_names(input: u64) -> String {
+    country_names_data().sample(input).to_string()
 }
 
-impl Default for StateCodes {
-    fn default() -> Self {
-        Self::new()
-    }
+/// `country_codes(input) -> String` — country code (uniform
+/// selection over the full ISO list).
+#[crate::polydat_node(category = RealData)]
+fn country_codes(input: u64) -> String {
+    country_codes_data().sample(input).to_string()
 }
 
-impl StateCodes {
-    pub fn new() -> Self {
-        let names = parse_single_column_csv(STATES_CSV);
-        Self {
-            meta: NodeMeta {
-                name: "state_codes".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            sampler: UniformNameSampler::new(names),
-        }
-    }
+/// `nationalities(input) -> String` — nationality name (uniform
+/// selection).
+#[crate::polydat_node(category = RealData)]
+fn nationalities(input: u64) -> String {
+    nationalities_data().sample(input).to_string()
 }
 
-impl PolydatNode for StateCodes {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
-    }
-}
-
-/// Country names (uniform selection).
-///
-/// Signature: `(input: u64) -> (String)`
-pub struct CountryNames {
-    meta: NodeMeta,
-    sampler: UniformNameSampler,
-}
-
-impl Default for CountryNames {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CountryNames {
-    pub fn new() -> Self {
-        let pairs = parse_code_name_csv(COUNTRIES_CSV);
-        let names: Vec<String> = pairs.into_iter().map(|(_, name)| name).collect();
-        Self {
-            meta: NodeMeta {
-                name: "country_names".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            sampler: UniformNameSampler::new(names),
-        }
-    }
-}
-
-impl PolydatNode for CountryNames {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
-    }
-}
-
-/// Country codes (uniform selection).
-///
-/// Signature: `(input: u64) -> (String)`
-pub struct CountryCodes {
-    meta: NodeMeta,
-    sampler: UniformNameSampler,
-}
-
-impl Default for CountryCodes {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CountryCodes {
-    pub fn new() -> Self {
-        let pairs = parse_code_name_csv(COUNTRIES_CSV);
-        let codes: Vec<String> = pairs.into_iter().map(|(code, _)| code).collect();
-        Self {
-            meta: NodeMeta {
-                name: "country_codes".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            sampler: UniformNameSampler::new(codes),
-        }
-    }
-}
-
-impl PolydatNode for CountryCodes {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
-    }
-}
-
-/// Nationality names (uniform selection).
-///
-/// Signature: `(input: u64) -> (String)`
-pub struct Nationalities {
-    meta: NodeMeta,
-    sampler: UniformNameSampler,
-}
-
-impl Default for Nationalities {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Nationalities {
-    pub fn new() -> Self {
-        let names = parse_single_column_csv(NATIONALITIES_CSV);
-        Self {
-            meta: NodeMeta {
-                name: "nationalities".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            sampler: UniformNameSampler::new(names),
-        }
-    }
-}
-
-impl PolydatNode for Nationalities {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
-    }
-}
-
-/// Full names: combines a first name and last name.
-///
-/// Signature: `(input: u64) -> (String)`
+/// `full_names(input) -> String` — combined first + last name.
 ///
 /// Uses two hash-derived values from the input to independently
-/// select a first name and last name.
-pub struct FullNames {
-    meta: NodeMeta,
-    first_female: WeightedNameSampler,
-    first_male: WeightedNameSampler,
-    last: UniformNameSampler,
+/// select a first name and last name. The first name's gender
+/// is decided by bit 0 of the secondary hash.
+#[crate::polydat_node(category = RealData)]
+fn full_names(input: u64) -> String {
+    use xxhash_rust::xxh3::xxh3_64;
+    let h2 = xxh3_64(&input.to_le_bytes());
+    let h3 = xxh3_64(&h2.to_le_bytes());
+    let first = if h2 & 1 == 0 {
+        female_first_names().sample(h2)
+    } else {
+        male_first_names().sample(h2)
+    };
+    let last_name = last_names_data().sample(h3);
+    format!("{first} {last_name}")
 }
 
-impl Default for FullNames {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FullNames {
-    pub fn new() -> Self {
-        let (f_names, f_weights) = parse_name_weight_csv(FEMALE_FIRSTNAMES_CSV);
-        let (m_names, m_weights) = parse_name_weight_csv(MALE_FIRSTNAMES_CSV);
-        Self {
-            meta: NodeMeta {
-                name: "full_names".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            first_female: WeightedNameSampler::new(f_names, f_weights),
-            first_male: WeightedNameSampler::new(m_names, m_weights),
-            last: UniformNameSampler::new(
-                crate::library::random::LASTNAMES.lines()
-                    .filter(|l| !l.is_empty())
-                    .map(|l| l.to_string())
-                    .collect()
-            ),
-        }
-    }
-}
-
-impl PolydatNode for FullNames {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        use xxhash_rust::xxh3::xxh3_64;
-        let h = inputs[0].as_u64();
-        let h2 = xxh3_64(&h.to_le_bytes());
-        let h3 = xxh3_64(&h2.to_le_bytes());
-        // Use h2 bit 0 to select male/female
-        let first = if h2 & 1 == 0 {
-            self.first_female.sample(h2)
-        } else {
-            self.first_male.sample(h2)
-        };
-        let last = self.last.sample(h3);
-        outputs[0] = Value::Str(format!("{first} {last}").into());
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for real-world data generation nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "first_names", category: C::RealData, outputs: 1,
-            description: "Census first name (weighted)",
-            help: "Select a first name from US Census data, weighted by frequency.\nMore common names appear proportionally more often.\nUse for realistic person-name generation in test data.\nParameters:\n  input — u64 wire input (typically hashed)",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "full_names", category: C::RealData, outputs: 1,
-            description: "full name (first + last)",
-            help: "Generate a full name (first + last) from Census data.\nFirst and last names are selected independently, both weighted\nby frequency. Produces realistic \"Jane Smith\" style names.\nParameters:\n  input — u64 wire input (typically hashed)",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "state_codes", category: C::RealData, outputs: 1,
-            description: "US state abbreviation",
-            help: "Select a US state abbreviation (e.g., \"CA\", \"NY\", \"TX\").\nAll 50 states plus DC are included with equal probability.\nUse for generating realistic US address data.\nParameters:\n  input — u64 wire input (typically hashed)",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "country_names", category: C::RealData, outputs: 1,
-            description: "country name",
-            help: "Select a country name from the full ISO list.\nAll countries are included with equal probability.\nUse for generating geographic diversity in test data.\nParameters:\n  input — u64 wire input (typically hashed)",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-/// Try to build a real-world data node from a function name and const args.
-///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "first_names" => Some(Ok(Box::new(FirstNames::female()))),
-        "full_names" => Some(Ok(Box::new(FullNames::new()))),
-        "state_codes" => Some(Ok(Box::new(StateCodes::new()))),
-        "country_names" => Some(Ok(Box::new(CountryNames::new()))),
-        _ => None,
-    }
-}
-
-
-crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
     use xxhash_rust::xxh3::xxh3_64;
 
     #[test]
     fn first_names_female() {
-        let node = FirstNames::female();
+        let node = FirstNames::new();
         let mut out = [Value::None];
         let h = xxh3_64(&42u64.to_le_bytes());
         node.eval(&[Value::U64(h)], &mut out);
@@ -446,7 +268,7 @@ mod tests {
 
     #[test]
     fn first_names_male() {
-        let node = FirstNames::male();
+        let node = FirstNamesMale::new();
         let mut out = [Value::None];
         let h = xxh3_64(&42u64.to_le_bytes());
         node.eval(&[Value::U64(h)], &mut out);
@@ -456,7 +278,7 @@ mod tests {
     #[test]
     fn first_names_weighted() {
         // "Mary" is the most common female name — should appear often
-        let node = FirstNames::female();
+        let node = FirstNames::new();
         let mut mary_count = 0;
         let mut out = [Value::None];
         for i in 0..10_000u64 {

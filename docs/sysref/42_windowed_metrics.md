@@ -110,21 +110,52 @@ forward to all consumers that asked for that cadence.
 
 ### Logging
 
-Every auto-inserted (hidden) cadence layer MUST be emitted at
-`INFO` level when the tree is constructed, so an operator reading
-startup logs can see the realized cadence layout — declared
-cadences, the hidden intermediates the scheduler synthesized, and
-the fan-in ratio between adjacent layers. Example:
+The realized cadence layout is emitted at `INFO` level when the
+tree is constructed as a single one-line summary — declared
+cadences inline with hidden intermediates in parentheses, the
+trailing `/ N` reporting the active max-fan-in cap (default 20).
+Example:
 
 ```
-INFO declared cadences: [10s, 1m, 10m, 10h]
-INFO inserted hidden cadence 1h between 10m and 10h (fan-in: 6, 10)
-INFO realized cadence tree: 1s → 10s → 1m → 10m → 1h* → 10h
+INFO metrics: cadences: [1s, 10s, 1m, 10m, (1h), 10h] / 20
 ```
 
-The user-declared cadences themselves are also surfaced at
-`INFO` so the realized layout is grep-able from the run log
-without enabling debug.
+The parentheses around `1h` mark it as a planner-synthesized
+hidden layer (no declared external reporter; feeds coalescing
+only). The user-declared cadences appear bare, in declaration
+order with hidden intermediates spliced in at the right positions
+so the sequence reads left-to-right ascending. The trailing
+`/ 20` carries `max_fan_in` — the cap that drove any insertions
+on this run.
+
+### Max fan-in
+
+**Fan-in** is the integer ratio between adjacent cadence layers:
+`next.interval / prev.interval`. A `1s → 10s` step has fan-in
+`10:1`; a `1s → 5m` step has fan-in `300:1`.
+
+The planner caps adjacent fan-in at `max_fan_in` (default 20)
+because upper-layer aggregate accuracy (mean / p99 / histogram
+fan-out) degrades non-linearly as the fan-in grows. At 20:1 the
+loss is bounded; at 300:1 the rolled-up percentile is effectively
+a coin flip. The cap keeps the cost-vs-accuracy trade-off
+predictable.
+
+When two declared layers exceed the cap, the planner inserts
+geometrically-spaced **hidden intermediate layers** — synthesized
+midpoints that keep every adjacent step within the limit. Hidden
+layers are not user-visible columns; they exist solely to feed
+the coalescing into the next declared layer.
+
+With `max_fan_in = 20`, declared `[1s, 5m]` (300:1) becomes
+realized `[1s, (20s), 5m]` — `20s` is hidden, adjacent ratios are
+`20:1` and `15:1`, both under the cap.
+
+Constant of truth lives at
+`nbrs_metrics::cadence::DEFAULT_MAX_FAN_IN` in the source. CLI
+override surface (`latency-fan-in=`) is reserved but not yet
+exposed — the default constant is the single project-wide value
+until an operator needs the knob.
 
 ```
 root (1s base)

@@ -127,6 +127,61 @@ impl Comprehension {
         acc
     }
 
+    /// Grammar-based extraction of the free names referenced by
+    /// every source spec in this comprehension subtree —
+    /// workload params, outer iter-vars, and wires that a
+    /// `Generator` spec (`concat(foo)`, bare `eh_values`)
+    /// consumes. Each spec is parsed with the canonical Polydat
+    /// expression grammar (`crate::dsl::refs::referenced_names`)
+    /// rather than byte-scanned, so a bare source reference is
+    /// recognised exactly as the kernel compiler would resolve
+    /// it. `WorkloadParamList { name }` contributes `name`
+    /// directly; literals / ranges / intervals contribute
+    /// nothing. Used by the workload validator's
+    /// declared-but-unreferenced check.
+    pub fn referenced_source_names(&self) -> std::collections::BTreeSet<String> {
+        use super::source::Source;
+        let mut out = std::collections::BTreeSet::new();
+        self.walk_sources(&mut |source| match source {
+            Source::WorkloadParamList { name, .. } => {
+                out.insert(name.clone());
+            }
+            Source::Generator { expr, .. } => {
+                // A generator spec references names two ways: as
+                // parsed free identifiers (`concat(foo)`) and as
+                // `{name}` interpolation placeholders
+                // (`concat({foo_values})`, where the braces are
+                // string-interpolation, not expression syntax —
+                // so the expression parser alone wouldn't see
+                // them). Collect both.
+                out.extend(crate::dsl::refs::referenced_names(expr));
+                crate::dsl::refs::collect_string_interpolation_refs(expr, &mut out);
+            }
+            Source::Literal { .. }
+            | Source::IntRange { .. }
+            | Source::ContinuousInterval { .. }
+            | Source::Distribution { .. } => {}
+        });
+        out
+    }
+
+    /// Visit every leaf [`Source`] in this comprehension subtree.
+    fn walk_sources(&self, visit: &mut impl FnMut(&super::source::Source)) {
+        match self {
+            Comprehension::Clause { source, .. } => visit(source),
+            Comprehension::Cartesian { children }
+            | Comprehension::Zip { children, .. }
+            | Comprehension::Union { children } => {
+                for c in children {
+                    c.walk_sources(visit);
+                }
+            }
+            Comprehension::Filter { child, .. } | Comprehension::Order { child, .. } => {
+                child.walk_sources(visit);
+            }
+        }
+    }
+
     fn collect_coordinate_specs(
         &self,
         acc: &mut Vec<(String, String)>,
@@ -305,6 +360,46 @@ mod tests {
         assert!(c.is_clause());
         assert!(!c.is_combinator());
         assert!(!c.is_modifier());
+    }
+
+    #[test]
+    fn referenced_source_names_grammar_based() {
+        // `eh in eh_values` — a bare source reference parses to
+        // a Generator whose free name is the workload param.
+        let bare = Comprehension::clause(
+            "eh",
+            Source::Generator { expr: "eh_values".into(), cardinality_hint: None },
+        );
+        let got: Vec<String> = bare.referenced_source_names().into_iter().collect();
+        assert_eq!(got, vec!["eh_values"]);
+
+        // `(nbo) in (concat(nbo_v_values))` — the source is a
+        // function call; the callee `concat` is NOT a reference
+        // but its argument IS.
+        let call = Comprehension::clause(
+            "nbo",
+            Source::Generator { expr: "concat(nbo_v_values)".into(), cardinality_hint: None },
+        );
+        let got: Vec<String> = call.referenced_source_names().into_iter().collect();
+        assert_eq!(got, vec!["nbo_v_values"]);
+
+        // `{profiles}` — an explicit WorkloadParamList contributes
+        // its name directly.
+        let wpl = Comprehension::clause(
+            "p",
+            Source::WorkloadParamList { name: "profiles".into(), len_hint: None },
+        );
+        let got: Vec<String> = wpl.referenced_source_names().into_iter().collect();
+        assert_eq!(got, vec!["profiles"]);
+
+        // Literal sources contribute nothing.
+        let lit = lit_int_clause("k", &[1, 2, 3]);
+        assert!(lit.referenced_source_names().is_empty());
+
+        // Cartesian unions the per-clause references.
+        let cart = Comprehension::cartesian(vec![bare, call]);
+        let got: Vec<String> = cart.referenced_source_names().into_iter().collect();
+        assert_eq!(got, vec!["eh_values", "nbo_v_values"]);
     }
 
     #[test]

@@ -47,6 +47,25 @@ fn slow_stdout_workload() -> (TempDir, PathBuf) {
     (dir, yaml_path)
 }
 
+/// A workload whose op paces itself via its own `rate:` field so
+/// the single synthetic phase `main` stays Running for the whole
+/// observation window. Callers drive it with `filename=/dev/null`
+/// so the stdout adapter writes nothing to the terminal — no
+/// second writer fighting the sink's absolutely-positioned region.
+fn paced_silent_workload() -> (TempDir, PathBuf) {
+    let dir = TempDir::new();
+    let yaml_path = dir.path().join("paced.yaml");
+    std::fs::write(
+        &yaml_path,
+        r#"ops:
+  hello:
+    raw: "tick={cycle}"
+    rate: "5/s"
+"#,
+    ).expect("write paced workload yaml");
+    (dir, yaml_path)
+}
+
 /// Hand-rolled tempdir so we don't add a `tempfile` dep just
 /// for these tests. Cleans up on drop.
 struct TempDir {
@@ -73,17 +92,26 @@ impl Drop for TempDir {
     }
 }
 
+/// Build the steppable-terminal config for `nbrs run`. Callers
+/// pass `cycles=` / `rate=` (and anything else) in `extra` — they
+/// are NOT hardcoded here, so a caller can pick a rate/duration
+/// without a duplicate param (two `rate=` values trip the
+/// op-rate-wrapper field-ownership validation).
+///
+/// Session output is redirected into the workload's tempdir via
+/// `--session-path` so the run never writes session directories
+/// under the project root (see the project's test-isolation
+/// memory).
 fn build_config(workload: &PathBuf, extra: &[&str]) -> Config {
+    let sessions = workload.parent()
+        .expect("workload path has a parent tempdir")
+        .join("sessions");
     let mut command: Vec<OsString> = Vec::new();
     command.push(nbrs_binary().into());
     command.push("run".into());
     command.push(format!("workload={}", workload.display()).into());
-    command.push("cycles=20".into());
-    // 5 ops/sec gives the test ~4s of runway to drive the
-    // toggle. Long enough that intermediate states are
-    // observable; short enough that the whole run finishes
-    // inside the per-test timeout.
-    command.push("rate=5".into());
+    command.push("--session-path".into());
+    command.push(sessions.into());
     command.push("tui=terminal".into());
     for arg in extra {
         command.push((*arg).into());
@@ -134,7 +162,7 @@ async fn assert_screen_contains(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn terminal_mode_renders_log_lines() {
     let (_dir, yaml) = slow_stdout_workload();
-    let config = build_config(&yaml, &[]);
+    let config = build_config(&yaml, &["cycles=20"]);
     let mut stepper = SteppableTerminal::start(config).await
         .expect("start steppable terminal");
 
@@ -148,49 +176,44 @@ async fn terminal_mode_renders_log_lines() {
     let _ = stepper.kill();
 }
 
-/// Drive the Ctrl-T toggle from terminal mode into the full
-/// TUI. The TUI's signature on screen is the scenario tree's
-/// box-drawing characters in the left panel. If we don't see
-/// them within the timeout, the toggle didn't take.
+/// Drive the Ctrl-T toggle terminal → full TUI → terminal.
 ///
-/// Currently `#[ignore]`d because the toggle depends on the
-/// runner having published a `MetricsQuery` to the observer
-/// (the `TuiSink` constructor needs it). The cadence reporter
-/// builds it on the first scheduler tick (~1 s after run
-/// start); if Ctrl-T fires before that the supervisor falls
-/// back to terminal mode with a "TUI not yet ready" notice.
-/// The non-flaky fix is to wait for a snapshot-side signal
-/// that metrics is wired before sending Ctrl-T — a follow-up
-/// can add a "metrics ready" log line and gate the test on it.
+/// The former race (Ctrl-T landing before the runner published a
+/// `MetricsQuery`, so the supervisor declined the swap) is gated
+/// out by construction: we wait for the live status block (its
+/// `ok:` field) before sending Ctrl-T. The status block only
+/// renders once the phase is `Running` and the inline-status
+/// thread has refreshed, which is *after* the runner's
+/// `observer.on_metrics_query(...)` in the execution-setup block
+/// (runner.rs) — so by the time `ok:` is on screen the query the
+/// `TuiSink` needs is already wired. (There is no managed
+/// phase-history region anymore; completed phases live in the
+/// scrollback and the running phase shows only in the live status
+/// block, which is re-derived from the snapshot on every sink.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "race against MetricsQuery wiring; needs a 'metrics ready' tell to gate Ctrl-T"]
-async fn ctrl_t_toggles_into_tui() {
-    let (_dir, yaml) = slow_stdout_workload();
-    let config = build_config(&yaml, &["cycles=80", "rate=3"]);
+async fn ctrl_t_toggles_into_tui_and_back() {
+    let (_dir, yaml) = paced_silent_workload();
+    let config = build_config(&yaml, &["cycles=300", "filename=/dev/null"]);
     let mut stepper = SteppableTerminal::start(config).await
         .expect("start steppable terminal");
 
-    // Wait until terminal-mode rendering is visible.
-    assert_screen_contains(&mut stepper, "phase 'hello'", Duration::from_secs(8)).await;
+    // Terminal mode renders the running phase as the live status
+    // block; its `ok:` field also signals the MetricsQuery is
+    // published.
+    assert_screen_contains(&mut stepper, "ok:", Duration::from_secs(10)).await;
 
-    // Ctrl-T (ASCII 0x14) — the keystroke watcher should pick
-    // this up and ask the supervisor to swap to TuiSink.
+    // Ctrl-T (ASCII 0x14): the watcher forwards ToggleTui and the
+    // supervisor swaps in the TuiSink (alt-screen). The TUI draws
+    // bordered panels with box-drawing the line-mode sink never
+    // emits — `┌` (a panel corner) is a clean alt-screen tell.
     stepper.send_input(Input::Characters("\x14".into())).expect("send Ctrl-T");
+    assert_screen_contains(&mut stepper, "┌", Duration::from_secs(8)).await;
 
-    // The TUI's tree panel uses these box-drawing chars; their
-    // appearance is a strong signal the alt-screen is up and
-    // the App is rendering.
-    assert_screen_contains(&mut stepper, "├", Duration::from_secs(5)).await;
-
-    // Toggle back. Inside the TUI, App handles Ctrl-T by
-    // setting `yielded_to_terminal = true` and exiting the
-    // event loop; the supervisor brings LogOnlySink back up.
+    // Ctrl-T back: the App sets `yielded_to_terminal`, the
+    // supervisor brings the LogOnlySink back up, and the live
+    // status block re-derives from the snapshot — `ok:` returns.
     stepper.send_input(Input::Characters("\x14".into())).expect("send Ctrl-T (back)");
-
-    // After the swap-back, fresh log lines should land. The
-    // exact line varies, but the run continues and progress
-    // events keep firing on the LogOnlySink poll cadence.
-    assert_screen_contains(&mut stepper, "phase 'hello'", Duration::from_secs(5)).await;
+    assert_screen_contains(&mut stepper, "ok:", Duration::from_secs(8)).await;
 
     let _ = stepper.kill();
 }

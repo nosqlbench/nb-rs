@@ -162,6 +162,71 @@ phases:
     let _ = std::fs::remove_file(&path);
 }
 
+/// Regression (SRD-18f Stage 2): a dependent comprehension whose
+/// *prior* clause is a **bare** reference (`k in k_values`, not
+/// `{k_values}`), and whose dependent clause composes the prior
+/// iter-var into a dynamic param name (`limit in {k_{k}_limits}`).
+///
+/// This is the `query_sweep` shape. The synthesis-time type
+/// inference (`pre_evaluate_clause`) must resolve the bare prior
+/// clause so the dependent clause's `{k}` substitution lands the
+/// *typed* value — otherwise `limit` defaulted to `String` and a
+/// downstream u64 use (`mul(limit, 2)`) failed phase-kernel
+/// synthesis with "cannot connect String output to u64 input".
+/// The existing dependent test uses the braced prior form
+/// (`{k_values}`), which masked this gap.
+#[test]
+fn dependent_bare_prior_clause_types_dependent_iter_var_numerically() {
+    let yaml = r#"
+params:
+  k_values: "1, 10"
+  k_1_limits: "100, 200"
+  k_10_limits: "1000, 2000, 3000"
+
+scenarios:
+  default:
+    - for_each: "k in k_values, limit in {k_{k}_limits}"
+      phases: [emit]
+
+phases:
+  emit:
+    adapter: stdout
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      # Downstream u64 use: if `limit` mis-typed as String, this
+      # arithmetic fails phase-kernel synthesis.
+      doubled := mul(limit, 2)
+      _used_k1 := "{k_1_limits}"
+      _used_k10 := "{k_10_limits}"
+    ops:
+      out:
+        stmt: "k={k} limit={limit} doubled={doubled}"
+"#;
+    let path = write_workload("dependent_bare", yaml);
+    let session = SessionGuard::new("dependent_bare");
+    let output = nbrs()
+        .args(["run", &format!("workload={}", path.display()), "scenario=default"])
+        .arg("--session-path")
+        .arg(&session.path)
+        .output()
+        .expect("nbrs failed to start");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(),
+        "bare-prior-clause dependent comprehension failed to synthesize \
+         (limit likely mis-typed as String):\nstdout: {stdout}\nstderr: {stderr}");
+
+    // |k=1's limits| + |k=10's limits| = 2 + 3 = 5
+    let emit_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("k=")).collect();
+    assert_eq!(emit_lines.len(), 5, "expected 5 tuples, got:\n{stdout}");
+    // The downstream u64 doubling proves numeric typing held.
+    assert!(stdout.contains("limit=100 doubled=200"), "k=1 first: {stdout}");
+    assert!(stdout.contains("limit=1000 doubled=2000"), "k=10 first: {stdout}");
+
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Multi-clause non-dependent (Cartesian product). No clause
 /// references another, so the dispatcher should produce |a| ×
 /// |b| tuples.
@@ -226,7 +291,7 @@ scenarios:
   default:
     - for_each:
         - "x in 1, 2, y in a, b"
-        - "x in 9, y in z"
+        - "x in 9, y in 'z'"
       phases: [emit]
 
 phases:

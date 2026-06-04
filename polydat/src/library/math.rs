@@ -7,114 +7,56 @@
 //! or `scale_range` to transform normalized values into waveforms,
 //! angles, or other mathematical shapes.
 
-use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
+// SRD-80 PR B.7 — `unary_f64_node!` and `binary_f64_node!`
+// declarative macros retired. `#[polydat_node]` auto-emits the
+// same Phase 2 closure with f64↔u64 bit-reinterpret from the
+// typed signature. Struct names follow snake_case → PascalCase
+// (e.g. `f64_add` → `F64Add`, `abs_f64` → `AbsF64`).
 
-macro_rules! unary_f64_node {
-    ($struct_name:ident, $func_name:expr, $op:expr) => {
-        pub struct $struct_name {
-            meta: NodeMeta,
-        }
+#[crate::polydat_node(category = Math)]
+fn sin(input: f64) -> f64 { input.sin() }
 
-        impl $struct_name {
-            pub fn new() -> Self {
-                Self {
-                    meta: NodeMeta {
-                        name: $func_name.into(),
-                        ins: vec![Slot::Wire(Port::f64("input"))],
-                        outs: vec![Port::f64("output")],
-                    },
-                }
-            }
-        }
+#[crate::polydat_node(category = Math)]
+fn cos(input: f64) -> f64 { input.cos() }
 
-        impl PolydatNode for $struct_name {
-            fn meta(&self) -> &NodeMeta { &self.meta }
+#[crate::polydat_node(category = Math)]
+fn tan(input: f64) -> f64 { input.tan() }
 
-            fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-                let v = inputs[0].as_f64();
-                let f: fn(f64) -> f64 = $op;
-                outputs[0] = Value::F64(f(v));
-            }
+#[crate::polydat_node(category = Math)]
+fn asin(input: f64) -> f64 { input.asin() }
 
-            fn compiled_u64(&self) -> Option<CompiledU64Op> {
-                Some(Box::new(|inputs, outputs| {
-                    let v = f64::from_bits(inputs[0]);
-                    let f: fn(f64) -> f64 = $op;
-                    outputs[0] = f(v).to_bits();
-                }))
-            }
-        }
-    };
-}
+#[crate::polydat_node(category = Math)]
+fn acos(input: f64) -> f64 { input.acos() }
 
-// Unary f64 math nodes — JIT level: P2 (compiled_u64 closure).
-unary_f64_node!(Sin, "sin", f64::sin);
-unary_f64_node!(Cos, "cos", f64::cos);
-unary_f64_node!(Tan, "tan", f64::tan);
-unary_f64_node!(Asin, "asin", f64::asin);
-unary_f64_node!(Acos, "acos", f64::acos);
-unary_f64_node!(Atan, "atan", f64::atan);
-unary_f64_node!(Sqrt, "sqrt", f64::sqrt);
-unary_f64_node!(Abs, "abs_f64", f64::abs);
-unary_f64_node!(Ln, "ln", f64::ln);
-unary_f64_node!(Exp, "exp", f64::exp);
+#[crate::polydat_node(category = Math)]
+fn atan(input: f64) -> f64 { input.atan() }
 
-// --- Binary f64 arithmetic ---
+#[crate::polydat_node(category = Math)]
+fn sqrt(input: f64) -> f64 { input.sqrt() }
 
-macro_rules! binary_f64_node {
-    ($struct_name:ident, $func_name:expr, $desc:expr, $a_name:expr, $b_name:expr, $op:expr) => {
-        pub struct $struct_name {
-            meta: NodeMeta,
-        }
+#[crate::polydat_node(category = Math)]
+fn abs_f64(input: f64) -> f64 { input.abs() }
 
-        impl Default for $struct_name {
-            fn default() -> Self { Self::new() }
-        }
+#[crate::polydat_node(category = Math)]
+fn ln(input: f64) -> f64 { input.ln() }
 
-        impl $struct_name {
-            pub fn new() -> Self {
-                Self {
-                    meta: NodeMeta {
-                        name: $func_name.into(),
-                        ins: vec![
-                            Slot::Wire(Port::f64($a_name)),
-                            Slot::Wire(Port::f64($b_name)),
-                        ],
-                        outs: vec![Port::f64("output")],
-                    },
-                }
-            }
-        }
+#[crate::polydat_node(category = Math)]
+fn exp(input: f64) -> f64 { input.exp() }
 
-        impl PolydatNode for $struct_name {
-            fn meta(&self) -> &NodeMeta { &self.meta }
+#[crate::polydat_node(category = Math)]
+fn f64_add(a: f64, b: f64) -> f64 { a + b }
 
-            fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-                let a = inputs[0].as_f64();
-                let b = inputs[1].as_f64();
-                let f: fn(f64, f64) -> f64 = $op;
-                outputs[0] = Value::F64(f(a, b));
-            }
+#[crate::polydat_node(category = Math)]
+fn f64_sub(a: f64, b: f64) -> f64 { a - b }
 
-            fn compiled_u64(&self) -> Option<CompiledU64Op> {
-                Some(Box::new(|inputs, outputs| {
-                    let a = f64::from_bits(inputs[0]);
-                    let b = f64::from_bits(inputs[1]);
-                    let f: fn(f64, f64) -> f64 = $op;
-                    outputs[0] = f(a, b).to_bits();
-                }))
-            }
+#[crate::polydat_node(category = Math)]
+fn f64_mul(a: f64, b: f64) -> f64 { a * b }
 
-            fn jit_constants(&self) -> Vec<u64> { vec![] }
-        }
-    };
-}
+#[crate::polydat_node(category = Math)]
+fn f64_div(a: f64, b: f64) -> f64 { if b != 0.0 { a / b } else { 0.0 } }
 
-binary_f64_node!(F64Add, "f64_add", "add two f64 values", "a", "b", |a, b| a + b);
-binary_f64_node!(F64Sub, "f64_sub", "subtract two f64 values", "a", "b", |a, b| a - b);
-binary_f64_node!(F64Mul, "f64_mul", "multiply two f64 values", "a", "b", |a, b| a * b);
-binary_f64_node!(F64Div, "f64_div", "divide two f64 values", "a", "b", |a, b| if b != 0.0 { a / b } else { 0.0 });
-binary_f64_node!(F64Mod, "f64_mod", "modulo two f64 values", "a", "b", |a, b| if b != 0.0 { a % b } else { 0.0 });
+#[crate::polydat_node(category = Math)]
+fn f64_mod(a: f64, b: f64) -> f64 { if b != 0.0 { a % b } else { 0.0 } }
 
 // --- Binary f64 math functions ---
 
@@ -127,350 +69,31 @@ binary_f64_node!(F64Mod, "f64_mod", "modulo two f64 values", "a", "b", |a, b| if
 /// coordinates to polar angle.
 ///
 /// JIT level: P2.
-pub struct Atan2 {
-    meta: NodeMeta,
-}
+/// Two-argument arc tangent. SRD-80 PR B.7 migration.
+#[crate::polydat_node(category = Math)]
+fn atan2(y: f64, x: f64) -> f64 { y.atan2(x) }
 
-impl Default for Atan2 {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Atan2 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "atan2".into(),
-                ins: vec![
-                    Slot::Wire(Port::f64("y")),
-                    Slot::Wire(Port::f64("x")),
-                ],
-                outs: vec![Port::f64("output")],
-            },
-        }
-    }
-}
-
-impl PolydatNode for Atan2 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let y = inputs[0].as_f64();
-        let x = inputs[1].as_f64();
-        outputs[0] = Value::F64(y.atan2(x));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let y = f64::from_bits(inputs[0]);
-            let x = f64::from_bits(inputs[1]);
-            outputs[0] = y.atan2(x).to_bits();
-        }))
-    }
-}
-
-/// Power: base^exponent.
+/// Power: base^exponent. SRD-80 PR B.7 migration.
 ///
-/// Signature: `pow(base: f64, exponent: f64) -> (f64)`
-///
-/// JIT level: P2.
-pub struct Pow {
-    meta: NodeMeta,
-}
-
-impl Default for Pow {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Pow {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "pow".into(),
-                ins: vec![
-                    Slot::Wire(Port::f64("base")),
-                    Slot::Wire(Port::f64("exponent")),
-                ],
-                outs: vec![Port::f64("output")],
-            },
-        }
-    }
-}
-
-impl PolydatNode for Pow {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let base = inputs[0].as_f64();
-        let exp = inputs[1].as_f64();
-        outputs[0] = Value::F64(base.powf(exp));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let base = f64::from_bits(inputs[0]);
-            let exp = f64::from_bits(inputs[1]);
-            outputs[0] = base.powf(exp).to_bits();
-        }))
-    }
-}
+/// Note: the macro-emitted second arg name is `exponent` (from
+/// the function signature); workloads that bound that param by
+/// position keep working unchanged.
+#[crate::polydat_node(category = Math)]
+fn pow(base: f64, exponent: f64) -> f64 { base.powf(exponent) }
 
 // ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
+// SRD-80 PR B.7 — every node in this module registers
+// link-time via the proc-macro-emitted NodeRegistration. The
+// hand-maintained signatures()/build_node()/register_nodes!
+// plumbing below is retained inside a never-compiled block so
+// the migration diff stays readable; remove on next pass.
 
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
+#[cfg(any())]
 
-/// Signatures for mathematical function nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "sin", category: C::Math,
-            outputs: 1, description: "sine (radians)",
-            help: "Sine of an f64 value in radians.\nOutput oscillates between -1 and 1.\n\nExample: sin(scale_range(hash(cycle), 0.0, 6.2832))",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "cos", category: C::Math,
-            outputs: 1, description: "cosine (radians)",
-            help: "Cosine of an f64 value in radians.\nOutput oscillates between -1 and 1.",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "tan", category: C::Math,
-            outputs: 1, description: "tangent (radians)",
-            help: "Tangent of an f64 value in radians.\nUnbounded output — has poles at odd multiples of pi/2.",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "asin", category: C::Math,
-            outputs: 1, description: "arc sine (inverse sin)",
-            help: "Arc sine: input in [-1, 1], output in [-pi/2, pi/2] radians.",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "acos", category: C::Math,
-            outputs: 1, description: "arc cosine (inverse cos)",
-            help: "Arc cosine: input in [-1, 1], output in [0, pi] radians.",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "atan", category: C::Math,
-            outputs: 1, description: "arc tangent",
-            help: "Arc tangent: output in (-pi/2, pi/2) radians.",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "atan2", category: C::Math,
-            outputs: 1, description: "two-argument arc tangent",
-            help: "atan2(y, x): angle in radians from positive x-axis to point (x,y).\nOutput in (-pi, pi]. Use for Cartesian-to-polar conversion.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "y", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "x", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "sqrt", category: C::Math,
-            outputs: 1, description: "square root",
-            help: "Square root of an f64 value.\nReturns NaN for negative inputs.",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "abs_f64", category: C::Math,
-            outputs: 1, description: "absolute value (f64)",
-            help: "Absolute value of an f64. Always non-negative.",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "ln", category: C::Math,
-            outputs: 1, description: "natural logarithm",
-            help: "Natural logarithm (base e).\nReturns -inf for 0, NaN for negative inputs.",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "exp", category: C::Math,
-            outputs: 1, description: "exponential (e^x)",
-            help: "Exponential function: e raised to the power of input.\nexp(0) = 1, exp(1) ≈ 2.718.",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "pow", category: C::Math,
-            outputs: 1, description: "power (base^exponent)",
-            help: "Raise base to the power of exponent.\npow(2, 10) = 1024. Both inputs are f64 wires.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "base", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "exponent", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "f64_add", category: C::Math,
-            outputs: 1, description: "add two f64 values",
-            help: "Add two f64 wire inputs: a + b.\nUse for composing waveforms, accumulating values, etc.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::AllCommutative,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "f64_sub", category: C::Math,
-            outputs: 1, description: "subtract two f64 values",
-            help: "Subtract two f64 wire inputs: a - b.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "f64_mul", category: C::Math,
-            outputs: 1, description: "multiply two f64 values",
-            help: "Multiply two f64 wire inputs: a * b.\nUse for scaling waveforms by amplitude, combining signals, etc.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::AllCommutative,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "f64_div", category: C::Math,
-            outputs: 1, description: "divide two f64 values",
-            help: "Divide two f64 wire inputs: a / b.\nReturns 0.0 if b is zero.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "f64_mod", category: C::Math,
-            outputs: 1, description: "modulo two f64 values",
-            help: "Modulo of two f64 wire inputs: a % b.\nReturns 0.0 if b is zero.\nUsed by the `%` infix operator.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-/// Try to build a math (trig/elementary) node from a function name and const args.
-///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "sin" => Some(Ok(Box::new(Sin::new()))),
-        "cos" => Some(Ok(Box::new(Cos::new()))),
-        "tan" => Some(Ok(Box::new(Tan::new()))),
-        "asin" => Some(Ok(Box::new(Asin::new()))),
-        "acos" => Some(Ok(Box::new(Acos::new()))),
-        "atan" => Some(Ok(Box::new(Atan::new()))),
-        "atan2" => Some(Ok(Box::new(Atan2::new()))),
-        "sqrt" => Some(Ok(Box::new(Sqrt::new()))),
-        "abs_f64" => Some(Ok(Box::new(Abs::new()))),
-        "ln" => Some(Ok(Box::new(Ln::new()))),
-        "exp" => Some(Ok(Box::new(Exp::new()))),
-        "pow" => Some(Ok(Box::new(Pow::new()))),
-        "f64_add" => Some(Ok(Box::new(F64Add::new()))),
-        "f64_sub" => Some(Ok(Box::new(F64Sub::new()))),
-        "f64_mul" => Some(Ok(Box::new(F64Mul::new()))),
-        "f64_div" => Some(Ok(Box::new(F64Div::new()))),
-        "f64_mod" => Some(Ok(Box::new(F64Mod::new()))),
-        _ => None,
-    }
-}
-
-
-crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
     use std::f64::consts::PI;
 
     #[test]

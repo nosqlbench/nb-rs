@@ -21,58 +21,23 @@
 
 use regex::Regex;
 
-use crate::ast::{
-    CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value,
-};
-
 // =========================================================================
 // required(input) — assert non-None, pass through
 // =========================================================================
 
 /// Assert that an input is defined (i.e. not `Value::None`).
 ///
-/// Signature: `required(input: u64) -> u64`
-///
-/// Typically applied to a workload parameter read: the compiler
-/// resolves the parameter, the value flows into `required`, and
-/// the node errors immediately if the parameter was not supplied.
-pub struct RequiredU64 {
-    meta: NodeMeta,
-    /// Name of the value being required, used in the error message
-    /// so the operator can see which parameter was undefined.
-    name: String,
-}
-
-impl RequiredU64 {
-    pub fn new(name: impl Into<String>) -> Self {
-        let name: String = name.into();
-        Self {
-            meta: NodeMeta {
-                name: "required".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_str("name", name.clone()),
-                ],
-            },
-            name,
-        }
-    }
-}
-
-impl PolydatNode for RequiredU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        if matches!(inputs[0], Value::None) {
-            panic!("required({}): value was not defined", self.name);
-        }
-        outputs[0] = inputs[0].clone();
-    }
-    /// `required` exists to ASSERT that None is unacceptable —
-    /// receiving None is the whole point of its contract. Opt
-    /// out of kernel-level Rule 1 propagation so the assertion
-    /// fires.
-    fn accepts_none_inputs(&self) -> bool { true }
+/// Signature: `required(input: u64) -> u64`. The `Option<u64>`
+/// wire shape opts the node into kernel-Rule-1 bypass (the macro
+/// auto-emits `accepts_none_inputs() -> true` when any arg is
+/// `Option<_>`); the body's `unwrap_or_else` is what actually
+/// fires the diagnostic.
+#[crate::polydat_node(category = Arithmetic)]
+fn required(
+    input: Option<u64>,
+    #[poly_default("value")] name: crate::derive_support::Const<&str>,
+) -> u64 {
+    input.unwrap_or_else(|| panic!("required({}): value was not defined", name.0))
 }
 
 // =========================================================================
@@ -81,48 +46,14 @@ impl PolydatNode for RequiredU64 {
 
 /// Return `primary` if it is defined, otherwise `default`.
 ///
-/// Signature: `this_or(primary: u64, default: u64) -> u64`
-///
-/// Lets a workload express "use this value if it was supplied,
-/// otherwise fall back to that one" without branching logic in
-/// the YAML layer. `Value::None` on the primary wire is the
-/// "undefined" sentinel.
-pub struct ThisOrU64 {
-    meta: NodeMeta,
-}
-
-impl Default for ThisOrU64 {
-    fn default() -> Self { Self::new() }
-}
-
-impl ThisOrU64 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "this_or".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("primary")),
-                    Slot::Wire(Port::u64("default")),
-                ],
-            },
-        }
-    }
-}
-
-impl PolydatNode for ThisOrU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = if matches!(inputs[0], Value::None) {
-            inputs[1].clone()
-        } else {
-            inputs[0].clone()
-        };
-    }
-    /// `this_or` is the typed coalesce equivalent of
-    /// `default_or` — consumes None as part of its fallback
-    /// semantics. Opt out of Rule 1 propagation.
-    fn accepts_none_inputs(&self) -> bool { true }
+/// Signature: `this_or(primary: Option<u64>, default: u64) -> u64`.
+/// The typed-coalesce equivalent of `default_or` — `None` on
+/// `primary` triggers the fallback. `Option<u64>` opts into
+/// None-tolerance via the macro's auto-emitted
+/// `accepts_none_inputs`.
+#[crate::polydat_node(category = Arithmetic)]
+fn this_or(primary: Option<u64>, default: u64) -> u64 {
+    primary.unwrap_or(default)
 }
 
 // =========================================================================
@@ -132,47 +63,17 @@ impl PolydatNode for ThisOrU64 {
 /// Assert that a u64 value is strictly positive (> 0).
 ///
 /// Signature: `is_positive(input: u64) -> u64`
-pub struct IsPositiveU64 {
-    meta: NodeMeta,
-    name: String,
-}
-
-impl IsPositiveU64 {
-    pub fn new(name: impl Into<String>) -> Self {
-        let name: String = name.into();
-        Self {
-            meta: NodeMeta {
-                name: "is_positive".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_str("name", name.clone()),
-                ],
-            },
-            name,
-        }
+/// Assert that a u64 value is strictly positive (> 0). SRD-80
+/// PR B.15 migration.
+#[crate::polydat_node(category = Arithmetic)]
+fn is_positive(
+    input: u64,
+    #[poly_default("value")] name: crate::derive_support::Const<&str>,
+) -> u64 {
+    if input == 0 {
+        panic!("is_positive({}): value must be > 0, got 0", name.0);
     }
-}
-
-impl PolydatNode for IsPositiveU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let v = inputs[0].as_u64();
-        if v == 0 {
-            panic!("is_positive({}): value must be > 0, got {v}", self.name);
-        }
-        outputs[0] = Value::U64(v);
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let name = self.name.clone();
-        Some(Box::new(move |inputs, outputs| {
-            let v = inputs[0];
-            if v == 0 {
-                panic!("is_positive({name}): value must be > 0, got 0");
-            }
-            outputs[0] = v;
-        }))
-    }
+    input
 }
 
 // =========================================================================
@@ -182,55 +83,18 @@ impl PolydatNode for IsPositiveU64 {
 /// Assert that a u64 value is in the inclusive range `[lo, hi]`.
 ///
 /// Signature: `in_range(input: u64, lo: u64, hi: u64) -> u64`
-pub struct InRangeU64 {
-    meta: NodeMeta,
-    lo: u64,
-    hi: u64,
-}
-
-impl InRangeU64 {
-    pub fn new(lo: u64, hi: u64) -> Self {
-        assert!(lo <= hi, "in_range: lo ({lo}) must be <= hi ({hi})");
-        Self {
-            meta: NodeMeta {
-                name: "in_range".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_u64("lo", lo),
-                    Slot::const_u64("hi", hi),
-                ],
-            },
-            lo,
-            hi,
-        }
+/// Assert that a u64 value is in the inclusive range `[lo, hi]`.
+/// SRD-80 PR B.15 migration.
+#[crate::polydat_node(category = Arithmetic)]
+fn in_range(
+    input: u64,
+    #[poly_default(0u64)] lo: crate::derive_support::Const<u64>,
+    #[poly_default(u64::MAX)] hi: crate::derive_support::Const<u64>,
+) -> u64 {
+    if input < *lo || input > *hi {
+        panic!("in_range: value {input} outside [{}, {}]", *lo, *hi);
     }
-}
-
-impl PolydatNode for InRangeU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let v = inputs[0].as_u64();
-        if v < self.lo || v > self.hi {
-            panic!(
-                "in_range: value {v} outside [{}, {}]",
-                self.lo, self.hi,
-            );
-        }
-        outputs[0] = Value::U64(v);
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let lo = self.lo;
-        let hi = self.hi;
-        Some(Box::new(move |inputs, outputs| {
-            let v = inputs[0];
-            if v < lo || v > hi {
-                panic!("in_range: value {v} outside [{lo}, {hi}]");
-            }
-            outputs[0] = v;
-        }))
-    }
-    fn jit_constants(&self) -> Vec<u64> { vec![self.lo, self.hi] }
+    input
 }
 
 // =========================================================================
@@ -238,202 +102,57 @@ impl PolydatNode for InRangeU64 {
 // =========================================================================
 
 /// Assert that a u64 value is one of an enumerated allow-list.
-///
-/// Signature: `is_one_of(input: u64, allowed...: u64) -> u64`
-///
-/// Named `is_one_of` rather than `one_of` to avoid collision with
-/// the probabilistic `one_of` node (uniform selection from a
-/// list) — this is a predicate, not a selector.
-pub struct IsOneOfU64 {
-    meta: NodeMeta,
-    allowed: Vec<u64>,
-}
-
-impl IsOneOfU64 {
-    pub fn new(allowed: Vec<u64>) -> Self {
-        assert!(!allowed.is_empty(), "is_one_of: allowed set must be non-empty");
-        let mut ins = vec![Slot::Wire(Port::u64("input"))];
-        for (idx, v) in allowed.iter().enumerate() {
-            ins.push(Slot::const_u64(format!("allowed_{idx}"), *v));
-        }
-        Self {
-            meta: NodeMeta {
-                name: "is_one_of".into(),
-                outs: vec![Port::u64("output")],
-                ins,
-            },
-            allowed,
-        }
+/// SRD-80b Phase C migration via `Const<Vec<C>>` combinator.
+/// JIT-ineligible by virtue of the variable-length allow-list
+/// (the JIT u64 buffer has no slot shape for it); the body
+/// runs on the typed-eval path.
+#[crate::polydat_node(category = Arithmetic)]
+fn is_one_of(input: u64, allowed: crate::derive_support::Const<Vec<u64>>) -> u64 {
+    if !allowed.contains(&input) {
+        panic!("is_one_of: value {input} not in allowed set {:?}", allowed.0);
     }
-}
-
-impl PolydatNode for IsOneOfU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let v = inputs[0].as_u64();
-        if !self.allowed.contains(&v) {
-            panic!(
-                "is_one_of: value {v} not in allowed set {:?}",
-                self.allowed,
-            );
-        }
-        outputs[0] = Value::U64(v);
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let allowed = self.allowed.clone();
-        Some(Box::new(move |inputs, outputs| {
-            let v = inputs[0];
-            if !allowed.contains(&v) {
-                panic!("is_one_of: value {v} not in allowed set {allowed:?}");
-            }
-            outputs[0] = v;
-        }))
-    }
-    fn jit_constants(&self) -> Vec<u64> { self.allowed.clone() }
+    input
 }
 
 // =========================================================================
 // matches(input, pattern) — assert regex match, pass through
 // =========================================================================
 
+/// Build a Regex from a pattern, panicking on invalid input.
+fn compile_matches_regex(pattern: &str) -> Regex {
+    Regex::new(pattern)
+        .unwrap_or_else(|e| panic!("matches: invalid regex {pattern:?}: {e}"))
+}
+
 /// Assert that a string value matches a regex pattern.
-///
-/// Signature: `matches(input: String, pattern: String) -> String`
-pub struct MatchesStr {
-    meta: NodeMeta,
-    re: Regex,
-    pattern: String,
-}
-
-impl MatchesStr {
-    pub fn new(pattern: &str) -> Self {
-        let re = Regex::new(pattern)
-            .unwrap_or_else(|e| panic!("matches: invalid regex {pattern:?}: {e}"));
-        Self {
-            meta: NodeMeta {
-                name: "matches".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![
-                    Slot::Wire(Port::new("input", PortType::Str)),
-                    Slot::const_str("pattern", pattern),
-                ],
-            },
-            re,
-            pattern: pattern.to_string(),
-        }
+/// SRD-80 PR B.6 migration.
+#[crate::polydat_node(category = Arithmetic)]
+fn matches(
+    input: &str,
+    pattern: crate::derive_support::Const<&str>,
+    #[poly_const(compile_matches_regex, from = pattern)]
+    re: &Regex,
+) -> String {
+    if !re.is_match(input) {
+        panic!("matches: value {input:?} does not match pattern {:?}", pattern.0);
     }
-}
-
-impl PolydatNode for MatchesStr {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let s = inputs[0].as_str();
-        if !self.re.is_match(s) {
-            panic!(
-                "matches: value {s:?} does not match pattern {:?}",
-                self.pattern,
-            );
-        }
-        outputs[0] = Value::Str(s.to_string().into());
-    }
+    input.to_string()
 }
 
 // =========================================================================
 // Registration
 // =========================================================================
 
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
+use crate::dsl::registry::FuncSig;
 
 pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
+    
     &[
-        FuncSig {
-            name: "required", category: C::Arithmetic, outputs: 1,
-            description: "assert a value is defined; pass through",
-            help: "Fails at the earliest evaluation if the input resolves to\nValue::None (undefined). Useful on workload parameters that must\nbe supplied at launch — a missing param surfaces as a clear error.\nParameters:\n  input — wire whose value must be defined\n  name  — identifier used in the error message\nExample: required({param:dataset}, \"dataset\")",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"dataset\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "this_or", category: C::Arithmetic, outputs: 1,
-            description: "return primary if defined, else default",
-            help: "Returns the primary input if it is defined (i.e. not Value::None),\notherwise returns the default. Use to layer a value explicitly:\n  concurrency := this_or({param:concurrency}, 100)\nParameters:\n  primary — preferred value; may be undefined\n  default — fallback value",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "primary", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "default", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "is_positive", category: C::Arithmetic, outputs: 1,
-            description: "assert value > 0; pass through",
-            help: "Predicate that fails if the input is zero. Use on workload\nparams like concurrency or rate where 0 is nonsensical.\nParameters:\n  input — u64 wire\n  name  — identifier used in the error message",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "in_range", category: C::Arithmetic, outputs: 1,
-            description: "assert value in [lo, hi]; pass through",
-            help: "Predicate that fails if the input is outside [lo, hi].\nUse for bounds on tunable parameters (timeouts, concurrency caps).\nParameters:\n  input — u64 wire\n  lo    — lower bound (inclusive)\n  hi    — upper bound (inclusive)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "lo", slot_type: SlotType::ConstU64, required: true, example: "1", constraint: None },
-                ParamSpec { name: "hi", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "is_one_of", category: C::Arithmetic, outputs: 1,
-            description: "assert value in allow-list; pass through",
-            help: "Predicate that fails if the input is not one of the allowed\nvalues. Variadic over the allow-list constants.\nParameters:\n  input      — u64 wire\n  allowed... — one or more u64 constants",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "allowed", slot_type: SlotType::ConstU64, required: true, example: "1", constraint: None },
-            ],
-            arity: Arity::VariadicConsts { min_consts: 1 },
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "matches", category: C::Arithmetic, outputs: 1,
-            description: "assert string matches regex; pass through",
-            help: "Predicate that fails if the input string does not match the\nregex pattern. Compiled once at construction; failed compile\n(invalid regex) is a hard error at node construction.\nParameters:\n  input   — string wire\n  pattern — regex pattern (compiled at init)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"^[a-z]+$\"",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_regex_pattern)) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `required` / `this_or` migrated to `#[polydat_node]` via the
+        // `Option<T>` combinator (SRD-80b Phase C).
+        // `is_positive` / `in_range` / `matches` already on the macro.
+        // `is_one_of` migrated to `#[polydat_node]` via the
+        // `Const<Vec<C>>` combinator (SRD-80b Phase C).
     ]
 }
 
@@ -442,42 +161,14 @@ pub(crate) fn build_node(
     _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType],
     consts: &[crate::dsl::factory::ConstArg],
 ) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "required" => {
-            let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();
-            Some(Ok(Box::new(RequiredU64::new(n))))
-        }
-        "this_or" => Some(Ok(Box::new(ThisOrU64::new()))),
-        "is_positive" => {
-            let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();
-            Some(Ok(Box::new(IsPositiveU64::new(n))))
-        }
-        "in_range" => {
-            let lo = consts.first().map(|c| c.as_u64()).unwrap_or(0);
-            let hi = consts.get(1).map(|c| c.as_u64()).unwrap_or(u64::MAX);
-            Some(Ok(Box::new(InRangeU64::new(lo, hi))))
-        }
-        "is_one_of" => {
-            let allowed: Vec<u64> = consts.iter().map(|c| c.as_u64()).collect();
-            if allowed.is_empty() {
-                return Some(Err("is_one_of: at least one allowed value required".into()));
-            }
-            Some(Ok(Box::new(IsOneOfU64::new(allowed))))
-        }
-        "matches" => {
-            let pat = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();
-            Some(Ok(Box::new(MatchesStr::new(&pat))))
-        }
-        _ => None,
-    }
+    let _ = name;
+    let _ = consts;
+    // All param-helper nodes route via proc-macro-emitted NodeRegistration.
+    None
 }
 
 /// Assembly-time constant validation for parameter-helper nodes.
 /// See SRD 15 §"Const Constraint Metadata".
-///
-/// `matches.pattern` rides on `StrParser` in its `ParamSpec`; the
-/// remaining rules — `in_range` (relational `lo ≤ hi`) and
-/// `is_one_of` (variadic emptiness) — can't be expressed per-param.
 pub(crate) fn validate_node(
     name: &str,
     consts: &[crate::dsl::factory::ConstArg],
@@ -499,21 +190,16 @@ pub(crate) fn validate_node(
     }
 }
 
-fn validate_regex_pattern(pattern: &str) -> Result<(), String> {
-    regex::Regex::new(pattern)
-        .map(|_| ())
-        .map_err(|e| format!("invalid regex '{pattern}': {e}"))
-}
-
 crate::register_nodes!(signatures, build_node, validate_node);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn required_passes_defined_value() {
-        let n = RequiredU64::new("x");
+        let n = Required::new("x".to_string());
         let mut out = [Value::None];
         n.eval(&[Value::U64(42)], &mut out);
         assert_eq!(out[0].as_u64(), 42);
@@ -522,14 +208,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "required(x): value was not defined")]
     fn required_panics_on_none() {
-        let n = RequiredU64::new("x");
+        let n = Required::new("x".to_string());
         let mut out = [Value::None];
         n.eval(&[Value::None], &mut out);
     }
 
     #[test]
     fn this_or_prefers_primary_when_defined() {
-        let n = ThisOrU64::new();
+        let n = ThisOr::new();
         let mut out = [Value::None];
         n.eval(&[Value::U64(7), Value::U64(99)], &mut out);
         assert_eq!(out[0].as_u64(), 7);
@@ -537,7 +223,7 @@ mod tests {
 
     #[test]
     fn this_or_falls_back_to_default_on_none() {
-        let n = ThisOrU64::new();
+        let n = ThisOr::new();
         let mut out = [Value::None];
         n.eval(&[Value::None, Value::U64(99)], &mut out);
         assert_eq!(out[0].as_u64(), 99);
@@ -545,7 +231,7 @@ mod tests {
 
     #[test]
     fn is_positive_passes_positive() {
-        let n = IsPositiveU64::new("rate");
+        let n = IsPositive::new("rate".to_string());
         let mut out = [Value::None];
         n.eval(&[Value::U64(1)], &mut out);
         assert_eq!(out[0].as_u64(), 1);
@@ -554,14 +240,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "is_positive(rate)")]
     fn is_positive_panics_on_zero() {
-        let n = IsPositiveU64::new("rate");
+        let n = IsPositive::new("rate".to_string());
         let mut out = [Value::None];
         n.eval(&[Value::U64(0)], &mut out);
     }
 
     #[test]
     fn in_range_passes_interior() {
-        let n = InRangeU64::new(10, 100);
+        let n = InRange::new(10, 100);
         let mut out = [Value::None];
         n.eval(&[Value::U64(50)], &mut out);
         assert_eq!(out[0].as_u64(), 50);
@@ -574,7 +260,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "outside [10, 100]")]
     fn in_range_panics_below() {
-        let n = InRangeU64::new(10, 100);
+        let n = InRange::new(10, 100);
         let mut out = [Value::None];
         n.eval(&[Value::U64(5)], &mut out);
     }
@@ -582,14 +268,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "outside [10, 100]")]
     fn in_range_panics_above() {
-        let n = InRangeU64::new(10, 100);
+        let n = InRange::new(10, 100);
         let mut out = [Value::None];
         n.eval(&[Value::U64(101)], &mut out);
     }
 
     #[test]
     fn is_one_of_passes_allowed() {
-        let n = IsOneOfU64::new(vec![1, 2, 3, 5, 8]);
+        let n = IsOneOf::new(vec![1, 2, 3, 5, 8]);
         let mut out = [Value::None];
         n.eval(&[Value::U64(5)], &mut out);
         assert_eq!(out[0].as_u64(), 5);
@@ -598,14 +284,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "not in allowed set")]
     fn is_one_of_panics_on_disallowed() {
-        let n = IsOneOfU64::new(vec![1, 2, 3]);
+        let n = IsOneOf::new(vec![1, 2, 3]);
         let mut out = [Value::None];
         n.eval(&[Value::U64(4)], &mut out);
     }
 
     #[test]
     fn matches_passes_matching_string() {
-        let n = MatchesStr::new(r"^\w+@\w+\.\w+$");
+        let n = Matches::new(r"^\w+@\w+\.\w+$".to_string());
         let mut out = [Value::None];
         n.eval(&[Value::Str("jshook@example.com".into())], &mut out);
         assert_eq!(out[0].as_str(), "jshook@example.com");
@@ -614,7 +300,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "does not match pattern")]
     fn matches_panics_on_mismatch() {
-        let n = MatchesStr::new(r"^\d+$");
+        let n = Matches::new(r"^\d+$".to_string());
         let mut out = [Value::None];
         n.eval(&[Value::Str("abc".into())], &mut out);
     }

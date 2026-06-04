@@ -144,6 +144,13 @@ impl HasPolydatMatter for WorkloadPhase {
         if by_bindings == PolydatMatter::Definitions {
             return PolydatMatter::Definitions;
         }
+        // Phase-level `metrics:` synthesise `volatile __metric_<name>
+        // := <value>` (plus the injected `phase_start` extern) onto
+        // the phase kernel — definitions by construction, so the
+        // phase needs its own scope kernel even with no `bindings:`.
+        if !self.metrics.is_empty() {
+            return PolydatMatter::Definitions;
+        }
         // `for_each:` clauses always bind iteration variables.
         if self.for_each.is_some() {
             return PolydatMatter::Definitions;
@@ -313,7 +320,7 @@ mod tests {
             adapter: None, errors: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![],
+            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::PolydatSource("k := 5".into()),
             poll: None,
         };
@@ -328,7 +335,30 @@ mod tests {
             ops: vec![],
             for_each: Some("k in 1,2,3".into()),
             loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![],
+            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
+            bindings: BindingsDef::default(),
+            poll: None,
+        };
+        assert_eq!(phase.polydat_matter(), PolydatMatter::Definitions);
+    }
+
+    #[test]
+    fn workload_phase_with_metrics_is_definitions() {
+        // A phase-level `metrics:` block synthesises
+        // `volatile __metric_<name> := <value>` (+ the injected
+        // `phase_start` extern) onto the phase kernel, so the phase
+        // needs its own scope kernel even with no `bindings:`.
+        let mut metrics = std::collections::HashMap::new();
+        metrics.insert("time_to_index".to_string(), crate::model::MetricSpec {
+            value: "current_epoch_millis() - phase_start".into(),
+            family: None, kind: None, unit: None, format: None,
+        });
+        let phase = WorkloadPhase {
+            cycles: None, concurrency: None, rate: None,
+            adapter: None, errors: None, tags: None,
+            ops: vec![], for_each: None,
+            loop_scope: None, iter_scope: None,
+            checkpoint: None, status_metrics: vec![], metrics,
             bindings: BindingsDef::default(),
             poll: None,
         };
@@ -342,7 +372,7 @@ mod tests {
             adapter: None, errors: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![],
+            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
         };
@@ -357,7 +387,7 @@ mod tests {
             adapter: None, errors: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![],
+            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
         };

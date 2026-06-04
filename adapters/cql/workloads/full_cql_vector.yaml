@@ -219,9 +219,7 @@ scenarios:
             - teardown
             - schema
             - rampup
-            - ensure_flushed
-            - jolokia_compact
-            - jolokia_await_compaction
+            - finalize_index
             - for: "k in {k_values}, limit in {k_{k}_limits}"
               phases:
                 - ann_query
@@ -249,9 +247,7 @@ scenarios:
         - teardown
         - schema
         - fknn_rampup_data
-        - ensure_flushed
-        - jolokia_compact
-        - jolokia_await_compaction
+        - finalize_index
         - for: "k in {k_values}, limit in {k_{k}_limits}"
           phases:
             - pvs_query
@@ -341,12 +337,12 @@ phases:
         # high (100000) so Cassandra's size-tier compactor
         # never triggers spontaneous compaction during the
         # benchmark — the test owns compaction timing
-        # explicitly via `ensure_compacted` (SRD-75) which
-        # fires `forceKeyspaceCompaction` and polls for
-        # `sstables == 1`. Without this, background
-        # compactions could run mid-rampup and shift the
-        # workload's measured throughput / recall metrics
-        # in non-reproducible ways.
+        # explicitly via the `finalize_index` phase, which
+        # fires `forceKeyspaceCompaction` and polls
+        # `system_views.sstable_tasks` until idle. Without
+        # this, background compactions could run mid-rampup
+        # and shift the workload's measured throughput /
+        # recall metrics in non-reproducible ways.
 
       create_vector_index:
         # Every SAI vector-index build knob is emitted here. Values
@@ -392,7 +388,7 @@ phases:
   #
   # Boost Cassandra's compaction parallelism + throughput at
   # session start so the per-cell compactions kicked off by
-  # `ensure_compacted` / `jolokia_compact` aren't artificially
+  # `finalize_index` aren't artificially
   # throttled by the per-node defaults (typically
   # `CompactionThroughputMbPerSec = 64` / `ConcurrentCompactors
   # = 2`, sized for steady-state production not for the
@@ -436,6 +432,13 @@ phases:
            "mbean":"org.apache.cassandra.db:type=StorageService",
            "attribute":"CompactionThroughputMbPerSec",
            "value":0}
+        body-json:
+          type: write
+          mbean: "org.apache.cassandra.db:type=StorageService"
+          stuff: [
+            "sldkfjsdf",
+            "{23l4kj3}"
+          ]
         request_timeout_ms: 10000
         verify:
           - field: status
@@ -474,38 +477,74 @@ phases:
       drop_table:
         raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
 
-  # Trigger a memtable flush for {keyspace} via the Jolokia
-  # JMX/HTTP bridge. Cassandra's `is_building=true → false`
-  # signal (used by `await_index`) fires before the data has
-  # been pushed to disk; until a flush happens, the SAI index
-  # lives entirely in the memtable and `sai_sstable_indexes`
-  # returns zero rows. Running this between rampup and the
-  # query phases guarantees there's at least one on-disk
-  # SSTable for the SAI index to anchor on, so the subsequent
-  # `await_compaction` poll on `count == 1` actually sees the
-  # state it's waiting for.
+  # ── Index finalization (one phase) ───────────────────────────
   #
-  # MBean: org.apache.cassandra.db:type=StorageService
-  # Operation:
-  #   forceKeyspaceFlush(String keyspaceName, String[] tableNames)
+  # Collapses the former `ensure_flushed` + `jolokia_compact` +
+  # `jolokia_await_compaction` (and the SRD-75 `ensure_compacted`)
+  # into a SINGLE phase that drives a write-data table to its
+  # steady-state, fully-compacted, on-disk form before the query
+  # phases measure recall. Applied to write-data scenarios only
+  # (`test_oracles`, `test_fknn`, and the sweep) — never to the
+  # query-only oracle scenario.
   #
-  # This Cassandra build requires the two-arg signature
-  # (`String, String[]`); the GET-URL form can't express the
-  # array argument cleanly, so we POST a JSON exec envelope
-  # with an empty `[]` tables list (= flush the entire
-  # keyspace).
+  # A stanza runs every op once, in declaration order (cycles: 1),
+  # so the sequence is exactly:
   #
-  # Jolokia ALWAYS returns HTTP 200 — the JMX call's outcome
-  # lives in the response body's `status` field. The verify
-  # block below asserts `status == 200` so a JMX-side error
-  # (mistyped keyspace, missing MBean, permission failure)
-  # surfaces as a phase error instead of being silently
-  # swallowed.
-  ensure_flushed:
-    adapter: http
+  #   flush          → roll memtables to disk (jolokia, synchronous)
+  #   read_sstables  → read LiveSSTableCount; capture `sstables`
+  #   trigger_compact→ DAEMON, `if: sstables > 1`; long-poll
+  #                    forceKeyspaceCompaction (holds the JMX socket
+  #                    for the whole compaction)
+  #   poll_progress  → CQL `system_views.sstable_tasks`, OP-LEVEL
+  #                    `poll: await_empty`; emits live progress
+  #                    gauges + memo until the table is idle
+  #
+  # Why op-level poll (not a phase-level `poll:`): a phase poll
+  # re-runs ALL ops every tick — it would re-fire `flush` and the
+  # compaction trigger on every iteration. An op-level poll loops
+  # ONLY `poll_progress`, so flush + read + trigger run exactly
+  # once each (the correct logical flow) while only the cheap CQL
+  # read repeats.
+  #
+  # `sstables` is the one cross-op wire (written by `read_sstables`,
+  # read by `trigger_compact`'s `if:`), so it is declared `shared`
+  # on the phase scope here; `read_sstables` references it (via its
+  # `table_live_sstables` metric) so its capture write attaches to
+  # the shared cell, and `trigger_compact`'s `if:` reads it back.
+  #
+  # Phase-level metric `time_to_index` = wall-clock duration of the
+  # whole phase (flush → compaction-complete), via the
+  # executor-injected `phase_start` origin (epoch millis). No
+  # dedicated clock node: `current_epoch_millis()` is a single
+  # volatile read and `phase_start` is plain injected data.
+  finalize_index:
+    # CQL is the phase default — `poll_progress` reads
+    # `system_views.sstable_tasks` over the native protocol. The
+    # jolokia ops (`flush`, `read_sstables`, `trigger_compact`)
+    # override to `adapter: http` per-op.
+    adapter: cql
     concurrency: 1
     cycles: 1
+    bindings: |
+      # Cross-op capture cell: `read_sstables` writes it, the
+      # `trigger_compact` daemon's `if:` reads it. Declared `shared`
+      # so the write-through propagates across ops on the phase
+      # scope (SRD-75 §"Captures are phase-scope shared wires").
+      shared sstables := 0
+      # Wall-clock read for the phase-duration metric. Declared
+      # `volatile` so (a) it re-reads the clock on each pull and
+      # (b) it explicitly acknowledges the non-deterministic node,
+      # keeping the phase kernel clean under `--strict`. The
+      # executor injects `phase_start` (epoch millis at phase start)
+      # on the completion-time metric pull.
+      volatile now_ms := current_epoch_millis()
+    metrics:
+      # Whole-phase wall-clock duration in millis.
+      time_to_index: { kind: gauge, value: "now_ms - phase_start" }
     ops:
+      # 1. Flush memtables to disk (synchronous JMX exec). Until a
+      #    flush happens the SAI index lives only in the memtable,
+      #    so there is nothing on disk to compact.
       flush:
         adapter: http
         uri: "http://{host}:8778/jolokia/"
@@ -515,15 +554,14 @@ phases:
            "mbean":"org.apache.cassandra.db:type=StorageService",
            "operation":"forceKeyspaceFlush(java.lang.String,[Ljava.lang.String;)",
            "arguments":["{keyspace}",[]]}
-        # `forceKeyspaceFlush` is synchronous — it blocks until
-        # every CFS in the keyspace has rolled its memtable to
-        # disk. On a freshly-rampup'd table with 1M rows that
-        # can take 30-60s while the SAI index segments build
-        # alongside; the HTTP client's 30s default trips
-        # before the JMX call returns. A 10-minute budget
-        # covers any realistic flush time without sacrificing
-        # the failure signal for genuine cluster hangs.
+        # `forceKeyspaceFlush` blocks until every CFS has rolled its
+        # memtable; on a 1M-row table that can take 30-60s while SAI
+        # segments build. 10-minute budget covers it without masking
+        # a genuine hang.
         request_timeout_ms: 600000
+        # Jolokia always returns HTTP 200; the JMX outcome is in the
+        # body's `status` field. Assert it so a JMX-side error fails
+        # the phase instead of being swallowed.
         verify:
           - field: status
             eq: "200"
@@ -532,36 +570,42 @@ phases:
           before: "flushing keyspace {keyspace}"
           after:  "flushed keyspace {keyspace}"
 
-  # Trigger a major compaction for {keyspace}.{table} via
-  # Jolokia. After a flush, multiple SSTables typically exist
-  # (one per flushed memtable + any prior segments). The
-  # compaction merges them into a single SSTable, which is
-  # the steady-state condition `await_compaction` polls for.
-  #
-  # MBean: org.apache.cassandra.db:type=StorageService
-  # Operation:
-  #   forceKeyspaceCompaction(boolean splitOutput,
-  #                           String keyspaceName,
-  #                           String... tableNames)
-  # `splitOutput=false` keeps the output as a single SSTable
-  # (the whole point of running this).
-  #
-  # `forceKeyspaceCompaction` is SYNCHRONOUS — the JMX call
-  # blocks until the compaction completes. For a 1M-vector
-  # table the call can take 20-30 minutes; `timeout_ms` is
-  # set high enough to cover that without tripping the
-  # adapter's default 30-second client timeout.
-  #
-  # Same Jolokia 200-in-body assertion as `ensure_flushed` —
-  # don't fire and forget. The verify block ensures a JMX
-  # failure (after the long wait) still fails the phase.
-  jolokia_compact:
-    adapter: http
-    concurrency: 1
-    cycles: 1
-    ops:
-      compact:
+      # 2. Read the table's live SSTable count via the per-table
+      #    metric MBean. Captures `sstables` (gates the compaction)
+      #    and emits it as a gauge — the metric reference is also
+      #    what attaches the capture write to the shared cell.
+      read_sstables:
         adapter: http
+        uri: "http://{host}:8778/jolokia/read/org.apache.cassandra.metrics:type=Table,keyspace={keyspace},scope={table},name=LiveSSTableCount/Value"
+        method: GET
+        request_timeout_ms: 10000
+        verify:
+          - field: status
+            eq: "200"
+        strict: true
+        capture:
+          # Jolokia wraps the attribute value in `{value: N, status: 200}`.
+          sstables: "/value"
+        metrics:
+          table_live_sstables: { kind: gauge, value: sstables }
+        memo:
+          after: "{keyspace}.{table}: {sstables} live sstable(s) before compaction"
+
+      # 3. Trigger a major compaction — but only when there is more
+      #    than one SSTable to merge. Runs as a DAEMON: it dispatches
+      #    at this op-walk position (after read_sstables completes),
+      #    its `if: sstables > 1` reads the just-captured count, and
+      #    it holds the synchronous JMX call open for the entire
+      #    compaction (minutes to hours). The daemon stays in scope
+      #    of the phase so a genuine dispatch failure (connection
+      #    refused, Jolokia 5xx) bubbles up via daemon_errors_total +
+      #    stop_reason; it does not gate phase exit — `poll_progress`
+      #    does. NO `on_timeout: accept`: the socket is held for the
+      #    duration (the user wants the held call, not fire-and-cancel).
+      trigger_compact:
+        adapter: http
+        daemon: true
+        if: "sstables > 1"
         uri: "http://{host}:8778/jolokia/"
         method: POST
         body: |
@@ -569,6 +613,8 @@ phases:
            "mbean":"org.apache.cassandra.db:type=StorageService",
            "operation":"forceKeyspaceCompaction(boolean,java.lang.String,[Ljava.lang.String;)",
            "arguments":[false,"{keyspace}",["{table}"]]}
+        # Held open for the whole compaction. `splitOutput=false`
+        # merges to a single SSTable.
         request_timeout_ms: 3600000
         verify:
           - field: status
@@ -578,179 +624,27 @@ phases:
           before: "compacting {keyspace}.{table}"
           after:  "compacted {keyspace}.{table}"
 
-  # Poll Jolokia until Cassandra's CompactionManager reports
-  # no running compactions. The state lives on the JMX
-  # ATTRIBUTE `Compactions` (read-only list of currently-
-  # active compaction tasks), NOT an op like `getCompactions`
-  # which this Cassandra build doesn't expose. Jolokia
-  # wraps the attribute value in `{value: [...], status: 200,
-  # ...}`, so the poll uses `json_path: /value` to drill into
-  # the array and `await_empty` semantics (default
-  # `min_rows=0, max_rows=0`) to wait until the list is
-  # empty.
-  #
-  # Each poll iteration is a short HTTP call — the *loop*
-  # is the long-running step. If a new compaction kicks off
-  # mid-poll (size-tier triggered by an earlier compaction's
-  # output, or a SAI side-effect of the base-table compact),
-  # the array becomes non-empty again and the loop keeps
-  # waiting. `request_timeout_ms: 10000` caps a single HTTP
-  # call (slow JMX, GC pause) so we fail fast and resume on
-  # the next interval; `poll.timeout_ms` is the overall
-  # loop deadline.
-  #
-  # Same `status == 200` verify as the trigger phases so a
-  # JMX-side failure surfaces as a phase error instead of
-  # being silently swallowed.
-  jolokia_await_compaction:
-    adapter: http
-    concurrency: 1
-    ops:
-      compactions_running:
-        adapter: http
-        memo:
-          before: "awaiting compaction on {keyspace}.{table}"
-          after: "compacted {keyspace}.{table}"
-        uri: "http://{host}:8778/jolokia/read/org.apache.cassandra.db:type=CompactionManager/Compactions"
-        method: GET
-        request_timeout_ms: 10000
-        verify:
-          - field: status
-            eq: "200"
-        strict: true
-        poll:
-          mode: await_empty
-          interval_ms: 5000
-          timeout_ms: 1800000
-          max_error_retries: 3
-          json_path: "/value"
-          metric_name: jolokia_compaction_wait_time_s
-
-  # SRD-75 phase-poll: the synchronizer pattern.
-  #
-  # Replaces `jolokia_compact + jolokia_await_compaction` with a
-  # single phase whose cycle execution is wrapped in a wall-clock
-  # loop until the table reaches its target state:
-  #
-  #   sstables == 1 && active_for_cf == 0 && pending_for_cf == 0
-  #
-  # Each iteration:
-  #   1. `read_table_state` runs a Jolokia bulk-POST that returns
-  #      three values from three JMX MBeans in one HTTP round-trip
-  #      (LiveSSTableCount, the running-compactions array,
-  #      PendingTasksByTableName drilled to {keyspace}/{table}).
-  #      The `capture:` block harvests each value through a
-  #      JSON-Pointer path; the `:count` suffix on the
-  #      Compactions array reduces it to its length so the
-  #      predicate can compare to 0.
-  #   2. `trigger_compact` fires `forceKeyspaceCompaction(false,
-  #      {keyspace}, [{table}])` ONCE at phase init as a
-  #      DAEMON op (SRD-79). The JMX call is synchronous on
-  #      Cassandra's side — the HTTP response is held until
-  #      compaction completes, which is minutes to hours for
-  #      a freshly-rampup'd SAI-indexed table. Running it as
-  #      a daemon means the fiber stays in scope of the phase
-  #      so its failures bubble up, but doesn't gate phase
-  #      exit: the phase exits when read_table_state's
-  #      predicate flips (sstables == 1 && idle), at which
-  #      point the daemon is sent a stop signal and its
-  #      in-flight reqwest future drops cleanly. The
-  #      cluster-side compaction continues to completion
-  #      regardless of whether the HTTP client is still
-  #      listening — that's the property that makes
-  #      trigger-and-cancel correct.
-  #
-  #      Jolokia ops do NOT use `on_timeout: accept` —
-  #      that modifier turns a request timeout into a benign
-  #      empty-body success, which would mask a real cluster
-  #      stall and leave the polling layer staring at stale
-  #      captures from the prior iteration. The polling
-  #      layer's `max_error_retries` budget absorbs transient
-  #      blips on read_table_state; daemon errors on
-  #      trigger_compact surface via daemon_errors_total +
-  #      stop_reason and fail the phase fast.
-  #
-  # After `read_compaction_progress`'s `metrics:` block, three
-  # gauges flow into the metric store per cycle:
-  #   compaction_completion_pct
-  #   compaction_progress_bytes
-  #   compaction_total_bytes
-  # Labels = the phase's scope coords (host, keyspace, table,
-  # plus every sweep iter-var). The synthesizer phase produces
-  # a continuous per-cell record of how compaction landed,
-  # with sub-cycle resolution on completion ratio.
-  ensure_compacted:
-    # CQL is the phase default — the polling read uses
-    # `SELECT FROM system_views.sstable_tasks` which routes
-    # through the native protocol coordinator, NOT through
-    # the JMX surface that the trigger holds. `trigger_compact`
-    # overrides back to `adapter: http` per-op so the JMX
-    # exec still goes through Jolokia.
-    adapter: cql
-    concurrency: 1
-    cycles: 1
-    bindings: |
-      # Forwarding bindings let the workload-init validator see
-      # the names referenced in metrics + memo (the validator's
-      # allow-list is bindings + params + iter-vars; raw
-      # captures are visible at runtime but invisible at
-      # init-time). Each forwarded wire here is also referenced
-      # by a metric below so the closure-binding economy keeps
-      # it allocated on the per-op kernel.
-      #
-      # `pct` is the percent form of the completion ratio.
-      # Coerced via if(active_compactions > 0, ..., 0.0) so
-      # the gauge + memo stay numeric when no compaction is
-      # active (capture is None on the empty-rows case).
-      pct            := if(active_compactions > 0, completion_ratio * 100.0, 0.0)
-      pending_tasks  := active_compactions
-      progress_bytes := progress
-      total_bytes    := total
-    poll:
-      # Predicate: no rows in sstable_tasks for this table
-      # of kind 'compaction' = the work is done. We dropped
-      # the prior `(sstables == 1) & (idle)` predicate — its
-      # `sstables == 1` clause was a redundant assurance that
-      # major compaction had merged down to one SSTable, but
-      # `active_compactions == 0` already implies that
-      # invariant for any cell where the daemon trigger fired
-      # successfully.
-      #
-      # Race acknowledgement: between the daemon dispatching
-      # the trigger and Cassandra's CompactionExecutor
-      # registering the task in `sstable_tasks`, our first
-      # poll iteration can see `active_compactions == 0`
-      # for the wrong reason ("not started yet"). For
-      # production cells (millions of rows, minutes-to-hours
-      # of compaction) this race is benign — the task
-      # registers within seconds, well inside the 5s
-      # interval. For already-compacted cells the early
-      # exit IS correct (no work needed). The sticky-bit
-      # `saw_any_compaction` predicate variant is parked
-      # for cells where confirmation matters.
-      until: "active_compactions == 0"
-      interval_ms: 5000
-      timeout_ms: 14400000
-      max_error_retries: 5
-      metric_name: ensure_compacted_wait_time_s
-      # SRD-75 `on_timeout: abort` — same rationale as
-      # before: a stuck compaction invalidates every
-      # downstream query phase, so we trip the global stop
-      # signal and unwind the whole scenario.
-      on_timeout: abort
-    ops:
-      read_compaction_progress:
-        # CQL virtual-table read. `system_views.sstable_tasks`
-        # exposes the live compaction state from the
-        # coordinator's perspective — independent of the JMX
-        # MBean surface the trigger daemon is blocking. One
-        # row per active compaction task; `kind` discriminates
-        # `compaction` from `validation`, `index_build`, etc.
-        #
-        # ALLOW FILTERING because the virtual table doesn't
-        # partition on `(keyspace_name, table_name, kind)`.
-        # The cost is negligible — virtual tables produce
-        # rows on-demand from in-memory state.
+      # 4. Poll compaction progress over the native protocol until
+      #    `system_views.sstable_tasks` reports no compaction task
+      #    for this table (`await_empty`). One row per active task;
+      #    the op-level poll loops ONLY this read. Emits live
+      #    completion / byte gauges + a per-iteration memo.
+      poll_progress:
+        adapter: cql
+        bindings: |
+          # Capture targets are external-write ports on this op's
+          # kernel: the `capture:` block writes them via ctx.wires,
+          # and the `metrics:` / `memo:` blocks read them in the same
+          # cycle. Declaring them here (rather than relying on a
+          # phase-level poll's shared-cell synthesis) keeps the
+          # progress wires same-op — finalize_index uses an op-level
+          # poll, so there is no phase-poll capture synthesis.
+          # `completion_ratio` is f64 (the DB reports a 0..1 ratio);
+          # the byte counters are u64.
+          extern active_compactions: u64 = 0
+          extern completion_ratio:   f64 = 0.0
+          extern progress:           u64 = 0
+          extern total:              u64 = 0
         raw: |
           SELECT completion_ratio, progress, total
             FROM system_views.sstable_tasks
@@ -759,127 +653,26 @@ phases:
              AND kind         = 'compaction'
           ALLOW FILTERING
         capture:
-          # Row count of the result body's root array.
-          # `count_of_subtree` returns array length for an
-          # array; with no active task the body is `[]` and
-          # active_compactions = 0.
+          # `:count` reduces the result array to its length so the
+          # poll's emptiness check + the predicate compare to 0.
           active_compactions: ":count"
-          # First active task's progress columns. Multiple
-          # concurrent compactions on the same table would
-          # produce additional rows we ignore for telemetry
-          # (the predicate still gates on count); typically
-          # one row at a time for a forced major.
           completion_ratio:   "/0/completion_ratio"
           progress:           "/0/progress"
           total:              "/0/total"
-        # Per-poll-iteration memo. Lands in the activity's
-        # memo ArcSwap so the operator-visible status line
-        # carries the live completion ratio + byte counters.
-        # `after:` runs once the read returns + captures
-        # land — the values reflect the JUST-OBSERVED state.
+        poll:
+          mode: await_empty
+          interval_ms: 5000
+          timeout_ms: 14400000
+          max_error_retries: 5
+          metric_name: compaction_wait_time_s
         memo:
-          # `active_compactions` is the count of in-flight
-          # compaction tasks for this table — the progress
-          # columns (pct / progress / total) describe only
-          # the FIRST one (`/0/...`). When more than one is
-          # in flight (e.g. base-table compaction + an SAI
-          # index compaction concurrently), the memo surfaces
-          # the count so the operator knows the progress
-          # number isn't telling the whole story.
-          after: "compacting {keyspace}.{table}: {pct}% complete, {progress_bytes}/{total_bytes} bytes ({pending_tasks} task(s) in flight)"
-        # Synthetic gauges over the captured progress columns
-        # via their forwarding bindings. Labels = phase scope
-        # coords (host, keyspace, table, sweep iter-vars).
-        # Each gauge ALSO anchors its wire into the per-op
-        # kernel so the memo template above can read it via
-        # `ctx.wires` — the kernel's closure-binding economy
-        # DCEs unreferenced bindings.
+          after: "compacting {keyspace}.{table}: ratio {completion_ratio}, {progress}/{total} bytes ({active_compactions} task(s) in flight)"
         metrics:
-          compaction_completion_pct:  { type: gauge, value: pct }
-          compaction_progress_bytes:  { type: gauge, value: progress_bytes }
-          compaction_total_bytes:     { type: gauge, value: total_bytes }
-          compaction_pending_tasks:   { type: gauge, value: pending_tasks }
-        # Per-read timeout. CQL coordinator responses are
-        # fast (single-row virtual table) so the budget is
-        # mostly a safety net for cluster-side stalls.
+          compaction_completion_ratio: { kind: gauge, value: completion_ratio }
+          compaction_progress_bytes:   { kind: gauge, value: progress }
+          compaction_total_bytes:      { kind: gauge, value: total }
+          compaction_pending_tasks:    { kind: gauge, value: active_compactions }
         request_timeout_ms: 60000
-      trigger_compact:
-        # Per-op adapter override: the phase default is `cql`
-        # (for the polling `read_compaction_progress` via
-        # `system_views.sstable_tasks`), but the trigger is a
-        # JMX exec that needs the http/jolokia path. Both
-        # ops live in the same phase; per-op `adapter:`
-        # routes each to its right driver.
-        adapter: http
-        # Fire-once daemon op (SRD-79) using the dispatch-
-        # confirmation pattern.
-        #
-        # Cassandra has no async compaction MBean — every
-        # variant of `forceKeyspaceCompaction` /
-        # `forceUserDefinedCompaction` blocks the HTTP
-        # response until the compaction itself completes (the
-        # `*Async` suffix appears on `repairAsync` and
-        # `bulkLoadAsync`, but no `compactAsync` exists; see
-        # StorageServiceMBean.java in apache/cassandra).
-        # Holding an HTTP socket open for the minutes-to-
-        # hours of a SAI-index compaction is unworkable: it
-        # ties up a Jolokia thread, holds JMX state, and
-        # blocks our daemon's reqwest future for the entire
-        # compaction.
-        #
-        # Resolution: combine `daemon: true` with a 5s
-        # `request_timeout_ms` and `on_timeout: accept`. The
-        # daemon fires the JMX call; reqwest's request
-        # timeout fires after 5s; `on_timeout: accept`
-        # translates that timeout into `Ok(body=None)`; the
-        # daemon returns `DaemonExit::Completed` cleanly.
-        # Critically, Cassandra's compaction work continues
-        # server-side regardless of whether the HTTP client
-        # is still listening — closing the socket doesn't
-        # interrupt the JMX thread. `read_table_state` polls
-        # the now-progressing compaction's MBean attributes
-        # until the predicate flips. The 5s timeout IS the
-        # dispatch-confirmation signal.
-        #
-        # Why daemon rather than a plain cycle-pool op: the
-        # daemon stays in scope of the phase for the
-        # duration. Genuine pre-dispatch failures (connection
-        # refused, Jolokia 5xx) surface as
-        # `DaemonExit::Errored` → `daemon_errors_total` +
-        # `stop_reason`, failing the phase fast. A cycle-pool
-        # op with the same shape would either block the
-        # cycle-pool (defeating the trigger-and-observe
-        # pattern) or get re-dispatched on every poll
-        # iteration.
-        daemon: true
-        request_timeout_ms: 5000
-        on_timeout: accept
-        # Default `daemon_cancel_grace_ms` (5s) is irrelevant
-        # here in practice — the daemon completes naturally
-        # via the accepted timeout long before the phase
-        # exits, so the cancel path isn't exercised. The
-        # field is still available if the workload-author
-        # wants to override pool defaults for a different
-        # daemon op.
-        uri: "http://{host}:8778/jolokia/"
-        method: POST
-        body: |
-          {"type":"exec",
-           "mbean":"org.apache.cassandra.db:type=StorageService",
-           "operation":"forceKeyspaceCompaction(boolean,java.lang.String,[Ljava.lang.String;)",
-           "arguments":[false,"{keyspace}",["{table}"]]}
-        # No `if:` — the daemon fires exactly once at phase
-        # init. The previous if-guard
-        # `(sstables > 1 & active == 0 & pending == 0)` was
-        # there to debounce repeated triggers across poll
-        # iterations; daemon semantics make that moot.
-        #
-        # No `verify` / `strict` here — the daemon's success
-        # is judged by the read_table_state predicate, not by
-        # the trigger's response code. With `on_timeout:
-        # accept` the body will frequently be None (we
-        # accepted the dispatch-confirmation timeout), and a
-        # verify clause would fail on the absent body.
 
   rampup:
     concurrency: "{concurrency}"

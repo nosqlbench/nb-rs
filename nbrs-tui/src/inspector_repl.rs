@@ -467,6 +467,8 @@ impl ReplApp {
     ///    last token) → complete a label key.
     /// 5. `metric <family>{…,k=<partial-value>` → complete a
     ///    value for that key in instances matching the family.
+    /// 6. `readout <prefix>` → complete the readout name from the
+    ///    built-in registry.
     fn autocomplete(&mut self) {
         let input = self.input.clone();
         // Only-first-token case (existing behavior).
@@ -502,6 +504,42 @@ impl ReplApp {
         if let Some(rest) = input.strip_prefix("metric ") {
             self.complete_metric_arg(rest);
             return;
+        }
+        // `readout <name>` — complete the readout name against the
+        // built-in registry (the same set `render_readout` validates
+        // against server-side).
+        if let Some(rest) = input.strip_prefix("readout ") {
+            self.complete_readout_arg(rest);
+            return;
+        }
+    }
+
+    /// Tab in `readout <prefix>` argument position: complete the
+    /// readout name from the built-in registry
+    /// (`nbrs_activity::readouts::Registry::all_names()`) — the
+    /// authoritative set the server's `render_readout` accepts. The
+    /// command takes a single name argument, so once the cursor is
+    /// past it (whitespace in `prefix`) there's nothing to complete.
+    fn complete_readout_arg(&mut self, prefix: &str) {
+        if prefix.contains(char::is_whitespace) {
+            return;
+        }
+        let matches = readout_name_candidates(prefix);
+        match matches.as_slice() {
+            [] => self.note_no_completion(prefix),
+            [single] => self.set_input(format!("readout {single}")),
+            many => {
+                let names: Vec<String> = many.iter().map(|s| s.to_string()).collect();
+                let lcp = longest_common_prefix(&names);
+                if lcp.len() > prefix.len() {
+                    self.set_input(format!("readout {lcp}"));
+                }
+                self.scrollback.push(Line::from(Span::styled(
+                    names.join("  "),
+                    Style::default().fg(Color::DarkGray),
+                )));
+                self.trim_scrollback();
+            }
         }
     }
 
@@ -1144,6 +1182,18 @@ impl ReplApp {
     }
 }
 
+/// Built-in readout names matching `prefix`, for `readout <name>`
+/// tab-completion. Pure helper over the authoritative registry
+/// (`nbrs_activity::readouts::Registry::all_names()`) so it's
+/// unit-testable without constructing a `ReplApp`.
+fn readout_name_candidates(prefix: &str) -> Vec<&'static str> {
+    nbrs_activity::readouts::Registry::all_names()
+        .iter()
+        .copied()
+        .filter(|n| n.starts_with(prefix))
+        .collect()
+}
+
 fn longest_common_prefix(strs: &[String]) -> String {
     if strs.is_empty() { return String::new(); }
     let mut prefix: Vec<u8> = strs[0].as_bytes().to_vec();
@@ -1192,6 +1242,21 @@ mod tests {
         let (family, pairs) = split_metric_row("ops{phase=load}").unwrap();
         assert_eq!(family, "ops");
         assert_eq!(pairs, vec![("phase".to_string(), "load".to_string())]);
+    }
+
+    #[test]
+    fn readout_name_candidates_filters_by_prefix() {
+        // Unique prefix.
+        assert_eq!(readout_name_candidates("error_"), vec!["error_readout"]);
+        // Ambiguous prefix → all matches (drives the LCP path).
+        assert_eq!(
+            readout_name_candidates("phase_st"),
+            vec!["phase_starting", "phase_status"],
+        );
+        // No match.
+        assert!(readout_name_candidates("zzz").is_empty());
+        // Wired to the real registry — a known name is in the full set.
+        assert!(readout_name_candidates("").contains(&"phase_outcome"));
     }
 
     #[test]

@@ -5,8 +5,8 @@
 //! from. See SRD-63 §2.
 //!
 //! Subject-kind validation is keyed off the firing
-//! [`Event`](super::Event) (via
-//! [`Event::subject_kind`](super::Event::subject_kind)) —
+//! [`EventType`](crate::lifecycle::EventType) (via
+//! [`EventType::subject_kind`](crate::lifecycle::EventType::subject_kind)) —
 //! one source of truth, no parallel `ctx.subject_kind()`
 //! that could drift. Builtins declare which kinds they
 //! accept via [`Readout::accepts`](super::Readout::accepts);
@@ -23,43 +23,7 @@
 //! empty so a context impl only fills the slots its kind
 //! actually owns.
 
-use super::Event;
-
-/// What kind of subject a context (and a render) is
-/// scoped to. Determined by the firing event and the
-/// surface that built the context. Builtins declare
-/// which kinds they accept; the binder validates at
-/// bake-time.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum SubjectKind {
-    /// The whole run. Used for `on_session_start` /
-    /// `on_session_end`.
-    Session,
-    /// A single phase activity. Used for `on_phase_start` /
-    /// `on_phase_end` / `on_update`.
-    Phase,
-    /// One iteration of a `for_each` / `for_combinations`
-    /// scope. Used for `on_each_start` / `on_each_end`.
-    Iteration,
-    /// A non-iteration scope group (`do_while` /
-    /// `do_until`). Used for `on_scope_start` /
-    /// `on_scope_end`.
-    Scope,
-}
-
-impl SubjectKind {
-    /// Lower-snake-case name for the storage / replay
-    /// surface. Stored in the `readout_snapshots.subject_kind`
-    /// column so `nbrs replay` can group rows by subject.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            SubjectKind::Session   => "session",
-            SubjectKind::Phase     => "phase",
-            SubjectKind::Iteration => "iteration",
-            SubjectKind::Scope     => "scope",
-        }
-    }
-}
+use crate::lifecycle::EventType;
 
 /// Lifecycle state of the subject (phase / iteration /
 /// scope / session) the readout is rendering for. See
@@ -264,7 +228,7 @@ pub trait ReadoutContext {
     /// misreport. No default — a phase-end fire that
     /// silently claimed `Update` would be a bug, so the
     /// type system makes the caller pick.
-    fn event(&self) -> Event;
+    fn event(&self) -> EventType;
 
     /// Monotonic refresh-tick counter. Advances once per
     /// refresh fire of the same subject. Used by readouts
@@ -349,12 +313,13 @@ pub trait ReadoutContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lifecycle::SubjectKind;
 
     struct PhaseLikeCtx { name: String, labels: String }
     impl ReadoutContext for PhaseLikeCtx {
         fn subject_name(&self) -> &str { &self.name }
         fn subject_labels(&self) -> &str { &self.labels }
-        fn event(&self) -> Event { Event::PhaseEnd }
+        fn event(&self) -> EventType { EventType::PhaseEnd }
     }
 
     #[test]
@@ -376,7 +341,7 @@ mod tests {
     impl ReadoutContext for SessionLikeCtx {
         fn subject_name(&self) -> &str { "session" }
         fn subject_id(&self) -> String { "session".to_string() }
-        fn event(&self) -> Event { Event::SessionEnd }
+        fn event(&self) -> EventType { EventType::SessionEnd }
     }
 
     #[test]

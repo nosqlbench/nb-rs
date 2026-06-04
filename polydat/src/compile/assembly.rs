@@ -1120,7 +1120,7 @@ impl PolydatAssembler {
                             .find(|&(_, &idx)| idx == i)
                             .map(|(n, _)| n.clone())
                             .unwrap_or_else(|| format!("__removed_{i}")),
-                        node: opt.unwrap_or_else(|| Box::new(crate::library::identity::Identity::new())),
+                        node: opt.unwrap_or_else(|| Box::new(crate::library::identity::Identity::new(crate::ast::PortType::U64))),
                         inputs: vec![], // wiring is in resolved_wiring
                     })
                     .collect();
@@ -1478,7 +1478,7 @@ pub fn boundary_adapter(from: PortType, to: PortType) -> Option<Box<dyn PolydatN
         (PortType::I32, PortType::U64) => Some(Box::new(P::I32ToU64::new())),
         (PortType::I32, PortType::U32) => Some(Box::new(P::I32ToU32::new())),
         (PortType::I32, PortType::F32) => Some(Box::new(P::I32ToF32::new())),
-        (PortType::F64, PortType::U64) => Some(Box::new(P::F64ToU64::new())),
+        (PortType::F64, PortType::U64) => Some(Box::new(P::F64ToU64Checked::new())),
         (PortType::F64, PortType::U32) => Some(Box::new(P::F64ToU32::new())),
         (PortType::F64, PortType::I64) => Some(Box::new(P::F64ToI64::new())),
         (PortType::F64, PortType::I32) => Some(Box::new(P::F64ToI32::new())),

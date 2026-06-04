@@ -66,15 +66,51 @@ fn string_lit_has_real_placeholder(s: &str) -> bool {
     false
 }
 
-fn wrap_to_f64(inner: Expr) -> Expr {
-    let span = match &inner {
+/// The source span of an expression, for diagnostics. `BinOp`
+/// carries no span of its own (it's a desugaring node), so it
+/// reports `0:0` — callers that need a real location should
+/// reach into an operand.
+fn expr_span(expr: &Expr) -> Span {
+    match expr {
         Expr::IntLit(_, s) | Expr::FloatLit(_, s) | Expr::StringLit(_, s)
             | Expr::Ident(_, s) | Expr::UnaryNeg(_, s) | Expr::UnaryBitNot(_, s)
             | Expr::ArrayLit(_, s) => *s,
         Expr::Call(c) => c.span,
         Expr::FieldAccess { span, .. } => *span,
         Expr::BinOp(..) => Span { line: 0, col: 0 },
-    };
+    }
+}
+
+/// Human/AI-readable name for an expression's syntactic shape.
+/// Used in diagnostics so an "unsupported here" error can name
+/// *what* it found, not just that something failed.
+fn expr_kind(expr: &Expr) -> &'static str {
+    match expr {
+        Expr::Ident(..) => "identifier",
+        Expr::IntLit(..) => "integer literal",
+        Expr::FloatLit(..) => "float literal",
+        Expr::StringLit(..) => "string literal",
+        Expr::ArrayLit(..) => "array literal",
+        Expr::Call(..) => "function call",
+        Expr::BinOp(..) => "binary operation",
+        Expr::UnaryNeg(..) => "unary negation",
+        Expr::UnaryBitNot(..) => "unary bitwise-not",
+        Expr::FieldAccess { .. } => "field access",
+    }
+}
+
+/// Best-effort iter-var name for a sweep-axis param, used only
+/// in a diagnostic hint. `eh_values` → `eh`; a name without the
+/// conventional `_values` suffix yields a generic `x`.
+fn singularize_axis(param: &str) -> String {
+    param.strip_suffix("_values")
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "x".to_string())
+}
+
+fn wrap_to_f64(inner: Expr) -> Expr {
+    let span = expr_span(&inner);
     Expr::Call(crate::dsl::ast::CallExpr {
         func: "to_f64".into(),
         args: vec![Arg::Positional(inner)],
@@ -473,7 +509,7 @@ impl Compiler {
                     for (i, target) in targets.iter().enumerate() {
                         asm.add_node(
                             target,
-                            Box::new(Identity::new()),
+                            Box::new(Identity::new(crate::ast::PortType::U64)),
                             vec![WireRef::node_port(&internal_name, i)],
                         );
                         self.all_names.push(target.clone());
@@ -566,9 +602,13 @@ impl Compiler {
                         }
                     }
 
-                    // All inputs treated as Str via auto-adapters
-                    let input_types = vec![crate::ast::PortType::Str; bind_names.len()];
-                    let node = Box::new(Printf::new(&fmt_str, &input_types));
+                    // All inputs treated as Str via auto-adapters.
+                    // SRD-80b Phase E: `Printf::new(fmt, n_wires)` —
+                    // the macro-emitted constructor declares each
+                    // variadic slot as `PortType::Str` so explicit
+                    // input-type vectors are no longer threaded
+                    // through the call.
+                    let node = Box::new(Printf::new(fmt_str.clone(), bind_names.len()));
                     let name = &targets[0];
                     asm.add_node(name, node, wire_refs);
                     self.all_names.push(name.clone());
@@ -595,7 +635,7 @@ impl Compiler {
                 };
                 let src_type = asm.wire_type(&wire).unwrap_or(PortType::U64);
                 if src_type == PortType::U64 {
-                    asm.add_node(name, Box::new(Identity::new()), vec![wire]);
+                    asm.add_node(name, Box::new(Identity::new(crate::ast::PortType::U64)), vec![wire]);
                 } else {
                     asm.add_node(
                         name,
@@ -658,7 +698,10 @@ impl Compiler {
                                 BinOpKind::Mul => "u64_mul",
                                 BinOpKind::Div => "u64_div",
                                 BinOpKind::Mod => "u64_mod",
-                                _ => unreachable!(),
+                                other => unreachable!(
+                                    "arithmetic dispatch reached with non-arithmetic \
+                                     BinOpKind {other:?}; the enclosing match only \
+                                     admits Add/Sub/Mul/Div/Mod"),
                             };
                             (name, false, false)
                         } else {
@@ -668,7 +711,10 @@ impl Compiler {
                                 BinOpKind::Mul => "f64_mul",
                                 BinOpKind::Div => "f64_div",
                                 BinOpKind::Mod => "f64_mod",
-                                _ => unreachable!(),
+                                other => unreachable!(
+                                    "arithmetic dispatch reached with non-arithmetic \
+                                     BinOpKind {other:?}; the enclosing match only \
+                                     admits Add/Sub/Mul/Div/Mod"),
                             };
                             (name, lhs_type == PortType::U64, rhs_type == PortType::U64)
                         }
@@ -700,14 +746,17 @@ impl Compiler {
                         let prefix = if str_path { "str" }
                                      else if f64_path { "f64" }
                                      else { "u64" };
-                        let suffix = match op {
-                            BinOpKind::Eq => "eq",
-                            BinOpKind::Ne => "ne",
-                            BinOpKind::Lt => "lt",
-                            BinOpKind::Gt => "gt",
-                            BinOpKind::Le => "le",
-                            BinOpKind::Ge => "ge",
-                            _ => unreachable!(),
+                        let (suffix, symbol) = match op {
+                            BinOpKind::Eq => ("eq", "=="),
+                            BinOpKind::Ne => ("ne", "!="),
+                            BinOpKind::Lt => ("lt", "<"),
+                            BinOpKind::Gt => ("gt", ">"),
+                            BinOpKind::Le => ("le", "<="),
+                            BinOpKind::Ge => ("ge", ">="),
+                            other => unreachable!(
+                                "comparison dispatch reached with non-comparison \
+                                 BinOpKind {other:?}; the enclosing match only \
+                                 admits Eq/Ne/Lt/Gt/Le/Ge"),
                         };
                         let name: &'static str = match (prefix, suffix) {
                             ("u64", "eq") => "u64_eq", ("u64", "ne") => "u64_ne",
@@ -718,9 +767,16 @@ impl Compiler {
                             ("f64", "le") => "f64_le", ("f64", "ge") => "f64_ge",
                             ("str", "eq") => "str_eq", ("str", "ne") => "str_ne",
                             ("str", _) => return Err(format!(
-                                "comparison operator `{suffix}` is not supported for String operands; only `==` and `!=` work on strings",
+                                "comparison operator `{symbol}` is not supported for \
+                                 String operands; only `==` and `!=` are defined on \
+                                 strings. Compare string values for equality, or \
+                                 convert to a numeric type for ordering comparisons.",
                             )),
-                            _ => unreachable!(),
+                            (other_prefix, other_suffix) => unreachable!(
+                                "comparison node-name dispatch fell through for \
+                                 (prefix={other_prefix:?}, suffix={other_suffix:?}); \
+                                 prefix is one of u64/f64/str and suffix one of \
+                                 eq/ne/lt/gt/le/ge by construction"),
                         };
                         // Widen u64→f64 only on the f64 path. The
                         // str path takes both sides as Str via
@@ -820,8 +876,40 @@ impl Compiler {
                 asm.add_node(name, identity, vec![WireRef::node(&wire_name)]);
                 self.all_names.push(name.clone());
             }
-            _ => {
-                return Err("unsupported expression in binding".to_string());
+            other => {
+                let target = targets.first().map(String::as_str).unwrap_or("<anonymous>");
+                let span = expr_span(other);
+                let loc = if span.line > 0 {
+                    format!(" (at {}:{})", span.line, span.col)
+                } else {
+                    String::new()
+                };
+                let kind = expr_kind(other);
+                // Targeted guidance for the shapes operators
+                // actually hit. An array literal in binding
+                // position is the common one: a list-valued
+                // workload param (`eh_values: [false, true]`)
+                // is a sweep axis consumed by a comprehension,
+                // not a scalar binding.
+                let hint = match other {
+                    Expr::ArrayLit(..) => format!(
+                        "a list value `[...]` cannot be bound to a single wire. \
+                         If `{target}` is a sweep axis, reference it from a \
+                         comprehension instead — e.g. `for: \"{target_var} in {target}\"` \
+                         — rather than binding it directly. If you meant a \
+                         single value, supply one element (`{target}: <value>`).",
+                        target_var = singularize_axis(target),
+                    ),
+                    _ => format!(
+                        "binding values must be one of: function call `f(...)`, \
+                         identifier, integer / float / string literal, arithmetic \
+                         or comparison expression (`a + b`, `x < y`), unary `-x` / \
+                         `!x`, or field access `src.field`."
+                    ),
+                };
+                return Err(format!(
+                    "binding `{target}`: unsupported {kind} in binding value{loc}. {hint}"
+                ));
             }
         }
         Ok(())

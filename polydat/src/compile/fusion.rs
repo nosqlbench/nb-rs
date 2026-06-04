@@ -807,14 +807,14 @@ mod tests {
     use super::*;
     use crate::compile::assembly::{PolydatAssembler, WireRef};
     use crate::ast::Value;
-    use crate::library::arithmetic::ModU64;
-    use crate::library::hash::Hash64;
+    use crate::library::arithmetic::Mod;
+    use crate::library::hash::Hash;
 
     #[test]
     fn hash_mod_fuses_to_hash_range() {
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
-        asm.add_node("m", Box::new(ModU64::new(100)), vec![WireRef::node("h")]);
+        asm.add_node("h", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("m", Box::new(Mod::new(100)), vec![WireRef::node("h")]);
         asm.add_output("out", WireRef::node("m"));
 
         let mut kernel = asm.compile().unwrap();
@@ -832,10 +832,10 @@ mod tests {
     #[test]
     fn fusion_skipped_when_intermediate_has_consumers() {
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
-        asm.add_node("m", Box::new(ModU64::new(100)), vec![WireRef::node("h")]);
+        asm.add_node("h", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("m", Box::new(Mod::new(100)), vec![WireRef::node("h")]);
         // Also wire hash output to a second consumer.
-        asm.add_node("m2", Box::new(ModU64::new(50)), vec![WireRef::node("h")]);
+        asm.add_node("m2", Box::new(Mod::new(50)), vec![WireRef::node("h")]);
         asm.add_output("out1", WireRef::node("m"));
         asm.add_output("out2", WireRef::node("m2"));
 
@@ -992,11 +992,11 @@ mod tests {
 
     #[test]
     fn variadic_pattern_matches_sum() {
-        use crate::library::arithmetic::SumN;
+        use crate::library::arithmetic::Sum;
 
         // Build a graph: sum(a, b, c) where a, b, c are coordinates
         let mut asm = PolydatAssembler::new(vec!["a".into(), "b".into(), "c".into()]);
-        asm.add_node("s", Box::new(SumN::new(3)), vec![
+        asm.add_node("s", Box::new(Sum::new(3)), vec![
             WireRef::input("a"), WireRef::input("b"), WireRef::input("c"),
         ]);
         asm.add_output("out", WireRef::node("s"));

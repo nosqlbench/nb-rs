@@ -93,38 +93,88 @@ pub fn render_workload_params_source(
     out
 }
 
-/// Format a workload-param string as a Polydat literal, detecting
-/// the natural type. Integers parse as `IntLit`, floats as
-/// `FloatLit`; everything else is emitted as a quoted string
-/// literal so the Polydat lexer always has a token kind to read.
+/// Format a workload-ROOT-param string as a Polydat literal.
 ///
-/// `true` / `false` are NOT special-cased: Polydat's lexer has no
-/// boolean token kind, so a bare `false` would parse as an
-/// identifier (wire reference) and fail kernel compilation.
-/// Workload params carrying boolean-looking strings are
-/// emitted as `"true"` / `"false"`; downstream consumers can
-/// `str_eq(x, "true")` if they need a real comparison, and the
-/// CQL `WITH OPTIONS` interpolation path already wants string
-/// values inside the single-quoted clause.
+/// Workload-root params have NO outer scope to reference, so
+/// bare identifier-shaped tokens lower to polydat STRING
+/// LITERALS (the legacy behavior) rather than wire references.
+/// The new array / quoted-string / numeric paths still apply.
 ///
-/// Mirrors `crate::scope::format_workload_param_as_polydat_literal`
-/// — kept private here for the params-kernel path so this
-/// module is self-contained and the legacy text-substitution
-/// pass can eventually be retired without affecting it.
+/// `set:` block bindings (in `nbrs-workload/src/parse.rs`) AND
+/// per-scope param bindings (in `scope::add_param_binding`)
+/// use a DIFFERENT classifier — at those sites the operator
+/// CAN intend a wire reference because an outer scope exists.
+///
+/// Surface here:
+///
+/// - Bare U64 / F64 / Bool literals → emit as-is
+/// - Polydat-quoted string `"…"` → emit as-is (the YAML carrier
+///   was `'"value"'`; the polydat-syntax quotes survived)
+/// - Polydat array literal `[…]` → emit as-is (a YAML array
+///   value flattened through `format_jval_as_polydat_literal`)
+/// - Anything else (including bare-identifier-shaped tokens) →
+///   wrap as Polydat string literal, escaping `\` and `"`
 fn format_value_as_polydat_literal(value: &str) -> String {
     let trimmed = value.trim();
-    if trimmed.parse::<u64>().is_ok() {
+    if trimmed.parse::<u64>().is_ok()
+        || trimmed.parse::<f64>().is_ok()
+    {
         return trimmed.to_string();
     }
-    if trimmed.parse::<f64>().is_ok() {
+    if is_polydat_quoted_string(trimmed)
+        || is_polydat_array_literal(trimmed)
+    {
         return trimmed.to_string();
     }
-    // Embed as a quoted string. Escape any embedded backslash
-    // and quote so the Polydat source remains parsable. The original
-    // (un-trimmed) value is preserved — leading/trailing space
-    // can be meaningful for some param values.
+    // Bare `true` / `false` AND anything else fall through to
+    // quoted-string. Polydat's lexer has no boolean token kind,
+    // so a workload param value of `flag_t: true` lowers to
+    // `const flag_t := "true"` (a Str) — downstream consumers
+    // can `str_eq(flag_t, "true")` if they need a boolean
+    // comparison. This is the legacy workload-root behavior;
+    // the `set:` block parser (which IS in a polydat-aware
+    // scope context) handles bool literals differently.
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
+}
+
+fn is_polydat_quoted_string(s: &str) -> bool {
+    if s.len() < 2 { return false; }
+    if !s.starts_with('"') || !s.ends_with('"') { return false; }
+    let bytes = s.as_bytes();
+    let mut i = 1;
+    let last = bytes.len() - 1;
+    while i < last {
+        if bytes[i] == b'\\' { i += 2; continue; }
+        if bytes[i] == b'"' { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn is_polydat_array_literal(s: &str) -> bool {
+    if !s.starts_with('[') || !s.ends_with(']') { return false; }
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    for c in s.chars() {
+        if escape { escape = false; continue; }
+        if in_string {
+            if c == '\\' { escape = true; }
+            else if c == '"' { in_string = false; }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth < 0 { return false; }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
 }
 
 #[cfg(test)]

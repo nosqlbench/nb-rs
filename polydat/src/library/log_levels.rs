@@ -24,261 +24,88 @@
 //! the rest of the run trace. With no sink installed (unit tests,
 //! dryrun, pre-init) lines fall back to stderr.
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::Value;
 
-/// One of the four supported log levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel {
-    Debug,
-    Info,
-    Warn,
-    Error,
+// SRD-80 PR B.8 — log_{debug,info,warn,error} migrated to
+// `#[polydat_node]` with `Value` PolyWire args. Each node
+// derives its own struct (LogDebug, LogInfo, LogWarn, LogError)
+// from snake_case → PascalCase; the runtime port type is
+// resolved by the assembler and passed to `new(value_type)`.
+
+fn log_at(level: crate::library::support::audit::LogLevel, fn_name: &str, value: &Value) {
+    let msg = format!("{fn_name}: {}", value.to_display_string());
+    crate::library::support::audit::log(level, &msg);
 }
 
-impl LogLevel {
-    fn func_name(self) -> &'static str {
-        match self {
-            LogLevel::Debug => "log_debug",
-            LogLevel::Info => "log_info",
-            LogLevel::Warn => "log_warn",
-            LogLevel::Error => "log_error",
-        }
-    }
+#[crate::polydat_node(category = Diagnostic, purity = SideChannel(LogBuffer))]
+fn log_debug(value: Value) -> Value {
+    log_at(crate::library::support::audit::LogLevel::Debug, "log_debug", &value);
+    value
 }
 
-/// Pass-through logger node. Construction wires through whatever
-/// `PortType` the input declares (defaulting to Str — the most common
-/// case for probe-phase result wires). Eval emits one diag line via
-/// [`crate::library::support::audit`] and returns the value unchanged.
-pub struct LogPassthrough {
-    meta: NodeMeta,
-    level: LogLevel,
+#[crate::polydat_node(category = Diagnostic, purity = SideChannel(LogBuffer))]
+fn log_info(value: Value) -> Value {
+    log_at(crate::library::support::audit::LogLevel::Info, "log_info", &value);
+    value
 }
 
-impl LogPassthrough {
-    /// Construct a log passthrough node typed for `port_type`.
-    /// Both input and output ports take this type — the eval
-    /// clones the input through, so the runtime value retains
-    /// its variant. The registry's `OutputType::SameAsInput(0)`
-    /// declaration drives the build dispatch to call this with
-    /// the resolved input wire's port type, so the wire-level
-    /// type contract matches what flows through at runtime.
-    pub fn new(level: LogLevel, port_type: PortType) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: level.func_name().into(),
-                outs: vec![Port::new("output", port_type)],
-                ins: vec![Slot::Wire(Port::new("value", port_type))],
-            },
-            level,
-        }
-    }
+#[crate::polydat_node(category = Diagnostic, purity = SideChannel(LogBuffer))]
+fn log_warn(value: Value) -> Value {
+    log_at(crate::library::support::audit::LogLevel::Warn, "log_warn", &value);
+    value
 }
 
-impl PolydatNode for LogPassthrough {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        // Route through `crate::library::support::audit` so the activity runner's
-        // installed sink forwards the line to `observer::log` and
-        // it lands in `session.log` alongside every other run-level
-        // entry. Falls back to stderr when no sink is installed
-        // (unit tests, dryrun, pre-init).
-        let msg = format!(
-            "{func}: {value}",
-            func = self.level.func_name(),
-            value = inputs[0].to_display_string()
-        );
-        let audit_level = match self.level {
-            LogLevel::Debug => crate::library::support::audit::LogLevel::Debug,
-            LogLevel::Info  => crate::library::support::audit::LogLevel::Info,
-            LogLevel::Warn  => crate::library::support::audit::LogLevel::Warn,
-            LogLevel::Error => crate::library::support::audit::LogLevel::Error,
-        };
-        crate::library::support::audit::log(audit_level, &msg);
-        outputs[0] = inputs[0].clone();
-    }
-
-    fn purity(&self) -> crate::ast::Purity {
-        // log_{debug,info,warn,error} pass the value through
-        // unchanged but emit a log line via the audit sink (or
-        // stderr fallback). The typed return is a pure
-        // function of inputs; the log emission is the
-        // observable side channel.
-        crate::ast::Purity::SideChannel {
-            sink: crate::ast::SideChannelSink::LogBuffer,
-        }
-    }
+#[crate::polydat_node(category = Diagnostic, purity = SideChannel(LogBuffer))]
+fn log_error(value: Value) -> Value {
+    log_at(crate::library::support::audit::LogLevel::Error, "log_error", &value);
+    value
 }
 
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-const LOG_PARAMS: &[ParamSpec] = &[ParamSpec {
-    name: "value",
-    slot_type: SlotType::Wire,
-    required: true,
-    example: "cycle",
-    constraint: None,
-}];
-
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "log_debug",
-            category: C::Diagnostic,
-            outputs: 1,
-            description: "log value at debug level; pass-through return",
-            help: "log_debug(value) -> value\n\
-                   \n\
-                   Emit one diag line at debug level containing the value's\n\
-                   display form, then return the value unchanged. Use to\n\
-                   surface a wire's runtime value without restructuring an\n\
-                   expression. Logging level filters apply: log_debug lines\n\
-                   drop when the runtime threshold is Info or higher.",
-            identity: None,
-            variadic_ctor: None,
-            params: LOG_PARAMS,
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::SameAsInput(0),
-        },
-        FuncSig {
-            name: "log_info",
-            category: C::Diagnostic,
-            outputs: 1,
-            description: "log value at info level; pass-through return",
-            help: "log_info(value) -> value\n\
-                   \n\
-                   Emit one diag line at info level containing the value's\n\
-                   display form, then return the value unchanged. Common\n\
-                   on probe-phase result wires so detected facts surface\n\
-                   at session start without a custom readout.",
-            identity: None,
-            variadic_ctor: None,
-            params: LOG_PARAMS,
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::SameAsInput(0),
-        },
-        FuncSig {
-            name: "log_warn",
-            category: C::Diagnostic,
-            outputs: 1,
-            description: "log value at warn level; pass-through return",
-            help: "log_warn(value) -> value\n\
-                   \n\
-                   Emit one diag line at warn level containing the value's\n\
-                   display form, then return the value unchanged.",
-            identity: None,
-            variadic_ctor: None,
-            params: LOG_PARAMS,
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::SameAsInput(0),
-        },
-        FuncSig {
-            name: "log_error",
-            category: C::Diagnostic,
-            outputs: 1,
-            description: "log value at error level; pass-through return",
-            help: "log_error(value) -> value\n\
-                   \n\
-                   Emit one diag line at error level containing the value's\n\
-                   display form, then return the value unchanged.",
-            identity: None,
-            variadic_ctor: None,
-            params: LOG_PARAMS,
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::SameAsInput(0),
-        },
-    ]
-}
-
-pub(crate) fn build_node(
-    name: &str,
-    _wires: &[crate::compile::assembly::WireRef],
-    wire_types: &[crate::ast::PortType],
-    _consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    let level = match name {
-        "log_debug" => LogLevel::Debug,
-        "log_info" => LogLevel::Info,
-        "log_warn" => LogLevel::Warn,
-        "log_error" => LogLevel::Error,
-        _ => return None,
-    };
-    // SRD: per FuncSig.output_type = SameAsInput(0), the
-    // output port type tracks the input wire's type. The
-    // dispatch path passes the resolved input wire type via
-    // `wire_types[0]`. A missing slot is an upstream-resolution
-    // bug — surface it loudly here rather than fabricating a
-    // U64 placeholder that masks the real fault.
-    let Some(typ) = wire_types.first().copied() else {
-        return Some(Err(format!(
-            "{name}: input wire type unresolved at node-build time \
-             (no entries in wire_types). The dispatch path must \
-             resolve the input wire before constructing this node."
-        )));
-    };
-    Some(Ok(Box::new(LogPassthrough::new(level, typ))))
-}
-
-crate::register_nodes!(signatures, build_node);
+// SRD-80 PR B.8 — every node in this module is registered
+// link-time via the proc-macro-emitted NodeRegistration. The
+// hand-maintained signatures()/build_node()/register_nodes!
+// plumbing is retired.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Each level passes through the input value verbatim. Stderr
-    /// emission is verified at the assembled-graph layer; here we
-    /// confirm the eval contract — value in == value out.
-    fn run(level: LogLevel, port_type: PortType, input: Value) -> Value {
-        let node = LogPassthrough::new(level, port_type);
-        let mut out = [Value::None];
-        node.eval(&[input], &mut out);
-        out.into_iter().next().unwrap()
-    }
+    use crate::ast::{PolydatNode, PortType, Slot};
 
     #[test]
     fn log_debug_passthrough() {
-        let v = run(LogLevel::Debug, PortType::Str, Value::Str("hello".into()));
-        assert_eq!(v.as_str(), "hello");
+        let node = LogDebug::new(PortType::Str);
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("hello".into())], &mut out);
+        assert_eq!(out[0].as_str(), "hello");
     }
 
     #[test]
     fn log_info_passthrough() {
-        let v = run(LogLevel::Info, PortType::Bool, Value::Bool(true));
-        assert!(v.as_bool());
+        let node = LogInfo::new(PortType::Bool);
+        let mut out = [Value::None];
+        node.eval(&[Value::Bool(true)], &mut out);
+        assert!(out[0].as_bool());
     }
 
     #[test]
     fn log_warn_passthrough() {
-        let v = run(LogLevel::Warn, PortType::U64, Value::U64(42));
-        assert_eq!(v.as_u64(), 42);
+        let node = LogWarn::new(PortType::U64);
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(42)], &mut out);
+        assert_eq!(out[0].as_u64(), 42);
     }
 
     #[test]
     fn log_error_passthrough() {
-        let v = run(LogLevel::Error, PortType::F64, Value::F64(1.5));
-        assert_eq!(v.as_f64(), 1.5);
+        let node = LogError::new(PortType::F64);
+        let mut out = [Value::None];
+        node.eval(&[Value::F64(1.5)], &mut out);
+        assert_eq!(out[0].as_f64(), 1.5);
     }
 
     #[test]
     fn log_node_meta_has_one_input_one_output() {
-        let node = LogPassthrough::new(LogLevel::Info, PortType::Str);
+        let node = LogInfo::new(PortType::Str);
         assert_eq!(node.meta().ins.len(), 1);
         assert_eq!(node.meta().outs.len(), 1);
         assert_eq!(node.meta().name, "log_info");
@@ -286,47 +113,20 @@ mod tests {
 
     #[test]
     fn log_info_meta_tracks_constructor_port_type() {
-        // SRD: log_* declare OutputType::SameAsInput(0). The
-        // constructor takes a port_type and both input and
-        // output ports carry it. Verify the constructor honours
-        // the contract — passing Bool produces Bool ports.
-        let node = LogPassthrough::new(LogLevel::Info, PortType::Bool);
+        let node = LogInfo::new(PortType::Bool);
         assert_eq!(node.meta().outs[0].typ, PortType::Bool);
-        match &node.meta().ins[0] {
-            Slot::Wire(p) => assert_eq!(p.typ, PortType::Bool),
-            other => panic!("expected Slot::Wire, got {other:?}"),
+        if let Slot::Wire(p) = &node.meta().ins[0] {
+            assert_eq!(p.typ, PortType::Bool);
+        } else {
+            panic!("expected Slot::Wire");
         }
     }
 
     #[test]
-    fn build_node_recognises_all_four_levels() {
-        // SameAsInput(0) requires an actual input wire-type at
-        // dispatch — log_* nodes track the input's PortType. Pass
-        // a representative U64 so the node-build path doesn't
-        // surface its unresolved-input diagnostic here.
-        for name in &["log_debug", "log_info", "log_warn", "log_error"] {
-            let result = build_node(name, &[], &[PortType::U64], &[]);
-            let node = result
-                .unwrap_or_else(|| panic!("name {name} not handled"))
-                .unwrap_or_else(|e| panic!("build failed for {name}: {e}"));
-            assert_eq!(node.meta().name, *name);
-        }
-    }
-
-    #[test]
-    fn build_node_surfaces_unresolved_input_wire_type() {
-        // Empty `wire_types` means the dispatch path couldn't
-        // resolve the input wire — log_* must surface this loudly
-        // rather than fabricating a U64 placeholder.
-        let result = build_node("log_info", &[], &[], &[])
-            .expect("log_info is a recognised name");
-        let err = match result {
-            Ok(_) => panic!("empty wire_types must surface as a build error"),
-            Err(e) => e,
-        };
-        assert!(
-            err.contains("unresolved"),
-            "diagnostic should call out the unresolved input: {err}"
-        );
+    fn log_purity_is_side_channel() {
+        use crate::ast::{Purity, SideChannelSink};
+        let node = LogInfo::new(PortType::U64);
+        let p = node.purity();
+        assert!(matches!(p, Purity::SideChannel { sink: SideChannelSink::LogBuffer }));
     }
 }

@@ -90,8 +90,7 @@ params:
   # `mnc` → `maximum_node_connections` — the M parameter
   # of the hierarchical graph build (number of neighbors
   # each node retains in the proximity graph).
-#  mnc_values:       "8, 128"
-  mnc_values:       "8,128"
+  mnc_values:       "8, 128"
 
   # `bw` → `construction_beam_width` — the
   # efConstruction parameter (beam width used while
@@ -104,7 +103,7 @@ params:
   # multi-layer HNSW structure (true) or the flat in-memory
   # variant (false).
   eh_values:        "false, true"
-#  eh_values:        "false"
+#  eh_values:        false
 
   # `nbo_v` (numeric value) + `nbo_label` (table-name-safe
   # string) → `neighborhood_overflow` — the alpha-overflow
@@ -113,19 +112,17 @@ params:
   # (`1.0 → "1p0"`) goes into the table name (CQL
   # identifiers can't contain `.`). Parallel-iter pair —
   # both lists must stay in lockstep length-wise.
-#  nbo_v_values:     "1.0"
-#  nbo_label_values: '"1p0"'
   nbo_v_values:     "1.0, 3.0"
-  nbo_label_values: '"1p0", "3p0"'
+  nbo_label_values: "1p0, 3p0"
 
   # `alf_v` (numeric) + `alf_label` (string) → `alpha` —
   # the alpha pruning factor (RNG-pruning threshold used
   # during graph construction). Same parallel-iter
   # value/label split as neighborhood_overflow.
-  alf_v_values:     "1.0"
-#  alf_v_values:     "1.0, 2.0"
-  alf_label_values: '"1p0"'
-#  alf_label_values: '"1p0", "2p0"'
+  alf_v_values:     1.0
+#  alf_v_values:     [1.0, 2.0]
+  alf_label_values: "1p0"
+#  alf_label_values: ["1p0", "2p0"]
 
   # ── query_sweep dimensions (4 axes × {2, 2, 1, 1} = 4 cells) ──
   # Bound at the inner level of `idx_sweep` AND as the only
@@ -158,12 +155,12 @@ params:
   # (`SELECT … ORDER BY ANN OF ? LIMIT k`). Single-element
   # default; multi-value lists span the K axis when
   # benchmarking recall@K curves.
-  k_values:                 "10"
+  k_values:                 10
 
   # `limit` — the `LIMIT` clause value passed to Cassandra.
   # Together with `k` controls how many candidates the
   # ANN traversal returns before the top-K cut.
-  limit_values:             "25,50,75,100"
+  limit_values:             "25, 50, 75, 100"
 #
 # Value taxonomy (for reference, used in the iter clauses):
 #
@@ -260,10 +257,11 @@ scenarios:
         # (rerank_k_strategy / pruning_strategy aren't declared in
         # the parent), so the phase below reads them directly via
         # the scope chain — no `set:` needed.
-        - for: "rerank_k_strategy in rerank_def, rerank_lim, rerank_2x, rerank_4x, rerank_1k,
-                pruning_strategy in pruning_def, pruning_off,
-                k in {k_values},
-                limit in {k_{k}_limits}"
+        - for: |
+            rerank_k_strategy in "rerank_def, rerank_lim, rerank_2x, rerank_4x, rerank_1k",
+            pruning_strategy in ["pruning_def", "pruning_off"],
+            k in k_values,
+            limit in {k_{k}_limits}
           phases:
             - pvs_query_sweep
 
@@ -331,12 +329,13 @@ scenarios:
         # lowercase wire (`sm_lc`) that matches the stored
         # identifier; the canonical uppercase `{sm}` still flows
         # into the CQL OPTIONS clause via the `set:` shadow.
-        - for: "sm in {sm_values},
-                mnc in {mnc_values},
-                bw in {bw_values},
-                eh in {eh_values},
-                (nbo_v, nbo_label) in (concat({nbo_v_values}), concat({nbo_label_values})),
-                (alf_v, alf_label) in (concat({alf_v_values}), concat({alf_label_values}))"
+        - for: |
+            sm in sm_values,
+            mnc in mnc_values,
+            bw in bw_values,
+            eh in eh_values,
+             (nbo_v, nbo_label) in (concat(nbo_v_values), concat(nbo_label_values)),
+             (alf_v, alf_label) in (concat(alf_v_values), concat(alf_label_values))
           order: extrema/1
           phases:
             # Per-iter case-fold of the source_model value so the
@@ -372,12 +371,12 @@ scenarios:
                     # default. Downstream `{source_model}` bind-points
                     # in the schema phase pick up the shadow at
                     # op-execution time.
-                    - set: { source_model: "{sm}",
-                             maximum_node_connections: "{mnc}",
-                             construction_beam_width: "{bw}",
-                             enable_hierarchy: "{eh}",
-                             neighborhood_overflow: "{nbo_v}",
-                             alpha: "{alf_v}" }
+                    - set: { source_model: sm,
+                             maximum_node_connections: mnc,
+                             construction_beam_width: bw,
+                             enable_hierarchy: eh,
+                             neighborhood_overflow: nbo_v,
+                             alpha: alf_v }
                       phases:
                         # Table + index lifecycle — runs once per
                         # outer tuple. `keyspace_reset` at the top of
@@ -386,18 +385,15 @@ scenarios:
                         # teardown is redundant.
                         - schema
                         - fknn_rampup_data
-                        # SRD-75 synchronizer pair: `ensure_flushed`
-                        # turns the memtable into SSTables, then
-                        # `ensure_compacted` polls observable state
-                        # (LiveSSTableCount + the Compactions array +
-                        # per-table pending task count) and
-                        # conditionally fires `forceKeyspaceCompaction`
-                        # only when the state shows drift + no work
-                        # in flight. Terminates when the table is
-                        # `sstables == 1` AND no active / pending
-                        # compactions remain.
-                        - ensure_flushed
-                        - ensure_compacted
+                        # One-phase finalization (inherited from
+                        # full_cql_vector.yaml via `extends:`):
+                        # flush → read SSTable count → conditionally
+                        # compact (daemon, `if: sstables > 1`,
+                        # long-poll) → poll `system_views.sstable_tasks`
+                        # until idle. Emits the `time_to_index`
+                        # phase-duration gauge plus live compaction
+                        # progress metrics.
+                        - finalize_index
                         # INNER comprehension: query-only params.
                         # Reified value lists are workload params so
                         # operators can pin individual axes for

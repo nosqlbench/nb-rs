@@ -1733,7 +1733,7 @@ impl App {
 
         // SRD-63 Push 5b: route the headline status row through
         // the readout engine. `phase_status` for live phases
-        // (binder.fire under Event::Update; ContentMode flips
+        // (binder.fire under EventType::Update; ContentMode flips
         // to Explanation when the `\` overlay-toggle is active);
         // `phase_outcome` / `phase_summary` for terminal states.
         // Tab / Shift-Tab cycle focus through bound bodies; +
@@ -2955,7 +2955,14 @@ impl App {
         // tail-slicing would erase entries that would otherwise
         // be visible whenever the buffer happens to end in
         // below-threshold severities.
+        //
+        // SRD-81: the log panel is **diagnostics-only**. Phase
+        // lifecycle / outcome renders are display projections that
+        // belong in the tree / active-phase panel (rendered natively
+        // via `TuiReadoutSink`), not here — a multi-line ANSI outcome
+        // render would otherwise garble as a single un-split `Span`.
         let filtered: Vec<&crate::state::LogEntry> = state.log_messages.iter()
+            .filter(|e| e.category == crate::state::LogCategory::Diagnostic)
             .filter(|e| e.severity >= self.log_level_filter)
             .collect();
         let visible = inner.height as usize;

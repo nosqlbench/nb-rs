@@ -117,6 +117,10 @@ pub mod linearize;
 pub mod fiber_pool;
 pub mod daemon_pool;
 pub mod log_sink;
+/// Lifecycle event vocabulary: the kind-tag [`lifecycle::EventType`]
+/// and its [`lifecycle::SubjectKind`], shared by the readout
+/// binder and the checkpoint log.
+pub mod lifecycle;
 pub mod readouts;
 pub mod readout_context;
 pub mod report_anchor;

@@ -491,7 +491,7 @@ fn weighted_u64_valid() {
 
 #[test]
 fn weighted_pick_valid() {
-    let mut k = polydat("out := weighted_pick(hash(cycle), 0.5, 10, 0.5, 20)");
+    let mut k = polydat("out := weighted_pick(hash(cycle), \"10:0.5;20:0.5\")");
     for cycle in 0..100 {
         let v = eval_u64(&mut k, cycle);
         assert!(v == 10 || v == 20, "cycle={cycle} gave {v}");
@@ -690,7 +690,10 @@ fn cycle_walk_bounded() {
 
 #[test]
 fn shuffle_bounded() {
-    let mut k = polydat("out := shuffle(cycle, 0, 100)");
+    // SRD-80b Phase E — `shuffle` now takes `(input, feedback, size, min)`.
+    // feedback=0x41 is the bank-0 polynomial for width 7 (size=100 needs
+    // 7 LFSR bits; see polydat/src/library/sampling/metashift_banks.inc).
+    let mut k = polydat("out := shuffle(cycle, 0x41, 100, 0)");
     for cycle in 0..100 {
         let v = eval_u64(&mut k, cycle);
         assert!(v < 100, "cycle={cycle} gave {v}");
@@ -699,7 +702,8 @@ fn shuffle_bounded() {
 
 #[test]
 fn shuffle_bijective() {
-    let mut k = polydat("out := shuffle(cycle, 0, 100)");
+    // SRD-80b Phase E — `shuffle` now takes `(input, feedback, size, min)`.
+    let mut k = polydat("out := shuffle(cycle, 0x41, 100, 0)");
     let mut seen = std::collections::HashSet::new();
     for cycle in 0..100 {
         let v = eval_u64(&mut k, cycle);
@@ -1873,6 +1877,7 @@ fn every_registered_function_compiles() {
         // Weighted
         ("weighted_strings", "input cycle: u64\nout := weighted_strings(hash(cycle), \"a:0.5;b:0.5\")".into()),
         ("weighted_u64", "input cycle: u64\nout := weighted_u64(hash(cycle), \"10:0.5;20:0.5\")".into()),
+        ("weighted_pick", "input cycle: u64\nout := weighted_pick(hash(cycle), \"10:0.5;20:0.5\")".into()),
         ("one_of_weighted", "input cycle: u64\nout := one_of_weighted(hash(cycle), \"a:0.5;b:0.5\")".into()),
         // String input
         ("html_encode", "input cycle: u64\ns := format_u64(cycle, 10)\nout := html_encode(s)".into()),
@@ -1893,6 +1898,10 @@ fn every_registered_function_compiles() {
         // Context (no inputs)
         ("current_epoch_millis", "input cycle: u64\nout := current_epoch_millis()".into()),
         ("counter", "input cycle: u64\nout := counter()".into()),
+        // Random nodes — auto-gen would feed both min/max the same
+        // value (100, 100), causing range=0 division panics.
+        ("random_range", "input cycle: u64\nout := random_range(0, 1000)".into()),
+        ("random_f64",   "input cycle: u64\nout := random_f64(0.0, 1.0)".into()),
         ("session_start_millis", "input cycle: u64\nout := session_start_millis()".into()),
         ("elapsed_millis", "input cycle: u64\nout := elapsed_millis()".into()),
         ("thread_id", "input cycle: u64\nout := thread_id()".into()),
@@ -1901,6 +1910,7 @@ fn every_registered_function_compiles() {
         ("quantize", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := quantize(f, 0.1)".into()),
         ("lerp", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := lerp(f, 0.0, 100.0)".into()),
         ("inv_lerp", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := inv_lerp(f, 0.0, 1.0)".into()),
+        ("remap", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := remap(f, 0.0, 1.0, 0.0, 100.0)".into()),
         // FFT (creates output file)
         ("fft_analyze", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := fft_analyze(f, \"/tmp/_polydat_fft_test.jsonl\", 8)".into()),
         // `env(name)` errors if the named var isn't set —
@@ -1967,6 +1977,13 @@ fn every_registered_function_compiles() {
     // name list so new RealData functions are automatically excluded.
     for sig in &reg {
         if sig.category == registry::FuncCategory::RealData { continue; }
+        // SRD-80 PR B.14: `__*`-prefixed nodes are
+        // assembly-phase auto-inserted edge adapters (e.g.
+        // `__u32_to_u64`, `__str_to_bool`). They're not
+        // workload-callable — the assembly inserts them at
+        // type boundaries. Skip them in the auto-generated
+        // workload coverage.
+        if sig.name.starts_with("__") { continue; }
 
         let src = if let Some(override_src) = overrides.get(sig.name) {
             override_src.to_string()
@@ -1981,6 +1998,7 @@ fn every_registered_function_compiles() {
                     SlotType::ConstStr => args.push("\"test\"".into()),
                     SlotType::ConstVecU64 => args.push("100".into()),
                     SlotType::ConstVecF64 => args.push("1.0".into()),
+                    SlotType::ConstVec => args.push("100".into()),
                 }
             }
             if args.is_empty() && sig.is_variadic() {

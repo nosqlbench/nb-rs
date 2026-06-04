@@ -20,8 +20,9 @@
 
 use std::fmt::Write as _;
 
+use crate::lifecycle::SubjectKind;
 use crate::readouts::buf::ReadoutBuf;
-use crate::readouts::context::{ReadoutContext, SubjectKind};
+use crate::readouts::context::ReadoutContext;
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
 pub struct TruncatedPhases;
@@ -118,8 +119,8 @@ mod tests {
     impl ReadoutContext for TestCtx {
         fn subject_name(&self) -> &str { "session" }
         fn session_phases_truncated(&self) -> usize { self.truncated }
-        fn event(&self) -> crate::readouts::Event {
-            crate::readouts::Event::SessionEnd
+        fn event(&self) -> crate::lifecycle::EventType {
+            crate::lifecycle::EventType::SessionEnd
         }
     }
 

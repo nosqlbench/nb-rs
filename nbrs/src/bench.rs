@@ -1128,7 +1128,7 @@ pub fn bench_command(args: &[String]) {
     if topic != "wiring" {
         eprintln!("Usage: nbrs bench wiring <expr> [cycles=N] [threads=RANGE]");
         eprintln!("  Example: nbrs bench wiring \"hash_range(hash(cycle), 1000)\"");
-        eprintln!("  Example: nbrs bench wiring \"weighted_pick(hash(cycle), 0.5, 10, 0.3, 20)\" threads=1:8*2");
+        eprintln!("  Example: nbrs bench wiring \"weighted_pick(hash(cycle), \\\"10:0.5;20:0.3\\\")\" threads=1:8*2");
         eprintln!();
         eprintln!("Range syntax: N | start:end:step | start:end*factor");
         return;

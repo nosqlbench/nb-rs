@@ -22,162 +22,127 @@
 //!                    found <r> rows × <c> columns
 //! ```
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::Value;
 
 /// Assert that the input value is a unary structure and return its
-/// single cell. See module docs.
-pub struct ExactlyOneValue {
-    meta: NodeMeta,
-}
-
-impl Default for ExactlyOneValue {
-    fn default() -> Self {
-        Self::new()
+/// single cell as a String. See module docs.
+///
+/// **Output is always `Str`** (the function returns `String`, so the
+/// macro emits a fixed `PortType::Str` output port). The function
+/// accepts any `Value` variant the upstream wire produces and
+/// renders the unwrapped leaf to its display form. This matches the
+/// load-bearing workload pattern `schema_text := exactly_one_value(body)`
+/// where downstream nodes (regex_match, format, …) take `&str`.
+///
+/// A polymorphic-output variant that preserves leaf types
+/// (Bool/U64/F64/…) would require a port-type declaration that
+/// reflects the runtime unwrap result rather than the input port,
+/// which the macro can't express today without generic-over-Wire
+/// instantiation. When such a variant is needed it becomes its own
+/// node.
+#[crate::polydat_node(category = Diagnostic)]
+fn exactly_one_value(body: Value) -> String {
+    if crate::library::debug_nodes_enabled() {
+        // Per-cycle visibility into what the structural unwrap
+        // saw and produced. Body's display form is truncated for
+        // long Json arrays so the trace stays scannable.
+        let body_disp = body.to_display_string();
+        let snippet: String = body_disp.chars().take(400).collect();
+        let ellipsis = if body_disp.len() > snippet.len() { "…" } else { "" };
+        eprintln!(
+            "[DEBUG] exactly_one_value: body.variant={:?} body.len={} snippet={}{ellipsis}",
+            body.port_type(),
+            body_disp.len(),
+            snippet,
+        );
     }
-}
+    let leaf_value: Value = match &body {
+        // Already-scalar values pass through unchanged. They came
+        // from a body projection that already collapsed the row ×
+        // column structure.
+        Value::Str(_) | Value::Bool(_) | Value::U64(_) | Value::F64(_) => body.clone(),
 
-impl ExactlyOneValue {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "exactly_one_value".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                // Body wire's port type is a placeholder. The assembler
-                // does not currently surface a "structural body" type;
-                // Push 2 will revisit this when the body wire's Polydat type
-                // is settled. For Push 1 we pass-through whatever type
-                // the upstream wire produces (the eval method inspects
-                // the actual `Value` variant).
-                ins: vec![Slot::Wire(Port::new("body", PortType::Str))],
-            },
+        // Typed vector carriers: the structural shape is "1 row × 1
+        // column" iff the slice has exactly one element.
+        Value::VecF32(arc) => {
+            if arc.len() != 1 {
+                panic!(
+                    "exactly_one_value: expected unary structure \
+                     (1 row × 1 column), found vec_f32 of length {}",
+                    arc.len()
+                );
+            }
+            Value::F64(arc[0] as f64)
         }
-    }
-}
-
-impl PolydatNode for ExactlyOneValue {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let body = &inputs[0];
-        if crate::library::debug_nodes_enabled() {
-            // Per-cycle visibility into what the structural unwrap
-            // saw and produced. Body's display form is truncated for
-            // long Json arrays so the trace stays scannable.
-            let body_disp = body.to_display_string();
-            let snippet: String = body_disp.chars().take(400).collect();
-            let ellipsis = if body_disp.len() > snippet.len() { "…" } else { "" };
-            eprintln!(
-                "[DEBUG] exactly_one_value: body.variant={:?} body.len={} snippet={}{ellipsis}",
-                body.port_type(),
-                body_disp.len(),
-                snippet,
-            );
+        Value::VecI32(arc) => {
+            if arc.len() != 1 {
+                panic!(
+                    "exactly_one_value: expected unary structure \
+                     (1 row × 1 column), found vec_i32 of length {}",
+                    arc.len()
+                );
+            }
+            Value::U64(arc[0] as u64)
         }
-        outputs[0] = match body {
-            // Already-scalar values pass through unchanged. They came
-            // from a body projection that already collapsed the row ×
-            // column structure (e.g. a CQL `body.to_text()` on a unary
-            // result), so the assertion is trivially satisfied.
-            Value::Str(_) | Value::Bool(_) | Value::U64(_) | Value::F64(_) => body.clone(),
+        Value::VecF64(arc) => {
+            if arc.len() != 1 {
+                panic!(
+                    "exactly_one_value: expected unary structure \
+                     (1 row × 1 column), found vec_f64 of length {}",
+                    arc.len()
+                );
+            }
+            Value::F64(arc[0])
+        }
+        Value::VecI64(arc) => {
+            if arc.len() != 1 {
+                panic!(
+                    "exactly_one_value: expected unary structure \
+                     (1 row × 1 column), found vec_i64 of length {}",
+                    arc.len()
+                );
+            }
+            Value::U64(arc[0] as u64)
+        }
+        Value::VecF16(arc) => {
+            if arc.len() != 1 {
+                panic!(
+                    "exactly_one_value: expected unary structure \
+                     (1 row × 1 column), found vec_f16 of length {}",
+                    arc.len()
+                );
+            }
+            Value::F64(arc[0].to_f32() as f64)
+        }
+        Value::VecI16(arc) => {
+            if arc.len() != 1 {
+                panic!(
+                    "exactly_one_value: expected unary structure \
+                     (1 row × 1 column), found vec_i16 of length {}",
+                    arc.len()
+                );
+            }
+            Value::U64(arc[0] as u64)
+        }
 
-            // Typed vector carriers: the structural shape is "1 row × 1
-            // column" iff the slice has exactly one element. Unwrap the
-            // single cell to its scalar carrier (F64 for f32, U64 for
-            // i32 — the standard widening when these vectors flow
-            // through the Polydat Kernel as scalars).
-            Value::VecF32(arc) => {
-                if arc.len() != 1 {
-                    panic!(
-                        "exactly_one_value: expected unary structure \
-                         (1 row × 1 column), found vec_f32 of length {}",
-                        arc.len()
-                    );
-                }
-                Value::F64(arc[0] as f64)
-            }
-            Value::VecI32(arc) => {
-                if arc.len() != 1 {
-                    panic!(
-                        "exactly_one_value: expected unary structure \
-                         (1 row × 1 column), found vec_i32 of length {}",
-                        arc.len()
-                    );
-                }
-                Value::U64(arc[0] as u64)
-            }
-            Value::VecF64(arc) => {
-                if arc.len() != 1 {
-                    panic!(
-                        "exactly_one_value: expected unary structure \
-                         (1 row × 1 column), found vec_f64 of length {}",
-                        arc.len()
-                    );
-                }
-                Value::F64(arc[0])
-            }
-            Value::VecI64(arc) => {
-                if arc.len() != 1 {
-                    panic!(
-                        "exactly_one_value: expected unary structure \
-                         (1 row × 1 column), found vec_i64 of length {}",
-                        arc.len()
-                    );
-                }
-                Value::U64(arc[0] as u64)
-            }
-            Value::VecF16(arc) => {
-                if arc.len() != 1 {
-                    panic!(
-                        "exactly_one_value: expected unary structure \
-                         (1 row × 1 column), found vec_f16 of length {}",
-                        arc.len()
-                    );
-                }
-                Value::F64(arc[0].to_f32() as f64)
-            }
-            Value::VecI16(arc) => {
-                if arc.len() != 1 {
-                    panic!(
-                        "exactly_one_value: expected unary structure \
-                         (1 row × 1 column), found vec_i16 of length {}",
-                        arc.len()
-                    );
-                }
-                Value::U64(arc[0] as u64)
-            }
+        Value::None => panic!(
+            "exactly_one_value: empty body (Value::None); the upstream \
+             op produced no result to unwrap"
+        ),
 
-            Value::None => panic!(
-                "exactly_one_value: empty body (Value::None); the upstream \
-                 op produced no result to unwrap"
-            ),
+        // Structural body walk: array = row dim, object = column
+        // dim, leaf = result. Unary shape = 1 × 1 × 1.
+        Value::Json(j) => unwrap_unary_json(j),
 
-            // SRD-66 §"Surface 4 §Semantics" — structural body
-            // walk: an `Array` is the row dimension, an `Object`
-            // is the column dimension within each row, and the
-            // single leaf cell is what we return. Unary shape =
-            // 1 row × 1 column × 1 leaf. The path matches CQL
-            // adapter projection: `[{"create_statement":"..."}]`
-            // is the canonical describe-keyspace shape — one row
-            // (array len 1), one column (object key count 1),
-            // one leaf (the schema text).
-            //
-            // The leaf maps back to the matching Value variant:
-            // JSON String → Value::Str, JSON Number → Value::F64
-            // / Value::U64 (per int-ness), JSON Bool → Value::Bool,
-            // JSON Null → panic (no value to unwrap).
-            Value::Json(j) => unwrap_unary_json(j),
-
-            // Other carriers — not part of the structural body
-            // shape. Pass through (the upstream projection
-            // already collapsed shape into a scalar carrier).
-            // Bytes / Ext / Handle would never ride the `body`
-            // wire (PortType::Json) but kept for completeness in
-            // case `exactly_one_value` is applied to non-body
-            // wires.
-            Value::Bytes(_) | Value::Ext(_) | Value::Handle(_) => body.clone(),
-        };
+        // Other carriers pass through (already collapsed).
+        Value::Bytes(_) | Value::Ext(_) | Value::Handle(_) => body.clone(),
+    };
+    // Render to String for the declared Str output port. Non-Str
+    // leaves render via the Value display form (Bool → "true"/"false",
+    // U64 → "42", F64 → "3.14", etc.).
+    match leaf_value {
+        Value::Str(s) => s.to_string(),
+        other => other.to_display_string(),
     }
 }
 
@@ -263,69 +228,17 @@ fn describe_json_kind(j: &serde_json::Value) -> &'static str {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Signature declaration for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[FuncSig {
-        name: "exactly_one_value",
-        category: C::Diagnostic,
-        outputs: 1,
-        description: "assert body has unary structure (1 row × 1 column) and return its single cell",
-        help: "exactly_one_value(body) -> V\n\
-               \n\
-               Inspect a structural body and return its single cell value;\n\
-               panic with a shape diagnostic if the body has zero or\n\
-               multiple rows / columns. Use to assertively unwrap a unary\n\
-               result (e.g. CQL `describe keyspace`) before applying a\n\
-               regex or other scalar predicate, instead of relying on an\n\
-               implicit modal projection. Push 1 supports scalar carriers\n\
-               and length-1 typed vectors; Push 2 extends to structural\n\
-               row × column bodies.\n\
-               \n\
-               Example:\n  \
-                 has_sai := regex_match(exactly_one_value(body),\n  \
-                                        \"^TABLE\\\\s+system_views\\\\.sai\")",
-        identity: None,
-        variadic_ctor: None,
-        params: &[ParamSpec {
-            name: "body",
-            slot_type: SlotType::Wire,
-            required: true,
-            example: "body",
-            constraint: None,
-        }],
-        arity: Arity::Fixed,
-        commutativity: crate::ast::Commutativity::Positional,
-        default_resolver: None,
-        output_type: crate::dsl::registry::OutputType::Fixed,
-    }]
-}
-
-pub(crate) fn build_node(
-    name: &str,
-    _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType],
-    _consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "exactly_one_value" => Some(Ok(Box::new(ExactlyOneValue::new()))),
-        _ => None,
-    }
-}
-
-crate::register_nodes!(signatures, build_node);
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::PolydatNode;
 
     fn run(input: Value) -> Value {
-        let node = ExactlyOneValue::new();
+        // Macro emits `ExactlyOneValue::new(input_type)` for a
+        // PolyWire-in node; pass the input's port type so the
+        // input slot's port-type metadata matches the upstream
+        // wire. (Output port is fixed `Str` regardless of input.)
+        let node = ExactlyOneValue::new(input.port_type());
         let mut out = [Value::None];
         node.eval(&[input], &mut out);
         out.into_iter().next().unwrap()
@@ -339,28 +252,29 @@ mod tests {
 
     #[test]
     fn passes_through_bool() {
+        // Bool leaves render to "true"/"false" (Str output).
         let v = run(Value::Bool(true));
-        assert!(v.as_bool());
+        assert_eq!(v.as_str(), "true");
     }
 
     #[test]
     fn passes_through_u64() {
+        // Numeric leaves render to their display form.
         let v = run(Value::U64(42));
-        assert_eq!(v.as_u64(), 42);
+        assert_eq!(v.as_str(), "42");
     }
 
     #[test]
     fn passes_through_f64() {
         let v = run(Value::F64(2.5));
-        assert_eq!(v.as_f64(), 2.5);
+        assert_eq!(v.as_str(), "2.5");
     }
 
     #[test]
     fn unwraps_singleton_vec_f32() {
-        // Use SliceArc::from a small Vec<f32>.
         let v = Value::VecF32(crate::ast::SliceArc::from_vec(vec![1.5_f32]));
         let out = run(v);
-        assert_eq!(out.as_f64(), 1.5);
+        assert_eq!(out.as_str(), "1.5");
     }
 
     #[test]
@@ -382,8 +296,6 @@ mod tests {
 
     #[test]
     fn unwraps_unary_json_describe_keyspace_shape() {
-        // Canonical CQL `DESCRIBE KEYSPACE` projection: array of
-        // one row, each row an object with one text column.
         let j = serde_json::json!([
             {"create_statement": "VIRTUAL TABLE system_views.sai_column_indexes (\n  ...\n)"}
         ]);
@@ -394,7 +306,6 @@ mod tests {
 
     #[test]
     fn unwraps_unary_json_string_leaf() {
-        // Bare scalar wrapped in array → object → string.
         let j = serde_json::json!([{"value": "hello"}]);
         let out = run(Value::Json(std::sync::Arc::new(j)));
         assert_eq!(out.as_str(), "hello");
@@ -404,14 +315,14 @@ mod tests {
     fn unwraps_unary_json_numeric_leaf() {
         let j = serde_json::json!([{"n": 42}]);
         let out = run(Value::Json(std::sync::Arc::new(j)));
-        assert_eq!(out.as_u64(), 42);
+        assert_eq!(out.as_str(), "42");
     }
 
     #[test]
     fn unwraps_unary_json_bool_leaf() {
         let j = serde_json::json!([{"b": true}]);
         let out = run(Value::Json(std::sync::Arc::new(j)));
-        assert!(out.as_bool());
+        assert_eq!(out.as_str(), "true");
     }
 
     #[test]

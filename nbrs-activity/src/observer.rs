@@ -26,6 +26,37 @@ pub enum LogLevel {
     Error,
 }
 
+/// Provenance tag carried alongside a log message so display
+/// sinks can route by *kind*, not by sniffing message text.
+///
+/// The only consumer today is the `tui=terminal` log sink: it
+/// owns a managed phase-history region (the idempotent catch-up
+/// projection of the scene tree), so the phase start/end readout
+/// lines that would otherwise scroll past in the log stream are
+/// [`LogCategory::PhaseLifecycle`] and suppressed from that
+/// stream — they live in the region instead. Every other surface
+/// (`session.log`, the failure dump, the full TUI panel) treats
+/// all categories alike; the category is purely additive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogCategory {
+    /// An ordinary diagnostic line (the overwhelming majority).
+    /// The TUI log panel shows these and only these.
+    #[default]
+    Diagnostic,
+    /// A phase **start** lifecycle render (the `phase_starting`
+    /// readout). Low-value noise next to the live status and the
+    /// `✓` outcome marker, so the terminal sink keeps it out of
+    /// scrollback and the TUI log panel filters it.
+    PhaseLifecycle,
+    /// A per-phase **outcome** render (the `✓`/`✗` `phase_outcome`
+    /// summary). SRD-81: this is a display *projection*, not a
+    /// diagnostic — the terminal scrollback shows it and the TUI
+    /// renders it natively in the tree / active-phase panel, so the
+    /// TUI log panel (diagnostics-only) filters it out instead of
+    /// garbling the multi-line ANSI render as one `Span`.
+    PhaseOutcome,
+}
+
 /// Kind of pre-mapped scenario entry. Re-export of
 /// [`crate::scene_tree::NodeKind`] for callers that already
 /// imported it via the observer module.
@@ -59,6 +90,15 @@ pub trait RunObserver: Send + Sync {
     /// to a ring buffer in TUI mode. All `eprintln!` in the
     /// runtime should go through this instead.
     fn log(&self, level: LogLevel, message: &str);
+
+    /// Log a message carrying an explicit [`LogCategory`]. The
+    /// default ignores the category and delegates to [`Self::log`]
+    /// — correct for every observer whose surface treats all
+    /// categories alike. Observers that feed a category-aware sink
+    /// (the run-state actor ring) override this to retain the tag.
+    fn log_categorized(&self, level: LogLevel, _category: LogCategory, message: &str) {
+        self.log(level, message);
+    }
 
     /// Publish (or clear) the latest rendered status line for
     /// the active phase. Default implementation is a no-op —
@@ -228,6 +268,85 @@ pub fn use_color() -> bool {
     })
 }
 
+/// SRD — explainer-overlay toggle state. Process-global so the
+/// TUI keystroke layer (which holds the watcher) and the
+/// readout binder (which holds the render thread) can rendezvous
+/// without threading a channel through every readout call.
+///
+/// Value semantics: wall-clock nanos at which the overlay
+/// auto-reverts. `0` means "off"; any value > `now_nanos()`
+/// means "render `ContentMode::Explanation` until the deadline."
+///
+/// Toggle model (not hold): a single `?` press flips the
+/// overlay on with a 10 s auto-revert deadline. A second press
+/// while on flips it back off immediately. Auto-revert ensures
+/// the operator can't leave the overlay stuck on after walking
+/// away.
+static EXPLAIN_HELD_UNTIL_NS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Wall-clock nanos of the most recent `?` press. Drives the
+/// auto-repeat debounce — terminals in raw mode send a stream
+/// of keystrokes while `?` is held, and without this the
+/// second auto-repeat would flip the overlay off again
+/// 30 ms after the operator's first press.
+static EXPLAIN_LAST_PRESS_NS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// How long the overlay stays on after a `?` toggle. Picked
+/// to be long enough that the operator can read the explainer
+/// surface without timing out mid-read, short enough that a
+/// forgotten toggle reverts on its own. 10 s lands in the
+/// middle of "long enough to be useful" and "short enough that
+/// the operator notices the auto-revert."
+const EXPLAIN_AUTO_REVERT_MS: u64 = 10_000;
+
+/// Auto-repeat debounce window. 250 ms swallows the 30 Hz
+/// auto-repeat stream while still allowing a deliberate
+/// second tap to take effect.
+const EXPLAIN_TOGGLE_DEBOUNCE_MS: u64 = 250;
+
+fn now_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+/// Toggle the explainer overlay. First press → on (with a 10 s
+/// auto-revert deadline). Second press while on → off
+/// immediately. Auto-repeat-safe via a 250 ms debounce.
+pub fn toggle_explain() {
+    let now = now_nanos();
+    let last_press = EXPLAIN_LAST_PRESS_NS.load(std::sync::atomic::Ordering::Acquire);
+    if last_press != 0
+        && now.saturating_sub(last_press) < EXPLAIN_TOGGLE_DEBOUNCE_MS * 1_000_000
+    {
+        return;
+    }
+    EXPLAIN_LAST_PRESS_NS.store(now, std::sync::atomic::Ordering::Release);
+    let currently_on = {
+        let deadline = EXPLAIN_HELD_UNTIL_NS.load(std::sync::atomic::Ordering::Acquire);
+        deadline != 0 && now < deadline
+    };
+    if currently_on {
+        EXPLAIN_HELD_UNTIL_NS.store(0, std::sync::atomic::Ordering::Release);
+    } else {
+        let deadline = now.saturating_add(EXPLAIN_AUTO_REVERT_MS * 1_000_000);
+        EXPLAIN_HELD_UNTIL_NS.store(deadline, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// True iff the explainer overlay is currently on (toggled on
+/// within the last `EXPLAIN_AUTO_REVERT_MS` and not yet
+/// toggled off). Read by the readout binder on each `fire()`
+/// to decide whether to dispatch with
+/// `ContentMode::Explanation` instead of `Value`.
+pub fn is_explain_held() -> bool {
+    let deadline = EXPLAIN_HELD_UNTIL_NS.load(std::sync::atomic::Ordering::Acquire);
+    deadline != 0 && now_nanos() < deadline
+}
+
 /// Minimum severity that reaches the file sink
 /// (`session.log`). Default `Debug` — the file gets every
 /// non-trivial entry. The display threshold (per-observer
@@ -282,6 +401,17 @@ pub fn display_level() -> LogLevel {
 }
 
 pub fn log(level: LogLevel, message: &str) {
+    log_categorized(level, LogCategory::Diagnostic, message);
+}
+
+/// [`log`] with an explicit [`LogCategory`]. The session-log
+/// write (unconditional, all categories) and the fallback stderr
+/// path are identical to [`log`]; the category only changes how a
+/// category-aware display sink files the message. Used by the
+/// readout engine to tag phase-lifecycle renders so the terminal
+/// sink can keep them out of its scrollback (they show in its
+/// managed phase-history region instead).
+pub fn log_categorized(level: LogLevel, category: LogCategory, message: &str) {
     if level >= retain_level() {
         if let Some(sink) = crate::log_sink::global() {
             let tag = match level {
@@ -296,12 +426,19 @@ pub fn log(level: LogLevel, message: &str) {
             // so log lines correlate visually with the session
             // directory.
             let ts = crate::session::now_log_timestamp();
-            let line = format!("{ts} {tag} {message}\n").into_bytes();
+            // The durable session.log is plain text — strip any ANSI
+            // a colored readout render carried in `message` (notably
+            // the phase `✓` outcome, SRD-81 push 1b). The live ring
+            // keeps the colored version for the terminal scrollback,
+            // and the replay capture is untouched; only this file
+            // projection is stripped.
+            let line = format!("{ts} {tag} {}\n",
+                crate::readouts::snapshot::strip_ansi(message)).into_bytes();
             let _ = sink.try_send(line);
         }
     }
     if let Some(obs) = GLOBAL_OBSERVER.get() {
-        obs.log(level, message);
+        obs.log_categorized(level, category, message);
     } else {
         eprintln!("{}", colorize_log_line(level, message));
     }

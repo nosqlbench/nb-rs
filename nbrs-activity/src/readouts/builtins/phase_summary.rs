@@ -21,8 +21,9 @@
 
 use std::fmt::Write as _;
 
+use crate::lifecycle::SubjectKind;
 use crate::readouts::buf::ReadoutBuf;
-use crate::readouts::context::{LifecycleState, ReadoutContext, SubjectKind};
+use crate::readouts::context::{LifecycleState, ReadoutContext};
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
 pub struct PhaseSummary;
@@ -186,7 +187,7 @@ mod tests {
         fn status_metric_chips(&self) -> String { String::new() }
         fn depth_indent(&self) -> &str { &self.depth_indent }
         fn use_color(&self) -> bool { false }
-        fn event(&self) -> crate::readouts::Event { crate::readouts::Event::PhaseEnd }
+        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::PhaseEnd }
         fn subject_state(&self) -> LifecycleState { self.state.clone() }
     }
 
@@ -309,8 +310,8 @@ mod tests {
             fn status_metric_chips(&self) -> String { String::new() }
             fn depth_indent(&self) -> &str { "" }
             fn use_color(&self) -> bool { true }
-            fn event(&self) -> crate::readouts::Event {
-                crate::readouts::Event::PhaseEnd
+            fn event(&self) -> crate::lifecycle::EventType {
+                crate::lifecycle::EventType::PhaseEnd
             }
             fn subject_state(&self) -> LifecycleState {
                 LifecycleState::Completed

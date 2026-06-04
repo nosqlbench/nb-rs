@@ -32,7 +32,7 @@ use nbrs_metrics::controls::{
 use nbrs_metrics::labels::Labels;
 use polydat::ast::{PolydatNode, Value};
 use polydat::library::param_helpers::{
-    InRangeU64, IsPositiveU64, RequiredU64, ThisOrU64,
+    InRange, IsPositive, Required, ThisOr,
 };
 use nbrs_activity::polydat_nodes::runtime_context::{
     set_session_root, set_task_cycle, with_fiber_context,
@@ -98,25 +98,25 @@ async fn fiber_reads_phase_and_cycle_from_task_context() {
 async fn param_helpers_pass_happy_values() {
     let _g = TEST_LOCK.lock().unwrap();
     // required: non-None value passes through.
-    let n = RequiredU64::new("cycles");
+    let n = Required::new("cycles".to_string());
     let mut out = [Value::None];
     n.eval(&[Value::U64(10_000)], &mut out);
     assert_eq!(out[0].as_u64(), 10_000);
 
     // is_positive: 1 passes.
-    let n = IsPositiveU64::new("rate");
+    let n = IsPositive::new("rate".to_string());
     let mut out = [Value::None];
     n.eval(&[Value::U64(1)], &mut out);
     assert_eq!(out[0].as_u64(), 1);
 
     // in_range: within bounds passes.
-    let n = InRangeU64::new(1, 100);
+    let n = InRange::new(1, 100);
     let mut out = [Value::None];
     n.eval(&[Value::U64(50)], &mut out);
     assert_eq!(out[0].as_u64(), 50);
 
     // this_or: primary when present.
-    let n = ThisOrU64::new();
+    let n = ThisOr::new();
     let mut out = [Value::None];
     n.eval(&[Value::U64(7), Value::U64(99)], &mut out);
     assert_eq!(out[0].as_u64(), 7);

@@ -88,6 +88,25 @@ pub struct ExecCtx {
     /// filters allow it.
     pub refine_plan: Option<Arc<crate::refine_plan::RefinePlan>>,
     pub diag: crate::runner::DiagnosticConfig,
+    /// True during the runner's pre-map structural pass. Pre-map
+    /// walks the scenario tree at depth=Phase to populate the
+    /// global `SceneTree` for the TUI/summary observers, but it
+    /// is NOT execution — no phase has actually run, no dispenser
+    /// has been built, no op has fired. "Completion" is an
+    /// undefined concern at that point.
+    ///
+    /// The structural walker's `depth < Dispenser` branch fires
+    /// sentinel `set_phase_running` + `set_phase_completed`
+    /// status mutations to make the `dryrun=phase` post-run
+    /// summary show `[ok]` for every traversed phase. When
+    /// `pre_map_only == true` those mutations are suppressed —
+    /// the scene tree comes out with every phase still
+    /// `Pending`, which is what the TUI margin reads when it
+    /// computes `seq` / `done / total`.
+    ///
+    /// `dryrun=phase` and the real execution paths both leave
+    /// this `false`. Only the pre-map pass sets it.
+    pub pre_map_only: bool,
     pub openmetrics_url: Option<String>,
     pub seq_type: SequencerType,
     pub concurrency: usize,
@@ -794,15 +813,25 @@ fn execute_node<'a>(
                         // Fire the sentinel phase_completed so the
                         // scene tree transitions Running → Completed
                         // and the post-run summary shows `[ok]`.
-                        crate::scene_tree::with_global_mut(|t| {
-                            t.set_phase_running(name, &phase_labels, 0);
-                            t.set_phase_completed(name, &phase_labels, 0.0);
-                        });
-                        ctx.observer.phase_starting(name, &phase_labels, 0, 0, 0);
-                        ctx.observer.phase_completed(name, &phase_labels, 0.0);
-                        crate::phase_end_triggers::fire_phase_completed(
-                            name, &phase_labels, 0.0,
-                        );
+                        //
+                        // Suppressed under `pre_map_only` — the
+                        // pre-map structural pass walks the same
+                        // depth as `dryrun=phase` but ISN'T
+                        // execution: "completion" is undefined
+                        // there and leaking the Completed status
+                        // makes the TUI margin read `N/N` 50 ms
+                        // into the run.
+                        if !ctx.pre_map_only {
+                            crate::scene_tree::with_global_mut(|t| {
+                                t.set_phase_running(name, &phase_labels, 0);
+                                t.set_phase_completed(name, &phase_labels, 0.0);
+                            });
+                            ctx.observer.phase_starting(name, &phase_labels, 0, 0, 0);
+                            ctx.observer.phase_completed(name, &phase_labels, 0.0);
+                            crate::phase_end_triggers::fire_phase_completed(
+                                name, &phase_labels, 0.0,
+                            );
+                        }
                     } else if refine_missing_skip {
                         // SRD-77 refine `scope=missing` skip:
                         // prior outcome exists, no hash check
@@ -949,12 +978,12 @@ fn execute_node<'a>(
                 let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
                 ctx.scene_tree_parent_id = scope_id;
                 fire_scope_lifecycle(
-                    ctx, crate::readouts::Event::ScopeStart,
+                    ctx, crate::lifecycle::EventType::ScopeStart,
                     &format!("do_while {condition}"), depth);
                 let r = run_do_loop(ctx, condition, counter.as_deref(), false,
                     children, depth + 1).await;
                 fire_scope_lifecycle(
-                    ctx, crate::readouts::Event::ScopeEnd,
+                    ctx, crate::lifecycle::EventType::ScopeEnd,
                     &format!("do_while {condition}"), depth);
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
@@ -973,12 +1002,12 @@ fn execute_node<'a>(
                 let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
                 ctx.scene_tree_parent_id = scope_id;
                 fire_scope_lifecycle(
-                    ctx, crate::readouts::Event::ScopeStart,
+                    ctx, crate::lifecycle::EventType::ScopeStart,
                     &format!("do_until {condition}"), depth);
                 let r = run_do_loop(ctx, condition, counter.as_deref(), true,
                     children, depth + 1).await;
                 fire_scope_lifecycle(
-                    ctx, crate::readouts::Event::ScopeEnd,
+                    ctx, crate::lifecycle::EventType::ScopeEnd,
                     &format!("do_until {condition}"), depth);
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
@@ -1461,7 +1490,7 @@ fn dispatch_comprehension<'a>(
 /// store distinguishes nested loops.
 fn fire_scope_lifecycle(
     ctx: &ExecCtx,
-    event: crate::readouts::Event,
+    event: crate::lifecycle::EventType,
     spec: &str,
     depth: usize,
 ) {
@@ -1671,7 +1700,7 @@ async fn run_one_iteration(
         writer.emit_scope_enter(kind, enter_coords.clone(), enter_path.clone());
     }
 
-    // SRD-63 Push 9a: fire `Event::EachStart` for this
+    // SRD-63 Push 9a: fire `EventType::EachStart` for this
     // iteration. Bindings carry the iteration tuple
     // (e.g. `(profile, alpha)`); the scope subject id is
     // the binding tuple as a sortable string. Subject
@@ -1689,14 +1718,14 @@ async fn run_one_iteration(
     };
     let depth_indent = " ".repeat(depth.saturating_sub(1));
     let each_ctx = crate::readout_context::LifecycleContext {
-        event: crate::readouts::Event::EachStart,
+        event: crate::lifecycle::EventType::EachStart,
         subject_name: iter_label.clone(),
         subject_labels: display_labels.clone(),
         depth_indent: depth_indent.clone(),
         use_color: crate::observer::use_color(),
     };
     crate::readout_context::fire_lifecycle(
-        crate::readouts::Event::EachStart,
+        crate::lifecycle::EventType::EachStart,
         &ctx.workload_readouts,
         None,
         &each_ctx,
@@ -1724,21 +1753,21 @@ async fn run_one_iteration(
         }
     };
 
-    // SRD-63 Push 9a: fire `Event::EachEnd` after the
+    // SRD-63 Push 9a: fire `EventType::EachEnd` after the
     // iteration body returns (success or failure — the
     // scope did still complete its iteration step). The
     // ctx.subject_id() matches the start fire's so the
     // snapshot store collapses both into the latest
     // end-render.
     let each_end_ctx = crate::readout_context::LifecycleContext {
-        event: crate::readouts::Event::EachEnd,
+        event: crate::lifecycle::EventType::EachEnd,
         subject_name: iter_label,
         subject_labels: display_labels,
         depth_indent,
         use_color: crate::observer::use_color(),
     };
     crate::readout_context::fire_lifecycle(
-        crate::readouts::Event::EachEnd,
+        crate::lifecycle::EventType::EachEnd,
         &ctx.workload_readouts,
         None,
         &each_end_ctx,
@@ -2742,7 +2771,7 @@ async fn run_phase(
     ctx.observer.phase_starting(phase_name, &phase_labels,
         stanza_len, progress_extent, phase_concurrency);
 
-    // Fire `Event::PhaseStart` once per phase. No built-in
+    // Fire `EventType::PhaseStart` once per phase. No built-in
     // default body — `phase_outcome` already renders the
     // lifecycle bound for the phase's existence, and a
     // separate `▶ starting` line just duplicates the
@@ -2758,14 +2787,14 @@ async fn run_phase(
         };
         let depth_indent = crate::scene_tree::running_phase_indent();
         let phase_ctx = crate::readout_context::LifecycleContext {
-            event: crate::readouts::Event::PhaseStart,
+            event: crate::lifecycle::EventType::PhaseStart,
             subject_name: phase_name.to_string(),
             subject_labels: display_labels.clone(),
             depth_indent,
             use_color: crate::observer::use_color(),
         };
         crate::readout_context::fire_lifecycle(
-            crate::readouts::Event::PhaseStart,
+            crate::lifecycle::EventType::PhaseStart,
             &ctx.workload_readouts,
             None,
             &phase_ctx,
@@ -3320,6 +3349,25 @@ async fn run_phase(
         });
     }
 
+    // Phase-level `metrics:` emission. Pull each `__metric_<name>`
+    // from the phase scope kernel (with the executor-injected
+    // `phase_start` set to this phase's chronological start) and
+    // record it on the phase component as the declared instrument.
+    // Done BEFORE the final cadence flush below so the recorded
+    // values land in this phase's terminal window. Only on
+    // successful completion — a stopped/failed phase's duration
+    // metric would be misleading.
+    if !stopped && !phase.metrics.is_empty() {
+        let phase_start_epoch_ms = (phase_start_nanos / 1_000_000) as u64;
+        if let Err(e) = emit_phase_metrics(
+            &ctx.scope_tree, phase_name, &phase,
+            phase_start_epoch_ms, &phase_component,
+        ) {
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "phase '{phase_name}': phase-metric emission: {e}");
+        }
+    }
+
     // Lifecycle flush: capture final delta, route through the
     // cadence reporter (single writer of windowed snapshots), and
     // deliver to the scheduler-tree reporters for external sinks.
@@ -3560,6 +3608,141 @@ async fn run_phase(
         if let Err(e) = writer.flush() {
             crate::diag!(crate::observer::LogLevel::Warn,
                 "checkpoint flush after phase '{phase_name}' completed: {e}");
+        }
+    }
+    Ok(())
+}
+
+/// Phase-level `metrics:` emission, run once at phase completion.
+///
+/// Builds a fresh subscope from the phase scope kernel (so the pull
+/// has its own evaluation state), sets the executor-injected
+/// `phase_start` origin wire to the phase's chronological start
+/// (epoch millis), then pulls each `__metric_<name>` the phase
+/// synthesiser emitted and records it on the phase component as the
+/// declared instrument (gauge by default). This mirrors the per-cycle
+/// op-metric path (`wrappers::metrics`) but fires exactly once: the
+/// value expression (e.g. `current_epoch_millis() - phase_start`)
+/// reads the clock at this moment, yielding the phase's wall-clock
+/// duration.
+fn emit_phase_metrics(
+    scope_tree: &crate::scope_tree::ScopeTree,
+    phase_name: &str,
+    phase: &nbrs_workload::model::WorkloadPhase,
+    phase_start_epoch_ms: u64,
+    phase_component: &Arc<RwLock<nbrs_metrics::component::Component>>,
+) -> Result<(), String> {
+    use polydat::ast::Value;
+    // Numeric coercion for the pulled metric value — same policy as
+    // `wrappers::metrics::value_to_f64` (Str / vector / none can't
+    // become a metric value).
+    fn to_f64(v: &Value) -> Option<f64> {
+        match v {
+            Value::F64(f) => Some(*f),
+            Value::U64(u) => Some(*u as f64),
+            Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+            _ => None,
+        }
+    }
+
+    // The phase scope kernel carries the synthesised
+    // `__metric_<name>` outputs + the `phase_start` input. Its
+    // presence is a synthesis invariant for a phase with metrics
+    // (PolydatMatter::Definitions installs the kernel).
+    let phase_kernel = scope_tree
+        .phase_node_by_name(phase_name)
+        .and_then(|idx| scope_tree.nodes[idx].cached_kernel.get().cloned())
+        .ok_or_else(|| format!(
+            "phase '{phase_name}' has `metrics:` but no cached phase scope \
+             kernel was installed — synthesis bug (a phase with metrics \
+             classifies as PolydatMatter::Definitions and must install a \
+             kernel via the `Bindings` install spec)"))?;
+
+    // Fresh subscope for the completion-time pull (own state, shares
+    // the parent's cells). Mirrors the per-fiber main-kernel and the
+    // do-loop persistent-kernel construction.
+    let mut k = phase_kernel.build_subscope(
+        polydat::kernel::subcontext::PolydatMatter::builder()
+            .program(phase_kernel.program().clone())
+            .build()
+            .expect("program-form matter is infallible"),
+    ).map_err(|e| format!("phase '{phase_name}': metric-pull subscope: {e}"))?;
+    phase_kernel.propagate_inputs_into(&mut k);
+
+    // Set the injected origin so `phase_elapsed(phase_start)` reads it.
+    if let Some(idx) = k.program().find_input("phase_start") {
+        k.state().set_input(idx, Value::U64(phase_start_epoch_ms));
+    }
+
+    // Pull every metric value first (no component lock held), then
+    // register + record under a single write lock. Stable name order
+    // keeps emission deterministic.
+    let mut entries: Vec<_> = phase.metrics.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    let mut recorded: Vec<(String, nbrs_workload::model::MetricSpec, f64)> = Vec::new();
+    for (name, spec) in entries {
+        let binding = crate::scope::synthesize_metric_binding_name(name);
+        let value = k.pull(&binding).clone();
+        let Some(raw) = to_f64(&value) else {
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "phase '{phase_name}' metric '{name}': value `{expr}` resolved to \
+                 a non-numeric {disc:?}; skipping (metric values must be U64 / F64 / Bool)",
+                expr = spec.value,
+                disc = std::mem::discriminant(&value));
+            continue;
+        };
+        let sanitised = match &spec.format {
+            Some(f) => match nbrs_workload::metric_format::parse_format_spec(f) {
+                Ok(fs) => fs.apply(raw),
+                Err(e) => {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "phase '{phase_name}' metric '{name}' format '{f}': {e}; \
+                         recording unformatted value");
+                    raw
+                }
+            },
+            None => raw,
+        };
+        recorded.push((name.clone(), spec.clone(), sanitised));
+    }
+
+    // Register + record on the phase component.
+    let mut pc = phase_component.write().unwrap_or_else(|e| e.into_inner());
+    let component_labels = pc.effective_labels().clone();
+    for (name, spec, value) in recorded {
+        use nbrs_metrics::component::InstrumentRef;
+        use nbrs_workload::model::MetricKind;
+        let family = spec.family.clone().unwrap_or_else(|| name.clone());
+        let kind = spec.kind.unwrap_or_default();
+        let instr_labels = component_labels.with("family", family.clone());
+        let instrument: InstrumentRef = match kind {
+            MetricKind::Gauge => {
+                let g = std::sync::Arc::new(
+                    nbrs_metrics::instruments::gauge::ValueGauge::new(instr_labels));
+                g.set(value);
+                InstrumentRef::Gauge(g)
+            }
+            MetricKind::Histogram => {
+                let h = std::sync::Arc::new(
+                    nbrs_metrics::instruments::histogram::Histogram::new(instr_labels));
+                h.record(value as u64);
+                InstrumentRef::Histogram(h)
+            }
+            MetricKind::Counter => {
+                let c = std::sync::Arc::new(
+                    nbrs_metrics::instruments::counter::Counter::new(instr_labels));
+                if value > 0.0 {
+                    c.inc_by(value as u64);
+                }
+                InstrumentRef::Counter(c)
+            }
+        };
+        if let Err(e) = pc.register_instrument_with_unit(
+            family.clone(), spec.unit.clone(), instrument,
+        ) {
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "phase '{phase_name}' metric '{name}': instrument registration \
+                 for family '{family}': {e}");
         }
     }
     Ok(())

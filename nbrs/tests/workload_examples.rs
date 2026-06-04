@@ -559,17 +559,22 @@ fn empty_bindings_and_set_blocks_emit_no_op_warning() {
     // the override and forgot the body). Pin both forms here
     // so a future refactor that silences the warning is
     // caught.
+    // `'"verbose"'` — YAML single-quotes around polydat
+    // double-quotes survive YAML scalar parsing and reach
+    // polydat as a string literal. Under the set-block
+    // bare-ident → polydat-reference convention, the explicit
+    // quotes are required to signal a string literal.
     let yaml = r#"
 params:
   mode: default
 
 scenarios:
   good:
-    - set: { mode: verbose }
+    - set: { mode: '"verbose"' }
       phases:
         - just_say
   empty_set:
-    - set: { mode: verbose }
+    - set: { mode: '"verbose"' }
   empty_bindings:
     - bindings: |
         const mode := "verbose"

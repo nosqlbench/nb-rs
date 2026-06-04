@@ -13,10 +13,20 @@
 //! - Shuffling sequences without materializing them
 //! - Deterministic reordering across distributed workers (via bank selection)
 //!
-//! The core algorithm is a Galois-configuration LFSR. The `Shuffle` GK
+//! The core algorithm is a Galois-configuration LFSR. The `Shuffle` Polydat
 //! node wraps it with range normalization and rejection sampling.
+//!
+//! SRD-80b Phase E — migrated from hand-written `impl PolydatNode for X`
+//! blocks to `#[polydat_node]` free-function authoring. The `feedback`
+//! polynomial is exposed explicitly as a Const arg so the macro can
+//! auto-emit the JIT-eligible `compiled_u64` / `jit_constants` hooks
+//! (Setup-derived state would disable the macro's auto-JIT emission, and
+//! the override path can't capture per-instance constants). Callers that
+//! previously used the `width_for_period` + bank-selection convenience now
+//! compute `feedback` themselves via [`feedback_for_width_and_bank`] or
+//! [`feedback_for_size`].
 
-use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
+use crate::derive_support::Const;
 
 // -----------------------------------------------------------------
 // LFSR feedback polynomials (one per register width 4..64)
@@ -35,35 +45,44 @@ const FEEDBACK_BANKS: [u64; 61 * BANKS_PER_WIDTH] = include!("metashift_banks.in
 /// `width` must be 4..=64. `bank` selects among different polynomials
 /// for the same width (modulo the number of available banks). Different
 /// banks produce different permutation orderings over the same range.
-fn feedback_for_width_and_bank(width: u32, bank: usize) -> u64 {
+pub fn feedback_for_width_and_bank(width: u32, bank: usize) -> u64 {
     assert!((4..=64).contains(&width), "LFSR width must be 4..64, got {width}");
     let base = (width as usize - 4) * BANKS_PER_WIDTH;
     FEEDBACK_BANKS[base + (bank % BANKS_PER_WIDTH)]
 }
 
 /// Return the default (bank 0) feedback polynomial for a given width.
-#[allow(dead_code)]
-fn feedback_for_width(width: u32) -> u64 {
+pub fn feedback_for_width(width: u32) -> u64 {
     feedback_for_width_and_bank(width, 0)
 }
 
 /// Return the minimum register width needed to represent `period` values.
-fn width_for_period(period: u64) -> u32 {
+pub fn width_for_period(period: u64) -> u32 {
     assert!(period > 0, "period must be positive");
     let bits = 64 - period.leading_zeros();
     bits.max(4) // minimum 4-bit LFSR
 }
 
+/// Convenience: derive a bank-0 feedback polynomial directly from a
+/// shuffle `size`. Callers building a `Shuffle` node from an outer
+/// "size" parameter use this rather than tracking width / bank
+/// manually.
+pub fn feedback_for_size(size: u64) -> u64 {
+    feedback_for_width_and_bank(width_for_period(size), 0)
+}
+
 // -----------------------------------------------------------------
-// Core LFSR step
+// Core LFSR step (algorithm)
 // -----------------------------------------------------------------
 
 /// Single Galois LFSR step.
 ///
 /// This is the fundamental bijective operation: given a register value,
-/// produce the next value in the LFSR sequence.
+/// produce the next value in the LFSR sequence. The helper is named
+/// `step` (not `lfsr_step`) to avoid colliding with the macro-consumed
+/// `fn lfsr_step` node-authoring function below.
 #[inline]
-fn lfsr_step(register: u64, feedback: u64) -> u64 {
+fn step(register: u64, feedback: u64) -> u64 {
     let lsb = register & 1;
     let shifted = register >> 1;
     // If LSB was 1, XOR with feedback polynomial; otherwise just shift.
@@ -76,16 +95,9 @@ fn lfsr_step(register: u64, feedback: u64) -> u64 {
 // Shuffle: bounded bijective permutation
 // -----------------------------------------------------------------
 
-/// Configuration for a bounded LFSR shuffle.
-struct ShuffleConfig {
-    feedback: u64,
-    size: u64,
-    min: u64,
-}
-
 /// Deterministic, bijective permutation of a bounded integer range.
 ///
-/// Signature: `shuffle(input: u64, min: u64, size: u64) -> (u64)`
+/// Signature: `shuffle(input: u64, feedback: u64, size: u64, min: u64) -> (u64)`
 ///
 /// Maps every value in [min, min+size) to itself in a pseudo-random
 /// order, visiting each value exactly once per cycle. Uses a Galois
@@ -94,107 +106,37 @@ struct ShuffleConfig {
 ///
 /// Use when you need every key in a range visited exactly once without
 /// repetition and without materializing the full sequence in memory.
-/// Common patterns: generating unique primary keys for bulk inserts
-/// (`shuffle(cycle, 0, 10_000_000)`), distributing work across
-/// partitions without collision, or simulating a deck-of-cards draw.
-/// Select different `bank` values for independent permutation orderings
-/// across distributed workers.
+/// Common patterns: generating unique primary keys for bulk inserts,
+/// distributing work across partitions without collision, or simulating
+/// a deck-of-cards draw. Pick different `feedback` polynomial values
+/// (via [`feedback_for_width_and_bank`]) for independent permutation
+/// orderings across distributed workers.
 ///
-/// JIT level: P3 (compiled_u64 with jit_constants for feedback, size,
-/// and min; the LFSR loop compiles to a tight branch sequence).
-pub struct Shuffle {
-    meta: NodeMeta,
-    config: ShuffleConfig,
-}
+/// JIT level: P3 — every arg + return is `u64`, so the macro auto-emits
+/// `compiled_u64` with `feedback`/`size`/`min` captured by `Copy` and
+/// `jit_constants` returning `[feedback, size, min]` (the layout
+/// `JitOp::ShuffleConst` consumes).
+#[crate::polydat_node(category = Permutation)]
+fn shuffle(
+    input: u64,
+    #[poly_default(0u64)] feedback: Const<u64>,
+    #[poly_default(0u64)] size: Const<u64>,
+    #[poly_default(0u64)] min: Const<u64>,
+) -> u64 {
+    // Normalize to 1-based LFSR range (LFSR cannot produce 0)
+    let mut register = (input % *size) + 1;
 
-impl Shuffle {
-    /// Create a shuffle over [min, min + size) using bank 0.
-    pub fn new(min: u64, size: u64) -> Self {
-        Self::with_bank(min, size, 0)
-    }
-
-    /// Create a shuffle over [min, min + size) with a specific bank.
-    ///
-    /// Different banks produce different permutation orderings over the
-    /// same range. Useful for distributed workers that need different
-    /// but reproducible shuffles.
-    pub fn with_bank(min: u64, size: u64, bank: usize) -> Self {
-        assert!(size > 0, "shuffle size must be positive");
-        let width = width_for_period(size);
-        let feedback = feedback_for_width_and_bank(width, bank);
-        Self {
-            meta: NodeMeta {
-                name: "shuffle".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_u64("feedback", feedback),
-                    Slot::const_u64("size", size),
-                    Slot::const_u64("min", min),
-                ],
-            },
-            config: ShuffleConfig { feedback, size, min },
+    // Apply LFSR with rejection sampling: if result exceeds size,
+    // step again until it's in range.
+    loop {
+        register = step(register, *feedback);
+        if register <= *size {
+            break;
         }
     }
 
-    /// Create a shuffle over [0, size) using bank 0.
-    pub fn zero_based(size: u64) -> Self {
-        Self::new(0, size)
-    }
-
-    /// Create a shuffle over [0, size) with a specific bank.
-    pub fn zero_based_with_bank(size: u64, bank: usize) -> Self {
-        Self::with_bank(0, size, bank)
-    }
-
-    /// Apply the shuffle to a single value.
-    #[inline]
-    fn apply(&self, input: u64) -> u64 {
-        // Normalize to 1-based LFSR range (LFSR cannot produce 0)
-        let mut register = (input % self.config.size) + 1;
-
-        // Apply LFSR with rejection sampling: if result exceeds size,
-        // step again until it's in range.
-        loop {
-            register = lfsr_step(register, self.config.feedback);
-            if register <= self.config.size {
-                break;
-            }
-        }
-
-        // Denormalize back to [min, min+size)
-        (register - 1) + self.config.min
-    }
-}
-
-impl PolydatNode for Shuffle {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(self.apply(inputs[0].as_u64()));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let feedback = self.config.feedback;
-        let size = self.config.size;
-        let min = self.config.min;
-        Some(Box::new(move |inputs, outputs| {
-            let mut register = (inputs[0] % size) + 1;
-            loop {
-                register = lfsr_step(register, feedback);
-                if register <= size {
-                    break;
-                }
-            }
-            outputs[0] = (register - 1) + min;
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> {
-        vec![self.config.feedback, self.config.size, self.config.min]
-    }
+    // Denormalize back to [min, min+size)
+    (register - 1) + *min
 }
 
 // -----------------------------------------------------------------
@@ -203,55 +145,25 @@ impl PolydatNode for Shuffle {
 
 /// Single Galois LFSR step as a Polydat node.
 ///
-/// Signature: `(input: u64) -> (u64)`
+/// Signature: `lfsr_step(input: u64, feedback: u64) -> (u64)`
 ///
 /// This is the raw bijective LFSR operation without range bounding.
 /// The period is 2^width - 1. Useful for building custom permutation
-/// patterns.
-pub struct LfsrStep {
-    meta: NodeMeta,
-    feedback: u64,
-}
-
-impl LfsrStep {
-    /// Create for a specific register width (4..=64) using bank 0.
-    pub fn new(width: u32) -> Self {
-        Self::with_bank(width, 0)
-    }
-
-    /// Create with a specific bank for a different permutation ordering.
-    pub fn with_bank(width: u32, bank: usize) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "lfsr_step".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            feedback: feedback_for_width_and_bank(width, bank),
-        }
-    }
-}
-
-impl PolydatNode for LfsrStep {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(lfsr_step(inputs[0].as_u64(), self.feedback));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let feedback = self.feedback;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = lfsr_step(inputs[0], feedback);
-        }))
-    }
+/// patterns. The `feedback` polynomial selects which permutation
+/// ordering is produced — use [`feedback_for_width`] or
+/// [`feedback_for_width_and_bank`] to compute one for a given
+/// register width.
+///
+/// JIT level: P3 — auto-emitted because both args + return are `u64`.
+#[crate::polydat_node(category = Permutation)]
+fn lfsr_step(input: u64, feedback: Const<u64>) -> u64 {
+    step(input, *feedback)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn lfsr_step_nonzero() {
@@ -259,7 +171,7 @@ mod tests {
         let feedback = feedback_for_width(8);
         let mut reg = 1u64;
         for _ in 0..255 {
-            reg = lfsr_step(reg, feedback);
+            reg = step(reg, feedback);
             assert_ne!(reg, 0, "LFSR must never produce 0");
         }
     }
@@ -271,7 +183,7 @@ mod tests {
         let mut seen = vec![false; 256];
         let mut reg = 1u64;
         for _ in 0..255 {
-            reg = lfsr_step(reg, feedback);
+            reg = step(reg, feedback);
             assert!(!seen[reg as usize], "duplicate value {reg}");
             seen[reg as usize] = true;
         }
@@ -287,18 +199,36 @@ mod tests {
         let start = 42u64;
         let mut reg = start;
         for _ in 0..255 {
-            reg = lfsr_step(reg, feedback);
+            reg = step(reg, feedback);
         }
         assert_eq!(reg, start, "LFSR should return to start after 2^N-1 steps");
+    }
+
+    /// Test-only helper: build a `Shuffle` over `[min, min+size)` using
+    /// bank 0. Mirrors the historical `Shuffle::new(min, size)` shape so
+    /// the in-file tests stay readable.
+    fn shuf(min: u64, size: u64) -> Shuffle {
+        Shuffle::new(feedback_for_size(size), size, min)
+    }
+
+    /// Test-only helper: build a `Shuffle` over `[0, size)` using bank 0.
+    fn shuf0(size: u64) -> Shuffle {
+        shuf(0, size)
+    }
+
+    fn apply(node: &Shuffle, input: u64) -> u64 {
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(input)], &mut out);
+        out[0].as_u64()
     }
 
     #[test]
     fn shuffle_bijective_small() {
         // Shuffle over [0, 31) should produce a permutation
-        let shuf = Shuffle::zero_based(31);
+        let node = shuf0(31);
         let mut seen = vec![false; 31];
         for i in 0..31u64 {
-            let out = shuf.apply(i);
+            let out = apply(&node, i);
             assert!(out < 31, "out of range: {out}");
             assert!(!seen[out as usize], "duplicate at input {i}: {out}");
             seen[out as usize] = true;
@@ -309,10 +239,10 @@ mod tests {
     #[test]
     fn shuffle_bijective_non_power_of_two() {
         // Shuffle over [0, 50) — not a power of 2, requires rejection sampling
-        let shuf = Shuffle::zero_based(50);
+        let node = shuf0(50);
         let mut seen = vec![false; 50];
         for i in 0..50u64 {
-            let out = shuf.apply(i);
+            let out = apply(&node, i);
             assert!(out < 50, "out of range: {out}");
             assert!(!seen[out as usize], "duplicate at input {i}: {out}");
             seen[out as usize] = true;
@@ -322,10 +252,10 @@ mod tests {
 
     #[test]
     fn shuffle_with_min_offset() {
-        let shuf = Shuffle::new(100, 20);
+        let node = shuf(100, 20);
         let mut seen = vec![false; 20];
         for i in 0..20u64 {
-            let out = shuf.apply(i);
+            let out = apply(&node, i);
             assert!((100..120).contains(&out), "out of range: {out}");
             seen[(out - 100) as usize] = true;
         }
@@ -334,19 +264,19 @@ mod tests {
 
     #[test]
     fn shuffle_deterministic() {
-        let shuf = Shuffle::zero_based(100);
-        let a = shuf.apply(42);
-        let b = shuf.apply(42);
+        let node = shuf0(100);
+        let a = apply(&node, 42);
+        let b = apply(&node, 42);
         assert_eq!(a, b);
     }
 
     #[test]
     fn shuffle_not_identity() {
         // The shuffle should reorder, not pass through
-        let shuf = Shuffle::zero_based(100);
+        let node = shuf0(100);
         let mut identity_count = 0;
         for i in 0..100u64 {
-            if shuf.apply(i) == i {
+            if apply(&node, i) == i {
                 identity_count += 1;
             }
         }
@@ -356,7 +286,7 @@ mod tests {
 
     #[test]
     fn shuffle_polydat_node() {
-        let node = Shuffle::zero_based(100);
+        let node = shuf0(100);
         let mut out = [Value::None];
         node.eval(&[Value::U64(7)], &mut out);
         assert!(out[0].as_u64() < 100);
@@ -364,7 +294,7 @@ mod tests {
 
     #[test]
     fn shuffle_compiled() {
-        let node = Shuffle::zero_based(100);
+        let node = shuf0(100);
         let op = node.compiled_u64().expect("should compile");
         let mut out = [0u64];
         op(&[7], &mut out);
@@ -378,7 +308,7 @@ mod tests {
 
     #[test]
     fn lfsr_step_node() {
-        let node = LfsrStep::new(8);
+        let node = LfsrStep::new(feedback_for_width(8));
         let mut out = [Value::None];
         node.eval(&[Value::U64(1)], &mut out);
         let v = out[0].as_u64();
@@ -389,10 +319,10 @@ mod tests {
     #[test]
     fn shuffle_large_range() {
         // Verify shuffle works for a larger range (1000)
-        let shuf = Shuffle::zero_based(1000);
+        let node = shuf0(1000);
         let mut seen = vec![false; 1000];
         for i in 0..1000u64 {
-            let out = shuf.apply(i);
+            let out = apply(&node, i);
             assert!(out < 1000, "out of range: {out}");
             seen[out as usize] = true;
         }
@@ -401,15 +331,18 @@ mod tests {
 
     #[test]
     fn different_banks_different_orderings() {
-        let shuf0 = Shuffle::zero_based_with_bank(100, 0);
-        let shuf1 = Shuffle::zero_based_with_bank(100, 1);
+        let size = 100;
+        let fb0 = feedback_for_width_and_bank(width_for_period(size), 0);
+        let fb1 = feedback_for_width_and_bank(width_for_period(size), 1);
+        let n0 = Shuffle::new(fb0, size, 0);
+        let n1 = Shuffle::new(fb1, size, 0);
         // Both should be bijective permutations
         let mut seen0 = vec![false; 100];
         let mut seen1 = vec![false; 100];
         let mut differ = false;
         for i in 0..100u64 {
-            let a = shuf0.apply(i);
-            let b = shuf1.apply(i);
+            let a = apply(&n0, i);
+            let b = apply(&n1, i);
             assert!(a < 100);
             assert!(b < 100);
             seen0[a as usize] = true;

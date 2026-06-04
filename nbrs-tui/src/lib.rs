@@ -62,6 +62,8 @@ pub mod frame_broker;
 pub mod key_watcher;
 pub mod log_only_observer;
 pub mod log_only_sink;
+pub mod formatted_line_sink;
+pub mod repl_state;
 pub mod prompt_state;
 pub mod readout_panel;
 pub mod readout_sink;

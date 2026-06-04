@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Linear interpolation and range mapping nodes.
+//!
+//! SRD-80b PR B.15+ migration — every node in this module
+//! authors via `#[polydat_node]`. The hand-maintained
+//! `signatures()` / `build_node()` / `validate_node()` /
+//! `register_nodes!` plumbing is retired; macro-emitted
+//! `NodeRegistration` covers link-time discovery.
 
-use crate::ast::{
-    CompiledU64Op,
-    PolydatNode, NodeMeta, Port, Slot, Value,
-};
 use crate::compile::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
 
 /// Linear interpolation with fixed endpoints.
@@ -20,49 +22,16 @@ use crate::compile::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
 /// 180.0)` produces a random longitude. Accepts t outside `[0,1]` for
 /// extrapolation.
 ///
-/// JIT level: P3 (compiled_u64 with jit_constants for a and b).
-pub struct LerpConst {
-    meta: NodeMeta,
-    a: f64,
-    b: f64,
-}
-
-impl LerpConst {
-    pub fn new(a: f64, b: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "lerp".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![
-                    Slot::Wire(Port::f64("t")),
-                    Slot::const_f64("a", a),
-                    Slot::const_f64("b", b),
-                ],
-            },
-            a,
-            b,
-        }
-    }
-}
-
-impl PolydatNode for LerpConst {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let t = inputs[0].as_f64();
-        outputs[0] = Value::F64(self.a + t * (self.b - self.a));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let a = self.a;
-        let b = self.b;
-        Some(Box::new(move |inputs, outputs| {
-            let t = f64::from_bits(inputs[0]);
-            outputs[0] = (a + t * (b - a)).to_bits();
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> { vec![self.a.to_bits(), self.b.to_bits()] }
+/// JIT level: P3 (macro-emitted `compiled_u64` + `jit_constants`
+/// `[a.to_bits(), b.to_bits()]` matching the JIT codegen
+/// `JitOp::LerpConst(a_bits, b_bits)` layout).
+#[crate::polydat_node(category = Interpolation)]
+fn lerp(
+    t: f64,
+    #[poly_default(0.0f64)] a: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] b: crate::derive_support::Const<f64>,
+) -> f64 {
+    *a + t * (*b - *a)
 }
 
 /// Map a u64 linearly to an f64 range.
@@ -76,61 +45,38 @@ impl PolydatNode for LerpConst {
 /// `scale_range(hash(cycle), 0.0, 1000.0)` gives a uniform float in
 /// [0, 1000].
 ///
-/// JIT level: P3 (compiled_u64 with jit_constants for min and range).
-pub struct ScaleRange {
-    meta: NodeMeta,
-    min: f64,
-    range: f64,
+/// JIT level: P3. `jit_constants` is overridden to emit the
+/// `(min, range)` pair that `JitOp::ScaleRangeConst` expects;
+/// the macro-derived default would emit `(min, max)` which the
+/// JIT codegen would interpret incorrectly.
+#[crate::polydat_node(
+    category = Interpolation,
+    jit_constants = scale_range_jit_constants,
+)]
+fn scale_range(
+    input: u64,
+    #[poly_default(0.0f64)] min: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] max: crate::derive_support::Const<f64>,
+) -> f64 {
+    let t = input as f64 / u64::MAX as f64;
+    *min + t * (*max - *min)
 }
 
-impl ScaleRange {
-    pub fn new(min: f64, max: f64) -> Self {
-        let range = max - min;
-        Self {
-            meta: NodeMeta {
-                name: "scale_range".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_f64("min", min),
-                    Slot::const_f64("range", range),
-                ],
-            },
-            min,
-            range,
-        }
-    }
-}
-
-impl PolydatNode for ScaleRange {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let t = inputs[0].as_u64() as f64 / u64::MAX as f64;
-        outputs[0] = Value::F64(self.min + t * self.range);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let min = self.min;
-        let range = self.range;
-        Some(Box::new(move |inputs, outputs| {
-            let t = inputs[0] as f64 / u64::MAX as f64;
-            outputs[0] = (min + t * range).to_bits();
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> { vec![self.min.to_bits(), self.range.to_bits()] }
+/// JIT-constants override for `scale_range`: emit the
+/// `(min, range)` layout that `JitOp::ScaleRangeConst`
+/// (polydat/src/compile/jit/codegen.rs) consumes.
+fn scale_range_jit_constants(node: &ScaleRange) -> Vec<u64> {
+    vec![node.min.to_bits(), (node.max - node.min).to_bits()]
 }
 
 impl FusedNode for ScaleRange {
     /// `scale_range(x, lo, hi)` decomposes to `lerp(unit_interval(x), lo, hi)`.
     fn decomposed(&self) -> DecomposedGraph {
         use crate::library::sampling::icd::UnitInterval;
-        let hi = self.min + self.range;
         let mut g = DecomposedGraph::new(1);
         let ui = g.add_node(Box::new(UnitInterval::new()), vec![DecomposedWire::Input(0)]);
         let lerp = g.add_node(
-            Box::new(LerpConst::new(self.min, hi)),
+            Box::new(Lerp::new(self.min, self.max)),
             vec![DecomposedWire::Node(ui, 0)],
         );
         g.set_outputs(vec![DecomposedWire::Node(lerp, 0)]);
@@ -149,40 +95,19 @@ impl FusedNode for ScaleRange {
 /// `inv_lerp(temperature, 32.0, 212.0)` normalizes Fahrenheit to
 /// `[0,1]`. Output is clamped, so out-of-range inputs saturate.
 ///
-/// JIT level: P1 (no compiled_u64; f64 in/out without captured closure).
-pub struct InvLerp {
-    meta: NodeMeta,
-    a: f64,
-    inv_range: f64,
-}
-
-impl InvLerp {
-    pub fn new(a: f64, b: f64) -> Self {
-        assert!((b - a).abs() > f64::EPSILON, "range must be non-zero");
-        let inv_range = 1.0 / (b - a);
-        Self {
-            meta: NodeMeta {
-                name: "inv_lerp".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![
-                    Slot::Wire(Port::f64("input")),
-                    Slot::const_f64("a", a),
-                    Slot::const_f64("inv_range", inv_range),
-                ],
-            },
-            a,
-            inv_range,
-        }
-    }
-}
-
-impl PolydatNode for InvLerp {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let t = (inputs[0].as_f64() - self.a) * self.inv_range;
-        outputs[0] = Value::F64(t.clamp(0.0, 1.0));
-    }
+/// Inverse linear interpolation. SRD-80 PR B.12 — inline
+/// compute; the per-call `1.0 / (b - a)` divide is acceptable
+/// versus the cost of a multi-source Setup mechanism that no
+/// other node would need.
+#[crate::polydat_node(category = Interpolation)]
+fn inv_lerp(
+    input: f64,
+    #[poly_default(0.0f64)] a: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] b: crate::derive_support::Const<f64>,
+) -> f64 {
+    let inv_range = 1.0 / (*b - *a);
+    let t = (input - *a) * inv_range;
+    t.clamp(0.0, 1.0)
 }
 
 /// Remap from one range to another.
@@ -197,47 +122,19 @@ impl PolydatNode for InvLerp {
 /// extrapolation is possible.
 ///
 /// JIT level: P1 (no compiled_u64; f64 in/out without captured closure).
-pub struct Remap {
-    meta: NodeMeta,
-    in_min: f64,
-    in_inv_range: f64,
-    out_min: f64,
-    out_range: f64,
-}
-
-impl Remap {
-    pub fn new(in_min: f64, in_max: f64, out_min: f64, out_max: f64) -> Self {
-        let in_range = in_max - in_min;
-        assert!(in_range.abs() > f64::EPSILON, "input range must be non-zero");
-        let in_inv_range = 1.0 / in_range;
-        let out_range = out_max - out_min;
-        Self {
-            meta: NodeMeta {
-                name: "remap".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![
-                    Slot::Wire(Port::f64("input")),
-                    Slot::const_f64("in_min", in_min),
-                    Slot::const_f64("in_inv_range", in_inv_range),
-                    Slot::const_f64("out_min", out_min),
-                    Slot::const_f64("out_range", out_range),
-                ],
-            },
-            in_min,
-            in_inv_range,
-            out_min,
-            out_range,
-        }
-    }
-}
-
-impl PolydatNode for Remap {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let t = (inputs[0].as_f64() - self.in_min) * self.in_inv_range;
-        outputs[0] = Value::F64(self.out_min + t * self.out_range);
-    }
+/// SRD-80 PR B.12 — inline compute; one extra divide per call
+/// versus the multi-source Setup machinery that would have
+/// precomputed `1.0 / (in_max - in_min)`.
+#[crate::polydat_node(category = Interpolation)]
+fn remap(
+    input: f64,
+    #[poly_default(0.0f64)] in_min: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] in_max: crate::derive_support::Const<f64>,
+    #[poly_default(0.0f64)] out_min: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] out_max: crate::derive_support::Const<f64>,
+) -> f64 {
+    let t = (input - *in_min) / (*in_max - *in_min);
+    *out_min + t * (*out_max - *out_min)
 }
 
 /// Quantize an f64 to the nearest multiple of a step size.
@@ -251,152 +148,36 @@ impl PolydatNode for Remap {
 /// timestamps to fixed intervals. Unlike `discretize`, the output
 /// remains f64 at the grid point, not a bucket index.
 ///
-/// JIT level: P3 (compiled_u64 with jit_constants for step).
-pub struct Quantize {
-    meta: NodeMeta,
-    step: f64,
-}
-
-impl Quantize {
-    pub fn new(step: f64) -> Self {
-        assert!(step > 0.0, "step must be positive");
-        Self {
-            meta: NodeMeta {
-                name: "quantize".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![
-                    Slot::Wire(Port::f64("input")),
-                    Slot::const_f64("step", step),
-                ],
-            },
-            step,
-        }
-    }
-}
-
-impl PolydatNode for Quantize {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let v = inputs[0].as_f64();
-        outputs[0] = Value::F64((v / self.step).round() * self.step);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let step = self.step;
-        Some(Box::new(move |inputs, outputs| {
-            let v = f64::from_bits(inputs[0]);
-            outputs[0] = ((v / step).round() * step).to_bits();
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> { vec![self.step.to_bits()] }
-}
-
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for interpolation and range-mapping nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "lerp", category: C::Interpolation,
-            outputs: 1, description: "linear interpolation with fixed endpoints",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "a", slot_type: SlotType::ConstF64, required: true, example: "0.0", constraint: None },
-                ParamSpec { name: "b", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Linear interpolation: output = a + t * (b - a).\nInput must be an f64 in [0,1] (the interpolation parameter t).\nParameters:\n  input — f64 wire in [0.0, 1.0] (e.g., from unit_interval)\n  a     — start value (when t=0)\n  b     — end value (when t=1)\nExample: lerp(unit_interval(hash(cycle)), -50.0, 50.0)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "scale_range", category: C::Interpolation,
-            outputs: 1, description: "map u64 to f64 range",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "min", slot_type: SlotType::ConstF64, required: true, example: "0.0", constraint: None },
-                ParamSpec { name: "max", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Maps a u64 directly to an f64 in [min, max). Equivalent to\nlerp(unit_interval(input), min, max) but fused into one node.\nParameters:\n  input — u64 wire input (typically hashed)\n  min   — lower bound of output range (inclusive)\n  max   — upper bound of output range (exclusive)\nExample: scale_range(hash(cycle), 0.0, 100.0)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "quantize", category: C::Interpolation,
-            outputs: 1, description: "round to nearest multiple of step",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "step", slot_type: SlotType::ConstF64, required: true, example: "0.1",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::PositiveFiniteF64) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Round an f64 to the nearest multiple of a step size.\nOutput remains f64 at the grid point (unlike discretize which returns a bucket index).\nUseful for snapping coordinates to a tile grid or binning to fixed intervals.\nParameters:\n  input — f64 wire input\n  step  — grid spacing (f64, must be > 0)\nExample: quantize(scale_range(hash(cycle), 0.0, 100.0), 5.0)  // 0, 5, 10, ..., 100",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-/// Try to build a lerp node from a function name and const args.
+/// JIT level: P3 (macro-emitted; consts = `[step.to_bits()]`).
 ///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "lerp" => Some(Ok(Box::new(LerpConst::new(
-            consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
-            consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
-        )))),
-        "scale_range" => Some(Ok(Box::new(ScaleRange::new(
-            consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
-            consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
-        )))),
-        "quantize" => Some(Ok(Box::new(Quantize::new(
-            consts.first().map(|c| c.as_f64()).unwrap_or(1.0),
-        )))),
-        _ => None,
-    }
+/// Greenfield migration note: the prior hand-written
+/// `Quantize::new` asserted `step > 0.0`, and the prior
+/// `ParamSpec` carried a `PositiveFiniteF64` constraint that
+/// Pass 1 enforced. Both are retired with the macro
+/// migration (the macro doesn't yet support const-arg
+/// `ConstConstraint` metadata). Behavior mirrors the
+/// `div`/`mod_const` precedent (arithmetic.rs): a non-
+/// positive `step` propagates a NaN/inf through the body,
+/// surfacing at cycle time. If early-fail is required
+/// again, it lands via a future macro extension that
+/// plumbs `#[constraint(PositiveFiniteF64)]` onto const
+/// args (current support is wire-only).
+#[crate::polydat_node(category = Interpolation)]
+fn quantize(
+    input: f64,
+    #[poly_default(1.0f64)] step: crate::derive_support::Const<f64>,
+) -> f64 {
+    (input / *step).round() * *step
 }
 
-
-/// Assembly-time constant validation. See SRD 15 §"Const Constraint Metadata".
-///
-/// `quantize.step` rides on a `PositiveFiniteF64` `ParamSpec`
-/// constraint enforced by Pass 1. `inv_lerp` and `remap` exist as
-/// struct types but aren't yet wired into the factory via FuncSig,
-/// so no validator entries are needed for them — when they're
-/// registered, their `a ≠ b` rule will live here as a relational
-/// check (`FiniteF64` constraints can cover the per-param finite
-/// requirement on the `ParamSpec`s themselves).
-pub(crate) fn validate_node(
-    _name: &str,
-    _consts: &[crate::dsl::factory::ConstArg],
-) -> Result<(), String> {
-    Ok(())
-}
-
-crate::register_nodes!(signatures, build_node, validate_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn lerp_endpoints() {
-        let node = LerpConst::new(10.0, 20.0);
+        let node = Lerp::new(10.0, 20.0);
         let mut out = [Value::None];
         node.eval(&[Value::F64(0.0)], &mut out);
         assert_eq!(out[0].as_f64(), 10.0);
@@ -406,7 +187,7 @@ mod tests {
 
     #[test]
     fn lerp_midpoint() {
-        let node = LerpConst::new(0.0, 100.0);
+        let node = Lerp::new(0.0, 100.0);
         let mut out = [Value::None];
         node.eval(&[Value::F64(0.5)], &mut out);
         assert_eq!(out[0].as_f64(), 50.0);
@@ -420,6 +201,17 @@ mod tests {
         assert!((out[0].as_f64() - 10.0).abs() < 0.001);
         node.eval(&[Value::U64(u64::MAX)], &mut out);
         assert!((out[0].as_f64() - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn scale_range_jit_constants_layout() {
+        // JIT codegen consumes (min, range); the override
+        // must emit that pair regardless of struct field order.
+        let node = ScaleRange::new(10.0, 25.0);
+        let consts = node.jit_constants();
+        assert_eq!(consts.len(), 2);
+        assert_eq!(f64::from_bits(consts[0]), 10.0);
+        assert_eq!(f64::from_bits(consts[1]), 15.0); // range = max - min
     }
 
     #[test]
