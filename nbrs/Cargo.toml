@@ -84,6 +84,7 @@ nbrs-web = { path = "../nbrs-web", version = "0.1.1" }
 nbrs-adapter-stdout = { path = "../adapters/stdout", version = "0.1.1" }
 nbrs-adapter-testkit = { path = "../adapters/testkit", version = "0.1.1" }
 nbrs-adapter-http = { path = "../adapters/http", version = "0.1.1" }
+nbrs-adapter-elasticsearch = { path = "../adapters/elasticsearch", version = "0.1.2" }
 nbrs-adapter-plotter = { path = "../adapters/plotter", version = "0.1.1" }
 # CQL adapter — `default-features = false` so the engine choice
 # flows through nbrs's own feature flags (engine-scylla /

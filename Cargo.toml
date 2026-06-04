@@ -16,6 +16,7 @@ members = [
     "adapters/plotter",
     "adapters/cql",
     "adapters/openapi",
+    "adapters/elasticsearch",
     # Vendored: cassandra-cpp 3.0.2 with the trace_id retrieval
     # surface added that the upstream wrapper omits. See
     # vendor/cassandra-cpp/CHANGES.local.md for the diff
@@ -50,6 +51,7 @@ default-members = [
     "adapters/plotter",
     "adapters/cql",
     "adapters/openapi",
+    "adapters/elasticsearch",
 ]
 
 # Shared package metadata inherited by every member via

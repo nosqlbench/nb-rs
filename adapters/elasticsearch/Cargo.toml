@@ -1,0 +1,24 @@
+[package]
+name = "nbrs-adapter-elasticsearch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Elasticsearch adapter for nb-rs: executes workload operations against an Elasticsearch cluster"
+keywords = ["nosqlbench", "workload", "benchmark", "elasticsearch"]
+categories = ["command-line-utilities", "database"]
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[dependencies]
+nbrs-activity = { path = "../../nbrs-activity", version = "0.1.1", default-features = false }
+polydat = { path = "../../polydat", version = "0.1.0" }
+nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
+# Elasticsearch Rust client. Version "8" tracks ES 8.x. If cargo cannot resolve
+# a stable 8.x release, pin to the latest known alpha (e.g. "=8.15.0-alpha.1")
+# or downgrade to "7" for the 7.17.x stable series — the core API used here
+# (IndexParts, SearchParts, GetParts, DeleteParts, BulkParts) is identical.
+elasticsearch = "8"
+serde_json = "1"
+inventory = "0.3.24"
+tokio = { version = "1", features = ["rt-multi-thread"] }
