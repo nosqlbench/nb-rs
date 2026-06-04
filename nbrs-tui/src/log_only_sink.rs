@@ -498,7 +498,7 @@ fn clear_combined_region<W: Write>(
     let _ = out.flush();
 }
 
-/// Clear the status region drawn by [`draw_status_region`].
+/// Clear the status region most recently rendered into `out`.
 /// Counts the embedded `\n`s in the prior render so a multi-
 /// line status (future expansion) clears all of its rows, not
 /// just the bottom one. Single-line callers see `\r\x1b[K`
@@ -518,29 +518,6 @@ fn clear_status_region<W: Write>(out: &mut W, prior: Option<&str>) {
         let _ = write!(out, "\r\x1b[{}A\x1b[J", lines - 1);
     } else {
         let _ = write!(out, "\r\x1b[K");
-    }
-    let _ = out.flush();
-}
-
-/// Write the status region. Caller has ensured the cursor is
-/// on a clean row (either freshly cleared by
-/// [`clear_status_region`] or just after a log line's `\r\n`).
-/// No trailing newline so the cursor stays at the end of the
-/// final status row — the next [`clear_status_region`] call
-/// computes its climb from there. Emitting an extra `\r\n` to
-/// "park" the cursor below the region would force a scroll on
-/// every render when the status sits at the bottom of the
-/// terminal, which is unworkable for an inline sink.
-///
-/// Embedded `\n` row breaks are upgraded to `\r\n` so the
-/// cursor returns to column 0 even when the sink supervisor
-/// has stdin in raw mode for the Ctrl-T watcher.
-fn draw_status_region<W: Write>(out: &mut W, status: &str) {
-    let mut first = true;
-    for row in status.split('\n') {
-        if !first { let _ = write!(out, "\r\n"); }
-        let _ = write!(out, "{row}");
-        first = false;
     }
     let _ = out.flush();
 }

@@ -351,7 +351,7 @@ mod tests {
             .expect("matter build");
         let mut root = <PolydatKernel as Construction>::root(matter)
             .expect("root from program matter");
-        root.set_wire("n", Value::U64(13));
+        root.set_wire("n", Value::U64(13)).expect("set_wire");
         assert_eq!(root.get_wire("n"), Some(Value::U64(13)));
     }
 

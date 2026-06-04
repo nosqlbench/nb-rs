@@ -24,7 +24,7 @@
 #   bash build.sh           # full build (driver + nbrs)
 #   bash build.sh driver    # build only the C++ driver
 #   bash build.sh cargo     # build only nbrs (driver must exist)
-#   bash build.sh install   # cargo install --path nbrs with the cpp engine
+#   bash build.sh install   # cargo install --path nbrs with all engines linked
 #   bash build.sh docker    # build nbrs entirely inside Docker
 #   bash build.sh clean     # `cargo clean` (this crate) + docker rmi
 #
@@ -440,7 +440,7 @@ clean() {
 
 
 case "${1:-default}" in
-    default|"")
+    default)
         build_driver
         build_cargo
         ;;
@@ -465,7 +465,7 @@ case "${1:-default}" in
         echo "  (default)    Build C++ driver, extract libs, cargo build on host"
         echo "  driver       Build only the C++ driver, extract to target/sysroot/"
         echo "  cargo        Build only nbrs --features engine-cassandra-cpp (driver must exist)"
-        echo "  install      cargo install --path nbrs --features engine-cassandra-cpp (driver must exist)"
+        echo "  install      cargo install --path nbrs --features all-engines (driver must exist)"
         echo "  docker       Build everything inside Docker (no host Rust needed)"
         echo "  clean        cargo clean (this crate's target/) + docker rmi"
         echo ""
