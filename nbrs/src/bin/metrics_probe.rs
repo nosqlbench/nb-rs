@@ -8,7 +8,8 @@ use rusqlite::Connection;
 
 fn main() {
     let path = std::env::args().nth(1)
-        .unwrap_or_else(|| "logs/latest/metrics.db".to_string());
+        .unwrap_or_else(|| nbrs_activity::session::latest_metrics_db()
+            .to_string_lossy().into_owned());
     let conn = Connection::open(&path).expect("open db");
 
     println!("=== families: cycles_* / recall_* ===");

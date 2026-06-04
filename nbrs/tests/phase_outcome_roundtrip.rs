@@ -124,7 +124,7 @@ fn failed_phase_lands_phase_outcomes_row_with_errors() {
     let reporter =
         nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db_path)
             .expect("open metrics.db");
-    let outcomes = reporter.read_phase_outcomes();
+    let outcomes = reporter.read_phase_outcomes(None);
     assert!(!outcomes.is_empty(),
         "phase_outcomes table empty after failing run; stderr:\n{stderr}");
 

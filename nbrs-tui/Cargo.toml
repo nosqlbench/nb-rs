@@ -34,6 +34,11 @@ arc-swap = "1"
 # with the core machine, which goes through the actor handle
 # instead. See SRD-02.
 parking_lot = "0.12"
+# rustyline: just `LineBuffer` + `DefaultHistory` for the
+# nb-shell prompt at the bottom of the inline status surface.
+# `with-file-history` is disabled — we don't persist history
+# to a file by default. `derive` is unused.
+rustyline = { version = "14", default-features = false, features = ["custom-bindings"] }
 
 [dev-dependencies]
 hdrhistogram = "7"

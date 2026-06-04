@@ -77,6 +77,22 @@ pub enum WatcherSignal {
     /// Ctrl-L pressed. Supervisor reaction: clear the screen
     /// — the standard "redraw" behaviour for cooked terminals.
     Redraw,
+    /// Alt+Up pressed. Supervisor reaction: grow the prompt
+    /// window by one row.
+    GrowPrompt,
+    /// Alt+Down pressed. Supervisor reaction: shrink the
+    /// prompt window by one row.
+    ShrinkPrompt,
+    /// Ctrl-/ pressed. Supervisor reaction: toggle the
+    /// prompt's keystroke-help overlay.
+    ToggleHelp,
+    /// Any other keypress — printable chars, line-editing
+    /// chords, history nav, Enter, etc. Forwarded to the
+    /// prompt without interpretation. Supervisor receives the
+    /// raw [`crossterm::event::KeyEvent`] inside [`Self::Key`]
+    /// so the [`crate::prompt_state::PromptState`] can apply
+    /// the same key translation as a terminal-native editor.
+    Key(crossterm::event::KeyEvent),
 }
 
 /// Handle the supervisor holds while the watcher is running.
@@ -156,34 +172,44 @@ fn run_loop(tx: mpsc::Sender<WatcherSignal>, stop: Arc<AtomicBool>) {
         };
         match evt {
             Event::Key(k) if k.kind == KeyEventKind::Press => {
+                // Global hotkeys first — these never reach the
+                // prompt because they have process-wide meaning
+                // (interrupt, suspend, redraw, mode toggle,
+                // window resize, help overlay). Everything else
+                // is forwarded as a raw key for the prompt to
+                // interpret with its own keymap.
                 let signal = match (k.code, k.modifiers) {
                     (KeyCode::Char('t'), m) | (KeyCode::Char('T'), m)
                         if m.contains(KeyModifiers::CONTROL) =>
                     {
-                        Some(WatcherSignal::ToggleTui)
+                        WatcherSignal::ToggleTui
                     }
                     (KeyCode::Char('c'), m) | (KeyCode::Char('C'), m)
                         if m.contains(KeyModifiers::CONTROL) =>
                     {
-                        Some(WatcherSignal::Interrupt)
+                        WatcherSignal::Interrupt
                     }
                     (KeyCode::Char('z'), m) | (KeyCode::Char('Z'), m)
                         if m.contains(KeyModifiers::CONTROL) =>
                     {
-                        Some(WatcherSignal::Suspend)
+                        WatcherSignal::Suspend
                     }
                     (KeyCode::Char('l'), m) | (KeyCode::Char('L'), m)
                         if m.contains(KeyModifiers::CONTROL) =>
                     {
-                        Some(WatcherSignal::Redraw)
+                        WatcherSignal::Redraw
                     }
-                    _ => None,
+                    (KeyCode::Up, m) if m.contains(KeyModifiers::ALT) =>
+                        WatcherSignal::GrowPrompt,
+                    (KeyCode::Down, m) if m.contains(KeyModifiers::ALT) =>
+                        WatcherSignal::ShrinkPrompt,
+                    (KeyCode::Char('/'), m) if m.contains(KeyModifiers::CONTROL) =>
+                        WatcherSignal::ToggleHelp,
+                    _ => WatcherSignal::Key(k),
                 };
-                if let Some(s) = signal {
-                    // Supervisor receiver dropped → run is over,
-                    // exit the loop cleanly.
-                    if tx.send(s).is_err() { return; }
-                }
+                // Supervisor receiver dropped → run is over,
+                // exit the loop cleanly.
+                if tx.send(signal).is_err() { return; }
             }
             _ => {}
         }

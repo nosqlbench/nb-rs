@@ -75,9 +75,75 @@ Known parameter categories:
 - **CQL**: `hosts`, `host`, `port`, `keyspace`, `consistency`,
   `username`, `password`, `request_timeout_ms`
 - **HTTP**: `base_url`, `timeout`
+- **Watch**: `watch` — register subprocess-based phase-end
+  triggers (see [Watch Triggers](#watch-triggers) below)
 
 Workload params (from `params:` section) are also accepted on
 CLI and override YAML defaults.
+
+---
+
+### Watch Triggers
+
+`watch=<spec>[,<spec>...]` registers one or more phase-end
+triggers that fire after every successful or failed phase.
+Each trigger spawns an `nbrs` subprocess to re-render a
+report or plot against the live session database, so an
+external viewer (image viewer, browser, `tail -F`-style
+watcher) sees up-to-date output as the run progresses.
+
+Specs:
+
+| Spec form              | Subprocess invoked                            |
+|------------------------|-----------------------------------------------|
+| `report`               | `nbrs report all --session <S>`               |
+| `report:<args>`        | `nbrs report <args> --session <S>`            |
+| `plot`                 | `nbrs plot all --session <S>`                 |
+| `plot:<name>`          | `nbrs plot --name <name> --session <S>`       |
+
+`<S>` is the active run's session directory (resolved from
+the same `--session=`/`logs/latest` lookup the report
+subcommand uses).
+
+Examples:
+
+```
+# Re-render every stored plot after each phase end:
+nbrs run workload=fknn.yaml watch=plot
+
+# Re-render one specific plot — point an image viewer at
+# logs/latest/throughput.svg and it'll refresh per phase:
+nbrs run workload=fknn.yaml watch=plot:throughput
+
+# Re-render an HTML report:
+nbrs run workload=fknn.yaml watch=report:fmt=html
+
+# Stack triggers — both fire on each phase end, in
+# registration order:
+nbrs run workload=fknn.yaml watch=report,plot:recall,plot:throughput
+```
+
+**Semantics:**
+
+- Triggers run on a single background worker thread shared
+  across all registrations. A slow subprocess won't block
+  the executor's next phase, but two triggers can't run in
+  parallel — they're sequenced.
+- Subprocess `stdout` is suppressed (the re-render's
+  side effect is the generated file, not its console text).
+  Subprocess `stderr` surfaces as the parent run's WARN log
+  on non-zero exit.
+- A panic inside a trigger does not stop subsequent triggers
+  in the chain — each fire is `catch_unwind`-guarded.
+- An unknown spec (e.g. `watch=garbage`) emits a startup
+  warning and is skipped; the run continues uninterrupted.
+- When no `watch=` is given the registry is empty and the
+  worker thread is never spawned — zero overhead.
+
+Implementation: `nbrs/src/watch_trigger.rs` (subprocess
+trigger), `nbrs-activity/src/phase_end_triggers.rs`
+(content-agnostic registry the executor fires into after
+every `phase_completed` / `phase_failed`).
 
 ---
 

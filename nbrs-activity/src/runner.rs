@@ -55,6 +55,27 @@ pub const KNOWN_PARAMS: &[&str] = &[
     // under `diagnostic` so step-debug / cycle-replay can see
     // values the workload doesn't otherwise consume.
     "kernel_opt",
+    // `watch=<spec>[,<spec>...]` — register phase-end triggers
+    // that re-render plots / reports as subprocesses after
+    // every phase boundary. Consumed in nbrs/src/run.rs
+    // (calls `crate::watch_trigger::register_watch_triggers`);
+    // the runner validator only needs to know the key is
+    // accepted so the unrecognized-param guard doesn't reject
+    // it before run.rs's handler fires.
+    "watch",
+    // SRD-77 — `scope=missing|changed|all` refine policy.
+    // Only meaningful when `--refine` is also set (the verb's
+    // own dispatch enforces this). `missing` (default) skips
+    // prior-completed phases; `all` runs every phase under
+    // the bumped exec_id; `changed` is reserved (see runner
+    // refine-scope handling).
+    "scope",
+    // SRD-77 — `on_removed=error|keep|drop` policy for
+    // phases that have prior outcomes but are no longer in
+    // the current workload. Default `error` refuses to
+    // proceed; `keep` retains prior outcomes (no work);
+    // `drop` is reserved.
+    "on_removed",
 ];
 
 /// Convert the workload-model `SummaryConfig` (parsed from the
@@ -65,6 +86,7 @@ pub const KNOWN_PARAMS: &[&str] = &[
 /// so both produce identical output for the same spec.
 pub fn report_config_from_summary(
     config: &nbrs_workload::model::SummaryConfig,
+    exec_id_filter: Option<u64>,
 ) -> nbrs_metrics::reporters::sqlite::ReportConfig {
     nbrs_metrics::reporters::sqlite::ReportConfig {
         columns: config.columns.clone(),
@@ -79,6 +101,7 @@ pub fn report_config_from_summary(
             }
         }).collect(),
         show_details: config.show_details,
+        exec_id_filter,
     }
 }
 
@@ -111,7 +134,8 @@ pub fn scenarios_in_workload_file(path: &str) -> Vec<String> {
 /// crates it wants available.
 /// Execution depth: how far through the pipeline to go.
 ///
-/// Ordering (shallowest → deepest): `Phase < Op < Cycle < Full`.
+/// Ordering (shallowest → deepest):
+/// `Phase < Dispenser < Op < Cycle < Full`.
 /// `PartialOrd`/`Ord` follow this ordering so depth-gating
 /// sites can write `ctx.diag.depth >= ExecDepth::Cycle` etc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -120,12 +144,25 @@ pub enum ExecDepth {
     /// kernels / adapter `map_op` / metric instruments. No
     /// adapters created.
     Phase,
-    /// SRD-13d §2.3 — phase walk + op-template kernels
-    /// instanced; adapter `map_op` called; metric instruments
-    /// registered (duplicate-family collisions from
-    /// `Component::register_instrument` surface here);
-    /// no cycles run. Adds the scope-flattening summary dump
-    /// at the end (SRD-13d §4.9, §5.3).
+    /// `dryrun=dispenser`: phase walk + every op template's
+    /// dispenser is constructed (adapter `map_op` fires; the
+    /// wrapper plan resolves and wraps; the cursor source
+    /// factory is built). NO cycles run. This is the
+    /// construction-time inspection level: catches `map_op`
+    /// failures (bad prepared statement, schema mismatch),
+    /// wrapper-resolver violations, source-factory init
+    /// errors — without paying any per-cycle cost. Distinct
+    /// from `Phase` (which builds NO dispensers) and `Op`
+    /// (which runs full cycles with the wrapper short-
+    /// circuit).
+    Dispenser,
+    /// `dryrun=op`: phase walk + dispenser construction +
+    /// per-cycle wrapper-stack execution. The DRYRUN wrapper
+    /// short-circuits the inner adapter `execute()`; every
+    /// other layer (bind-point eval, wrapper pulls, metric
+    /// timing) runs faithfully. The auto-bump in the runner
+    /// lifts `Op` to `Cycle` so the cycle loop actually
+    /// dispatches.
     Op,
     /// Run cycles with dry-run adapter.
     Cycle,
@@ -171,6 +208,7 @@ impl DiagnosticConfig {
         for flag in spec.split(',') {
             match flag.trim() {
                 "phase" => { config.depth = ExecDepth::Phase; depth_set = true; }
+                "dispenser" => { config.depth = ExecDepth::Dispenser; depth_set = true; }
                 "op" => { config.depth = ExecDepth::Op; depth_set = true; }
                 "cycle" => { config.depth = ExecDepth::Cycle; depth_set = true; }
                 "full" => { config.depth = ExecDepth::Full; depth_set = true; }
@@ -202,9 +240,9 @@ impl DiagnosticConfig {
                 // `params.get("dryrun")` lookup below and bumps
                 // depth to Cycle so the cycle path runs. The depth-
                 // config parser tolerates these tokens silently so
-                // an operator passing `dryrun=emit` doesn't see a
+                // an operator passing `dryrun=fields` doesn't see a
                 // misleading "unknown flag" warning.
-                "emit" | "silent" | "json" => {}
+                "fields" | "silent" | "json" => {}
                 // `dryrun=kernels` is a planning-only mode — it
                 // builds the scope tree, then walks every
                 // materialised scope and prints its polydat
@@ -869,6 +907,21 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         diag = DiagnosticConfig::parse(spec);
     }
 
+    // "Never Ignore Silently" — scenario-parse errors are
+    // ALWAYS fatal regardless of strict mode. The parser used
+    // to silently drop unknown scenario-node keys (e.g.
+    // `iterate:` misspellings, stray `phases:` siblings),
+    // which led to downstream "phase 'iterate' not found"
+    // confusion masking the real bug. The parser now collects
+    // every malformed-node case here and we refuse to dispatch.
+    if !workload.scenario_parse_errors.is_empty() {
+        return Err(format!(
+            "scenario parse error{plural} — workload is malformed:\n  - {msgs}",
+            plural = if workload.scenario_parse_errors.len() == 1 { "" } else { "s" },
+            msgs = workload.scenario_parse_errors.join("\n  - "),
+        ));
+    }
+
     // SRD-46 + SRD-15: surface report-block warnings collected
     // by the parser. Strict mode promotes to a hard error so a
     // workload with `defaults`-collisions or empty groups can't
@@ -885,30 +938,45 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         }
     }
 
-    // Dry-run mode: dryrun=cycle uses "silent" adapter
+    // Dry-run mode resolution.
+    //
+    // The mode string is a LABEL — there is no "silent" or
+    // "op" or "cycle" adapter. The real adapter from the
+    // workload is constructed in full (connect, prepare,
+    // metadata, dispenser init); the `DryRunWrapper` is
+    // installed at the outermost wrapper position and per-
+    // cycle short-circuits the inner stack so the adapter's
+    // `execute()` never fires. The mode string carries
+    // operator intent through the log (`dryrun: injected
+    // `dryrun: <mode>` …`) and only the `fields` mode has a
+    // structural side-effect (forces the fields wrapper on so
+    // rendered op text reaches stdout).
+    //
+    // Mapping:
+    //   dryrun=cycle  → mode="cycle",  wrapper short-circuit
+    //   dryrun=op     → mode="op",     wrapper short-circuit
+    //   dryrun=silent → mode="silent", wrapper short-circuit
+    //   dryrun=fields → mode="fields", wrapper short-circuit + fields-render on
+    //   dryrun=full   → mode=None,     real execution
     let dry_run: Option<&str> = if diag.depth == ExecDepth::Cycle {
-        Some("silent")
+        Some("cycle")
     } else {
         params.get("dryrun").and_then(|s| match s.as_str() {
-            "emit" => Some("emit"),
+            "fields" => Some("fields"),
             "silent" => Some("silent"),
-            _ => None,
+            "op"     => Some("op"),
+            _        => None,
         })
     };
 
-    // Unification: the dryrun adapters (`emit` / `silent`)
-    // need ops to actually fire — they substitute for the
-    // real driver and print or drop each rendered op. The
-    // phased walker gates `run_phase` on `diag.depth >= Op`
-    // AND short-circuits inside `run_phase` when depth <
-    // Cycle (executor.rs's "fire phase_completed early"
-    // block). So `dryrun=emit` needs depth=Cycle to dispatch
-    // ops without producing real driver-side I/O.
-    // Pre-unification the single-activity branch bypassed
-    // both gates; this preserves the legacy contract.
-    if matches!(dry_run, Some("emit") | Some("silent"))
-        && diag.depth < ExecDepth::Cycle
-    {
+    // Auto-bump depth to Cycle for any dryrun mode that
+    // installs the wrapper — cycles must dispatch for the
+    // wrapper to have anything to short-circuit. Without the
+    // bump, `dryrun=silent` / `dryrun=fields` / `dryrun=op`
+    // would silently produce no output because the
+    // phase-early-complete branch at executor.rs:2998 elides
+    // the cycle loop when depth < Cycle.
+    if dry_run.is_some() && diag.depth < ExecDepth::Cycle {
         diag.depth = ExecDepth::Cycle;
     }
 
@@ -931,7 +999,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 let p = std::path::PathBuf::from(s);
                 if p.is_file() { p }
                 else if p.is_dir() { p.join("checkpoint.jsonl") }
-                else { crate::session::default_logs_root().join(s).join("checkpoint.jsonl") }
+                else { crate::session::default_sessions_root().join(s).join("checkpoint.jsonl") }
             });
         let resume_latest = params.get("resume_latest")
             .map(|s| s != "false" && s != "0")
@@ -941,11 +1009,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             // Resolve the symlink to a concrete session dir
             // *now* — once `Session::new` runs the symlink will
             // be repointed at the new session.
-            let latest = crate::session::default_logs_root().join("latest");
+            let latest = crate::session::default_sessions_root().join("latest");
             let resolved = std::fs::read_link(&latest).ok()
                 .map(|target| {
                     if target.is_absolute() { target }
-                    else { crate::session::default_logs_root().join(target) }
+                    else { crate::session::default_sessions_root().join(target) }
                 })
                 .map(|d| d.join("checkpoint.jsonl"));
             explicit.or(resolved)
@@ -954,16 +1022,175 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         }
     };
 
+    // SRD-77 refine: the `nbrs refine` verb injects `--refine`
+    // into argv before delegating to the runner. Detected here
+    // so we can load the session's prior `phase_outcomes` and
+    // build a skip plan + bump `exec_id` before the session is
+    // re-attached. Implies `--resume-latest` semantics for
+    // session dir resolution (the resolver at line 950+ already
+    // produces the right `resume_target` when `--resume-latest`
+    // was passed alongside `--refine` by `refine_command`).
+    let refine_requested = args.iter().any(|a| a == "--refine");
+
     // Session: root context for this run. Creates logs/{scenario}_{timestamp}/
     // for fresh runs; reuses the prior session dir when resuming
     // so the metrics.db is appended-to in-place per SRD-44
     // §"Wholesale metrics-purge".
     let scenario_for_session = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
-    let session = match resume_target.as_ref() {
-        Some(p) if p.exists() => {
+    // SRD-77 — refine_plan is populated only when:
+    //   1. `--refine` was passed (refine verb is in flight)
+    //   2. The resume_target resolves to an existing session dir
+    // Computed BEFORE Session construction so the plan's
+    // `next_exec_id` can flow into `Session::refine`.
+    // SRD-77 refine scope. Default `missing` (skip phases with
+    // a prior completed outcome) when `--refine` is set without
+    // an explicit `scope=`. `scope=all` builds the plan for
+    // exec_id bumping + session re-attach but leaves the skip
+    // set empty, so every phase runs and new outcomes overwrite
+    // the prior ones (the cardinal history stays — prior rows
+    // keep their old exec_id, new rows land under the bumped
+    // exec_id). `scope=changed` requires `phase_hash` storage
+    // on PhaseOutcome (follow-up push) and is rejected here
+    // with a "not yet implemented" diag so the operator isn't
+    // silently dropped to `missing` semantics.
+    let refine_scope: Option<&str> = params.get("scope")
+        .map(|s| s.as_str())
+        .filter(|_| refine_requested);
+    let refine_plan: Option<Arc<crate::refine_plan::RefinePlan>> = if refine_requested {
+        resume_target.as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .and_then(|prior_dir| {
+                if !prior_dir.exists() {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "refine: prior session dir not found ({}); \
+                         running every phase as if this were a fresh `nbrs run`",
+                        prior_dir.display());
+                    return None;
+                }
+                let mut plan = crate::refine_plan::RefinePlan::load_from_session_dir(&prior_dir);
+                if plan.is_none() {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "refine: no readable phase_outcomes in {}; \
+                         running every phase as if this were a fresh `nbrs run`",
+                        prior_dir.display());
+                }
+                if let Some(p) = plan.as_mut() {
+                    p.scope = match refine_scope {
+                        Some("all") => {
+                            crate::diag!(crate::observer::LogLevel::Info,
+                                "refine: scope=all — every phase will run \
+                                 under exec_id={}", p.next_exec_id);
+                            crate::refine_plan::RefineScope::All
+                        }
+                        Some("changed") => {
+                            crate::diag!(crate::observer::LogLevel::Info,
+                                "refine: scope=changed — comparing each \
+                                 phase's program hash against the prior \
+                                 outcome; unchanged phases skip, changed \
+                                 phases re-run under exec_id={}",
+                                p.next_exec_id);
+                            crate::refine_plan::RefineScope::Changed
+                        }
+                        _ => crate::refine_plan::RefineScope::Missing,
+                    };
+                }
+                plan.map(Arc::new)
+            })
+    } else {
+        None
+    };
+    // SRD-77 — `--on-removed=` policy. When refine attaches to
+    // a session whose prior outcomes name phases the current
+    // workload no longer declares, the default behavior is
+    // ERROR (refuse to proceed) — silently keeping orphan
+    // outcomes hides intent, silently dropping them loses
+    // data. `--on-removed=keep` retains them (no work);
+    // `--on-removed=drop` is reserved for a future push that
+    // wires the deletion + interactive confirm.
+    //
+    // The check compares the prior `phase_name` set against
+    // the current workload's `phases:` map keys. Sweep-cell
+    // variants (same name, different labels) are aggregated by
+    // name here — a missing name covers every prior cell of
+    // it. Tighter (name+labels) granularity is a follow-up
+    // when label-set comparison becomes load-bearing.
+    let on_removed_policy: &str = params.get("on_removed")
+        .map(|s| s.as_str())
+        .unwrap_or("error");
+    if let Some(plan) = refine_plan.as_ref() {
+        let current_names: std::collections::HashSet<&str> = phases.keys()
+            .map(|s| s.as_str())
+            .collect();
+        let mut removed: Vec<&str> = plan.seen_identities.iter()
+            .map(|(name, _)| name.as_str())
+            .filter(|n| !current_names.contains(n))
+            .collect();
+        removed.sort();
+        removed.dedup();
+        if !removed.is_empty() {
+            match on_removed_policy {
+                "error" => {
+                    return Err(format!(
+                        "refine: workload removes {n} phase{plural} that have \
+                         prior outcomes in this session:\n  - {names}\n\
+                         Pass `on_removed=keep` to retain the prior outcomes \
+                         (no work, no error); `on_removed=drop` is reserved \
+                         (not yet implemented). Default `error` refuses to \
+                         proceed so accidental axis-trim doesn't drop history \
+                         silently.",
+                        n = removed.len(),
+                        plural = if removed.len() == 1 { "" } else { "s" },
+                        names = removed.join("\n  - "),
+                    ));
+                }
+                "keep" => {
+                    crate::diag!(crate::observer::LogLevel::Info,
+                        "refine: on_removed=keep — retaining prior outcomes \
+                         for {n} removed phase(s): {names}",
+                        n = removed.len(),
+                        names = removed.join(", "));
+                }
+                "drop" => {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "refine: on_removed=drop is reserved — not yet \
+                         implemented. Treating as `keep` (retaining prior \
+                         outcomes) for now: {names}",
+                        names = removed.join(", "));
+                }
+                other => {
+                    return Err(format!(
+                        "refine: unknown on_removed= policy '{other}'; \
+                         expected `error` (default), `keep`, or `drop`"
+                    ));
+                }
+            }
+        }
+    }
+
+    let session = match (refine_plan.as_ref(), resume_target.as_ref()) {
+        (Some(plan), Some(p)) if p.exists() => {
             let prior_dir = p.parent()
                 .map(|d| d.to_path_buf())
-                .unwrap_or_else(|| std::path::PathBuf::from("logs/latest"));
+                .unwrap_or_else(crate::session::latest_session_dir);
+            crate::diag!(crate::observer::LogLevel::Info,
+                "refine: attached to session {}; \
+                 prior outcomes={}, completed phases to skip={}, \
+                 next exec_id={}",
+                prior_dir.display(),
+                plan.prior_outcomes_seen,
+                plan.completed.len(),
+                plan.next_exec_id);
+            crate::session::Session::refine(
+                prior_dir,
+                workload_file.as_deref().unwrap_or("inline"),
+                scenario_for_session,
+                plan.next_exec_id,
+            )
+        }
+        (_, Some(p)) if p.exists() => {
+            let prior_dir = p.parent()
+                .map(|d| d.to_path_buf())
+                .unwrap_or_else(crate::session::latest_session_dir);
             crate::session::Session::resume(
                 prior_dir,
                 workload_file.as_deref().unwrap_or("inline"),
@@ -978,9 +1205,9 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     };
     let session_id = session.id.clone();
     // SRD-77 — exec_id is the active execution's identity
-    // within the session. Today every session has exactly one
-    // execution (`exec_id = 1`); the `refine` verb will
-    // eventually bump this per follow-up invocation.
+    // within the session. `Session::refine` populates this from
+    // the prior outcomes' max+1; `Session::resume` /
+    // `Session::new_with_args` set it to `1`.
     let exec_id = session.execution.exec_id;
 
     // dryrun=controls: defer the tree walk until after phase
@@ -1088,6 +1315,33 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             r.set_metadata("cli_params", &cli_text);
             crate::diag!(crate::observer::LogLevel::Info, "metrics: {}",
                 sqlite_path.display());
+
+            // SRD-77 — insert the in-flight execution row.
+            // Carries the same workload-yaml + cli-params
+            // snapshot the metadata table already stores, so
+            // an operator looking at `executions` alone (the
+            // cardinal-history surface) has the full audit
+            // payload without joining session_metadata.
+            // `ended_at_nanos` / `disposition` stay NULL until
+            // the shutdown-flush guard updates them.
+            // SRD-77 — `scope` reflects the actual --scope=
+            // (or `scope=`) param when refine is active. Only
+            // refine writes a non-NULL scope; run/resume leave
+            // it NULL.
+            let scope_for_row: Option<&str> = if refine_requested {
+                Some(refine_scope.unwrap_or("missing"))
+            } else {
+                None
+            };
+            r.insert_execution_start(
+                &session.id,
+                session.execution.exec_id,
+                session.execution.verb,
+                scope_for_row,
+                session.execution.started_at_nanos,
+                workload_source_text.as_deref().unwrap_or(""),
+                &cli_text,
+            );
             r
         })
         .map_err(|e| crate::diag!(crate::observer::LogLevel::Warn,
@@ -2151,9 +2405,17 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 .map_err(|e| format!("schedule= param: {e}"))?,
             None => crate::scheduler::ScheduleSpec::default_serial(),
         });
+        // `&str` → `&'static str` so the activity config can
+        // carry the mode label across thread boundaries
+        // without lifetime gymnastics. Every mode the resolver
+        // above produces must appear here, otherwise the
+        // wrapper-install path silently sees `None` and
+        // DRYRUN never installs.
         let dry_run_static: Option<&'static str> = match dry_run {
             Some("silent") => Some("silent"),
-            Some("emit") => Some("emit"),
+            Some("fields") => Some("fields"),
+            Some("cycle")  => Some("cycle"),
+            Some("op")     => Some("op"),
             _ => None,
         };
 
@@ -2193,6 +2455,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             merged_params: merged_params.clone(),
             dry_run: dry_run_static,
             phase_filter: phase_filter.clone(),
+            refine_plan: refine_plan.clone(),
             diag: {
                 let mut d = diag.clone();
                 d.depth = ExecDepth::Phase;
@@ -2333,7 +2596,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let parent_for_keep_check = if let Some(p) = session.output_dir.parent() {
             p.to_path_buf()
         } else {
-            crate::session::default_logs_root()
+            crate::session::default_sessions_root()
         };
         let session_keep = crate::session::resolve_session_dir(&args).session_keep;
         struct EndOfRunNoticeGuard {
@@ -2457,13 +2720,18 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // so we close at the session root.
         cadence_reporter.close_path(&Labels::of("session", &session.id));
 
-        // SRD-13d Phase 7 — `dryrun=op` scope-flattening summary.
-        // Phase walk has just completed; scope tree carries final
-        // `materialised` / `logical_name` marks (set by the
-        // workload-load classifier). Dump now so the diagnostic
-        // surfaces phase-init artifacts (registered metrics,
-        // adapter map_op calls) in the same run.
-        if diag.depth == ExecDepth::Op {
+        // SRD-13d Phase 7 — `dryrun=dispenser` scope-flattening
+        // summary. Phase walk has just completed; scope tree
+        // carries final `materialised` / `logical_name` marks
+        // (set by the workload-load classifier). Dump now so the
+        // diagnostic surfaces phase-init artifacts (registered
+        // metrics, adapter map_op calls) in the same run. Used
+        // to fire for `Op` depth; since the auto-bump now lifts
+        // `dryrun=op` to `Cycle` (full cycle execution with
+        // wrapper short-circuit), the scope-flattening surface
+        // moved to `dryrun=dispenser` — the explicit "build
+        // every dispenser but don't run cycles" mode.
+        if diag.depth == ExecDepth::Dispenser {
             let mut out = std::io::stdout();
             if let Err(e) = render_scope_flattening_summary(&scope_tree, &mut out) {
                 crate::diag!(crate::observer::LogLevel::Warn,
@@ -2604,7 +2872,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     let cfg = &active_summaries[name];
                     let (basename, format) =
                         nbrs_metrics::reporters::sqlite::derive_name_and_format(name);
-                    let report_config = report_config_from_summary(cfg);
+                    // SRD-77 — the in-run summary is naturally
+                    // scoped to the current execution; qualifier
+                    // narrows to this run's exec_id so a refine
+                    // doesn't render rows from prior runs.
+                    let report_config = report_config_from_summary(cfg, Some(exec_id));
                     let rendered = reporter.format_summary_with_format(
                         &report_config, &format);
                     if rendered.is_empty() { continue; }
@@ -2652,6 +2924,32 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         if let Err(e) = render_controls_tree(&session.component, &mut out) {
             crate::diag!(crate::observer::LogLevel::Warn,
                 "warning: rendering controls: {e}");
+        }
+    }
+
+    // SRD-77 — close out the executions row with the
+    // computed disposition + end timestamp. Walks the scene
+    // tree's session disposition (success iff every phase
+    // ended cleanly) and writes both into the in-flight row.
+    // Uncleanly-exiting runs (Ctrl-C, panic) skip this step;
+    // their `ended_at_nanos` stays NULL, which the read side
+    // surfaces as "execution in flight / unclean exit"
+    // distinct from a recorded SUCCESS/FAILURE outcome.
+    {
+        let disposition = crate::scene_tree::with_global(|t| {
+            t.session_disposition().label()
+        }).unwrap_or("UNKNOWN");
+        let ended_at_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        if let Ok(mut g) = sqlite_reporter.lock()
+            && let Some(r) = g.as_mut()
+        {
+            r.update_execution_end(
+                &session_id, exec_id,
+                ended_at_nanos, disposition,
+            );
         }
     }
 
@@ -2757,7 +3055,7 @@ fn print_kernel_for_scope(
     } else {
         node.logical_name.clone()
     };
-    let depth_indent = "  ".repeat(node.depth);
+    let depth_indent = " ".repeat(node.depth);
     println!("{depth_indent}{green}●{reset} {bold}{cyan}{logical}{reset} \
               {dim}(depth={}, kind={:?}){reset}",
         node.depth, node.kind);
@@ -3811,7 +4109,7 @@ fn format_scenario_nodes(
     out: &mut String,
 ) {
     use nbrs_workload::model::ScenarioNode::*;
-    let indent = "  ".repeat(depth);
+    let indent = " ".repeat(depth);
     for node in nodes {
         match node {
             Phase(name) => {
@@ -4023,6 +4321,7 @@ const RECOGNIZED_BARE_FLAGS: &[&str] = &[
     "--strict",              // SRD-15 strict-mode toggle.
     "--resume-latest",       // SRD-44: resume from logs/latest.
     "--force-retry-failed",  // SRD-44: prepend retry,warn to errors.
+    "--refine",              // SRD-77: enable refine-mode skip-plan loading.
 ];
 
 /// Strip a single layer of matching outer quotes (single or

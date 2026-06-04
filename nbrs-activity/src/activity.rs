@@ -104,6 +104,17 @@ pub struct ActivityConfig {
     /// reifies at `map_op` time (CQL: prepare + metadata) is
     /// available under dryrun exactly as it is under a real run.
     pub dry_run_mode: Option<String>,
+    /// `dryrun=dispenser`: when true, `run_with_adapters`
+    /// returns cleanly after every op template's dispenser is
+    /// constructed (adapter `map_op` fires, the wrapper plan
+    /// resolves and wraps, the per-template pull plan seals).
+    /// No fiber pool is spawned, no cycles run. Lets the
+    /// operator verify the full construction pipeline ran
+    /// without paying any per-cycle cost.
+    ///
+    /// Set from `ExecCtx::diag.depth` at phase-attach time —
+    /// `< Cycle` flips this on, `>= Cycle` leaves it off.
+    pub stop_after_dispenser_init: bool,
 }
 
 impl Default for ActivityConfig {
@@ -126,6 +137,7 @@ impl Default for ActivityConfig {
             cli_readout_override: None,
             snapshot_writer: None,
             dry_run_mode: None,
+            stop_after_dispenser_init: false,
         }
     }
 }
@@ -983,29 +995,32 @@ impl Activity {
                         "dryrun".into(),
                         serde_json::Value::String(mode.to_string()),
                     );
-                    // dryrun=emit also forces the emit wrapper
+                    // dryrun=fields also forces the fields wrapper
                     // on so the rendered op text reaches stdout
                     // even though DRYRUN short-circuits the
-                    // adapter call. emit is composed OUTER of
-                    // dryrun (see wrapper_resolver::DEFAULT_ORDER),
-                    // so its pre-execute render runs first; the
+                    // adapter call. The fields wrapper is composed
+                    // OUTER of dryrun (see
+                    // wrapper_resolver::DEFAULT_ORDER), so its
+                    // pre-execute render runs first; the
                     // subsequent DRYRUN short-circuit suppresses
                     // the real adapter call.
-                    if mode == "emit" {
+                    if mode == "fields" {
                         clone.params.insert(
-                            "emit".into(),
+                            "fields".into(),
                             serde_json::Value::Bool(true),
                         );
                     }
                     clone
                 })
                 .collect();
-            crate::diag!(crate::observer::LogLevel::Info,
-                "dryrun: injected `dryrun: {}` marker into {} op template(s); \
-                 DRYRUN wrapper will install outermost and short-circuit \
-                 every op (inner adapter, verify, metrics, poll, etc. will \
-                 not fire).",
-                mode, templates_owned.len());
+            // The user passed `dryrun=<mode>` on the CLI — they
+            // already know what they asked for. Keep the
+            // marker-injection record at Debug so step-through /
+            // session-log audits can still find it without
+            // narrating it back on stderr every phase.
+            crate::diag!(crate::observer::LogLevel::Debug,
+                "dryrun={mode}: injected marker into {n} op template(s)",
+                mode = mode, n = templates_owned.len());
             &templates_owned[..]
         } else {
             activity.op_sequence.templates()
@@ -1535,11 +1550,12 @@ impl Activity {
                                     }
                                 }
                             }
-                            crate::wrappers::emit::NAME => {
-                                // Capture op_fields so emit can render
-                                // the rendered op text at cycle time.
-                                // Stable insertion order isn't guaranteed
-                                // by HashMap, but ParsedOp.op is small
+                            crate::wrappers::fields::NAME => {
+                                // Capture op_fields so the fields
+                                // wrapper can render the rendered op
+                                // text at cycle time. Stable
+                                // insertion order isn't guaranteed by
+                                // HashMap, but ParsedOp.op is small
                                 // enough that a deterministic
                                 // alphabetical sort keeps the printed
                                 // output stable across runs.
@@ -1548,7 +1564,7 @@ impl Activity {
                                     .map(|(k, v)| (k.clone(), v.clone()))
                                     .collect();
                                 op_fields.sort_by(|a, b| a.0.cmp(&b.0));
-                                current = crate::wrappers::EmitDispenser::wrap_with_op_fields(
+                                current = crate::wrappers::FieldsDispenser::wrap_with_op_fields(
                                     current.clone(), &template.name, op_fields,
                                 );
                                 false
@@ -1719,6 +1735,21 @@ impl Activity {
         // Register dispensers for adapter-specific metrics capture
         activity.metrics.set_dispensers(dispensers.clone());
         let pull_plans_per_template = Arc::new(pull_plans_per_template);
+
+        // `dryrun=dispenser` exit point. Every op template's
+        // dispenser is constructed (map_op succeeded, wrapper
+        // plan resolved, pull plan sealed). Nothing else needs
+        // to happen for the operator to know the construction
+        // pipeline is healthy — return cleanly without spawning
+        // the fiber pool or the progress thread.
+        if activity.config.stop_after_dispenser_init {
+            crate::diag!(crate::observer::LogLevel::Info,
+                "dryrun=dispenser: {} op-template dispenser(s) constructed; \
+                 stopping before cycle execution",
+                dispensers.len());
+            return false;
+        }
+
         let validation_metrics = Arc::new(validation_metrics);
         // Share the validation-metrics handle with ActivityMetrics so
         // the progress thread (below) can read live relevancy aggregates.
@@ -2782,19 +2813,14 @@ async fn executor_task(
                     if satisfied {
                         // SRD-75 metric_name emission is wired
                         // when the per-fiber mutable kernel handle
-                        // path settles (the phase scope kernel is
-                        // currently held as `Arc<PolydatKernel>` for
-                        // the predicate's read-only path; an
-                        // interior-mutability shim or a write-via-
-                        // wires path lands in a follow-up). For
-                        // now log the elapsed time at Info so
-                        // operators can pin down loop duration in
-                        // session.log without depending on the
-                        // metric write.
+                        // Elapsed time goes to the metric (when one
+                        // is configured); operators read it there.
+                        // Logging it at INFO every loop is just
+                        // narrating the happy path.
                         if let Some(name) = &pp.metric_name {
                             let elapsed = pp.started_at.elapsed().as_secs_f64();
                             crate::diag!(
-                                crate::observer::LogLevel::Info,
+                                crate::observer::LogLevel::Debug,
                                 "phase-poll: predicate satisfied; {name}={elapsed:.3}s",
                             );
                         }

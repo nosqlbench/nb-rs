@@ -44,7 +44,7 @@ fn resolve_checkpoint_path(arg: &str) -> PathBuf {
     } else if p.is_dir() {
         p.join("checkpoint.jsonl")
     } else {
-        PathBuf::from("logs").join(arg).join("checkpoint.jsonl")
+        nbrs_activity::session::session_dir_named(arg).join("checkpoint.jsonl")
     }
 }
 
@@ -485,10 +485,14 @@ mod tests {
         assert_eq!(resolve_checkpoint_path(nested.to_str().unwrap()), nested);
         // 2) Directory path → joins checkpoint.jsonl.
         assert_eq!(resolve_checkpoint_path(dir.to_str().unwrap()), dir.join("checkpoint.jsonl"));
-        // 3) Bare id → logs/<id>/checkpoint.jsonl.
+        // 3) Bare id → <sessions-root>/<id>/checkpoint.jsonl
+        //    (SRD-77 rename — `logs/` was the pre-SRD-77
+        //    name; under cargo workspace the helper resolves
+        //    to `<tmp>/nbrs-sessions/` so we assert on the
+        //    trailing structure instead of the prefix).
         let id_path = resolve_checkpoint_path("nonexistent_session_id");
-        assert!(id_path.starts_with("logs"), "expected logs/<id> path: {id_path:?}");
-        assert!(id_path.ends_with("checkpoint.jsonl"));
+        assert!(id_path.ends_with("nonexistent_session_id/checkpoint.jsonl"),
+            "expected <sessions-root>/<id>/checkpoint.jsonl, got {id_path:?}");
     }
 
     #[test]

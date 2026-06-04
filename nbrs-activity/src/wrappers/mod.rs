@@ -22,8 +22,8 @@ pub mod r#while;
 pub use r#while::WhileWrapper;
 pub mod op_rate;
 pub use op_rate::OpRateWrapper;
-pub mod emit;
-pub use emit::EmitDispenser;
+pub mod fields;
+pub use fields::FieldsDispenser;
 pub mod poll;
 pub use poll::{PollingDispenser, PollingMetrics};
 pub mod result;
@@ -35,5 +35,5 @@ pub use traverse::{TraversingDispenser, TraversalStats};
 
 // All wrappers now live in their own submodules:
 //   if / throttle.rs / poll / result.rs /
-//   metrics.rs / emit.rs / memo.rs / dryrun / traverse.
+//   metrics.rs / fields.rs / memo.rs / dryrun / traverse.
 

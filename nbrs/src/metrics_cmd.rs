@@ -108,12 +108,35 @@ fn format_completer(partial: &str, _ctx: &[&str]) -> Vec<String> {
         .collect()
 }
 
-fn list_or_show_flags() -> Vec<Flag> {
+/// SRD-77 — the `--execution=<n>` / `--all-executions` pair
+/// every `nbrs metrics` subcommand accepts. Declared once
+/// here so the spec stays consistent across `list` / `show` /
+/// `match` / `groups` and the completion surface offers the
+/// same flags on each.
+fn execution_qualifier_flags() -> Vec<Flag> {
     vec![
+        Flag {
+            long: "--execution", short: None, aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::Custom(crate::completion::execution_id_provider),
+            help: "Filter to one execution_id (default: most recent).",
+            repeatable: false,
+        },
+        Flag {
+            long: "--all-executions", short: None, aliases: &[],
+            arity: Arity::Bool, value: ValueProvider::None,
+            help: "Pull every execution's instances (aggregate read).",
+            repeatable: false,
+        },
+    ]
+}
+
+fn list_or_show_flags() -> Vec<Flag> {
+    let mut out = vec![
         Flag {
             long: "--db", short: None, aliases: &[],
             arity: Arity::Value, value: ValueProvider::Path,
-            help: "Override metrics db. Default: logs/latest/metrics.db",
+            help: "Override metrics db. Default: sessions/latest/metrics.db",
             repeatable: false,
         },
         Flag {
@@ -134,16 +157,20 @@ fn list_or_show_flags() -> Vec<Flag> {
             help: "Reshape json/yaml as nested key=value tree.",
             repeatable: false,
         },
-    ]
+    ];
+    out.extend(execution_qualifier_flags());
+    out
 }
 
 fn match_flags() -> Vec<Flag> {
-    vec![Flag {
+    let mut out = vec![Flag {
         long: "--db", short: None, aliases: &[],
         arity: Arity::Value, value: ValueProvider::Path,
-        help: "Override metrics db. Default: logs/latest/metrics.db",
+        help: "Override metrics db. Default: sessions/latest/metrics.db",
         repeatable: false,
-    }]
+    }];
+    out.extend(execution_qualifier_flags());
+    out
 }
 
 pub fn spec() -> Command {
@@ -275,17 +302,33 @@ fn handle_groups(p: ParsedCommand) -> Result<(), String> {
     if let Some(db) = p.flag("--db") { argv.push("--db".into()); argv.push(db.to_string()); }
     if let Some(by) = p.flag("--by") { argv.push("--by".into()); argv.push(by.to_string()); }
     if let Some(fmt) = p.flag("--format") { argv.push("--format".into()); argv.push(fmt.to_string()); }
+    forward_exec_qualifier_flags(&p, &mut argv);
     if let Some(expr) = p.positional(0) { argv.push(expr.to_string()); }
     groups_command(&argv);
     Ok(())
 }
 
+/// SRD-77 — forward the `--execution=<n>` / `--all-executions`
+/// pair from the walker-parsed command into the legacy
+/// imperative argv shape every metrics subcommand still
+/// consumes. Single chokepoint so the pair never drops on
+/// the floor at one of the handlers.
+fn forward_exec_qualifier_flags(p: &ParsedCommand, argv: &mut Vec<String>) {
+    if let Some(n) = p.flag("--execution") {
+        argv.push("--execution".into());
+        argv.push(n.to_string());
+    }
+    if p.bool("--all-executions") {
+        argv.push("--all-executions".into());
+    }
+}
+
 fn groups_flags() -> Vec<Flag> {
-    vec![
+    let mut out = vec![
         Flag {
             long: "--db", short: None, aliases: &[],
             arity: Arity::Value, value: ValueProvider::Path,
-            help: "Override metrics db. Default: logs/latest/metrics.db",
+            help: "Override metrics db. Default: sessions/latest/metrics.db",
             repeatable: false,
         },
         Flag {
@@ -300,7 +343,9 @@ fn groups_flags() -> Vec<Flag> {
             help: "plain | csv | json. Default: plain.",
             repeatable: false,
         },
-    ]
+    ];
+    out.extend(execution_qualifier_flags());
+    out
 }
 
 fn handle_match(p: ParsedCommand) -> Result<(), String> {
@@ -314,6 +359,7 @@ fn handle_match(p: ParsedCommand) -> Result<(), String> {
         argv.push("--db".into());
         argv.push(db.to_string());
     }
+    forward_exec_qualifier_flags(&p, &mut argv);
     if let Some(expr) = p.positional(0) {
         argv.push(expr.to_string());
     }
@@ -353,6 +399,7 @@ fn list_from_parsed(p: &ParsedCommand, show_values: bool) {
     if p.bool("--tree") {
         argv.push("--tree".into());
     }
+    forward_exec_qualifier_flags(p, &mut argv);
     if let Some(expr) = p.positional(0) {
         argv.push(expr.to_string());
     }
@@ -449,6 +496,90 @@ fn print_metrics_usage() {
     eprintln!("                               metricsql.");
 }
 
+/// SRD-77 — shared parser fragment for the
+/// `--execution=<n>` / `--all-executions` flag pair that
+/// every `nbrs metrics` subcommand accepts. Returns `true`
+/// when the arg was consumed, so the caller's match arm can
+/// dispatch with `if exec_flag_consumed(&mut state, arg, iter)
+/// { continue; }`. Stores into a unified `MetricsExecFlag`
+/// state — `Latest` (the default) becomes `Some(max_id)` at
+/// resolution time, `Specific(n)` narrows to one execution,
+/// `All` aggregates.
+fn metrics_exec_flag_consumed<'a, I>(
+    state: &mut MetricsExecFlag,
+    arg: &str,
+    iter: &mut I,
+) -> bool
+where I: Iterator<Item = &'a String> {
+    match arg {
+        "--all-executions" => { *state = MetricsExecFlag::All; true }
+        "--execution" => {
+            if let Some(v) = iter.next() {
+                match v.parse::<u64>() {
+                    Ok(n) => { *state = MetricsExecFlag::Specific(n); true }
+                    Err(_) => {
+                        eprintln!("nbrs metrics: --execution requires an integer, got '{v}'");
+                        std::process::exit(2);
+                    }
+                }
+            } else {
+                eprintln!("nbrs metrics: --execution requires a value");
+                std::process::exit(2);
+            }
+        }
+        other if other.starts_with("--execution=") => {
+            let v = &other[12..];
+            match v.parse::<u64>() {
+                Ok(n) => { *state = MetricsExecFlag::Specific(n); true }
+                Err(_) => {
+                    eprintln!("nbrs metrics: --execution requires an integer, got '{v}'");
+                    std::process::exit(2);
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
+/// SRD-77 — operator-facing execution selection. `Latest` is
+/// the default (implicit "show me the latest execution" with a
+/// banner when more than one exists); `Specific(n)` and `All`
+/// are explicit opt-ins via the CLI flags above.
+#[derive(Debug, Clone, Copy)]
+enum MetricsExecFlag {
+    Latest,
+    Specific(u64),
+    All,
+}
+
+impl Default for MetricsExecFlag {
+    fn default() -> Self { MetricsExecFlag::Latest }
+}
+
+impl MetricsExecFlag {
+    /// Resolve this operator-facing flag to a concrete
+    /// storage-layer `exec_id_filter`. Latest → emit the
+    /// multi-exec banner (silent for single-exec sessions) and
+    /// pick `max(exec_id)`. Specific → that exec id. All →
+    /// `None` (the explicit aggregate-across-executions
+    /// intent, which translates to no `WHERE exec_id = …`
+    /// predicate at the storage boundary).
+    fn resolve(self, db_path: &Path) -> Option<u64> {
+        let session_dir = db_path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        match self {
+            MetricsExecFlag::Latest => {
+                nbrs_activity::refine_plan::warn_multi_execution_default(&session_dir);
+                nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+                    .specific_id()
+            }
+            MetricsExecFlag::Specific(n) => Some(n),
+            MetricsExecFlag::All => None,
+        }
+    }
+}
+
 /// `nbrs metrics match <expr>` — print a flat list of every
 /// `family{labels}` spec that matches the filter, one per line.
 /// Unlike `list`/`show` (which group hierarchically by label
@@ -458,8 +589,12 @@ fn print_metrics_usage() {
 fn match_specs(args: &[String]) {
     let mut db_path: Option<PathBuf> = None;
     let mut filter_expr: Option<String> = None;
+    let mut exec_flag = MetricsExecFlag::default();
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
+        if metrics_exec_flag_consumed(&mut exec_flag, a, &mut iter) {
+            continue;
+        }
         match a.as_str() {
             "--db" => { db_path = iter.next().map(PathBuf::from); }
             other if other.starts_with("--db=") => {
@@ -489,7 +624,7 @@ fn match_specs(args: &[String]) {
         Ok(f) => f,
         Err(e) => { eprintln!("nbrs metrics match: filter: {e}"); std::process::exit(2); }
     };
-    let db = db_path.unwrap_or_else(|| PathBuf::from("logs/latest/metrics.db"));
+    let db = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
     if !db.exists() {
         eprintln!("nbrs metrics match: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -501,18 +636,32 @@ fn match_specs(args: &[String]) {
             std::process::exit(2);
         }
     };
-    let mut stmt = match conn.prepare(
-        "SELECT spec FROM metric_instance ORDER BY spec"
-    ) {
+    // SRD-77 — push the execution qualifier into the SQL
+    // boundary. The default flag (`Latest`) emits the
+    // multi-exec banner here; the operator can override via
+    // `--execution=<n>` / `--all-executions`.
+    let exec_filter = exec_flag.resolve(&db);
+    let (sql, params): (&str, Vec<i64>) = match exec_filter {
+        Some(id) => (
+            "SELECT spec FROM metric_instance WHERE exec_id = ?1 ORDER BY spec",
+            vec![id as i64],
+        ),
+        None => (
+            "SELECT spec FROM metric_instance ORDER BY spec",
+            Vec::new(),
+        ),
+    };
+    let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("nbrs metrics match: query: {e}");
             std::process::exit(2);
         }
     };
-    let rows: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))
-        .map(|it| it.flatten().collect())
-        .unwrap_or_default();
+    let rows: Vec<String> = stmt.query_map(
+        rusqlite::params_from_iter(params.iter()),
+        |r| r.get::<_, String>(0),
+    ).map(|it| it.flatten().collect()).unwrap_or_default();
 
     let mut count = 0;
     for spec in &rows {
@@ -605,8 +754,12 @@ fn groups_command(args: &[String]) {
     let mut filter_expr: Option<String> = None;
     let mut by_keys: Vec<String> = Vec::new();
     let mut format = Format::Plain;
+    let mut exec_flag = MetricsExecFlag::default();
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
+        if metrics_exec_flag_consumed(&mut exec_flag, a, &mut iter) {
+            continue;
+        }
         match a.as_str() {
             "--db" => { db_path = iter.next().map(PathBuf::from); }
             other if other.starts_with("--db=") => {
@@ -670,7 +823,7 @@ fn groups_command(args: &[String]) {
         Err(e) => { eprintln!("nbrs metrics groups: filter: {e}"); std::process::exit(2); }
     };
 
-    let db = db_path.unwrap_or_else(|| PathBuf::from("logs/latest/metrics.db"));
+    let db = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
     if !db.exists() {
         eprintln!("nbrs metrics groups: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -690,18 +843,31 @@ fn groups_command(args: &[String]) {
     // that ran 1000 samples weighs 1000× a phase with one
     // sample. That's the right shape for the recall /
     // latency questions this is designed to answer.
-    let mut stmt = match conn.prepare(
-        "SELECT mi.id, mi.spec FROM metric_instance mi"
-    ) {
+    // SRD-77 — push the execution qualifier into the
+    // metric_instance SELECT so the aggregation only sees
+    // instances from the qualified execution(s).
+    let exec_filter = exec_flag.resolve(&db);
+    let (instances_sql, instances_params): (&str, Vec<i64>) = match exec_filter {
+        Some(id) => (
+            "SELECT mi.id, mi.spec FROM metric_instance mi WHERE mi.exec_id = ?1",
+            vec![id as i64],
+        ),
+        None => (
+            "SELECT mi.id, mi.spec FROM metric_instance mi",
+            Vec::new(),
+        ),
+    };
+    let mut stmt = match conn.prepare(instances_sql) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("nbrs metrics groups: query: {e}");
             std::process::exit(2);
         }
     };
-    let instances: Vec<(i64, String)> = stmt.query_map([], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-    }).map(|it| it.flatten().collect()).unwrap_or_default();
+    let instances: Vec<(i64, String)> = stmt.query_map(
+        rusqlite::params_from_iter(instances_params.iter()),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    ).map(|it| it.flatten().collect()).unwrap_or_default();
 
     let mut buckets: BTreeMap<Vec<String>, GroupBucket> = BTreeMap::new();
 
@@ -1020,8 +1186,12 @@ fn list(args: &[String], show_values_in: bool) {
     // output to be useful. `list --tree` and `show --tree` thus
     // produce the same content.
     let mut show_values: bool = show_values_in;
+    let mut exec_flag = MetricsExecFlag::default();
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
+        if metrics_exec_flag_consumed(&mut exec_flag, a, &mut iter) {
+            continue;
+        }
         match a.as_str() {
             "--db" => { db_path = iter.next().map(PathBuf::from); }
             other if other.starts_with("--db=") => {
@@ -1090,7 +1260,7 @@ fn list(args: &[String], show_values_in: bool) {
         std::process::exit(2);
     }
 
-    let db = db_path.unwrap_or_else(|| PathBuf::from("logs/latest/metrics.db"));
+    let db = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
     if !db.exists() {
         eprintln!("nbrs metrics: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -1107,18 +1277,33 @@ fn list(args: &[String], show_values_in: bool) {
         Ok(f) => f,
         Err(e) => { eprintln!("nbrs metrics: filter: {e}"); std::process::exit(2); }
     };
-    let mut stmt = match conn.prepare(
-        "SELECT mi.id, mi.spec FROM metric_instance mi ORDER BY mi.spec"
-    ) {
+    // SRD-77 — qualify the instance listing by the operator's
+    // execution selector. Default is Latest with multi-exec
+    // banner; `--execution=<n>` narrows; `--all-executions`
+    // pulls across every recorded execution.
+    let exec_filter = exec_flag.resolve(&db);
+    let (sql, params): (&str, Vec<i64>) = match exec_filter {
+        Some(id) => (
+            "SELECT mi.id, mi.spec FROM metric_instance mi \
+             WHERE mi.exec_id = ?1 ORDER BY mi.spec",
+            vec![id as i64],
+        ),
+        None => (
+            "SELECT mi.id, mi.spec FROM metric_instance mi ORDER BY mi.spec",
+            Vec::new(),
+        ),
+    };
+    let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("nbrs metrics: query: {e}");
             std::process::exit(2);
         }
     };
-    let rows: Vec<(i64, String)> = stmt.query_map([], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-    }).map(|it| it.flatten().collect()).unwrap_or_default();
+    let rows: Vec<(i64, String)> = stmt.query_map(
+        rusqlite::params_from_iter(params.iter()),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    ).map(|it| it.flatten().collect()).unwrap_or_default();
 
     // Bucket by family then by sorted label tuple. Used by the
     // tree renderer; structured renderers walk the flat list.

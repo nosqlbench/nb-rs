@@ -51,8 +51,8 @@ const FORBIDS_OUTER: &[WrapperName] = &[
     crate::validation::WRAPPER_NAME,
     super::poll::NAME,
     super::r#if::NAME,
-    // `emit` is INTENTIONALLY allowed outer of dryrun — under
-    // `dryrun=emit` the emit wrapper's pre-execute render is
+    // `fields` is INTENTIONALLY allowed outer of dryrun — under
+    // `dryrun=fields` the fields wrapper's pre-execute render is
     // the surface that produces operator-visible output, so it
     // must run before DRYRUN's short-circuit.
     super::result::NAME,

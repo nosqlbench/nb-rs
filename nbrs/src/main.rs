@@ -28,8 +28,10 @@ mod report;
 mod report_build;
 mod report_cmd;
 mod report_scratch;
+mod refine;
 mod run;
 mod summary;
+mod watch_trigger;
 #[allow(dead_code)]
 mod web_push;
 

@@ -222,14 +222,14 @@ pub const DEFAULT_ORDER: &[&str] = &[
     // explicit slot here is the resolver's tiebreaker for any
     // future wrapper that DRYRUN doesn't yet forbid.
     "dryrun",
-    // `emit` is intentionally LAST — outer of everything
-    // including dryrun — so under `dryrun=emit` the emit
+    // `fields` is intentionally LAST — outer of everything
+    // including dryrun — so under `dryrun=fields` the fields
     // wrapper's pre-execute render runs BEFORE DRYRUN's
-    // short-circuit (emit's render+println is the surface
+    // short-circuit (the fields render+println is the surface
     // that produces the operator-visible "what would have
     // been sent" output). Innermost-first list ordering
     // means later index = outer position at execute time.
-    "emit",
+    "fields",
 ];
 
 /// Resolves a [`WrapperPlan`] for a parsed op template.

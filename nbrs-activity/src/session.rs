@@ -66,6 +66,22 @@ impl Execution {
                 .unwrap_or(0),
         }
     }
+
+    /// SRD-77 — construct a follow-up execution with an
+    /// explicit `exec_id`. Used by `nbrs refine`, which reads
+    /// the prior `phase_outcomes` to compute `next_exec_id`
+    /// and passes it here so the resumed session's component
+    /// tree carries the right `exec_id` label from the start.
+    pub fn with_exec_id(verb: &'static str, exec_id: u64) -> Self {
+        Self {
+            exec_id,
+            verb,
+            started_at_nanos: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i64)
+                .unwrap_or(0),
+        }
+    }
 }
 
 /// A workload run session.
@@ -289,24 +305,65 @@ impl SessionReuse {
 /// fallback is the blast-radius limiter, not a substitute for
 /// explicit sandboxing.
 pub fn default_session_dir(id: &str) -> PathBuf {
-    default_logs_root().join(id)
+    default_sessions_root().join(id)
 }
 
 /// Resolve the parent directory the runtime treats as the session
 /// root when `--session-path` is absent. See [`default_session_dir`]
 /// for the three-case logic.
-pub fn default_logs_root() -> PathBuf {
+/// `<root>/latest` — the symlink the runtime maintains to point
+/// at the most recent session dir. Read-side commands
+/// (`nbrs report`, `nbrs plot`, `nbrs replay`, …) default to
+/// reading through this path so "show me my latest run" is the
+/// natural no-arg invocation.
+pub fn latest_session_dir() -> PathBuf {
+    default_sessions_root().join("latest")
+}
+
+/// `<root>/latest/metrics.db` — the sqlite db of the most recent
+/// session. Centralised here so every read-side command names
+/// the path one way.
+pub fn latest_metrics_db() -> PathBuf {
+    latest_session_dir().join("metrics.db")
+}
+
+/// `<root>/latest/session.log` — the diagnostic log of the most
+/// recent session. `nbrs attach` / log tooling reads from here.
+pub fn latest_session_log() -> PathBuf {
+    latest_session_dir().join("session.log")
+}
+
+/// `<root>/latest/checkpoint.jsonl` — the SRD-44 event log of
+/// the most recent session. The resume planner reads from here.
+pub fn latest_checkpoint_jsonl() -> PathBuf {
+    latest_session_dir().join("checkpoint.jsonl")
+}
+
+/// `<root>/<name>` — a named session dir under the sessions root.
+/// Used by `--session=<name>` resolvers in read-side commands so
+/// the path doesn't get spelled out at every call site.
+pub fn session_dir_named(name: &str) -> PathBuf {
+    default_sessions_root().join(name)
+}
+
+pub fn default_sessions_root() -> PathBuf {
     if cwd_is_workspace_dir() {
         // Cargo-spawned invocation, cwd is a cargo workspace
         // dir (`Cargo.toml` present) — the cwd-relative default
-        // would write into the user-visible `<workspace>/logs/`.
+        // would write into the user-visible `<workspace>/sessions/`.
         // Redirect to TMPDIR (per `.cargo/config.toml`, this is
         // `<workspace>/target/test-tmp/`), under an
         // `nbrs-sessions/` infix so siblings tempfiles stay
         // segregated.
         std::env::temp_dir().join("nbrs-sessions")
     } else {
-        PathBuf::from("logs")
+        // SRD-77: `sessions/` is the per-cwd default. The
+        // directory holds session state (metrics.db,
+        // session.log, checkpoints, reports), not just logs.
+        // Pre-SRD-77 builds wrote to `logs/`; the migration is
+        // flag-day (no auto-rename — operators run a one-shot
+        // `mv logs sessions` if they care about retention).
+        PathBuf::from("sessions")
     }
 }
 
@@ -653,7 +710,7 @@ pub fn resolve_active(args: &[String]) -> Result<PathBuf, String> {
         }
         return Ok(p);
     }
-    let latest = PathBuf::from("logs/latest");
+    let latest = latest_session_dir();
     if latest.exists() {
         // Resolve through the symlink so callers get a stable
         // path that won't change underneath them mid-run.
@@ -904,9 +961,9 @@ pub fn apply_session_directory_at_startup(args: &[String]) {
         let resolved = sd.replace(SESSION_TOKEN, "");
         PathBuf::from(resolved).parent()
             .map(|p| p.to_path_buf())
-            .unwrap_or_else(default_logs_root)
+            .unwrap_or_else(default_sessions_root)
     } else {
-        default_logs_root()
+        default_sessions_root()
     };
     purge_stale_sessions(&cleanup_parent, spec.session_keep, spec.session_shelflife);
 
@@ -916,7 +973,7 @@ pub fn apply_session_directory_at_startup(args: &[String]) {
     // `auto_id` won't be consumed because `needs_auto_id()` is
     // false above; pass an empty placeholder for the contract.
     let Some((path, _id)) = spec.resolve("") else { return; };
-    let logs = default_logs_root();
+    let logs = default_sessions_root();
     // Only touch `logs/` when the resolved session path lives
     // under it. A `--session-path /tmp/x` (or any path the user
     // redirected outside `logs/`) is an explicit opt-out:
@@ -1111,7 +1168,7 @@ impl Session {
         // are linked here so live tooling can `tail -f
         // logs/session.log` or open `logs/metrics.db` without
         // chasing the timestamped session id.
-        let logs = PathBuf::from("logs");
+        let logs = default_sessions_root();
         // Only touch `logs/` when the session output dir is under
         // it. An explicit `--session-path /tmp/x` (or any redirect
         // outside `logs/`) is treated as opt-out:
@@ -1228,7 +1285,7 @@ impl Session {
         // session lives outside `logs/` (see Session::new for
         // rationale: one-off external session dirs shouldn't
         // hijack the user's `logs/latest`).
-        let logs = PathBuf::from("logs");
+        let logs = default_sessions_root();
         if target_is_under(&logs, &prior_session_dir) {
             let latest = logs.join("latest");
             let _ = std::fs::remove_file(&latest);
@@ -1270,6 +1327,64 @@ impl Session {
         }
     }
 
+    /// SRD-77 — re-attach to a prior session for a `refine`
+    /// execution. Differs from [`Self::resume`] in two ways:
+    /// the execution is constructed with `verb = "refine"` and
+    /// the caller-supplied `next_exec_id` (one greater than the
+    /// max prior `exec_id` observed in `phase_outcomes`); the
+    /// rest of the session-attach plumbing (symlinks, root
+    /// labels, output-dir reuse) is identical to `resume` so
+    /// the `metrics.db` is appended to in-place.
+    pub fn refine(
+        prior_session_dir: PathBuf,
+        workload: &str,
+        scenario: &str,
+        next_exec_id: u64,
+    ) -> Self {
+        let workload_stem = Path::new(workload)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("workload");
+        let id = prior_session_dir.file_name()
+            .and_then(|s| s.to_str())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                format!("{scenario}_{}", format_timestamp())
+            });
+
+        let logs = default_sessions_root();
+        if target_is_under(&logs, &prior_session_dir) {
+            let latest = logs.join("latest");
+            let _ = std::fs::remove_file(&latest);
+            let _ = std::os::unix::fs::symlink(&id, &latest);
+            for artifact in ["session.log", "metrics.db"] {
+                let link = logs.join(artifact);
+                let _ = std::fs::remove_file(&link);
+                let target = PathBuf::from("latest").join(artifact);
+                let _ = std::os::unix::fs::symlink(&target, &link);
+            }
+        }
+
+        let execution = Execution::with_exec_id("refine", next_exec_id);
+        let component = Component::root(
+            Labels::of("session", &id)
+                .with("exec_id", &execution.exec_id.to_string())
+                .with("workload", workload_stem),
+            std::collections::HashMap::new(),
+        );
+        crate::polydat_nodes::runtime_context::set_session_root(component.clone());
+
+        Self {
+            id,
+            output_dir: prior_session_dir,
+            workload: workload_stem.to_string(),
+            scenario: scenario.to_string(),
+            execution,
+            component,
+            metrics_query: Mutex::new(None),
+        }
+    }
+
     /// Create a `logs/<artifact>` convenience symlink that points
     /// (through `logs/latest`) at the named artifact in the
     /// current session's output dir. Idempotent — replaces any
@@ -1277,7 +1392,7 @@ impl Session {
     /// at the moment the artifact has actually been produced, so
     /// the convenience link never dangles.
     pub fn link_artifact(name: &str) {
-        let logs = PathBuf::from("logs");
+        let logs = default_sessions_root();
         let link = logs.join(name);
         let _ = std::fs::remove_file(&link);
         let target = PathBuf::from("latest").join(name);
@@ -1420,7 +1535,7 @@ mod tests {
         unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
         let session = Session::new("full_cql_vector.yaml", "fknn_rampup");
         assert!(session.id.starts_with("fknn_rampup_"), "id: {}", session.id);
-        let expected_root = default_logs_root();
+        let expected_root = default_sessions_root();
         assert!(session.output_dir.starts_with(&expected_root),
             "output_dir {} should start with {}",
             session.output_dir.display(), expected_root.display());
@@ -1476,7 +1591,7 @@ mod tests {
         clear_session_env();
         let args = vec!["--session-name=alpha".into()];
         let (path, id) = resolve_session_dir(&args).resolve("autogen").unwrap();
-        assert_eq!(path, default_logs_root().join("alpha"));
+        assert_eq!(path, default_sessions_root().join("alpha"));
         assert_eq!(id, "alpha");
     }
 
@@ -1690,6 +1805,60 @@ mod tests {
             assert!(check_session_path(bad, "test").is_err(),
                 "should reject '{bad}'");
         }
+    }
+
+    // ── SRD-77 session-path helpers ──────────────────────
+    // Pin the structural composition: every helper builds on
+    // `default_sessions_root()` so a future env-aware redirect
+    // (cargo tmp, --session-path override, etc.) propagates
+    // cleanly without each helper carrying its own literal.
+
+    #[test]
+    fn latest_session_dir_is_under_default_sessions_root() {
+        let root = default_sessions_root();
+        let latest = latest_session_dir();
+        assert!(latest.starts_with(&root),
+            "latest_session_dir MUST live under default_sessions_root \
+             so the env-aware redirect (cargo tmp, etc.) covers it; \
+             root={root:?}, latest={latest:?}");
+        assert_eq!(latest.file_name().and_then(|s| s.to_str()), Some("latest"));
+    }
+
+    #[test]
+    fn latest_metrics_db_is_under_latest_session_dir() {
+        let metrics = latest_metrics_db();
+        let latest = latest_session_dir();
+        assert!(metrics.starts_with(&latest),
+            "latest_metrics_db MUST live under latest_session_dir; \
+             metrics={metrics:?}, latest={latest:?}");
+        assert_eq!(metrics.file_name().and_then(|s| s.to_str()), Some("metrics.db"));
+    }
+
+    #[test]
+    fn latest_session_log_is_under_latest_session_dir() {
+        let log = latest_session_log();
+        let latest = latest_session_dir();
+        assert!(log.starts_with(&latest));
+        assert_eq!(log.file_name().and_then(|s| s.to_str()), Some("session.log"));
+    }
+
+    #[test]
+    fn latest_checkpoint_jsonl_is_under_latest_session_dir() {
+        let ckpt = latest_checkpoint_jsonl();
+        let latest = latest_session_dir();
+        assert!(ckpt.starts_with(&latest));
+        assert_eq!(ckpt.file_name().and_then(|s| s.to_str()), Some("checkpoint.jsonl"));
+    }
+
+    #[test]
+    fn session_dir_named_is_a_sibling_of_latest() {
+        let root = default_sessions_root();
+        let named = session_dir_named("default_20260601_120000");
+        assert!(named.starts_with(&root));
+        assert_eq!(
+            named.file_name().and_then(|s| s.to_str()),
+            Some("default_20260601_120000"),
+        );
     }
 
     #[test]

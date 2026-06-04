@@ -48,6 +48,7 @@ pub mod lexer;
 pub mod ast;
 pub mod parser;
 pub mod prettifier;
+pub mod query_rewrite;
 pub mod eval;
 pub mod streaming;
 pub mod adapters;

@@ -76,7 +76,7 @@ mod tests {
         let names: Vec<&str> = r.iter().map(|reg| reg.name.as_str()).collect();
         for expected in [
             "traverse", "delay", "validate", "poll",
-            "if", "emit", "result", "metrics",
+            "if", "fields", "result", "metrics",
         ] {
             assert!(
                 names.contains(&expected),
@@ -197,7 +197,7 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let custom = vec![
             "traverse", "delay", "validate", "if", "poll",
-            "emit", "result", "metrics",
+            "fields", "result", "metrics",
         ];
         let resolver = WrapperResolver::from_names(&custom, &r).unwrap();
         let mut t = empty_template("flexible");
@@ -276,7 +276,7 @@ mod tests {
         t.params.insert("poll".into(),
             serde_json::Value::String("await_empty".into()));
         t.condition = Some("flag".into());
-        t.params.insert("emit".into(), serde_json::Value::Bool(true));
+        t.params.insert("fields".into(), serde_json::Value::Bool(true));
         t.metrics.insert("recall".into(),
             nbrs_workload::model::MetricSpec {
                 value: "recall_value".into(),
@@ -287,15 +287,15 @@ mod tests {
             });
         let plan = resolver.resolve(&t, &r).unwrap();
         let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
-        // `emit` was moved to the outermost position (after
-        // `dryrun`) to support `dryrun=emit` semantics — emit's
+        // `fields` was moved to the outermost position (after
+        // `dryrun`) to support `dryrun=fields` semantics — the
         // pre-execute render must fire BEFORE DRYRUN's short-
         // circuit. With no `dryrun:` injected on this op the
-        // stack ends at `emit`; under `dryrun=emit` it becomes
-        // `..., metrics, dryrun, emit`.
+        // stack ends at `fields`; under `dryrun=fields` it becomes
+        // `..., metrics, dryrun, fields`.
         assert_eq!(names, vec![
             "traverse", "delay", "validate", "poll",
-            "if", "result", "metrics", "emit",
+            "if", "result", "metrics", "fields",
         ]);
     }
 
@@ -324,8 +324,8 @@ mod tests {
 
     /// Variant: when EVERY wrapper activates (full template
     /// plus injected dryrun marker), DRYRUN sits just below
-    /// `emit` — the latter is intentionally allowed outer of
-    /// dryrun so `dryrun=emit`'s pre-execute render fires
+    /// `fields` — the latter is intentionally allowed outer of
+    /// dryrun so `dryrun=fields`'s pre-execute render fires
     /// before DRYRUN's short-circuit. Every other wrapper
     /// stays inside DRYRUN.
     #[test]
@@ -339,7 +339,7 @@ mod tests {
         t.params.insert("poll".into(),
             serde_json::Value::String("await_empty".into()));
         t.condition = Some("flag".into());
-        t.params.insert("emit".into(), serde_json::Value::Bool(true));
+        t.params.insert("fields".into(), serde_json::Value::Bool(true));
         t.params.insert("memo".into(),
             serde_json::Value::String("doing X".into()));
         t.params.insert("dryrun".into(),
@@ -355,21 +355,21 @@ mod tests {
         let plan = resolver.resolve(&t, &r).unwrap();
         let names: Vec<&str> = plan.stack.iter()
             .map(|reg| reg.name.as_str()).collect();
-        // `emit` is the outermost wrapper (intentionally outer
+        // `fields` is the outermost wrapper (intentionally outer
         // of dryrun); `dryrun` sits second-outermost. Every
         // other wrapper is inside DRYRUN's short-circuit.
-        assert_eq!(*names.last().unwrap(), "emit",
-            "emit must be outermost — its pre-execute render \
+        assert_eq!(*names.last().unwrap(), "fields",
+            "fields must be outermost — its pre-execute render \
              must fire before DRYRUN's short-circuit; got {names:?}");
         let dryrun_idx = names.iter().position(|n| *n == "dryrun")
             .expect("dryrun triggered by injected dryrun: param");
         assert_eq!(dryrun_idx, names.len() - 2,
-            "dryrun must sit just below emit (second-outermost); got {names:?}");
+            "dryrun must sit just below fields (second-outermost); got {names:?}");
         // Every wrapper inner of dryrun is short-circuited
-        // — assert the non-emit/non-dryrun set lives strictly
+        // — assert the non-fields/non-dryrun set lives strictly
         // inside dryrun.
         for n in &names {
-            if *n == "emit" || *n == "dryrun" { continue; }
+            if *n == "fields" || *n == "dryrun" { continue; }
             let i = names.iter().position(|x| x == n).unwrap();
             assert!(i < dryrun_idx,
                 "{n} must sit inside dryrun's short-circuit; got {names:?}");

@@ -2335,7 +2335,7 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     } else if let Some(p) = opts.db.clone() {
         vec![p]
     } else {
-        vec![PathBuf::from("logs/latest/metrics.db")]
+        vec![nbrs_activity::session::latest_metrics_db()]
     };
     for db in &dbs {
         if !db.exists() {
@@ -2816,7 +2816,7 @@ fn peel_stored_mode(args: &[String]) -> Option<StoredArgs> {
 
 fn run_stored(stored: StoredArgs) {
     let db_path = stored.db.clone().unwrap_or_else(
-        || PathBuf::from("logs/latest/metrics.db"));
+        || nbrs_activity::session::latest_metrics_db());
     if !db_path.exists() {
         eprintln!("nbrs plot: metrics db not found at '{}'.",
             db_path.display());
@@ -2920,7 +2920,7 @@ fn run_stored(stored: StoredArgs) {
 /// instead of `process::exit`-ing.
 fn run_stored_result(stored: StoredArgs) -> Result<(), String> {
     let db_path = stored.db.clone().unwrap_or_else(
-        || PathBuf::from("logs/latest/metrics.db"));
+        || nbrs_activity::session::latest_metrics_db());
     if !db_path.exists() {
         return Err(format!("metrics db not found at '{}'", db_path.display()));
     }
@@ -3576,8 +3576,18 @@ fn series_via_metricsql(
 
     let ds = SqliteDataSource::open(db_path)
         .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
-    let parsed = nbrs_metricsql::parse(expr)
+    let mut parsed = nbrs_metricsql::parse(expr)
         .map_err(|e| format!("parse metricsql: {e}"))?;
+    // SRD-77 — inject the implicit `exec_id="<latest>"` so the
+    // plot's series default to the latest execution.
+    {
+        let session_dir = db_path.parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let resolved = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+            .specific_id();
+        nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut parsed, resolved);
+    }
     let (start_ms, end_ms) = match latest_sample_window(db_path) {
         Some((s, e)) => (s, e),
         None => return Ok(Vec::new()),
@@ -3601,8 +3611,18 @@ fn rows_via_metricsql(db_path: &Path, expr: &str) -> Result<Vec<DbRow>, String> 
 
     let ds = SqliteDataSource::open(db_path)
         .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
-    let parsed = nbrs_metricsql::parse(expr)
+    let mut parsed = nbrs_metricsql::parse(expr)
         .map_err(|e| format!("parse metricsql: {e}"))?;
+    // SRD-77 — inject `exec_id="<latest>"` for the same reason
+    // as the series-emitting path above.
+    {
+        let session_dir = db_path.parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let resolved = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+            .specific_id();
+        nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut parsed, resolved);
+    }
     // Anchor at the latest sample timestamp in the db so the
     // instant query picks up the freshest values. Lookback
     // covers cadence skew (counters and summaries land within

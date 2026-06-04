@@ -396,13 +396,36 @@ impl ReadoutSink for StringSink {
                 self.fresh_line = false;
             }
             FlatLayoutHint::Block => {
-                if !self.fresh_line {
+                // Insert the block-separator newline up front,
+                // then call the readout. If it writes nothing
+                // (e.g. an error_readout with no errors), roll
+                // back the newline AND preserve the prior
+                // pending_break / fresh_line state so the next
+                // emitter doesn't see a stranded blank line.
+                let snapshot_buf_len = self.buf.len();
+                let snapshot_pending = self.pending_break;
+                let snapshot_fresh = self.fresh_line;
+                let inserted_newline = if !self.fresh_line {
                     self.buf.push('\n');
-                }
+                    true
+                } else {
+                    false
+                };
+                let pre_render_len = self.buf.len();
                 let mut buf = StringBuf::new(&mut self.buf);
                 readout.render(ctx, lod, mode, options, &mut buf);
-                self.pending_break = true;
-                self.fresh_line = false;
+                if self.buf.len() == pre_render_len {
+                    // Zero-byte render — roll back so an empty
+                    // readout contributes nothing.
+                    if inserted_newline {
+                        self.buf.truncate(snapshot_buf_len);
+                    }
+                    self.pending_break = snapshot_pending;
+                    self.fresh_line = snapshot_fresh;
+                } else {
+                    self.pending_break = true;
+                    self.fresh_line = false;
+                }
             }
         }
     }
@@ -1136,6 +1159,81 @@ mod tests {
         sink.line_break();
         sink.literal("c");
         assert_eq!(sink.take(), "a\nb\nc");
+    }
+
+    /// Regression: a Block-classified readout that writes nothing
+    /// must contribute nothing — no stranded blank line. The
+    /// failure shape was `error_readout` (empty errors) emitting
+    /// its block-separator newline before discovering it had no
+    /// content, leaving the prior block-separator pending state +
+    /// the new newline = visible blank row between phase outcomes.
+    #[test]
+    fn empty_block_render_contributes_no_blank_line() {
+        use crate::readouts::context::SubjectKind;
+        use crate::readouts::buf::ReadoutBuf;
+        struct EmptyReadout;
+        impl Readout for EmptyReadout {
+            fn name(&self) -> &'static str { "empty" }
+            fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Phase] }
+            fn render(
+                &self,
+                _ctx: &dyn ReadoutContext,
+                _lod: Lod,
+                _mode: ContentMode,
+                _opts: &ReadoutOptions,
+                _out: &mut dyn ReadoutBuf,
+            ) -> usize { 0 }
+        }
+        struct Filler;
+        impl Readout for Filler {
+            fn name(&self) -> &'static str { "filler" }
+            fn accepts(&self) -> &'static [SubjectKind] { &[SubjectKind::Phase] }
+            fn render(
+                &self,
+                _ctx: &dyn ReadoutContext,
+                _lod: Lod,
+                _mode: ContentMode,
+                _opts: &ReadoutOptions,
+                out: &mut dyn ReadoutBuf,
+            ) -> usize {
+                let _ = out.write_str("filler-text");
+                "filler-text".len()
+            }
+        }
+        struct Ctx;
+        impl ReadoutContext for Ctx {
+            fn subject_name(&self) -> &str { "x" }
+            fn subject_seq(&self) -> Option<(usize, usize)> { None }
+            fn subject_labels(&self) -> &str { "" }
+            fn cycles_completed(&self) -> u64 { 0 }
+            fn cycles_total(&self) -> u64 { 0 }
+            fn ops_ok(&self) -> u64 { 0 }
+            fn errors(&self) -> u64 { 0 }
+            fn retries(&self) -> u64 { 0 }
+            fn concurrency(&self) -> usize { 0 }
+            fn elapsed_secs(&self) -> f64 { 0.0 }
+            fn consumed(&self) -> u64 { 0 }
+            fn status_metric_chips(&self) -> String { String::new() }
+            fn depth_indent(&self) -> &str { "" }
+            fn use_color(&self) -> bool { false }
+            fn event(&self) -> Event { Event::PhaseEnd }
+        }
+        let mut sink = StringSink::new();
+        let opts = ReadoutOptions::new();
+        let h_filler: ReadoutHandle = std::sync::Arc::new(Filler);
+        let h_empty: ReadoutHandle = std::sync::Arc::new(EmptyReadout);
+
+        // Block A: writes content.
+        sink.render(h_filler.clone(), &Ctx, Lod::Labeled, ContentMode::Value, &opts, LayoutHint::Block);
+        // Block B: empty render. Must NOT introduce a blank line.
+        sink.render(h_empty,           &Ctx, Lod::Labeled, ContentMode::Value, &opts, LayoutHint::Block);
+        // Block C: writes content.
+        sink.render(h_filler,          &Ctx, Lod::Labeled, ContentMode::Value, &opts, LayoutHint::Block);
+
+        // Expected: filler + \n + filler — single block separator,
+        // not filler + \n + \n + filler (which would be the stranded-
+        // blank-line failure).
+        assert_eq!(sink.take(), "filler-text\nfiller-text");
     }
 
     #[test]

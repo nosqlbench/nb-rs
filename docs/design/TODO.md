@@ -7,3 +7,4 @@
 * extend op templates to include structural JSON templates
 * audit docs
 * remove status/progress tracking detritous
+* fully decouple inventory shared components from runtime, no static lists or preconfigs

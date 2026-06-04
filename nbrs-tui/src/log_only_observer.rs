@@ -345,7 +345,7 @@ impl RunObserver for LogOnlyObserver {
         for new_id in &ancestor_chain[common_prefix..] {
             if let Some(scope) = tree.nodes.get(*new_id) {
                 let depth = scope.depth.saturating_sub(1);
-                let indent = "  ".repeat(depth);
+                let indent = " ".repeat(depth);
                 let mut s_buf = String::with_capacity(64);
                 {
                     use nbrs_activity::readouts as ro;

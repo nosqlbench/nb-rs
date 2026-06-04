@@ -79,6 +79,14 @@ pub struct ExecCtx {
     /// See [`crate::phase_filter::PhasePattern`] for the dialect
     /// rules (bareword / glob / regex).
     pub phase_filter: Option<Arc<crate::phase_filter::PhasePattern>>,
+    /// SRD-77 refine plan. When `Some`, the scenario walker
+    /// skips phase activations whose `(name, phase_labels)` is
+    /// already in the plan's `completed` set (a prior execution
+    /// in this session finished them). When `None`, every
+    /// non-`phase_filter`-elided phase runs. Composes additively
+    /// with `phase_filter`: a phase is dispatched iff both
+    /// filters allow it.
+    pub refine_plan: Option<Arc<crate::refine_plan::RefinePlan>>,
     pub diag: crate::runner::DiagnosticConfig,
     pub openmetrics_url: Option<String>,
     pub seq_type: SequencerType,
@@ -744,10 +752,15 @@ fn execute_node<'a>(
                     );
                     let mut phase_path = ctx.scene_tree_path.clone();
                     phase_path.push(PathSegment::Phase(name.clone()));
+                    // Clone `phase_labels` before moving it into
+                    // the scene-tree push — the gate below still
+                    // needs to match it against the refine plan.
+                    let phase_labels_for_gate = phase_labels.clone();
                     push_phase_scene_node(
                         ctx.scene_tree_parent_id, phase_path, name.clone(),
                         phase_labels, op_names,
                     );
+                    let phase_labels = phase_labels_for_gate;
                     // Depth gating per SRD 17 §"Execution Depth"
                     // + SRD 18b §"Single Walker Contract" point
                     // 3: structural push always runs; executional
@@ -759,13 +772,59 @@ fn execute_node<'a>(
                     // doesn't match. The structural push above
                     // still ran so the tree / TUI / coords stay
                     // intact; only the per-cycle work is elided.
-                    let active = ctx.phase_filter.as_ref()
+                    let pattern_active = ctx.phase_filter.as_ref()
                         .map(|pat| pat.is_match(name))
                         .unwrap_or(true);
-                    if !active {
+                    // SRD-77 refine `--scope=missing` fast-path:
+                    // for the default scope, we can skip without
+                    // computing the phase hash. `Changed` mode
+                    // needs the hash, so it falls through into
+                    // `run_phase` where the hash is computed and
+                    // a deferred skip-gate evaluates there.
+                    let refine_missing_skip = ctx.refine_plan.as_ref()
+                        .filter(|p| p.scope == crate::refine_plan::RefineScope::Missing)
+                        .map(|p| p.is_completed(name, &phase_labels))
+                        .unwrap_or(false);
+                    if !pattern_active {
                         crate::diag!(crate::observer::LogLevel::Debug,
                             "phases=<filter>: skipping phase '{name}' (does not match)");
-                    } else if ctx.diag.depth >= crate::runner::ExecDepth::Op {
+                    } else if ctx.diag.depth < crate::runner::ExecDepth::Dispenser {
+                        // `dryrun=phase`: structural walk only —
+                        // no `run_phase` call, no dispensers built.
+                        // Fire the sentinel phase_completed so the
+                        // scene tree transitions Running → Completed
+                        // and the post-run summary shows `[ok]`.
+                        crate::scene_tree::with_global_mut(|t| {
+                            t.set_phase_running(name, &phase_labels, 0);
+                            t.set_phase_completed(name, &phase_labels, 0.0);
+                        });
+                        ctx.observer.phase_starting(name, &phase_labels, 0, 0, 0);
+                        ctx.observer.phase_completed(name, &phase_labels, 0.0);
+                        crate::phase_end_triggers::fire_phase_completed(
+                            name, &phase_labels, 0.0,
+                        );
+                    } else if refine_missing_skip {
+                        // SRD-77 refine `scope=missing` skip:
+                        // prior outcome exists, no hash check
+                        // needed. Mark Completed (zero duration)
+                        // on the scene tree + observer so the
+                        // post-run summary shows `ok`.
+                        crate::diag!(crate::observer::LogLevel::Info,
+                            "refine: skipping phase '{name}' [{phase_labels}] \
+                             (prior completed outcome)");
+                        crate::scene_tree::with_global_mut(|t| {
+                            t.set_phase_running(name, &phase_labels, 0);
+                            t.set_phase_completed(name, &phase_labels, 0.0);
+                        });
+                        ctx.observer.phase_starting(name, &phase_labels, 0, 0, 0);
+                        ctx.observer.phase_completed(name, &phase_labels, 0.0);
+                        crate::phase_end_triggers::fire_phase_completed(
+                            name, &phase_labels, 0.0,
+                        );
+                    } else if ctx.diag.depth >= crate::runner::ExecDepth::Dispenser {
+                        // Falls through for `scope=changed` (needs
+                        // the hash, computed inside run_phase) and
+                        // for non-refine runs.
                         run_phase(ctx, name).await?;
                     }
                 }
@@ -1406,7 +1465,7 @@ fn fire_scope_lifecycle(
     spec: &str,
     depth: usize,
 ) {
-    let depth_indent = "  ".repeat(depth.saturating_sub(1));
+    let depth_indent = " ".repeat(depth.saturating_sub(1));
     let display_labels: String = {
         let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
             .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
@@ -1628,7 +1687,7 @@ async fn run_one_iteration(
             .unwrap_or_default();
         polydat::kernel::format_scope_coordinate_path(&parent_coords)
     };
-    let depth_indent = "  ".repeat(depth.saturating_sub(1));
+    let depth_indent = " ".repeat(depth.saturating_sub(1));
     let each_ctx = crate::readout_context::LifecycleContext {
         event: crate::readouts::Event::EachStart,
         subject_name: iter_label.clone(),
@@ -1872,6 +1931,9 @@ async fn run_phase(
             });
             ctx.observer.phase_starting(phase_name, &early_phase_labels, 0, 0, 0);
             ctx.observer.phase_completed(phase_name, &early_phase_labels, 0.0);
+            crate::phase_end_triggers::fire_phase_completed(
+                phase_name, &early_phase_labels, 0.0,
+            );
             return Ok(());
         }
         crate::checkpoint::ResumeAction::IdentityMismatch { reason } => {
@@ -2710,47 +2772,37 @@ async fn run_phase(
             Some(&ctx.sqlite_reporter),
         );
     }
+    // Compute the phase's ancestor-chain instance_hash up
+    // front — SRD-44 needs it on the checkpoint writer (when
+    // resumable), SRD-77 needs it on the persisted phase
+    // outcome (always, so `refine --scope=changed` can
+    // compare prior vs current program shape).
+    //
+    // The hash is the workload-root program's canonical_hash
+    // plus every intermediate scope kernel's canonical_hash,
+    // in chain order. The resume planner pre-computes the
+    // same value for its candidates so saved.phase_hash and
+    // candidate.phase_hash compare directly. Doesn't include
+    // this phase's own compiled program (phases compile
+    // lazily) — pure upstream-binding edits caught, pure
+    // phase-body edits not. See SRD-44 §"Identity matching
+    // at resume" + project memory `program_vs_instance_hash`.
+    let phase_hash_bytes = ctx.scope_tree.phase_node_by_name(phase_name)
+        .and_then(|idx| {
+            let ancestors = ctx.scope_tree.ancestor_kernels(idx);
+            if ancestors.is_empty() { return None; }
+            let head = ancestors[0].program();
+            let tail: Vec<&polydat::kernel::PolydatProgram> = ancestors[1..]
+                .iter().map(|k| k.program().as_ref()).collect();
+            Some(head.instance_hash(&tail))
+        })
+        .unwrap_or_else(|| iter_op_builder.program().canonical_hash());
+    let phase_hash_hex: String = phase_hash_bytes.iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     if let Some(writer) = ctx.checkpoint_writer.clone() {
         let identity = phase_identity_for(phase_name, &phase_labels);
-        // Stamp the writer's entry with this phase's
-        // *instance* hash — the canonical hash of this phase's
-        // program combined with every installed ancestor's
-        // program hash. This lets a future resume detect
-        // upstream-binding edits (workload params, intermediate
-        // for_each scope bindings) that pure per-program
-        // canonical_hash misses. See SRD-44 §"Identity matching
-        // at resume" + project memory
-        // `program_vs_instance_hash`.
-        // Stamp the writer's entry with the phase's
-        // ancestor-chain instance_hash — the workload-root
-        // program's canonical_hash plus every intermediate
-        // scope kernel's canonical_hash, in chain order. This
-        // is the same hash the resume planner pre-computes for
-        // its candidates (see
-        // [`crate::checkpoint::scene_tree_resume_candidates`]),
-        // so saved.phase_hash and candidate.phase_hash compare
-        // directly.
-        //
-        // Doesn't include this phase's own compiled program —
-        // phases compile lazily, so the planner can't include
-        // it in candidates without an eager-compile pass at
-        // pre-map. Pure upstream-binding edits (workload params,
-        // intermediate scope bindings) are caught; pure phase-
-        // body edits are not. See SRD-44 §"Identity matching
-        // at resume" + project memory
-        // `program_vs_instance_hash`. Eager phase-compile at
-        // pre-map is the upgrade path for full coverage.
-        let hash = ctx.scope_tree.phase_node_by_name(phase_name)
-            .and_then(|idx| {
-                let ancestors = ctx.scope_tree.ancestor_kernels(idx);
-                if ancestors.is_empty() { return None; }
-                let head = ancestors[0].program();
-                let tail: Vec<&polydat::kernel::PolydatProgram> = ancestors[1..]
-                    .iter().map(|k| k.program().as_ref()).collect();
-                Some(head.instance_hash(&tail))
-            })
-            .unwrap_or_else(|| iter_op_builder.program().canonical_hash());
-        writer.update_phase_hash(&identity, hash);
+        writer.update_phase_hash(&identity, phase_hash_bytes);
 
         // Wholesale metrics-purge (SRD-44): on resume, before a
         // phase re-runs, delete every sample_value row from the
@@ -2777,6 +2829,31 @@ async fn run_phase(
             crate::diag!(crate::observer::LogLevel::Warn,
                 "checkpoint flush at phase '{phase_name}' start: {e}");
         }
+    }
+
+    // SRD-77 `--scope=changed` skip-gate: now that the
+    // phase_hash is computed, defer to the refine plan. If the
+    // plan says this (name, labels, hash) is unchanged from a
+    // prior outcome, short-circuit the same shape as the
+    // structural-walker missing-skip path. `should_skip` is a
+    // no-op for non-Changed scopes and for non-refine runs.
+    if let Some(plan) = ctx.refine_plan.as_ref()
+        && plan.scope == crate::refine_plan::RefineScope::Changed
+        && plan.is_unchanged(phase_name, &phase_labels, &phase_hash_hex)
+    {
+        crate::diag!(crate::observer::LogLevel::Info,
+            "refine: skipping phase '{phase_name}' [{phase_labels}] \
+             (scope=changed: prior hash matches current)");
+        crate::scene_tree::with_global_mut(|t| {
+            t.set_phase_running(phase_name, &phase_labels, 0);
+            t.set_phase_completed(phase_name, &phase_labels, 0.0);
+        });
+        ctx.observer.phase_starting(phase_name, &phase_labels, 0, 0, 0);
+        ctx.observer.phase_completed(phase_name, &phase_labels, 0.0);
+        crate::phase_end_triggers::fire_phase_completed(
+            phase_name, &phase_labels, 0.0,
+        );
+        return Ok(());
     }
 
     let config = ActivityConfig {
@@ -2820,13 +2897,20 @@ async fn run_phase(
         readouts: ctx.workload_readouts.clone(),
         cli_readout_override: ctx.cli_readout_override.clone(),
         snapshot_writer: Some(ctx.sqlite_reporter.clone()),
-        // Session-level dryrun mode (`silent`/`emit`/`json`)
+        // Session-level dryrun mode (`silent`/`fields`/`json`/`op`/`cycle`)
         // drives the dryrun template-parameter injection inside
         // `run_with_adapters`. There is no adapter substitution
         // anymore; the real adapter constructs in full and only
         // the outbound `execute()` is suppressed by the outermost
         // `DryRunWrapper`.
         dry_run_mode: ctx.dry_run.map(String::from),
+        // `dryrun=dispenser` (and any path that reaches
+        // `run_phase` with depth < Cycle) wants the full
+        // dispenser-construction pipeline to fire but no cycles
+        // to run. `run_with_adapters` honors this flag right
+        // after the per-template map_op loop and before any
+        // fiber-pool spawn.
+        stop_after_dispenser_init: ctx.diag.depth < crate::runner::ExecDepth::Cycle,
     };
 
     let phase_driver_owned = phase.adapter.clone().unwrap_or_else(|| ctx.driver.clone());
@@ -2978,24 +3062,19 @@ async fn run_phase(
     // a no-op.
     crate::activity::declare_adapter_controls(&adapters, &phase_component);
 
-    // dryrun=Phase / dryrun=Op: every phase has now been constructed —
-    // component attached, concurrency / rate / adapter controls
-    // declared — so dump-the-tree paths (`dryrun=controls` in
-    // particular) see the full surface. Stop before fiber pool
-    // spawn / progress thread / cycle execution. Both Phase and
-    // Op short-circuit here; Op additionally triggers the
-    // scope-flattening summary dump in `runner::run_impl` after
-    // the executor returns (SRD-13d §4.9, §5.3). Anything
-    // `>= Cycle` proceeds to actually run cycles.
-    //
-    // Fire phase_completed (with a sentinel zero duration) so
-    // scene-tree state transitions Running → Completed and the
-    // post-run summary renders `[ok] phase` instead of
-    // `[..] phase (still running)`. The renderer suppresses the
-    // " 0.00s" duration suffix for zero-duration completions
-    // (see `nbrs_tui::observer::print_post_run_summary`).
-    if ctx.diag.depth < crate::runner::ExecDepth::Cycle {
+    // `dryrun=phase` early-exit. Phase depth is already
+    // filtered upstream at the structural gate (the scenario
+    // walker only calls `run_phase` for depth >= Dispenser),
+    // so this branch is defensive — it fires only when a
+    // future caller invokes `run_phase` directly with
+    // depth < Dispenser. The pre-existing `dryrun=Op` /
+    // `dryrun=Dispenser` exits happen post-`run_with_adapters`
+    // below, so dispenser construction can run first.
+    if ctx.diag.depth < crate::runner::ExecDepth::Dispenser {
         ctx.observer.phase_completed(phase_name, &phase_labels, 0.0);
+        crate::phase_end_triggers::fire_phase_completed(
+            phase_name, &phase_labels, 0.0,
+        );
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_completed(phase_name, &phase_labels, 0.0);
         });
@@ -3173,6 +3252,26 @@ async fn run_phase(
     // Stop progress thread
     progress_running.store(false, std::sync::atomic::Ordering::Relaxed);
 
+    // `dryrun=dispenser` (and any depth < Cycle that reached
+    // this far) exit: `run_with_adapters` honored its
+    // `stop_after_dispenser_init` flag, the per-template
+    // dispensers are constructed, no cycles ran. Skip the
+    // cycle-cleanup machinery below (phase poll teardown,
+    // checkpoint writer phase row, success/fail PhaseOutcome
+    // construction) and fire the sentinel phase_completed
+    // directly — the post-run summary shows `[ok]` with no
+    // duration suffix, matching the dryrun=phase path.
+    if ctx.diag.depth < crate::runner::ExecDepth::Cycle {
+        ctx.observer.phase_completed(phase_name, &phase_labels, 0.0);
+        crate::phase_end_triggers::fire_phase_completed(
+            phase_name, &phase_labels, 0.0,
+        );
+        crate::scene_tree::with_global_mut(|t| {
+            t.set_phase_completed(phase_name, &phase_labels, 0.0);
+        });
+        return Ok(());
+    }
+
     // Emit one final phase_progress with fresh numbers before
     // `phase_completed`. Short phases (e.g. 100ms ann_query) can
     // finish between progress-thread ticks (every 500ms), so
@@ -3333,6 +3432,9 @@ async fn run_phase(
         crate::diag!(crate::observer::LogLevel::Error,
             "{depth_indent}phase '{bold}{phase_name}{reset}'{coords_part} {red}{detail_msg}{reset} {dim}({phase_duration:.2}s){reset}");
         ctx.observer.phase_failed(phase_name, &phase_labels, &detail_msg);
+        crate::phase_end_triggers::fire_phase_failed(
+            phase_name, &phase_labels, &detail_msg,
+        );
         // SRD-76 — build the structured PhaseOutcome and
         // install it on the scene tree alongside the
         // legacy `set_phase_failed` mirror. The
@@ -3372,7 +3474,7 @@ async fn run_phase(
             ),
             phase_duration,
             errors,
-        );
+        ).with_phase_hash(phase_hash_hex.clone());
         // SRD-76 Push 3 — persist before installing on the
         // scene tree so a panic during scene-tree
         // mutation still leaves a durable row on disk. The
@@ -3411,6 +3513,12 @@ async fn run_phase(
     // while the phase identity and coords are already on the
     // phase-starting row directly above.
     ctx.observer.phase_completed(phase_name, &phase_labels, phase_duration);
+    // Phase-end trigger fan-out: registered triggers
+    // (plot re-render, report rebuild, etc.) run on the
+    // worker thread so the executor's loop isn't blocked.
+    crate::phase_end_triggers::fire_phase_completed(
+        phase_name, &phase_labels, phase_duration,
+    );
     // SRD-76 — install the structured success outcome.
     // Drain any residual entries from the phase_errors
     // buffer just in case (a non-stopping retryable
@@ -3429,6 +3537,7 @@ async fn run_phase(
         duration_secs: phase_duration,
         errors: success_errors,
         resume_cursor: None,
+        phase_hash: Some(phase_hash_hex.clone()),
     };
     // SRD-76 Push 3 — persist the success outcome. Same
     // best-effort policy as the failure path above; the

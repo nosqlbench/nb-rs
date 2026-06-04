@@ -91,7 +91,7 @@ params:
   # of the hierarchical graph build (number of neighbors
   # each node retains in the proximity graph).
 #  mnc_values:       "8, 128"
-  mnc_values:       "8"
+  mnc_values:       "8,128"
 
   # `bw` → `construction_beam_width` — the
   # efConstruction parameter (beam width used while
@@ -113,10 +113,10 @@ params:
   # (`1.0 → "1p0"`) goes into the table name (CQL
   # identifiers can't contain `.`). Parallel-iter pair —
   # both lists must stay in lockstep length-wise.
-  nbo_v_values:     "1.0"
-  nbo_label_values: '"1p0"'
-#  nbo_v_values:     "1.0, 3.0"
-#  nbo_label_values: '"1p0", "3p0"'
+#  nbo_v_values:     "1.0"
+#  nbo_label_values: '"1p0"'
+  nbo_v_values:     "1.0, 3.0"
+  nbo_label_values: '"1p0", "3p0"'
 
   # `alf_v` (numeric) + `alf_label` (string) → `alpha` —
   # the alpha pruning factor (RNG-pruning threshold used
@@ -143,7 +143,7 @@ params:
   #                  `sai_ann_rerank_k_max_value` guardrail).
   # Drives the `rerank_k` entry of the query's
   # `WITH ann_options = {...}` clause.
-  rerank_k_strategy_values: "rerank_def, rerank_lim"
+  rerank_k_strategy_values: "rerank_def, rerank_1x, rerank_2x, rerank_lim"
 
   # `pruning_strategy` → `use_pruning` — three detents with
   # the `pruning_<state>` prefix:

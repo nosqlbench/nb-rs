@@ -387,7 +387,7 @@ pub fn build_inline_refresh_context(
             let depth = node.depth.saturating_sub(1);
             Some((
                 Some((seq, t.total_phases())),
-                "  ".repeat(depth),
+                " ".repeat(depth),
             ))
         })
         .unwrap_or((None, String::new()));

@@ -103,8 +103,8 @@ pub const CORE_OP_PARAMS: &[&str] = &[
     // `{before, after}` map; rendered through wires
     // substitution before publish.
     "memo",
-    // Op weighting / dry-run
-    "ratio", "emit",
+    // Op weighting / fields-render wrapper
+    "ratio", "fields",
     // Adapter selection
     "adapter", "driver",
     // Daemon-op declaration + loop / rate primitives. `daemon`

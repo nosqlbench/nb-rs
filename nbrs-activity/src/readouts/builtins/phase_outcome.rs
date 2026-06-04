@@ -54,6 +54,7 @@ use std::fmt::Write as _;
 
 use crate::readouts::buf::ReadoutBuf;
 use crate::readouts::context::{ReadoutContext, SubjectKind};
+use crate::readouts::format::ballot_bar;
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
 /// Process-global record of the last-rendered phase-coords
@@ -678,21 +679,40 @@ fn render_outcome_errors_block(
     if errors.is_empty() {
         return String::new();
     }
+    // Driver-supplied messages (CQL statement text, etc.) carry
+    // embedded newlines; re-indent each continuation line to
+    // nest under the surrounding block so the output doesn't
+    // break out to column 0.
+    let msg_continuation = format!("{indent}      ");
+    let detail_continuation = format!("{indent}        ");
+    let reindent = |s: &str, prefix: &str| -> String {
+        let mut out = String::with_capacity(s.len() + prefix.len() * 2);
+        let mut first = true;
+        for line in s.split('\n') {
+            if first { first = false; }
+            else { out.push('\n'); out.push_str(prefix); }
+            out.push_str(line);
+        }
+        out
+    };
     let mut out = String::with_capacity(128);
     let _ = write!(&mut out, "\n{indent}  errors:");
     for e in errors {
+        let msg = reindent(&e.message, &msg_continuation);
         let _ = write!(&mut out,
             "\n{indent}    {red}[{class}]{reset} {msg}",
-            class = e.class, msg = e.message);
+            class = e.class);
         if let Some(c) = e.cycle {
             let _ = write!(&mut out,
                 "\n{indent}      {dim}cycle:{reset} {c}");
         }
         if let Some(t) = &e.op_template {
+            let t = reindent(t, &detail_continuation);
             let _ = write!(&mut out,
                 "\n{indent}      {dim}op-template:{reset} {t}");
         }
         if let Some(r) = &e.op_resolved {
+            let r = reindent(r, &detail_continuation);
             let _ = write!(&mut out,
                 "\n{indent}      {dim}op-resolved:{reset} {r}");
         }
@@ -866,12 +886,31 @@ fn render_labeled_value(
         Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
         None => String::new(),
     };
+    // Per-cell completion bar for small phases — preserves
+    // the per-op success/failure visibility from `phase_status`
+    // through to the completion line so the operator can see
+    // WHICH ops succeeded or failed, not just an aggregate
+    // percentage. Width matches phase_status's variant
+    // (1 leading space + N glyphs).
+    let bar = if total_extent > 0 && total_extent <= 10 {
+        let bg = if color { "\x1b[48;2;50;50;50m" } else { "" };
+        let fg = if color { "\x1b[97m"            } else { "" };
+        format!(" {bg}{fg}{}{reset}", ballot_bar(total_extent, ok, errors))
+    } else {
+        String::new()
+    };
+    let bar_visible: usize = if total_extent > 0 && total_extent <= 10 {
+        1 + total_extent as usize
+    } else {
+        0
+    };
+
     // Estimate visible columns consumed by the head of the
     // line prior to the coords block — used to drive wrap
     // decisions inside `format_coords_block`. Composition:
-    //   depth_indent (variable) + "✓ " (2) + seq prefix
-    //   visible chars ("[N/M] " when seq is Some) +
-    //   "[<name>]" length.
+    //   depth_indent (variable) + "✓ " (2) + ballot bar
+    //   (when ≤10) + seq prefix visible chars ("[N/M] " when
+    //   seq is Some) + "[<name>]" length.
     let name = ctx.subject_name();
     let seq_visible: usize = match ctx.subject_seq() {
         Some((s, t)) => format!("[{s}/{t}] ").chars().count(),
@@ -879,6 +918,7 @@ fn render_labeled_value(
     };
     let head_consumed: usize = depth_indent.chars().count()
         + 2  // ✓ + space
+        + bar_visible
         + seq_visible
         + 2  // [ and ]
         + name.chars().count();
@@ -919,13 +959,14 @@ fn render_labeled_value(
     let _ = write!(
         &mut tmp,
         "{memo_header}\
-{depth_indent}{glyph_color}{glyph}{reset} {seq}{bold}{blue}[{name}]{reset}{coords} {pct:.0}%\n\
+{depth_indent}{glyph_color}{glyph}{reset}{bar} {seq}{bold}{blue}[{name}]{reset}{coords} {pct:.0}%\n\
 {depth_indent}    {rate_str} ok:{ok_pct:.0}% \
 {err_color}e:{errors} r:{retries}{reset} c:{concurrency}{chips} \
 {dim}({elapsed:.2}s){reset}",
         depth_indent = depth_indent,
         glyph_color = glyph_color,
         glyph = glyph,
+        bar = bar,
         reset = reset,
         seq = seq_part,
         bold = bold,
@@ -983,8 +1024,28 @@ fn render_labeled_value_failed(
         Some((s, t)) => format!("[{s}/{t}] ").chars().count(),
         None => 0,
     };
+    // Ballot bar for small phases — same shape as the success
+    // path. A failed ≤10-op phase still shows the per-op
+    // success/failure breakdown so the operator sees how far
+    // the phase got before the failure landed.
+    let total_extent = ctx.cycles_total();
+    let ok = ctx.ops_ok();
+    let err_count = ctx.errors();
+    let bar = if total_extent > 0 && total_extent <= 10 {
+        let bg = if color { "\x1b[48;2;50;50;50m" } else { "" };
+        let fg = if color { "\x1b[97m"            } else { "" };
+        format!(" {bg}{fg}{}{reset}", ballot_bar(total_extent, ok, err_count))
+    } else {
+        String::new()
+    };
+    let bar_visible: usize = if total_extent > 0 && total_extent <= 10 {
+        1 + total_extent as usize
+    } else {
+        0
+    };
     let head_consumed: usize = depth_indent.chars().count()
         + 2  // ✗ + space
+        + bar_visible
         + seq_visible
         + 2  // [ and ]
         + name.chars().count();
@@ -1009,7 +1070,7 @@ fn render_labeled_value_failed(
     let mut tmp = String::with_capacity(192);
     let _ = write!(
         &mut tmp,
-        "{depth_indent}{red}✗{reset} {seq_part}{bold}{blue}[{name}]{reset}{coords_part} \
+        "{depth_indent}{red}✗{reset}{bar} {seq_part}{bold}{blue}[{name}]{reset}{coords_part} \
 {red}{class_label}{reset}\n\
 {depth_indent}    {red}{message}{reset}{extra_suffix} {dim}({elapsed:.2}s){reset}",
     );
@@ -1360,6 +1421,11 @@ mod tests {
 
     #[test]
     fn no_color_no_coords_no_chips() {
+        // cycles_total=3 (≤10) triggers the ballot-bar variant —
+        // the completion line shows per-op outcome glyphs so the
+        // operator can see which ops succeeded or failed at a
+        // glance, preserving the visibility from `phase_status`
+        // through to the completion record.
         let ctx = TestCtx {
             phase_name: "setup".into(),
             phase_seq: Some((1, 2)),
@@ -1373,7 +1439,7 @@ mod tests {
         };
         assert_eq!(
             render(&ctx),
-            "✓ [1/2] [setup] 100%\n    300/s ok:100% e:0 r:0 c:1 (0.01s)"
+            "✓ ☑☑☑ [1/2] [setup] 100%\n    300/s ok:100% e:0 r:0 c:1 (0.01s)"
         );
     }
 
@@ -1770,6 +1836,34 @@ mod tests {
             assert!(s.starts_with(want),
                 "compact glyph for {status:?} should be {want:?}: {s:?}");
         }
+    }
+
+    /// Failed ≤10-op phase carries the ballot bar so the
+    /// operator sees the per-op success/failure pattern that
+    /// preceded the failure, not just the error class.
+    #[test]
+    fn failed_small_phase_renders_ballot_bar_with_errors_first() {
+        let ctx = TestCtx {
+            phase_name: "tiny".into(),
+            cycles_completed: 5,
+            cycles_total: 5,
+            ops_ok: 3,
+            errors: 2,
+            elapsed_secs: 0.5,
+            outcome_status: crate::phase_outcome::PhaseStatus::Failed,
+            outcome_errors: vec![crate::phase_outcome::PhaseErrorDetail {
+                class: "Timeout".into(),
+                message: "deadline exceeded".into(),
+                op_name: None, cycle: None,
+                op_template: None, op_resolved: None,
+                at_nanos: 0, retryable: false,
+            }],
+            ..Default::default()
+        };
+        let out = render(&ctx);
+        // 2 errors → ☒☒, 3 successes → ☑☑☑.
+        assert!(out.starts_with("✗ ☒☒☑☑☑ "),
+            "failed ≤10 phase should lead with bar (errors first): {out:?}");
     }
 
     #[test]

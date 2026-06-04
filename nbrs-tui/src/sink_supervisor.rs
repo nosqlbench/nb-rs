@@ -73,11 +73,12 @@ impl SinkSupervisor {
     pub fn spawn(
         observer: Arc<LogOnlyObserver>,
         state: RunStateHandle,
+        runtime: Option<tokio::runtime::Handle>,
     ) -> Self {
         let (done_tx, done_rx) = mpsc::channel::<()>();
         let join = std::thread::Builder::new()
             .name("sink-supervisor".into())
-            .spawn(move || run_supervision(observer, state, done_rx))
+            .spawn(move || run_supervision(observer, state, done_rx, runtime))
             .expect("spawn sink-supervisor thread");
         Self { done_tx: Some(done_tx), join: Some(join) }
     }
@@ -99,6 +100,11 @@ enum ActiveSink {
         sink_handle: Box<dyn SinkHandle>,
         watcher: KeyWatcher,
         signal_rx: mpsc::Receiver<WatcherSignal>,
+        /// Forwarder for prompt-bound signals. The supervisor's
+        /// match arms route `Key` / `GrowPrompt` / `ShrinkPrompt`
+        /// / `ToggleHelp` here; the `LogOnlySink` owns the
+        /// receiver and drives its embedded `PromptState`.
+        prompt_tx: mpsc::Sender<WatcherSignal>,
     },
     Tui {
         sink_handle: Box<dyn SinkHandle>,
@@ -110,6 +116,7 @@ fn run_supervision(
     observer: Arc<LogOnlyObserver>,
     state: RunStateHandle,
     done_rx: mpsc::Receiver<()>,
+    runtime: Option<tokio::runtime::Handle>,
 ) {
     // Two distinct flags the supervisor manages:
     //   • sink_active     — observer's synchronous-stderr
@@ -130,7 +137,7 @@ fn run_supervision(
     //                       conflict).
     let sink_active_flag = observer.sink_active_flag();
     let inline_suppress = observer.inline_suppress_flag();
-    let mut active = match start_terminal(&observer, &state) {
+    let mut active = match start_terminal(&observer, &state, runtime.clone()) {
         Some(a) => a,
         None => {
             // No TTY — KeyWatcher refused. Fall through:
@@ -156,7 +163,7 @@ fn run_supervision(
         // and `continue`-loop, restarting the polling cycle.
         let mut swap_to: Option<Transition> = None;
         match &active {
-            ActiveSink::Terminal { signal_rx, .. } => {
+            ActiveSink::Terminal { signal_rx, prompt_tx, .. } => {
                 while let Ok(sig) = signal_rx.try_recv() {
                     match sig {
                         WatcherSignal::ToggleTui => {
@@ -200,6 +207,21 @@ fn run_supervision(
                             let _ = err.write_all(b"\x1b[2J\x1b[H");
                             let _ = err.flush();
                         }
+                        // Prompt-bound signals. The
+                        // `LogOnlySink` owns the receiver and
+                        // applies these directly to its
+                        // `PromptState`. A disconnected
+                        // receiver (sink shutting down) is
+                        // not fatal here — we just drop the
+                        // signal; the sink will catch up on
+                        // its next start.
+                        sig @ (WatcherSignal::Key(_)
+                            | WatcherSignal::GrowPrompt
+                            | WatcherSignal::ShrinkPrompt
+                            | WatcherSignal::ToggleHelp) =>
+                        {
+                            let _ = prompt_tx.send(sig);
+                        }
                     }
                 }
             }
@@ -212,7 +234,8 @@ fn run_supervision(
 
         if let Some(t) = swap_to {
             active = match t {
-                Transition::TerminalToTui => swap_to_tui(&observer, &state, active),
+                Transition::TerminalToTui =>
+                    swap_to_tui(&observer, &state, active, runtime.clone()),
                 Transition::TuiToTerminal => {
                     // Wait for the App thread to fully exit and
                     // restore the terminal before bringing the
@@ -229,7 +252,7 @@ fn run_supervision(
                     // `LogOnlySink::start`.
                     observer.inline_suppress_flag()
                         .store(false, Ordering::Release);
-                    match start_terminal(&observer, &state) {
+                    match start_terminal(&observer, &state, runtime.clone()) {
                         Some(a) => a,
                         None => {
                             // Lost the TTY (unexpected). Fall
@@ -272,30 +295,43 @@ enum Transition {
 fn start_terminal(
     observer: &Arc<LogOnlyObserver>,
     state: &RunStateHandle,
+    runtime: Option<tokio::runtime::Handle>,
 ) -> Option<ActiveSink> {
     let (signal_tx, signal_rx) = mpsc::channel::<WatcherSignal>();
     let watcher = KeyWatcher::spawn(signal_tx)?;
 
+    // Prompt-bound channel: the supervisor's match forwards
+    // Key / GrowPrompt / ShrinkPrompt / ToggleHelp here, and
+    // the LogOnlySink drains them on every render tick.
+    let (prompt_tx, prompt_rx) = mpsc::channel::<WatcherSignal>();
+
     let min_level = observer.min_level();
     let sink_active = observer.sink_active_flag();
-    let sink = Box::new(LogOnlySink::new(min_level, sink_active));
+    let sink = Box::new(
+        LogOnlySink::new(min_level, sink_active).with_keys(prompt_rx, runtime),
+    );
     let sink_handle = sink.start(DisplayInputs {
         state: state.clone(),
         frame_rx: None,
         metrics_query: None,
     });
 
-    Some(ActiveSink::Terminal { sink_handle, watcher, signal_rx })
+    Some(ActiveSink::Terminal { sink_handle, watcher, signal_rx, prompt_tx })
 }
 
 fn swap_to_tui(
     observer: &Arc<LogOnlyObserver>,
     state: &RunStateHandle,
     active: ActiveSink,
+    runtime: Option<tokio::runtime::Handle>,
 ) -> ActiveSink {
     // Tear down terminal mode first — the watcher disables
     // raw mode + releases stdin so the App can claim it.
-    if let ActiveSink::Terminal { sink_handle, watcher, .. } = active {
+    if let ActiveSink::Terminal { sink_handle, watcher, prompt_tx, .. } = active {
+        // Dropping `prompt_tx` disconnects the prompt receiver
+        // inside the sink so its drain loop exits cleanly; the
+        // sink_handle.shutdown() that follows then joins.
+        drop(prompt_tx);
         sink_handle.shutdown();
         watcher.shutdown();
     } else {
@@ -314,7 +350,7 @@ fn swap_to_tui(
                 &mut std::io::stderr(),
                 b"Ctrl-T: TUI not yet ready (metrics scheduler pending) - retry once the run is underway\r\n",
             );
-            return start_terminal(observer, state)
+            return start_terminal(observer, state, runtime)
                 .expect("re-entering terminal mode after deferred swap");
         }
     };

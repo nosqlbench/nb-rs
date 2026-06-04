@@ -58,6 +58,18 @@ pub struct Workload {
     /// validator decide how to surface them.
     #[serde(default, skip_serializing)]
     pub report_warnings: Vec<String>,
+    /// Fatal scenario-parse errors collected during
+    /// `parse_scenario_nodes` — typically "unknown scenario-
+    /// node key" cases the parser used to silently drop. Per
+    /// the project's "Never Ignore Silently" rule (memory),
+    /// the runner promotes these to hard errors before
+    /// dispatching the workload. Unlike `report_warnings`,
+    /// these are always-fatal regardless of strict mode —
+    /// a malformed scenario-tree node never produces useful
+    /// behavior, so a downstream `phase 'iterate' not found`
+    /// error masks the real bug.
+    #[serde(default, skip_serializing)]
+    pub scenario_parse_errors: Vec<String>,
     /// Workload-wide default for the per-phase
     /// [`WorkloadPhase::status_metrics`] field. Phases that don't
     /// declare their own `status_metrics:` inherit this list.

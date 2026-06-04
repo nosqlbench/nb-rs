@@ -53,3 +53,6 @@ regex = "1"
 nbrs-adapter-stdout = { path = "../adapters/stdout", version = "0.1.1" }
 nbrs-adapter-testkit = { path = "../adapters/testkit", version = "0.1.1" }
 proptest = "1"
+# SRD-77 refine_plan tests build a throwaway sqlite under a
+# `tempfile::tempdir()` and verify the loader's behavior.
+tempfile = "3"

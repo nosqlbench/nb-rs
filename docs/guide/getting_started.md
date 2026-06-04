@@ -142,6 +142,43 @@ nbrs run workload=<file> [parameters...]
 | `format=` | `stmt` | Output: `stmt`, `json`, `csv`, `assignments` |
 | `errors=` | `.*:warn,counter` | Error handler spec |
 | `filename=` | `stdout` | Output file (or `stdout`) |
+| `watch=` | (off) | Phase-end re-render triggers — see [Watch Triggers](#watch-triggers) |
+
+### Watch Triggers
+
+`watch=<spec>[,<spec>...]` registers subprocess-based
+re-renderers that fire after every phase completion or
+failure. Each trigger spawns an `nbrs` subprocess that
+writes its output against the live session directory, so
+external viewers (image viewer, browser, file watcher) see
+the latest data without waiting for the run to finish.
+
+| Spec | Subprocess invoked |
+|------|--------------------|
+| `report` | `nbrs report all --session <SESSION>` |
+| `report:<args>` | `nbrs report <args> --session <SESSION>` |
+| `plot` | `nbrs plot all --session <SESSION>` |
+| `plot:<name>` | `nbrs plot --name <name> --session <SESSION>` |
+
+Examples:
+
+```bash
+# Re-render the throughput plot after each phase:
+nbrs run workload=fknn.yaml watch=plot:throughput
+
+# Stack triggers — both fire per phase end:
+nbrs run workload=fknn.yaml watch=plot:throughput,plot:recall
+
+# Rebuild a full report on each phase end:
+nbrs run workload=fknn.yaml watch=report
+```
+
+Triggers run on a single background worker thread, sequenced
+in registration order; a panic in one trigger doesn't stop
+later ones. Subprocess `stdout` is suppressed; non-zero exit
+surfaces as a parent-side WARN log. See
+[CLI sysref §Watch Triggers](../sysref/60_cli.md#watch-triggers)
+for the full reference.
 
 ### Cycle Count Suffixes
 

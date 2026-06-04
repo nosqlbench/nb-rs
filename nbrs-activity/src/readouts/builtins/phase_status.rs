@@ -24,7 +24,7 @@ use std::fmt::Write as _;
 
 use crate::readouts::buf::ReadoutBuf;
 use crate::readouts::context::{ReadoutContext, SubjectKind};
-use crate::readouts::format::{braille_bar, format_eta, format_rate, spinner_frame};
+use crate::readouts::format::{ballot_bar, braille_bar, format_eta, format_rate, spinner_frame};
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
 pub struct PhaseStatus;
@@ -127,7 +127,7 @@ fn render_labeled(
     let reset  = if color { "\x1b[0m"    } else { "" };
 
     let total_extent = ctx.cycles_total();
-    let _started     = ctx.ops_started();
+    let started      = ctx.ops_started();
     let finished     = ctx.ops_finished();
     let ops_completed= ctx.cycles_completed();
     let successes    = ctx.ops_ok();
@@ -135,6 +135,32 @@ fn render_labeled(
     let retries      = ctx.retries();
     let elapsed      = ctx.elapsed_secs();
     let concurrency  = ctx.concurrency();
+
+    // "Not yet ready" guard: when a phase has just started
+    // and hasn't dispatched its first op, the full counter
+    // block reads as all-zeros, which the operator perceives
+    // as a stale or broken frame. Render a compact "starting…"
+    // placeholder until the phase has either dispatched its
+    // first op or accumulated at least 200ms of elapsed time.
+    // The spinner keeps moving so motion confirms the
+    // renderer is alive.
+    if started == 0 && elapsed < 0.2 {
+        let depth_indent = ctx.depth_indent();
+        let activity_name = ctx.activity_name();
+        let spinner = spinner_frame(ctx.refresh_tick());
+        let seq_prefix: String = match ctx.subject_seq() {
+            Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
+            None => String::new(),
+        };
+        let mut tmp = String::with_capacity(64);
+        let _ = write!(
+            &mut tmp,
+            "{depth_indent}{cyan}{spinner}{reset} {seq_prefix}{bold}{blue}[{activity_name}]{reset} {dim}starting…{reset}",
+        );
+        let len = tmp.len();
+        let _ = out.write_str(&tmp);
+        return len;
+    }
 
     // Progress percentage uses *completed* cycles, not
     // dispatched ones. The previous `ops_started`-based
@@ -165,10 +191,25 @@ fn render_labeled(
     // rather than `▮          ` (where the trailing cells
     // were braille blanks against the terminal default
     // background).
+    // Bar variant selection: phases sized over 10 or fewer
+    // operations (small phases — schema migrations, single-
+    // op smoke checks, low-cycle bring-up stanzas) render
+    // per-cell ballot boxes so each glyph represents ONE
+    // operation with success/failure carried in the fill.
+    // Larger phases use the braille percentage fill where
+    // each glyph carries a slice of the total. `total_extent`
+    // here is the resolved cycle count — covers both the
+    // data-cursor case (real iteration source) and the
+    // synthetic-cursor case (stanza-shape fallback).
     let bar = if total_extent > 0 {
         let bg = if color { "\x1b[48;2;50;50;50m" } else { "" };
         let fg = if color { "\x1b[97m"            } else { "" };
-        format!(" {bg}{fg}{}{reset}", braille_bar(pct, 10))
+        let glyphs = if total_extent <= 10 {
+            ballot_bar(total_extent, successes, errors)
+        } else {
+            braille_bar(pct, 10)
+        };
+        format!(" {bg}{fg}{glyphs}{reset}")
     } else {
         String::new()
     };
@@ -251,10 +292,13 @@ fn render_labeled(
     //   + activity_name length
     let labels = ctx.subject_labels();
     let bar_visible: usize = if total_extent > 0 {
-        // The braille bar is ` ` + 10 braille glyphs (each
-        // 1 cell wide when no truecolor wrapping is in play
-        // — the bg/fg escapes are zero-width).
-        11
+        // Both bar variants are ` ` + N glyphs (each glyph 1
+        // cell wide — bg/fg escapes are zero-width). Width
+        // is fixed 10 for the braille variant; the ballot
+        // variant scales with op count up to 10 so a small
+        // phase doesn't reserve padding cells it can't use.
+        let glyphs = if total_extent <= 10 { total_extent as usize } else { 10 };
+        1 + glyphs
     } else {
         0
     };
@@ -547,20 +591,24 @@ mod tests {
     fn labeled_no_eta_when_no_extent() {
         // When cycles_total=0 there's no `/ETA` half of the
         // span; the time pair degenerates to elapsed-only —
-        // `(0s)` here since the test fixture has elapsed=0.
-        // The slash MUST NOT appear in this branch.
+        // `(0s)` here. The slash MUST NOT appear in this
+        // branch. Bypass the "not-yet-ready" guard with
+        // ops_started > 0 + measurable elapsed so the full
+        // labeled render fires.
         let ctx = TestCtx {
             phase_name: "x".into(),
             activity_name: "x".into(),
             cycles_total: 0,
+            ops_started: 1,
+            elapsed_secs: 0.5,
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
         // The time span itself collapses to elapsed-only;
         // `(0s)` appears, but no `0s/...` ETA half.
-        assert!(out.contains("(0s)"),
+        assert!(out.contains("(0s)") || out.contains("(1s)"),
             "elapsed-only time span missing: {out}");
-        assert!(!out.contains("0s/"),
+        assert!(!out.contains("/0s") && !out.contains("0s/"),
             "ETA half should be suppressed when cycles_total=0: {out}");
     }
 

@@ -80,6 +80,18 @@ pub fn with_global_mut<F: FnOnce(&mut SceneTree)>(f: F) {
         }
 }
 
+/// Read-only access to the global scene tree, if installed.
+/// Returns `None` when no session has published one. Mirrors
+/// [`with_global_mut`] for callers that just need to inspect
+/// (e.g. SRD-77 execution-end disposition computation).
+pub fn with_global<R, F: FnOnce(&SceneTree) -> R>(f: F) -> Option<R> {
+    let arc = {
+        let guard = GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clone()
+    };
+    arc.and_then(|a| a.read().ok().map(|g| f(&*g)))
+}
+
 /// Stable index into [`SceneTree::nodes`]. Indices never change for
 /// a given tree instance; renderers can hold onto them across
 /// status updates.
@@ -654,12 +666,16 @@ impl SceneTree {
     }
 }
 
-/// Indent prefix (`"  "` repeats) for log lines whose visual
-/// nesting should match the currently-running phase's scope
-/// depth. Looks up the global scene tree, finds the first
-/// `Running` phase in DFS order, returns `"  ".repeat(depth)`
+/// Indent prefix (single-space repeats) for log lines whose
+/// visual nesting should match the currently-running phase's
+/// scope depth. Looks up the global scene tree, finds the
+/// first `Running` phase in DFS order, returns `" ".repeat(depth)`
 /// for it. Empty string when no scene tree is installed or no
 /// phase is currently running.
+///
+/// One char per level — deep scenario trees can stack 5+
+/// levels of nesting; a 2-char indent burns 10+ columns of
+/// screen real estate before any content lands.
 ///
 /// Used by emit sites that fire from inside a phase's
 /// execution (polling-op progress, activity-end DONE summary,
@@ -678,7 +694,7 @@ pub fn running_phase_indent() -> String {
     let Some(tree) = current() else { return String::new(); };
     tree.dfs_phases()
         .find(|n| matches!(n.status, PhaseStatus::Running))
-        .map(|n| "  ".repeat(n.depth.saturating_sub(1)))
+        .map(|n| " ".repeat(n.depth.saturating_sub(1)))
         .unwrap_or_default()
 }
 
@@ -898,6 +914,7 @@ mod tests {
                 duration_secs: 0.5,
                 errors: Vec::new(),
                 resume_cursor: None,
+                phase_hash: None,
             },
         );
         assert_eq!(t.session_disposition(), SessionDisposition::Success);

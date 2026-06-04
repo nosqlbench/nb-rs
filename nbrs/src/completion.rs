@@ -147,6 +147,9 @@ pub fn attach_global_value_providers(tree: CommandTree) -> CommandTree {
         .global_value_provider("profiler=", fn_provider(static_profiler))
         .global_value_provider("tui=", fn_provider(static_tui))
         .global_value_provider("dryrun=", fn_provider(static_dryrun))
+        .global_value_provider("watch=", fn_provider(static_watch))
+        .global_value_provider("scope=", fn_provider(static_scope))
+        .global_value_provider("on_removed=", fn_provider(static_on_removed))
         .global_value_provider("--socket", fn_provider(socket_path_provider))
         .global_value_provider("--pid", fn_provider(pid_provider))
 }
@@ -241,7 +244,7 @@ pub fn handle_complete_env(tree: &CommandTree) -> bool {
     if matches_metrics_match(&prior) {
         let db_path = match db_path_from_args(&prior) {
             Some(p) => p,
-            None => std::path::PathBuf::from("logs/latest/metrics.db"),
+            None => nbrs_activity::session::latest_metrics_db(),
         };
         if db_path.exists() {
             for c in crate::metrics_cache::match_completions(&cur, &db_path) {
@@ -702,6 +705,53 @@ fn scenario_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
     scenario_candidates(partial, &context_strings)
 }
 
+/// Dynamic completion for `--execution=<n>` (SRD-77). Reads
+/// the session db at `logs/latest/metrics.db` and returns
+/// every distinct `exec_id` from the `executions` table.
+/// Best-effort: any sqlite error (missing file, missing
+/// table, lock contention) yields an empty list rather than
+/// an error message, matching the existing provider
+/// convention.
+pub fn execution_id_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    let db_path = nbrs_activity::session::latest_metrics_db();
+    if !db_path.exists() {
+        return Vec::new();
+    }
+    let conn = match rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    // Verify table exists before querying — sessions from
+    // before SRD-77 won't have it.
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+         WHERE type='table' AND name='executions')",
+        [],
+        |r| r.get::<_, i64>(0),
+    ).map(|n| n != 0).unwrap_or(false);
+    if !exists {
+        return Vec::new();
+    }
+    let mut stmt = match conn.prepare(
+        "SELECT exec_id FROM executions ORDER BY exec_id"
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = match stmt.query_map([], |r| r.get::<_, i64>(0)) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    rows.filter_map(Result::ok)
+        .map(|id| id.to_string())
+        .filter(|s| s.starts_with(partial))
+        .collect()
+}
+
 fn adapter_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     let mut names: Vec<String> = registered_driver_names()
         .into_iter()
@@ -722,11 +772,34 @@ fn static_tui(partial: &str, _ctx: &[&str]) -> Vec<String> {
 
 fn static_dryrun(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(
-        &["phase", "op", "cycle", "full",
+        &["phase", "dispenser", "op", "cycle", "full",
           "controls", "wiring", "labels",
-          "silent", "emit", "json"],
+          "silent", "fields", "json"],
         partial,
     )
+}
+
+/// Static completions for `scope=`. SRD-77 refine policy.
+fn static_scope(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["missing", "changed", "all"], partial)
+}
+
+/// Static completions for `on_removed=`. SRD-77 refine
+/// removed-phase policy.
+fn static_on_removed(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["error", "keep", "drop"], partial)
+}
+
+/// Static completions for `watch=`. Only the bare-spec
+/// forms (`report`, `plot`) are offered here — the
+/// `report:<args>` and `plot:<name>` shapes carry
+/// arbitrary user payload, so we don't try to enumerate
+/// every plot name the session might own. The bare forms
+/// cover the most common workflow ("re-render everything
+/// after each phase") and a typing user can extend from
+/// there.
+fn static_watch(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["report", "plot"], partial)
 }
 
 /// Inspector socket discovery — same logic as the legacy
@@ -1088,7 +1161,7 @@ fn db_path_from_context(ctx: &[&str]) -> std::path::PathBuf {
     if let Some(dir) = nbrs_activity::session::read_session_dir(&owned) {
         return dir.join("metrics.db");
     }
-    std::path::PathBuf::from("logs/latest/metrics.db")
+    nbrs_activity::session::latest_metrics_db()
 }
 
 /// Dynamic option discovery: when a `workload=…` is on the

@@ -119,6 +119,16 @@ pub async fn run_command(args: &[String]) {
         "off"
     };
 
+    // Register `watch=` phase-end triggers before the actor
+    // spawn so any registration warnings land in the
+    // expected place in the log stream. The trigger worker
+    // is process-global and lazy-spawned on the first
+    // registration; nothing to clean up here.
+    if let Some(watch_spec) = params.get("watch") {
+        let specs = crate::watch_trigger::split_watch_param(watch_spec);
+        let _ids = crate::watch_trigger::register_watch_triggers(&specs);
+    }
+
     // Spawn the RunState actor + inspector socket *before* the
     // tui-mode branch. The actor was originally TUI-only and the
     // inspector got tied to it by accident — but the high-value
@@ -154,7 +164,7 @@ pub async fn run_command(args: &[String]) {
     // the inspector just stays disabled with a warning.
     let runtime_handle = tokio::runtime::Handle::try_current().ok();
     let _inspector_join = match nbrs_tui::inspector_server::spawn(
-        run_state.clone(), runtime_handle,
+        run_state.clone(), runtime_handle.clone(),
     ) {
         Ok((path, join)) => {
             eprintln!("inspector socket: {}", path.display());
@@ -263,6 +273,7 @@ pub async fn run_command(args: &[String]) {
             Some(nbrs_tui::sink_supervisor::SinkSupervisor::spawn(
                 observer_arc.clone(),
                 run_state.clone(),
+                runtime_handle.clone(),
             ))
         } else {
             None
@@ -419,7 +430,7 @@ fn print_post_run_reports(
     // when no override is set preserves the historical
     // bare-CLI behavior.
     let session_dir = nbrs_activity::session::read_session_dir(args)
-        .unwrap_or_else(|| std::path::PathBuf::from("logs/latest"));
+        .unwrap_or_else(|| nbrs_activity::session::latest_session_dir());
 
     // SRD-46 auto-render: when the workload completed without
     // being aborted by the error handler, render every plot
@@ -713,7 +724,11 @@ fn run_handler(p: ParsedCommand)
     })
 }
 
-fn standard_run_flags() -> Vec<Flag> {
+/// SRD-77 — exported so `nbrs refine` declares the same flag
+/// surface as `nbrs run`. The two verbs share workload-level
+/// arg shapes; only the runtime semantic (skip prior completed
+/// phases, bump `exec_id`) differs.
+pub fn standard_run_flags() -> Vec<Flag> {
     vec![
         Flag {
             long: "--strict", short: None, aliases: &[],

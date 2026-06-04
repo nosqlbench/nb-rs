@@ -179,11 +179,11 @@ fn in_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
 }
 
 fn read_logs_latest(dir: &std::path::Path) -> PathBuf {
-    let latest = dir.join("logs").join("latest");
+    let latest = dir.join("sessions").join("latest");
     let target = std::fs::read_link(&latest)
-        .unwrap_or_else(|_| panic!("logs/latest missing in {}", dir.display()));
+        .unwrap_or_else(|_| panic!("sessions/latest missing in {}", dir.display()));
     if target.is_absolute() { target }
-    else { dir.join("logs").join(target) }
+    else { dir.join("sessions").join(target) }
 }
 
 fn find_phase<'a>(cp: &'a Checkpoint, name: &str) -> &'a nbrs_activity::checkpoint::PhaseEntry {

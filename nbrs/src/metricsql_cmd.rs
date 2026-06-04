@@ -81,13 +81,28 @@ pub fn query(args: &[String]) {
     };
     let step_ms = parsed.step_ms;
 
-    let expr = match nbrs_metricsql::parse(&parsed.query) {
+    let mut expr = match nbrs_metricsql::parse(&parsed.query) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("nbrs metrics query: parse: {e}");
             std::process::exit(2);
         }
     };
+    // SRD-77 — inject `exec_id="<latest>"` into every vector
+    // selector that doesn't already carry one. The operator
+    // typed a query; we wrap it in the implicit "show me the
+    // latest execution" qualifier. The reserved `"latest"`
+    // literal also resolves here (storage never sees the
+    // literal — the metric_instance reserved-word guard
+    // refuses it).
+    let session_dir = parsed.db_path.parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    nbrs_activity::refine_plan::warn_multi_execution_default(&session_dir);
+    let resolved_exec_id = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+        .specific_id();
+    nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut expr, resolved_exec_id);
+    let expr = expr;
     // Two query modes:
     //
     // - **Instant** (`--lookback 0`, the default): use
@@ -208,7 +223,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
         }
     }
     let query = query.ok_or("metricsql expression required (positional argument)")?;
-    let db_path = db_path.unwrap_or_else(|| PathBuf::from("logs/latest/metrics.db"));
+    let db_path = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
     Ok(ParsedArgs {
         db_path, query, anchor_ms, lookback_ms, step_ms,
         stale_window_ms, latest_only,
@@ -361,13 +376,29 @@ pub fn watch(args: &[String]) {
             parsed.db_path.display());
         std::process::exit(2);
     }
-    let expr = match nbrs_metricsql::parse(&parsed.query) {
+    let mut expr = match nbrs_metricsql::parse(&parsed.query) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("nbrs metrics watch: parse: {e}");
             std::process::exit(2);
         }
     };
+    // SRD-77 — same `exec_id="<latest>"` injection as the
+    // one-shot query path above. The watch loop re-runs the
+    // same expression on a cadence, so the qualifier is
+    // pinned once at startup (deliberate — a refine landing
+    // mid-watch would otherwise silently jump the watched
+    // execution from under the operator).
+    {
+        let session_dir = parsed.db_path.parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        nbrs_activity::refine_plan::warn_multi_execution_default(&session_dir);
+        let resolved = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+            .specific_id();
+        nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut expr, resolved);
+    }
+    let expr = expr;
 
     // Try the runtime path first; fall back to batch if
     // `compile_streaming` rejects the shape. Both paths
@@ -554,7 +585,7 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
         }
     }
     let query = query.ok_or("metricsql expression required (positional argument)")?;
-    let db_path = db_path.unwrap_or_else(|| PathBuf::from("logs/latest/metrics.db"));
+    let db_path = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
     Ok(WatchArgs { db_path, query, interval_ms, warmup_ms, latest_only, no_clear })
 }
 

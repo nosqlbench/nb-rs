@@ -51,7 +51,8 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let mut scenarios = parse_scenarios(obj.get("scenarios"));
+    let mut scenario_parse_errors: Vec<String> = Vec::new();
+    let mut scenarios = parse_scenarios(obj.get("scenarios"), &mut scenario_parse_errors);
     // Resolve `scenario: <name>` includes after every scenario
     // has been parsed so forward references work and cycles are
     // detected with the full graph available.
@@ -239,7 +240,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     Ok(Workload {
         description, scenarios, ops: all_ops, bindings: doc_bindings,
         params: resolved_params, phases, phase_order, declared_params,
-        report, report_warnings,
+        report, report_warnings, scenario_parse_errors,
         status_metrics: doc_status_metrics,
         readouts,
         wrappers: None,
@@ -463,16 +464,100 @@ pub fn parse_ops(yaml_source: &str) -> Result<Vec<ParsedOp>, String> {
 // Scenarios
 // -----------------------------------------------------------------
 
-fn parse_scenarios(val: Option<&JVal>) -> HashMap<String, Vec<ScenarioNode>> {
+fn parse_scenarios(
+    val: Option<&JVal>,
+    errors: &mut Vec<String>,
+) -> HashMap<String, Vec<ScenarioNode>> {
     let mut scenarios = HashMap::new();
     let Some(val) = val else { return scenarios; };
     let Some(obj) = val.as_object() else { return scenarios; };
 
     for (scenario_name, steps_val) in obj {
-        let nodes = parse_scenario_nodes(steps_val);
+        let nodes = parse_scenario_nodes_with_errors(steps_val, scenario_name, errors);
         scenarios.insert(scenario_name.clone(), nodes);
     }
     scenarios
+}
+
+/// Wrapper around the legacy `parse_scenario_nodes` that
+/// accumulates `unknown-key` errors against a per-call sink.
+/// Used by `parse_scenarios` so the top-level builder can
+/// inspect the result and refuse to dispatch a malformed
+/// workload (per "Never Ignore Silently"). The legacy
+/// non-erroring shape is still exposed for the in-file
+/// recursive callers that pre-date the error contract;
+/// those paths quietly drop the unknown-key information,
+/// but the top-level entry now sees it.
+fn parse_scenario_nodes_with_errors(
+    val: &JVal,
+    scenario_name: &str,
+    errors: &mut Vec<String>,
+) -> Vec<ScenarioNode> {
+    match val {
+        JVal::Array(arr) => arr.iter()
+            .flat_map(|item| parse_scenario_nodes_with_errors(item, scenario_name, errors))
+            .collect(),
+        JVal::Object(obj) => {
+            if has_recognised_scenario_key(obj) {
+                return parse_scenario_nodes(val);
+            }
+            // No recognized scenario-node key. Two legitimate
+            // shapes can land here:
+            //
+            // 1. **Legacy command-string form** — `{ name: "run
+            //    ..." }`. Each entry maps a step name to a CLI
+            //    command string; the catch-all in
+            //    `parse_scenario_nodes` produces one
+            //    `ScenarioNode::Phase(<name>)` per key. The
+            //    values are always strings (CLI command lines).
+            //    Accepted.
+            //
+            // 2. **Malformed unknown-key node** — `{ iterate: {
+            //    phases: [...] } }`, `{ for_with_typo: ... }`,
+            //    etc. The value is a map or array, which means
+            //    the author was trying to express structure the
+            //    parser doesn't understand. Reject loudly per
+            //    the project's "Never Ignore Silently" rule —
+            //    silently dropping these used to cause
+            //    confusing downstream errors (`phase 'iterate'
+            //    not found` masking a typoed `for_each` key).
+            let bad: Vec<&String> = obj.iter()
+                .filter(|(_, v)| !matches!(v, JVal::String(_) | JVal::Null))
+                .map(|(k, _)| k)
+                .collect();
+            if !bad.is_empty() {
+                let bad_names: Vec<&str> = bad.iter().map(|s| s.as_str()).collect();
+                errors.push(format!(
+                    "scenario '{scenario_name}': unrecognised scenario-node key(s) \
+                     {bad_names:?} carry non-string values (a map or array). \
+                     Expected one of: `for_each` / `for`, `scenarios`, \
+                     `for_combinations`, `do_while`, `do_until`, `bindings`, \
+                     `set`, `scenario`. (The legacy `name: \"run ...\"` \
+                     command-string form is still accepted when the value is \
+                     a plain string.)"
+                ));
+                return Vec::new();
+            }
+            // All values are strings — legacy command-string
+            // form. Route through the legacy catch-all.
+            parse_scenario_nodes(val)
+        }
+        _ => parse_scenario_nodes(val),
+    }
+}
+
+/// True iff this scenario-node object has at least one of the
+/// recognized keys handled by `parse_scenario_nodes`. Used by
+/// the error-aware wrapper to distinguish "malformed node"
+/// (no recognized key) from "legitimate node" before the
+/// silent-catchall in the legacy path can fire.
+fn has_recognised_scenario_key(obj: &serde_json::Map<String, JVal>) -> bool {
+    const RECOGNIZED: &[&str] = &[
+        "for_each", "for", "scenario", "scenarios",
+        "for_combinations", "do_while", "do_until",
+        "bindings", "set",
+    ];
+    RECOGNIZED.iter().any(|k| obj.contains_key(*k))
 }
 
 /// Recursively parse scenario nodes from YAML.
@@ -2601,6 +2686,93 @@ ops:
 "#;
         let workload = parse_workload(yaml, &HashMap::new()).unwrap();
         assert!(workload.description.unwrap().contains("test workload"));
+    }
+
+    // ── Scenario malformed-node rejection (Never Ignore
+    // Silently). The parser used to silently drop an
+    // unrecognised scenario-node key like `iterate:` →
+    // `{phases: [...]}`, leaving the scenario empty and
+    // surfacing as a confusing downstream "phase not found"
+    // error. These tests pin the loud-rejection behavior so a
+    // refactor can't regress the silent-drop. ──
+
+    #[test]
+    fn scenario_node_with_unknown_map_key_collects_parse_error() {
+        let yaml = r#"
+scenarios:
+  bogus:
+    - iterate:
+        phases:
+          - phase_x
+phases:
+  phase_x:
+    ops:
+      noop: "x"
+"#;
+        let workload = parse_workload(yaml, &HashMap::new()).unwrap();
+        assert!(!workload.scenario_parse_errors.is_empty(),
+            "malformed `iterate:` node MUST surface a scenario_parse_error \
+             — silent drop is the safety bug being prevented");
+        let msg = workload.scenario_parse_errors[0].as_str();
+        assert!(msg.contains("bogus"), "error must name the offending scenario: {msg}");
+        assert!(msg.contains("iterate"), "error must name the bad key: {msg}");
+        // Bogus scenario must NOT have absorbed phase_x as a Phase
+        // node via the legacy catch-all.
+        assert_eq!(workload.scenarios.get("bogus").map(|v| v.len()), Some(0),
+            "malformed node must NOT silently produce ScenarioNode::Phase");
+    }
+
+    #[test]
+    fn scenario_node_with_legacy_command_string_form_still_works() {
+        // Pre-existing nosqlbench-style scenario shape: each
+        // map key is a step name, value is a `run ...` CLI
+        // string. The malformed-rejection refactor MUST NOT
+        // break this — the discriminator is "map value is
+        // a string" → legacy, "map value is a map/array" →
+        // malformed.
+        let yaml = r#"
+scenarios:
+  default:
+    schema: run tags==block:schema
+    main: run tags==block:main
+ops:
+  op1: "test"
+"#;
+        let workload = parse_workload(yaml, &HashMap::new()).unwrap();
+        assert!(workload.scenario_parse_errors.is_empty(),
+            "legacy command-string form must NOT be flagged as malformed: {:?}",
+            workload.scenario_parse_errors);
+        let default = &workload.scenarios["default"];
+        assert_eq!(default.len(), 2);
+        assert!(matches!(&default[0], ScenarioNode::Phase(n) if n == "schema"));
+        assert!(matches!(&default[1], ScenarioNode::Phase(n) if n == "main"));
+    }
+
+    #[test]
+    fn scenario_node_malformed_error_lists_recognised_keys() {
+        // The error message must point the operator at the
+        // recognised key vocabulary so they can self-correct
+        // without grepping the source.
+        let yaml = r#"
+scenarios:
+  s1:
+    - typoed_for_each:
+        phases:
+          - phase_x
+phases:
+  phase_x:
+    ops:
+      noop: "x"
+"#;
+        let workload = parse_workload(yaml, &HashMap::new()).unwrap();
+        assert_eq!(workload.scenario_parse_errors.len(), 1);
+        let msg = &workload.scenario_parse_errors[0];
+        // Must mention at least the load-bearing alternatives.
+        for expected in ["for_each", "scenarios", "do_while", "bindings"] {
+            assert!(msg.contains(expected),
+                "error message must mention `{expected}` as a valid \
+                 alternative; got: {msg}");
+        }
     }
 
     #[test]

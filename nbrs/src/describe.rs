@@ -1202,25 +1202,158 @@ fn render_flattening_summary(yaml_source: &str, path: &str) -> Result<String, St
 
 // ── cli_spec entry ─────────────────────────────────────────
 
-/// `nbrs describe <topic> …` — sub-topic dispatch is
-/// parser-internal (each topic has its own `parse_*_args`).
-/// raw_args=true: the spec advertises the command for
-/// completion+help; per-topic flag declarations remain inside
-/// `describe_command`.
-///
-/// **Open gap:** topics like `describe wiring`, `describe adapter`
-/// could be modelled as nested `Command`s with their own
-/// flags. Future work would walk each topic's parser and
-/// lift its flag set into a Command subtree.
+/// `nbrs describe <topic> …` — every topic is declared as a
+/// real subcommand here so a single spec drives both dispatch
+/// (the walker matches the topic, calls the leaf's handler)
+/// and completion (the cli_spec→completion adapter sees the
+/// same subcommand tree). The leaf handlers delegate to the
+/// existing `describe_*` functions; their internal argv
+/// parsers continue to handle topic-specific flags and
+/// positionals (raw_args=true on the leaves so the legacy
+/// per-topic parsers don't lose access to their argv).
 pub fn spec() -> crate::cli_spec::Command {
     use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
-    fn handle(p: ParsedCommand) -> Result<(), String> {
-        describe_command(&p.raw);
+    fn handle_default(_p: ParsedCommand) -> Result<(), String> {
+        // `nbrs describe` with no subcommand — render the
+        // topic list (matches the historical default-arm
+        // usage text).
+        describe_command(&[]);
         Ok(())
     }
     Command {
         name: "describe",
         help: "Documentation surface (`describe wiring`, `describe adapter`, …).",
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        subcommands: vec![
+            adapter_spec(),
+            wiring_spec(),
+            wrappers_spec(),
+            op_spec(),
+        ],
+        handler: Some(Handler::Sync(handle_default)),
+        raw_args: false,
+        completion_override: None,
+    }
+}
+
+fn adapter_spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        let mut argv = vec!["adapter".to_string()];
+        argv.extend(p.raw.iter().cloned());
+        describe_command(&argv);
+        Ok(())
+    }
+    Command {
+        name: "adapter",
+        help: "List adapters or show one adapter's params + drivers.",
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: true,
+        completion_override: None,
+    }
+}
+
+fn wiring_spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle_wiring_default(_p: ParsedCommand) -> Result<(), String> {
+        describe_command(&["wiring".to_string()]);
+        Ok(())
+    }
+    Command {
+        name: "wiring",
+        help: "Wiring (graph-kernel) topics: functions, types, stdlib, dag, modules.",
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        subcommands: vec![
+            wiring_leaf("functions",
+                "List wiring functions ([--verbose] adds signatures + types)."),
+            wiring_leaf("functions-md",
+                "Dump all wiring functions to a markdown file ([<path>] default wiring_functions.md)."),
+            wiring_leaf("stdlib",
+                "List embedded standard-library modules."),
+            wiring_leaf("types",
+                "List wiring port types with descriptions."),
+            wiring_leaf("types-md",
+                "Dump wiring types to a markdown file ([<path>] default wiring_types.md)."),
+            wiring_leaf("dag",
+                "Render a wiring source as DOT, Mermaid, or SVG."),
+            wiring_leaf("modules",
+                "List modules from a directory."),
+        ],
+        handler: Some(Handler::Sync(handle_wiring_default)),
+        raw_args: false,
+        completion_override: None,
+    }
+}
+
+fn wiring_leaf(name: &'static str, help: &'static str) -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    let leaf_name = name;
+    // Use a single shared handler that recovers the leaf name
+    // from `p.path` — the walker pushes every matched segment
+    // there, so the last element is the wiring leaf's own name.
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        let leaf = p.path.last().cloned().unwrap_or_default();
+        let mut argv = vec!["wiring".to_string(), leaf];
+        argv.extend(p.raw.iter().cloned());
+        describe_command(&argv);
+        Ok(())
+    }
+    Command {
+        name: leaf_name,
+        help,
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: true,
+        completion_override: None,
+    }
+}
+
+fn wrappers_spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle(_p: ParsedCommand) -> Result<(), String> {
+        describe_command(&["wrappers".to_string()]);
+        Ok(())
+    }
+    Command {
+        name: "wrappers",
+        help: "List the registered op-template wrappers.",
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: false,
+        completion_override: None,
+    }
+}
+
+fn op_spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        let mut argv = vec!["op".to_string()];
+        argv.extend(p.raw.iter().cloned());
+        describe_command(&argv);
+        Ok(())
+    }
+    Command {
+        name: "op",
+        help: "Show the resolved wrapper stack for one op (`describe op <workload> <op>`).",
         category: Category::Documentation,
         level: Level::FullSurface,
         flags: Vec::new(),
@@ -1347,7 +1480,7 @@ fn trigger_label(name: &str, owned_fields: &[&str]) -> String {
         "validate" => "verify/relevancy set".to_string(),
         "poll" => "poll: set".to_string(),
         "if" => "if: set".to_string(),
-        "emit" => "emit: true".to_string(),
+        "fields" => "fields: true".to_string(),
         "result" => "always (no-op when result map empty)".to_string(),
         "metrics" => "non-empty metrics map".to_string(),
         _ if owned_fields.is_empty() => "always".to_string(),
@@ -1618,7 +1751,7 @@ mod describe_wrappers_tests {
         // Each registered wrapper appears.
         for name in [
             "traverse", "delay", "validate", "poll",
-            "if", "emit", "result", "metrics",
+            "if", "fields", "result", "metrics",
         ] {
             assert!(out.contains(name),
                 "wrapper `{name}` missing from describe wrappers output:\n{out}");
@@ -1715,7 +1848,7 @@ phases:
             .lines()
             .filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()))
             .collect();
-        for unexpected in ["delay", "validate", "poll", "emit", "metrics"] {
+        for unexpected in ["delay", "validate", "poll", "fields", "metrics"] {
             for line in &stack_lines {
                 assert!(!line.contains(unexpected),
                     "unexpected wrapper `{unexpected}` in stack line: {line}");

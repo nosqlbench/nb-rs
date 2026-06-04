@@ -40,7 +40,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         session_dir.as_ref().map(|d| d.join("metrics.db"));
     let output_root: PathBuf = session_dir
         .clone()
-        .unwrap_or_else(|| PathBuf::from("logs/latest"));
+        .unwrap_or_else(|| nbrs_activity::session::latest_session_dir());
 
     // Promote `nbrs report plot ...` / `nbrs report table ...` to
     // the kind-filtered form, peeling the kind keyword off so the
@@ -80,7 +80,8 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| session_db.as_deref()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "logs/latest/metrics.db".into()));
+            .unwrap_or_else(|| nbrs_activity::session::latest_metrics_db()
+                .display().to_string()));
     eprintln!("nbrs report: {} item(s) resolved from {} ({})",
         items.len(), source_kind, source_path);
     eprintln!("nbrs report: output → {}", output_root.display());
@@ -1038,7 +1039,7 @@ pub(crate) fn resolve_items(
         // report parser ingests.
         let db_path = session_db
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("logs/latest/metrics.db"));
+            .unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
         if !db_path.exists() { return Ok(Vec::new()); }
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
@@ -1929,7 +1930,7 @@ fn discover_faceted_tuples(
     use std::collections::BTreeSet;
     let db_path = match session_db {
         Some(p) => p.to_path_buf(),
-        None => PathBuf::from("logs/latest/metrics.db"),
+        None => nbrs_activity::session::latest_metrics_db(),
     };
     if !db_path.exists() {
         return Err(format!("session db '{}' missing", db_path.display()));
@@ -1959,8 +1960,16 @@ fn discover_faceted_tuples(
         query_start_ms: Some(min_ts),
         query_end_ms: Some(max_ts),
     };
-    let parsed = nbrs_metricsql::parse(expr)
+    let mut parsed = nbrs_metricsql::parse(expr)
         .map_err(|e| format!("parse '{expr}': {e}"))?;
+    // SRD-77 — inject `exec_id="<latest>"` so facet discovery
+    // sees only the current execution's labels by default.
+    let session_dir = db_path.parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let resolved_exec_id = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+        .specific_id();
+    nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut parsed, resolved_exec_id);
     let series = evaluate(&ctx, &parsed)
         .map_err(|e| format!("evaluate '{expr}': {e}"))?;
     let mut seen: BTreeSet<Vec<String>> = BTreeSet::new();

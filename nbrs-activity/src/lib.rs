@@ -83,6 +83,18 @@ pub mod phase_filter;
 /// SRD-76 phase outcome disposition (structured
 /// per-phase status + error list).
 pub mod phase_outcome;
+/// Phase-end trigger registry — content-agnostic callbacks
+/// that fire after every phase completion or failure. Used by
+/// the `watch=plots` / `watch=report` CLI flags to keep an
+/// external view (plot image, report html) up-to-date as the
+/// run progresses.
+pub mod phase_end_triggers;
+/// SRD-77 refine plan — pre-computed skip set + next-execution
+/// id, derived from a session's prior `phase_outcomes` rows.
+/// The runner builds one when `nbrs refine` re-attaches to an
+/// existing session; the executor's phase-walk gate checks it
+/// before dispatching each phase's per-cycle work.
+pub mod refine_plan;
 pub mod checkpoint;
 pub mod scheduler;
 pub mod profiler;

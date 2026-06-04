@@ -188,7 +188,11 @@ fn handle_connection(
     Ok(())
 }
 
-fn dispatch(
+/// Inspector command dispatch surface. Public to the crate so
+/// the in-process nb-shell prompt (`crate::prompt_state`) can
+/// invoke the same commands the unix-socket inspector accepts,
+/// without re-implementing the parser.
+pub(crate) fn dispatch(
     line: &str,
     state: &RunStateHandle,
     runtime: Option<&tokio::runtime::Handle>,
@@ -222,7 +226,11 @@ fn dispatch(
     }
 }
 
-const COMMAND_NAMES: &[&str] = &[
+/// Canonical command names. `pub(crate)` so the in-process
+/// nb-shell prompt (`crate::prompt_state`) can power Tab
+/// completion against the same set the unix-socket inspector
+/// accepts.
+pub(crate) const COMMAND_NAMES: &[&str] = &[
     "commands",
     "help",
     "meta",
@@ -293,7 +301,7 @@ fn render_phases(state: &RunState) -> String {
     }
     let mut s = String::new();
     for p in &state.phases {
-        let indent = "  ".repeat(p.depth);
+        let indent = " ".repeat(p.depth);
         let marker = match &p.status {
             PhaseStatus::Pending     => "[  ]",
             PhaseStatus::Running     => "[..]",
@@ -371,7 +379,7 @@ fn render_tree(state: &RunState) -> String {
     // headers visually so the indent structure reads cleanly.
     let mut s = String::new();
     for p in &state.phases {
-        let indent = "  ".repeat(p.depth);
+        let indent = " ".repeat(p.depth);
         match p.kind {
             EntryKind::Scope => {
                 s.push_str(&format!("{indent}· {}\n", p.labels));

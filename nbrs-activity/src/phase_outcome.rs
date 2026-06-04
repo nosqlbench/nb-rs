@@ -241,6 +241,14 @@ pub struct PhaseOutcome {
     /// phase doesn't support cursor-resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_cursor: Option<ResumeCursor>,
+    /// SRD-77 `--scope=changed` — the GK chain-hash for this
+    /// phase (`GkProgram::instance_hash` from SRD-44). Hex-
+    /// encoded so the storage layer can round-trip as TEXT.
+    /// `None` for outcomes recorded before the column was
+    /// added (legacy rows) or for skipped phases that never
+    /// computed their hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_hash: Option<String>,
 }
 
 impl PhaseOutcome {
@@ -253,6 +261,7 @@ impl PhaseOutcome {
             duration_secs,
             errors: Vec::new(),
             resume_cursor: None,
+            phase_hash: None,
         }
     }
 
@@ -273,6 +282,7 @@ impl PhaseOutcome {
             duration_secs,
             errors,
             resume_cursor: None,
+            phase_hash: None,
         }
     }
 
@@ -286,7 +296,17 @@ impl PhaseOutcome {
             duration_secs: 0.0,
             errors: Vec::new(),
             resume_cursor: None,
+            phase_hash: None,
         }
+    }
+
+    /// Stamp the GK chain-hash on this outcome. Builder-style
+    /// so existing callers that don't yet have the hash
+    /// available (legacy / partial paths) stay unchanged;
+    /// SRD-77-aware callers chain `.completed(...).with_hash(h)`.
+    pub fn with_phase_hash(mut self, hex_hash: String) -> Self {
+        self.phase_hash = Some(hex_hash);
+        self
     }
 
     /// Convenience: the first error's message, or `None`
@@ -324,6 +344,7 @@ impl PhaseOutcome {
             duration_secs:    self.duration_secs,
             started_at_nanos,
             ended_at_nanos,
+            phase_hash:       self.phase_hash.clone(),
             errors:           self.errors.iter().map(|e| {
                 nbrs_metrics::reporters::sqlite::PhaseErrorRow {
                     class:       e.class.clone(),
@@ -425,6 +446,7 @@ mod tests {
                 retryable: false,
             }],
             resume_cursor: None,
+            phase_hash: None,
         };
         let json = serde_json::to_string(&original).expect("serialise");
         let parsed: PhaseOutcome = serde_json::from_str(&json)

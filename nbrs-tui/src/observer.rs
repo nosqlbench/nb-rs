@@ -529,7 +529,7 @@ pub fn print_post_run_summary(
         let mut truncated_phases: usize = 0;
 
         for (i, phase) in s.phases.iter().enumerate() {
-            let indent = "  ".repeat(phase.depth);
+            let indent = " ".repeat(phase.depth);
 
             // Truncation guard: once we're past the last
             // failure and past the small tail window, count the
@@ -658,7 +658,7 @@ pub fn print_post_run_summary(
         for (idx, phase) in &failed {
             for scope_idx in scope_ancestors(&s.phases, *idx) {
                 let scope = &s.phases[scope_idx];
-                let indent = "  ".repeat(scope.depth);
+                let indent = " ".repeat(scope.depth);
                 // Scope descriptors live in `name` (e.g.
                 // `for_each k=10`); `labels` carries the
                 // structural-identity coord-path string and is
@@ -680,7 +680,7 @@ pub fn print_post_run_summary(
                 }
                 eprintln!("  {indent}{s_buf}");
             }
-            let indent = "  ".repeat(phase.depth);
+            let indent = " ".repeat(phase.depth);
             // SRD-63 Push 9e: route the failed-phase inset
             // through `phase_summary` with `show_labels=true`
             // so the leaf-coord path lands on the failure

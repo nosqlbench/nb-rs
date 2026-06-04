@@ -160,7 +160,7 @@ fn json_format() {
 }
 
 #[test]
-fn dry_run_emit() {
+fn dry_run_fields() {
     let session_parent = std::env::temp_dir().join(format!(
         "nbrs-inline-dry-{}-{}",
         std::process::id(),
@@ -170,7 +170,7 @@ fn dry_run_emit() {
     std::fs::create_dir_all(&session_parent).expect("create session parent");
     let session_path = session_parent.join("session");
     let output = nbrs()
-        .args(["run", "op=test {{cycle}}", "cycles=3", "dryrun=emit"])
+        .args(["run", "op=test {{cycle}}", "cycles=3", "dryrun=fields"])
         .arg("--session-path")
         .arg(&session_path)
         .output()

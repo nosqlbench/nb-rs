@@ -1190,12 +1190,12 @@ impl App {
     /// that never produces a dump. We create it here, at the
     /// moment the stable-named copy actually lands.
     fn write_dump(&mut self, text: String, ts: &str) {
-        let logs_dir = std::path::PathBuf::from("logs");
-        let session_dir = logs_dir.join("latest");
-        // `logs/latest` exists as a symlink once Session::new has run.
-        // If it's not there yet (very early failure), fall back to the
-        // logs root so the timestamped archive still lands somewhere
-        // visible.
+        let logs_dir = nbrs_activity::session::default_sessions_root();
+        let session_dir = nbrs_activity::session::latest_session_dir();
+        // `sessions/latest` exists as a symlink once Session::new has
+        // run. If it's not there yet (very early failure), fall back
+        // to the sessions root so the timestamped archive still lands
+        // somewhere visible.
         let target_dir = if session_dir.exists() { &session_dir } else { &logs_dir };
         let fname_ts = ts.replace([':', ' ', '.'], "_").replace('-', "");
         let archive_name = format!("tui_{fname_ts}.dump");
@@ -3177,6 +3177,7 @@ impl Drop for TerminalGuard {
 static PRETUI_TERMIOS: std::sync::OnceLock<libc::termios>
     = std::sync::OnceLock::new();
 
+
 pub(crate) fn save_pretui_termios() {
     // tcgetattr on stderr (the TUI writes there). If this fails
     // (e.g. stderr isn't a tty), we skip — the signal handler will
@@ -3241,6 +3242,16 @@ extern "C" fn signal_terminal_restore(
     // Each escape-sequence write goes via raw `write` to stderr,
     // which is async-signal-safe. crossterm's higher-level API
     // is not, so we hand-roll the sequences here.
+    // `\x1b[999;1H` is the "park cursor at bottom-left"
+    // idiom: terminals clamp the row to the actual last
+    // visible row, so this lands on the bottom row of the
+    // viewport regardless of terminal size. Followed by a
+    // single `\r\n` so the cooked shell's next prompt prints
+    // on a fresh line below whatever we just rendered (status
+    // + prompt + log tail), and the user types into a clean
+    // cell. Replaces the prior INLINE_STATUS_HEIGHT walk loop
+    // — that approach drifted when scrolls had moved the
+    // renderer's region around since the last height publish.
     const CLEANUP: &[u8] = concat!(
         "\x1b[?1000l", // disable basic mouse reporting
         "\x1b[?1002l", // disable button-event mouse reporting
@@ -3250,6 +3261,8 @@ extern "C" fn signal_terminal_restore(
         "\x1b[?1049l", // leave alternate screen
         "\x1b[?25h",   // show cursor
         "\x1b[0m",     // reset SGR
+        "\x1b[999;1H", // park at absolute bottom-left (terminal clamps)
+        "\r\n",        // fresh line for the shell prompt
     ).as_bytes();
     unsafe {
         libc::write(

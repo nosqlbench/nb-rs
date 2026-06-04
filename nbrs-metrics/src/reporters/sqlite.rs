@@ -38,9 +38,16 @@ mod inner {
             // WAL mode: readers don't block writers, no fsync on every commit.
             // synchronous=NORMAL: fsync only on WAL checkpoint, not every transaction.
             conn.execute_batch(
+                // SRD-77 — `foreign_keys=ON` enables the schema's
+                // FK constraints on `metric_instance(session, exec_id)`
+                // → `executions(session, exec_id)` so every metric
+                // sample is transitively tied to a real execution.
+                // Off-by-default in sqlite; must be enabled per-
+                // connection.
                 "PRAGMA journal_mode=WAL;\
                  PRAGMA synchronous=NORMAL;\
-                 PRAGMA wal_autocheckpoint=1000;"
+                 PRAGMA wal_autocheckpoint=1000;\
+                 PRAGMA foreign_keys=ON;"
             ).map_err(|e| format!("failed to set SQLite pragmas: {e}"))?;
             let mut reporter = Self {
                 conn,
@@ -54,6 +61,15 @@ mod inner {
         pub fn in_memory() -> Result<Self, String> {
             let conn = Connection::open_in_memory()
                 .map_err(|e| format!("failed to open in-memory SQLite: {e}"))?;
+            // SRD-77 — enable FK enforcement on the in-memory
+            // connection too so the test-time path mirrors
+            // production's constraint surface exactly. No
+            // bootstrap row, no test-only arms: production opens
+            // a reporter via `new()`, then `insert_execution_start`
+            // before any metric write — tests follow the same
+            // shape.
+            conn.execute_batch("PRAGMA foreign_keys=ON;")
+                .map_err(|e| format!("failed to set foreign_keys pragma: {e}"))?;
             let mut reporter = Self {
                 conn,
                 family_cache: HashMap::new(),
@@ -133,7 +149,30 @@ mod inner {
 
         fn create_schema(&mut self) -> Result<(), String> {
             self.conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS metric_family (
+                // SRD-77 — `executions` MUST be defined before any
+                // table that FK-references it; the FK on
+                // metric_instance(session, exec_id) below targets
+                // this table. One row per `nbrs run` / `nbrs
+                // refine` / `nbrs resume` invocation that reached
+                // the runner. `verb` records the launching CLI
+                // verb; `scope` records the `--scope=` setting for
+                // refine (NULL elsewhere). `workload_yaml_snapshot`
+                // stores the workload yaml verbatim so an operator
+                // can reconstruct what THIS execution ran without
+                // needing the workload file to still exist on disk.
+                "CREATE TABLE IF NOT EXISTS executions (
+                    session                 TEXT    NOT NULL,
+                    exec_id                 INTEGER NOT NULL,
+                    verb                    TEXT    NOT NULL,
+                    scope                   TEXT,
+                    started_at_nanos        INTEGER NOT NULL,
+                    ended_at_nanos          INTEGER,
+                    disposition             TEXT,
+                    workload_yaml_snapshot  TEXT NOT NULL DEFAULT '',
+                    cli_params_snapshot     TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (session, exec_id)
+                );
+                CREATE TABLE IF NOT EXISTS metric_family (
                     id INTEGER PRIMARY KEY,
                     name TEXT NOT NULL,
                     type TEXT NOT NULL,
@@ -152,7 +191,28 @@ mod inner {
                 CREATE TABLE IF NOT EXISTS metric_instance (
                     id INTEGER PRIMARY KEY,
                     family_id INTEGER NOT NULL REFERENCES metric_family(id),
-                    spec TEXT NOT NULL UNIQUE
+                    spec TEXT NOT NULL UNIQUE,
+                    -- SRD-77 — every metric instance MUST be
+                    -- tied to a concrete session + execution.
+                    -- These columns denormalize the values that
+                    -- already appear as `session` / `exec_id`
+                    -- labels in the spec text; promoting them to
+                    -- first-class columns lets the FK below
+                    -- ENFORCE the relationship structurally,
+                    -- instead of trusting writers to keep the
+                    -- spec well-formed. sample_value transits
+                    -- to executions through this column pair via
+                    -- instance_id (already FK'd to
+                    -- metric_instance). Pre-SRD-77 rows get the
+                    -- sentinel session=''/exec_id=0 — the
+                    -- migration `ALTER TABLE` adds the columns
+                    -- with that default, and the FK is added
+                    -- only when no legacy rows remain.
+                    session TEXT NOT NULL DEFAULT '',
+                    exec_id INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (session, exec_id)
+                        REFERENCES executions(session, exec_id)
+                        DEFERRABLE INITIALLY DEFERRED
                 );
                 -- Per-instance label rows. Holds `__name__`
                 -- alongside every other label so queries that
@@ -315,6 +375,13 @@ mod inner {
                     duration_secs REAL    NOT NULL,
                     started_at_nanos INTEGER NOT NULL,
                     ended_at_nanos   INTEGER NOT NULL,
+                    -- SRD-77 — GK chain-hash (hex). NULL for
+                    -- legacy rows from before this column
+                    -- was added; populated for every row
+                    -- written by SRD-77-aware code paths so
+                    -- `refine --scope=changed` can compare
+                    -- prior vs current program shape.
+                    phase_hash    TEXT,
                     PRIMARY KEY (session, exec_id, phase_name, phase_labels)
                 );
                 -- SRD-76: per-error detail rows, 0..N per phase
@@ -374,12 +441,14 @@ mod inner {
                 tx.execute(
                     "INSERT OR REPLACE INTO phase_outcomes \
                      (session, exec_id, phase_name, phase_labels, status, \
-                      duration_secs, started_at_nanos, ended_at_nanos) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                      duration_secs, started_at_nanos, ended_at_nanos, \
+                      phase_hash) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         row.session, row.exec_id as i64,
                         row.phase_name, row.phase_labels, row.status,
                         row.duration_secs, row.started_at_nanos, row.ended_at_nanos,
+                        row.phase_hash,
                     ],
                 )?;
                 tx.execute(
@@ -425,24 +494,162 @@ mod inner {
             }
         }
 
-        /// SRD-76 — read every persisted phase outcome from
-        /// this session, ordered by chronological phase-end
-        /// time. Each outcome carries its full error list.
-        pub fn read_phase_outcomes(&self) -> Vec<PhaseOutcomeRow> {
+        /// SRD-77 — insert the in-flight execution row at session
+        /// open. `ended_at_nanos` / `disposition` stay `NULL`
+        /// until the matching [`Self::update_execution_end`]
+        /// call at shutdown. The `(session, exec_id)` PK is
+        /// strict: a duplicate insert (same session + exec_id)
+        /// returns Err verbatim from sqlite so the runner can
+        /// surface "this exec_id is already taken" rather than
+        /// silently overwriting prior history.
+        pub fn insert_execution_start(
+            &mut self,
+            session: &str,
+            exec_id: u64,
+            verb: &str,
+            scope: Option<&str>,
+            started_at_nanos: i64,
+            workload_yaml_snapshot: &str,
+            cli_params_snapshot: &str,
+        ) {
+            let res = self.conn.execute(
+                "INSERT INTO executions \
+                 (session, exec_id, verb, scope, started_at_nanos, \
+                  workload_yaml_snapshot, cli_params_snapshot) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    session, exec_id as i64, verb, scope,
+                    started_at_nanos, workload_yaml_snapshot, cli_params_snapshot,
+                ],
+            );
+            if let Err(e) = res {
+                crate::diag::warn(&format!(
+                    "sqlite executions insert failed (session={session}, \
+                     exec_id={exec_id}): {e}"));
+            }
+        }
+
+        /// SRD-77 — update the in-flight execution row at
+        /// shutdown. Sets `ended_at_nanos` + `disposition` so
+        /// the cardinal-history table records the run's terminal
+        /// state. Idempotent: the WHERE clause keys on the
+        /// in-flight row (ended_at_nanos IS NULL) so a second
+        /// call after the row has already been closed is a no-op.
+        pub fn update_execution_end(
+            &mut self,
+            session: &str,
+            exec_id: u64,
+            ended_at_nanos: i64,
+            disposition: &str,
+        ) {
+            let res = self.conn.execute(
+                "UPDATE executions \
+                 SET ended_at_nanos = ?1, disposition = ?2 \
+                 WHERE session = ?3 AND exec_id = ?4 \
+                   AND ended_at_nanos IS NULL",
+                params![
+                    ended_at_nanos, disposition,
+                    session, exec_id as i64,
+                ],
+            );
+            if let Err(e) = res {
+                crate::diag::warn(&format!(
+                    "sqlite executions update failed (session={session}, \
+                     exec_id={exec_id}): {e}"));
+            }
+        }
+
+        /// SRD-77 — read execution rows scoped by the supplied
+        /// `exec_id_filter`. **Every** caller MUST decide:
+        /// `Some(n)` narrows to one execution; `None` reads
+        /// every execution (the explicit "aggregate" semantic).
+        /// Higher layers translate `ExecutionQualifier` (in
+        /// nbrs-activity) into this primitive — the storage
+        /// layer doesn't depend on the activity crate. Ordered
+        /// by `exec_id` so callers see them in cardinal
+        /// sequence.
+        pub fn read_executions(&self, exec_id_filter: Option<u64>)
+            -> Vec<ExecutionRow>
+        {
+            let (sql, params): (&str, Vec<i64>) = match exec_id_filter {
+                Some(id) => (
+                    "SELECT session, exec_id, verb, scope, \
+                            started_at_nanos, ended_at_nanos, disposition, \
+                            workload_yaml_snapshot, cli_params_snapshot \
+                     FROM executions WHERE exec_id = ?1 \
+                     ORDER BY session, exec_id",
+                    vec![id as i64],
+                ),
+                None => (
+                    "SELECT session, exec_id, verb, scope, \
+                            started_at_nanos, ended_at_nanos, disposition, \
+                            workload_yaml_snapshot, cli_params_snapshot \
+                     FROM executions \
+                     ORDER BY session, exec_id",
+                    Vec::new(),
+                ),
+            };
+            let mut stmt = match self.conn.prepare(sql) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            let rows = stmt.query_map(
+                rusqlite::params_from_iter(params.iter()),
+                |r| Ok(ExecutionRow {
+                    session:                r.get(0)?,
+                    exec_id:                r.get::<_, i64>(1)? as u64,
+                    verb:                   r.get(2)?,
+                    scope:                  r.get(3)?,
+                    started_at_nanos:       r.get(4)?,
+                    ended_at_nanos:         r.get(5)?,
+                    disposition:            r.get(6)?,
+                    workload_yaml_snapshot: r.get(7)?,
+                    cli_params_snapshot:    r.get(8)?,
+                })
+            );
+            rows.map(|iter| iter.filter_map(Result::ok).collect())
+                .unwrap_or_default()
+        }
+
+        /// SRD-76 / SRD-77 — read persisted phase outcomes,
+        /// scoped by `exec_id_filter`. `Some(n)` narrows to one
+        /// execution; `None` reads across every execution (the
+        /// explicit aggregate intent). Higher layers translate
+        /// `ExecutionQualifier` (nbrs-activity) into this
+        /// primitive. Ordered by chronological phase-end time.
+        /// Each outcome carries its full error list.
+        pub fn read_phase_outcomes(&self, exec_id_filter: Option<u64>)
+            -> Vec<PhaseOutcomeRow>
+        {
             let mut outcomes: Vec<PhaseOutcomeRow> = Vec::new();
-            {
-                let mut out_stmt = match self.conn.prepare(
+            let (sql, params): (&str, Vec<i64>) = match exec_id_filter {
+                Some(id) => (
                     "SELECT session, exec_id, phase_name, phase_labels, \
                             status, duration_secs, \
-                            started_at_nanos, ended_at_nanos \
+                            started_at_nanos, ended_at_nanos, phase_hash \
+                     FROM phase_outcomes WHERE exec_id = ?1 \
+                     ORDER BY ended_at_nanos, session, exec_id, \
+                              phase_name, phase_labels",
+                    vec![id as i64],
+                ),
+                None => (
+                    "SELECT session, exec_id, phase_name, phase_labels, \
+                            status, duration_secs, \
+                            started_at_nanos, ended_at_nanos, phase_hash \
                      FROM phase_outcomes \
                      ORDER BY ended_at_nanos, session, exec_id, \
-                              phase_name, phase_labels"
-                ) {
+                              phase_name, phase_labels",
+                    Vec::new(),
+                ),
+            };
+            {
+                let mut out_stmt = match self.conn.prepare(sql) {
                     Ok(s) => s,
                     Err(_) => return Vec::new(),
                 };
-                let rows = out_stmt.query_map([], |row| {
+                let rows = out_stmt.query_map(
+                    rusqlite::params_from_iter(params.iter()),
+                    |row| {
                     Ok(PhaseOutcomeRow {
                         session:           row.get(0)?,
                         exec_id:           row.get::<_, i64>(1)? as u64,
@@ -452,6 +659,7 @@ mod inner {
                         duration_secs:     row.get(5)?,
                         started_at_nanos:  row.get(6)?,
                         ended_at_nanos:    row.get(7)?,
+                        phase_hash:        row.get::<_, Option<String>>(8)?,
                         errors:            Vec::new(),
                     })
                 });
@@ -479,7 +687,8 @@ mod inner {
             phase_labels: &str,
         ) -> Option<PhaseOutcomeRow> {
             let mut row = self.conn.query_row(
-                "SELECT status, duration_secs, started_at_nanos, ended_at_nanos \
+                "SELECT status, duration_secs, started_at_nanos, ended_at_nanos, \
+                        phase_hash \
                  FROM phase_outcomes \
                  WHERE session = ?1 AND exec_id = ?2 \
                    AND phase_name = ?3 AND phase_labels = ?4",
@@ -493,6 +702,7 @@ mod inner {
                     duration_secs:     r.get(1)?,
                     started_at_nanos:  r.get(2)?,
                     ended_at_nanos:    r.get(3)?,
+                    phase_hash:        r.get::<_, Option<String>>(4)?,
                     errors:            Vec::new(),
                 }),
             ).ok()?;
@@ -677,9 +887,48 @@ mod inner {
             if let Some(&id) = self.instance_cache.get(&spec) {
                 return id;
             }
+            // SRD-77 — extract session + exec_id from the
+            // canonical labels and write them as first-class
+            // columns. The FK on (session, exec_id) →
+            // executions enforces that every metric instance
+            // is structurally tied to a real execution. The
+            // labels already carry these values (set by
+            // Component::root at session-open); promoting them
+            // to columns gives the storage layer a constraint
+            // surface rather than trusting writers to keep
+            // the spec well-formed.
+            //
+            // Reserved-word guard: `"latest"` is a CLI-side
+            // virtual qualifier ("the most recent execution")
+            // and MUST NEVER land in storage. If the labels
+            // carry it (which would only happen via a
+            // bug — the resolver should translate it before
+            // any write), refuse the insert and warn.
+            let session = canonical.get("session").unwrap_or("");
+            if session == "latest" {
+                crate::diag::warn(
+                    "metric_instance insert rejected: \
+                     session=\"latest\" is a reserved CLI \
+                     qualifier and must be resolved to a \
+                     concrete session id before write."
+                );
+                return 0;
+            }
+            let exec_id_raw = canonical.get("exec_id").unwrap_or("");
+            if exec_id_raw == "latest" {
+                crate::diag::warn(
+                    "metric_instance insert rejected: \
+                     exec_id=\"latest\" is a reserved CLI \
+                     qualifier and must be resolved to a \
+                     concrete integer before write."
+                );
+                return 0;
+            }
+            let exec_id: i64 = exec_id_raw.parse::<i64>().unwrap_or(0);
             self.conn.execute(
-                "INSERT OR IGNORE INTO metric_instance (family_id, spec) VALUES (?1, ?2)",
-                params![family_id, &spec],
+                "INSERT OR IGNORE INTO metric_instance \
+                 (family_id, spec, session, exec_id) VALUES (?1, ?2, ?3, ?4)",
+                params![family_id, &spec, session, exec_id],
             ).unwrap_or_else(|e| {
                 crate::diag::warn(&format!("warning: metric_instance insert failed: {e}"));
                 0
@@ -1126,6 +1375,15 @@ mod inner {
         pub duration_secs: f64,
         pub started_at_nanos: i64,
         pub ended_at_nanos: i64,
+        /// SRD-77 — hex-encoded chain hash from
+        /// `GkProgram::instance_hash`. Used by `refine
+        /// --scope=changed` to compare a prior outcome's
+        /// program shape against the freshly-computed one;
+        /// equal hashes mean the phase's program tree is
+        /// byte-identical and the phase can be skipped.
+        /// `None` for legacy rows recorded before the column
+        /// was added.
+        pub phase_hash: Option<String>,
         pub errors: Vec<PhaseErrorRow>,
     }
 
@@ -1146,6 +1404,25 @@ mod inner {
         pub retryable: bool,
     }
 
+    /// SRD-77 — storage-layer mirror of the cardinal-history
+    /// `executions` table. One row per `nbrs <verb>` invocation
+    /// that touched a session. `ended_at_nanos` / `disposition`
+    /// are populated only after the matching session's shutdown
+    /// flush completes — `None` while the execution is in flight
+    /// (or if the process exited uncleanly).
+    #[derive(Debug, Clone)]
+    pub struct ExecutionRow {
+        pub session: String,
+        pub exec_id: u64,
+        pub verb: String,
+        pub scope: Option<String>,
+        pub started_at_nanos: i64,
+        pub ended_at_nanos: Option<i64>,
+        pub disposition: Option<String>,
+        pub workload_yaml_snapshot: String,
+        pub cli_params_snapshot: String,
+    }
+
     pub struct ReportConfig {
         /// Gauge column filter patterns. Empty = show all.
         pub columns: Vec<String>,
@@ -1155,6 +1432,14 @@ mod inner {
         pub aggregates: Vec<ReportAggregate>,
         /// Whether to show individual data rows.
         pub show_details: bool,
+        /// SRD-77 — execution qualifier. `Some(n)` narrows the
+        /// summary's metric queries to one execution_id;
+        /// `None` aggregates across every execution recorded in
+        /// the session. Higher layers translate
+        /// `ExecutionQualifier` (nbrs-activity) into this
+        /// primitive at the call site. There is no aggregate-
+        /// by-default fallback — callers MUST decide.
+        pub exec_id_filter: Option<u64>,
     }
 
     /// An aggregate expression for the summary report. Two
@@ -1288,7 +1573,7 @@ mod inner {
                 .filter_map(|p| regex::Regex::new(p.trim()).ok())
                 .collect();
 
-            let rows = self.query_all_activities();
+            let rows = self.query_all_activities(config.exec_id_filter);
             if rows.is_empty() { return None; }
 
             // Discover which optional column groups have data
@@ -1360,29 +1645,52 @@ mod inner {
         /// Query all activities that produced data, returning one row per
         /// distinct label set. No hardcoded phase name patterns — the
         /// summary is projected directly from whatever the workload produced.
-        fn query_all_activities(&self) -> Vec<ActivityRow> {
+        ///
+        /// SRD-77 — `exec_id_filter` qualifies which execution's
+        /// data to project: `Some(n)` narrows; `None` aggregates
+        /// across every execution. Other per-label-set query
+        /// helpers below (`query_latency`, `query_gauges_for_labels`,
+        /// `query_elapsed_ms`) also accept the same qualifier
+        /// so the projection is consistent across one summary
+        /// pass.
+        fn query_all_activities(&self, exec_id_filter: Option<u64>) -> Vec<ActivityRow> {
             // Find every distinct label set that has cycles_total > 0.
             // Phase-level inclusion / exclusion is gone — every
             // active phase contributes a row by default; the
             // `report:` block (SRD-46) decides what gets
             // rendered into which file.
-            let mut stmt = match self.conn.prepare(
-                "SELECT mi.spec, MAX(sv.count)
-                 FROM sample_value sv
-                 JOIN metric_instance mi ON sv.instance_id = mi.id
-                 WHERE mi.spec LIKE 'cycles_total%'
-                 GROUP BY mi.id
-                 HAVING MAX(sv.count) > 0
-                 ORDER BY mi.id"
-            ) {
+            let (sql, params): (&str, Vec<i64>) = match exec_id_filter {
+                Some(id) => (
+                    "SELECT mi.spec, MAX(sv.count)
+                     FROM sample_value sv
+                     JOIN metric_instance mi ON sv.instance_id = mi.id
+                     WHERE mi.spec LIKE 'cycles_total%' AND mi.exec_id = ?1
+                     GROUP BY mi.id
+                     HAVING MAX(sv.count) > 0
+                     ORDER BY mi.id",
+                    vec![id as i64],
+                ),
+                None => (
+                    "SELECT mi.spec, MAX(sv.count)
+                     FROM sample_value sv
+                     JOIN metric_instance mi ON sv.instance_id = mi.id
+                     WHERE mi.spec LIKE 'cycles_total%'
+                     GROUP BY mi.id
+                     HAVING MAX(sv.count) > 0
+                     ORDER BY mi.id",
+                    Vec::new(),
+                ),
+            };
+            let mut stmt = match self.conn.prepare(sql) {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
 
             let mut rows: Vec<(Vec<(String, String)>, ActivityRow)> = Vec::new();
-            let iter = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            });
+            let iter = stmt.query_map(
+                rusqlite::params_from_iter(params.iter()),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            );
 
             if let Ok(iter) = iter {
                 for r in iter.filter_map(|r| r.ok()) {
@@ -2246,10 +2554,11 @@ mod inner {
                 duration_secs: 1.234,
                 started_at_nanos: 1_000_000,
                 ended_at_nanos:   1_001_234_000,
+                phase_hash: None,
                 errors: Vec::new(),
             };
             r.write_phase_outcome(&row);
-            let read = r.read_phase_outcomes();
+            let read = r.read_phase_outcomes(None);
             assert_eq!(read.len(), 1);
             assert_eq!(read[0].session,       "test-sess");
             assert_eq!(read[0].exec_id,       1);
@@ -2271,6 +2580,7 @@ mod inner {
                 duration_secs: 14400.0,
                 started_at_nanos: 0,
                 ended_at_nanos:   14400 * 1_000_000_000,
+                phase_hash: None,
                 errors: vec![
                     super::PhaseErrorRow {
                         class: "poll_timeout".into(),
@@ -2318,6 +2628,7 @@ mod inner {
                 duration_secs: 1.0,
                 started_at_nanos: 0,
                 ended_at_nanos: 1,
+                phase_hash: None,
                 errors: vec![super::PhaseErrorRow {
                     class: "A".into(),
                     message: "m".into(),
@@ -2353,10 +2664,11 @@ mod inner {
                     duration_secs: 1.0,
                     started_at_nanos: exec_id as i64 * 1_000,
                     ended_at_nanos:   exec_id as i64 * 1_000 + 1,
+                    phase_hash: None,
                     errors: Vec::new(),
                 });
             }
-            let all = r.read_phase_outcomes();
+            let all = r.read_phase_outcomes(None);
             assert_eq!(all.len(), 2,
                 "distinct exec_ids must produce distinct rows");
             assert_eq!(all.iter().map(|o| o.exec_id).collect::<Vec<_>>(),
@@ -2367,7 +2679,7 @@ mod inner {
         fn phase_outcome_read_missing_returns_none() {
             let r = super::SqliteReporter::in_memory().unwrap();
             assert!(r.read_phase_outcome("s", 1, "nope", "").is_none());
-            assert!(r.read_phase_outcomes().is_empty());
+            assert!(r.read_phase_outcomes(None).is_empty());
         }
 
         #[test]
@@ -2554,13 +2866,29 @@ mod inner {
             assert!(count >= 7, "expected 7+ tables, got {count}");
         }
 
+        /// Helper: tests use their own session/exec_id qualifier
+        /// to satisfy the SRD-77 metric_instance FK. Pre-insert
+        /// an executions row matching `(session_id, 1)` and
+        /// return labels with those qualifiers attached. Tests
+        /// can share the in-memory store across each other by
+        /// picking distinct `session_id`s, but the more common
+        /// pattern (one in_memory per test) keeps tests
+        /// independent.
+        fn test_session_setup(
+            r: &mut SqliteReporter, session_id: &str,
+        ) -> Labels {
+            r.insert_execution_start(session_id, 1, "test", None, 0, "", "");
+            Labels::of("session", session_id).with("exec_id", "1")
+        }
+
         #[test]
         fn sqlite_inserts_counter() {
             let mut reporter = SqliteReporter::in_memory().unwrap();
+            let qualifier = test_session_setup(&mut reporter, "test_inserts_counter");
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
             snapshot.insert_counter(
                 "ops_total",
-                Labels::of("activity", "write"),
+                qualifier.with("activity", "write"),
                 42,
                 Instant::now(),
             );
@@ -2575,13 +2903,14 @@ mod inner {
         #[test]
         fn sqlite_inserts_timer() {
             let mut reporter = SqliteReporter::in_memory().unwrap();
+            let qualifier = test_session_setup(&mut reporter, "test_inserts_timer");
             let mut h = hdrhistogram::Histogram::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
             for i in 1..=100 { let _ = h.record(i * 1_000_000); }
 
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
             snapshot.insert_histogram(
                 "latency",
-                Labels::of("activity", "read"),
+                qualifier.with("activity", "read"),
                 h,
                 Instant::now(),
             );
@@ -2596,9 +2925,10 @@ mod inner {
         #[test]
         fn sqlite_deduplicates_families() {
             let mut reporter = SqliteReporter::in_memory().unwrap();
+            let qualifier = test_session_setup(&mut reporter, "test_dedupe_families");
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
-            snapshot.insert_counter("ops", Labels::of("activity", "a"), 1, Instant::now());
-            snapshot.insert_counter("ops", Labels::of("activity", "b"), 2, Instant::now());
+            snapshot.insert_counter("ops", qualifier.clone().with("activity", "a"), 1, Instant::now());
+            snapshot.insert_counter("ops", qualifier.with("activity", "b"), 2, Instant::now());
             reporter.report(&snapshot);
 
             let families: i64 = reporter.conn.query_row(
@@ -2778,6 +3108,7 @@ mod inner {
                 row_filters: vec![],
                 aggregates: vec![],
                 show_details: true,
+                exec_id_filter: None,
             };
             r.print_summary(&config);
 
@@ -2793,6 +3124,7 @@ mod inner {
                     group_by: Vec::new(),
                 }],
                 show_details: true,
+                exec_id_filter: None,
             };
             r.print_summary(&config_agg);
             eprintln!("--- end ---");
@@ -2803,12 +3135,13 @@ mod inner {
         #[test]
         fn write_native_sample_round_trips_histogram_with_le_buckets() {
             let mut r = SqliteReporter::in_memory().unwrap();
+            let qualifier = test_session_setup(&mut r, "test_native_histogram");
             // Three bucket instances differing only on `le`.
             for le in ["0.1", "0.5", "+Inf"] {
                 r.write_native_sample(
                     "request_latency",
                     "histogram",
-                    &Labels::of("phase", "run").with("le", le),
+                    &qualifier.clone().with("phase", "run").with("le", le),
                     &NativeSample {
                         interval_ms: 1000,
                         count: Some(42),
@@ -2819,12 +3152,12 @@ mod inner {
             // Sibling _sum and _count families.
             r.write_native_sample(
                 "request_latency_sum", "histogram",
-                &Labels::of("phase", "run"),
+                &qualifier.clone().with("phase", "run"),
                 &NativeSample { interval_ms: 1000, sum: Some(123.4), ..NativeSample::default() },
             );
             r.write_native_sample(
                 "request_latency_count", "histogram",
-                &Labels::of("phase", "run"),
+                &qualifier.with("phase", "run"),
                 &NativeSample { interval_ms: 1000, count: Some(100), ..NativeSample::default() },
             );
 
@@ -2863,11 +3196,12 @@ mod inner {
         #[test]
         fn write_native_sample_round_trips_stateset_type() {
             let mut r = SqliteReporter::in_memory().unwrap();
+            let qualifier = test_session_setup(&mut r, "test_native_stateset");
             // Three states with active/inactive per-state samples.
             for (state, on) in [("alpha", 1.0), ("beta", 0.0), ("gamma", 1.0)] {
                 r.write_native_sample(
                     "feature_flags", "stateset",
-                    &Labels::of("feature", state),
+                    &qualifier.clone().with("feature", state),
                     &NativeSample { interval_ms: 0, mean: Some(on), ..NativeSample::default() },
                 );
             }
@@ -2915,10 +3249,11 @@ mod inner {
             // labels) reuse the cached family_id and
             // instance_id rather than creating duplicates.
             let mut r = SqliteReporter::in_memory().unwrap();
+            let qualifier = test_session_setup(&mut r, "test_native_dedupes");
             for _ in 0..3 {
                 r.write_native_sample(
                     "build_info", "info",
-                    &Labels::of("version", "1.2.3"),
+                    &qualifier.clone().with("version", "1.2.3"),
                     &NativeSample { interval_ms: 0, count: Some(1), ..NativeSample::default() },
                 );
             }
@@ -2948,9 +3283,12 @@ mod inner {
             let mut r = SqliteReporter::in_memory().unwrap();
             use crate::scheduler::Reporter;
             use std::time::{Duration, Instant};
-            let labels_a = Labels::of("phase", "ann_query")
+            let qualifier = test_session_setup(&mut r, "test_instance_identity");
+            let labels_a = qualifier.clone()
+                .with("phase", "ann_query")
                 .with("k", "1").with("optimize_for", "recall");
-            let labels_b = Labels::of("optimize_for", "recall")
+            let labels_b = qualifier
+                .with("optimize_for", "recall")
                 .with("k", "1").with("phase", "ann_query");
             let mut snap = MetricSet::new(Duration::from_secs(1));
             snap.insert_counter("recall_mean", labels_a, 10, Instant::now());
@@ -2971,8 +3309,11 @@ mod inner {
             // OpenMetrics canonical form: metric name as
             // prefix, `__name__` excluded from the labels
             // block, the rest sorted by key.
+            // Session + exec_id labels show up in the canonical
+            // spec alongside the test-supplied labels (sorted
+            // alphabetically per OpenMetrics).
             assert_eq!(spec,
-                r#"recall_mean{k="1",optimize_for="recall",phase="ann_query"}"#);
+                r#"recall_mean{exec_id="1",k="1",optimize_for="recall",phase="ann_query",session="test_instance_identity"}"#);
 
             // `__name__` is stored alongside the other
             // labels so queries can filter on it uniformly.
@@ -2980,6 +3321,309 @@ mod inner {
                 "SELECT COUNT(*) FROM instance_label WHERE key='__name__'",
                 [], |row| row.get(0)).unwrap();
             assert_eq!(n_name_rows, 1);
+        }
+
+        // ── SRD-77 executions table ──────────────────────────
+
+        #[test]
+        fn execution_insert_then_update_completes_cardinal_history() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.insert_execution_start(
+                "sess", 1, "run", None,
+                1_000_000_000,
+                "phases: { schema: { ops: { noop: { op: x }}}}",
+                "cycles=10\nconcurrency=4",
+            );
+            // ended_at_nanos / disposition land via the update.
+            r.update_execution_end("sess", 1, 5_000_000_000, "SUCCESS");
+            let rows = r.read_executions(None);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].session, "sess");
+            assert_eq!(rows[0].exec_id, 1);
+            assert_eq!(rows[0].verb, "run");
+            assert_eq!(rows[0].scope, None);
+            assert_eq!(rows[0].started_at_nanos, 1_000_000_000);
+            assert_eq!(rows[0].ended_at_nanos, Some(5_000_000_000));
+            assert_eq!(rows[0].disposition.as_deref(), Some("SUCCESS"));
+            assert!(rows[0].workload_yaml_snapshot.contains("schema"));
+            assert!(rows[0].cli_params_snapshot.contains("cycles=10"));
+        }
+
+        /// PK collision: a second insert with the same
+        /// (session, exec_id) must NOT overwrite the prior row.
+        /// This is the regression guard for the bug found
+        /// earlier this session — `next_exec_id` was computed
+        /// from `phase_outcomes` alone, missed exec_ids from
+        /// skip-only refines, and collided on the executions
+        /// PK.
+        #[test]
+        fn execution_insert_pk_collision_is_no_op_and_preserves_prior_row() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.insert_execution_start(
+                "sess", 1, "run", None,
+                1_000, "first", "",
+            );
+            // Second insert with the same PK — should be
+            // logged at WARN inside `insert_execution_start`
+            // and produce no row mutation.
+            r.insert_execution_start(
+                "sess", 1, "refine", Some("missing"),
+                9_999, "DIFFERENT_PAYLOAD", "x=y",
+            );
+            let rows = r.read_executions(None);
+            assert_eq!(rows.len(), 1, "collision must NOT have created a 2nd row");
+            assert_eq!(rows[0].verb, "run",
+                "prior row must remain intact (no overwrite)");
+            assert_eq!(rows[0].started_at_nanos, 1_000,
+                "prior timestamp must remain intact");
+            assert_eq!(rows[0].workload_yaml_snapshot, "first",
+                "prior workload yaml must remain intact");
+        }
+
+        /// `update_execution_end` is idempotent — calling it
+        /// twice doesn't reopen the row or stamp a different
+        /// disposition. The `WHERE ended_at_nanos IS NULL`
+        /// clause is what enforces this.
+        #[test]
+        fn execution_update_end_is_idempotent() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.insert_execution_start("sess", 1, "run", None, 100, "", "");
+            r.update_execution_end("sess", 1, 200, "SUCCESS");
+            // Second update — different disposition / timestamp.
+            // Must be a no-op because the row is already closed.
+            r.update_execution_end("sess", 1, 300, "FAILURE");
+            let rows = r.read_executions(None);
+            assert_eq!(rows[0].ended_at_nanos, Some(200),
+                "second update must NOT overwrite ended_at_nanos");
+            assert_eq!(rows[0].disposition.as_deref(), Some("SUCCESS"),
+                "second update must NOT overwrite disposition");
+        }
+
+        /// SRD-77 — `read_phase_outcomes(Some(n))` MUST filter at
+        /// the SQL boundary, not in memory. Pins the "every read
+        /// path is execution-qualified" invariant: a caller asking
+        /// for exec_id=2 receives only exec_id=2 rows even when
+        /// other execs exist.
+        #[test]
+        fn read_phase_outcomes_filters_by_exec_id() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            for (exec_id, name) in [(1, "alpha"), (2, "beta"), (3, "gamma")] {
+                r.write_phase_outcome(&PhaseOutcomeRow {
+                    session: "s".into(), exec_id,
+                    phase_name: name.into(),
+                    phase_labels: String::new(),
+                    status: "completed".into(),
+                    duration_secs: 1.0,
+                    started_at_nanos: 0,
+                    ended_at_nanos: exec_id as i64,
+                    phase_hash: None,
+                    errors: Vec::new(),
+                });
+            }
+            let exec_2 = r.read_phase_outcomes(Some(2));
+            assert_eq!(exec_2.len(), 1);
+            assert_eq!(exec_2[0].exec_id, 2);
+            assert_eq!(exec_2[0].phase_name, "beta");
+        }
+
+        /// `None` is the explicit aggregate-across-executions
+        /// intent — every recorded outcome must surface.
+        #[test]
+        fn read_phase_outcomes_none_returns_every_row() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            for exec_id in [1, 2, 3] {
+                r.write_phase_outcome(&PhaseOutcomeRow {
+                    session: "s".into(), exec_id,
+                    phase_name: "p".into(),
+                    phase_labels: String::new(),
+                    status: "completed".into(),
+                    duration_secs: 1.0,
+                    started_at_nanos: 0,
+                    ended_at_nanos: exec_id as i64,
+                    phase_hash: None,
+                    errors: Vec::new(),
+                });
+            }
+            let all = r.read_phase_outcomes(None);
+            assert_eq!(all.len(), 3,
+                "None MUST aggregate across executions: {all:?}");
+            let ids: Vec<u64> = all.iter().map(|o| o.exec_id).collect();
+            assert!(ids.contains(&1) && ids.contains(&2) && ids.contains(&3));
+        }
+
+        /// Same shape for `read_executions`. SQL-level filter,
+        /// in-memory result MUST NOT include any row outside the
+        /// qualifier.
+        #[test]
+        fn read_executions_filters_by_exec_id() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            for (exec_id, verb) in [(1, "run"), (2, "refine"), (3, "refine")] {
+                r.insert_execution_start(
+                    "s", exec_id, verb, None,
+                    exec_id as i64 * 100, "", "",
+                );
+            }
+            let exec_2 = r.read_executions(Some(2));
+            assert_eq!(exec_2.len(), 1);
+            assert_eq!(exec_2[0].exec_id, 2);
+            assert_eq!(exec_2[0].verb, "refine");
+        }
+
+        /// `read_executions(None)` is the aggregate read; every
+        /// execution row must surface in cardinal order.
+        #[test]
+        fn read_executions_none_returns_every_row_in_cardinal_order() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.insert_execution_start("s", 3, "refine", None, 300, "", "");
+            r.insert_execution_start("s", 1, "run",    None, 100, "", "");
+            r.insert_execution_start("s", 2, "refine", None, 200, "", "");
+            let all = r.read_executions(None);
+            assert_eq!(all.len(), 3);
+            // ORDER BY exec_id — insert order doesn't dictate output.
+            let ids: Vec<u64> = all.iter().map(|e| e.exec_id).collect();
+            assert_eq!(ids, vec![1, 2, 3]);
+        }
+
+        /// SRD-77 — `"latest"` is a CLI-side virtual qualifier
+        /// that resolves to max(exec_id) at query-construction
+        /// time. It MUST NEVER land in stored data — the
+        /// metric_instance reserved-word guard refuses any write
+        /// whose `session` or `exec_id` label literally equals
+        /// `"latest"`. Without this guard, a buggy resolver
+        /// could pollute storage with rows that can never be
+        /// queried back consistently.
+        #[test]
+        fn metric_write_with_session_latest_label_is_rejected() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.insert_execution_start("real_sess", 1, "run", None, 0, "", "");
+            let mut snapshot = MetricSet::new(Duration::from_secs(1));
+            snapshot.insert_counter(
+                "ops_total",
+                Labels::of("session", "latest")
+                    .with("exec_id", "1"),
+                42,
+                Instant::now(),
+            );
+            r.report(&snapshot);
+            let n: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_instance \
+                 WHERE session = 'latest'",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(n, 0,
+                "metric_instance MUST refuse `session=\"latest\"`; \
+                 the reserved word should never land in storage");
+        }
+
+        #[test]
+        fn metric_write_with_exec_id_latest_label_is_rejected() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.insert_execution_start("real_sess", 1, "run", None, 0, "", "");
+            let mut snapshot = MetricSet::new(Duration::from_secs(1));
+            snapshot.insert_counter(
+                "ops_total",
+                Labels::of("session", "real_sess")
+                    .with("exec_id", "latest"),
+                42,
+                Instant::now(),
+            );
+            r.report(&snapshot);
+            let n: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_instance \
+                 WHERE session = 'real_sess'",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(n, 0,
+                "metric_instance MUST refuse `exec_id=\"latest\"`");
+        }
+
+        /// SRD-77 — metric_instance FK enforces every metric is
+        /// tied to a real execution row. An attempt to insert a
+        /// metric whose `(session, exec_id)` labels don't match
+        /// any executions row MUST fail and produce no
+        /// metric_instance row. This is the "schema-enforced
+        /// execution qualification" promise — operators (and
+        /// tests) can't accidentally drift outside a session.
+        #[test]
+        fn metric_write_without_matching_executions_row_fails_fk() {
+            // NOTE: this test bypasses `in_memory()`'s bootstrap
+            // helper deliberately — we open a raw connection,
+            // run create_schema, and verify the FK fires.
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+            conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+            let mut r = super::SqliteReporter {
+                conn,
+                family_cache: std::collections::HashMap::new(),
+                instance_cache: std::collections::HashMap::new(),
+            };
+            r.create_schema().unwrap();
+            // No executions row! Attempt a metric write —
+            // upsert_instance should log a WARN and produce no
+            // row because the FK rejects the INSERT.
+            let mut snapshot = MetricSet::new(Duration::from_secs(1));
+            snapshot.insert_counter(
+                "ops_total",
+                Labels::of("session", "nonexistent")
+                    .with("exec_id", "999"),
+                42,
+                Instant::now(),
+            );
+            r.report(&snapshot);
+            let n_instances: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_instance",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(n_instances, 0,
+                "metric_instance MUST NOT have a row when its \
+                 (session, exec_id) doesn't reference any \
+                 executions row — FK constraint should have \
+                 rejected the insert.");
+        }
+
+        /// Mirror: when the executions row IS present, the
+        /// metric write succeeds. Pins that the FK doesn't
+        /// over-reject — well-formed metrics still land.
+        #[test]
+        fn metric_write_with_matching_executions_row_succeeds() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.insert_execution_start("real_sess", 1, "run", None, 0, "", "");
+            let mut snapshot = MetricSet::new(Duration::from_secs(1));
+            snapshot.insert_counter(
+                "ops_total",
+                Labels::of("session", "real_sess")
+                    .with("exec_id", "1"),
+                42,
+                Instant::now(),
+            );
+            r.report(&snapshot);
+            let n_instances: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_instance \
+                 WHERE session = 'real_sess' AND exec_id = 1",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(n_instances, 1,
+                "metric_instance MUST have one row when its \
+                 (session, exec_id) references an existing \
+                 executions row.");
+        }
+
+        /// `read_executions` returns rows ordered by
+        /// `(session, exec_id)` so callers see them in cardinal
+        /// sequence regardless of insertion order.
+        #[test]
+        fn execution_rows_are_returned_in_cardinal_order() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            // Insert out of order to verify the ORDER BY clause.
+            r.insert_execution_start("sess", 3, "refine", Some("all"), 300, "", "");
+            r.insert_execution_start("sess", 1, "run", None, 100, "", "");
+            r.insert_execution_start("sess", 2, "refine", Some("missing"), 200, "", "");
+            let rows = r.read_executions(None);
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[0].exec_id, 1);
+            assert_eq!(rows[1].exec_id, 2);
+            assert_eq!(rows[2].exec_id, 3);
+            assert_eq!(rows[1].scope.as_deref(), Some("missing"));
+            assert_eq!(rows[2].scope.as_deref(), Some("all"));
         }
     }
 }

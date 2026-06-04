@@ -954,30 +954,18 @@ impl DriverAdapter for CqlAdapter {
                             let (lvalue_type, allow_fusion) =
                                 match lvalue_specs.get(i).and_then(|s| s.as_ref()) {
                                     Some(LvalueSpec::Wildcard) => {
-                                        nbrs_activity::diag!(
-                                            nbrs_activity::observer::LogLevel::Info,
-                                            "cassandra-cpp op '{op}' field 'prepared' slot [{i}] \
-                                             wire `{name}`: `:*` wildcard opt-in seen on this \
-                                             bind-point — polydat binder slot keeps cluster-\
-                                             reported lvalue type `{cluster_lvalue}` with \
-                                             allow_fusion=true; verifier skips the strict \
-                                             rvalue→lvalue rule for this slot.",
-                                            op = template.name,
-                                        );
+                                        // Workload author wrote `:*` — they
+                                        // licensed fusion deliberately. No log:
+                                        // the syntax IS the announcement.
                                         (cluster_lvalue, true)
                                     }
                                     Some(LvalueSpec::Explicit(type_name)) => {
                                         match polydat::ast::PortType::from_workload_name(type_name) {
                                             Some(pt) => {
-                                                nbrs_activity::diag!(
-                                                    nbrs_activity::observer::LogLevel::Info,
-                                                    "cassandra-cpp op '{op}' field 'prepared' slot [{i}] \
-                                                     wire `{name}`: `:{type_name}` lvalue assertion \
-                                                     seen on this bind-point — using workload-\
-                                                     asserted polydat type `{type_name}` (cluster \
-                                                     reports `{cluster_lvalue}`).",
-                                                    op = template.name,
-                                                );
+                                                // Workload author asserted a
+                                                // specific polydat type via
+                                                // `:<type>`. Quiet — the source
+                                                // text is the record.
                                                 (pt, false)
                                             }
                                             None => {
@@ -995,35 +983,24 @@ impl DriverAdapter for CqlAdapter {
                                         }
                                     }
                                     None => {
-                                        // Honest verifier-policy split from
-                                        // `cass_to_polydat`: Strict slots reject
-                                        // rvalue mismatches; TextNatural slots
-                                        // (CQL TEXT/VARCHAR/ASCII) permit text
-                                        // coercion as the protocol's intended
-                                        // carrier; Fallback slots permit fusion
-                                        // and emit a WARN naming the unmapped
-                                        // CQL type so operators can promote it
-                                        // to a precise arm.
+                                        // Fallback policy is the only path
+                                        // that warns: the workload author
+                                        // didn't ask for anything special,
+                                        // yet the slot lost typed verification
+                                        // because `cass_to_polydat` has no
+                                        // precise arm for this CQL type.
+                                        // Strict and TextNatural slots are
+                                        // silent — they're honest, deliberate
+                                        // mappings.
                                         if let Some(cql_label) = policy.fallback_label() {
-                                            let class_hint = match class_name.as_deref() {
-                                                Some(cn) if !cn.is_empty() =>
-                                                    format!(" (class_name=`{cn}`)"),
-                                                _ => String::new(),
-                                            };
                                             nbrs_activity::diag!(
                                                 nbrs_activity::observer::LogLevel::Warn,
                                                 "cassandra-cpp op '{op}' field 'prepared' slot [{i}] \
-                                                 wire `{name}`: CQL type {cql_label}{class_hint} has \
-                                                 no precise polydat mapping yet — falling back to \
-                                                 Str-lvalue, which permits any rvalue and \
-                                                 effectively bypasses typed verification for this \
-                                                 slot. Add a precise arm to \
-                                                 adapters/cql/src/cassandra_cpp/binder_meta.rs::cass_to_polydat \
-                                                 when this type becomes a verification bottleneck, \
-                                                 or silence this warning intentionally by spelling \
-                                                 the bind-point with the `:*` wildcard suffix (i.e. \
-                                                 write `{{{name}:*}}` in place of `{{{name}}}` in \
-                                                 the workload template).",
+                                                 wire `{name}`: CQL type {cql_label} has no precise \
+                                                 polydat mapping yet — slot accepts any rvalue via \
+                                                 Str fallback (typed verification bypassed). Add a \
+                                                 precise arm in binder_meta.rs::cass_to_polydat, or \
+                                                 mark intent with `{{{name}:*}}` to silence.",
                                                 op = template.name,
                                             );
                                         }

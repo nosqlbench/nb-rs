@@ -125,6 +125,7 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         declared_params: Vec::new(),
         report: crate::report::Report::default(),
         report_warnings: Vec::new(),
+        scenario_parse_errors: Vec::new(),
         status_metrics: Vec::new(),
         readouts: crate::model::ReadoutsBindings::default(),
         wrappers: None,

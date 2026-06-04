@@ -60,6 +60,15 @@ struct Opts {
     /// object per line to stdout, instead of running the
     /// readout binder. Useful for CI / downstream tooling.
     json: bool,
+    /// SRD-77 — which execution(s) of the session to render.
+    /// `None` (the default) auto-picks the maximum `exec_id`
+    /// observed in `phase_outcomes` — i.e. "the most recent
+    /// execution" — so a session with multiple refines shows
+    /// the latest layer's outcomes by default.
+    /// `Some(n)` filters to exactly `exec_id = n`.
+    /// `Some(0)` is the sentinel for "all executions"
+    /// (`--all-executions`).
+    execution: Option<u64>,
 }
 
 fn parse_args(args: &[String]) -> Result<Opts, String> {
@@ -68,6 +77,7 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
     let mut errors_only = false;
     let mut phase_filter: Option<String> = None;
     let mut json = false;
+    let mut execution: Option<u64> = None;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -98,6 +108,20 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
                 .ok_or_else(|| "--db requires a value".to_string())?;
             db_path = Some(PathBuf::from(v));
             i += 1;
+        } else if let Some(rest) = a.strip_prefix("--execution=") {
+            execution = Some(rest.parse().map_err(|e|
+                format!("--execution requires an integer: {e}"))?);
+        } else if a == "--execution" {
+            let v = args.get(i + 1)
+                .ok_or_else(|| "--execution requires a value".to_string())?;
+            execution = Some(v.parse().map_err(|e|
+                format!("--execution requires an integer: {e}"))?);
+            i += 1;
+        } else if a == "--all-executions" {
+            // Sentinel: `Some(0)` means "no exec_id filter". Real
+            // exec_ids are 1-indexed (Execution::first → 1), so 0
+            // doesn't collide with any actual stored row.
+            execution = Some(0);
         } else if a == "-h" || a == "--help" {
             print_usage();
             std::process::exit(0);
@@ -106,14 +130,14 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
         }
         i += 1;
     }
-    let db_path = db_path.unwrap_or_else(|| PathBuf::from("logs/latest/metrics.db"));
+    let db_path = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
     if !db_path.exists() {
         return Err(format!(
             "session db not found at '{}' — pass --session=<dir> or --db=<path>",
             db_path.display(),
         ));
     }
-    Ok(Opts { db_path, plain, errors_only, phase_filter, json })
+    Ok(Opts { db_path, plain, errors_only, phase_filter, json, execution })
 }
 
 fn session_db(session_arg: &str) -> Result<PathBuf, String> {
@@ -125,7 +149,7 @@ fn session_db(session_arg: &str) -> Result<PathBuf, String> {
         Ok(p)
     } else {
         // Try as a logs/<name> session directory.
-        let candidate = PathBuf::from("logs").join(session_arg).join("metrics.db");
+        let candidate = nbrs_activity::session::session_dir_named(session_arg).join("metrics.db");
         if candidate.exists() {
             Ok(candidate)
         } else {
@@ -150,8 +174,10 @@ fn print_usage() {
     eprintln!("  --plain          Strip ANSI styling from output");
     eprintln!("  --errors         Only show phases that failed");
     eprintln!("  --phase <name>   Filter to a single phase identity");
-    eprintln!("  --json           Machine-readable JSON dump (one outcome per line)");
-    eprintln!("  -h, --help       Show this message");
+    eprintln!("  --json                Machine-readable JSON dump (one outcome per line)");
+    eprintln!("  --execution=<n>       Filter to one execution (default: most recent)");
+    eprintln!("  --all-executions      Render every execution's outcomes");
+    eprintln!("  -h, --help            Show this message");
 }
 
 fn run(opts: Opts) -> Result<(), String> {
@@ -165,7 +191,32 @@ fn run(opts: Opts) -> Result<(), String> {
     // or a session that ran without any phase outcomes
     // recorded), fall back to the SRD-63 readout_snapshots
     // pre-rendered store.
-    let mut outcomes = reporter.read_phase_outcomes();
+    // SRD-77 — execution qualification at the storage boundary.
+    // Default (`None` in `opts.execution`): qualify to the
+    // most-recent execution via the shared resolver. An
+    // explicit `--execution=<n>` narrows; `--all-executions`
+    // (sentinel `0`) opts into the aggregate-across-executions
+    // intent. The storage layer applies the WHERE filter so
+    // we don't pull every execution's rows just to filter them
+    // out in memory.
+    let session_dir = opts.db_path.parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let exec_id_filter: Option<u64> = match opts.execution {
+        Some(0) => None,
+        Some(n) => Some(n),
+        None => {
+            // Only emit the multi-exec banner under the
+            // implicit-default path; explicit `--execution=`
+            // or `--all-executions` means the operator is
+            // already aware of the choice and doesn't need
+            // the disambiguation hint.
+            nbrs_activity::refine_plan::warn_multi_execution_default(&session_dir);
+            nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+                .specific_id()
+        }
+    };
+    let mut outcomes = reporter.read_phase_outcomes(exec_id_filter);
     if let Some(name) = opts.phase_filter.as_deref() {
         outcomes.retain(|o| o.phase_name == name);
     }
@@ -374,6 +425,10 @@ pub fn spec() -> crate::cli_spec::Command {
         if let Some(v) = p.flag("--phase") {
             argv.push("--phase".into()); argv.push(v.into());
         }
+        if let Some(v) = p.flag("--execution") {
+            argv.push("--execution".into()); argv.push(v.into());
+        }
+        if p.bool("--all-executions") { argv.push("--all-executions".into()); }
         replay_command(&argv);
         Ok(())
     }
@@ -417,6 +472,24 @@ pub fn spec() -> crate::cli_spec::Command {
                 long: "--json", short: None, aliases: &[],
                 arity: Arity::Bool, value: ValueProvider::None,
                 help: "Machine-readable JSON per outcome (SRD-76).",
+                repeatable: false,
+            },
+            // SRD-77 — execution selection. Default (no flag)
+            // auto-picks the highest `exec_id` from the session's
+            // outcomes; `--execution=<n>` targets one; the
+            // bool `--all-executions` disables the filter
+            // (sentinel `0` inside `replay_command`).
+            Flag {
+                long: "--execution", short: None, aliases: &[],
+                arity: Arity::Value,
+                value: ValueProvider::Custom(crate::completion::execution_id_provider),
+                help: "Filter to one execution_id (default: most recent).",
+                repeatable: false,
+            },
+            Flag {
+                long: "--all-executions", short: None, aliases: &[],
+                arity: Arity::Bool, value: ValueProvider::None,
+                help: "Render every execution's outcomes.",
                 repeatable: false,
             },
         ],

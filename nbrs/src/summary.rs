@@ -184,9 +184,17 @@ fn render_metricsql_table(
     let group_keys: &[String] = cfg.group_by.as_slice();
     let mut by_group: BTreeMap<String, Vec<Option<f64>>> = BTreeMap::new();
     let n_cols = cfg.metricsql_columns.len();
+    // SRD-77 — resolve `latest` once per render so every
+    // column query in this table targets the same execution.
+    let session_dir = db_path.parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let resolved_exec_id = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+        .specific_id();
     for (col_idx, (_col_name, expr)) in cfg.metricsql_columns.iter().enumerate() {
-        let parsed = nbrs_metricsql::parse(expr)
+        let mut parsed = nbrs_metricsql::parse(expr)
             .map_err(|e| format!("parse '{expr}': {e}"))?;
+        nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut parsed, resolved_exec_id);
         let series = evaluate(&ctx, &parsed)
             .map_err(|e| format!("evaluate '{expr}': {e}"))?;
         for s in series {
@@ -422,7 +430,7 @@ pub fn summary_command(args: &[String]) {
     // first, producing a temp file whose merged rows feed
     // SqliteReporter as if from one logical session.
     let primary_db = opts.db.clone().unwrap_or_else(
-        || PathBuf::from("logs/latest/metrics.db"));
+        || nbrs_activity::session::latest_metrics_db());
     let effective_dbs: Vec<PathBuf> = if opts.dbs.is_empty() {
         vec![primary_db.clone()]
     } else {
@@ -634,7 +642,20 @@ pub fn summary_command(args: &[String]) {
                 }
             }
         } else {
-            let report_cfg = report_config_from_summary(cfg);
+            // SRD-77 — default to the latest execution's data
+            // when the operator hasn't explicitly opted into an
+            // aggregate read. The summary command operates on
+            // one session's metrics.db, so "latest" means the
+            // max(exec_id) recorded in that db's executions
+            // table. Emit the multi-exec banner so the
+            // operator sees which execution they're seeing.
+            let session_dir = db_path.parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            nbrs_activity::refine_plan::warn_multi_execution_default(&session_dir);
+            let exec_id_filter = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+                .specific_id();
+            let report_cfg = report_config_from_summary(cfg, exec_id_filter);
             reporter.format_summary_with_format(&report_cfg, &format)
         };
         if rendered.is_empty() {

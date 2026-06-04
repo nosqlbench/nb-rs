@@ -1,17 +1,17 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Emit wrapper — prints the rendered op text per cycle.
+//! Fields wrapper — prints the rendered op text per cycle.
 //!
 //! Two modes, distinguished by whether op_fields are attached at
 //! wrap time:
-//! - **Adapter-agnostic emit** (`emit: true` on op template):
+//! - **Adapter-agnostic field render** (`fields: true` on op template):
 //!   resolves the op_fields the template carries via the
 //!   per-fiber wires, prints each value verbatim, then forwards
-//!   the call to inner. This is the canonical "emit what the
-//!   adapter would send" surface — under `dryrun=emit` the
-//!   DRYRUN wrapper short-circuits inner, so emit is the only
-//!   surface that prints.
+//!   the call to inner. This is the canonical "render what the
+//!   adapter would send" surface — under `dryrun=fields` the
+//!   DRYRUN wrapper short-circuits inner, so this wrapper is the
+//!   only surface that prints.
 //! - **Body+wire dump** (no op_fields at wrap): falls back to
 //!   the inner result body + wire snapshot. Kept as the
 //!   historical surface for callers that want post-execute
@@ -25,13 +25,13 @@ use crate::wrapper_registry::{WrapperName, WrapperRegistration};
 use nbrs_workload::model::ParsedOp;
 
 /// SRD-32a wrapper name.
-pub const NAME: WrapperName = WrapperName::new("emit");
+pub const NAME: WrapperName = WrapperName::new("fields");
 
-/// Trigger: op carries `emit: true` (bool, or string "true").
+/// Trigger: op carries `fields: true` (bool, or string "true").
 fn triggers(template: &ParsedOp) -> bool {
     template
         .params
-        .get("emit")
+        .get("fields")
         .map(|v| {
             v.as_bool().unwrap_or_else(|| {
                 v.as_str().map(|s| s == "true").unwrap_or(false)
@@ -41,19 +41,19 @@ fn triggers(template: &ParsedOp) -> bool {
 }
 
 fn describe_assignment(_: &ParsedOp) -> Option<String> {
-    Some("emit: rendered op text to stdout".into())
+    Some("fields: rendered op text to stdout".into())
 }
 
 inventory::submit! {
     WrapperRegistration {
         name: NAME,
-        owned_fields: &["emit"],
+        owned_fields: &["fields"],
         triggers,
-        // SRD-32a's table lists `emit.requires_inner = [result]`,
-        // but the cascade composes `result` OUTSIDE `emit`
-        // (innermost-first list ends `..., emit, result,
+        // SRD-32a's table lists `fields.requires_inner = [result]`,
+        // but the cascade composes `result` OUTSIDE `fields`
+        // (innermost-first list ends `..., fields, result,
         // metrics`). Declaring `requires_inner = [result]` would
-        // make `result` innermore than `emit`, which contradicts
+        // make `result` innermore than `fields`, which contradicts
         // the cascade and breaks the byte-identical-output test
         // bar in §"Migration".
         requires_inner: &[],
@@ -67,21 +67,21 @@ inventory::submit! {
 /// as JSON after each execution. Adapter-agnostic — works with CQL,
 /// HTTP, stdout, or any adapter that returns a ResultBody.
 ///
-/// Enabled by wrapping at init time when `dryrun=emit` is active
-/// or when the op has `emit: true`.
-pub struct EmitDispenser {
+/// Enabled by wrapping at init time when `dryrun=fields` is active
+/// or when the op has `fields: true`.
+pub struct FieldsDispenser {
     inner: Arc<dyn OpDispenser>,
     op_name: String,
     /// Op-field key/value pairs cloned from the op template at
-    /// wrap time. When non-empty, emit resolves them via wires
+    /// wrap time. When non-empty, this wrapper resolves them via wires
     /// at each cycle and prints the value strings — that's the
     /// pre-execute "render what would have been sent" surface.
-    /// When empty, emit falls back to the post-execute body
+    /// When empty, falls back to the post-execute body
     /// + wires dump for callers that want introspection only.
     op_fields: Vec<(String, serde_json::Value)>,
 }
 
-impl EmitDispenser {
+impl FieldsDispenser {
     pub fn wrap(inner: Arc<dyn OpDispenser>, op_name: &str) -> Arc<dyn OpDispenser> {
         Arc::new(Self {
             inner,
@@ -94,7 +94,7 @@ impl EmitDispenser {
     /// op_fields it should resolve + print on each cycle. Used
     /// at activity init when the op template's `op:` map is
     /// known and we want the rendered op text on stdout (e.g.
-    /// under `dryrun=emit`).
+    /// under `dryrun=fields`).
     pub fn wrap_with_op_fields(
         inner: Arc<dyn OpDispenser>,
         op_name: &str,
@@ -108,9 +108,9 @@ impl EmitDispenser {
     }
 }
 
-impl WrappingDispenser for EmitDispenser {}
+impl WrappingDispenser for FieldsDispenser {}
 
-impl OpDispenser for EmitDispenser {
+impl OpDispenser for FieldsDispenser {
     fn execute<'a>(
         &'a self,
         cycle: u64,
@@ -122,7 +122,7 @@ impl OpDispenser for EmitDispenser {
             // values. This runs BEFORE inner.execute so the
             // surface lands the rendered op text whether or
             // not inner short-circuits (DRYRUN under
-            // dryrun=emit, etc).
+            // dryrun=fields, etc).
             if !self.op_fields.is_empty() {
                 match crate::wires::resolve_op_fields_via_wires(
                     &self.op_fields, ctx.wires,
@@ -133,7 +133,7 @@ impl OpDispenser for EmitDispenser {
                         }
                     }
                     Err(msg) => {
-                        eprintln!("[{}@{}] emit-render failed: {msg}",
+                        eprintln!("[{}@{}] fields-render failed: {msg}",
                             self.op_name, cycle);
                     }
                 }
@@ -142,7 +142,7 @@ impl OpDispenser for EmitDispenser {
             let result = self.inner.execute(cycle, ctx).await?;
 
             // Post-execute introspection — only fires when
-            // emit was wrapped without op_fields (the
+            // this wrapper was wrapped without op_fields (the
             // body+wires fallback surface). With op_fields the
             // pre-execute render is the authoritative surface
             // and the post-execute dump is omitted to keep

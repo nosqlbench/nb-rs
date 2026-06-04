@@ -131,6 +131,59 @@ fn dryrun_cycle_short_circuits_inner_adapter() {
     }
 }
 
+/// SRD-77 `dryrun=dispenser`: every op template's dispenser
+/// constructs (adapter `map_op` fires, wrapper plan resolves,
+/// pull plan seals) but NO cycles run. Distinct from
+/// `dryrun=phase` (which doesn't reach run_phase / map_op) and
+/// `dryrun=op`/`cycle` (which run cycles with wrapper short-
+/// circuit). Stdout MUST be empty (no `test <n>` lines) AND
+/// stderr MUST surface the dispenser-construction confirmation
+/// so the operator can tell the level apart.
+#[test]
+fn dryrun_dispenser_builds_dispensers_without_running_cycles() {
+    let (stdout, stderr, ok) = run(
+        &["op=test {{cycle}}", "cycles=3", "dryrun=dispenser"],
+        "dryrun-dispenser",
+    );
+    assert!(ok, "nbrs run failed in dryrun=dispenser: stderr={stderr}");
+    // No per-cycle output — cycles never ran.
+    for line in stdout.lines() {
+        assert!(!line.starts_with("test "),
+            "dryrun=dispenser MUST NOT fire any cycle; \
+             saw stdout line `{line}`. Full stdout: {stdout:?}");
+    }
+    // The construction-confirmation log line from
+    // `Activity::run_with_adapters`'s
+    // `stop_after_dispenser_init` exit. Operator-visible
+    // signal that this level fired correctly.
+    assert!(
+        stderr.contains("dryrun=dispenser:")
+            && stderr.contains("dispenser(s) constructed")
+            && stderr.contains("stopping before cycle execution"),
+        "dryrun=dispenser MUST log the construction-confirmation \
+         line; stderr:\n{stderr}"
+    );
+}
+
+/// Symmetric check vs `dryrun=phase`: at phase depth NO
+/// dispenser is built, so the construction-confirmation log
+/// MUST NOT fire. Catches a regression where the gate at
+/// `executor.rs`'s structural walker incorrectly lets Phase
+/// depth reach `run_phase`.
+#[test]
+fn dryrun_phase_does_not_build_dispensers() {
+    let (_, stderr, ok) = run(
+        &["op=test {{cycle}}", "cycles=3", "dryrun=phase"],
+        "dryrun-phase-no-dispenser",
+    );
+    assert!(ok, "nbrs run failed in dryrun=phase: stderr={stderr}");
+    assert!(
+        !stderr.contains("dryrun=dispenser:"),
+        "dryrun=phase MUST NOT trigger the dispenser-build log; \
+         stderr:\n{stderr}"
+    );
+}
+
 // =====================================================
 // 2. Inner wrappers (verify) short-circuit too
 // =====================================================
