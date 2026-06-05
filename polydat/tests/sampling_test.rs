@@ -8,7 +8,7 @@
 //! tests/examples/.
 
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
-use polydat::library::arithmetic::{AddU64, Interleave, MixedRadix, ModU64};
+use polydat::library::arithmetic::{Add, Interleave, MixedRadix, Mod};
 use polydat::library::hash::Hash64;
 use polydat::library::sampling::alias::AliasSample;
 use polydat::library::sampling::icd::{ClampF64, IcdSample, UnitInterval};
@@ -192,7 +192,7 @@ fn build_weighted_entity_pipeline() -> polydat::kernel::PolydatKernel {
         vec![WireRef::node_port("decompose", 0)]);
     asm.add_node("region", Box::new(AliasSample::from_weights(&region_weights)),
         vec![WireRef::node("tenant_h")]);
-    asm.add_node("tenant_code", Box::new(ModU64::new(100000)),
+    asm.add_node("tenant_code", Box::new(Mod::new(100000)),
         vec![WireRef::node("tenant_h")]);
 
     // Reuse the same pattern for device types: 4 types, uniform
@@ -201,7 +201,7 @@ fn build_weighted_entity_pipeline() -> polydat::kernel::PolydatKernel {
         vec![WireRef::node_port("decompose", 1)]);
     asm.add_node("device_type", Box::new(AliasSample::from_weights(&device_weights)),
         vec![WireRef::node("device_h")]);
-    asm.add_node("device_code", Box::new(ModU64::new(100000)),
+    asm.add_node("device_code", Box::new(Mod::new(100000)),
         vec![WireRef::node("device_h")]);
 
     asm.add_output("region", WireRef::node("region"));
@@ -268,7 +268,7 @@ fn build_sensor_workload() -> polydat::kernel::PolydatKernel {
     // Site identity
     asm.add_node("site_h", Box::new(Hash64::new()),
         vec![WireRef::node_port("decompose", 0)]);
-    asm.add_node("site_code", Box::new(ModU64::new(10000)),
+    asm.add_node("site_code", Box::new(Mod::new(10000)),
         vec![WireRef::node("site_h")]);
 
     // Sensor identity (interleave site + sensor)
@@ -276,7 +276,7 @@ fn build_sensor_workload() -> polydat::kernel::PolydatKernel {
         vec![WireRef::node_port("decompose", 0), WireRef::node_port("decompose", 1)]);
     asm.add_node("sensor_h", Box::new(Hash64::new()),
         vec![WireRef::node("ss_interleave")]);
-    asm.add_node("sensor_code", Box::new(ModU64::new(100000)),
+    asm.add_node("sensor_code", Box::new(Mod::new(100000)),
         vec![WireRef::node("sensor_h")]);
 
     // Independent quantiles via chained hashes
@@ -302,7 +302,7 @@ fn build_sensor_workload() -> polydat::kernel::PolydatKernel {
         vec![WireRef::node("battery_raw")]);
 
     // Timestamp
-    asm.add_node("timestamp", Box::new(AddU64::new(1_710_000_000_000)),
+    asm.add_node("timestamp", Box::new(Add::new(1_710_000_000_000)),
         vec![WireRef::node_port("decompose", 2)]);
 
     asm.add_output("site_code", WireRef::node("site_code"));

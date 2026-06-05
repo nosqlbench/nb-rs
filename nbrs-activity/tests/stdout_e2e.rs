@@ -16,7 +16,7 @@ use nbrs_activity::synthesis::OpBuilder;
 use nbrs_metrics::labels::Labels;
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::hash::Hash64;
-use polydat::library::arithmetic::ModU64;
+use polydat::library::arithmetic::Mod;
 use polydat::library::identity::Identity;
 use nbrs_workload::parse::parse_ops;
 
@@ -38,7 +38,7 @@ ops:
     assert_eq!(ops[0].name, "write_user");
 
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("user_id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("user_id", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
     asm.add_output("user_id", WireRef::node("user_id"));
     let kernel = asm.compile().unwrap();
 
@@ -91,9 +91,9 @@ ops:
 
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("h1", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
-    asm.add_node("user_id", Box::new(ModU64::new(1_000_000)), vec![WireRef::node("h1")]);
+    asm.add_node("user_id", Box::new(Mod::new(1_000_000)), vec![WireRef::node("h1")]);
     asm.add_node("h2", Box::new(Hash64::new()), vec![WireRef::node("h1")]);
-    asm.add_node("bucket", Box::new(ModU64::new(64)), vec![WireRef::node("h2")]);
+    asm.add_node("bucket", Box::new(Mod::new(64)), vec![WireRef::node("h2")]);
     asm.add_output("user_id", WireRef::node("user_id"));
     asm.add_output("bucket", WireRef::node("bucket"));
     let kernel = asm.compile().unwrap();
@@ -147,7 +147,7 @@ ops:
     let ops = parse_ops(yaml).unwrap();
 
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("id", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
     asm.add_output("id", WireRef::node("id"));
     let kernel = asm.compile().unwrap();
     let builder = Arc::new(OpBuilder::new(kernel));
@@ -199,7 +199,7 @@ ops:
 
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
     asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
-    asm.add_node("user_id", Box::new(ModU64::new(10000)), vec![WireRef::node("h")]);
+    asm.add_node("user_id", Box::new(Mod::new(10000)), vec![WireRef::node("h")]);
     asm.add_output("user_id", WireRef::node("user_id"));
     let kernel = asm.compile().unwrap();
     let builder = Arc::new(OpBuilder::new(kernel));

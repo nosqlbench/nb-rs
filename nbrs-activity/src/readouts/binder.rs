@@ -744,7 +744,18 @@ impl ReadoutBinder for TuiReadoutBinder {
         sink: &mut dyn ReadoutSink,
     ) {
         self.last_event = Some(event);
-        let mode = if self.overlay_held {
+        // Two paths to Explanation mode:
+        //   1. Local `overlay_held` toggle — set via
+        //      `BinderKey::OverlayHeld(true)`, primarily the
+        //      programmatic test path.
+        //   2. Process-global hold flag stamped by the TUI
+        //      keystroke layer on `?` press, decaying on its
+        //      own auto-revert deadline (see `observer::toggle_explain`).
+        // Either path activates the overlay — first one to
+        // signal wins. The global path is what powers the
+        // operator-visible `?` hold-to-explain UX.
+        let global_held = crate::observer::is_explain_held();
+        let mode = if self.overlay_held || global_held {
             ContentMode::Explanation
         } else {
             ContentMode::Value
@@ -1428,6 +1439,67 @@ mod tests {
         assert!(binder.overlay_held());
         binder.on_key(BinderKey::OverlayHeld(false));
         assert!(!binder.overlay_held());
+    }
+
+    /// The process-global `?`-toggle flag is an OR-with-local
+    /// path into Explanation mode: when on, every `fire()`
+    /// dispatches with `ContentMode::Explanation` regardless
+    /// of the binder's local `overlay_held` toggle. This is
+    /// what powers the TUI's `?`-to-explain UX without
+    /// threading a channel into each binder.
+    ///
+    /// Toggle semantics (not hold): one press → on; second
+    /// press → off. Tests below cover both transitions plus
+    /// the auto-repeat debounce. We avoid the 10 s auto-revert
+    /// by manually toggling off rather than waiting for the
+    /// deadline.
+    #[test]
+    fn global_explain_toggle_flips_explanation_mode() {
+        // Force baseline off by toggling until off. (A previous
+        // test may have left it on; the debounce + 10 s deadline
+        // mean we can't just wait for decay in a unit test.)
+        // Two toggles in sequence: first might be no-op due to
+        // debounce, second always applies after a short sleep.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if crate::observer::is_explain_held() {
+            crate::observer::toggle_explain();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        assert!(!crate::observer::is_explain_held(),
+            "baseline: explain flag MUST be off");
+        // First press → on.
+        crate::observer::toggle_explain();
+        assert!(crate::observer::is_explain_held(),
+            "first press MUST turn the flag on");
+        // Second press past the debounce window → off.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        crate::observer::toggle_explain();
+        assert!(!crate::observer::is_explain_held(),
+            "second press MUST turn the flag off");
+    }
+
+    /// Auto-repeat debounce: a second `toggle_explain` call
+    /// within 250 ms of the first is swallowed. The state
+    /// stays where the first press left it.
+    #[test]
+    fn global_explain_toggle_debounces_auto_repeat() {
+        // Force baseline off, with appropriate spacing.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if crate::observer::is_explain_held() {
+            crate::observer::toggle_explain();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        assert!(!crate::observer::is_explain_held(), "baseline: off");
+        // First press → on.
+        crate::observer::toggle_explain();
+        assert!(crate::observer::is_explain_held());
+        // Immediately repeated → should be swallowed (debounce).
+        crate::observer::toggle_explain();
+        assert!(crate::observer::is_explain_held(),
+            "rapid second press MUST be debounced, leaving state on");
+        // Clean up: wait for debounce window, toggle off.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        crate::observer::toggle_explain();
     }
 
     #[test]

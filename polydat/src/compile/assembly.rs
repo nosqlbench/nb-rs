@@ -1120,7 +1120,7 @@ impl PolydatAssembler {
                             .find(|&(_, &idx)| idx == i)
                             .map(|(n, _)| n.clone())
                             .unwrap_or_else(|| format!("__removed_{i}")),
-                        node: opt.unwrap_or_else(|| Box::new(crate::library::identity::Identity::new())),
+                        node: opt.unwrap_or_else(|| Box::new(crate::library::identity::Identity::new(crate::ast::PortType::U64))),
                         inputs: vec![], // wiring is in resolved_wiring
                     })
                     .collect();

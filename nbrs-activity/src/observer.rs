@@ -228,6 +228,85 @@ pub fn use_color() -> bool {
     })
 }
 
+/// SRD — explainer-overlay toggle state. Process-global so the
+/// TUI keystroke layer (which holds the watcher) and the
+/// readout binder (which holds the render thread) can rendezvous
+/// without threading a channel through every readout call.
+///
+/// Value semantics: wall-clock nanos at which the overlay
+/// auto-reverts. `0` means "off"; any value > `now_nanos()`
+/// means "render `ContentMode::Explanation` until the deadline."
+///
+/// Toggle model (not hold): a single `?` press flips the
+/// overlay on with a 10 s auto-revert deadline. A second press
+/// while on flips it back off immediately. Auto-revert ensures
+/// the operator can't leave the overlay stuck on after walking
+/// away.
+static EXPLAIN_HELD_UNTIL_NS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Wall-clock nanos of the most recent `?` press. Drives the
+/// auto-repeat debounce — terminals in raw mode send a stream
+/// of keystrokes while `?` is held, and without this the
+/// second auto-repeat would flip the overlay off again
+/// 30 ms after the operator's first press.
+static EXPLAIN_LAST_PRESS_NS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// How long the overlay stays on after a `?` toggle. Picked
+/// to be long enough that the operator can read the explainer
+/// surface without timing out mid-read, short enough that a
+/// forgotten toggle reverts on its own. 10 s lands in the
+/// middle of "long enough to be useful" and "short enough that
+/// the operator notices the auto-revert."
+const EXPLAIN_AUTO_REVERT_MS: u64 = 10_000;
+
+/// Auto-repeat debounce window. 250 ms swallows the 30 Hz
+/// auto-repeat stream while still allowing a deliberate
+/// second tap to take effect.
+const EXPLAIN_TOGGLE_DEBOUNCE_MS: u64 = 250;
+
+fn now_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+/// Toggle the explainer overlay. First press → on (with a 10 s
+/// auto-revert deadline). Second press while on → off
+/// immediately. Auto-repeat-safe via a 250 ms debounce.
+pub fn toggle_explain() {
+    let now = now_nanos();
+    let last_press = EXPLAIN_LAST_PRESS_NS.load(std::sync::atomic::Ordering::Acquire);
+    if last_press != 0
+        && now.saturating_sub(last_press) < EXPLAIN_TOGGLE_DEBOUNCE_MS * 1_000_000
+    {
+        return;
+    }
+    EXPLAIN_LAST_PRESS_NS.store(now, std::sync::atomic::Ordering::Release);
+    let currently_on = {
+        let deadline = EXPLAIN_HELD_UNTIL_NS.load(std::sync::atomic::Ordering::Acquire);
+        deadline != 0 && now < deadline
+    };
+    if currently_on {
+        EXPLAIN_HELD_UNTIL_NS.store(0, std::sync::atomic::Ordering::Release);
+    } else {
+        let deadline = now.saturating_add(EXPLAIN_AUTO_REVERT_MS * 1_000_000);
+        EXPLAIN_HELD_UNTIL_NS.store(deadline, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// True iff the explainer overlay is currently on (toggled on
+/// within the last `EXPLAIN_AUTO_REVERT_MS` and not yet
+/// toggled off). Read by the readout binder on each `fire()`
+/// to decide whether to dispatch with
+/// `ContentMode::Explanation` instead of `Value`.
+pub fn is_explain_held() -> bool {
+    let deadline = EXPLAIN_HELD_UNTIL_NS.load(std::sync::atomic::Ordering::Acquire);
+    deadline != 0 && now_nanos() < deadline
+}
+
 /// Minimum severity that reaches the file sink
 /// (`session.log`). Default `Debug` — the file gets every
 /// non-trivial entry. The display threshold (per-observer

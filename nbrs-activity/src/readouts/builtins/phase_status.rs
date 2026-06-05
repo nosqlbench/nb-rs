@@ -24,7 +24,7 @@ use std::fmt::Write as _;
 
 use crate::readouts::buf::ReadoutBuf;
 use crate::readouts::context::{ReadoutContext, SubjectKind};
-use crate::readouts::format::{ballot_bar, braille_bar, format_eta, format_rate, spinner_frame};
+use crate::readouts::format::{braille_bar, format_eta, format_rate, spinner_frame};
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
 pub struct PhaseStatus;
@@ -183,7 +183,13 @@ fn render_labeled(
     let rate: f64 = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
     let rate_str = format_rate(rate);
 
-    let spinner = spinner_frame(ctx.refresh_tick());
+    // The spinner moved OUT of this line — it now replaces
+    // the `│` divider on the row-2 margin (built by the sink
+    // renderer) as a subtle animation indicator that the
+    // phase is still ticking. At phase end, the sink reverts
+    // to the standard `│` divider.
+    let spinner = "";
+    let _ = spinner_frame(0);
     // Bar styling: bright-white braille dots on a dark-grey
     // truecolor background. The background makes the empty
     // leading cells visible as a defined region instead of
@@ -191,28 +197,13 @@ fn render_labeled(
     // rather than `▮          ` (where the trailing cells
     // were braille blanks against the terminal default
     // background).
-    // Bar variant selection: phases sized over 10 or fewer
-    // operations (small phases — schema migrations, single-
-    // op smoke checks, low-cycle bring-up stanzas) render
-    // per-cell ballot boxes so each glyph represents ONE
-    // operation with success/failure carried in the fill.
-    // Larger phases use the braille percentage fill where
-    // each glyph carries a slice of the total. `total_extent`
-    // here is the resolved cycle count — covers both the
-    // data-cursor case (real iteration source) and the
-    // synthetic-cursor case (stanza-shape fallback).
-    let bar = if total_extent > 0 {
-        let bg = if color { "\x1b[48;2;50;50;50m" } else { "" };
-        let fg = if color { "\x1b[97m"            } else { "" };
-        let glyphs = if total_extent <= 10 {
-            ballot_bar(total_extent, successes, errors)
-        } else {
-            braille_bar(pct, 10)
-        };
-        format!(" {bg}{fg}{glyphs}{reset}")
-    } else {
-        String::new()
-    };
+    // The 10-glyph progress bar moved OUT of this line. The
+    // outer sink renderer (`log_only_sink`) builds the bar
+    // from live metrics and renders it as the row-2 margin
+    // replacement, so the running-phase header here is just
+    // `<spinner> <name> <pct>%` while the stats row below
+    // carries the bar in its left-margin gutter.
+    let bar = String::new();
     // Time span: cumulative elapsed / ETA remaining, packed
     // into a single dim parenthesised pair. The slash reads
     // as past→future without needing a label. When ETA can't
@@ -291,25 +282,15 @@ fn render_labeled(
     //   + " " (1) + seq_prefix (visible chars when set)
     //   + activity_name length
     let labels = ctx.subject_labels();
-    let bar_visible: usize = if total_extent > 0 {
-        // Both bar variants are ` ` + N glyphs (each glyph 1
-        // cell wide — bg/fg escapes are zero-width). Width
-        // is fixed 10 for the braille variant; the ballot
-        // variant scales with op count up to 10 so a small
-        // phase doesn't reserve padding cells it can't use.
-        let glyphs = if total_extent <= 10 { total_extent as usize } else { 10 };
-        1 + glyphs
-    } else {
-        0
-    };
+    // Bar is no longer inline in line 1 — moved to the
+    // row-2 margin built by the sink renderer.
+    let bar_visible: usize = 0;
     let seq_visible: usize = match ctx.subject_seq() {
         Some((s, t)) => format!("[{s}/{t}] ").chars().count(),
         None => 0,
     };
     let head_consumed: usize = depth_indent.chars().count()
-        + 1  // spinner glyph
         + bar_visible
-        + 1  // space between bar and seq/name
         + seq_visible
         + activity_name.chars().count();
     let continuation_indent = format!("{depth_indent}    ");
@@ -528,9 +509,13 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
-        // Spinner frame at tick=0 is ⠋. Pct 50%. Rate 50/s.
-        assert!(out.starts_with("⠋"),
-            "spinner frame missing: {out}");
+        // The spinner and 10-glyph progress bar moved OUT of
+        // this row — the sink renderer builds them as the
+        // row-2 margin replacement so the readout body is
+        // just `<name> <coord> <pct>%` on row 1 and
+        // `<rate> ok:.. e:.. r:.. c:.. cycles:..` on row 2.
+        assert!(!out.contains("⠋"),
+            "spinner MUST NOT appear in phase_status body: {out}");
         // Two-line layout: head ends with " 50%\n",
         // tail begins with the indented counters.
         assert!(out.contains(" 50%\n"),

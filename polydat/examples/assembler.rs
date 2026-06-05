@@ -5,7 +5,7 @@
 
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::hash::Hash64;
-use polydat::library::arithmetic::{ModU64, MixedRadix};
+use polydat::library::arithmetic::{Mod, MixedRadix};
 
 fn main() {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
@@ -17,7 +17,7 @@ fn main() {
     // Hash region for a deterministic region code
     asm.add_node("region_h", Box::new(Hash64::new()),
         vec![WireRef::node_port("decompose", 0)]);
-    asm.add_node("region_code", Box::new(ModU64::new(10000)),
+    asm.add_node("region_code", Box::new(Mod::new(10000)),
         vec![WireRef::node("region_h")]);
 
     // Declare outputs

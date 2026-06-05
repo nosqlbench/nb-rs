@@ -436,6 +436,13 @@ phases:
            "mbean":"org.apache.cassandra.db:type=StorageService",
            "attribute":"CompactionThroughputMbPerSec",
            "value":0}
+        body-json:
+          type: write
+          mbean: "org.apache.cassandra.db:type=StorageService"
+          stuff: [
+            "sldkfjsdf",
+            "{23l4kj3}"
+          ]
         request_timeout_ms: 10000
         verify:
           - field: status

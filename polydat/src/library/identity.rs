@@ -5,53 +5,17 @@
 
 use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
-/// Passthrough: output equals input.
+/// Passthrough: output equals input. SRD-80 PR B.8 — polymorphic
+/// via PolyWire. The runtime port type is resolved by the
+/// assembler from the upstream wire's type and passed to
+/// `Identity::new(input_type)`.
 ///
-/// Signature: `identity(input: u64) -> (u64)`
-///
-/// Emits the input cycle counter unchanged. Useful as a placeholder
-/// during DAG construction, as a debugging tap, or when the raw
-/// sequential ordinal is the desired value (e.g., auto-incrementing
-/// primary keys). Also serves as the simplest reference node for
-/// testing the PolydatNode trait.
-///
-/// JIT level: P2 (compiled_u64 is a trivial copy).
-pub struct Identity {
-    meta: NodeMeta,
-}
-
-impl Default for Identity {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Identity {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "identity".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for Identity {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = inputs[0].clone();
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            outputs[0] = inputs[0];
-        }))
-    }
+/// JIT is disabled (Value isn't a u64-buffer carrier); for a
+/// u64-only fast path, the assembler can synthesize a typed
+/// alternative.
+#[crate::polydat_node(category = Diagnostic)]
+fn identity(input: Value) -> Value {
+    input
 }
 
 /// Passthrough for external port values (captures).

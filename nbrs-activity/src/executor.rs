@@ -88,6 +88,25 @@ pub struct ExecCtx {
     /// filters allow it.
     pub refine_plan: Option<Arc<crate::refine_plan::RefinePlan>>,
     pub diag: crate::runner::DiagnosticConfig,
+    /// True during the runner's pre-map structural pass. Pre-map
+    /// walks the scenario tree at depth=Phase to populate the
+    /// global `SceneTree` for the TUI/summary observers, but it
+    /// is NOT execution — no phase has actually run, no dispenser
+    /// has been built, no op has fired. "Completion" is an
+    /// undefined concern at that point.
+    ///
+    /// The structural walker's `depth < Dispenser` branch fires
+    /// sentinel `set_phase_running` + `set_phase_completed`
+    /// status mutations to make the `dryrun=phase` post-run
+    /// summary show `[ok]` for every traversed phase. When
+    /// `pre_map_only == true` those mutations are suppressed —
+    /// the scene tree comes out with every phase still
+    /// `Pending`, which is what the TUI margin reads when it
+    /// computes `seq` / `done / total`.
+    ///
+    /// `dryrun=phase` and the real execution paths both leave
+    /// this `false`. Only the pre-map pass sets it.
+    pub pre_map_only: bool,
     pub openmetrics_url: Option<String>,
     pub seq_type: SequencerType,
     pub concurrency: usize,
@@ -794,15 +813,25 @@ fn execute_node<'a>(
                         // Fire the sentinel phase_completed so the
                         // scene tree transitions Running → Completed
                         // and the post-run summary shows `[ok]`.
-                        crate::scene_tree::with_global_mut(|t| {
-                            t.set_phase_running(name, &phase_labels, 0);
-                            t.set_phase_completed(name, &phase_labels, 0.0);
-                        });
-                        ctx.observer.phase_starting(name, &phase_labels, 0, 0, 0);
-                        ctx.observer.phase_completed(name, &phase_labels, 0.0);
-                        crate::phase_end_triggers::fire_phase_completed(
-                            name, &phase_labels, 0.0,
-                        );
+                        //
+                        // Suppressed under `pre_map_only` — the
+                        // pre-map structural pass walks the same
+                        // depth as `dryrun=phase` but ISN'T
+                        // execution: "completion" is undefined
+                        // there and leaking the Completed status
+                        // makes the TUI margin read `N/N` 50 ms
+                        // into the run.
+                        if !ctx.pre_map_only {
+                            crate::scene_tree::with_global_mut(|t| {
+                                t.set_phase_running(name, &phase_labels, 0);
+                                t.set_phase_completed(name, &phase_labels, 0.0);
+                            });
+                            ctx.observer.phase_starting(name, &phase_labels, 0, 0, 0);
+                            ctx.observer.phase_completed(name, &phase_labels, 0.0);
+                            crate::phase_end_triggers::fire_phase_completed(
+                                name, &phase_labels, 0.0,
+                            );
+                        }
                     } else if refine_missing_skip {
                         // SRD-77 refine `scope=missing` skip:
                         // prior outcome exists, no hash check

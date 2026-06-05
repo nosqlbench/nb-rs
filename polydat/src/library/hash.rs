@@ -116,10 +116,10 @@ impl PolydatNode for HashRange {
 impl FusedNode for HashRange {
     /// `hash_range(x, K)` decomposes to `mod(hash(x), K)`.
     fn decomposed(&self) -> DecomposedGraph {
-        use crate::library::arithmetic::ModU64;
+        use crate::library::arithmetic::Mod;
         let mut g = DecomposedGraph::new(1);
         let h = g.add_node(Box::new(Hash64::new()), vec![DecomposedWire::Input(0)]);
-        let m = g.add_node(Box::new(ModU64::new(self.max)), vec![DecomposedWire::Node(h, 0)]);
+        let m = g.add_node(Box::new(Mod::new(self.max)), vec![DecomposedWire::Node(h, 0)]);
         g.set_outputs(vec![DecomposedWire::Node(m, 0)]);
         g
     }

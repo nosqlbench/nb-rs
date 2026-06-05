@@ -28,28 +28,34 @@ use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 /// string.
 ///
 /// JIT level: P1 (String output; no compiled_u64 path).
-pub struct Combinations {
-    meta: NodeMeta,
-    segments: Vec<Segment>,
-    modulus: u64,
+/// SRD-80 PR B.6 — derived state for `combinations`. Computed
+/// once per node instance via `from_pattern`; the macro stores
+/// the instance in a struct field and hands the eval body a
+/// `&ParsedCombinations` borrow each call.
+pub struct ParsedCombinations {
+    pub segments: Vec<Segment>,
+    pub modulus: u64,
 }
 
-enum Segment {
+impl crate::derive_support::PolydatSetup for ParsedCombinations {}
+
+pub enum Segment {
     /// Variable: select one char from the charset based on a radix digit.
     Charset(Vec<char>),
     /// Fixed: always emit this string (e.g., a literal separator).
     Literal(String),
 }
 
-impl Combinations {
-    pub fn new(pattern: &str) -> Self {
+impl ParsedCombinations {
+    /// Single-call setup. The `#[polydat_node]` macro invokes
+    /// this exactly once in the generated `Combinations::new()`;
+    /// no other call path exists.
+    pub fn from_pattern(pattern: &str) -> Self {
         let mut segments = Vec::new();
         let mut modulus: u64 = 1;
-
         for spec in pattern.split(';') {
             let chars = parse_charset(spec);
             if chars.len() == 1 && !spec.contains('-') {
-                // Single literal character (no range), emit as-is
                 segments.push(Segment::Literal(chars[0].to_string()));
             } else if chars.is_empty() {
                 segments.push(Segment::Literal(spec.to_string()));
@@ -58,46 +64,39 @@ impl Combinations {
                 segments.push(Segment::Charset(chars));
             }
         }
-
-        Self {
-            meta: NodeMeta {
-                name: "combinations".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            segments,
-            modulus,
-        }
-    }
-
-    /// The total number of unique combinations before wrapping.
-    pub fn cardinality(&self) -> u64 {
-        self.modulus
+        Self { segments, modulus }
     }
 }
 
-impl PolydatNode for Combinations {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let mut remainder = inputs[0].as_u64() % self.modulus;
-        let mut result = String::with_capacity(self.segments.len());
-
-        for seg in &self.segments {
-            match seg {
-                Segment::Literal(s) => result.push_str(s),
-                Segment::Charset(chars) => {
-                    let radix = chars.len() as u64;
-                    let idx = (remainder % radix) as usize;
-                    result.push(chars[idx]);
-                    remainder /= radix;
-                }
+/// Map a u64 input to a deterministic string by interpreting
+/// it as a multi-positional choice over the pattern's charsets.
+#[crate::polydat_node(category = String)]
+fn combinations(
+    input: u64,
+    pattern: crate::derive_support::Const<&str>,
+    #[poly_const(ParsedCombinations::from_pattern, from = pattern)]
+    parsed: &ParsedCombinations,
+) -> String {
+    let mut remainder = input % parsed.modulus;
+    let mut result = String::with_capacity(parsed.segments.len());
+    for seg in &parsed.segments {
+        match seg {
+            Segment::Literal(s) => result.push_str(s),
+            Segment::Charset(chars) => {
+                let radix = chars.len() as u64;
+                let idx = (remainder % radix) as usize;
+                result.push(chars[idx]);
+                remainder /= radix;
             }
         }
+    }
+    result
+}
 
-        outputs[0] = Value::Str(result.into());
+impl Combinations {
+    /// The total number of unique combinations before wrapping.
+    pub fn cardinality(&self) -> u64 {
+        self.parsed.modulus
     }
 }
 
@@ -142,36 +141,11 @@ fn parse_charset(spec: &str) -> Vec<char> {
 /// `number_to_words(hash_range(h, 1000))`.
 ///
 /// JIT level: P1 (String output; no compiled_u64 path).
-pub struct NumberToWords {
-    meta: NodeMeta,
-}
-
-impl Default for NumberToWords {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl NumberToWords {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "number_to_words".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for NumberToWords {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(u64_to_words(inputs[0].as_u64()).into());
-    }
+/// Spell a u64 input as English words. Migrated to
+/// `#[polydat_node]` per SRD-80 PR B.4.
+#[crate::polydat_node(category = String)]
+fn number_to_words(input: u64) -> String {
+    u64_to_words(input)
 }
 
 const ONES: [&str; 20] = [
@@ -253,57 +227,12 @@ use crate::ast::SlotType;
 pub fn signatures() -> &'static [FuncSig] {
     use FuncCategory as C;
     &[
-        FuncSig {
-            name: "combinations", category: C::String,
-            outputs: 1, description: "mixed-radix character set mapping",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"[a-z]+\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Map a u64 to a string via mixed-radix indexing into character sets.\nPattern is semicolon-delimited character set specs per position.\nEach spec uses ranges (A-Z, 0-9) or literal characters.\nA single literal (like -) is emitted as-is without consuming a radix digit.\nParameters:\n  input   — u64 wire input\n  pattern — semicolon-separated charset specs\nExample: combinations(cycle, \"0-9;0-9;0-9;-;0-9;0-9;0-9;0-9\")  // \"372-8419\"",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "number_to_words", category: C::String, outputs: 1,
-            description: "spell out number in English",
-            help: "Convert a u64 to its English word representation.\nExample: 42 becomes \"forty-two\", 1000 becomes \"one thousand\".\nUseful for generating human-readable labels or test data.\nParameters:\n  input — u64 wire input",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "hashed_uuid", category: C::String, outputs: 1,
-            description: "deterministic UUID v4 from u64 seed",
-            help: "Generate a deterministic UUID v4 string from a u64 seed.\nSame seed always produces the same UUID. The 128 bits are\nderived from xxHash3 with version/variant bits set per RFC 4122.\nExample: hashed_uuid(hash(cycle))",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "char_buf", category: C::String, outputs: 1,
-            description: "deterministic string from seed + charset + length",
-            help: "Generate a deterministic string of the given length from a\nseed and character set. Charset uses range syntax: A-Za-z0-9.\nSame seed always produces the same string.\nExample: char_buf(hash(cycle), \"A-Za-z0-9\", 100)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "seed", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "charset", slot_type: SlotType::ConstStr, required: true, example: "\"abcdefghijklmnopqrstuvwxyz\"", constraint: None },
-                ParamSpec { name: "length", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `combinations` migrated to `#[polydat_node]` per
+        // SRD-80 PR B.6 — Setup<ParsedCombinations> with
+        // PolydatSetup-compatible from_pattern.
+        // `number_to_words` and `hashed_uuid` migrated to
+        // `#[polydat_node]` per SRD-80 PR B.4.
+        // `char_buf` migrated to `#[polydat_node]` per SRD-80 PR B.6.
         FuncSig {
             name: "file_line_at", category: C::String, outputs: 1,
             description: "select a line from a file by index",
@@ -318,45 +247,11 @@ pub fn signatures() -> &'static [FuncSig] {
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
         },
-        FuncSig {
-            name: "str_concat", category: C::String, outputs: 1,
-            description: "concatenate N inputs as strings",
-            help: "Concatenate variadic wire inputs into a single string.\nEach value is rendered to its display form: strings pass through,\nnumerics format as decimal, bools as true/false, JSON via to_string.\nThis is the desugared form of `+` between Str-typed operands\nin the DSL: `\"a\" + b + \"c\"` lowers to `str_concat(\"a\", b, \"c\")`.\nParameters:\n  input... — wire inputs (any type)\nExample: str_concat(\"id=\", id, \" v=\", val)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "\"hello\"", constraint: None },
-            ],
-            arity: Arity::VariadicWires { min_wires: 0 },
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "str_lower", category: C::String, outputs: 1,
-            description: "fold a string to lowercase",
-            help: "Return the lowercase form of the input string using\nUnicode case-folding. Useful for normalizing identifiers at\nupstream interpolation points — e.g. CQL stores unquoted\ntable names lowercased, so a sweep workload baking\n`{source_model}` into a table name should pass it through\n`str_lower(source_model)` so the local label matches the\nstored identifier when JMX / jolokia lookups happen later.\nParameters:\n  input — string wire\nExample: const table_lc := str_lower(table)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "\"HELLO\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "str_upper", category: C::String, outputs: 1,
-            description: "fold a string to uppercase",
-            help: "Return the uppercase form of the input string using\nUnicode case-folding. Mirror of `str_lower`; useful when a\ndownstream consumer (e.g. an enum-string config value) wants\nan uppercase form regardless of how the upstream binding\nwas written.\nParameters:\n  input — string wire\nExample: const model_uc := str_upper(source_model)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "\"hello\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `str_concat` migrated to `#[polydat_node]` per SRD-80 PR B.9.
+        // `str_lower` and `str_upper` migrated to
+        // `#[polydat_node]` per SRD-80 PR B.4 — their FuncSig
+        // entries flow through the proc-macro-emitted
+        // NodeRegistration, no manual SIGS entry needed.
     ]
 }
 
@@ -365,55 +260,33 @@ pub fn signatures() -> &'static [FuncSig] {
 // =================================================================
 
 /// Generate a deterministic UUID v4 string from a u64 seed.
-///
-/// The hash output fills the 128 UUID bits, with version (4) and
-/// variant (RFC 4122) bits set per spec. Same seed always produces
-/// the same UUID.
+/// Same seed always produces the same UUID; the hash output
+/// fills the 128 UUID bits with version (4) and variant
+/// (RFC 4122) bits set per spec.
 ///
 /// Signature: `hashed_uuid(input: u64) -> (String)`
-pub struct HashedUuid {
-    meta: NodeMeta,
-}
-
-impl HashedUuid {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "hashed_uuid".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for HashedUuid {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let seed = inputs[0].as_u64();
-        // Use two hashes to fill 128 bits
-        let h1 = xxhash_rust::xxh3::xxh3_64(&seed.to_le_bytes());
-        let h2 = xxhash_rust::xxh3::xxh3_64(&h1.to_le_bytes());
-
-        let mut bytes = [0u8; 16];
-        bytes[..8].copy_from_slice(&h1.to_le_bytes());
-        bytes[8..].copy_from_slice(&h2.to_le_bytes());
-
-        // Set version 4 (bits 12-15 of byte 6)
-        bytes[6] = (bytes[6] & 0x0F) | 0x40;
-        // Set variant RFC 4122 (bits 6-7 of byte 8)
-        bytes[8] = (bytes[8] & 0x3F) | 0x80;
-
-        let uuid = format!(
-            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[4], bytes[5],
-            bytes[6], bytes[7],
-            bytes[8], bytes[9],
-            bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        );
-        outputs[0] = Value::Str(uuid.into());
-    }
+///
+/// SRD-80 PR B.4 migration.
+#[crate::polydat_node(category = String)]
+fn hashed_uuid(input: u64) -> String {
+    // Two hashes fill 128 bits.
+    let h1 = xxhash_rust::xxh3::xxh3_64(&input.to_le_bytes());
+    let h2 = xxhash_rust::xxh3::xxh3_64(&h1.to_le_bytes());
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&h1.to_le_bytes());
+    bytes[8..].copy_from_slice(&h2.to_le_bytes());
+    // Version 4 (bits 12-15 of byte 6).
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    // Variant RFC 4122 (bits 6-7 of byte 8).
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+    )
 }
 
 // =================================================================
@@ -427,67 +300,49 @@ impl PolydatNode for HashedUuid {
 /// Same seed + charset + length always produces the same string.
 ///
 /// Signature: `char_buf(seed: u64, charset: &str, length: u64) -> (String)`
-pub struct CharBuf {
-    meta: NodeMeta,
-    charset: Vec<char>,
-}
-
-impl CharBuf {
-    pub fn new(charset: &str) -> Self {
-        let chars: Vec<char> = if charset.is_empty() {
-            ('a'..='z').collect()
+/// Expand a charset spec like "A-Za-z0-9" into a Vec<char>.
+/// SRD-80 PR B.6 setup helper for `char_buf`.
+fn expand_charset(charset: &str) -> Vec<char> {
+    if charset.is_empty() {
+        return ('a'..='z').collect();
+    }
+    let mut result = Vec::new();
+    let chars_vec: Vec<char> = charset.chars().collect();
+    let mut i = 0;
+    while i < chars_vec.len() {
+        if i + 2 < chars_vec.len() && chars_vec[i + 1] == '-' {
+            for c in chars_vec[i]..=chars_vec[i + 2] { result.push(c); }
+            i += 3;
         } else {
-            // Expand ranges: "A-Za-z0-9" → all chars in those ranges
-            let mut result = Vec::new();
-            let chars_vec: Vec<char> = charset.chars().collect();
-            let mut i = 0;
-            while i < chars_vec.len() {
-                if i + 2 < chars_vec.len() && chars_vec[i + 1] == '-' {
-                    let start = chars_vec[i];
-                    let end = chars_vec[i + 2];
-                    for c in start..=end {
-                        result.push(c);
-                    }
-                    i += 3;
-                } else {
-                    result.push(chars_vec[i]);
-                    i += 1;
-                }
-            }
-            if result.is_empty() { ('a'..='z').collect() } else { result }
-        };
-        Self {
-            meta: NodeMeta {
-                name: "char_buf".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![
-                    Slot::Wire(Port::u64("seed")),
-                    Slot::Wire(Port::u64("length")),
-                ],
-            },
-            charset: chars,
+            result.push(chars_vec[i]);
+            i += 1;
         }
     }
+    if result.is_empty() { ('a'..='z').collect() } else { result }
 }
 
-impl PolydatNode for CharBuf {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let seed = inputs[0].as_u64();
-        let length = inputs[1].as_u64() as usize;
-        let n = self.charset.len();
-        if n == 0 || length == 0 {
-            outputs[0] = Value::Str(String::new().into());
-            return;
-        }
-        let mut result = String::with_capacity(length);
-        let mut h = seed;
-        for _ in 0..length {
-            h = xxhash_rust::xxh3::xxh3_64(&h.to_le_bytes());
-            result.push(self.charset[(h as usize) % n]);
-        }
-        outputs[0] = Value::Str(result.into());
+/// Generate a deterministic string of a given length from a
+/// seed and character set. SRD-80 PR B.6 migration.
+#[crate::polydat_node(category = String)]
+fn char_buf(
+    seed: u64,
+    charset: crate::derive_support::Const<&str>,
+    length: u64,
+    #[poly_const(expand_charset, from = charset)]
+    chars: &Vec<char>,
+) -> String {
+    let n = chars.len();
+    let len = length as usize;
+    if n == 0 || len == 0 {
+        return String::new();
     }
+    let mut result = String::with_capacity(len);
+    let mut h = seed;
+    for _ in 0..len {
+        h = xxhash_rust::xxh3::xxh3_64(&h.to_le_bytes());
+        result.push(chars[(h as usize) % n]);
+    }
+    result
 }
 
 // =================================================================
@@ -554,47 +409,27 @@ impl PolydatNode for FileLineAt {
 /// callable directly as `str_concat(a, b, c, ...)`.
 ///
 /// Signature: `str_concat(in_0, in_1, ...) -> (String)`
-pub struct StrConcat {
-    meta: NodeMeta,
-}
-
-impl StrConcat {
-    pub fn new(wire_count: usize) -> Self {
-        let inputs: Vec<Port> = (0..wire_count)
-            .map(|i| Port::new(format!("in_{i}"), PortType::Str))
-            .collect();
-        let slots: Vec<Slot> = inputs.iter().map(|p| Slot::Wire(p.clone())).collect();
-        Self {
-            meta: NodeMeta {
-                name: "str_concat".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: slots,
-            },
+/// Concatenate N values, rendering each as its display form.
+/// SRD-80 PR B.9 — variadic over `&[Value]`. The body stringifies
+/// per element so mixed-type inputs (Str + U64 + Bool, etc.)
+/// produce a single concatenated string; this matches the
+/// DSL's lowering of `+` between Str-typed operands.
+#[crate::polydat_node(category = String)]
+fn str_concat(parts: &[polydat::ast::Value]) -> String {
+    use polydat::ast::Value;
+    let mut out = String::new();
+    for v in parts {
+        match v {
+            Value::Str(s) => out.push_str(s),
+            Value::U64(n) => out.push_str(&n.to_string()),
+            Value::F64(n) => out.push_str(&n.to_string()),
+            Value::Bool(b) => out.push_str(&b.to_string()),
+            Value::Json(j) => out.push_str(&j.to_string()),
+            Value::Bytes(b) => out.push_str(&String::from_utf8_lossy(b)),
+            other => out.push_str(&format!("{other:?}")),
         }
     }
-}
-
-fn value_to_display(val: &Value) -> String {
-    match val {
-        Value::Str(s) => s.to_string(),
-        Value::U64(v) => v.to_string(),
-        Value::F64(v) => v.to_string(),
-        Value::Bool(v) => v.to_string(),
-        Value::Json(j) => j.to_string(),
-        Value::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
-        _ => format!("{val:?}"),
-    }
-}
-
-impl PolydatNode for StrConcat {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let mut out = String::new();
-        for v in inputs {
-            out.push_str(&value_to_display(v));
-        }
-        outputs[0] = Value::Str(out.into());
-    }
+    out
 }
 
 // =================================================================
@@ -604,53 +439,24 @@ impl PolydatNode for StrConcat {
 /// Fold a string to lowercase (`str.to_lowercase()` semantics).
 ///
 /// Signature: `str_lower(input: Str) -> (Str)`
-pub struct StrLower {
-    meta: NodeMeta,
-}
-
-impl StrLower {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "str_lower".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for StrLower {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(value_to_display(&inputs[0]).to_lowercase().into());
-    }
+///
+/// SRD-80 PR B.4 — migrated to `#[polydat_node]`. `String`
+/// (not `&str`) so `FromValue<String>` honors the legacy
+/// "stringify any input via `to_display_string`" behavior;
+/// switching to `&str` would tighten this to require Str
+/// inputs only, which the type-checker doesn't yet enforce
+/// (deferred to SRD-79's type-driven resolution).
+#[crate::polydat_node(category = String)]
+fn str_lower(input: String) -> String {
+    input.to_lowercase()
 }
 
 /// Fold a string to uppercase (`str.to_uppercase()` semantics).
 ///
 /// Signature: `str_upper(input: Str) -> (Str)`
-pub struct StrUpper {
-    meta: NodeMeta,
-}
-
-impl StrUpper {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "str_upper".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for StrUpper {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(value_to_display(&inputs[0]).to_uppercase().into());
-    }
+#[crate::polydat_node(category = String)]
+fn str_upper(input: String) -> String {
+    input.to_uppercase()
 }
 
 /// Try to build a string node from a function name and const args.
@@ -658,21 +464,18 @@ impl PolydatNode for StrUpper {
 /// Returns `None` if the name is not handled by this module.
 pub(crate) fn build_node(name: &str, wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
-        "combinations" => Some(Ok(Box::new(Combinations::new(
-            consts.first().map(|c| c.as_str()).unwrap_or("a-z"),
-        )))),
-        "number_to_words" => Some(Ok(Box::new(NumberToWords::new()))),
-        "hashed_uuid" => Some(Ok(Box::new(HashedUuid::new()))),
-        "char_buf" => Some(Ok(Box::new(CharBuf::new(
-            consts.first().map(|c| c.as_str()).unwrap_or("a-z"),
-        )))),
+        // `combinations` routes through proc-macro-emitted
+        // NodeRegistration per SRD-80 PR B.6.
+        // `number_to_words` / `hashed_uuid` route through
+        // proc-macro-emitted NodeRegistration per SRD-80 PR B.4.
+        // `char_buf` routes via proc-macro-emitted NodeRegistration per SRD-80 PR B.6.
         "file_line_at" => {
             let path = consts.first().map(|c| c.as_str()).unwrap_or("");
             Some(FileLineAt::new(path).map(|n| Box::new(n) as Box<dyn crate::ast::PolydatNode>))
         }
-        "str_concat" => Some(Ok(Box::new(StrConcat::new(wires.len())))),
-        "str_lower" => Some(Ok(Box::new(StrLower::new()))),
-        "str_upper" => Some(Ok(Box::new(StrUpper::new()))),
+        // `str_concat` routes via proc-macro NodeRegistration per SRD-80 PR B.9.
+        // `str_lower` / `str_upper` route through the
+        // proc-macro-emitted NodeRegistration per SRD-80 PR B.4.
         _ => None,
     }
 }
@@ -687,7 +490,7 @@ mod tests {
 
     #[test]
     fn combinations_digits() {
-        let node = Combinations::new("0-9;0-9;0-9");
+        let node = Combinations::new("0-9;0-9;0-9".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::U64(123)], &mut out);
         let s = out[0].as_str();
@@ -697,7 +500,7 @@ mod tests {
 
     #[test]
     fn combinations_with_separator() {
-        let node = Combinations::new("0-9;0-9;0-9;-;0-9;0-9;0-9");
+        let node = Combinations::new("0-9;0-9;0-9;-;0-9;0-9;0-9".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::U64(0)], &mut out);
         let s = out[0].as_str();
@@ -707,7 +510,7 @@ mod tests {
 
     #[test]
     fn combinations_alpha() {
-        let node = Combinations::new("A-Z;A-Z;A-Z");
+        let node = Combinations::new("A-Z;A-Z;A-Z".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::U64(0)], &mut out);
         assert_eq!(out[0].as_str(), "AAA");
@@ -717,14 +520,14 @@ mod tests {
 
     #[test]
     fn combinations_cardinality() {
-        let node = Combinations::new("0-9;0-9;-;A-Z");
+        let node = Combinations::new("0-9;0-9;-;A-Z".to_string());
         // 10 * 10 * 26 = 2600 (separator doesn't count)
         assert_eq!(node.cardinality(), 2600);
     }
 
     #[test]
     fn combinations_deterministic() {
-        let node = Combinations::new("A-Z;0-9");
+        let node = Combinations::new("A-Z;0-9".to_string());
         let mut out1 = [Value::None];
         let mut out2 = [Value::None];
         node.eval(&[Value::U64(42)], &mut out1);
@@ -734,7 +537,7 @@ mod tests {
 
     #[test]
     fn combinations_wraps() {
-        let node = Combinations::new("0-9");
+        let node = Combinations::new("0-9".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::U64(0)], &mut out);
         let a = out[0].as_str().to_string();

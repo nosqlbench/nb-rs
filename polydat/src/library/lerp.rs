@@ -149,40 +149,19 @@ impl FusedNode for ScaleRange {
 /// `inv_lerp(temperature, 32.0, 212.0)` normalizes Fahrenheit to
 /// `[0,1]`. Output is clamped, so out-of-range inputs saturate.
 ///
-/// JIT level: P1 (no compiled_u64; f64 in/out without captured closure).
-pub struct InvLerp {
-    meta: NodeMeta,
-    a: f64,
-    inv_range: f64,
-}
-
-impl InvLerp {
-    pub fn new(a: f64, b: f64) -> Self {
-        assert!((b - a).abs() > f64::EPSILON, "range must be non-zero");
-        let inv_range = 1.0 / (b - a);
-        Self {
-            meta: NodeMeta {
-                name: "inv_lerp".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![
-                    Slot::Wire(Port::f64("input")),
-                    Slot::const_f64("a", a),
-                    Slot::const_f64("inv_range", inv_range),
-                ],
-            },
-            a,
-            inv_range,
-        }
-    }
-}
-
-impl PolydatNode for InvLerp {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let t = (inputs[0].as_f64() - self.a) * self.inv_range;
-        outputs[0] = Value::F64(t.clamp(0.0, 1.0));
-    }
+/// Inverse linear interpolation. SRD-80 PR B.12 — inline
+/// compute; the per-call `1.0 / (b - a)` divide is acceptable
+/// versus the cost of a multi-source Setup mechanism that no
+/// other node would need.
+#[crate::polydat_node(category = Interpolation)]
+fn inv_lerp(
+    input: f64,
+    #[poly_default(0.0f64)] a: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] b: crate::derive_support::Const<f64>,
+) -> f64 {
+    let inv_range = 1.0 / (*b - *a);
+    let t = (input - *a) * inv_range;
+    t.clamp(0.0, 1.0)
 }
 
 /// Remap from one range to another.
@@ -197,47 +176,19 @@ impl PolydatNode for InvLerp {
 /// extrapolation is possible.
 ///
 /// JIT level: P1 (no compiled_u64; f64 in/out without captured closure).
-pub struct Remap {
-    meta: NodeMeta,
-    in_min: f64,
-    in_inv_range: f64,
-    out_min: f64,
-    out_range: f64,
-}
-
-impl Remap {
-    pub fn new(in_min: f64, in_max: f64, out_min: f64, out_max: f64) -> Self {
-        let in_range = in_max - in_min;
-        assert!(in_range.abs() > f64::EPSILON, "input range must be non-zero");
-        let in_inv_range = 1.0 / in_range;
-        let out_range = out_max - out_min;
-        Self {
-            meta: NodeMeta {
-                name: "remap".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![
-                    Slot::Wire(Port::f64("input")),
-                    Slot::const_f64("in_min", in_min),
-                    Slot::const_f64("in_inv_range", in_inv_range),
-                    Slot::const_f64("out_min", out_min),
-                    Slot::const_f64("out_range", out_range),
-                ],
-            },
-            in_min,
-            in_inv_range,
-            out_min,
-            out_range,
-        }
-    }
-}
-
-impl PolydatNode for Remap {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let t = (inputs[0].as_f64() - self.in_min) * self.in_inv_range;
-        outputs[0] = Value::F64(self.out_min + t * self.out_range);
-    }
+/// SRD-80 PR B.12 — inline compute; one extra divide per call
+/// versus the multi-source Setup machinery that would have
+/// precomputed `1.0 / (in_max - in_min)`.
+#[crate::polydat_node(category = Interpolation)]
+fn remap(
+    input: f64,
+    #[poly_default(0.0f64)] in_min: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] in_max: crate::derive_support::Const<f64>,
+    #[poly_default(0.0f64)] out_min: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] out_max: crate::derive_support::Const<f64>,
+) -> f64 {
+    let t = (input - *in_min) / (*in_max - *in_min);
+    *out_min + t * (*out_max - *out_min)
 }
 
 /// Quantize an f64 to the nearest multiple of a step size.

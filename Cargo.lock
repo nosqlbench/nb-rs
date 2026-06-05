@@ -3565,6 +3565,7 @@ dependencies = [
  "layout-rs",
  "md-5",
  "petgraph",
+ "polydat-derive",
  "rayon",
  "regex",
  "serde",
@@ -3575,6 +3576,15 @@ dependencies = [
  "tokio",
  "vectordata",
  "xxhash-rust",
+]
+
+[[package]]
+name = "polydat-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

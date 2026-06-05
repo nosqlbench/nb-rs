@@ -98,12 +98,19 @@ impl SinkSupervisor {
 enum ActiveSink {
     Terminal {
         sink_handle: Box<dyn SinkHandle>,
-        watcher: KeyWatcher,
+        /// `None` when stdin isn't a TTY — the LogOnlySink is
+        /// still rendering to the stderr terminal, just without
+        /// interactive key handling / prompt. Auto-degraded path
+        /// for piped-stdin invocations.
+        watcher: Option<KeyWatcher>,
         signal_rx: mpsc::Receiver<WatcherSignal>,
         /// Forwarder for prompt-bound signals. The supervisor's
         /// match arms route `Key` / `GrowPrompt` / `ShrinkPrompt`
         /// / `ToggleHelp` here; the `LogOnlySink` owns the
         /// receiver and drives its embedded `PromptState`.
+        /// Unused in the degraded (no-watcher) mode — kept on
+        /// the struct so the enum variant doesn't need
+        /// per-mode shape, but no traffic ever flows.
         prompt_tx: mpsc::Sender<WatcherSignal>,
     },
     Tui {
@@ -207,6 +214,30 @@ fn run_supervision(
                             let _ = err.write_all(b"\x1b[2J\x1b[H");
                             let _ = err.flush();
                         }
+                        WatcherSignal::ExplainPulse => {
+                            // `?` keystroke: toggle the global
+                            // explainer overlay. First press
+                            // turns it on with a 10 s auto-
+                            // revert deadline; second press
+                            // while on turns it off. Auto-
+                            // repeat-safe via the debounce
+                            // inside `toggle_explain`.
+                            nbrs_activity::observer::toggle_explain();
+                        }
+                        WatcherSignal::ReplToggleBar => {
+                            // `~` keystroke: cycle REPL
+                            // visibility (Hidden ↔ Bar; any
+                            // visible state → Hidden). The
+                            // global state has its own
+                            // auto-repeat debounce, so holding
+                            // the key doesn't strobe.
+                            crate::repl_state::toggle_bar();
+                        }
+                        WatcherSignal::ReplToggleWindow => {
+                            // `Ctrl-~` keystroke: open or close
+                            // the full-screen REPL window.
+                            crate::repl_state::toggle_window();
+                        }
                         // Prompt-bound signals. The
                         // `LogOnlySink` owns the receiver and
                         // applies these directly to its
@@ -297,20 +328,30 @@ fn start_terminal(
     state: &RunStateHandle,
     runtime: Option<tokio::runtime::Handle>,
 ) -> Option<ActiveSink> {
+    // Stderr-only TTY case (stdin is piped/redirected — common
+    // for `nbrs run ... 2>&1 | tee log.txt` or invocation under
+    // a parent process that captures stdin): KeyWatcher refuses
+    // to spawn (no raw-mode access), but the stderr terminal can
+    // still render the status block via absolute positioning. We
+    // start LogOnlySink without key plumbing — same readouts,
+    // same in-place updates, just no interactive keys/prompt.
     let (signal_tx, signal_rx) = mpsc::channel::<WatcherSignal>();
-    let watcher = KeyWatcher::spawn(signal_tx)?;
+    let watcher = KeyWatcher::spawn(signal_tx);
 
-    // Prompt-bound channel: the supervisor's match forwards
-    // Key / GrowPrompt / ShrinkPrompt / ToggleHelp here, and
-    // the LogOnlySink drains them on every render tick.
+    // Prompt-bound channel: only wired when KeyWatcher is up.
+    // The supervisor's match forwards prompt-bound signals
+    // here; in the watcher-less degraded mode this channel
+    // never carries traffic, so `prompt_tx` is `None` and
+    // the sink is constructed without a key receiver.
     let (prompt_tx, prompt_rx) = mpsc::channel::<WatcherSignal>();
 
     let min_level = observer.min_level();
     let sink_active = observer.sink_active_flag();
-    let sink = Box::new(
-        LogOnlySink::new(min_level, sink_active).with_keys(prompt_rx, runtime),
-    );
-    let sink_handle = sink.start(DisplayInputs {
+    let mut sink = LogOnlySink::new(min_level, sink_active);
+    if watcher.is_some() {
+        sink = sink.with_keys(prompt_rx, runtime);
+    }
+    let sink_handle = Box::new(sink).start(DisplayInputs {
         state: state.clone(),
         frame_rx: None,
         metrics_query: None,
@@ -333,7 +374,7 @@ fn swap_to_tui(
         // sink_handle.shutdown() that follows then joins.
         drop(prompt_tx);
         sink_handle.shutdown();
-        watcher.shutdown();
+        if let Some(w) = watcher { w.shutdown(); }
     } else {
         unreachable!("swap_to_tui called outside Terminal state");
     }
@@ -382,7 +423,7 @@ fn teardown(active: ActiveSink) {
     match active {
         ActiveSink::Terminal { sink_handle, watcher, .. } => {
             sink_handle.shutdown();
-            watcher.shutdown();
+            if let Some(w) = watcher { w.shutdown(); }
         }
         ActiveSink::Tui { sink_handle, .. } => {
             sink_handle.shutdown();

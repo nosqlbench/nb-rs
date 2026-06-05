@@ -12,57 +12,16 @@ use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Val
 /// Emit a fixed f64 value.
 ///
 /// Signature: `() -> (f64)`
-pub struct ConstF64 {
-    meta: NodeMeta,
-    value: f64,
+/// Emit a fixed f64 value. SRD-80 PR B.15 migration.
+#[crate::polydat_node(category = Math)]
+fn const_f64(#[poly_default(0.0f64)] value: crate::derive_support::Const<f64>) -> f64 {
+    *value
 }
 
-impl ConstF64 {
-    pub fn new(value: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "const_f64".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![Slot::const_f64("value", value)],
-            },
-            value,
-        }
-    }
-}
-
-impl PolydatNode for ConstF64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::F64(self.value);
-    }
-}
-
-/// Emit a fixed bool value.
-///
-/// Signature: `() -> (bool)`
-pub struct ConstBool {
-    meta: NodeMeta,
-    value: bool,
-}
-
-impl ConstBool {
-    pub fn new(value: bool) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "const_bool".into(),
-                outs: vec![Port::bool("output")],
-                ins: Vec::new(),
-            },
-            value,
-        }
-    }
-}
-
-impl PolydatNode for ConstBool {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Bool(self.value);
-    }
+/// Emit a fixed bool value. SRD-80 PR B.15 migration.
+#[crate::polydat_node(category = Math)]
+fn const_bool(#[poly_default(false)] value: crate::derive_support::Const<bool>) -> bool {
+    *value
 }
 
 // =================================================================
@@ -181,32 +140,19 @@ impl PolydatNode for FixedValuesStr {
 ///
 /// The input is expected to be hashed (uniform). The threshold is
 /// precomputed from the probability at init time.
-pub struct CoinFlip {
-    meta: NodeMeta,
-    threshold: u64,
+fn compute_threshold(probability: f64) -> u64 {
+    (probability.clamp(0.0, 1.0) * u64::MAX as f64) as u64
 }
 
-impl CoinFlip {
-    /// Create with a probability of true in [0.0, 1.0].
-    pub fn new(probability: f64) -> Self {
-        let threshold = (probability.clamp(0.0, 1.0) * u64::MAX as f64) as u64;
-        Self {
-            meta: NodeMeta {
-                name: "coin_flip".into(),
-                outs: vec![Port::bool("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            threshold,
-        }
-    }
-}
-
-impl PolydatNode for CoinFlip {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Bool(inputs[0].as_u64() < self.threshold);
-    }
+/// Probabilistic boolean with a precomputed threshold from a
+/// const probability arg. SRD-80 PR B.15 migration.
+#[crate::polydat_node(category = Probability)]
+fn coin_flip(
+    input: u64,
+    #[poly_default(0.5f64)] probability: crate::derive_support::Const<f64>,
+    #[poly_const(compute_threshold, from = probability)] threshold: &u64,
+) -> bool {
+    input < *threshold
 }
 
 #[cfg(test)]

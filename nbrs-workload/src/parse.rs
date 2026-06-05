@@ -867,19 +867,35 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     // lifetime — author doesn't need to think
                     // about which path the runtime takes.
                     //
-                    // Literal-format rules:
-                    //   - numeric-parseable → bare (no quotes)
-                    //   - "true" / "false" → bare boolean
-                    //   - everything else → quoted Polydat string
-                    //     literal, with `\` / `"` escaped
+                    // Literal-format rules — same classifier the
+                    // workload-root `add_param_binding` uses, so
+                    // `set: { … }` block bindings carry the same
+                    // bare-identifier / array-literal / quoted-
+                    // string surface as workload params:
+                    //
+                    //   - bare numeric / `true` / `false` → emit as-is
+                    //   - polydat array literal `[…]`     → emit as-is
+                    //   - polydat-quoted string `"…"`      → emit as-is
+                    //   - identifier-shaped                → emit as
+                    //     a polydat wire reference (this is the
+                    //     `set: { source_model: sm }` path —
+                    //     `sm` becomes a reference, not a Str
+                    //     literal `"sm"`)
+                    //   - anything else                    → wrap as
+                    //     polydat string literal
                     let mut source = String::new();
                     for (name, value) in &pairs {
                         let trimmed = value.trim();
                         let literal = if trimmed.parse::<u64>().is_ok()
                             || trimmed.parse::<f64>().is_ok()
+                            || trimmed == "true"
+                            || trimmed == "false"
                         {
                             trimmed.to_string()
-                        } else if trimmed == "true" || trimmed == "false" {
+                        } else if is_polydat_quoted_string(trimmed)
+                            || is_polydat_array_literal(trimmed)
+                            || is_bare_identifier(trimmed)
+                        {
                             trimmed.to_string()
                         } else {
                             let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
@@ -2331,18 +2347,134 @@ fn inline_block_sugar_into_op(block_sugar: &BindingsDef, op_own: &BindingsDef) -
     }
 }
 
+/// Render a YAML/JSON param value as the text form
+/// `add_param_binding` expects.
+///
+/// Scalar shapes pass through RAW (no extra quoting): a YAML
+/// `iter_count: "3"` and a YAML `iter_count: 3` BOTH come out as
+/// the string `"3"` here — the downstream classifier sees
+/// numeric-shape and emits a bare U64 binding either way. YAML's
+/// quotes are presentation, not semantic, for scalars.
+///
+/// Array shape gets the polydat array literal form
+/// (`[v1, v2, v3]`) — that's the new convention the workload
+/// surface needs to support. Array ELEMENTS are formatted with
+/// polydat literal grammar (strings explicitly quoted) since
+/// polydat's parser requires quotes inside array literals;
+/// `format_jval_in_array_context` handles the recursion.
+///
+/// Object shape (rare for params) falls back to JSON
+/// serialization — there's no polydat literal form for objects,
+/// so the value passes through whatever-it-is for callers
+/// downstream to handle.
+pub(crate) fn format_jval_as_polydat_literal(v: &JVal) -> String {
+    match v {
+        JVal::Null => String::new(),
+        JVal::Bool(b) => b.to_string(),
+        JVal::Number(n) => n.to_string(),
+        // Scalar strings pass through unquoted to preserve the
+        // legacy "YAML quotes are presentation" behavior. The
+        // downstream classifier (`add_param_binding`) figures
+        // out the actual type from the content — numeric-shape
+        // becomes U64/F64, identifier-shape becomes a reference,
+        // string-shape becomes a polydat-quoted Str.
+        JVal::String(s) => s.clone(),
+        JVal::Array(items) => {
+            let elts: Vec<String> = items.iter()
+                .map(format_jval_in_array_context)
+                .collect();
+            format!("[{}]", elts.join(", "))
+        }
+        JVal::Object(_) => v.to_string(),
+    }
+}
+
+/// Element-context formatter: polydat array literals require
+/// explicit quotes around string elements (`["a", "b"]`), unlike
+/// the scalar-context formatter which leaves strings unquoted.
+fn format_jval_in_array_context(v: &JVal) -> String {
+    match v {
+        JVal::String(s) => {
+            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("\"{escaped}\"")
+        }
+        JVal::Array(items) => {
+            let elts: Vec<String> = items.iter()
+                .map(format_jval_in_array_context)
+                .collect();
+            format!("[{}]", elts.join(", "))
+        }
+        _ => format_jval_as_polydat_literal(v),
+    }
+}
+
 fn extract_string_map(val: Option<&JVal>) -> HashMap<String, String> {
     let mut map = HashMap::new();
     if let Some(JVal::Object(obj)) = val {
         for (k, v) in obj {
-            if let Some(s) = v.as_str() {
-                map.insert(k.clone(), s.to_string());
-            } else {
-                map.insert(k.clone(), v.to_string());
-            }
+            // Format every YAML value as polydat-native source.
+            // Strings come out quote-wrapped, arrays as
+            // `[a, b, c]`, numbers / bools bare. The downstream
+            // `add_param_binding` classifier reads this and emits
+            // the const binding without re-quoting.
+            map.insert(k.clone(), format_jval_as_polydat_literal(v));
         }
     }
     map
+}
+
+/// Shared classifier helpers — `set:` block parser and the
+/// scope-level `add_param_binding` route every value through
+/// the same shape detection so the bare-identifier / array-
+/// literal / quoted-string surface is consistent across both
+/// param entry points.
+
+fn is_bare_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn is_polydat_quoted_string(s: &str) -> bool {
+    if s.len() < 2 { return false; }
+    if !s.starts_with('"') || !s.ends_with('"') { return false; }
+    let bytes = s.as_bytes();
+    let mut i = 1;
+    let last = bytes.len() - 1;
+    while i < last {
+        if bytes[i] == b'\\' { i += 2; continue; }
+        if bytes[i] == b'"' { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn is_polydat_array_literal(s: &str) -> bool {
+    if !s.starts_with('[') || !s.ends_with(']') { return false; }
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    for c in s.chars() {
+        if escape { escape = false; continue; }
+        if in_string {
+            if c == '\\' { escape = true; }
+            else if c == '"' { in_string = false; }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth < 0 { return false; }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
 }
 
 fn extract_value_map(val: Option<&JVal>) -> HashMap<String, JVal> {

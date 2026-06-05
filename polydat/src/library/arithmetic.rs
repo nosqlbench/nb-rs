@@ -22,176 +22,38 @@ use crate::ast::{
 /// `add(base_epoch, offset)`.
 ///
 /// JIT level: P3 (single `iadd` instruction).
-pub struct AddU64 {
-    meta: NodeMeta,
-    addend: u64,
+// SRD-80 PR B.7 — Phase 3 const-arg arithmetic family
+// migrated to `#[polydat_node]`. The macro derives `Add`,
+// `Mul`, `Div`, `Mod` from snake_case → PascalCase; the
+// `r#mod` raw identifier is stripped to "mod" for the DSL
+// name and PascalCased to `Mod` for the struct.
+//
+// `classify_node` matches by DSL name ("add", "mul", "div",
+// "mod") and reads `jit_constants()` — the macro auto-emits
+// both, so Phase 3 dispatch is preserved verbatim.
+
+#[crate::polydat_node(category = Arithmetic)]
+fn add(input: u64, addend: crate::derive_support::Const<u64>) -> u64 {
+    input.wrapping_add(*addend)
 }
 
-impl AddU64 {
-    pub fn new(addend: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "add".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_u64("addend", addend),
-                ],
-            },
-            addend,
-        }
-    }
+#[crate::polydat_node(category = Arithmetic)]
+fn mul(input: u64, factor: crate::derive_support::Const<u64>) -> u64 {
+    input.wrapping_mul(*factor)
 }
 
-impl PolydatNode for AddU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(inputs[0].as_u64().wrapping_add(self.addend));
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let addend = self.addend;
-        Some(Box::new(move |inputs, outputs| { outputs[0] = inputs[0].wrapping_add(addend); }))
-    }
-    fn jit_constants(&self) -> Vec<u64> { vec![self.addend] }
+#[crate::polydat_node(category = Arithmetic)]
+fn div(input: u64, divisor: crate::derive_support::Const<u64>) -> u64 {
+    // Greenfield posture: zero-divisor panics at cycle time
+    // (matching the body's `/`). The original `new()` assert
+    // is retired with the migration; if early-fail is needed
+    // again, it lands via a const-constraint attribute later.
+    input / *divisor
 }
 
-/// Multiply a u64 value by a constant (wrapping).
-///
-/// Signature: `mul(input: u64, factor: u64) -> (u64)`
-///
-/// Use for scaling counters to time intervals: `mul(reading_idx, 1000)`
-/// converts a reading index to millisecond offsets. Wraps at 2^64.
-///
-/// JIT level: P3 (single `imul` instruction).
-pub struct MulU64 {
-    meta: NodeMeta,
-    factor: u64,
-}
-
-impl MulU64 {
-    pub fn new(factor: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "mul".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_u64("factor", factor),
-                ],
-            },
-            factor,
-        }
-    }
-}
-
-impl PolydatNode for MulU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(inputs[0].as_u64().wrapping_mul(self.factor));
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let factor = self.factor;
-        Some(Box::new(move |inputs, outputs| { outputs[0] = inputs[0].wrapping_mul(factor); }))
-    }
-    fn jit_constants(&self) -> Vec<u64> { vec![self.factor] }
-}
-
-/// Divide a u64 value by a constant (integer division, toward zero).
-///
-/// Signature: `div(input: u64, divisor: u64) -> (u64)`
-///
-/// Use for coarsening: `div(cycle, 100)` groups 100 consecutive cycles
-/// into one bucket. Panics at construction if divisor is 0.
-///
-/// JIT level: P3 (single `udiv` instruction).
-pub struct DivU64 {
-    meta: NodeMeta,
-    divisor: u64,
-}
-
-impl DivU64 {
-    pub fn new(divisor: u64) -> Self {
-        assert!(divisor != 0, "divisor must not be zero");
-        Self {
-            meta: NodeMeta {
-                name: "div".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_u64("divisor", divisor),
-                ],
-            },
-            divisor,
-        }
-    }
-}
-
-impl PolydatNode for DivU64 {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(inputs[0].as_u64() / self.divisor);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let divisor = self.divisor;
-        Some(Box::new(move |inputs, outputs| { outputs[0] = inputs[0] / divisor; }))
-    }
-    fn jit_constants(&self) -> Vec<u64> { vec![self.divisor] }
-}
-
-/// Modulo of a u64 value by a constant. Result in [0, modulus).
-///
-/// Signature: `mod(input: u64, modulus: u64) -> (u64)`
-///
-/// The most common operation after hash. `mod(hash(cycle), N)` gives a
-/// uniformly distributed integer in [0, N). Also used for cyclic patterns:
-/// `mod(cycle, period)` repeats every `period` cycles.
-///
-/// JIT level: P3 (single `urem` instruction).
-pub struct ModU64 {
-    meta: NodeMeta,
-    modulus: u64,
-}
-
-impl ModU64 {
-    pub fn new(modulus: u64) -> Self {
-        assert!(modulus != 0, "modulus must not be zero");
-        Self {
-            meta: NodeMeta {
-                name: "mod".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_u64("modulus", modulus),
-                ],
-            },
-            modulus,
-        }
-    }
-}
-
-impl PolydatNode for ModU64 {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(inputs[0].as_u64() % self.modulus);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let modulus = self.modulus;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = inputs[0] % modulus;
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> {
-        vec![self.modulus]
-    }
+#[crate::polydat_node(category = Arithmetic)]
+fn r#mod(input: u64, modulus: crate::derive_support::Const<u64>) -> u64 {
+    input % *modulus
 }
 
 /// Modulo of a u64 value by a *wire-fed* divisor.
@@ -208,99 +70,23 @@ impl PolydatNode for ModU64 {
 /// the canonical "panic at hour 14" hazard, opt-out by design.
 ///
 /// Use this when the modulus genuinely varies across cycles. For
-/// the const case, prefer [`ModU64`] which is faster (the divisor
+/// the const case, prefer [`Mod`] which is faster (the divisor
 /// is baked into the JIT closure as a constant).
 ///
 /// JIT level: P2 (compiled_u64 closure; not const-foldable).
-pub struct ModWireU64 {
-    meta: NodeMeta,
+/// Modulo of a u64 by a wire-fed divisor. SRD-80 PR B.14
+/// migration — the `#[constraint(NonZeroU64)]` attribute carries
+/// the strict-wire-mode assertion contract.
+#[crate::polydat_node(category = Arithmetic)]
+fn mod_wire(input: u64, #[constraint(NonZeroU64)] divisor: u64) -> u64 {
+    input % divisor
 }
 
-impl Default for ModWireU64 {
-    fn default() -> Self { Self::new() }
-}
-
-impl ModWireU64 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "mod_wire".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    // The divisor wire declares its non-zero
-                    // contract here. Strict-wire mode auto-inserts
-                    // an `assert_u64_nonzero` upstream when the
-                    // source can't statically guarantee it.
-                    Slot::Wire(
-                        Port::u64("divisor")
-                            .with_constraint(crate::dsl::const_constraints::ConstConstraint::NonZeroU64),
-                    ),
-                ],
-            },
-        }
-    }
-}
-
-impl PolydatNode for ModWireU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let divisor = inputs[1].as_u64();
-        // Trust the divisor by contract. Bad input is the user's
-        // problem unless they opted into strict_values, in which
-        // case the upstream assertion has already rejected zero.
-        outputs[0] = Value::U64(inputs[0].as_u64() % divisor);
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            outputs[0] = inputs[0] % inputs[1];
-        }))
-    }
-}
-
-/// Division of a u64 value by a *wire-fed* divisor.
-///
-/// Signature: `div_wire(input: u64, divisor: u64) -> (u64)`
-///
-/// Sibling of [`ModWireU64`] for integer division. Same wire-input
-/// contract: divisor must be non-zero. Strict-wire mode auto-wires
-/// the assertion. JIT level: P2.
-pub struct DivWireU64 {
-    meta: NodeMeta,
-}
-
-impl Default for DivWireU64 {
-    fn default() -> Self { Self::new() }
-}
-
-impl DivWireU64 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "div_wire".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::Wire(
-                        Port::u64("divisor")
-                            .with_constraint(crate::dsl::const_constraints::ConstConstraint::NonZeroU64),
-                    ),
-                ],
-            },
-        }
-    }
-}
-
-impl PolydatNode for DivWireU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(inputs[0].as_u64() / inputs[1].as_u64());
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            outputs[0] = inputs[0] / inputs[1];
-        }))
-    }
+/// Division of a u64 by a wire-fed divisor. SRD-80 PR B.14
+/// migration — same NonZeroU64 contract as mod_wire.
+#[crate::polydat_node(category = Arithmetic)]
+fn div_wire(input: u64, #[constraint(NonZeroU64)] divisor: u64) -> u64 {
+    input / divisor
 }
 
 /// Smallest multiple of `multiple` that is ≥ `value`.
@@ -321,50 +107,16 @@ impl PolydatNode for DivWireU64 {
 ///   - bucketing: snap a value up to the next bin edge
 ///
 /// JIT level: P2 (uses `u64::div_ceil`).
-pub struct CeilToMultipleU64 {
-    meta: NodeMeta,
-}
-
-impl Default for CeilToMultipleU64 {
-    fn default() -> Self { Self::new() }
-}
-
-impl CeilToMultipleU64 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "ceil_to_multiple".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("value")),
-                    Slot::Wire(Port::u64("multiple")),
-                ],
-            },
-        }
-    }
-}
-
-impl PolydatNode for CeilToMultipleU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let value = inputs[0].as_u64();
-        let multiple = inputs[1].as_u64();
-        outputs[0] = Value::U64(if multiple == 0 {
-            value
-        } else {
-            value.div_ceil(multiple).saturating_mul(multiple)
-        });
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let value = inputs[0];
-            let multiple = inputs[1];
-            outputs[0] = if multiple == 0 {
-                value
-            } else {
-                value.div_ceil(multiple).saturating_mul(multiple)
-            };
-        }))
+/// Smallest multiple of `multiple` that is ≥ `value`. SRD-80
+/// PR B.13. `multiple == 0` is a soft no-op (returns value
+/// unchanged) so a transient zero from a wire-bound extern
+/// doesn't break a binding mid-evaluation. JIT P2.
+#[crate::polydat_node(category = Arithmetic)]
+fn ceil_to_multiple(value: u64, multiple: u64) -> u64 {
+    if multiple == 0 {
+        value
+    } else {
+        value.div_ceil(multiple).saturating_mul(multiple)
     }
 }
 
@@ -390,43 +142,12 @@ impl PolydatNode for CeilToMultipleU64 {
 /// trap, the function quietly yields the only honest answer.
 ///
 /// JIT level: P3 (single `udiv_ceil`).
-pub struct MultiplesAtLeastU64 {
-    meta: NodeMeta,
-}
-
-impl Default for MultiplesAtLeastU64 {
-    fn default() -> Self { Self::new() }
-}
-
-impl MultiplesAtLeastU64 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "multiples_at_least".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("value")),
-                    Slot::Wire(Port::u64("multiple")),
-                ],
-            },
-        }
-    }
-}
-
-impl PolydatNode for MultiplesAtLeastU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let value = inputs[0].as_u64();
-        let multiple = inputs[1].as_u64();
-        outputs[0] = Value::U64(if multiple == 0 { 0 } else { value.div_ceil(multiple) });
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let value = inputs[0];
-            let multiple = inputs[1];
-            outputs[0] = if multiple == 0 { 0 } else { value.div_ceil(multiple) };
-        }))
-    }
+/// Count of multiples needed to cover `value`. SRD-80 PR B.13.
+/// `multiple == 0` returns 0 (no count covers positive value
+/// with zero-sized multiples). JIT P3.
+#[crate::polydat_node(category = Arithmetic)]
+fn multiples_at_least(value: u64, multiple: u64) -> u64 {
+    if multiple == 0 { 0 } else { value.div_ceil(multiple) }
 }
 
 /// "Set-or-get" memoizer: returns `current` if non-zero,
@@ -640,196 +361,30 @@ impl PolydatNode for MixedRadix {
 /// Use for combining multiple values into a single aggregate.
 ///
 /// JIT level: P2 (closure with loop).
-pub struct SumN {
-    meta: NodeMeta,
+// SRD-80 PR B.9 — variadic N-ary u64 reductions migrated to
+// `#[polydat_node]`. Macro generates Sum/Product/Min/Max
+// structs with `new(n_wires)` ctors and auto-emits Phase 2
+// closures that pass the JIT `&[u64]` buffer directly to the
+// body. AllCommutative declared via attribute.
+
+#[crate::polydat_node(category = Variadic, identity = 0u64, commutativity = AllCommutative)]
+fn sum(values: &[u64]) -> u64 {
+    values.iter().fold(0u64, |a, b| a.wrapping_add(*b))
 }
 
-impl SumN {
-    pub fn new(n: usize) -> Self {
-        let slots: Vec<Slot> = (0..n)
-            .map(|i| Slot::Wire(Port::u64(format!("in_{i}"))))
-            .collect();
-        Self {
-            meta: NodeMeta {
-                name: "sum".into(),
-                outs: vec![Port::u64("output")],
-                ins: slots,
-            },
-        }
-    }
+#[crate::polydat_node(category = Variadic, identity = 1u64, commutativity = AllCommutative)]
+fn product(values: &[u64]) -> u64 {
+    values.iter().fold(1u64, |a, b| a.wrapping_mul(*b))
 }
 
-impl PolydatNode for SumN {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let mut acc: u64 = 0;
-        for input in inputs {
-            acc = acc.wrapping_add(input.as_u64());
-        }
-        outputs[0] = Value::U64(acc);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let mut acc: u64 = 0;
-            for &v in inputs {
-                acc = acc.wrapping_add(v);
-            }
-            outputs[0] = acc;
-        }))
-    }
+#[crate::polydat_node(category = Variadic, identity = { u64::MAX }, commutativity = AllCommutative)]
+fn min(values: &[u64]) -> u64 {
+    values.iter().copied().fold(u64::MAX, std::cmp::min)
 }
 
-/// Multiply N u64 inputs (wrapping). Variadic: accepts 0..N wire inputs.
-///
-/// Signature: `product(in_0: u64, ..., in_N: u64) -> (u64)`
-///
-/// Group theory: identity element is 1 (multiplicative identity).
-/// `product()` = 1, `product(a)` = a, `product(a, b)` = a * b.
-///
-/// JIT level: P2 (closure with loop).
-pub struct ProductN {
-    meta: NodeMeta,
-}
-
-impl ProductN {
-    pub fn new(n: usize) -> Self {
-        let slots: Vec<Slot> = (0..n)
-            .map(|i| Slot::Wire(Port::u64(format!("in_{i}"))))
-            .collect();
-        Self {
-            meta: NodeMeta {
-                name: "product".into(),
-                outs: vec![Port::u64("output")],
-                ins: slots,
-            },
-        }
-    }
-}
-
-impl PolydatNode for ProductN {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let mut acc: u64 = 1;
-        for input in inputs {
-            acc = acc.wrapping_mul(input.as_u64());
-        }
-        outputs[0] = Value::U64(acc);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let mut acc: u64 = 1;
-            for &v in inputs { acc = acc.wrapping_mul(v); }
-            outputs[0] = acc;
-        }))
-    }
-}
-
-/// Minimum of N u64 inputs. Variadic: accepts 0..N wire inputs.
-///
-/// Signature: `min(in_0: u64, ..., in_N: u64) -> (u64)`
-///
-/// Lattice: identity element is u64::MAX (top element).
-/// `min()` = u64::MAX, `min(a)` = a, `min(a, b, c)` = smallest.
-///
-/// JIT level: P2 (closure with loop).
-pub struct MinN {
-    meta: NodeMeta,
-}
-
-impl MinN {
-    pub fn new(n: usize) -> Self {
-        let slots: Vec<Slot> = (0..n)
-            .map(|i| Slot::Wire(Port::u64(format!("in_{i}"))))
-            .collect();
-        Self {
-            meta: NodeMeta {
-                name: "min".into(),
-                outs: vec![Port::u64("output")],
-                ins: slots,
-            },
-        }
-    }
-}
-
-impl PolydatNode for MinN {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let mut acc: u64 = u64::MAX;
-        for input in inputs {
-            acc = acc.min(input.as_u64());
-        }
-        outputs[0] = Value::U64(acc);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let mut acc: u64 = u64::MAX;
-            for &v in inputs { acc = acc.min(v); }
-            outputs[0] = acc;
-        }))
-    }
-}
-
-/// Maximum of N u64 inputs. Variadic: accepts 0..N wire inputs.
-///
-/// Signature: `max(in_0: u64, ..., in_N: u64) -> (u64)`
-///
-/// Lattice: identity element is 0 (bottom element).
-/// `max()` = 0, `max(a)` = a, `max(a, b, c)` = largest.
-///
-/// JIT level: P2 (closure with loop).
-pub struct MaxN {
-    meta: NodeMeta,
-}
-
-impl MaxN {
-    pub fn new(n: usize) -> Self {
-        let slots: Vec<Slot> = (0..n)
-            .map(|i| Slot::Wire(Port::u64(format!("in_{i}"))))
-            .collect();
-        Self {
-            meta: NodeMeta {
-                name: "max".into(),
-                outs: vec![Port::u64("output")],
-                ins: slots,
-            },
-        }
-    }
-}
-
-impl PolydatNode for MaxN {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let mut acc: u64 = 0;
-        for input in inputs {
-            acc = acc.max(input.as_u64());
-        }
-        outputs[0] = Value::U64(acc);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let mut acc: u64 = 0;
-            for &v in inputs { acc = acc.max(v); }
-            outputs[0] = acc;
-        }))
-    }
+#[crate::polydat_node(category = Variadic, identity = 0u64, commutativity = AllCommutative)]
+fn max(values: &[u64]) -> u64 {
+    values.iter().copied().fold(0u64, std::cmp::max)
 }
 
 /// Interleave the bits of two u64 values into one (Morton code).
@@ -909,170 +464,15 @@ pub fn signatures() -> &'static [FuncSig] {
     use FuncCategory as C;
     &[
         // --- Variadic arithmetic ---
-        FuncSig {
-            name: "sum", category: C::Variadic, outputs: 1,
-            description: "sum of N inputs (wrapping); identity = 0",
-            help: "Wrapping addition of N wire inputs. With zero inputs returns 0.\nUseful for combining multiple independently generated components.\nParameters:\n  input... — any number of u64 wire inputs\nExample: sum(hash(cycle), hash(add(cycle, 1000)))\nIdentity element is 0. Overflow wraps at 2^64.",
-            identity: Some(0),
-            variadic_ctor: Some(|n| Box::new(SumN::new(n))),
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle", constraint: None }],
-            arity: Arity::VariadicWires { min_wires: 0 },
-            commutativity: crate::ast::Commutativity::AllCommutative,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "product", category: C::Variadic, outputs: 1,
-            description: "product of N inputs (wrapping); identity = 1",
-            help: "Wrapping multiplication of N wire inputs. With zero inputs returns 1.\nUseful for combining independent scaling factors.\nParameters:\n  input... — any number of u64 wire inputs\nExample: product(hash(cycle), mod(cycle, 10))\nIdentity element is 1. Overflow wraps at 2^64.",
-            identity: Some(1),
-            variadic_ctor: Some(|n| Box::new(ProductN::new(n))),
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle", constraint: None }],
-            arity: Arity::VariadicWires { min_wires: 0 },
-            commutativity: crate::ast::Commutativity::AllCommutative,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "min", category: C::Variadic, outputs: 1,
-            description: "minimum of N inputs; identity = u64::MAX",
-            help: "Returns the smallest of N wire inputs. With zero inputs returns u64::MAX.\nUseful for clamping to the lowest of several generated bounds.\nParameters:\n  input... — any number of u64 wire inputs\nExample: min(hash(cycle), mod(cycle, 1000))\nIdentity element is u64::MAX.",
-            identity: Some(u64::MAX),
-            variadic_ctor: Some(|n| Box::new(MinN::new(n))),
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle", constraint: None }],
-            arity: Arity::VariadicWires { min_wires: 0 },
-            commutativity: crate::ast::Commutativity::AllCommutative,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "max", category: C::Variadic, outputs: 1,
-            description: "maximum of N inputs; identity = 0",
-            help: "Returns the largest of N wire inputs. With zero inputs returns 0.\nUseful for selecting the highest of several generated values.\nParameters:\n  input... — any number of u64 wire inputs\nExample: max(hash(cycle), mod(cycle, 500))\nIdentity element is 0.",
-            identity: Some(0),
-            variadic_ctor: Some(|n| Box::new(MaxN::new(n))),
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle", constraint: None }],
-            arity: Arity::VariadicWires { min_wires: 0 },
-            commutativity: crate::ast::Commutativity::AllCommutative,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `sum` / `product` / `min` / `max` migrated to
+        // `#[polydat_node]` per SRD-80 PR B.9.
 
         // --- Arithmetic ---
-        FuncSig {
-            name: "add", category: C::Arithmetic,
-            outputs: 1, description: "add a constant (wrapping)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "addend", slot_type: SlotType::ConstU64, required: true, example: "10", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Add a constant to a u64 value using wrapping arithmetic.\nUseful for offsetting ranges or shifting cycle ordinals.\nParameters:\n  input  — u64 wire input\n  addend — constant to add (wraps at 2^64)\nExample: add(hash(cycle), 1000000)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "mul", category: C::Arithmetic,
-            outputs: 1, description: "multiply by a constant (wrapping)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "factor", slot_type: SlotType::ConstU64, required: true, example: "10", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Multiply a u64 value by a constant using wrapping arithmetic.\nUseful for scaling counters or spreading values across a stride.\nParameters:\n  input  — u64 wire input\n  factor — constant multiplier (wraps at 2^64)\nExample: mul(cycle, 7)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "div", category: C::Arithmetic,
-            outputs: 1, description: "divide by a constant",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "divisor", slot_type: SlotType::ConstU64, required: true, example: "10",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::NonZeroU64) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Integer division by a constant (truncating toward zero).\nUseful for coarsening values — e.g., grouping cycles into blocks.\nParameters:\n  input   — u64 wire input\n  divisor — constant divisor (must be > 0)\nExample: div(cycle, 100)  // groups into blocks of 100",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "mod", category: C::Arithmetic,
-            outputs: 1, description: "modulo by a constant",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "modulus", slot_type: SlotType::ConstU64, required: true, example: "1000",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::NonZeroU64) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Modular reduction: output = input % modulus, producing [0, K).\nThe most common operation after hash — bounds a hashed value\ninto a usable integer range.\nParameters:\n  input   — u64 wire input (typically hashed)\n  modulus — upper bound (exclusive, must be > 0)\nExample: mod(hash(cycle), 1000)  // yields 0..999",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "mod_wire", category: C::Arithmetic,
-            outputs: 1, description: "modulo by a wire-fed divisor",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "divisor", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Modulo by a wire-fed divisor. Sibling of `mod` for cases where\nthe divisor varies per cycle (e.g. driven by a control or a\nruntime-derived shard count). The divisor port declares a\n`NonZeroU64` constraint, so under `// @pragma: strict_values`\nthe compiler auto-inserts an `assert_u64_nonzero` upstream.\nWithout strict mode the node trusts the divisor; a zero panics.\nParameters:\n  input   — u64 wire input\n  divisor — u64 wire input (non-zero)\nExample: shard := mod_wire(cycle, concurrency())",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "div_wire", category: C::Arithmetic,
-            outputs: 1, description: "divide by a wire-fed divisor",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "divisor", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Integer division by a wire-fed divisor. Sibling of `div`. Same\nnon-zero contract on the `divisor` wire. Use when the divisor\ngenuinely varies per cycle.\nParameters:\n  input   — u64 wire input\n  divisor — u64 wire input (non-zero)\nExample: bucket := div_wire(cycle, partition_size())",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "ceil_to_multiple", category: C::Arithmetic,
-            outputs: 1, description: "smallest multiple of `multiple` that is ≥ `value`",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "multiple", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Round `value` UP to the nearest multiple of `multiple`.\nUseful for cycle counts (smallest whole-pass cycle count\nmeeting a minimum), alignment (pad to chunk boundary),\nbucketing (snap to next bin edge).\nReturns `value` unchanged if `multiple == 0` (soft no-op so a\ntransient zero from a wire-bound extern doesn't trap).\nParameters:\n  value    — u64 wire input\n  multiple — u64 wire input (multiplier base)\nExample: cycles := ceil_to_multiple(min_cycles, base)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "multiples_at_least", category: C::Arithmetic,
-            outputs: 1, description: "count of `multiple`s needed to cover `value`",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "multiple", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Number of `multiple`-sized chunks needed to cover `value`:\nceil(value / multiple). Companion to ceil_to_multiple — returns\nthe count instead of the rounded value.\nReturns 0 if `multiple == 0`.\nParameters:\n  value    — u64 wire input\n  multiple — u64 wire input (chunk size)\nExample: passes := multiples_at_least(min_cycles, base)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `add` / `mul` / `div` / `mod` migrated to
+        // `#[polydat_node]` per SRD-80 PR B.7.
+        // `mod_wire` / `div_wire` migrated to `#[polydat_node]` per SRD-80 PR B.14.
+        // `ceil_to_multiple` / `multiples_at_least` migrated to
+        // `#[polydat_node]` per SRD-80 PR B.13.
         FuncSig {
             name: "set_or_get", category: C::Arithmetic,
             outputs: 1, description: "first non-zero of (current, fallback)",
@@ -1129,19 +529,7 @@ pub fn signatures() -> &'static [FuncSig] {
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
         },
-        FuncSig {
-            name: "identity", category: C::Arithmetic, outputs: 1,
-            description: "passthrough",
-            help: "Passes the input value through unchanged.\nUseful for debugging, naming intermediate values, or as a\nplaceholder during graph construction.\nParameters:\n  input — any wire value\nExample: identity(hash(cycle))  // same as hash(cycle)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `identity` migrated to `#[polydat_node]` per SRD-80 PR B.8.
     ]
 }
 
@@ -1150,14 +538,11 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Returns `None` if the name is not handled by this module.
 pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
-        "add" => Some(Ok(Box::new(AddU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(0))))),
-        "mul" => Some(Ok(Box::new(MulU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
-        "div" => Some(Ok(Box::new(DivU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
-        "mod" => Some(Ok(Box::new(ModU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
-        "mod_wire" => Some(Ok(Box::new(ModWireU64::new()))),
-        "div_wire" => Some(Ok(Box::new(DivWireU64::new()))),
-        "ceil_to_multiple" => Some(Ok(Box::new(CeilToMultipleU64::new()))),
-        "multiples_at_least" => Some(Ok(Box::new(MultiplesAtLeastU64::new()))),
+        // add / mul / div / mod route via proc-macro
+        // NodeRegistration per SRD-80 PR B.7.
+        // `mod_wire` / `div_wire` route via proc-macro NodeRegistration per SRD-80 PR B.14.
+        // `ceil_to_multiple` / `multiples_at_least` route via proc-macro
+        // NodeRegistration per SRD-80 PR B.13.
         "set_or_get" => Some(Ok(Box::new(SetOrGetU64::new()))),
         "clamp" => Some(Ok(Box::new(ClampU64::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(0),
@@ -1206,7 +591,7 @@ mod tests {
 
     #[test]
     fn add_wrapping() {
-        let node = AddU64::new(10);
+        let node = Add::new(10);
         let mut out = [Value::None];
         node.eval(&[Value::U64(5)], &mut out);
         assert_eq!(out[0].as_u64(), 15);
@@ -1214,7 +599,7 @@ mod tests {
 
     #[test]
     fn mod_basic() {
-        let node = ModU64::new(100);
+        let node = Mod::new(100);
         let mut out = [Value::None];
         node.eval(&[Value::U64(542)], &mut out);
         assert_eq!(out[0].as_u64(), 42);
@@ -1268,7 +653,7 @@ mod tests {
 
     #[test]
     fn div_basic() {
-        let node = DivU64::new(100);
+        let node = Div::new(100);
         let mut out = [Value::None];
         node.eval(&[Value::U64(4_201_337)], &mut out);
         assert_eq!(out[0].as_u64(), 42013);
@@ -1279,18 +664,18 @@ mod tests {
     #[test]
     fn sum_variadic() {
         // 0 inputs → identity = 0
-        let node = SumN::new(0);
+        let node = Sum::new(0);
         let mut out = [Value::None];
         node.eval(&[], &mut out);
         assert_eq!(out[0].as_u64(), 0);
 
         // 1 input → passthrough
-        let node = SumN::new(1);
+        let node = Sum::new(1);
         node.eval(&[Value::U64(42)], &mut out);
         assert_eq!(out[0].as_u64(), 42);
 
         // 3 inputs → fold
-        let node = SumN::new(3);
+        let node = Sum::new(3);
         node.eval(&[Value::U64(10), Value::U64(20), Value::U64(30)], &mut out);
         assert_eq!(out[0].as_u64(), 60);
     }
@@ -1298,18 +683,18 @@ mod tests {
     #[test]
     fn product_variadic() {
         // 0 inputs → identity = 1
-        let node = ProductN::new(0);
+        let node = Product::new(0);
         let mut out = [Value::None];
         node.eval(&[], &mut out);
         assert_eq!(out[0].as_u64(), 1);
 
         // 1 input → passthrough
-        let node = ProductN::new(1);
+        let node = Product::new(1);
         node.eval(&[Value::U64(7)], &mut out);
         assert_eq!(out[0].as_u64(), 7);
 
         // 3 inputs → fold
-        let node = ProductN::new(3);
+        let node = Product::new(3);
         node.eval(&[Value::U64(2), Value::U64(3), Value::U64(7)], &mut out);
         assert_eq!(out[0].as_u64(), 42);
     }
@@ -1317,13 +702,13 @@ mod tests {
     #[test]
     fn min_variadic() {
         // 0 inputs → identity = u64::MAX
-        let node = MinN::new(0);
+        let node = Min::new(0);
         let mut out = [Value::None];
         node.eval(&[], &mut out);
         assert_eq!(out[0].as_u64(), u64::MAX);
 
         // 3 inputs → min
-        let node = MinN::new(3);
+        let node = Min::new(3);
         node.eval(&[Value::U64(50), Value::U64(10), Value::U64(30)], &mut out);
         assert_eq!(out[0].as_u64(), 10);
     }
@@ -1331,13 +716,13 @@ mod tests {
     #[test]
     fn max_variadic() {
         // 0 inputs → identity = 0
-        let node = MaxN::new(0);
+        let node = Max::new(0);
         let mut out = [Value::None];
         node.eval(&[], &mut out);
         assert_eq!(out[0].as_u64(), 0);
 
         // 3 inputs → max
-        let node = MaxN::new(3);
+        let node = Max::new(3);
         node.eval(&[Value::U64(50), Value::U64(10), Value::U64(30)], &mut out);
         assert_eq!(out[0].as_u64(), 50);
     }
@@ -1351,10 +736,10 @@ mod tests {
         use crate::ast::PolydatNode;
 
         let nodes: Vec<Box<dyn PolydatNode>> = vec![
-            Box::new(AddU64::new(42)),
-            Box::new(MulU64::new(7)),
-            Box::new(DivU64::new(100)),
-            Box::new(ModU64::new(256)),
+            Box::new(Add::new(42)),
+            Box::new(Mul::new(7)),
+            Box::new(Div::new(100)),
+            Box::new(Mod::new(256)),
             Box::new(ClampU64::new(10, 90)),
             Box::new(MixedRadix::new(vec![100, 1000, 0])),
         ];
@@ -1380,32 +765,32 @@ mod tests {
 
     #[test]
     fn ceil_to_multiple_returns_value_when_already_a_multiple() {
-        let n = CeilToMultipleU64::new();
+        let n = CeilToMultiple::default();
         assert_eq!(run_binary(&n, 800, 100), 800);
     }
 
     #[test]
     fn ceil_to_multiple_rounds_up_to_next_boundary() {
-        let n = CeilToMultipleU64::new();
+        let n = CeilToMultiple::default();
         assert_eq!(run_binary(&n, 801, 100), 900);
     }
 
     #[test]
     fn ceil_to_multiple_zero_value_is_zero() {
-        let n = CeilToMultipleU64::new();
+        let n = CeilToMultiple::default();
         assert_eq!(run_binary(&n, 0, 100), 0);
     }
 
     #[test]
     fn ceil_to_multiple_below_one_multiple_rounds_to_multiple() {
-        let n = CeilToMultipleU64::new();
+        let n = CeilToMultiple::default();
         assert_eq!(run_binary(&n, 50, 100), 100);
         assert_eq!(run_binary(&n, 1, 100), 100);
     }
 
     #[test]
     fn ceil_to_multiple_zero_multiple_is_soft_no_op() {
-        let n = CeilToMultipleU64::new();
+        let n = CeilToMultiple::default();
         assert_eq!(run_binary(&n, 42, 0), 42,
             "multiple=0 must not trap; passes value through");
     }
@@ -1414,26 +799,26 @@ mod tests {
 
     #[test]
     fn multiples_at_least_exact_division() {
-        let n = MultiplesAtLeastU64::new();
+        let n = MultiplesAtLeast::default();
         assert_eq!(run_binary(&n, 800, 100), 8);
     }
 
     #[test]
     fn multiples_at_least_rounds_up_partial() {
-        let n = MultiplesAtLeastU64::new();
+        let n = MultiplesAtLeast::default();
         assert_eq!(run_binary(&n, 801, 100), 9);
         assert_eq!(run_binary(&n, 1, 100), 1);
     }
 
     #[test]
     fn multiples_at_least_zero_value_is_zero() {
-        let n = MultiplesAtLeastU64::new();
+        let n = MultiplesAtLeast::default();
         assert_eq!(run_binary(&n, 0, 100), 0);
     }
 
     #[test]
     fn multiples_at_least_zero_multiple_is_zero() {
-        let n = MultiplesAtLeastU64::new();
+        let n = MultiplesAtLeast::default();
         assert_eq!(run_binary(&n, 42, 0), 0);
     }
 
@@ -1481,8 +866,8 @@ mod tests {
     fn ceil_to_multiple_and_count_satisfy_invariant() {
         // Documented invariant: ceil_to_multiple(v, m) == multiples_at_least(v, m) * m
         // whenever m > 0 and the multiplication doesn't overflow.
-        let ceil = CeilToMultipleU64::new();
-        let count = MultiplesAtLeastU64::new();
+        let ceil = CeilToMultiple::default();
+        let count = MultiplesAtLeast::default();
         for (v, m) in [(0u64, 100), (1, 100), (50, 100), (100, 100),
                        (101, 100), (10000, 7), (10000, 64), (12345, 256)] {
             let c_val = run_binary(&ceil, v, m);
@@ -1498,14 +883,14 @@ mod tests {
         use crate::ast::PolydatNode;
 
         let nodes: Vec<Box<dyn PolydatNode>> = vec![
-            Box::new(AddU64::new(0)),
-            Box::new(ModU64::new(1)),
-            Box::new(SumN::new(3)),
-            Box::new(ProductN::new(2)),
+            Box::new(Add::new(0)),
+            Box::new(Mod::new(1)),
+            Box::new(Sum::new(3)),
+            Box::new(Product::new(2)),
             Box::new(Interleave::new()),
             Box::new(MixedRadix::new(vec![10, 20])),
-            Box::new(CeilToMultipleU64::new()),
-            Box::new(MultiplesAtLeastU64::new()),
+            Box::new(CeilToMultiple::default()),
+            Box::new(MultiplesAtLeast::default()),
             Box::new(SetOrGetU64::new()),
         ];
 

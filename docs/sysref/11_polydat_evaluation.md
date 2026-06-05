@@ -15,6 +15,52 @@ bridge and the cursor-driven evaluation pump.
 
 ---
 
+## Planned: type-driven name resolution
+
+The current name-resolution flow (Pass 1 auto-infers every
+unknown identifier as a `U64` coordinate input, Pass 3 binding
+compilation resolves against the resulting input set) is
+type-agnostic. This is the cause of three operator-visible
+symptoms:
+
+- The audit-log `boundary adapter: no catalog entry for X → Ext`
+  warning class (workloads that pass U64 / Str / Handle values
+  into auto-extern'd slots typed as the catch-all `Ext`).
+- The workload-author surface ambiguity around `set: { mode:
+  outer }`: today the bare token lowers to a wire reference
+  and silently auto-extern's as a `U64` coordinate, even when
+  the operator intended a Str literal.
+- The YAML array / object workload param round-trip through
+  stringified text: `mnc_values: [8, 128]` and `opts: {a: 1}`
+  flatten to `"[8,128]"` and `"{\"a\":1}"` at the polydat
+  boundary, forcing every consumer to re-parse the structure.
+  `Value::Json` / `PortType::Json` already exists as a first-
+  class carrier; the resolution pass doesn't currently use it
+  as the deferred-typing fallback it's well-suited to be.
+
+[SRD-79](79_type_driven_name_resolution.md) plans the refactor
+that makes name resolution type-aware end-to-end. **Primary
+goal**: primitive type alignment outside of `Value::Json` —
+the type-expectation graph collapses workload-author
+polymorphism into runtime specialization wherever the
+alignment can be proved safe (`U64`, `F64`, `Str`, `Bool`,
+`VecU64`, `VecF32`, …) so producer and consumer wire types
+agree by construction. **Type fusion / polyfill** is the
+auto-bridge that inserts conversion adapters where primitive
+mismatches DO exist (widening, narrowing, parse-from-string,
+etc.) or materializes a primitive from `Json` at the
+receiver. **`Value::Json` is the interstitial bridge and
+last-resort carrier** — used only when the graph genuinely
+can't decide a primitive alignment OR when the operator
+explicitly defers typing for late binding. Json is never
+the default when the graph could have committed. When SRD-79
+ships, this section will be replaced with the new resolution
+contract; until then, the existing flow stands and the audit-
+log warning surface is the right place to look when the
+boundary-adapter surface fires.
+
+---
+
 ## FiberBuilder
 
 The per-fiber bridge between Polydat and the execution engine:

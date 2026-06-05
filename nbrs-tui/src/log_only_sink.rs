@@ -210,6 +210,10 @@ fn run_render_loop(
     // overlay; the renderer recomputes it each tick.
     let mut prompt_drawn_rows: u16 = 0;
     let mut prompt_dirty = prompt.is_some();
+    // Tracks the REPL visibility that the last redraw committed
+    // to. Drives a redraw on the tick after a `~` / `Ctrl-~`
+    // toggle so the prompt show/hide takes effect promptly.
+    let mut repl_visibility_drawn = crate::repl_state::current();
     while !stop.load(Ordering::Acquire) {
         // Drain any metrics frames that arrived since the last
         // tick — only when a frame channel was actually wired in.
@@ -302,6 +306,12 @@ fn run_render_loop(
         for line in &submitted_commands {
             let response = crate::inspector_server::dispatch(
                 line, &state, runtime.as_ref());
+            // Persist command + response into the REPL
+            // transcript ring so Window mode can render the
+            // scrollback above the input. The same data flows
+            // to stderr below for Bar / Hidden modes (where
+            // the inline scroll is what the operator sees).
+            crate::repl_state::push_transcript(line, &response);
             // Echo the command then its response so the user
             // sees what they typed.
             for row in std::iter::once(format!("> {line}").as_str())
@@ -337,9 +347,18 @@ fn run_render_loop(
         // with no changes leaves the cursor and screen alone —
         // critical fix to keep the prompt from drifting down
         // the screen as `\r\n` separators stack up.
+        // REPL visibility transitions drive a redraw too —
+        // toggling `~` flips whether the prompt row exists,
+        // shifting the status block's absolute position; the
+        // existing dirty signals can't catch it because they're
+        // all derived from log/prompt content, not visibility.
+        let repl_now = crate::repl_state::current();
+        let repl_changed = repl_now != repl_visibility_drawn;
+        repl_visibility_drawn = repl_now;
         let region_dirty = need_log_emit || status_changed
-            || dispatched_lines || prompt_dirty;
-        let prompt_first_render = prompt.is_some() && prompt_drawn_rows == 0;
+            || dispatched_lines || prompt_dirty || repl_changed;
+        let prompt_first_render = prompt.is_some() && prompt_drawn_rows == 0
+            && !matches!(repl_now, crate::repl_state::ReplVisibility::Hidden);
         let must_redraw = region_dirty || prompt_first_render;
 
         if must_redraw {
@@ -421,24 +440,163 @@ fn run_render_loop(
         // the screen alone.
         let (cols, rows) = terminal_size_via_ioctl().unwrap_or((200, 50));
         if must_redraw {
-            let new_status_text: Option<String> = next_status.as_ref().map(|s| {
-                clamp_multiline(s, (cols as usize).saturating_sub(1))
-            });
-            let prompt_input = prompt.as_ref().map(|p| PromptInput {
-                rendered: {
-                    let mut f = String::with_capacity(128);
-                    p.render(&mut f, cols as usize, true);
-                    f
-                },
-                window_rows: p.window_rows(),
-                cursor_col: p.cursor_col() as u16,
-            });
+            // Re-format the margin at status-draw time so the
+            // session timer + phase counter on the status rows
+            // tick along with the running phase, matching what
+            // the log lines above show.
+            let status_margin = format_margin_prefix(&snap,
+                nbrs_activity::observer::use_color());
+            let margin_visible_width = visible_width(&status_margin) as u16;
+            // Row-2 margin replacement for the running-phase
+            // status block: progress bar + ETA + spinner
+            // (replacing the `│` divider while the phase
+            // is in flight). Padded to the same visible
+            // width as the row-1 margin so the divider
+            // columns align across both rows. Empty string
+            // when no phase is active — callers fall back to
+            // the standard margin.
+            let row2_margin = format_running_phase_row2_margin(
+                &snap,
+                margin_visible_width,
+                nbrs_activity::observer::use_color(),
+            );
+            let status_cols = (cols as usize)
+                .saturating_sub(margin_visible_width as usize);
+            // Window mode replaces the status block with a
+            // one-line REPL header so the operator knows the
+            // surface they're on and how to dismiss it. Bar
+            // and Hidden modes use the live status text as
+            // usual.
+            let new_status_text: Option<String> = if matches!(
+                crate::repl_state::current(),
+                crate::repl_state::ReplVisibility::Window
+            ) {
+                let color = nbrs_activity::observer::use_color();
+                let dim   = if color { "\x1b[2m" } else { "" };
+                let reset = if color { "\x1b[0m" } else { "" };
+                Some(format!(
+                    "{dim}REPL · ` close · ~ hide{reset}"
+                ))
+            } else {
+                next_status.as_ref().map(|s| {
+                    clamp_multiline(s, status_cols.saturating_sub(1))
+                })
+            };
+            // REPL visibility gate. Three states:
+            //
+            // - Hidden: no prompt drawn, status block fills
+            //   the bottom region normally.
+            // - Bar: single-row prompt at the bottom; status
+            //   block sits above.
+            // - Window: full-screen REPL — the prompt window
+            //   expands to fill the available vertical space
+            //   (term_rows - 1, leaving one row for the header
+            //   label rendered as the first status line) and
+            //   the status block is suppressed so the REPL
+            //   surface dominates.
+            //
+            // The state is toggled by `~` / `Ctrl-~`
+            // keystrokes the supervisor watches for.
+            let repl_vis = crate::repl_state::current();
+            let window_mode = matches!(repl_vis,
+                crate::repl_state::ReplVisibility::Window);
+            let repl_visible = !matches!(repl_vis,
+                crate::repl_state::ReplVisibility::Hidden);
+            // In Window mode, expand the prompt window to
+            // claim (rows - 1) so it fills the screen minus
+            // the header label. `set_window_rows` is the
+            // single chokepoint into the prompt's geometry —
+            // we recompute it every tick because the
+            // operator's `Alt-Up` / `Alt-Down` keys also
+            // touch it; the REPL-mode override wins per tick
+            // by being the last writer.
+            if let Some(p) = prompt.as_mut() {
+                if window_mode {
+                    let target = rows.saturating_sub(2).max(1);
+                    if p.window_rows() != target {
+                        p.set_window_rows(target);
+                        // The `repl_changed` redraw trigger
+                        // computed downstream catches the
+                        // visibility transition; resizing
+                        // within Window mode (e.g. on a
+                        // terminal resize) is rare enough
+                        // that we accept a one-tick lag
+                        // rather than threading another
+                        // dirty bit through.
+                    }
+                }
+            }
+            let prompt_input = if repl_visible {
+                prompt.as_ref().map(|p| {
+                    let win_rows = p.window_rows() as usize;
+                    // Window mode composes its `rendered`
+                    // bytes by hand: top rows are the
+                    // transcript tail (oldest at top, newest
+                    // just above the input), bottom row is
+                    // the standard prompt-input render. Bar
+                    // mode falls through to the plain
+                    // PromptState render.
+                    let rendered = if window_mode && win_rows > 1 {
+                        let transcript_rows = win_rows.saturating_sub(1);
+                        let tail = crate::repl_state::transcript_tail(transcript_rows);
+                        let cols_usize = cols as usize;
+                        let mut composed = String::with_capacity(cols_usize * win_rows);
+                        // Top-pad with blanks when the
+                        // transcript is shorter than the
+                        // window so the input stays anchored
+                        // at the bottom row of the prompt
+                        // region rather than rising as
+                        // history grows.
+                        let blanks = transcript_rows.saturating_sub(tail.len());
+                        for _ in 0..blanks {
+                            composed.push_str("\r\n");
+                        }
+                        for line in tail.iter() {
+                            let row = nbrs_activity::activity::truncate_to_width(
+                                line, cols_usize);
+                            composed.push_str(&row);
+                            composed.push_str("\r\n");
+                        }
+                        // Final row: the prompt's own
+                        // single-row render of the input
+                        // buffer (`❯ <buffer>` plus cursor).
+                        let mut input_row = String::with_capacity(128);
+                        // `with_window_override=false` would
+                        // be the right shape if we had it;
+                        // for now use render() and trust the
+                        // prompt has been resized to `target`
+                        // — the last row of its multi-row
+                        // render is what we want anyway.
+                        // Render with window_rows=1 by
+                        // grabbing only the last row of the
+                        // multi-row render.
+                        p.render(&mut input_row, cols_usize, true);
+                        let last = input_row.split('\n').last().unwrap_or("");
+                        composed.push_str(last.strip_suffix('\r').unwrap_or(last));
+                        composed
+                    } else {
+                        let mut f = String::with_capacity(128);
+                        p.render(&mut f, cols as usize, true);
+                        f
+                    };
+                    PromptInput {
+                        rendered,
+                        window_rows: p.window_rows(),
+                        cursor_col: p.cursor_col() as u16,
+                    }
+                })
+            } else {
+                None
+            };
             redraw_bottom_region(
                 &mut stderr,
                 new_status_text.as_deref(),
                 prompt_input.as_ref(),
                 cols,
                 rows,
+                &status_margin,
+                margin_visible_width,
+                &row2_margin,
             );
             status_drawn = new_status_text;
             prompt_drawn_rows = prompt_input.map(|p| p.window_rows).unwrap_or(0);
@@ -556,24 +714,48 @@ fn format_margin_prefix(
 
     // Count phases only — scope nodes (for_each / do_while
     // wrappers) live in `snap.phases` but they're not what
-    // the operator wants in the step counter. Otherwise a
-    // scenario with 53 phases inside 57 scope nodes shows
-    // "110" in the denominator and the running index jumps
-    // non-monotonically as scope iterations switch.
+    // the operator wants in the step counter.
+    //
+    // Denominator: `expected_total_phases`, pinned by
+    // `install_tree` from the pre-map walk. Stable across
+    // the run regardless of whether the executor materializes
+    // additional phases at runtime (param-driven `for_each`
+    // expansion the structural pass couldn't resolve).
+    //
+    // Numerator: the pre-mapped `seq` of the currently-running
+    // phase (or the latest-completed phase when nothing is
+    // running). `seq` is the 1-based pre-map sequence number
+    // assigned at SceneTree::push time — STABLE under runtime
+    // mutation. The previous logic used `phase_only.iter()
+    // .position(running)`, which silently drifted as the live
+    // phase list grew (auto-extern materialization appended new
+    // pending phases, shifting the running one's index even
+    // though its pre-mapped slot hadn't moved).
+    //
+    // Runtime-materialized phases (no `seq`) report `None`
+    // here; we fall back to a sequential count among the
+    // non-pending phases so the operator still sees forward
+    // progress in that edge case.
     let phase_only: Vec<_> = snap.phases.iter()
         .filter(|p| matches!(p.kind, crate::state::EntryKind::Phase))
         .collect();
-    let total = phase_only.len();
-    let active_pos = phase_only.iter().position(|p| {
-        matches!(p.status, crate::state::PhaseStatus::Running)
-    });
-    let phase_str = match (active_pos, total) {
-        (Some(i), n) if n > 0 => format!("{:>3}/{}", i + 1, n),
-        (None,    n) if n > 0 => {
-            let done = phase_only.iter().filter(|p|
-                !matches!(p.status, crate::state::PhaseStatus::Pending)).count();
-            format!("{:>3}/{}", done, n)
-        }
+    let total = snap.expected_total_phases;
+    let running_seq = phase_only.iter()
+        .find(|p| matches!(p.status, crate::state::PhaseStatus::Running))
+        .and_then(|p| p.seq);
+    let latest_done_seq = phase_only.iter()
+        .filter(|p| !matches!(p.status, crate::state::PhaseStatus::Pending))
+        .filter_map(|p| p.seq)
+        .max();
+    let fallback_done = phase_only.iter()
+        .filter(|p| !matches!(p.status, crate::state::PhaseStatus::Pending))
+        .count();
+    let phase_str = match (running_seq, latest_done_seq, total) {
+        (Some(s), _, n) if n > 0 => format!("{s:>3}/{n}"),
+        (None, Some(s), n) if n > 0 => format!("{s:>3}/{n}"),
+        (None, None, n) if n > 0 && fallback_done > 0 =>
+            format!("{fallback_done:>3}/{n}"),
+        (_, _, n) if n > 0 => format!("  0/{n}"),
         _ => "   /  ".to_string(),
     };
 
@@ -633,6 +815,9 @@ pub(crate) fn redraw_bottom_region<W: Write>(
     prompt: Option<&PromptInput>,
     term_cols: u16,
     term_rows: u16,
+    status_margin: &str,
+    margin_width: u16,
+    row2_margin: &str,
 ) {
     let _ = term_cols;
     let status_lines: Vec<&str> = status_text
@@ -651,26 +836,112 @@ pub(crate) fn redraw_bottom_region<W: Write>(
 
     // Status — position-per-line with erase-to-end-of-line so
     // residue from a wider prior render is scrubbed.
+    //
+    // Row 0 carries `status_margin` (session timer + phase
+    // counter + `│ ` divider). Rows 1+ carry `row2_margin`
+    // when present — the running-phase variant: 10-glyph
+    // progress bar + ETA + spinner-as-divider, padded to the
+    // same visible width so the divider column lines up
+    // vertically. When `row2_margin` is empty (no active
+    // phase, or a single-line status), every row falls back
+    // to the standard margin.
     for (i, row) in status_lines.iter().enumerate() {
         let row_abs = status_top + i as u16;
-        let _ = write!(out, "\x1b[{row_abs};1H\x1b[K{row}");
+        let margin = if i == 0 || row2_margin.is_empty() {
+            status_margin
+        } else {
+            row2_margin
+        };
+        let _ = write!(out, "\x1b[{row_abs};1H\x1b[K{margin}{row}");
     }
 
     // Prompt — same discipline. `rendered` is the prompt's own
     // render() output; split on `\n` and strip stray `\r`
-    // (the prompt's renderer separates rows with `\r\n`).
+    // (the prompt's renderer separates rows with `\r\n`). The
+    // prompt's `>` glyph sits at the same column as the log
+    // content (right of the margin), so the operator reads the
+    // input row as the bottom of the same column.
     if let Some(p) = prompt {
         for (i, row) in p.rendered.split('\n').enumerate() {
             let row_abs = prompt_top + i as u16;
             let row = row.strip_suffix('\r').unwrap_or(row);
             let row = row.strip_prefix('\r').unwrap_or(row);
-            let _ = write!(out, "\x1b[{row_abs};1H\x1b[K{row}");
+            let _ = write!(out, "\x1b[{row_abs};1H\x1b[K{status_margin}{row}");
         }
         // Place the cursor at the prompt's input row + cursor
-        // column. Always absolute.
-        let target_col = p.cursor_col + 1;
+        // column. Add `margin_width` so the cursor lands inside
+        // the input row's content area, not under the margin.
+        let target_col = margin_width + p.cursor_col + 1;
         let _ = write!(out, "\x1b[{term_rows};{target_col}H");
     }
+}
+
+/// Build the row-2 margin for a running-phase status block.
+/// Layout: `<bar><eta-padded><spinner>` so the bar reads as
+/// "progress" and the spinner replaces the standard `│`
+/// divider as a still-ticking indicator. Padded with spaces
+/// so its visible width matches `target_width` — the row-1
+/// margin width — making the divider columns line up
+/// vertically across rows.
+///
+/// Returns an empty string when no phase is currently running
+/// — the caller falls back to the standard margin.
+fn format_running_phase_row2_margin(
+    snap: &std::sync::Arc<crate::state::RunState>,
+    target_width: u16,
+    color: bool,
+) -> String {
+    use nbrs_activity::readouts::format::{
+        braille_bar, format_eta, spinner_frame,
+    };
+    let Some(active) = snap.active_phases.values().next() else {
+        return String::new();
+    };
+    let dim   = if color { "\x1b[2m"  } else { "" };
+    let cyan  = if color { "\x1b[36m" } else { "" };
+    let reset = if color { "\x1b[0m"  } else { "" };
+    let elapsed = active.started_at.elapsed().as_secs_f64();
+    let pct = if active.cursor_extent > 0 {
+        (active.ops_finished as f64) * 100.0 / (active.cursor_extent as f64)
+    } else { 0.0 };
+    let bar = braille_bar(pct, 10);
+    let eta_str = if active.cursor_extent > 0 && active.ops_per_sec > 0.0 {
+        let remaining = active.cursor_extent.saturating_sub(active.ops_finished) as f64;
+        format_eta(remaining / active.ops_per_sec)
+    } else {
+        format_eta(elapsed)
+    };
+    // Spinner ticks once per render. Use elapsed-secs * 10 so
+    // the frame advances at ~10 Hz independent of redraw cadence.
+    let tick = (elapsed * 10.0) as u64;
+    let spinner = spinner_frame(tick);
+    // Content visible width = bar (10) + " " + eta + " "
+    // Reserve trailing 2 cells for `<spinner><space>` to
+    // mirror the standard `│ ` divider shape.
+    let content_visible = 10 + 1 + eta_str.chars().count() + 1;
+    let divider_visible = 2; // spinner + space
+    let total_target = target_width as usize;
+    let pad = total_target.saturating_sub(content_visible + divider_visible);
+    format!("{bar} {dim}{eta_str}{reset}{:<pad$}{cyan}{spinner}{reset} ", "", pad = pad)
+}
+
+/// Approximate visible width of a string with ANSI SGR escape
+/// codes stripped. SGR sequences (`\x1b[...m`) carry no
+/// columns; everything else counts as one column per char.
+/// Good enough for the margin prefix, which has no
+/// double-width glyphs.
+fn visible_width(s: &str) -> usize {
+    let mut width = 0;
+    let mut in_escape = false;
+    for ch in s.chars() {
+        if in_escape {
+            if ch == 'm' { in_escape = false; }
+            continue;
+        }
+        if ch == '\x1b' { in_escape = true; continue; }
+        width += 1;
+    }
+    width
 }
 
 /// Clamp each `\n`-delimited row of `s` to `max_cols` columns
@@ -727,7 +998,21 @@ mod redraw_tests {
         let mut out: Vec<u8> = Vec::new();
         // 24-row × 80-col terminal — small enough to make the
         // absolute row arithmetic auditable by eye.
-        redraw_bottom_region(&mut out, status, prompt, 80, 24);
+        // Empty margin: legacy tests pin the no-margin layout;
+        // the margin-aware behavior is covered in a separate
+        // test below.
+        redraw_bottom_region(&mut out, status, prompt, 80, 24, "", 0, "");
+        String::from_utf8(out).expect("rendered bytes are utf-8")
+    }
+
+    fn render_tick_with_margin(
+        status: Option<&str>,
+        prompt: Option<&PromptInput>,
+        margin: &str,
+    ) -> String {
+        let mut out: Vec<u8> = Vec::new();
+        let width = super::visible_width(margin) as u16;
+        redraw_bottom_region(&mut out, status, prompt, 80, 24, margin, width, "");
         String::from_utf8(out).expect("rendered bytes are utf-8")
     }
 
@@ -842,5 +1127,92 @@ mod redraw_tests {
         // via `clear_combined_region`. This test only pins
         // the absolute-positioning invariant for the new
         // content; the prior-region clear has its own test.
+    }
+
+    /// Status + prompt rows are prefixed with the same margin
+    /// the log lines above carry, so content columns line up
+    /// vertically across the log/status divide. The cursor lands
+    /// in the prompt's content area (past the margin), not under
+    /// the margin itself.
+    #[test]
+    fn status_and_prompt_carry_log_margin_for_column_alignment() {
+        let margin = "12.34s 5/9 │ ";
+        let status = "running";
+        let prompt = one_row_prompt("hi");
+        let out = render_tick_with_margin(Some(status), Some(&prompt), margin);
+        // Status row inherits the margin prefix so the
+        // `running` text starts at the same column as a log
+        // row's content.
+        assert!(out.contains(&format!("\x1b[23;1H\x1b[K{margin}running")),
+            "status row must carry the margin: {out:?}");
+        // Prompt row also gets the margin prefix.
+        assert!(out.contains(&format!("\x1b[24;1H\x1b[K{margin}\x1b[36m❯\x1b[0m hi")),
+            "prompt row must carry the margin: {out:?}");
+        // Cursor offset = margin_width + cursor_col + 1.
+        // margin is 13 chars visible; "❯ hi" puts cursor_col at
+        // 4; final col = 13 + 4 + 1 = 18.
+        assert!(out.contains("\x1b[24;18H"),
+            "cursor must skip past the margin width: {out:?}");
+    }
+
+    /// When the running-phase row-2 margin is supplied (the
+    /// new bar+ETA+spinner gutter), line 0 of the status block
+    /// inherits the standard row-1 margin and lines 1+ inherit
+    /// the row-2 margin. Both columns are drawn at the same
+    /// absolute row offsets — the per-row margin choice is the
+    /// only thing that changes.
+    #[test]
+    fn row2_margin_applies_to_line_two_only() {
+        let row1 = "12.34s 5/9 │ ";
+        let row2 = "⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ 3s   │ ";
+        let status = "running\nstats line";
+        let mut out: Vec<u8> = Vec::new();
+        redraw_bottom_region(
+            &mut out, Some(status), None,
+            80, 24,
+            row1, super::visible_width(row1) as u16,
+            row2,
+        );
+        let out = String::from_utf8(out).expect("utf-8");
+        // Line 0 → row1 margin + `running`.
+        assert!(out.contains(&format!("\x1b[23;1H\x1b[K{row1}running")),
+            "line 0 MUST carry row1 margin: {out:?}");
+        // Line 1 → row2 margin + `stats line`.
+        assert!(out.contains(&format!("\x1b[24;1H\x1b[K{row2}stats line")),
+            "line 1 MUST carry row2 margin: {out:?}");
+    }
+
+    /// Empty row2 margin → every line falls back to row1 (the
+    /// no-active-phase baseline path).
+    #[test]
+    fn empty_row2_margin_uses_row1_for_every_line() {
+        let row1 = "12.34s 5/9 │ ";
+        let status = "first\nsecond";
+        let mut out: Vec<u8> = Vec::new();
+        redraw_bottom_region(
+            &mut out, Some(status), None,
+            80, 24,
+            row1, super::visible_width(row1) as u16,
+            "", // empty row2_margin → fallback
+        );
+        let out = String::from_utf8(out).expect("utf-8");
+        assert!(out.contains(&format!("\x1b[23;1H\x1b[K{row1}first")),
+            "line 0 MUST carry row1 margin: {out:?}");
+        assert!(out.contains(&format!("\x1b[24;1H\x1b[K{row1}second")),
+            "line 1 MUST also carry row1 margin when row2 is empty: {out:?}");
+    }
+
+    /// `visible_width` strips ANSI SGR sequences so the
+    /// margin-offset arithmetic still lines up when the margin
+    /// is color-painted.
+    #[test]
+    fn visible_width_strips_sgr_sequences() {
+        assert_eq!(super::visible_width(""), 0);
+        assert_eq!(super::visible_width("plain text"), 10);
+        // `\x1b[2m...\x1b[0m` carries no columns.
+        assert_eq!(super::visible_width("\x1b[2mdim\x1b[0m text"), 8);
+        // Nested / multiple escapes.
+        assert_eq!(super::visible_width("\x1b[1;31mAB\x1b[0m\x1b[32mCD\x1b[0m"),
+            4);
     }
 }

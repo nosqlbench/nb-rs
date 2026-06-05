@@ -83,7 +83,7 @@ fn grad2d(hash: u8, x: f64, y: f64) -> f64 {
 }
 
 /// Evaluate 1D Perlin noise at a given point.
-fn perlin_1d(perm: &PermTable, x: f64) -> f64 {
+fn perlin_1d_algo(perm: &PermTable, x: f64) -> f64 {
     let xi = x.floor() as i32;
     let xf = x - x.floor();
     let u = fade(xf);
@@ -95,7 +95,7 @@ fn perlin_1d(perm: &PermTable, x: f64) -> f64 {
 }
 
 /// Evaluate 2D Perlin noise at a given point.
-fn perlin_2d(perm: &PermTable, x: f64, y: f64) -> f64 {
+fn perlin_2d_algo(perm: &PermTable, x: f64, y: f64) -> f64 {
     let xi = x.floor() as i32;
     let yi = y.floor() as i32;
     let xf = x - x.floor();
@@ -122,7 +122,7 @@ fn perlin_2d(perm: &PermTable, x: f64, y: f64) -> f64 {
 const F2: f64 = 0.3660254037844386; // (sqrt(3) - 1) / 2
 const G2: f64 = 0.21132486540518713; // (3 - sqrt(3)) / 6
 
-fn simplex_2d(perm: &PermTable, x: f64, y: f64) -> f64 {
+fn simplex_2d_algo(perm: &PermTable, x: f64, y: f64) -> f64 {
     let s = (x + y) * F2;
     let i = (x + s).floor() as i32;
     let j = (y + s).floor() as i32;
@@ -177,98 +177,46 @@ fn simplex_2d(perm: &PermTable, x: f64, y: f64) -> f64 {
 ///
 /// The u64 input is scaled to the float domain by `frequency`.
 /// Output is in [-1, 1]. For [0, 1], compose with a remap node.
-pub struct Perlin1D {
-    meta: NodeMeta,
-    perm: PermTable,
-    frequency: f64,
+// SRD-80 PR B.6 — `perlin_1d`, `perlin_2d`, `simplex_2d`
+// migrated to `#[polydat_node]` with `PermTable` as a
+// setup-derived field. Macro generates structs `Perlin1d`,
+// `Perlin2d`, `Simplex2d` (snake_case → PascalCase).
+
+impl crate::derive_support::PolydatSetup for PermTable {}
+
+#[crate::polydat_node(category = Noise)]
+fn perlin_1d(
+    input: u64,
+    seed: crate::derive_support::Const<u64>,
+    frequency: crate::derive_support::Const<f64>,
+    #[poly_const(PermTable::new, from = seed)]
+    perm: &PermTable,
+) -> f64 {
+    perlin_1d_algo(perm, input as f64 * *frequency)
 }
 
-impl Perlin1D {
-    pub fn new(seed: u64, frequency: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "perlin_1d".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            perm: PermTable::new(seed),
-            frequency,
-        }
-    }
+#[crate::polydat_node(category = Noise)]
+fn perlin_2d(
+    x: u64,
+    y: u64,
+    seed: crate::derive_support::Const<u64>,
+    frequency: crate::derive_support::Const<f64>,
+    #[poly_const(PermTable::new, from = seed)]
+    perm: &PermTable,
+) -> f64 {
+    perlin_2d_algo(perm, x as f64 * *frequency, y as f64 * *frequency)
 }
 
-impl PolydatNode for Perlin1D {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let x = inputs[0].as_u64() as f64 * self.frequency;
-        outputs[0] = Value::F64(perlin_1d(&self.perm, x));
-    }
-}
-
-/// 2D Perlin noise.
-///
-/// Signature: `(x: u64, y: u64) -> (f64)`
-pub struct Perlin2D {
-    meta: NodeMeta,
-    perm: PermTable,
-    frequency: f64,
-}
-
-impl Perlin2D {
-    pub fn new(seed: u64, frequency: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "perlin_2d".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![Slot::Wire(Port::u64("x")), Slot::Wire(Port::u64("y"))],
-            },
-            perm: PermTable::new(seed),
-            frequency,
-        }
-    }
-}
-
-impl PolydatNode for Perlin2D {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let x = inputs[0].as_u64() as f64 * self.frequency;
-        let y = inputs[1].as_u64() as f64 * self.frequency;
-        outputs[0] = Value::F64(perlin_2d(&self.perm, x, y));
-    }
-}
-
-/// 2D Simplex noise.
-///
-/// Signature: `(x: u64, y: u64) -> (f64)`
-///
-/// Faster than Perlin for 2D+ with fewer directional artifacts.
-pub struct SimplexNoise2D {
-    meta: NodeMeta,
-    perm: PermTable,
-    frequency: f64,
-}
-
-impl SimplexNoise2D {
-    pub fn new(seed: u64, frequency: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "simplex_2d".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![Slot::Wire(Port::u64("x")), Slot::Wire(Port::u64("y"))],
-            },
-            perm: PermTable::new(seed),
-            frequency,
-        }
-    }
-}
-
-impl PolydatNode for SimplexNoise2D {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let x = inputs[0].as_u64() as f64 * self.frequency;
-        let y = inputs[1].as_u64() as f64 * self.frequency;
-        outputs[0] = Value::F64(simplex_2d(&self.perm, x, y));
-    }
+#[crate::polydat_node(category = Noise)]
+fn simplex_2d(
+    x: u64,
+    y: u64,
+    seed: crate::derive_support::Const<u64>,
+    frequency: crate::derive_support::Const<f64>,
+    #[poly_const(PermTable::new, from = seed)]
+    perm: &PermTable,
+) -> f64 {
+    simplex_2d_algo(perm, x as f64 * *frequency, y as f64 * *frequency)
 }
 
 /// Fractal Brownian motion (FBM): layered octaves of noise.
@@ -326,7 +274,7 @@ impl PolydatNode for FractalNoise1D {
         let mut max_amp = 0.0;
 
         for _ in 0..self.octaves {
-            total += perlin_1d(&self.perm, base_x * freq) * amp;
+            total += perlin_1d_algo(&self.perm, base_x * freq) * amp;
             max_amp += amp;
             freq *= self.lacunarity;
             amp *= self.persistence;
@@ -384,7 +332,7 @@ impl PolydatNode for FractalNoise2D {
         let mut max_amp = 0.0;
 
         for _ in 0..self.octaves {
-            total += perlin_2d(&self.perm, base_x * freq, base_y * freq) * amp;
+            total += perlin_2d_algo(&self.perm, base_x * freq, base_y * freq) * amp;
             max_amp += amp;
             freq *= self.lacunarity;
             amp *= self.persistence;
@@ -405,53 +353,8 @@ use crate::ast::SlotType;
 pub fn signatures() -> &'static [FuncSig] {
     use FuncCategory as C;
     &[
-        FuncSig {
-            name: "perlin_1d", category: C::Noise,
-            outputs: 1, description: "1D Perlin noise",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true, example: "42", constraint: None },
-                ParamSpec { name: "frequency", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "1D Perlin noise: coherent pseudo-random f64 in [-1, 1].\nThe u64 input is scaled to the float domain by frequency.\nNearby inputs produce smoothly varying outputs (spatial correlation).\nParameters:\n  input     — u64 wire input\n  seed      — permutation table seed (u64)\n  frequency — spatial frequency (f64; higher = more detail)\nExample: perlin_1d(cycle, 42, 0.01)  // slow-varying noise",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "perlin_2d", category: C::Noise,
-            outputs: 1, description: "2D Perlin noise",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "x", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "y", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true, example: "42", constraint: None },
-                ParamSpec { name: "frequency", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "2D Perlin noise: coherent pseudo-random f64 in [-1, 1].\nTwo u64 coordinate inputs are scaled by frequency.\nProduces spatially correlated values for terrain, textures, etc.\nParameters:\n  x         — u64 x-coordinate wire input\n  y         — u64 y-coordinate wire input\n  seed      — permutation table seed (u64)\n  frequency — spatial frequency (f64)\nExample: perlin_2d(row, col, 42, 0.05)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "simplex_2d", category: C::Noise,
-            outputs: 1, description: "2D simplex noise",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "x", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "y", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true, example: "42", constraint: None },
-                ParamSpec { name: "frequency", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "2D simplex noise: faster than Perlin for 2D+ with fewer directional artifacts.\nOutput is f64 in [-1, 1]. Uses a simplex grid instead of a square grid.\nParameters:\n  x         — u64 x-coordinate wire input\n  y         — u64 y-coordinate wire input\n  seed      — permutation table seed (u64)\n  frequency — spatial frequency (f64)\nExample: simplex_2d(row, col, 99, 0.1)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `perlin_1d` / `perlin_2d` / `simplex_2d` migrated to
+        // `#[polydat_node]` per SRD-80 PR B.6.
         FuncSig {
             name: "fractal_noise_1d", category: C::Noise,
             outputs: 1, description: "1D fractal Brownian motion",
@@ -493,18 +396,8 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Returns `None` if the name is not handled by this module.
 pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
-        "perlin_1d" => Some(Ok(Box::new(Perlin1D::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(0),
-            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
-        )))),
-        "perlin_2d" => Some(Ok(Box::new(Perlin2D::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(0),
-            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
-        )))),
-        "simplex_2d" => Some(Ok(Box::new(SimplexNoise2D::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(0),
-            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
-        )))),
+        // `perlin_1d` / `perlin_2d` / `simplex_2d` route via
+        // proc-macro-emitted NodeRegistration per SRD-80 PR B.6.
         "fractal_noise_1d" => Some(Ok(Box::new(FractalNoise1D::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(0),
             consts.get(1).map(|c| c.as_f64()).unwrap_or(0.02),
@@ -527,7 +420,7 @@ mod tests {
 
     #[test]
     fn perlin_1d_bounded() {
-        let node = Perlin1D::new(42, 0.01);
+        let node = Perlin1d::new(42, 0.01);
         let mut out = [Value::None];
         for i in 0..1000u64 {
             node.eval(&[Value::U64(i)], &mut out);
@@ -539,7 +432,7 @@ mod tests {
     #[test]
     fn perlin_1d_smooth() {
         // Adjacent inputs should produce similar (not identical) values
-        let node = Perlin1D::new(42, 0.01);
+        let node = Perlin1d::new(42, 0.01);
         let mut prev = [Value::None];
         let mut curr = [Value::None];
         node.eval(&[Value::U64(100)], &mut prev);
@@ -556,7 +449,7 @@ mod tests {
 
     #[test]
     fn perlin_1d_deterministic() {
-        let node = Perlin1D::new(42, 0.1);
+        let node = Perlin1d::new(42, 0.1);
         let mut out1 = [Value::None];
         let mut out2 = [Value::None];
         node.eval(&[Value::U64(123)], &mut out1);
@@ -566,8 +459,8 @@ mod tests {
 
     #[test]
     fn perlin_1d_different_seeds() {
-        let a = Perlin1D::new(1, 0.1);
-        let b = Perlin1D::new(2, 0.1);
+        let a = Perlin1d::new(1, 0.1);
+        let b = Perlin1d::new(2, 0.1);
         let mut out_a = [Value::None];
         let mut out_b = [Value::None];
         let mut differ = false;
@@ -584,7 +477,7 @@ mod tests {
 
     #[test]
     fn perlin_2d_bounded() {
-        let node = Perlin2D::new(42, 0.01);
+        let node = Perlin2d::new(42, 0.01);
         let mut out = [Value::None];
         for x in 0..50u64 {
             for y in 0..50u64 {
@@ -597,7 +490,7 @@ mod tests {
 
     #[test]
     fn perlin_2d_smooth() {
-        let node = Perlin2D::new(42, 0.01);
+        let node = Perlin2d::new(42, 0.01);
         let mut prev = [Value::None];
         let mut curr = [Value::None];
         node.eval(&[Value::U64(100), Value::U64(100)], &mut prev);
@@ -613,7 +506,7 @@ mod tests {
 
     #[test]
     fn simplex_2d_bounded() {
-        let node = SimplexNoise2D::new(42, 0.01);
+        let node = Simplex2d::new(42, 0.01);
         let mut out = [Value::None];
         for x in 0..50u64 {
             for y in 0..50u64 {
@@ -639,7 +532,7 @@ mod tests {
     fn fractal_1d_more_detail_than_single_octave() {
         // FBM with 4 octaves should have more high-frequency variation
         // than a single octave
-        let single = Perlin1D::new(42, 0.01);
+        let single = Perlin1d::new(42, 0.01);
         let fbm = FractalNoise1D::new(42, 0.01, 4);
         let mut s_out = [Value::None];
         let mut f_out = [Value::None];

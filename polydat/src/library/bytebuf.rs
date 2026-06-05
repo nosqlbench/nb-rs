@@ -20,75 +20,29 @@ use xxhash_rust::xxh3::xxh3_64;
 // =================================================================
 
 /// Convert a u64 to 8 bytes (little-endian).
-///
-/// Signature: `(input: u64) -> (bytes)`
-pub struct U64ToBytes {
-    meta: NodeMeta,
-}
-
-impl Default for U64ToBytes {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl U64ToBytes {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "u64_to_bytes".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for U64ToBytes {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Bytes(inputs[0].as_u64().to_le_bytes().to_vec().into());
-    }
+/// SRD-80 PR B.13 migration.
+#[crate::polydat_node(category = ByteBuffers)]
+fn u64_to_bytes(input: u64) -> Vec<u8> {
+    input.to_le_bytes().to_vec()
 }
 
 /// Generate N deterministic bytes from a u64 seed via chained hashing.
-///
-/// Signature: `(input: u64) -> (bytes)`
-/// Param: `size: usize`
-///
-/// Each 8-byte chunk is `hash(seed + chunk_index)`. The buffer is
-/// fresh per cycle — no image caching.
-pub struct BytesFromHash {
-    meta: NodeMeta,
-    size: usize,
-}
-
-impl BytesFromHash {
-    pub fn new(size: usize) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "bytes_from_hash".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            size,
-        }
+/// Each 8-byte chunk is `hash(seed + chunk_index)`. Buffer is fresh
+/// per cycle. SRD-80 PR B.13 migration.
+#[crate::polydat_node(category = ByteBuffers)]
+fn bytes_from_hash(
+    input: u64,
+    #[poly_default(8u64)] size: crate::derive_support::Const<u64>,
+) -> Vec<u8> {
+    let sz = *size as usize;
+    let mut result = Vec::with_capacity(sz);
+    let chunks = sz.div_ceil(8);
+    for i in 0..chunks {
+        let h = xxh3_64(&(input.wrapping_add(i as u64)).to_le_bytes());
+        let take = (sz - result.len()).min(8);
+        result.extend_from_slice(&h.to_le_bytes()[..take]);
     }
-}
-
-impl PolydatNode for BytesFromHash {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let seed = inputs[0].as_u64();
-        let mut result = Vec::with_capacity(self.size);
-        let chunks = self.size.div_ceil(8);
-        for i in 0..chunks {
-            let h = xxh3_64(&(seed.wrapping_add(i as u64)).to_le_bytes());
-            let take = (self.size - result.len()).min(8);
-            result.extend_from_slice(&h.to_le_bytes()[..take]);
-        }
-        outputs[0] = Value::Bytes(result.into());
-    }
+    result
 }
 
 // =================================================================
@@ -271,106 +225,35 @@ impl PolydatNode for CharImageExtract {
 // =================================================================
 
 /// Extract a sub-range from a byte buffer.
-///
-/// Signature: `(input: bytes) -> (bytes)`
-pub struct ByteSlice {
-    meta: NodeMeta,
-    offset: usize,
-    length: usize,
-}
-
-impl ByteSlice {
-    pub fn new(offset: usize, length: usize) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "byte_slice".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
-            },
-            offset,
-            length,
-        }
-    }
-}
-
-impl PolydatNode for ByteSlice {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let bytes = inputs[0].as_bytes();
-        let end = (self.offset + self.length).min(bytes.len());
-        let start = self.offset.min(end);
-        outputs[0] = Value::Bytes(bytes[start..end].to_vec().into());
-    }
+/// SRD-80 PR B.13 migration.
+#[crate::polydat_node(category = ByteBuffers)]
+fn byte_slice(
+    input: &[u8],
+    #[poly_default(0u64)] offset: crate::derive_support::Const<u64>,
+    #[poly_default(8u64)] length: crate::derive_support::Const<u64>,
+) -> Vec<u8> {
+    let off = *offset as usize;
+    let len = *length as usize;
+    let end = (off + len).min(input.len());
+    let start = off.min(end);
+    input[start..end].to_vec()
 }
 
 /// Encode bytes as lowercase hexadecimal string.
-///
-/// Signature: `(input: bytes) -> (String)`
-pub struct ToHex {
-    meta: NodeMeta,
-}
-
-impl Default for ToHex {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ToHex {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "to_hex".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for ToHex {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let hex: String = inputs[0].as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-        outputs[0] = Value::Str(hex.into());
-    }
+/// SRD-80 PR B.13 migration.
+#[crate::polydat_node(category = ByteBuffers)]
+fn to_hex(input: &[u8]) -> String {
+    input.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Decode a hexadecimal string to bytes.
-///
-/// Signature: `(input: String) -> (bytes)`
-pub struct FromHex {
-    meta: NodeMeta,
-}
-
-impl Default for FromHex {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FromHex {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "from_hex".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for FromHex {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let s = inputs[0].as_str();
-        let bytes: Vec<u8> = (0..s.len())
-            .step_by(2)
-            .filter_map(|i| s.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
-            .collect();
-        outputs[0] = Value::Bytes(bytes.into());
-    }
+/// SRD-80 PR B.13 migration.
+#[crate::polydat_node(category = ByteBuffers)]
+fn from_hex(input: &str) -> Vec<u8> {
+    (0..input.len())
+        .step_by(2)
+        .filter_map(|i| input.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+        .collect()
 }
 
 // --- charset parser (shared with string::Combinations) ---
@@ -401,76 +284,10 @@ use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
 use crate::ast::SlotType;
 
 /// Signatures for byte buffer nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "u64_to_bytes", category: C::ByteBuffers, outputs: 1,
-            description: "convert u64 to 8 bytes LE",
-            help: "Convert a u64 to an 8-byte little-endian byte buffer.\nThis is the bridge from the integer domain to the bytes domain.\nFeed the result into sha256, md5, to_hex, or to_base64.\nParameters:\n  input — u64 wire input",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "bytes_from_hash", category: C::ByteBuffers,
-            outputs: 1, description: "generate N deterministic bytes",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "size", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Generate N deterministic bytes from a u64 seed via chained hashing.\nEach 8-byte chunk is hash(seed + chunk_index). Fresh per cycle.\nParameters:\n  input — u64 wire input (seed value)\n  size  — number of bytes to generate (u64)\nExample: bytes_from_hash(hash(cycle), 32)  // 32 pseudo-random bytes",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "to_hex", category: C::ByteBuffers, outputs: 1,
-            description: "encode bytes as hex string",
-            help: "Encode a byte buffer as a lowercase hexadecimal string.\nEach byte becomes two hex digits: [0xDE, 0xAD] -> \"dead\".\nUse after sha256/md5/u64_to_bytes for human-readable output.\nParameters:\n  input — Bytes wire input",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "from_hex", category: C::ByteBuffers, outputs: 1,
-            description: "decode hex string to bytes",
-            help: "Decode a hexadecimal string to a byte buffer.\nAccepts uppercase or lowercase hex digits. The string length\nmust be even (two hex chars per byte).\nParameters:\n  input — String wire input (hex-encoded)",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-/// Try to build a byte-buffer node from a function name and const args.
-///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "bytes_from_hash" => Some(Ok(Box::new(BytesFromHash::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(16) as usize,
-        )))),
-        "u64_to_bytes" => Some(Ok(Box::new(U64ToBytes::new()))),
-        "to_hex" => Some(Ok(Box::new(ToHex::new()))),
-        "from_hex" => Some(Ok(Box::new(FromHex::new()))),
-        _ => None,
-    }
-}
-
-
-crate::register_nodes!(signatures, build_node);
+// All byte-buffer nodes (`u64_to_bytes`, `bytes_from_hash`,
+// `to_hex`, `from_hex`) migrated to `#[polydat_node]` per
+// SRD-80 PR B.13. No hand-written signatures or build_node
+// remain in this module.
 #[cfg(test)]
 mod tests {
     use super::*;

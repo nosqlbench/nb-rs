@@ -156,7 +156,7 @@ impl OpDispenser for RecordingDispenser {
 
 fn test_kernel() -> polydat::kernel::PolydatKernel {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("id", Box::new(Identity::new(polydat::ast::PortType::U64)), vec![WireRef::input("cycle")]);
     asm.add_output("id", WireRef::node("id"));
     asm.compile().unwrap()
 }

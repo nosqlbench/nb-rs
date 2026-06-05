@@ -66,14 +66,23 @@ impl ProfileGuard {
         // appeared.
         match params.get("profiler").map(|s| s.as_str()) {
             None => {
-                crate::observer::log(crate::observer::LogLevel::Info,
-                    "profiler: off (no `profiler=` on the CLI; \
-                     pass `profiler=perf` for a full-stack flamegraph \
-                     or `profiler=flamegraph` for Rust-only pprof)");
+                // The default-off case carries no operator-
+                // visible value at INFO. Demoted to Debug so
+                // it's still discoverable by `--debug` /
+                // session.log without dominating the startup
+                // banner. The actionable hint (`profiler=perf`
+                // / `profiler=flamegraph`) belongs in the
+                // CLI help text, not every quiet startup.
+                crate::observer::log(crate::observer::LogLevel::Debug,
+                    "profiler: off (pass `profiler=perf` or \
+                     `profiler=flamegraph` to enable)");
                 None
             }
             Some("off") | Some("none") | Some("") => {
-                crate::observer::log(crate::observer::LogLevel::Info,
+                // Explicit-off — the operator typed
+                // `profiler=off`, so they already know.
+                // Debug-level confirmation is enough.
+                crate::observer::log(crate::observer::LogLevel::Debug,
                     "profiler: off (explicitly disabled)");
                 None
             }

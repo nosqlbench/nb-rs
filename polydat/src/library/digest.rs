@@ -3,300 +3,70 @@
 
 //! Cryptographic digest and base encoding nodes.
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
-use sha2::{Sha256, Digest as Sha2Digest};
-use md5::Md5;
+// SRD-80 PR B.11 — alias the upstream digest types so the
+// macro-generated `Sha256` / `Md5` structs don't collide.
+use sha2::{Sha256 as Sha2_256, Digest as Sha2Digest};
+use md5::Md5 as Md5Hasher;
 
-/// SHA-256 digest of a byte buffer.
-///
-/// Signature: `(input: bytes) -> (bytes)`
-/// Output is always 32 bytes.
-pub struct DigestSha256 {
-    meta: NodeMeta,
+// SRD-80 PR B.11 — digest and base-encoding nodes migrated to
+// `#[polydat_node]` with native Rust types for Bytes:
+//   - input  Bytes:  `&[u8]` (borrow, zero-alloc)
+//   - output Bytes:  `Vec<u8>` (owned, becomes Arc<[u8]> via IntoValue)
+
+#[crate::polydat_node(category = Digest)]
+fn sha256(input: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha2_256::new();
+    hasher.update(input);
+    hasher.finalize().to_vec()
 }
 
-impl Default for DigestSha256 {
-    fn default() -> Self {
-        Self::new()
-    }
+#[crate::polydat_node(category = Digest)]
+fn md5(input: &[u8]) -> Vec<u8> {
+    let mut hasher = Md5Hasher::new();
+    hasher.update(input);
+    hasher.finalize().to_vec()
 }
 
-impl DigestSha256 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "sha256".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
-            },
-        }
-    }
+#[crate::polydat_node(category = Digest)]
+fn to_base64(input: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(input)
 }
 
-impl PolydatNode for DigestSha256 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let mut hasher = Sha256::new();
-        hasher.update(inputs[0].as_bytes());
-        outputs[0] = Value::Bytes(hasher.finalize().to_vec().into());
-    }
+#[crate::polydat_node(category = Digest)]
+fn from_base64(input: &str) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(input)
+        .unwrap_or_default()
 }
 
-/// MD5 digest of a byte buffer.
-///
-/// Signature: `(input: bytes) -> (bytes)`
-/// Output is always 16 bytes.
-pub struct DigestMd5 {
-    meta: NodeMeta,
+#[crate::polydat_node(category = Digest)]
+fn to_base32(input: &[u8]) -> String {
+    data_encoding::BASE32.encode(input)
 }
 
-impl Default for DigestMd5 {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DigestMd5 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "md5".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for DigestMd5 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let mut hasher = Md5::new();
-        hasher.update(inputs[0].as_bytes());
-        outputs[0] = Value::Bytes(hasher.finalize().to_vec().into());
-    }
-}
-
-/// Base64 encode bytes to string.
-///
-/// Signature: `(input: bytes) -> (String)`
-pub struct ToBase64 {
-    meta: NodeMeta,
-}
-
-impl Default for ToBase64 {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ToBase64 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "to_base64".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for ToBase64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        use base64::Engine;
-        outputs[0] = Value::Str(base64::engine::general_purpose::STANDARD.encode(inputs[0].as_bytes()).into());
-    }
-}
-
-/// Base64 decode string to bytes.
-///
-/// Signature: `(input: String) -> (bytes)`
-pub struct FromBase64 {
-    meta: NodeMeta,
-}
-
-impl Default for FromBase64 {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FromBase64 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "from_base64".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for FromBase64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(inputs[0].as_str())
-            .unwrap_or_default();
-        outputs[0] = Value::Bytes(bytes.into());
-    }
-}
-
-/// Base32 encode bytes to string.
-///
-/// Signature: `(input: bytes) -> (String)`
-pub struct ToBase32 {
-    meta: NodeMeta,
-}
-
-impl Default for ToBase32 {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ToBase32 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "to_base32".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for ToBase32 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(data_encoding::BASE32.encode(inputs[0].as_bytes()).into());
-    }
-}
-
-/// Base32 decode string to bytes.
-///
-/// Signature: `(input: String) -> (bytes)`
-pub struct FromBase32 {
-    meta: NodeMeta,
-}
-
-impl Default for FromBase32 {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FromBase32 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "from_base32".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for FromBase32 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let bytes = data_encoding::BASE32
-            .decode(inputs[0].as_str().as_bytes())
-            .unwrap_or_default();
-        outputs[0] = Value::Bytes(bytes.into());
-    }
+#[crate::polydat_node(category = Digest)]
+fn from_base32(input: &str) -> Vec<u8> {
+    data_encoding::BASE32
+        .decode(input.as_bytes())
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
 // Signature declarations for the DSL registry
 // ---------------------------------------------------------------------------
 
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for digest and encoding nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "sha256", category: C::Digest,
-            outputs: 1, description: "SHA-256 digest",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Compute the SHA-256 cryptographic digest of a byte buffer.\nOutput is always 32 bytes. Use with to_hex or to_base64 for string output.\nParameters:\n  input — bytes wire input\nExample: sha256(bytes_from_hash(cycle, 64)) -> to_hex(...)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "md5", category: C::Digest,
-            outputs: 1, description: "MD5 digest",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Compute the MD5 digest of a byte buffer.\nOutput is always 16 bytes. Not cryptographically secure — use for\nchecksums, deduplication keys, or legacy compatibility only.\nParameters:\n  input — bytes wire input\nExample: md5(u64_to_bytes(hash(cycle))) -> to_hex(...)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "to_base64", category: C::Digest, outputs: 1,
-            description: "base64 encode",
-            help: "Encode a byte buffer as a standard base64 string (RFC 4648).\nUse after digest functions for compact, printable output.\nExample: sha256(...) -> to_base64(...)\nParameters:\n  input — Bytes wire input",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "from_base64", category: C::Digest, outputs: 1,
-            description: "base64 decode",
-            help: "Decode a standard base64 string back to a byte buffer.\nAccepts standard base64 (RFC 4648) with optional padding.\nUse when processing base64-encoded input data.\nParameters:\n  input — String wire input (base64-encoded)",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-/// Try to build a digest or base64 node from a function name and const args.
-///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "sha256" => Some(Ok(Box::new(DigestSha256::new()))),
-        "md5" => Some(Ok(Box::new(DigestMd5::new()))),
-        "to_base64" => Some(Ok(Box::new(ToBase64::new()))),
-        "from_base64" => Some(Ok(Box::new(FromBase64::new()))),
-        _ => None,
-    }
-}
-
-
-crate::register_nodes!(signatures, build_node);
+// SRD-80 PR B.11 — every node in this module registers
+// link-time via the proc-macro-emitted NodeRegistration.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn sha256_known() {
-        let node = DigestSha256::new();
+        let node = Sha256::default();
         let mut out = [Value::None];
         // SHA-256 of empty string
         node.eval(&[Value::Bytes(vec![].into())], &mut out[..]);
@@ -309,7 +79,7 @@ mod tests {
 
     #[test]
     fn sha256_deterministic() {
-        let node = DigestSha256::new();
+        let node = Sha256::default();
         let mut out1 = [Value::None];
         let mut out2 = [Value::None];
         let input = Value::Bytes(b"hello world".to_vec().into());
@@ -320,7 +90,7 @@ mod tests {
 
     #[test]
     fn md5_known() {
-        let node = DigestMd5::new();
+        let node = Md5::default();
         let mut out = [Value::None];
         node.eval(&[Value::Bytes(vec![].into())], &mut out[..]);
         let bytes = out[0].as_bytes();
@@ -331,8 +101,8 @@ mod tests {
 
     #[test]
     fn base64_roundtrip() {
-        let enc = ToBase64::new();
-        let dec = FromBase64::new();
+        let enc = ToBase64::default();
+        let dec = FromBase64::default();
         let mut mid = [Value::None];
         let mut out = [Value::None];
         let input = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x42];
@@ -343,8 +113,8 @@ mod tests {
 
     #[test]
     fn base32_roundtrip() {
-        let enc = ToBase32::new();
-        let dec = FromBase32::new();
+        let enc = ToBase32::default();
+        let dec = FromBase32::default();
         let mut mid = [Value::None];
         let mut out = [Value::None];
         let input = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x42];

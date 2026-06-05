@@ -241,6 +241,18 @@ impl PromptState {
         self.window_rows
     }
 
+    /// Set the prompt window's row count directly. Clamped
+    /// to `[1, MAX_WINDOW_ROWS]`. The REPL Window mode uses
+    /// this to claim most of the terminal in one shot rather
+    /// than stepping through grow/shrink; the cap stays at
+    /// `MAX_WINDOW_ROWS` so even Window mode doesn't exceed
+    /// the prompt-state buffer's capacity. Returns the new
+    /// (possibly clamped) row count.
+    pub fn set_window_rows(&mut self, target: u16) -> u16 {
+        self.window_rows = target.clamp(1, MAX_WINDOW_ROWS);
+        self.window_rows
+    }
+
     pub fn toggle_help(&mut self) {
         self.help_visible = !self.help_visible;
     }

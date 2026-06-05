@@ -61,10 +61,12 @@ scenarios:
 
   # 2. Single shadow. `mode` is overridden over the inner
   #    `phases:` subtree; `size` keeps its workload-root
-  #    default. Bare tokens (no quotes) are emitted as
-  #    quoted Polydat string literals.
+  #    default. Quoted tokens (`"verbose"`) emit as Polydat
+  #    string literals. Bare tokens without quotes are
+  #    treated as Polydat wire references — see #6 below
+  #    for that shape.
   single_shadow:
-    - set: { mode: verbose }
+    - set: { mode: '"verbose"' }
       phases:
         - announce
 
@@ -72,7 +74,7 @@ scenarios:
   #    map produce sibling `init` lines in one source body.
   #    Both `mode` and `size` are overridden together.
   multi_shadow:
-    - set: { mode: verbose, size: bulk }
+    - set: { mode: '"verbose"', size: '"bulk"' }
       phases:
         - announce
 
@@ -91,7 +93,7 @@ scenarios:
   #    under `mode=swept`. Confirms scenario-tree bindings
   #    don't interfere with iter-var binding.
   with_for_each:
-    - set: { mode: swept }
+    - set: { mode: '"swept"' }
       phases:
         - for_each: "n in 1,2,3"
           phases:
@@ -102,9 +104,9 @@ scenarios:
   #    subtree too; the inner block adds its own override
   #    on top.
   nested:
-    - set: { mode: outer }
+    - set: { mode: '"outer"' }
       phases:
-        - set: { size: inner_size }
+        - set: { size: '"inner_size"' }
           phases:
             - announce
 

@@ -1893,6 +1893,10 @@ fn every_registered_function_compiles() {
         // Context (no inputs)
         ("current_epoch_millis", "input cycle: u64\nout := current_epoch_millis()".into()),
         ("counter", "input cycle: u64\nout := counter()".into()),
+        // Random nodes — auto-gen would feed both min/max the same
+        // value (100, 100), causing range=0 division panics.
+        ("random_range", "input cycle: u64\nout := random_range(0, 1000)".into()),
+        ("random_f64",   "input cycle: u64\nout := random_f64(0.0, 1.0)".into()),
         ("session_start_millis", "input cycle: u64\nout := session_start_millis()".into()),
         ("elapsed_millis", "input cycle: u64\nout := elapsed_millis()".into()),
         ("thread_id", "input cycle: u64\nout := thread_id()".into()),
@@ -1901,6 +1905,7 @@ fn every_registered_function_compiles() {
         ("quantize", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := quantize(f, 0.1)".into()),
         ("lerp", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := lerp(f, 0.0, 100.0)".into()),
         ("inv_lerp", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := inv_lerp(f, 0.0, 1.0)".into()),
+        ("remap", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := remap(f, 0.0, 1.0, 0.0, 100.0)".into()),
         // FFT (creates output file)
         ("fft_analyze", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := fft_analyze(f, \"/tmp/_polydat_fft_test.jsonl\", 8)".into()),
         // `env(name)` errors if the named var isn't set —
@@ -1967,6 +1972,13 @@ fn every_registered_function_compiles() {
     // name list so new RealData functions are automatically excluded.
     for sig in &reg {
         if sig.category == registry::FuncCategory::RealData { continue; }
+        // SRD-80 PR B.14: `__*`-prefixed nodes are
+        // assembly-phase auto-inserted edge adapters (e.g.
+        // `__u32_to_u64`, `__str_to_bool`). They're not
+        // workload-callable — the assembly inserts them at
+        // type boundaries. Skip them in the auto-generated
+        // workload coverage.
+        if sig.name.starts_with("__") { continue; }
 
         let src = if let Some(override_src) = overrides.get(sig.name) {
             override_src.to_string()

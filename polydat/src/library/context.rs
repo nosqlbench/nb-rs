@@ -315,49 +315,25 @@ impl PolydatNode for TmpDir {
 /// Signature: `() -> (u64)`
 ///
 /// Returns 0, 1, 2, ... across all calls. Not coordinate-derived.
-pub struct Counter {
-    meta: NodeMeta,
-    count: AtomicU64,
-}
+// SRD-80 PR B.11 — state-bearing nodes use `Setup<T>` over an
+// interior-mutability primitive (PolydatNode is Send+Sync, so
+// Cell is off the table). For a u64 counter, `AtomicU64` is
+// the right fit; `start` is a const arg that initialises the
+// atomic via the setup function. No new macro vocabulary —
+// state is just a Setup-derived field with mutable inner type.
 
-impl Default for Counter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Counter {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "counter".into(),
-                outs: vec![Port::u64("output")],
-                ins: Vec::new(),
-            },
-            count: AtomicU64::new(0),
-        }
-    }
-
-    pub fn starting_at(start: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "counter".into(),
-                outs: vec![Port::u64("output")],
-                ins: Vec::new(),
-            },
-            count: AtomicU64::new(start),
-        }
-    }
-}
-
-impl PolydatNode for Counter {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(self.count.fetch_add(1, Ordering::Relaxed));
-    }
-    fn purity(&self) -> crate::ast::Purity {
-        crate::ast::Purity::Nondeterministic { reason: "monotonic counter incremented per call" }
-    }
+/// Monotonic counter (non-deterministic). SRD-80 PR B.11
+/// migration.
+#[crate::polydat_node(
+    category = Context,
+    purity = Nondeterministic("monotonic counter incremented per call"),
+)]
+fn counter(
+    #[poly_default(0u64)] start: crate::derive_support::Const<u64>,
+    #[poly_const(AtomicU64::new, from = start)]
+    count: &AtomicU64,
+) -> u64 {
+    count.fetch_add(1, Ordering::Relaxed)
 }
 
 // ---------------------------------------------------------------------------
@@ -381,17 +357,7 @@ pub fn signatures() -> &'static [FuncSig] {
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
         },
-        FuncSig {
-            name: "counter", category: C::Context, outputs: 1,
-            description: "monotonic counter (non-deterministic)",
-            help: "Returns a monotonically increasing u64 counter.\nNON-DETERMINISTIC: increments on each evaluation across all threads.\nUse for sequence numbers, unique IDs, or ordering guarantees.\nTakes no wire inputs.",
-            identity: None, variadic_ctor: None,
-            params: &[],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `counter` migrated to `#[polydat_node]` per SRD-80 PR B.11.
         FuncSig {
             name: "session_start_millis", category: C::Context, outputs: 1,
             description: "session start time (frozen at init)",
@@ -527,7 +493,7 @@ impl PolydatNode for CursorLimit {
 pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         "current_epoch_millis" => Some(Ok(Box::new(CurrentEpochMillis::new()))),
-        "counter" => Some(Ok(Box::new(Counter::new()))),
+        // `counter` routes via proc-macro NodeRegistration per SRD-80 PR B.11.
         "session_start_millis" => Some(Ok(Box::new(SessionStartMillis::new()))),
         "elapsed_millis" => Some(Ok(Box::new(ElapsedMillis::new()))),
         "thread_id" => Some(Ok(Box::new(ThreadId::new()))),
@@ -593,7 +559,7 @@ mod tests {
 
     #[test]
     fn counter_increments() {
-        let node = Counter::new();
+        let node = Counter::new(0);
         let mut out = [Value::None];
         node.eval(&[], &mut out);
         assert_eq!(out[0].as_u64(), 0);
@@ -605,7 +571,7 @@ mod tests {
 
     #[test]
     fn counter_starting_at() {
-        let node = Counter::starting_at(100);
+        let node = Counter::new(100);
         let mut out = [Value::None];
         node.eval(&[], &mut out);
         assert_eq!(out[0].as_u64(), 100);

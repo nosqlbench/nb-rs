@@ -151,7 +151,9 @@ pub fn build_node(
 
     // --- Sampling functions without a dedicated node module ---
     match func {
-        "identity" => return Ok(Box::new(crate::library::identity::Identity::new())),
+        // `identity` migrated to `#[polydat_node]` per SRD-80
+        // PR B.8 — routes via the proc-macro-emitted
+        // NodeRegistration instead of this hand-dispatch.
 
         "lut_sample" | "icd_normal" => {
             use crate::library::sampling::icd::IcdSample;

@@ -1888,28 +1888,28 @@ mod tests {
 
     #[test]
     fn classify_routes_new_param_helpers() {
-        use crate::library::param_helpers::{InRangeU64, IsPositiveU64};
+        use crate::library::param_helpers::{InRange, IsPositive};
         // The classify_node entrypoint must see the new
         // predicate nodes and return the JIT-lowered op variants
         // rather than falling through to Fallback.
-        let p = IsPositiveU64::new("rate");
+        let p = IsPositive::new("rate".to_string());
         assert!(matches!(classify_node(&p), JitOp::IsPositiveCheck));
 
-        let r = InRangeU64::new(1, 100);
+        let r = InRange::new(1, 100);
         assert!(matches!(classify_node(&r), JitOp::InRangeCheck(1, 100)));
     }
 
     #[test]
     fn classify_leaves_other_param_helpers_on_fallback() {
         use crate::library::param_helpers::{
-            MatchesStr, RequiredU64, ThisOrU64,
+            Matches, RequiredU64, ThisOrU64,
         };
         // By design: required/this_or/matches stay on Phase-2.
         // classify_node must pick Fallback so the closure-based
         // eval runs instead of an uninitialized JIT op.
         assert!(matches!(classify_node(&RequiredU64::new("x")), JitOp::Fallback));
         assert!(matches!(classify_node(&ThisOrU64::new()), JitOp::Fallback));
-        assert!(matches!(classify_node(&MatchesStr::new(r"^\d+$")), JitOp::Fallback));
+        assert!(matches!(classify_node(&Matches::new(r"^\d+$".to_string())), JitOp::Fallback));
     }
 
     #[test]

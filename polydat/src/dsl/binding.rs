@@ -473,7 +473,7 @@ impl Compiler {
                     for (i, target) in targets.iter().enumerate() {
                         asm.add_node(
                             target,
-                            Box::new(Identity::new()),
+                            Box::new(Identity::new(crate::ast::PortType::U64)),
                             vec![WireRef::node_port(&internal_name, i)],
                         );
                         self.all_names.push(target.clone());
@@ -595,7 +595,7 @@ impl Compiler {
                 };
                 let src_type = asm.wire_type(&wire).unwrap_or(PortType::U64);
                 if src_type == PortType::U64 {
-                    asm.add_node(name, Box::new(Identity::new()), vec![wire]);
+                    asm.add_node(name, Box::new(Identity::new(crate::ast::PortType::U64)), vec![wire]);
                 } else {
                     asm.add_node(
                         name,

@@ -2440,6 +2440,29 @@ mod inner {
                 consumed: std::sync::atomic::AtomicBool::new(false),
             }
         }
+
+        /// Run the WAL consolidation NOW and mark the guard
+        /// consumed so the drop-time fallback is a no-op.
+        /// Returns whatever the caller wants — the consolidation
+        /// runs silently here so the caller can emit operator-
+        /// visible "shutting down" / "shutdown complete"
+        /// messages through whatever channel is appropriate
+        /// (observer log, stderr, …) and they land in the right
+        /// stream relative to other output. The drop-time
+        /// fallback's `eprintln!` exists only for unclean
+        /// shutdown paths (panic, force-exit during render-
+        /// active sinks) where the observer is no longer
+        /// available.
+        pub fn consume(&self) {
+            if self.consumed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            if let Ok(guard) = self.reporter.lock() {
+                if let Some(ref r) = *guard {
+                    r.consolidate_wal();
+                }
+            }
+        }
     }
 
     impl Drop for SqliteShutdownGuard {

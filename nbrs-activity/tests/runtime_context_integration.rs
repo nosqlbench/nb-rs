@@ -32,7 +32,7 @@ use nbrs_metrics::controls::{
 use nbrs_metrics::labels::Labels;
 use polydat::ast::{PolydatNode, Value};
 use polydat::library::param_helpers::{
-    InRangeU64, IsPositiveU64, RequiredU64, ThisOrU64,
+    InRange, IsPositive, RequiredU64, ThisOrU64,
 };
 use nbrs_activity::polydat_nodes::runtime_context::{
     set_session_root, set_task_cycle, with_fiber_context,
@@ -104,13 +104,13 @@ async fn param_helpers_pass_happy_values() {
     assert_eq!(out[0].as_u64(), 10_000);
 
     // is_positive: 1 passes.
-    let n = IsPositiveU64::new("rate");
+    let n = IsPositive::new("rate".to_string());
     let mut out = [Value::None];
     n.eval(&[Value::U64(1)], &mut out);
     assert_eq!(out[0].as_u64(), 1);
 
     // in_range: within bounds passes.
-    let n = InRangeU64::new(1, 100);
+    let n = InRange::new(1, 100);
     let mut out = [Value::None];
     n.eval(&[Value::U64(50)], &mut out);
     assert_eq!(out[0].as_u64(), 50);

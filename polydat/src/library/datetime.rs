@@ -3,7 +3,7 @@
 
 //! Datetime and epoch function nodes.
 
-use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
 
 /// Scale a u64 to epoch milliseconds by multiplying by a factor.
 ///
@@ -11,9 +11,13 @@ use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Val
 /// Param: `factor: u64` — milliseconds per input unit.
 ///
 /// Example: `EpochScale(1000)` treats input as seconds → millis.
-pub struct EpochScale {
-    meta: NodeMeta,
-    factor: u64,
+/// Scale a u64 to epoch milliseconds. SRD-80 PR B.13 migration.
+#[crate::polydat_node(category = Datetime)]
+fn epoch_scale(
+    input: u64,
+    #[poly_default(1u64)] factor: crate::derive_support::Const<u64>,
+) -> u64 {
+    input.wrapping_mul(*factor)
 }
 
 impl EpochScale {
@@ -21,72 +25,22 @@ impl EpochScale {
     pub fn seconds() -> Self { Self::new(1_000) }
     pub fn minutes() -> Self { Self::new(60_000) }
     pub fn hours() -> Self { Self::new(3_600_000) }
-
-    pub fn new(factor: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "epoch_scale".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            factor,
-        }
-    }
 }
 
-impl PolydatNode for EpochScale {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(inputs[0].as_u64().wrapping_mul(self.factor));
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let factor = self.factor;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = inputs[0].wrapping_mul(factor);
-        }))
-    }
-}
-
-/// Add a base epoch offset to a u64 value (milliseconds).
-///
-/// Signature: `(input: u64) -> (u64)`
-/// Param: `base_epoch_ms: u64`
-///
-/// Convenience: combines with a reading counter to produce timestamps.
-pub struct EpochOffset {
-    meta: NodeMeta,
-    base: u64,
+/// Add a base epoch offset to a u64 value. SRD-80 PR B.13 migration.
+#[crate::polydat_node(category = Datetime)]
+fn epoch_offset(
+    input: u64,
+    #[poly_default(0u64)] base_epoch_ms: crate::derive_support::Const<u64>,
+) -> u64 {
+    input.wrapping_add(*base_epoch_ms)
 }
 
 impl EpochOffset {
-    pub fn new(base_epoch_ms: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "epoch_offset".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            base: base_epoch_ms,
-        }
-    }
-
     /// 2024-01-01T00:00:00Z in epoch millis.
     pub fn from_2024() -> Self { Self::new(1_704_067_200_000) }
     /// 2025-01-01T00:00:00Z in epoch millis.
     pub fn from_2025() -> Self { Self::new(1_735_689_600_000) }
-}
-
-impl PolydatNode for EpochOffset {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(inputs[0].as_u64().wrapping_add(self.base));
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let base = self.base;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = inputs[0].wrapping_add(base);
-        }))
-    }
 }
 
 /// Format an epoch-millis u64 as an ISO-8601-like timestamp string.
@@ -95,76 +49,21 @@ impl PolydatNode for EpochOffset {
 ///
 /// Produces: `"YYYY-MM-DDThh:mm:ss.mmmZ"`
 /// Uses a simple arithmetic calendar (no timezone, no leap second handling).
-pub struct ToTimestamp {
-    meta: NodeMeta,
-}
-
-impl Default for ToTimestamp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ToTimestamp {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "to_timestamp".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for ToTimestamp {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(epoch_ms_to_iso(inputs[0].as_u64()).into());
-    }
+/// Convert u64 epoch millis to ISO-8601 timestamp string.
+/// SRD-80 PR B.6 migration.
+#[crate::polydat_node(category = Datetime)]
+fn to_timestamp(input: u64) -> String {
+    epoch_ms_to_iso(input)
 }
 
 /// Decompose epoch millis into date/time components.
-///
-/// Signature: `(input: u64) -> (year: u64, month: u64, day: u64, hour: u64, minute: u64, second: u64, millis: u64)`
-pub struct DateComponents {
-    meta: NodeMeta,
-}
-
-impl Default for DateComponents {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DateComponents {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "date_components".into(),
-                outs: vec![
-                    Port::u64("year"), Port::u64("month"), Port::u64("day"),
-                    Port::u64("hour"), Port::u64("minute"), Port::u64("second"),
-                    Port::u64("millis"),
-                ],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for DateComponents {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let (y, mo, d, h, mi, s, ms) = decompose_epoch_ms(inputs[0].as_u64());
-        outputs[0] = Value::U64(y);
-        outputs[1] = Value::U64(mo);
-        outputs[2] = Value::U64(d);
-        outputs[3] = Value::U64(h);
-        outputs[4] = Value::U64(mi);
-        outputs[5] = Value::U64(s);
-        outputs[6] = Value::U64(ms);
-    }
+/// SRD-80 PR B.10 — tuple-return multi-output.
+#[crate::polydat_node(
+    category = Datetime,
+    output_names(year, month, day, hour, minute, second, millis),
+)]
+fn date_components(input: u64) -> (u64, u64, u64, u64, u64, u64, u64) {
+    decompose_epoch_ms(input)
 }
 
 // --- Calendar arithmetic (simplified, no leap seconds) ---
@@ -237,58 +136,10 @@ use crate::ast::SlotType;
 pub fn signatures() -> &'static [FuncSig] {
     use FuncCategory as C;
     &[
-        FuncSig {
-            name: "epoch_scale", category: C::Datetime,
-            outputs: 1, description: "scale u64 to epoch millis",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "factor", slot_type: SlotType::ConstU64, required: true, example: "10", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Scale a u64 to epoch milliseconds by multiplying by a factor.\nUse to convert a counter in coarse units to millisecond timestamps.\nParameters:\n  input  — u64 wire input (e.g., a cycle counter)\n  factor — milliseconds per input unit (u64)\nExample: epoch_scale(cycle, 1000)  // treat input as seconds -> millis",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "epoch_offset", category: C::Datetime,
-            outputs: 1, description: "add base epoch offset",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "base", slot_type: SlotType::ConstU64, required: true, example: "1000000", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Add a base epoch offset (milliseconds) to a u64 value.\nShifts a relative millisecond value into absolute epoch time.\nParameters:\n  input — u64 wire input (relative millis)\n  base  — epoch milliseconds to add (e.g., 1704067200000 for 2024-01-01)\nExample: epoch_offset(epoch_scale(cycle, 1000), 1704067200000)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "to_timestamp", category: C::Datetime,
-            outputs: 1, description: "format epoch millis as ISO-8601",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Format an epoch-millis u64 as an ISO-8601 timestamp string.\nProduces: \"YYYY-MM-DDThh:mm:ss.mmmZ\" (UTC, no timezone conversion).\nParameters:\n  input — u64 epoch milliseconds\nExample: to_timestamp(epoch_offset(epoch_scale(cycle, 1000), 1704067200000))",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "date_components", category: C::Datetime, outputs: 7,
-            description: "decompose epoch to year/month/day/hour/min/sec/ms",
-            help: "Decompose epoch milliseconds into 7 output ports:\nyear, month (1-12), day (1-31), hour (0-23), minute (0-59),\nsecond (0-59), millisecond (0-999). All values are UTC.\nUse when you need individual date/time fields for structured output.\nParameters:\n  input — u64 epoch milliseconds",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `epoch_scale` migrated to `#[polydat_node]` per SRD-80 PR B.13.
+        // `epoch_offset` migrated to `#[polydat_node]` per SRD-80 PR B.13.
+        // `to_timestamp` migrated to `#[polydat_node]` per SRD-80 PR B.6.
+        // `date_components` migrated to `#[polydat_node]` per SRD-80 PR B.10.
     ]
 }
 
@@ -297,10 +148,10 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Returns `None` if the name is not handled by this module.
 pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
-        "epoch_scale" => Some(Ok(Box::new(EpochScale::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
-        "epoch_offset" => Some(Ok(Box::new(EpochOffset::new(consts.first().map(|c| c.as_u64()).unwrap_or(0))))),
-        "to_timestamp" => Some(Ok(Box::new(ToTimestamp::new()))),
-        "date_components" => Some(Ok(Box::new(DateComponents::new()))),
+        // `epoch_scale` / `epoch_offset` route via proc-macro
+        // NodeRegistration per SRD-80 PR B.13.
+        // `to_timestamp` routes via proc-macro NodeRegistration per SRD-80 PR B.6.
+        // `date_components` routes via proc-macro NodeRegistration per SRD-80 PR B.10.
         _ => None,
     }
 }

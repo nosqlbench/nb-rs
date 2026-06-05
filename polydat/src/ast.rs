@@ -1517,7 +1517,7 @@ mod purity_tests {
 
     #[test]
     fn inspect_node_declares_stderr_side_channel() {
-        let n = crate::library::diagnostic::Inspect::u64("x");
+        let n = crate::library::diagnostic::Inspect::new(PortType::U64, "x".to_string());
         match n.purity() {
             Purity::SideChannel { sink } => assert_eq!(sink, SideChannelSink::Stderr),
             other => panic!("inspect should declare Stderr SideChannel, got {other:?}"),
@@ -1526,10 +1526,7 @@ mod purity_tests {
 
     #[test]
     fn log_passthrough_declares_log_buffer_side_channel() {
-        let n = crate::library::log_levels::LogPassthrough::new(
-            crate::library::log_levels::LogLevel::Info,
-            PortType::U64,
-        );
+        let n = crate::library::log_levels::LogInfo::new(PortType::U64);
         match n.purity() {
             Purity::SideChannel { sink } => assert_eq!(sink, SideChannelSink::LogBuffer),
             other => panic!("log_passthrough should declare LogBuffer SideChannel, got {other:?}"),

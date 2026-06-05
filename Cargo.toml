@@ -2,6 +2,7 @@
 members = [
     "nbrs",
     "polydat",
+    "polydat-derive",
     "nbrs-metrics",
     "nbrs-metricsql",
     "nbrs-workload",

@@ -77,10 +77,52 @@ pub(crate) fn adapt_boundary_value(slot_name: &str, slot_type: crate::ast::PortT
             outputs.remove(0)
         }
         None => {
+            // Actionable warning surface — `Ext` as the slot
+            // type is by far the most common landing point
+            // here (it's the fallback when the auto-extern
+            // inferrer couldn't resolve the binding's RHS
+            // output type from the assembler or the surface
+            // AST). The advice differs based on the slot's
+            // declared type because the fix differs too:
+            //
+            // - Slot is `Ext`: the workload likely meant a
+            //   primitive type. The inferrer surfaced its
+            //   gap; the right fix is a registry update or
+            //   an explicit `extern NAME: <type>` declaration
+            //   so the slot's type matches the producer's.
+            // - Slot is concrete: there's a real type
+            //   mismatch the catalog can't bridge. The
+            //   author wrote `extern NAME: <wrong_type>` or
+            //   the consumer's declared port type doesn't
+            //   match the actual cross-scope contract.
+            let hint = if slot_type == crate::ast::PortType::Ext {
+                "  - The slot's type defaulted to `Ext` (extension type) — the auto-extern \
+                 inferrer couldn't resolve the binding's RHS to a concrete `PortType`. \
+                 Options:\n\
+                 \x20   * Add an explicit `extern {slot_name}: <type>` declaration in the \
+                 receiving scope so the slot's type is pinned at the source.\n\
+                 \x20   * If the binding is set from YAML sugar (e.g. `set: {{ {slot_name}: \"{{ outer }}\" }}`), \
+                 the desugared `const {slot_name} := \"{{ outer }}\"` evaluates to a Str — \
+                 use the bare form `set: {{ {slot_name}: outer }}` to pass the original \
+                 type through, or quote-encode if the consumer expects a string.\n\
+                 \x20   * File a registry gap if the binding's RHS function isn't recognized \
+                 by `infer_auto_extern_type` — the function's output `PortType` should be \
+                 surfaced via the DSL registry."
+            } else {
+                "  - The slot's declared type and the cross-scope provider's type don't match. \
+                 Options:\n\
+                 \x20   * Change the `extern {slot_name}: <type>` declaration to match the \
+                 producer's actual type.\n\
+                 \x20   * Convert at the consumer: wrap the read with the matching `as_*` / \
+                 `*_from_*` adapter for the slot type."
+            };
+            let hint = hint
+                .replace("{slot_name}", slot_name);
             crate::library::support::audit::warn(&format!(
                 "boundary adapter: no catalog entry for {value_type:?} → {slot_type:?} \
                  at slot '{slot_name}'; passing value as-is (will likely produce a wire \
-                 error or coerce silently at first read)"
+                 error or coerce silently at first read)\n\
+                 {hint}"
             ));
             value
         }

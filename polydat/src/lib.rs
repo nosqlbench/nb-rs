@@ -37,11 +37,11 @@
 //! ```rust
 //! use polydat::compile::assembly::{PolydatAssembler, WireRef};
 //! use polydat::library::hash::Hash64;
-//! use polydat::library::arithmetic::ModU64;
+//! use polydat::library::arithmetic::Mod;
 //!
 //! let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 //! asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
-//! asm.add_node("user_id", Box::new(ModU64::new(1_000_000)), vec![WireRef::node("hashed")]);
+//! asm.add_node("user_id", Box::new(Mod::new(1_000_000)), vec![WireRef::node("hashed")]);
 //! asm.add_output("user_id", WireRef::node("user_id"));
 //!
 //! let mut kernel = asm.compile().unwrap();
@@ -106,6 +106,13 @@
 //!   (library-internal cache + audit infrastructure)
 //! - [`viz`]: DAG visualization (DOT, Mermaid)
 
+// SRD-80 PR B.3 — let the `#[polydat_node]` macro's emitted
+// `polydat::...` paths resolve when the macro is invoked from
+// INSIDE the polydat crate itself (library nodes migrating to
+// the macro form). External callers don't need this — they
+// reference `polydat` via the regular crate-name lookup.
+extern crate self as polydat;
+
 pub mod ast;
 pub mod binder;
 pub mod kernel;
@@ -114,3 +121,23 @@ pub mod compile;
 pub mod library;
 pub mod dsl;
 pub mod viz;
+
+// SRD-80 — proc-macro trait surface. The `polydat-derive`
+// crate emits paths like `polydat::derive_support::FromValue` /
+// `IntoValue` that resolve here.
+pub mod derive_support;
+
+// SRD-80 PR B.5 — `Const<T>` wrapper re-exported at crate root
+// for ergonomic use in `#[polydat_node]` function signatures.
+pub use derive_support::Const;
+
+// SRD-80 — re-export the `#[polydat_node]` attribute so
+// library callers can write `#[polydat::polydat_node]` without
+// a separate `use polydat_derive::polydat_node;` line.
+pub use polydat_derive::polydat_node;
+
+// SRD-80 — re-export `inventory` so the macro's emitted
+// `::polydat::inventory::submit!` path resolves at every call
+// site without users having to add `inventory` to their own
+// dependencies.
+pub use inventory;

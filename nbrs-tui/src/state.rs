@@ -234,6 +234,23 @@ pub struct RunState {
     /// per phase lifecycle, not per-op).
     pub phases: Vec<PhaseEntry>,
 
+    /// Phase-count denominator from the pre-map walk —
+    /// pinned at `install_tree` time and never mutated by
+    /// runtime phase materialization. The renderer's `X/N`
+    /// margin display reads this as the stable Y, so an
+    /// operator watching the progress sees a fixed total
+    /// rather than one that drifts upward as `for_each`
+    /// expansion lands new phases at runtime.
+    ///
+    /// When the runtime materializes more phases than the
+    /// pre-map enumerated (param-driven `for_each` whose iter
+    /// source the structural walker couldn't resolve), the
+    /// numerator can exceed `expected_total_phases` — that's
+    /// the honest signal that the planning walk under-counted,
+    /// surfaced as `N/Y` with `N > Y` rather than papered
+    /// over by a moving denominator.
+    pub expected_total_phases: usize,
+
     /// Every phase currently in flight, keyed by (name, labels).
     /// Empty between phases. Multi-phase scenarios (stanza-level
     /// parallelism, multi-activity sessions) populate more than
@@ -331,6 +348,7 @@ impl RunState {
             tree: SceneTree::new(),
             summaries: HashMap::new(),
             phases: Vec::new(),
+            expected_total_phases: 0,
             active_phases: HashMap::new(),
             log_messages: Vec::new(),
             log_seq_total: 0,
@@ -414,6 +432,14 @@ impl RunState {
         self.tree = tree;
         self.summaries.clear();
         self.rebuild_phases();
+        // Pin the pre-map's phase count. Read by the margin
+        // renderer as the stable denominator so a refine /
+        // for_each / runtime-materialized phase doesn't drift
+        // the displayed total. The pre-map walker's
+        // `pre_map_only` flag (executor.rs) suppresses sentinel
+        // status mutations during the pre-map pass, so this
+        // count reflects pending phases only.
+        self.expected_total_phases = self.tree.total_phases();
     }
 
     /// Add a pending phase to the tree at the synthetic root —

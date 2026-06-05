@@ -66,162 +66,89 @@ fn next_f64() -> f64 {
 // Non-deterministic random nodes (0→1)
 // =================================================================
 
-/// Random u64 in [min, max).
-///
-/// Signature: `() -> (u64)`
-pub struct RandomRange {
-    meta: NodeMeta,
-    min: u64,
-    range: u64,
+/// Random u64 in [min, max). SRD-80 PR B.13 migration —
+/// inline-compute `range = max - min` per call (non-det node,
+/// per-call subtraction is noise).
+#[crate::polydat_node(
+    category = Probability,
+    purity = Nondeterministic("thread-local PRNG"),
+)]
+fn random_range(
+    #[poly_default(0u64)] min: crate::derive_support::Const<u64>,
+    #[poly_default(100u64)] max: crate::derive_support::Const<u64>,
+) -> u64 {
+    // Saturate the range to a non-zero value so a misconfigured
+    // workload (min == max, or min > max) doesn't trap on the
+    // modulus. `max.saturating_sub(min)` is 0 when min >= max.
+    let range = max.saturating_sub(*min).max(1);
+    *min + (next_u64() % range)
 }
 
-impl RandomRange {
-    pub fn new(min: u64, max: u64) -> Self {
-        assert!(max > min);
-        Self {
-            meta: NodeMeta {
-                name: "random_range".into(),
-                outs: vec![Port::u64("output")],
-                ins: Vec::new(),
-            },
-            min,
-            range: max - min,
-        }
+/// Random f64 in [min, max). SRD-80 PR B.13 migration.
+#[crate::polydat_node(
+    category = Probability,
+    purity = Nondeterministic("thread-local PRNG"),
+)]
+fn random_f64(
+    #[poly_default(0.0f64)] min: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] max: crate::derive_support::Const<f64>,
+) -> f64 {
+    *min + next_f64() * (*max - *min)
+}
+
+/// Random byte buffer. SRD-80 PR B.13 migration.
+#[crate::polydat_node(
+    category = Probability,
+    purity = Nondeterministic("thread-local PRNG"),
+)]
+fn random_bytes(
+    #[poly_default(8u64)] size: crate::derive_support::Const<u64>,
+) -> Vec<u8> {
+    let sz = *size as usize;
+    let mut buf = Vec::with_capacity(sz);
+    while buf.len() < sz {
+        let take = (sz - buf.len()).min(8);
+        buf.extend_from_slice(&next_u64().to_le_bytes()[..take]);
     }
+    buf
 }
 
-impl PolydatNode for RandomRange {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(self.min + (next_u64() % self.range));
+/// Random string from a character set. Charset parsed each
+/// call — for hot-path use, prefer the deterministic
+/// `combinations` node which precompiles the charset.
+/// SRD-80 PR B.13 migration.
+#[crate::polydat_node(
+    category = Probability,
+    purity = Nondeterministic("thread-local PRNG"),
+)]
+fn random_string(
+    #[poly_default("A-Za-z0-9")] charset: crate::derive_support::Const<&str>,
+    #[poly_default(8u64)] length: crate::derive_support::Const<u64>,
+) -> String {
+    let chars = parse_charset(&charset);
+    if chars.is_empty() {
+        return String::new();
     }
+    (0..*length)
+        .map(|_| chars[(next_u64() as usize) % chars.len()])
+        .collect()
 }
 
-/// Random f64 in [min, max).
-///
-/// Signature: `() -> (f64)`
-pub struct RandomF64 {
-    meta: NodeMeta,
-    min: f64,
-    range: f64,
-}
-
-impl RandomF64 {
-    pub fn new(min: f64, max: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "random_f64".into(),
-                outs: vec![Port::f64("output")],
-                ins: Vec::new(),
-            },
-            min,
-            range: max - min,
-        }
-    }
-}
-
-impl PolydatNode for RandomF64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::F64(self.min + next_f64() * self.range);
-    }
-}
-
-/// Random byte buffer of a fixed size.
-///
-/// Signature: `() -> (bytes)`
-pub struct RandomBytes {
-    meta: NodeMeta,
-    size: usize,
-}
-
-impl RandomBytes {
-    pub fn new(size: usize) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "random_bytes".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: Vec::new(),
-            },
-            size,
-        }
-    }
-}
-
-impl PolydatNode for RandomBytes {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let mut buf = Vec::with_capacity(self.size);
-        while buf.len() < self.size {
-            let take = (self.size - buf.len()).min(8);
-            buf.extend_from_slice(&next_u64().to_le_bytes()[..take]);
-        }
-        outputs[0] = Value::Bytes(buf.into());
-    }
-}
-
-/// Random string from a character set.
-///
-/// Signature: `() -> (String)`
-pub struct RandomString {
-    meta: NodeMeta,
-    chars: Vec<char>,
-    length: usize,
+/// Random boolean with probability of true. SRD-80 PR B.13.
+#[crate::polydat_node(
+    category = Probability,
+    purity = Nondeterministic("thread-local PRNG"),
+)]
+fn random_bool(
+    #[poly_default(0.5f64)] probability: crate::derive_support::Const<f64>,
+) -> bool {
+    let threshold = (probability.clamp(0.0, 1.0) * u64::MAX as f64) as u64;
+    next_u64() < threshold
 }
 
 impl RandomString {
-    pub fn alphanumeric(length: usize) -> Self {
-        Self::from_charset("A-Za-z0-9", length)
-    }
-
-    pub fn from_charset(spec: &str, length: usize) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "random_string".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: Vec::new(),
-            },
-            chars: parse_charset(spec),
-            length,
-        }
-    }
-}
-
-impl PolydatNode for RandomString {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let s: String = (0..self.length)
-            .map(|_| self.chars[(next_u64() as usize) % self.chars.len()])
-            .collect();
-        outputs[0] = Value::Str(s.into());
-    }
-}
-
-/// Random boolean with a given probability of true.
-///
-/// Signature: `() -> (bool)`
-pub struct RandomBool {
-    meta: NodeMeta,
-    threshold: u64,
-}
-
-impl RandomBool {
-    pub fn new(probability: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "random_bool".into(),
-                outs: vec![Port::bool("output")],
-                ins: Vec::new(),
-            },
-            threshold: (probability.clamp(0.0, 1.0) * u64::MAX as f64) as u64,
-        }
-    }
-}
-
-impl PolydatNode for RandomBool {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Bool(next_u64() < self.threshold);
+    pub fn alphanumeric(length: u64) -> Self {
+        Self::new("A-Za-z0-9".to_string(), length)
     }
 }
 

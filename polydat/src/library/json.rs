@@ -204,110 +204,34 @@ impl PolydatNode for JsonToStr {
 }
 
 /// Serialize a JSON value to a pretty-printed string.
-///
-/// Signature: `(input: json) -> (String)`
-pub struct JsonToStrPretty {
-    meta: NodeMeta,
-}
-
-impl Default for JsonToStrPretty {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl JsonToStrPretty {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "json_to_str_pretty".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::json("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for JsonToStrPretty {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(
-            serde_json::to_string_pretty(inputs[0].as_json()).unwrap_or_default().into()
-        );
-    }
+/// SRD-80 PR B.11 migration — `&serde_json::Value` input.
+#[crate::polydat_node(category = Json)]
+fn json_to_str_pretty(input: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(input).unwrap_or_default()
 }
 
 /// Parse a JSON string into a JSON value.
-///
-/// Signature: `(input: String) -> (json)`
-pub struct StrToJson {
-    meta: NodeMeta,
-}
-
-impl Default for StrToJson {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl StrToJson {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "str_to_json".into(),
-                outs: vec![Port::json("output")],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for StrToJson {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let parsed = serde_json::from_str(inputs[0].as_str())
-            .unwrap_or(serde_json::Value::Null);
-        outputs[0] = Value::Json(std::sync::Arc::new(parsed));
-    }
+/// SRD-80 PR B.11 migration — `Arc<serde_json::Value>` output.
+#[crate::polydat_node(category = Json)]
+fn str_to_json(input: &str) -> std::sync::Arc<serde_json::Value> {
+    let parsed = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
+    std::sync::Arc::new(parsed)
 }
 
 /// Escape a string for safe embedding in a JSON string value.
 ///
 /// Signature: `(input: String) -> (String)`
 ///
-/// Escapes `"`, `\`, control characters, etc. Does NOT add
-/// surrounding quotes — the result is the interior of a JSON string.
-pub struct EscapeJson {
-    meta: NodeMeta,
-}
-
-impl Default for EscapeJson {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl EscapeJson {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "escape_json".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for EscapeJson {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        // serde_json::to_string adds quotes; strip them for interior-only
-        let json_str = serde_json::to_string(inputs[0].as_str()).unwrap_or_default();
-        // Remove leading and trailing quote
-        let interior = &json_str[1..json_str.len() - 1];
-        outputs[0] = Value::Str(interior.to_string().into());
-    }
+/// Escape a string for embedding inside JSON. Escapes `"`,
+/// `\`, control characters, etc. Does NOT add surrounding
+/// quotes — the result is the interior of a JSON string.
+///
+/// SRD-80 PR B.4 migration.
+#[crate::polydat_node(category = Json)]
+fn escape_json(input: String) -> String {
+    // serde_json::to_string adds quotes; strip them for interior-only.
+    let json_str = serde_json::to_string(&input).unwrap_or_default();
+    json_str[1..json_str.len() - 1].to_string()
 }
 
 // =================================================================
@@ -617,17 +541,8 @@ pub fn signatures() -> &'static [FuncSig] {
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
         },
-        FuncSig {
-            name: "escape_json", category: C::Json, outputs: 1,
-            description: "escape string for JSON embedding",
-            help: "Escape a string for safe embedding inside a JSON string literal.\nBackslashes, quotes, control characters, and unicode are escaped.\nUse when building JSON by hand via printf rather than to_json.\nParameters:\n  input — String wire input",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `escape_json` migrated to `#[polydat_node]`
+        // per SRD-80 PR B.4.
         FuncSig {
             name: "json_merge", category: C::Json, outputs: 1,
             description: "shallow merge two JSON objects",
@@ -915,7 +830,7 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef
         "to_json" => Some(Ok(Box::new(ToJson::new(crate::ast::PortType::U64)))),
         "json_to_str" => Some(Ok(Box::new(JsonToStr::new()))),
         "json_text" => Some(Ok(Box::new(JsonText::new()))),
-        "escape_json" => Some(Ok(Box::new(EscapeJson::new()))),
+        // `escape_json` routes through proc-macro-emitted NodeRegistration.
         "json_merge" => Some(Ok(Box::new(JsonMerge::new()))),
         "array_len" => Some(Ok(Box::new(ArrayLen::new()))),
         "array_at" => Some(Ok(Box::new(ArrayAt::new()))),
@@ -1136,7 +1051,7 @@ mod tests {
     #[test]
     fn str_to_json_roundtrip() {
         let to_str = JsonToStr::new();
-        let from_str = StrToJson::new();
+        let from_str = StrToJson::default();
         let original = Value::Json(std::sync::Arc::new(json!({"key": [1, 2, 3]})));
         let mut mid = [Value::None];
         let mut out = [Value::None];
@@ -1195,7 +1110,7 @@ mod tests {
 
     #[test]
     fn json_pretty_print() {
-        let node = JsonToStrPretty::new();
+        let node = JsonToStrPretty::default();
         let mut out = [Value::None];
         node.eval(&[Value::Json(std::sync::Arc::new(json!({"a": 1})))], &mut out);
         let s = out[0].as_str();

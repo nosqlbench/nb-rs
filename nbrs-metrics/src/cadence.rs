@@ -183,8 +183,58 @@ fn parse_duration(s: &str) -> Result<Duration, ()> {
 // =========================================================================
 
 /// Default maximum fan-in between adjacent layers in the realized
-/// cadence tree. Adjacent ratios above this trigger insertion of
-/// hidden intermediate layers. See SRD-42 §Auto-Intermediate Buckets.
+/// cadence tree.
+///
+/// ## What max-fan-in means
+///
+/// Each cadence layer (e.g. 10 s) aggregates samples from the layer
+/// below it (e.g. 1 s). The **fan-in** is the integer ratio
+/// `next.interval / prev.interval` — how many of the lower-layer
+/// windows roll up into one upper-layer window.
+///
+/// - Declared `[1 s, 10 s]` → fan-in `10:1` (each 10 s window
+///   summarizes 10 of the 1 s windows below it).
+/// - Declared `[1 s, 5 m]` → fan-in `300:1` — too aggressive. The
+///   planner refuses to leave that as the realized layout because
+///   a single 5-minute window summarizing 300 of the 1 s windows
+///   loses too much accuracy in the upper-layer aggregates.
+///
+/// ## Why a cap exists
+///
+/// The accuracy of the upper-layer aggregates (mean / p99 /
+/// histogram fan-out) degrades non-linearly as the fan-in grows.
+/// At 20:1 the loss is bounded; at 300:1 the rolled-up percentile
+/// is effectively a coin flip. Limiting adjacent fan-in to a known
+/// ratio keeps the cost-vs-accuracy trade-off predictable.
+///
+/// ## How the planner enforces it
+///
+/// When two declared layers have a ratio above `max_fan_in`, the
+/// planner synthesizes **hidden intermediate layers** — geometric
+/// midpoints that keep every adjacent step within the limit. With
+/// `max_fan_in = 20`:
+///
+/// - Declared `[1 s, 5 m]` (300:1) → realized `[1 s, (20 s), 5 m]`
+///   — `20 s` is hidden, the operator never sees it as a column
+///   but the upper-layer aggregates use it. Adjacent ratios:
+///   `20:1` and `15:1`, both under the cap.
+///
+/// The synthesized line in the run log surfaces hidden layers in
+/// parentheses, with the trailing `/ N` carrying this cap:
+///
+/// ```text
+/// metrics: cadences: [1s, (20s), 5m] / 20
+/// ```
+///
+/// ## Tuning
+///
+/// 20 is the workload default. Lower values (more intermediate
+/// layers) trade storage for accuracy at very wide cadence
+/// declarations. Higher values trust the operator that the
+/// rolled-up percentile is "good enough." Override via the
+/// `latency-fan-in=` CLI / param when SRD-42 needs the knob —
+/// currently not exposed (the constant is the single source of
+/// truth project-wide).
 pub const DEFAULT_MAX_FAN_IN: u32 = 20;
 
 /// One layer in the realized cadence tree.
@@ -257,7 +307,7 @@ impl CadenceTree {
             sorted.iter().copied().collect();
 
         let mut layers: Vec<Duration> = sorted.clone();
-        let inserted = synthesize_intermediates(&mut layers, max_fan_in);
+        synthesize_intermediates(&mut layers, max_fan_in);
 
         let realized: Vec<CadenceLayer> = layers.iter()
             .map(|d| CadenceLayer {
@@ -266,7 +316,7 @@ impl CadenceTree {
             })
             .collect();
 
-        log_realized_tree(&declared, &realized, &inserted, max_fan_in);
+        log_realized_tree(&realized, max_fan_in);
 
         Self { declared, layers: realized, max_fan_in }
     }
@@ -431,44 +481,23 @@ pub fn format_duration_short(d: Duration) -> String {
     }
 }
 
-fn log_realized_tree(
-    declared: &Cadences,
-    realized: &[CadenceLayer],
-    inserted: &[(Duration, Duration, Duration)],
-    max_fan_in: u32,
-) {
-    let declared_str = declared.iter()
-        .map(format_duration_short)
+fn log_realized_tree(realized: &[CadenceLayer], max_fan_in: u32) {
+    // One-line summary of the realized cadence layout:
+    //   `metrics: cadences: [1s, (10s), 30s, 1m, 5m] / 20`
+    // Parens mark auto-inserted layers — synthesized by the
+    // planner to keep adjacent fan-in within `max_fan_in:1`
+    // when the declared layers are too far apart. The
+    // trailing `/ <n>` reads as "max fan-in 20:1".
+    let cadences_str = realized.iter()
+        .map(|l| {
+            let s = format_duration_short(l.interval);
+            if l.hidden { format!("({s})") } else { s }
+        })
         .collect::<Vec<_>>()
         .join(", ");
     crate::diag::info(&format!(
-        "metrics: declared cadences: [{declared_str}] (max-fan-in {max_fan_in})"
+        "metrics: cadences: [{cadences_str}] / {max_fan_in}"
     ));
-    for (a, b, mid) in inserted {
-        crate::diag::info(&format!(
-            "metrics: inserted hidden cadence {} between {} and {} (fan-in: {}, {})",
-            format_duration_short(*mid),
-            format_duration_short(*a),
-            format_duration_short(*b),
-            ratio_round(*a, *mid),
-            ratio_round(*mid, *b),
-        ));
-    }
-    let tree_str = realized.iter()
-        .map(|l| {
-            let mark = if l.hidden { "*" } else { "" };
-            format!("{}{}", format_duration_short(l.interval), mark)
-        })
-        .collect::<Vec<_>>()
-        .join(" → ");
-    crate::diag::info(&format!(
-        "metrics: realized cadence tree: {tree_str}  (* = hidden)"
-    ));
-}
-
-fn ratio_round(a: Duration, b: Duration) -> u64 {
-    let a_s = a.as_secs_f64().max(f64::EPSILON);
-    (b.as_secs_f64() / a_s).round() as u64
 }
 
 #[cfg(test)]

@@ -6,125 +6,35 @@
 //! These are development aids, not hot-path nodes. They let users
 //! inspect types and values flowing through the DAG.
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Purity, SideChannelSink, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, Purity, Slot, Value};
 
 /// Emit the type name of the input value as a string.
 ///
 /// Signature: `(input: any) -> (String)`
 ///
 /// Returns "u64", "f64", "bool", "String", or "bytes".
-pub struct TypeOf {
-    meta: NodeMeta,
-    input_type: PortType,
+/// Return the input's port type as a string. SRD-80 PR B.8 —
+/// PolyWire input, Fixed Str output.
+#[crate::polydat_node(category = Diagnostic)]
+fn type_of(input: Value) -> String {
+    input.port_type().to_string()
 }
 
-impl TypeOf {
-    pub fn for_u64() -> Self { Self::new(PortType::U64) }
-    pub fn for_f64() -> Self { Self::new(PortType::F64) }
-    pub fn for_str() -> Self { Self::new(PortType::Str) }
-    pub fn for_bool() -> Self { Self::new(PortType::Bool) }
-
-    pub fn new(input_type: PortType) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "type_of".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", input_type))],
-            },
-            input_type,
-        }
-    }
+/// Emit the Rust Debug representation of the input value.
+#[crate::polydat_node(category = Diagnostic)]
+fn debug_repr(input: Value) -> String {
+    format!("{input:?}")
 }
 
-impl PolydatNode for TypeOf {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.input_type.to_string().into());
-    }
-}
-
-/// Emit the Rust Debug representation of the input value as a string.
-///
-/// Signature: `(input: any) -> (String)`
-pub struct DebugRepr {
-    meta: NodeMeta,
-    _input_type: PortType,
-}
-
-impl DebugRepr {
-    pub fn for_u64() -> Self { Self::new(PortType::U64) }
-    pub fn for_f64() -> Self { Self::new(PortType::F64) }
-    pub fn for_str() -> Self { Self::new(PortType::Str) }
-
-    pub fn new(input_type: PortType) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "debug_repr".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", input_type))],
-            },
-            _input_type: input_type,
-        }
-    }
-}
-
-impl PolydatNode for DebugRepr {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(format!("{:?}", inputs[0]).into());
-    }
-}
-
-/// Passthrough that prints the value to stderr (for development).
-///
-/// Signature: `(input: u64) -> (u64)` (or any matching type)
-///
-/// The value passes through unchanged. A side-effect log line is
-/// emitted to stderr with the node name, cycle value, and type.
-pub struct Inspect {
-    meta: NodeMeta,
-    label: String,
-}
-
-impl Inspect {
-    pub fn u64(label: impl Into<String>) -> Self {
-        Self::new(label, PortType::U64)
-    }
-
-    pub fn f64(label: impl Into<String>) -> Self {
-        Self::new(label, PortType::F64)
-    }
-
-    pub fn str(label: impl Into<String>) -> Self {
-        Self::new(label, PortType::Str)
-    }
-
-    pub fn new(label: impl Into<String>, typ: PortType) -> Self {
-        let label = label.into();
-        Self {
-            meta: NodeMeta {
-                name: format!("inspect[{label}]"),
-                outs: vec![Port::new("output", typ)],
-                ins: vec![Slot::Wire(Port::new("input", typ))],
-            },
-            label,
-        }
-    }
-}
-
-impl PolydatNode for Inspect {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        eprintln!("[inspect:{}] {:?}", self.label, inputs[0]);
-        outputs[0] = inputs[0].clone();
-    }
-
-    fn purity(&self) -> Purity {
-        Purity::SideChannel { sink: SideChannelSink::Stderr }
-    }
+/// Passthrough that prints the value (with a const label) to
+/// stderr. SameAsInput output — runtime port type preserved.
+#[crate::polydat_node(category = Diagnostic, purity = SideChannel(Stderr))]
+fn inspect(
+    input: Value,
+    #[poly_default("inspect")] label: crate::derive_support::Const<&str>,
+) -> Value {
+    eprintln!("[inspect:{}] {input:?}", label.0);
+    input
 }
 
 // ---------------------------------------------------------------------------
@@ -274,39 +184,8 @@ use crate::ast::SlotType;
 pub fn signatures() -> &'static [FuncSig] {
     use FuncCategory as C;
     &[
-        FuncSig {
-            name: "type_of", category: C::Diagnostic, outputs: 1,
-            description: "emit type name as string",
-            help: "Returns the runtime type name of the input value as a String.\nOutputs: \"U64\", \"F64\", \"Str\", \"Bool\", \"Bytes\", \"Json\", etc.\nUseful for debugging type mismatches in complex graphs.\nParameters:\n  input — any wire value",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "debug_repr", category: C::Diagnostic, outputs: 1,
-            description: "emit Debug representation as string",
-            help: "Returns the Rust Debug representation of the input value as a String.\nShows internal structure: U64(42), Str(\"hello\"), Bytes([0x01, ...]).\nMore detailed than type_of — use for inspecting actual values.\nParameters:\n  input — any wire value",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "inspect", category: C::Diagnostic, outputs: 1,
-            description: "passthrough with stderr logging",
-            help: "Passes the input value through unchanged while logging it to stderr.\nThe value is printed with its type and Debug repr on every evaluation.\nUse for live debugging during graph development — remove before production.\nParameters:\n  input — any wire value (passed through unmodified)",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `type_of`, `debug_repr`, `inspect` migrated to
+        // `#[polydat_node]` per SRD-80 PR B.8.
         FuncSig {
             name: "fft_analyze", category: C::Diagnostic, outputs: 1,
             description: "write FFT analysis of signal to JSONL file",
@@ -330,9 +209,8 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Returns `None` if the name is not handled by this module.
 pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
-        "type_of" => Some(Ok(Box::new(TypeOf::for_u64()))),
-        "inspect" => Some(Ok(Box::new(Inspect::u64("inspect")))),
-        "debug_repr" => Some(Ok(Box::new(DebugRepr::new(crate::ast::PortType::U64)))),
+        // `type_of` / `debug_repr` / `inspect` route via
+        // proc-macro NodeRegistration per SRD-80 PR B.8.
         "fft_analyze" => {
             let filename = consts.first().map(|c| c.as_str()).unwrap_or("fft.jsonl");
             let window = consts.get(1).map(|c| c.as_u64()).unwrap_or(256) as usize;
@@ -348,9 +226,11 @@ crate::register_nodes!(signatures, build_node);
 mod tests {
     use super::*;
 
+    use crate::ast::PortType;
+
     #[test]
     fn type_of_u64() {
-        let node = TypeOf::for_u64();
+        let node = TypeOf::new(PortType::U64);
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
         assert_eq!(out[0].as_str(), "u64");
@@ -358,7 +238,7 @@ mod tests {
 
     #[test]
     fn type_of_f64() {
-        let node = TypeOf::for_f64();
+        let node = TypeOf::new(PortType::F64);
         let mut out = [Value::None];
         node.eval(&[Value::F64(3.14)], &mut out);
         assert_eq!(out[0].as_str(), "f64");
@@ -366,7 +246,7 @@ mod tests {
 
     #[test]
     fn type_of_str() {
-        let node = TypeOf::for_str();
+        let node = TypeOf::new(PortType::Str);
         let mut out = [Value::None];
         node.eval(&[Value::Str("hello".into())], &mut out);
         assert_eq!(out[0].as_str(), "String");
@@ -374,7 +254,7 @@ mod tests {
 
     #[test]
     fn debug_repr_u64() {
-        let node = DebugRepr::for_u64();
+        let node = DebugRepr::new(PortType::U64);
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
         assert_eq!(out[0].as_str(), "U64(42)");
@@ -382,7 +262,7 @@ mod tests {
 
     #[test]
     fn debug_repr_str() {
-        let node = DebugRepr::for_str();
+        let node = DebugRepr::new(PortType::Str);
         let mut out = [Value::None];
         node.eval(&[Value::Str("hello".into())], &mut out);
         assert!(out[0].as_str().contains("hello"));
@@ -390,7 +270,7 @@ mod tests {
 
     #[test]
     fn inspect_passthrough() {
-        let node = Inspect::u64("test");
+        let node = Inspect::new(PortType::U64, "test".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
         assert_eq!(out[0].as_u64(), 42);

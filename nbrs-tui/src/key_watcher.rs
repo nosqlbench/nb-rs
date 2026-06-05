@@ -86,6 +86,28 @@ pub enum WatcherSignal {
     /// Ctrl-/ pressed. Supervisor reaction: toggle the
     /// prompt's keystroke-help overlay.
     ToggleHelp,
+    /// `?` pressed. Supervisor reaction: call
+    /// `observer::toggle_explain()` — toggle the explainer
+    /// overlay on (with a 10 s auto-revert deadline) or off
+    /// (if it was already on). Auto-repeat from holding the
+    /// key is swallowed by the toggle's own debounce.
+    ExplainPulse,
+    /// `~` pressed. Supervisor reaction: cycle the REPL
+    /// visibility through Hidden → Bar → Hidden (and Window
+    /// → Hidden if currently Window). Tilde is the universal
+    /// "toggle off" key — pressing it from any visible state
+    /// returns to Hidden. See [`crate::repl_state`] for the
+    /// full state machine.
+    ReplToggleBar,
+    /// Backtick (`` ` ``) pressed. Supervisor reaction: open
+    /// the full-screen REPL window (or close it if already
+    /// open). Chosen instead of `Ctrl-~` because the latter
+    /// proved unreliable across terminals — many terminal
+    /// emulators intercept or fail to deliver the chord. A
+    /// bare key with a single keysym + no modifier dependency
+    /// works uniformly across stock terminals. See
+    /// [`crate::repl_state`] for the full state machine.
+    ReplToggleWindow,
     /// Any other keypress — printable chars, line-editing
     /// chords, history nav, Enter, etc. Forwarded to the
     /// prompt without interpretation. Supervisor receives the
@@ -205,6 +227,26 @@ fn run_loop(tx: mpsc::Sender<WatcherSignal>, stop: Arc<AtomicBool>) {
                         WatcherSignal::ShrinkPrompt,
                     (KeyCode::Char('/'), m) if m.contains(KeyModifiers::CONTROL) =>
                         WatcherSignal::ToggleHelp,
+                    // `?` (no modifier) — explainer-overlay hold.
+                    // Each press / auto-repeat extends the
+                    // deadline; the readout binder reads
+                    // `observer::is_explain_held()` on each
+                    // fire and renders `ContentMode::Explanation`
+                    // while the deadline hasn't passed. Shift
+                    // is implicit on US layouts; we match the
+                    // `?` character regardless of modifier so
+                    // alternate layouts that produce `?`
+                    // without Shift work too.
+                    (KeyCode::Char('?'), _) => WatcherSignal::ExplainPulse,
+                    // `~` toggles the bar (Hidden ↔ Bar,
+                    // collapses Window → Hidden). Auto-repeat-
+                    // safe via the supervisor's debounce.
+                    (KeyCode::Char('~'), _) => WatcherSignal::ReplToggleBar,
+                    // Backtick `` ` `` toggles the full-screen
+                    // REPL window. Picked over `Ctrl-~` because
+                    // terminals deliver the bare chord more
+                    // reliably than the Ctrl-modified one.
+                    (KeyCode::Char('`'), _) => WatcherSignal::ReplToggleWindow,
                     _ => WatcherSignal::Key(k),
                 };
                 // Supervisor receiver dropped → run is over,

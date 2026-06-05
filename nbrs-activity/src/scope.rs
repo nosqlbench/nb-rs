@@ -264,17 +264,35 @@ impl BindingScope {
     /// compilation unchanged. Numeric and boolean values are
     /// emitted as bare literals.
     pub fn add_param_binding(&mut self, name: &str, value: &str) {
-        let line = if value.parse::<u64>().is_ok() || value.parse::<f64>().is_ok() {
-            format!("const {name} := {value}")
-        } else if value == "true" || value == "false" {
-            format!("const {name} := {value}")
+        // Param-binding emission used by scope synth when
+        // cascading workload-root values into descendant
+        // scopes. Values arrive already-typed (raw workload-
+        // param text OR `value_to_param_string` output from a
+        // parent kernel constant). Workload-root semantics
+        // apply: bare strings lower to polydat string literals
+        // (legacy), NOT references. The `set:` block parser
+        // in nbrs-workload uses a DIFFERENT classifier that
+        // does treat bare identifiers as references — that's
+        // the entry point where the operator IS in a scope
+        // context with visible wires to reference.
+        let trimmed = value.trim();
+        let literal = if trimmed.parse::<u64>().is_ok()
+            || trimmed.parse::<f64>().is_ok()
+            || trimmed == "true"
+            || trimmed == "false"
+        {
+            trimmed.to_string()
+        } else if is_polydat_quoted_string(trimmed)
+            || is_polydat_array_literal(trimmed)
+        {
+            trimmed.to_string()
         } else {
             let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-            format!("const {name} := \"{escaped}\"")
+            format!("\"{escaped}\"")
         };
         self.bindings.push(ScopedBinding {
             name: name.to_string(),
-            line,
+            line: format!("const {name} := {literal}"),
             origin: BindingOrigin::ParamExpansion,
             modifier: ScopeModifier::Final,
         });
@@ -2651,6 +2669,120 @@ fn is_bare_ident(s: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// True iff `s` is a polydat string literal — opens with `"`,
+/// closes with `"`, and (conservatively) contains no
+/// unescaped closing quote in the middle. This is the shape
+/// `format_jval_as_polydat_literal` produces for YAML strings
+/// (`"hello"`) so the param-binding classifier can pass it
+/// through without re-quoting.
+fn is_polydat_quoted_string(s: &str) -> bool {
+    if s.len() < 2 { return false; }
+    if !s.starts_with('"') || !s.ends_with('"') { return false; }
+    // Walk the inner span; reject if we find an unescaped `"`
+    // before the final character (which would mean the outer
+    // quotes don't actually pair).
+    let bytes = s.as_bytes();
+    let mut i = 1;
+    let last = bytes.len() - 1;
+    while i < last {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'"' { return false; }
+        i += 1;
+    }
+    true
+}
+
+/// True iff `s` looks like a polydat array literal: `[` …
+/// matched brackets … `]`. Conservative — we don't validate
+/// the elements here; the polydat parser handles that when
+/// the `const X := [...]` line compiles. The check just
+/// distinguishes "this is already polydat array syntax" from
+/// "this is a raw string that happens to contain brackets".
+fn is_polydat_array_literal(s: &str) -> bool {
+    if !s.starts_with('[') || !s.ends_with(']') { return false; }
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    for c in s.chars() {
+        if escape { escape = false; continue; }
+        if in_string {
+            if c == '\\' { escape = true; }
+            else if c == '"' { in_string = false; }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth < 0 { return false; }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
+#[cfg(test)]
+mod polydat_param_classifier_tests {
+    use super::*;
+
+    #[test]
+    fn bare_identifier_classifier_accepts_idents_and_rejects_other_shapes() {
+        assert!(is_bare_ident("sm"));
+        assert!(is_bare_ident("source_model"));
+        assert!(is_bare_ident("k_values"));
+        assert!(is_bare_ident("_underscore"));
+        assert!(is_bare_ident("a1"));
+        // Rejects strings that don't fit the ident grammar.
+        assert!(!is_bare_ident(""));
+        assert!(!is_bare_ident("1abc"), "ident can't start with digit");
+        assert!(!is_bare_ident("foo bar"), "no spaces");
+        assert!(!is_bare_ident("[a, b]"));
+        assert!(!is_bare_ident("\"quoted\""));
+        assert!(!is_bare_ident("foo+bar"));
+        // Reserved-ish keywords stay valid as identifiers here;
+        // the polydat parser is the authority on what's
+        // reserved.
+        assert!(is_bare_ident("true"));
+        assert!(is_bare_ident("false"));
+    }
+
+    #[test]
+    fn polydat_quoted_string_accepts_paired_quotes_only() {
+        assert!(is_polydat_quoted_string("\"hello\""));
+        assert!(is_polydat_quoted_string("\"\""));
+        assert!(is_polydat_quoted_string("\"with \\\"escaped\\\" inner\""));
+        // Rejects shapes that aren't paired-quote.
+        assert!(!is_polydat_quoted_string("hello"));
+        assert!(!is_polydat_quoted_string("\"open-only"));
+        assert!(!is_polydat_quoted_string("close-only\""));
+        assert!(!is_polydat_quoted_string(""));
+        assert!(!is_polydat_quoted_string("\""));
+    }
+
+    #[test]
+    fn polydat_array_literal_balances_brackets() {
+        assert!(is_polydat_array_literal("[1, 2, 3]"));
+        assert!(is_polydat_array_literal("[]"));
+        assert!(is_polydat_array_literal("[[1, 2], [3, 4]]"),
+            "nested arrays balance");
+        assert!(is_polydat_array_literal("[\"a\", \"b\"]"));
+        // Strings containing `]` don't break the count.
+        assert!(is_polydat_array_literal("[\"a]b\", \"c\"]"));
+        // Rejects unbalanced shapes.
+        assert!(!is_polydat_array_literal("[1, 2"));
+        assert!(!is_polydat_array_literal("1, 2]"));
+        // `[1][2]` passes the conservative shape check (depth
+        // returns to zero) — polydat's parser rejects it
+        // downstream as invalid syntax. The classifier is a
+        // routing heuristic, not a validator.
+    }
 }
 
 /// Recursively walk a JSON value and resolve every `{name}`

@@ -1242,41 +1242,24 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     crate::diag!(crate::observer::LogLevel::Info, "session: {} ({})",
         session.id, session.output_dir.display());
 
-    // Workload-emitted audit channel: route to
-    // <session>/audit.log. See the comment near the top
-    // of run() for the design rationale (session.log is
-    // lifecycle-only; metric data goes to
-    // <session>/metrics/*.jsonl; bulk workload diagnostic
-    // dumps via `log_info` and friends land here).
-    let audit_log_path = session.output_dir.join("audit.log");
-    match std::fs::OpenOptions::new()
-        .create(true).append(true).open(&audit_log_path)
-    {
-        Ok(file) => {
-            let handle = std::sync::Arc::new(std::sync::Mutex::new(file));
-            polydat::library::support::audit::set_log_fn(move |level, msg| {
-                use std::io::Write;
-                let tag = match level {
-                    polydat::library::support::audit::LogLevel::Trace => "TRC",
-                    polydat::library::support::audit::LogLevel::Debug => "DBG",
-                    polydat::library::support::audit::LogLevel::Info  => "INF",
-                    polydat::library::support::audit::LogLevel::Warn  => "WRN",
-                    polydat::library::support::audit::LogLevel::Error => "ERR",
-                };
-                if let Ok(mut f) = handle.lock() {
-                    let _ = writeln!(f, "{tag} {msg}");
-                }
-            });
-            crate::diag!(crate::observer::LogLevel::Info,
-                "audit log: {}", audit_log_path.display());
-        }
-        Err(e) => {
-            crate::diag!(crate::observer::LogLevel::Warn,
-                "audit log: failed to open '{}': {e} (audit messages dropped)",
-                audit_log_path.display());
-            polydat::library::support::audit::set_log_fn(|_level, _msg| {});
-        }
-    }
+    // Polydat library audit channel: route polydat's
+    // `audit::log/info/warn/...` calls through this
+    // process's observer so they land in `session.log`
+    // alongside every other diagnostic line, with a
+    // `[lib]` subsystem tag so the operator can filter them
+    // out if they're noisy. Replaces the standalone
+    // `<session>/audit.log` file — same content, one fewer
+    // place to look.
+    polydat::library::support::audit::set_log_fn(|level, msg| {
+        use polydat::library::support::audit::LogLevel as AuditLevel;
+        let mapped = match level {
+            AuditLevel::Trace | AuditLevel::Debug => crate::observer::LogLevel::Debug,
+            AuditLevel::Info  => crate::observer::LogLevel::Info,
+            AuditLevel::Warn  => crate::observer::LogLevel::Warn,
+            AuditLevel::Error => crate::observer::LogLevel::Error,
+        };
+        crate::observer::log(mapped, &format!("[lib] {msg}"));
+    });
 
     // SQLite metrics in session directory
     let sqlite_path = session.metrics_path();
@@ -2461,6 +2444,15 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 d.depth = ExecDepth::Phase;
                 d
             },
+            // The pre-map pass walks at depth=Phase but is NOT
+            // execution: the structural-only sentinel that fires
+            // `set_phase_running` + `_completed` in the walker
+            // (intended for the dryrun=phase summary) is
+            // suppressed via this flag so the TUI's scene tree
+            // doesn't start life with every phase already
+            // Completed. Flipped back to false at line ~2675
+            // before the real execution pass.
+            pre_map_only: true,
             openmetrics_url: openmetrics_url.clone(),
             seq_type,
             concurrency,
@@ -2693,6 +2685,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         exec_ctx.scene_tree_parent_id = 0;
         exec_ctx.scene_tree_path = initial_scene_tree_path.clone();
         exec_ctx.current_scope_idx = 0;
+        // Pre-map pass is done — the real execution starts now.
+        // dryrun=phase still walks at depth=Phase but with this
+        // flag false, so the sentinel set_phase_completed in the
+        // walker fires as the dryrun=phase summary needs.
+        exec_ctx.pre_map_only = false;
 
         let scheduler = crate::scheduler::build(&schedule_spec);
         let scheduler_result = scheduler.run(
@@ -2787,6 +2784,21 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             Some(&sqlite_reporter),
         );
     }
+
+    // Clean shutdown WAL consolidation: route the "shutting
+    // down" / "shutdown complete" notice through the observer
+    // so it lands in the proper log-row stream (with the
+    // session-elapsed margin) instead of as raw `eprintln!`
+    // that punches through whatever the active sink is
+    // currently rendering. Consume the guard so its drop-time
+    // fallback is a no-op for the clean path — the drop-time
+    // `eprintln!` only fires now on unclean exits (panic, …)
+    // where the observer log channel isn't trustworthy.
+    crate::diag!(crate::observer::LogLevel::Info,
+        "shutting down — consolidating metrics.db WAL");
+    _sqlite_shutdown_guard.consume();
+    crate::diag!(crate::observer::LogLevel::Info,
+        "shutdown complete");
 
     observer.run_finished();
 
@@ -4102,6 +4114,74 @@ fn format_scenario_tree(
     out
 }
 
+/// Render a multi-coord comprehension's `[vars] in [specs]`
+/// in two column-aligned lines. Column `i` is padded to the
+/// widest of `vars[i]` and `specs[i]` so corresponding entries
+/// stack vertically:
+///
+/// ```text
+/// for [sm,          mnc,          bw,          eh,           alf_label]
+///  in [{sm_values}, {mnc_values}, {bw_values}, {eh_values}, concat({alf_label_values})]
+/// ```
+///
+/// `for ` and ` in ` are 4 chars (padding `in` with a leading
+/// space) so the `[` brackets and every column thereafter
+/// share the same vertical line. Color highlights the
+/// keywords when the active terminal supports it; on a
+/// piped/no-color stderr the output stays plain.
+///
+/// `indent_prefix` is the per-depth indent at the call site
+/// — applied to the second line so it sits at the same depth
+/// as the first.
+fn format_for_combinations(
+    pairs: &[(String, String)],
+    indent_prefix: &str,
+) -> String {
+    let color = crate::observer::use_color();
+    let kw_open  = if color { "\x1b[1;36m" } else { "" };
+    let kw_close = if color { "\x1b[0m"    } else { "" };
+    let bracket_open  = if color { "\x1b[2m" } else { "" };
+    let bracket_close = if color { "\x1b[0m" } else { "" };
+
+    let widths: Vec<usize> = pairs.iter()
+        .map(|(v, s)| v.chars().count().max(s.chars().count()))
+        .collect();
+
+    let pad = |entry: &str, idx: usize, last: bool| -> String {
+        // Last column gets no trailing comma + no padding —
+        // the closing `]` lands flush against the final token.
+        if last {
+            entry.to_string()
+        } else {
+            // `<entry>,` then pad to `widths[idx] + 1` so the
+            // next column begins at a constant offset.
+            let with_comma = format!("{entry},");
+            let width_target = widths[idx] + 1; // +1 for the comma
+            let visible = with_comma.chars().count();
+            if visible >= width_target {
+                with_comma
+            } else {
+                format!("{with_comma}{:<pad$}", "", pad = width_target - visible)
+            }
+        }
+    };
+
+    let last_idx = pairs.len().saturating_sub(1);
+    let vars_line: String = pairs.iter().enumerate()
+        .map(|(i, (v, _))| pad(v, i, i == last_idx))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let specs_line: String = pairs.iter().enumerate()
+        .map(|(i, (_, s))| pad(s, i, i == last_idx))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    format!(
+        "{kw_open}for{kw_close} {bracket_open}[{bracket_close}{vars_line}{bracket_open}]{bracket_close}\n\
+         {indent_prefix} {kw_open}in{kw_close} {bracket_open}[{bracket_close}{specs_line}{bracket_open}]{bracket_close}"
+    )
+}
+
 fn format_scenario_nodes(
     nodes: &[nbrs_workload::model::ScenarioNode],
     phases: &std::collections::HashMap<String, nbrs_workload::model::WorkloadPhase>,
@@ -4158,10 +4238,17 @@ fn format_scenario_nodes(
                             let (var, spec) = &pairs[0];
                             format!("for_each {var} in {spec}")
                         } else {
-                            let vars: Vec<&str> = pairs.iter().map(|(v, _)| v.as_str()).collect();
-                            let specs: Vec<&str> = pairs.iter().map(|(_, s)| s.as_str()).collect();
-                            format!("for_combinations [{}] in [{}]",
-                                vars.join(", "), specs.join(", "))
+                            // Two-line column-aligned form for
+                            // multi-coord comprehensions: variable
+                            // names on the first line, source
+                            // expressions on the second, each
+                            // column padded to its widest
+                            // (var, spec) pair so the columns
+                            // line up vertically. Keywords
+                            // `for` / ` in` are right-aligned
+                            // so the `[` brackets land in the
+                            // same column.
+                            format_for_combinations(&pairs, &indent)
                         }
                     }
                 };
@@ -4984,6 +5071,56 @@ mod tests {
         ]));
         assert!(!out.iter().any(|a| a.starts_with("scenario=")),
             "readout body misread as scenario: {out:?}");
+    }
+
+    /// `format_for_combinations` lays out vars and specs in
+    /// column-aligned pairs. Each column is padded to the
+    /// widest of its (var, spec) so corresponding entries
+    /// stack vertically. With NO_COLOR set (the test
+    /// process's default), the output contains no ANSI
+    /// escapes — easier to assert against.
+    #[test]
+    fn format_for_combinations_aligns_columns() {
+        // Force the no-color branch so the assertion can
+        // pattern-match the raw text.
+        // SAFETY: tests run in a fresh process; `NO_COLOR` only
+        // affects the local observer::use_color() call.
+        unsafe { std::env::set_var("NO_COLOR", "1"); }
+        let pairs = vec![
+            ("sm".to_string(),  "{sm_values}".to_string()),
+            ("mnc".to_string(), "{mnc_values}".to_string()),
+            ("alf_label".to_string(), "concat({alf_label_values})".to_string()),
+        ];
+        let out = format_for_combinations(&pairs, "");
+        let lines: Vec<&str> = out.split('\n').collect();
+        assert_eq!(lines.len(), 2, "MUST produce exactly 2 lines: {out:?}");
+        assert!(lines[0].starts_with("for ["),
+            "first line MUST start with `for [`: {:?}", lines[0]);
+        assert!(lines[1].starts_with(" in ["),
+            "second line MUST start with ` in [`: {:?}", lines[1]);
+        // Bracket columns align: the `[` after `for` and the
+        // `[` after `in ` should be at the same column index.
+        let l0_bracket = lines[0].find('[').unwrap();
+        let l1_bracket = lines[1].find('[').unwrap();
+        assert_eq!(l0_bracket, l1_bracket,
+            "`[` brackets MUST align: line0={l0_bracket}, line1={l1_bracket}");
+        // Column alignment: the comma after `sm,` on line 0
+        // sits at the same column as the comma after the
+        // `{sm_values},` on line 1 — except padded so that
+        // `mnc` on line 0 starts at the same column as
+        // `{mnc_values}` on line 1.
+        let mnc_pos = lines[0].find("mnc").unwrap();
+        let mnc_values_pos = lines[1].find("{mnc_values}").unwrap();
+        assert_eq!(mnc_pos, mnc_values_pos,
+            "column 2 MUST align: `mnc`@{mnc_pos} vs `{{mnc_values}}`@{mnc_values_pos}\n{out}");
+        let alf_pos = lines[0].find("alf_label").unwrap();
+        let alf_concat_pos = lines[1].find("concat(").unwrap();
+        assert_eq!(alf_pos, alf_concat_pos,
+            "column 3 MUST align: `alf_label`@{alf_pos} vs `concat(...)`@{alf_concat_pos}\n{out}");
+        // Closing brackets present on both lines.
+        assert!(lines[0].ends_with(']'));
+        assert!(lines[1].ends_with(']'));
+        unsafe { std::env::remove_var("NO_COLOR"); }
     }
 }
 
