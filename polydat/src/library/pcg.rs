@@ -15,8 +15,18 @@
 //! - [`Pcg`] — fixed seed and stream, position is the wire input
 //! - [`PcgStream`] — fixed seed, both position and stream are wire inputs
 //! - [`CycleWalk`] — bijective permutation of `[0, range)` via cycle-walking
+//!
+//! SRD-80b Phase E — all three nodes are macro-authored via
+//! `#[polydat_node]`. `CycleWalk` uses multi-source `#[poly_const]`
+//! to derive a `CycleWalkState` from `(range, seed, stream)` at
+//! construction time, plus `compiled_u64 = ...` / `jit_constants
+//! = ...` overrides that capture the cached Feistel state by Copy
+//! and publish `[range, seed, inc]` to the JIT classifier.
 
-use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
+use crate::ast::CompiledU64Op;
+#[cfg(test)]
+use crate::ast::{PolydatNode, Value};
+use crate::derive_support::{Const, PolydatSetup};
 
 // =================================================================
 // PCG-RXS-M-XS 64/64 core algorithm
@@ -71,74 +81,34 @@ pub(crate) fn pcg_seek(seed: u64, inc: u64, position: u64) -> u64 {
 
 /// PCG-RXS-M-XS 64/64 random number generator with fixed seed and stream.
 ///
-/// Signature: `pcg(position: u64) -> u64`
+/// Signature: `pcg(input: u64, seed: u64, stream: u64) -> u64`
 ///
 /// The `seed` and `stream` are init-time constants baked into the node.
-/// The `position` wire input selects which element of the sequence to
-/// return. Seeking is O(log N) so any position can be accessed directly.
+/// The `input` wire selects which element of the sequence to return.
+/// Seeking is O(log N) so any position can be accessed directly.
 ///
 /// Use this when every thread/cycle needs an independent, deterministic
 /// random value from the same generator. The output is a full 64-bit
 /// pseudo-random value suitable for feeding into range reduction,
 /// unit-interval mapping, or distribution sampling.
 ///
-/// JIT level: P2 (compiled_u64 closure with captured seed and inc).
-/// Exposes `jit_constants`: `[seed, inc]`.
-pub struct Pcg {
-    meta: NodeMeta,
-    seed: u64,
-    inc: u64,
-}
-
-impl Pcg {
-    /// Create a new PCG node.
-    ///
-    /// - `seed`: initial LCG state
-    /// - `stream`: stream selector; the LCG increment is `2 * stream + 1`
-    pub fn new(seed: u64, stream: u64) -> Self {
-        let inc = 2u64.wrapping_mul(stream).wrapping_add(1);
-        Self {
-            meta: NodeMeta {
-                name: "pcg".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("position")),
-                    Slot::const_u64("seed", seed),
-                    Slot::const_u64("inc", inc),
-                ],
-            },
-            seed,
-            inc,
-        }
-    }
-}
-
-impl PolydatNode for Pcg {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let position = inputs[0].as_u64();
-        outputs[0] = Value::U64(pcg_seek(self.seed, self.inc, position));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let seed = self.seed;
-        let inc = self.inc;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = pcg_seek(seed, inc, inputs[0]);
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> {
-        vec![self.seed, self.inc]
-    }
+/// JIT level: P2 (auto-emitted `compiled_u64` closure with captured
+/// `seed` and `stream`; the body recomputes `inc = 2*stream + 1`
+/// per call — a single mul+add, negligible vs the seek work).
+/// `jit_constants`: `[seed, stream]` in declaration order.
+#[crate::polydat_node(category = Permutation)]
+fn pcg(
+    input: u64,
+    #[poly_default(0u64)] seed: Const<u64>,
+    #[poly_default(0u64)] stream: Const<u64>,
+) -> u64 {
+    let inc = 2u64.wrapping_mul(*stream).wrapping_add(1);
+    pcg_seek(*seed, inc, input)
 }
 
 /// PCG-RXS-M-XS 64/64 with runtime stream selection.
 ///
-/// Signature: `pcg_stream(position: u64, stream_id: u64) -> u64`
+/// Signature: `pcg_stream(input: u64, stream: u64, seed: u64) -> u64`
 ///
 /// Like [`Pcg`], but the stream is a wire input rather than a constant.
 /// This allows each row or partition to use a different stream while
@@ -148,55 +118,93 @@ impl PolydatNode for Pcg {
 /// Use this when the stream identity is data-dependent (e.g., derived
 /// from a partition key) and cannot be fixed at assembly time.
 ///
-/// JIT level: P2 (compiled_u64 closure with captured seed).
-pub struct PcgStream {
-    meta: NodeMeta,
-    seed: u64,
+/// JIT level: P2 (auto-emitted `compiled_u64` closure with captured
+/// `seed`; `inc` derives from the wire-fed `stream` each call).
+#[crate::polydat_node(category = Permutation)]
+fn pcg_stream(input: u64, stream: u64, #[poly_default(0u64)] seed: Const<u64>) -> u64 {
+    let inc = 2u64.wrapping_mul(stream).wrapping_add(1);
+    pcg_seek(*seed, inc, input)
 }
 
-impl PcgStream {
-    /// Create a new PcgStream node.
-    ///
-    /// - `seed`: initial LCG state (init-time constant)
-    pub fn new(seed: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "pcg_stream".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::u64("position")), Slot::Wire(Port::u64("stream_id"))],
-            },
-            seed,
-        }
-    }
+/// Number of Feistel rounds. 6 rounds provides good diffusion.
+const FEISTEL_ROUNDS: usize = 6;
+
+/// Pre-computed Feistel state for [`CycleWalk`]. Built once at
+/// construction from `(range, seed, stream)` via the multi-source
+/// `#[poly_const]` setup; consumed read-only by every cycle and by
+/// the `compiled_u64` override's captured closure.
+pub struct CycleWalkState {
+    /// Number of bits per Feistel half (total domain is 2^(2*half_bits)).
+    pub half_bits: u32,
+    /// Bitmask for each half: `(1 << half_bits) - 1`.
+    pub half_mask: u64,
+    /// PCG-derived LCG increment, `2 * stream + 1`. Published to
+    /// the JIT classifier as the third element of `jit_constants`.
+    pub inc: u64,
+    /// Pre-computed round keys derived from seed and stream.
+    pub round_keys: [u64; FEISTEL_ROUNDS],
 }
 
-impl PolydatNode for PcgStream {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
+impl PolydatSetup for CycleWalkState {}
+
+/// Joint Feistel-state derivation. Single-call construction-time
+/// invocation per node instance; the macro emits the call inside
+/// the generated `CycleWalk::new(range, seed, stream)`.
+///
+/// Panics if `range` is 0 — preserves the construction-time
+/// validation contract from the pre-Phase-E hand-written form.
+fn build_cycle_walk_state(range: u64, seed: u64, stream: u64) -> CycleWalkState {
+    assert!(range > 0, "CycleWalk range must be > 0");
+    let inc = 2u64.wrapping_mul(stream).wrapping_add(1);
+
+    // Compute the total bit width needed, then round up to even
+    // so the Feistel halves are balanced.
+    let min_bits = if range <= 1 {
+        2 // minimum 2 bits for a balanced Feistel
+    } else {
+        let b = 64 - (range - 1).leading_zeros();
+        if !b.is_multiple_of(2) { b + 1 } else { b.max(2) }
+    };
+    let half_bits = min_bits / 2;
+    let half_mask = (1u64 << half_bits) - 1;
+
+    // Derive round keys from seed and inc using the PCG itself.
+    let mut round_keys = [0u64; FEISTEL_ROUNDS];
+    for (i, key) in round_keys.iter_mut().enumerate() {
+        *key = pcg_seek(seed, inc, i as u64 + 1_000_000_000);
     }
 
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let position = inputs[0].as_u64();
-        let stream_id = inputs[1].as_u64();
-        let inc = 2u64.wrapping_mul(stream_id).wrapping_add(1);
-        outputs[0] = Value::U64(pcg_seek(self.seed, inc, position));
-    }
+    CycleWalkState { half_bits, half_mask, inc, round_keys }
+}
 
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let seed = self.seed;
-        Some(Box::new(move |inputs, outputs| {
-            let inc = 2u64.wrapping_mul(inputs[1]).wrapping_add(1);
-            outputs[0] = pcg_seek(seed, inc, inputs[0]);
-        }))
-    }
+/// `compiled_u64` override — captures the pre-computed Feistel
+/// state from `&Self` by Copy and returns a closure that walks
+/// the input through the bijection. SRD-80b in-spirit refinement:
+/// the override receives `&Self` so setup-derived state is reachable
+/// without exposing the macro-internal struct shape to user code.
+fn cycle_walk_jit(node: &CycleWalk) -> CompiledU64Op {
+    let range = node.range;
+    let half_bits = node.state.half_bits;
+    let half_mask = node.state.half_mask;
+    let round_keys = node.state.round_keys;
+    Box::new(move |inputs, outputs| {
+        outputs[0] = cycle_walk_inner(inputs[0], range, half_bits, half_mask, &round_keys);
+    })
+}
+
+/// `jit_constants` override — publishes `[range, seed, inc]` in
+/// the order the Phase-3 classifier expects. `inc` comes from the
+/// cached state (derived from `stream` at construction).
+fn cycle_walk_jit_constants(node: &CycleWalk) -> Vec<u64> {
+    vec![node.range, node.seed, node.state.inc]
 }
 
 /// Bijective permutation of `[0, range)` via cycle-walking over PCG.
 ///
-/// Signature: `cycle_walk(position: u64) -> u64`
+/// Signature: `cycle_walk(position: u64, range: u64, seed: u64, stream: u64) -> u64`
 ///
 /// Maps every integer in `[0, range)` to a unique integer in `[0, range)`
-/// (a permutation). Internally uses a 3-round Feistel network operating
+/// (a permutation). Internally uses a 6-round Feistel network operating
 /// on the bit-width of range, with PCG-derived round keys, then
 /// cycle-walks: if the Feistel output is >= range, it is fed back as
 /// input. Because the Feistel cipher is a bijection on the power-of-two
@@ -210,74 +218,31 @@ impl PolydatNode for PcgStream {
 ///
 /// The `range`, `seed`, and `stream` are init-time constants.
 ///
-/// JIT level: P2 (compiled_u64 closure with captured constants).
-/// Exposes `jit_constants`: `[range, seed, inc]`.
-pub struct CycleWalk {
-    meta: NodeMeta,
-    range: u64,
-    seed: u64,
-    inc: u64,
-    /// Number of bits per Feistel half (total domain is 2^(2*half_bits)).
-    half_bits: u32,
-    /// Bitmask for each half: `(1 << half_bits) - 1`.
-    half_mask: u64,
-    /// Pre-computed round keys derived from seed and stream.
-    round_keys: [u64; FEISTEL_ROUNDS],
-}
-
-/// Number of Feistel rounds. 6 rounds provides good diffusion.
-const FEISTEL_ROUNDS: usize = 6;
-
-impl CycleWalk {
-    /// Create a new CycleWalk node.
-    ///
-    /// - `range`: the permutation domain `[0, range)`
-    /// - `seed`: initial LCG state
-    /// - `stream`: stream selector; the LCG increment is `2 * stream + 1`
-    ///
-    /// # Panics
-    ///
-    /// Panics if `range` is 0.
-    pub fn new(range: u64, seed: u64, stream: u64) -> Self {
-        assert!(range > 0, "CycleWalk range must be > 0");
-        let inc = 2u64.wrapping_mul(stream).wrapping_add(1);
-
-        // Compute the total bit width needed, then round up to even
-        // so the Feistel halves are balanced.
-        let min_bits = if range <= 1 {
-            2 // minimum 2 bits for a balanced Feistel
-        } else {
-            let b = 64 - (range - 1).leading_zeros();
-            if !b.is_multiple_of(2) { b + 1 } else { b.max(2) }
-        };
-        let half_bits = min_bits / 2;
-        let half_mask = (1u64 << half_bits) - 1;
-
-        // Derive round keys from seed and inc using the PCG itself.
-        let mut round_keys = [0u64; FEISTEL_ROUNDS];
-        for (i, key) in round_keys.iter_mut().enumerate() {
-            *key = pcg_seek(seed, inc, i as u64 + 1_000_000_000);
-        }
-
-        Self {
-            meta: NodeMeta {
-                name: "cycle_walk".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("position")),
-                    Slot::const_u64("range", range),
-                    Slot::const_u64("seed", seed),
-                    Slot::const_u64("inc", inc),
-                ],
-            },
-            range,
-            seed,
-            inc,
-            half_bits,
-            half_mask,
-            round_keys,
-        }
-    }
+/// JIT level: P2 — macro-authored via `compiled_u64 = ...` /
+/// `jit_constants = ...` overrides that capture the pre-computed
+/// `CycleWalkState`. Exposes `jit_constants`: `[range, seed, inc]`.
+#[crate::polydat_node(
+    category = Permutation,
+    compiled_u64 = cycle_walk_jit,
+    jit_constants = cycle_walk_jit_constants,
+)]
+fn cycle_walk(
+    position: u64,
+    range: Const<u64>,
+    #[poly_default(0u64)] seed: Const<u64>,
+    #[poly_default(0u64)] stream: Const<u64>,
+    #[poly_const(build_cycle_walk_state, from = (range, seed, stream))]
+    state: &CycleWalkState,
+) -> u64 {
+    let _ = seed;
+    let _ = stream;
+    cycle_walk_inner(
+        position,
+        *range,
+        state.half_bits,
+        state.half_mask,
+        &state.round_keys,
+    )
 }
 
 /// Feistel round function: mix the half-block with a round key.
@@ -340,137 +305,10 @@ fn cycle_walk_inner(
     }
 }
 
-impl PolydatNode for CycleWalk {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
+// CycleWalk now self-registers via `#[polydat_node]`; the
+// hand-written `signatures()` / `build_node()` / `register_nodes!`
+// entries from the pre-Phase-E form have been removed.
 
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let position = inputs[0].as_u64();
-        outputs[0] = Value::U64(cycle_walk_inner(
-            position, self.range, self.half_bits, self.half_mask, &self.round_keys,
-        ));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let range = self.range;
-        let half_bits = self.half_bits;
-        let half_mask = self.half_mask;
-        let round_keys = self.round_keys;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = cycle_walk_inner(inputs[0], range, half_bits, half_mask, &round_keys);
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> {
-        vec![self.range, self.seed, self.inc]
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for PCG RNG and permutation nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "pcg", category: C::Permutation,
-            outputs: 1, description: "PCG-RXS-M-XS seekable RNG (pure function)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true, example: "42", constraint: None },
-                ParamSpec { name: "stream", slot_type: SlotType::ConstU64, required: true, example: "42", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Seekable pseudo-random generator: a pure function from position.\nPCG-RXS-M-XS variant — given the same input, seed, and stream,\nalways returns the same output. Stateless alternative to hash.\nParameters:\n  input  — u64 position (cycle ordinal)\n  seed   — initialization constant\n  stream — stream selector (different streams = independent sequences)\nExample: pcg(cycle, 42, 0)\nTheory: PCG uses a linear congruential core with permuted output;\nthe RXS-M-XS variant supports O(1) seeking to any position.",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "pcg_stream", category: C::Permutation,
-            outputs: 1, description: "PCG with dynamic stream ID from wire",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "stream", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true, example: "42", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "PCG with a runtime (wire) stream ID instead of a fixed constant.\nUse when the stream identity is data-dependent (e.g., derived from\na partition key) and cannot be fixed at assembly time.\nParameters:\n  input  — u64 position (cycle ordinal)\n  stream — u64 wire input selecting the stream\n  seed   — initialization constant (u64)\nExample: pcg_stream(cycle, partition_id, 42)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "cycle_walk", category: C::Permutation,
-            outputs: 1, description: "bijective permutation via Feistel + cycle-walking",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "range", slot_type: SlotType::ConstU64, required: true, example: "100",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::NonZeroU64) },
-                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true, example: "42", constraint: None },
-                ParamSpec { name: "stream", slot_type: SlotType::ConstU64, required: true, example: "42", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Bijective permutation of [0, range) via a Feistel network + cycle-walking.\nEvery input maps to a unique output (and vice versa) within [0, range).\nUse to visit every row exactly once in pseudo-random order, or to\ngenerate unique IDs without a tracking structure.\nParameters:\n  input  — u64 wire input (position in [0, range))\n  range  — domain size (u64, must be > 0)\n  seed   — Feistel round key seed (u64)\n  stream — stream selector (u64)\nExample: cycle_walk(cycle, 1000000, 42, 0)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "shuffle", category: C::Permutation,
-            outputs: 1, description: "bijective LFSR permutation",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "min", slot_type: SlotType::ConstU64, required: false, example: "100", constraint: None },
-                ParamSpec { name: "size", slot_type: SlotType::ConstU64, required: true, example: "100",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::NonZeroU64) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Bijective permutation: maps [0, size) to [0, size) with no collisions.\nEvery input maps to a unique output and vice versa — a perfect shuffle.\nParameters:\n  input — u64 wire input\n  min   — optional offset added to output (default 0)\n  size  — range size (required)\nExample: shuffle(cycle, 0, 10000)  // permute 0..9999\nTheory: uses a maximal-length LFSR (linear feedback shift register)\nto generate a permutation without storing a full table.",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-/// Try to build a PCG or shuffle node from a function name and const args.
-///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "pcg" => Some(Ok(Box::new(Pcg::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(0),
-            consts.get(1).map(|c| c.as_u64()).unwrap_or(0),
-        )))),
-        "pcg_stream" => Some(Ok(Box::new(PcgStream::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(0),
-        )))),
-        "cycle_walk" => Some(Ok(Box::new(CycleWalk::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(1000),
-            consts.get(1).map(|c| c.as_u64()).unwrap_or(0),
-            consts.get(2).map(|c| c.as_u64()).unwrap_or(0),
-        )))),
-        "shuffle" => Some(Ok(Box::new(crate::library::sampling::metashift::Shuffle::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(0),
-            consts.get(1).map(|c| c.as_u64()).unwrap_or(1024),
-        )))),
-        _ => None,
-    }
-}
-
-
-crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,11 +424,16 @@ mod tests {
 
     #[test]
     fn pcg_jit_constants() {
+        // Macro auto-emits jit_constants in declaration order:
+        // [seed, stream]. Phase-3 classifier doesn't special-case
+        // pcg (it rides the Fallback path), so the precise layout
+        // is informational; the contract is "values the closure
+        // depends on", and the body recomputes inc from stream.
         let node = Pcg::new(42, 7);
         let consts = node.jit_constants();
         assert_eq!(consts.len(), 2);
         assert_eq!(consts[0], 42, "first constant is seed");
-        assert_eq!(consts[1], 2 * 7 + 1, "second constant is inc = 2*stream+1");
+        assert_eq!(consts[1], 7, "second constant is stream (inc = 2*stream+1 derived in body)");
     }
 
     // ----- PcgStream node tests -----

@@ -60,6 +60,7 @@ programs combine; read in order if you're new to it.
 - [SRD 18c: Comprehension Syntax](sysref/18c_comprehension_syntax.md) — layered grammar of clause expressions: literal lists, ranges, named generators, `where` filter, SI suffixes, tuple LHS (parallel-iter + destructure), bucket/concat/interval LUT expansions.
 - [SRD 18d: Comprehension Traversal Order](sysref/18d_comprehension_traversal_order.md) — emission order of tuples: lex, diagonal, extrema-first, concentric shells, space-filling (Halton/Sobol/LHS), custom; composes with `where` filter; truncation as part of the ordering declaration.
 - [SRD 18e: Comprehension Canonical Reference](sysref/18e_comprehension_canonical_reference.md) — the implementer contract: full AST in one place, Cartesian/Union detection, coordinate-set contract, index-space ordering rule, Union+non-lex rejection, `where` predicate semantics, Layer 7 extension path with `Value::Tuple` dependency. Read after 18c/18d, before writing or auditing comprehension code.
+- [SRD 18f: Comprehension Source Forms — List & String Comprehensions](sysref/18f_comprehension_source_forms.md) *(DRAFT)* — the source position (right of `in`): peel-exactly-one-level invariant; **list comprehension sugar** `[S]` (no-peel) / `[S…]` (destructure) / `[a,b,c]`; **string comprehension** double-quoted = iterable (token-strip on `, ; ws`, colons retained) vs single-quoted = atomic, *positional* (only in the source slot); relaxed `x in S` ≡ infer between `[S…]`/`[S]` via the canonical `iteration_interior` predicate; list elements parsed by the core expression grammar (bare = wire ref, quoted = string — retires bare-word→string coercion); interpolation declared orthogonal to quote-kind. Supersedes the ad-hoc peel/wrap in `evaluate_spec_internal`.
 
 ### Polydat kernel internals
 
@@ -116,6 +117,7 @@ specifies how the kernel runs.
 ### TUI / CLI / build
 
 - [SRD 60: CLI Structure](sysref/60_cli.md), [SRD 61: Single Binary, Feature-Gated Drivers](sysref/61_single_binary.md), [SRD 62: TUI Layout](sysref/62_tui_layout.md), [SRD 64: Report CLI](sysref/64_report_cli.md) *(DRAFT)*.
+- [SRD 81: Event-Sourced Display Projections](sysref/81_event_sourced_display.md) *(DRAFT — design)* — every display surface (terminal scrollback, TUI tree/log/panels, `session.log`, replay) is a **projection** of one typed, ordered **event stream**; the `RunState` snapshot is a **fold** of that stream. No surface consumes a pre-rendered string built for another surface — rendering always goes through the single `ReadoutSink` seam (`StringSink` for terminal/log, a new ratatui `SpanSink` for the TUI). Fixes the SRD-63 conflation where the per-phase `✓` outcome is `diag!`'d into the log plane as an ANSI string (garbles `draw_log`, pollutes `session.log`). Builds on existing machinery (`readouts::Event`, `CheckpointEvent` JSONL fold per SRD-44a, `PhaseSummary` per SRD-76, actor+ArcSwap per SRD-02). Load-bearing artifacts: the `ReadoutSink` seam + a sink-agreement property test. Pushes: (1) de-conflate + typed events ring; (2) `SpanSink` + native TUI projection; (3) persistence/replay reconciliation.
 
 ---
 

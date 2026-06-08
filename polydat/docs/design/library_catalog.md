@@ -426,35 +426,69 @@ different source kind (CSV, streaming, etc.).
 
 ## Registration
 
-Nodes are registered in the DSL compiler's function registry
-(`polydat/src/dsl/registry.rs`). Each entry maps a function
-name to a factory that produces a `Box<dyn GkNode>` from parsed
-arguments.
+Library nodes are authored via the `#[polydat_node]`
+attribute macro and self-register through the `inventory`
+crate at link time. The macro is the SOLE authoring path for
+workload-callable library nodes (SRD-80b §"the macro is the
+sole authoring path"). The canonical-form table in
+[`docs/sysref/80b_macro_universal_authoring.md`](../../../docs/sysref/80b_macro_universal_authoring.md)
+§"Authoring patterns" lists every recognised function-signature
+shape; new nodes use what's there.
 
 ```rust
-registry.register("hash", |args| {
-    Ok(Box::new(Hash64::new()))
-});
+// Scalar — body returns the output value; macro reads
+// `category` + `purity` / `commutativity` per attribute.
+#[polydat_node(category = Hashing)]
+fn hash(input: u64) -> u64 {
+    xxh3_64(&input.to_le_bytes())
+}
 
-registry.register("mod", |args| {
-    let modulus = args.get_u64(0)?;
-    Ok(Box::new(ModU64::new(modulus)))
-});
+// Const arg — `Const<T>` wraps a workload-supplied literal.
+#[polydat_node(category = Arithmetic)]
+fn mod_u64(input: u64, modulus: Const<u64>) -> u64 {
+    input % modulus.0
+}
 ```
 
-Vectordata nodes are registered behind a `vectordata` feature gate.
+The macro reads everything from the function signature:
+- Per-arg metadata via Wire trait consts (`PORT`, `JIT`,
+  `RESOLVER`, `WIRE_COST`) — no `#[polydat_node]` attribute
+  noise for these
+- Marker wrappers (`Const<T>`, `Ext<T>`, `Resolved<R, T>`,
+  `Config<T>`, `Option<T>`, `DynamicOutputs<T>`) cover every
+  shape the operator surfaces explicitly
+- Variadic shapes recognised syntactically: `&[T]` (single),
+  two `&[T]` args (split-halves), `Const<Vec<C>>` (trailing
+  scalar consts)
 
-### Node Registration
+Vectordata nodes are registered behind a `vectordata` feature
+gate. Cross-crate registration works identically — adapter
+crates (`nbrs-adapter-cql`, etc.) declare `#[polydat_node]`
+functions in their own source and their nodes appear in the
+Polydat registry at link time.
 
-Node functions self-register via the `register_nodes!` macro.
-Each node module exports `signatures()` and `build_node()`,
-then calls:
+### Carve-outs from the canonical path
 
-    crate::register_nodes!(signatures, build_node);
+Six files contain hand-written `impl PolydatNode for X` blocks
+by explicit architectural design:
 
-This works across crate boundaries — adapter crates can define
-domain-specific nodes (e.g., `cql_timeuuid` in nbrs-adapter-cql) that
-automatically appear in the Polydat function registry at link time.
+- `polydat/src/library/identity.rs` — `PortPassthrough`,
+  `ConstHandle`, `ConstExt`: compiler-synthesised
+  infrastructure (extern-port nodes, fold-pass synthesised
+  from runtime values), not DSL-callable.
+- `polydat/src/library/assertions.rs` — `AssertType`,
+  `AssertValue`: compiler-synthesised via runtime-PortType /
+  runtime-ConstConstraint dispatch.
+- `polydat/src/library/context.rs` — `CursorLimit`:
+  cursor-compiler synthesised; no workload signature.
+- `polydat/src/library/sampling/lut.rs` — `LutSample`:
+  Rust-internal composition primitive backing the `dist_*`
+  family; no DSL surface.
+
+This carve-out list is the ceiling — any new hand-written
+`impl PolydatNode for X` in `polydat/src/library/**` outside
+these files fails the SRD-80b invariant test at
+`polydat/tests/srd80b_invariant.rs`.
 
 ---
 

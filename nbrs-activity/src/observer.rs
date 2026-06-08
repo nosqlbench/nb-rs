@@ -26,6 +26,37 @@ pub enum LogLevel {
     Error,
 }
 
+/// Provenance tag carried alongside a log message so display
+/// sinks can route by *kind*, not by sniffing message text.
+///
+/// The only consumer today is the `tui=terminal` log sink: it
+/// owns a managed phase-history region (the idempotent catch-up
+/// projection of the scene tree), so the phase start/end readout
+/// lines that would otherwise scroll past in the log stream are
+/// [`LogCategory::PhaseLifecycle`] and suppressed from that
+/// stream — they live in the region instead. Every other surface
+/// (`session.log`, the failure dump, the full TUI panel) treats
+/// all categories alike; the category is purely additive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogCategory {
+    /// An ordinary diagnostic line (the overwhelming majority).
+    /// The TUI log panel shows these and only these.
+    #[default]
+    Diagnostic,
+    /// A phase **start** lifecycle render (the `phase_starting`
+    /// readout). Low-value noise next to the live status and the
+    /// `✓` outcome marker, so the terminal sink keeps it out of
+    /// scrollback and the TUI log panel filters it.
+    PhaseLifecycle,
+    /// A per-phase **outcome** render (the `✓`/`✗` `phase_outcome`
+    /// summary). SRD-81: this is a display *projection*, not a
+    /// diagnostic — the terminal scrollback shows it and the TUI
+    /// renders it natively in the tree / active-phase panel, so the
+    /// TUI log panel (diagnostics-only) filters it out instead of
+    /// garbling the multi-line ANSI render as one `Span`.
+    PhaseOutcome,
+}
+
 /// Kind of pre-mapped scenario entry. Re-export of
 /// [`crate::scene_tree::NodeKind`] for callers that already
 /// imported it via the observer module.
@@ -59,6 +90,15 @@ pub trait RunObserver: Send + Sync {
     /// to a ring buffer in TUI mode. All `eprintln!` in the
     /// runtime should go through this instead.
     fn log(&self, level: LogLevel, message: &str);
+
+    /// Log a message carrying an explicit [`LogCategory`]. The
+    /// default ignores the category and delegates to [`Self::log`]
+    /// — correct for every observer whose surface treats all
+    /// categories alike. Observers that feed a category-aware sink
+    /// (the run-state actor ring) override this to retain the tag.
+    fn log_categorized(&self, level: LogLevel, _category: LogCategory, message: &str) {
+        self.log(level, message);
+    }
 
     /// Publish (or clear) the latest rendered status line for
     /// the active phase. Default implementation is a no-op —
@@ -361,6 +401,17 @@ pub fn display_level() -> LogLevel {
 }
 
 pub fn log(level: LogLevel, message: &str) {
+    log_categorized(level, LogCategory::Diagnostic, message);
+}
+
+/// [`log`] with an explicit [`LogCategory`]. The session-log
+/// write (unconditional, all categories) and the fallback stderr
+/// path are identical to [`log`]; the category only changes how a
+/// category-aware display sink files the message. Used by the
+/// readout engine to tag phase-lifecycle renders so the terminal
+/// sink can keep them out of its scrollback (they show in its
+/// managed phase-history region instead).
+pub fn log_categorized(level: LogLevel, category: LogCategory, message: &str) {
     if level >= retain_level() {
         if let Some(sink) = crate::log_sink::global() {
             let tag = match level {
@@ -375,12 +426,19 @@ pub fn log(level: LogLevel, message: &str) {
             // so log lines correlate visually with the session
             // directory.
             let ts = crate::session::now_log_timestamp();
-            let line = format!("{ts} {tag} {message}\n").into_bytes();
+            // The durable session.log is plain text — strip any ANSI
+            // a colored readout render carried in `message` (notably
+            // the phase `✓` outcome, SRD-81 push 1b). The live ring
+            // keeps the colored version for the terminal scrollback,
+            // and the replay capture is untouched; only this file
+            // projection is stripped.
+            let line = format!("{ts} {tag} {}\n",
+                crate::readouts::snapshot::strip_ansi(message)).into_bytes();
             let _ = sink.try_send(line);
         }
     }
     if let Some(obs) = GLOBAL_OBSERVER.get() {
-        obs.log(level, message);
+        obs.log_categorized(level, category, message);
     } else {
         eprintln!("{}", colorize_log_line(level, message));
     }

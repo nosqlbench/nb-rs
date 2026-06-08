@@ -30,7 +30,6 @@ pub mod binder;
 pub mod buf;
 pub mod color;
 pub mod context;
-pub mod event;
 pub mod format;
 pub mod parse;
 pub mod readout;
@@ -47,7 +46,6 @@ pub use binder::{
     validate_body_for_event,
 };
 pub use buf::ReadoutBuf;
-pub use context::{LifecycleState, ReadoutContext, SubjectKind};
-pub use event::Event;
+pub use context::{LifecycleState, ReadoutContext};
 pub use readout::{ContentMode, Lod, OptionTypeMismatch, OptionValue, Readout, ReadoutOptions};
 pub use registry::Registry;

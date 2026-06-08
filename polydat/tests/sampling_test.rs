@@ -9,9 +9,13 @@
 
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::arithmetic::{Add, Interleave, MixedRadix, Mod};
-use polydat::library::hash::Hash64;
+use polydat::library::hash::Hash;
 use polydat::library::sampling::alias::AliasSample;
-use polydat::library::sampling::icd::{ClampF64, IcdSample, UnitInterval};
+use polydat::library::sampling::icd::{
+    ClampF64, DEFAULT_RESOLUTION, UnitInterval,
+    dist_exponential_lut, dist_normal_lut, dist_pareto_lut,
+};
+use polydat::library::sampling::lut::LutSample;
 
 // =================================================================
 // distributions.polydat — Decomposed ICD pipeline
@@ -20,9 +24,10 @@ use polydat::library::sampling::icd::{ClampF64, IcdSample, UnitInterval};
 /// Build: hash → unit_interval → icd_normal(72, 5)
 fn build_normal_pipeline() -> polydat::kernel::PolydatKernel {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("seed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("seed", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
     asm.add_node("quantile", Box::new(UnitInterval::new()), vec![WireRef::node("seed")]);
-    asm.add_node("temperature", Box::new(IcdSample::normal(72.0, 5.0)),
+    asm.add_node("temperature",
+        Box::new(LutSample::new(dist_normal_lut(72.0, 5.0, DEFAULT_RESOLUTION))),
         vec![WireRef::node("quantile")]);
     asm.add_output("temperature", WireRef::node("temperature"));
     asm.compile().unwrap()
@@ -60,11 +65,13 @@ fn normal_pipeline_deterministic() {
 
 fn build_correlated_pipeline() -> polydat::kernel::PolydatKernel {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("seed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("seed", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
     asm.add_node("quantile", Box::new(UnitInterval::new()), vec![WireRef::node("seed")]);
-    asm.add_node("temp", Box::new(IcdSample::normal(72.0, 5.0)),
+    asm.add_node("temp",
+        Box::new(LutSample::new(dist_normal_lut(72.0, 5.0, DEFAULT_RESOLUTION))),
         vec![WireRef::node("quantile")]);
-    asm.add_node("wait", Box::new(IcdSample::exponential(0.5)),
+    asm.add_node("wait",
+        Box::new(LutSample::new(dist_exponential_lut(0.5, DEFAULT_RESOLUTION))),
         vec![WireRef::node("quantile")]);
     asm.add_output("temp", WireRef::node("temp"));
     asm.add_output("wait", WireRef::node("wait"));
@@ -103,9 +110,9 @@ fn build_independent_pipeline() -> polydat::kernel::PolydatKernel {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
     // Chained hashes
-    asm.add_node("h0", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
-    asm.add_node("h1", Box::new(Hash64::new()), vec![WireRef::node("h0")]);
-    asm.add_node("h2", Box::new(Hash64::new()), vec![WireRef::node("h1")]);
+    asm.add_node("h0", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("h1", Box::new(Hash::new()), vec![WireRef::node("h0")]);
+    asm.add_node("h2", Box::new(Hash::new()), vec![WireRef::node("h1")]);
 
     // Independent quantiles
     asm.add_node("q0", Box::new(UnitInterval::new()), vec![WireRef::node("h0")]);
@@ -113,11 +120,14 @@ fn build_independent_pipeline() -> polydat::kernel::PolydatKernel {
     asm.add_node("q2", Box::new(UnitInterval::new()), vec![WireRef::node("h2")]);
 
     // Independent distribution samples
-    asm.add_node("temp", Box::new(IcdSample::normal(72.0, 5.0)),
+    asm.add_node("temp",
+        Box::new(LutSample::new(dist_normal_lut(72.0, 5.0, DEFAULT_RESOLUTION))),
         vec![WireRef::node("q0")]);
-    asm.add_node("wait", Box::new(IcdSample::exponential(0.5)),
+    asm.add_node("wait",
+        Box::new(LutSample::new(dist_exponential_lut(0.5, DEFAULT_RESOLUTION))),
         vec![WireRef::node("q1")]);
-    asm.add_node("size", Box::new(IcdSample::pareto(1.0, 2.0)),
+    asm.add_node("size",
+        Box::new(LutSample::new(dist_pareto_lut(1.0, 2.0, DEFAULT_RESOLUTION))),
         vec![WireRef::node("q2")]);
 
     asm.add_output("temp", WireRef::node("temp"));
@@ -188,18 +198,18 @@ fn build_weighted_entity_pipeline() -> polydat::kernel::PolydatKernel {
 
     // Weighted region selection: 4 regions, US-heavy
     let region_weights = vec![60.0, 20.0, 15.0, 5.0];
-    asm.add_node("tenant_h", Box::new(Hash64::new()),
+    asm.add_node("tenant_h", Box::new(Hash::new()),
         vec![WireRef::node_port("decompose", 0)]);
-    asm.add_node("region", Box::new(AliasSample::from_weights(&region_weights)),
+    asm.add_node("region", Box::new(AliasSample::new(region_weights.clone())),
         vec![WireRef::node("tenant_h")]);
     asm.add_node("tenant_code", Box::new(Mod::new(100000)),
         vec![WireRef::node("tenant_h")]);
 
     // Reuse the same pattern for device types: 4 types, uniform
     let device_weights = vec![25.0, 25.0, 25.0, 25.0];
-    asm.add_node("device_h", Box::new(Hash64::new()),
+    asm.add_node("device_h", Box::new(Hash::new()),
         vec![WireRef::node_port("decompose", 1)]);
-    asm.add_node("device_type", Box::new(AliasSample::from_weights(&device_weights)),
+    asm.add_node("device_type", Box::new(AliasSample::new(device_weights.clone())),
         vec![WireRef::node("device_h")]);
     asm.add_node("device_code", Box::new(Mod::new(100000)),
         vec![WireRef::node("device_h")]);
@@ -266,7 +276,7 @@ fn build_sensor_workload() -> polydat::kernel::PolydatKernel {
         vec![WireRef::input("cycle")]);
 
     // Site identity
-    asm.add_node("site_h", Box::new(Hash64::new()),
+    asm.add_node("site_h", Box::new(Hash::new()),
         vec![WireRef::node_port("decompose", 0)]);
     asm.add_node("site_code", Box::new(Mod::new(10000)),
         vec![WireRef::node("site_h")]);
@@ -274,7 +284,7 @@ fn build_sensor_workload() -> polydat::kernel::PolydatKernel {
     // Sensor identity (interleave site + sensor)
     asm.add_node("ss_interleave", Box::new(Interleave::new()),
         vec![WireRef::node_port("decompose", 0), WireRef::node_port("decompose", 1)]);
-    asm.add_node("sensor_h", Box::new(Hash64::new()),
+    asm.add_node("sensor_h", Box::new(Hash::new()),
         vec![WireRef::node("ss_interleave")]);
     asm.add_node("sensor_code", Box::new(Mod::new(100000)),
         vec![WireRef::node("sensor_h")]);
@@ -282,21 +292,24 @@ fn build_sensor_workload() -> polydat::kernel::PolydatKernel {
     // Independent quantiles via chained hashes
     asm.add_node("combined", Box::new(Interleave::new()),
         vec![WireRef::node("sensor_h"), WireRef::node_port("decompose", 2)]);
-    asm.add_node("h0", Box::new(Hash64::new()), vec![WireRef::node("combined")]);
-    asm.add_node("h1", Box::new(Hash64::new()), vec![WireRef::node("h0")]);
-    asm.add_node("h2", Box::new(Hash64::new()), vec![WireRef::node("h1")]);
+    asm.add_node("h0", Box::new(Hash::new()), vec![WireRef::node("combined")]);
+    asm.add_node("h1", Box::new(Hash::new()), vec![WireRef::node("h0")]);
+    asm.add_node("h2", Box::new(Hash::new()), vec![WireRef::node("h1")]);
     asm.add_node("q_temp", Box::new(UnitInterval::new()), vec![WireRef::node("h0")]);
     asm.add_node("q_humid", Box::new(UnitInterval::new()), vec![WireRef::node("h1")]);
     asm.add_node("q_batt", Box::new(UnitInterval::new()), vec![WireRef::node("h2")]);
 
     // Distribution sampling
-    asm.add_node("temperature", Box::new(IcdSample::normal(22.0, 3.0)),
+    asm.add_node("temperature",
+        Box::new(LutSample::new(dist_normal_lut(22.0, 3.0, DEFAULT_RESOLUTION))),
         vec![WireRef::node("q_temp")]);
-    asm.add_node("humidity_raw", Box::new(IcdSample::normal(55.0, 10.0)),
+    asm.add_node("humidity_raw",
+        Box::new(LutSample::new(dist_normal_lut(55.0, 10.0, DEFAULT_RESOLUTION))),
         vec![WireRef::node("q_humid")]);
     asm.add_node("humidity", Box::new(ClampF64::new(0.0, 100.0)),
         vec![WireRef::node("humidity_raw")]);
-    asm.add_node("battery_raw", Box::new(IcdSample::exponential(0.02)),
+    asm.add_node("battery_raw",
+        Box::new(LutSample::new(dist_exponential_lut(0.02, DEFAULT_RESOLUTION))),
         vec![WireRef::node("q_batt")]);
     asm.add_node("battery", Box::new(ClampF64::new(0.0, 100.0)),
         vec![WireRef::node("battery_raw")]);

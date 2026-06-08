@@ -24,7 +24,7 @@
 use std::path::PathBuf;
 
 use nbrs_activity::checkpoint::storage::{self, OpCounts};
-use nbrs_activity::checkpoint::{CheckpointEvent, PathSegment, PhaseIdentity};
+use nbrs_activity::checkpoint::{CheckpointData, PathSegment, PhaseIdentity};
 
 /// Resolve a session argument to an on-disk `checkpoint.jsonl`
 /// path, mirroring the runner's resume-target resolution
@@ -109,7 +109,7 @@ pub fn fold_command(session: &str) -> Result<(), String> {
 /// Format: `<timestamp>  <event_type>  <details>`. The
 /// timestamp + type columns are left-aligned at fixed widths
 /// for scanability; details are variant-specific.
-pub fn render_event(e: &CheckpointEvent) -> String {
+pub fn render_event(e: &CheckpointData) -> String {
     // Pad event-type column to 18 chars so paths line up.
     fn row(at: &str, kind: &str, body: &str) -> String {
         if body.is_empty() {
@@ -119,26 +119,26 @@ pub fn render_event(e: &CheckpointEvent) -> String {
         }
     }
     match e {
-        CheckpointEvent::SessionStart {
+        CheckpointData::SessionStart {
             at, version, session, started_at, invocation,
         } => row(at, "session_start", &format!(
             "session={session} invocation={invocation} version={version} started_at={started_at}",
         )),
-        CheckpointEvent::SessionEnd { at, outcome, error } => {
+        CheckpointData::SessionEnd { at, outcome, error } => {
             let body = match error {
                 Some(err) => format!("outcome={outcome} error={err}"),
                 None => format!("outcome={outcome}"),
             };
             row(at, "session_end", &body)
         }
-        CheckpointEvent::PhaseDeclared { at, identity, skip_eligible } => {
+        CheckpointData::PhaseDeclared { at, identity, skip_eligible } => {
             row(at, "phase_declared",
                 &format!("{} (skip_eligible={skip_eligible})", format_identity(identity)))
         }
-        CheckpointEvent::PhaseStarted { at, identity } => {
+        CheckpointData::PhaseStarted { at, identity } => {
             row(at, "phase_started", &format_identity(identity))
         }
-        CheckpointEvent::PhaseProgress { at, identity, op_counts, cursor_state } => {
+        CheckpointData::PhaseProgress { at, identity, op_counts, cursor_state } => {
             let mut body = format!(
                 "{} {}", format_identity(identity), format_op_counts(op_counts),
             );
@@ -147,13 +147,13 @@ pub fn render_event(e: &CheckpointEvent) -> String {
             }
             row(at, "phase_progress", &body)
         }
-        CheckpointEvent::PhaseCompleted { at, identity, duration_secs, op_counts } => {
+        CheckpointData::PhaseCompleted { at, identity, duration_secs, op_counts } => {
             row(at, "phase_completed", &format!(
                 "{} duration={:.3}s {}",
                 format_identity(identity), duration_secs, format_op_counts(op_counts),
             ))
         }
-        CheckpointEvent::PhaseFailed { at, identity, error, op_counts } => {
+        CheckpointData::PhaseFailed { at, identity, error, op_counts } => {
             let counts = op_counts.as_ref()
                 .map(|c| format!(" {}", format_op_counts(c)))
                 .unwrap_or_default();
@@ -162,17 +162,17 @@ pub fn render_event(e: &CheckpointEvent) -> String {
                 format_identity(identity),
             ))
         }
-        CheckpointEvent::PhaseHash { at, identity, hash_hex } => {
+        CheckpointData::PhaseHash { at, identity, hash_hex } => {
             // 12-char hash prefix is enough for visual diffing
             // without flooding the line.
             let prefix: String = hash_hex.chars().take(12).collect();
             row(at, "phase_hash",
                 &format!("{} hash={prefix}…", format_identity(identity)))
         }
-        CheckpointEvent::ScopeEnter { at, kind, coords, .. } => {
+        CheckpointData::ScopeEnter { at, kind, coords, .. } => {
             row(at, "scope_enter", &format!("kind={kind} coords={}", format_coords_map(coords)))
         }
-        CheckpointEvent::ScopeExit { at, kind, coords, outcome, .. } => {
+        CheckpointData::ScopeExit { at, kind, coords, outcome, .. } => {
             row(at, "scope_exit", &format!(
                 "kind={kind} outcome={outcome} coords={}", format_coords_map(coords),
             ))
@@ -375,7 +375,7 @@ mod tests {
 
         // Render every event the sample log contains and check
         // the human-friendly shape per event type.
-        let events: Vec<CheckpointEvent> = storage::iter_events(&path)
+        let events: Vec<CheckpointData> = storage::iter_events(&path)
             .expect("open log")
             .expect("present")
             .collect::<Result<Vec<_>, _>>()
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn render_event_session_end_includes_outcome() {
-        let e = CheckpointEvent::SessionEnd {
+        let e = CheckpointData::SessionEnd {
             at: "2026-05-07T12:00:05Z".into(),
             outcome: "completed".into(),
             error: None,
@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn render_event_phase_failed_includes_error() {
-        let e = CheckpointEvent::PhaseFailed {
+        let e = CheckpointData::PhaseFailed {
             at: "2026-05-07T12:00:10Z".into(),
             identity: ident("rampup"),
             error: "boom".into(),

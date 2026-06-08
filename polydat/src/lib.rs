@@ -36,11 +36,11 @@
 //!
 //! ```rust
 //! use polydat::compile::assembly::{PolydatAssembler, WireRef};
-//! use polydat::library::hash::Hash64;
+//! use polydat::library::hash::Hash;
 //! use polydat::library::arithmetic::Mod;
 //!
 //! let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-//! asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+//! asm.add_node("hashed", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
 //! asm.add_node("user_id", Box::new(Mod::new(1_000_000)), vec![WireRef::node("hashed")]);
 //! asm.add_output("user_id", WireRef::node("user_id"));
 //!

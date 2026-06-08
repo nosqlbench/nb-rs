@@ -187,7 +187,7 @@ mod tests {
             adapter: None, errors: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![],
+            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
         }

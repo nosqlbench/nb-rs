@@ -8,10 +8,8 @@
 //! mixed_radix for coordinate decomposition, interleave for combining
 //! independent dimensions.
 
-use crate::ast::{
-    Commutativity, CompiledU64Op,
-    PolydatNode, NodeMeta, Port, Slot, Value,
-};
+use crate::ast::CompiledU64Op;
+use crate::derive_support::Const;
 
 /// Add a constant to a u64 value (wrapping).
 ///
@@ -33,17 +31,17 @@ use crate::ast::{
 // both, so Phase 3 dispatch is preserved verbatim.
 
 #[crate::polydat_node(category = Arithmetic)]
-fn add(input: u64, addend: crate::derive_support::Const<u64>) -> u64 {
+fn add(input: u64, addend: Const<u64>) -> u64 {
     input.wrapping_add(*addend)
 }
 
 #[crate::polydat_node(category = Arithmetic)]
-fn mul(input: u64, factor: crate::derive_support::Const<u64>) -> u64 {
+fn mul(input: u64, factor: Const<u64>) -> u64 {
     input.wrapping_mul(*factor)
 }
 
 #[crate::polydat_node(category = Arithmetic)]
-fn div(input: u64, divisor: crate::derive_support::Const<u64>) -> u64 {
+fn div(input: u64, divisor: Const<u64>) -> u64 {
     // Greenfield posture: zero-divisor panics at cycle time
     // (matching the body's `/`). The original `new()` assert
     // is retired with the migration; if early-fail is needed
@@ -52,7 +50,7 @@ fn div(input: u64, divisor: crate::derive_support::Const<u64>) -> u64 {
 }
 
 #[crate::polydat_node(category = Arithmetic)]
-fn r#mod(input: u64, modulus: crate::derive_support::Const<u64>) -> u64 {
+fn r#mod(input: u64, modulus: Const<u64>) -> u64 {
     input % *modulus
 }
 
@@ -124,7 +122,7 @@ fn ceil_to_multiple(value: u64, multiple: u64) -> u64 {
 ///
 /// Signature: `multiples_at_least(value: u64, multiple: u64) -> (u64)`
 ///
-/// Companion to [`CeilToMultipleU64`] that returns the *count*
+/// Companion to [`CeilToMultiple`] that returns the *count*
 /// instead of the product — i.e. `ceil(value / multiple)`. The
 /// invariant `multiples_at_least(v, m) * m == ceil_to_multiple(v, m)`
 /// holds whenever `multiple > 0` and the multiplication doesn't
@@ -183,43 +181,14 @@ fn multiples_at_least(value: u64, multiple: u64) -> u64 {
 /// wins, but they're writing the same value anyway.
 ///
 /// JIT level: P3 (single compare + select).
-pub struct SetOrGetU64 {
-    meta: NodeMeta,
-}
-
-impl Default for SetOrGetU64 {
-    fn default() -> Self { Self::new() }
-}
-
-impl SetOrGetU64 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "set_or_get".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("current")),
-                    Slot::Wire(Port::u64("fallback")),
-                ],
-            },
-        }
-    }
-}
-
-impl PolydatNode for SetOrGetU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let current = inputs[0].as_u64();
-        let fallback = inputs[1].as_u64();
-        outputs[0] = Value::U64(if current == 0 { fallback } else { current });
-    }
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let current = inputs[0];
-            let fallback = inputs[1];
-            outputs[0] = if current == 0 { fallback } else { current };
-        }))
-    }
+//
+// SRD-80b Phase E: migrated to `#[polydat_node]`. Struct
+// renamed from `SetOrGetU64` to `SetOrGet` (greenfield
+// posture — no cross-crate callers reference the old name)
+// to match the macro's snake_case → PascalCase derivation.
+#[crate::polydat_node(category = Arithmetic)]
+fn set_or_get(current: u64, fallback: u64) -> u64 {
+    if current == 0 { fallback } else { current }
 }
 
 /// Clamp an unsigned integer to [min, max].
@@ -230,45 +199,13 @@ impl PolydatNode for SetOrGetU64 {
 /// you want values to pile up at the edges rather than wrap around.
 ///
 /// JIT level: P3 (`umax` + `umin`).
-pub struct ClampU64 {
-    meta: NodeMeta,
-    min: u64,
-    max: u64,
-}
-
-impl ClampU64 {
-    pub fn new(min: u64, max: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "clamp".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_u64("min", min),
-                    Slot::const_u64("max", max),
-                ],
-            },
-            min,
-            max,
-        }
-    }
-}
-
-impl PolydatNode for ClampU64 {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(inputs[0].as_u64().clamp(self.min, self.max));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let min = self.min;
-        let max = self.max;
-        Some(Box::new(move |inputs, outputs| { outputs[0] = inputs[0].clamp(min, max); }))
-    }
-    fn jit_constants(&self) -> Vec<u64> { vec![self.min, self.max] }
+//
+// SRD-80b Phase E: migrated to `#[polydat_node]`. Struct
+// renamed from `ClampU64` to `Clamp` (greenfield posture —
+// no cross-crate callers reference the old name).
+#[crate::polydat_node(category = Arithmetic)]
+fn clamp(input: u64, min: Const<u64>, max: Const<u64>) -> u64 {
+    input.clamp(*min, *max)
 }
 
 /// Decompose a u64 into mixed-radix digits.
@@ -287,68 +224,59 @@ impl PolydatNode for ClampU64 {
 /// d1 increments every `radix[0]` cycles, etc.
 ///
 /// JIT level: P3 (unrolled urem/udiv chain).
-pub struct MixedRadix {
-    meta: NodeMeta,
-    radixes: Vec<u64>,
-}
+//
+// SRD-80b Phase E: kept hand-written. The macro doesn't
+// currently support nodes whose output port count is
+// `MixedRadix` migrated to `#[polydat_node]` via the SRD-80b
+// `DynamicOutputs<T>` shape — the output port count is
+// determined at construction time from the `radixes`
+// `Const<Vec<u64>>` arg's length.
 
-impl MixedRadix {
-    pub fn new(radixes: Vec<u64>) -> Self {
-        let outputs: Vec<Port> = radixes
-            .iter()
-            .enumerate()
-            .map(|(i, _)| Port::u64(format!("d{i}")))
-            .collect();
-        let slots = vec![
-            Slot::Wire(Port::u64("input")),
-            Slot::const_vec_u64("radixes", radixes.clone()),
-        ];
-        Self {
-            meta: NodeMeta {
-                name: "mixed_radix".into(),
-                outs: outputs,
-                ins: slots,
-            },
-            radixes,
-        }
-    }
-}
-
-impl PolydatNode for MixedRadix {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let mut remainder = inputs[0].as_u64();
-        for (i, &radix) in self.radixes.iter().enumerate() {
+fn mixed_radix_jit(node: &MixedRadix) -> CompiledU64Op {
+    let radixes = node.radixes.clone();
+    Box::new(move |inputs, outputs| {
+        let mut remainder = inputs[0];
+        for (i, &radix) in radixes.iter().enumerate() {
             if radix == 0 {
-                outputs[i] = Value::U64(remainder);
+                outputs[i] = remainder;
                 remainder = 0;
             } else {
-                outputs[i] = Value::U64(remainder % radix);
+                outputs[i] = remainder % radix;
                 remainder /= radix;
             }
         }
-    }
+    })
+}
 
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let radixes = self.radixes.clone();
-        Some(Box::new(move |inputs, outputs| {
-            let mut remainder = inputs[0];
-            for (i, &radix) in radixes.iter().enumerate() {
-                if radix == 0 {
-                    outputs[i] = remainder;
-                    remainder = 0;
-                } else {
-                    outputs[i] = remainder % radix;
-                    remainder /= radix;
-                }
-            }
-        }))
-    }
+fn mixed_radix_jit_constants(node: &MixedRadix) -> Vec<u64> {
+    node.radixes.clone()
+}
 
-    fn jit_constants(&self) -> Vec<u64> { self.radixes.clone() }
+/// Decompose `value` into mixed-radix digits using the given
+/// `radixes`. The output is a vector of N digits where N =
+/// `radixes.len()`. A radix of 0 in the trailing position
+/// captures the remainder verbatim.
+#[crate::polydat_node(
+    category = Arithmetic,
+    compiled_u64 = mixed_radix_jit,
+    jit_constants = mixed_radix_jit_constants,
+)]
+fn mixed_radix(
+    input: u64,
+    radixes: crate::derive_support::Const<Vec<u64>>,
+) -> crate::derive_support::DynamicOutputs<u64> {
+    let mut remainder = input;
+    let mut result = Vec::with_capacity(radixes.len());
+    for &radix in radixes.iter() {
+        if radix == 0 {
+            result.push(remainder);
+            remainder = 0;
+        } else {
+            result.push(remainder % radix);
+            remainder /= radix;
+        }
+    }
+    crate::derive_support::DynamicOutputs(result)
 }
 
 /// Sum N u64 inputs (wrapping). Variadic: accepts 0..N wire inputs.
@@ -377,7 +305,7 @@ fn product(values: &[u64]) -> u64 {
     values.iter().fold(1u64, |a, b| a.wrapping_mul(*b))
 }
 
-#[crate::polydat_node(category = Variadic, identity = { u64::MAX }, commutativity = AllCommutative)]
+#[crate::polydat_node(category = Variadic, identity = u64::MAX, commutativity = AllCommutative)]
 fn min(values: &[u64]) -> u64 {
     values.iter().copied().fold(u64::MAX, std::cmp::min)
 }
@@ -398,58 +326,17 @@ fn max(values: &[u64]) -> u64 {
 /// changes when either dimension changes, with spatial correlation.
 ///
 /// JIT level: P3 (extern call).
-pub struct Interleave {
-    meta: NodeMeta,
-}
-
-impl Default for Interleave {
-    fn default() -> Self {
-        Self::new()
+//
+// SRD-80b Phase E: migrated to `#[polydat_node]`. Struct
+// name `Interleave` matches snake_case → PascalCase of `interleave`.
+#[crate::polydat_node(category = Arithmetic)]
+fn interleave(a: u64, b: u64) -> u64 {
+    let mut result: u64 = 0;
+    for i in 0..32 {
+        result |= ((a >> i) & 1) << (2 * i);
+        result |= ((b >> i) & 1) << (2 * i + 1);
     }
-}
-
-impl Interleave {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "interleave".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("a")),
-                    Slot::Wire(Port::u64("b")),
-                ],
-            },
-        }
-    }
-}
-
-impl PolydatNode for Interleave {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let a = inputs[0].as_u64();
-        let b = inputs[1].as_u64();
-        let mut result: u64 = 0;
-        for i in 0..32 {
-            result |= ((a >> i) & 1) << (2 * i);
-            result |= ((b >> i) & 1) << (2 * i + 1);
-        }
-        outputs[0] = Value::U64(result);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let (a, b) = (inputs[0], inputs[1]);
-            let mut result: u64 = 0;
-            for i in 0..32 {
-                result |= ((a >> i) & 1) << (2 * i);
-                result |= ((b >> i) & 1) << (2 * i + 1);
-            }
-            outputs[0] = result;
-        }))
-    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -460,62 +347,14 @@ use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
 use crate::ast::SlotType;
 
 /// Signatures for arithmetic and variadic nodes.
+///
+/// SRD-80b Phase E: most arithmetic nodes route through the
+/// proc-macro NodeRegistration. Only `mixed_radix` (dynamic
+/// output count from a `Const<Vec<C>>` arg) still needs a
+/// hand-written FuncSig + build_node entry.
 pub fn signatures() -> &'static [FuncSig] {
     use FuncCategory as C;
     &[
-        // --- Variadic arithmetic ---
-        // `sum` / `product` / `min` / `max` migrated to
-        // `#[polydat_node]` per SRD-80 PR B.9.
-
-        // --- Arithmetic ---
-        // `add` / `mul` / `div` / `mod` migrated to
-        // `#[polydat_node]` per SRD-80 PR B.7.
-        // `mod_wire` / `div_wire` migrated to `#[polydat_node]` per SRD-80 PR B.14.
-        // `ceil_to_multiple` / `multiples_at_least` migrated to
-        // `#[polydat_node]` per SRD-80 PR B.13.
-        FuncSig {
-            name: "set_or_get", category: C::Arithmetic,
-            outputs: 1, description: "first non-zero of (current, fallback)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "current", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "fallback", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Returns `current` if non-zero, else `fallback`. Use with\nSRD-13f shared wires for cross-scope memoization:\n  shared X := set_or_get(X, expensive_computation())\nFirst evaluation: X reads 0, returns fallback, broadcast\nwrites it to the parent's SharedCell. Subsequent\nevaluations: X reads the cached value, fallback is\ndiscarded. Concurrency-safe via the SharedCell mutex.\nParameters:\n  current  — u64 wire input (typically a shared-bound slot)\n  fallback — u64 wire input (computed value to use when current==0)\nExample: passes := set_or_get(query_passes, multiples_at_least(min, base))",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "clamp", category: C::Arithmetic,
-            outputs: 1, description: "clamp u64 to [min, max]",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "min", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
-                ParamSpec { name: "max", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Saturating clamp: values below min become min, above max become max.\nUnlike mod (which wraps), clamp preserves relative ordering within\nthe valid range. Use when you need hard bounds without wrap-around.\nParameters:\n  input — u64 wire input\n  min   — lower bound (inclusive)\n  max   — upper bound (inclusive)\nExample: clamp(hash(cycle), 10, 500)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "interleave", category: C::Arithmetic,
-            outputs: 1, description: "interleave bits of two u64 values",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Interleave the bits of two u64 values into a single u64 (Morton code).\nBit 0 of a goes to bit 0, bit 0 of b goes to bit 1, bit 1 of a to bit 2, etc.\nUseful for combining two independent coordinates into one value\nthat preserves spatial locality.\nParameters:\n  a — first u64 wire input (even bits in output)\n  b — second u64 wire input (odd bits in output)\nExample: hash(interleave(x_coord, y_coord))",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
         FuncSig {
             name: "mixed_radix", category: C::Arithmetic, outputs: 0,
             description: "decompose into mixed-radix digits (output count = number of radixes)",
@@ -529,26 +368,15 @@ pub fn signatures() -> &'static [FuncSig] {
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
         },
-        // `identity` migrated to `#[polydat_node]` per SRD-80 PR B.8.
     ]
 }
 
 /// Try to build an arithmetic node from a function name and const args.
 ///
-/// Returns `None` if the name is not handled by this module.
+/// Returns `None` if the name is not handled by this module. Only
+/// `mixed_radix` is still hand-built here (see [`signatures`]).
 pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
-        // add / mul / div / mod route via proc-macro
-        // NodeRegistration per SRD-80 PR B.7.
-        // `mod_wire` / `div_wire` route via proc-macro NodeRegistration per SRD-80 PR B.14.
-        // `ceil_to_multiple` / `multiples_at_least` route via proc-macro
-        // NodeRegistration per SRD-80 PR B.13.
-        "set_or_get" => Some(Ok(Box::new(SetOrGetU64::new()))),
-        "clamp" => Some(Ok(Box::new(ClampU64::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(0),
-            consts.get(1).map(|c| c.as_u64()).unwrap_or(u64::MAX),
-        )))),
-        "interleave" => Some(Ok(Box::new(Interleave::new()))),
         "mixed_radix" => {
             let radixes: Vec<u64> = consts.iter().map(|c| c.as_u64()).collect();
             Some(Ok(Box::new(MixedRadix::new(radixes))))
@@ -560,13 +388,11 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef
 
 /// Assembly-time constant validation. See SRD 15 §"Const Constraint Metadata".
 ///
-/// `div` and `mod` declare `NonZeroU64` on their constant param;
-/// Pass 1 enforces those before this validator runs. The only
-/// rule left here is `mixed_radix`'s variadic positional check —
-/// the non-terminal radixes must each be non-zero, but the last
-/// one is allowed to be `0` as the "everything left" sentinel,
-/// and that variadic positional rule can't ride on a per-param
-/// `ParamSpec.constraint`.
+/// The variadic positional rule for `mixed_radix` — non-terminal
+/// radixes must each be non-zero, but the last one is allowed to
+/// be `0` as the "everything left" sentinel — can't ride on a
+/// per-param `ParamSpec.constraint`, so it stays here as a
+/// hand-written validator.
 pub(crate) fn validate_node(
     name: &str,
     consts: &[crate::dsl::factory::ConstArg],
@@ -585,9 +411,11 @@ pub(crate) fn validate_node(
 }
 
 crate::register_nodes!(signatures, build_node, validate_node);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn add_wrapping() {
@@ -740,7 +568,7 @@ mod tests {
             Box::new(Mul::new(7)),
             Box::new(Div::new(100)),
             Box::new(Mod::new(256)),
-            Box::new(ClampU64::new(10, 90)),
+            Box::new(Clamp::new(10, 90)),
             Box::new(MixedRadix::new(vec![100, 1000, 0])),
         ];
 
@@ -826,14 +654,14 @@ mod tests {
 
     #[test]
     fn set_or_get_returns_current_when_non_zero() {
-        let n = SetOrGetU64::new();
+        let n = SetOrGet::default();
         assert_eq!(run_binary(&n, 7, 99), 7);
         assert_eq!(run_binary(&n, u64::MAX, 99), u64::MAX);
     }
 
     #[test]
     fn set_or_get_returns_fallback_when_current_is_zero() {
-        let n = SetOrGetU64::new();
+        let n = SetOrGet::default();
         assert_eq!(run_binary(&n, 0, 99), 99);
     }
 
@@ -842,7 +670,7 @@ mod tests {
         // If both inputs are zero, output is zero — soft default
         // for the degenerate case (caller's choice not to seed
         // a meaningful fallback).
-        let n = SetOrGetU64::new();
+        let n = SetOrGet::default();
         assert_eq!(run_binary(&n, 0, 0), 0);
     }
 
@@ -852,7 +680,7 @@ mod tests {
         // cached value, fallback is the (still-evaluated but
         // discarded) recomputation. Returning current preserves
         // the cached state across phases.
-        let n = SetOrGetU64::new();
+        let n = SetOrGet::default();
         for v in [1u64, 42, 1000, u64::MAX] {
             // Even if the fallback differs each call (e.g., a
             // recomputation that picked a slightly different
@@ -891,7 +719,7 @@ mod tests {
             Box::new(MixedRadix::new(vec![10, 20])),
             Box::new(CeilToMultiple::default()),
             Box::new(MultiplesAtLeast::default()),
-            Box::new(SetOrGetU64::new()),
+            Box::new(SetOrGet::default()),
         ];
 
         for node in &nodes {

@@ -33,7 +33,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use super::events::{CheckpointEvent, hash_to_hex};
+use super::events::{CheckpointData, hash_to_hex};
 use super::identity::PhaseIdentity;
 use super::storage::{Checkpoint, OpCounts, PhaseEntry, PhaseStatus, now_rfc3339};
 
@@ -122,7 +122,7 @@ impl CheckpointWriter {
         // else. Resume continues the same log by appending its
         // own `session_start`, so this stays correct across
         // invocations too.
-        writer.append_event(CheckpointEvent::SessionStart {
+        writer.append_event(CheckpointData::SessionStart {
             at: now_rfc3339(),
             version: CHECKPOINT_VERSION,
             session,
@@ -157,7 +157,7 @@ impl CheckpointWriter {
             inner: Mutex::new(Inner { doc, index, file }),
             _lock_fd: lock,
         };
-        writer.append_event(CheckpointEvent::SessionStart {
+        writer.append_event(CheckpointData::SessionStart {
             at: now_rfc3339(),
             version: CHECKPOINT_VERSION,
             session,
@@ -190,7 +190,7 @@ impl CheckpointWriter {
             g.doc.phases.push(entry);
             let idx = g.doc.phases.len() - 1;
             g.index.insert(key, idx);
-            CheckpointEvent::PhaseDeclared {
+            CheckpointData::PhaseDeclared {
                 at: now_rfc3339(),
                 identity,
                 skip_eligible,
@@ -206,7 +206,7 @@ impl CheckpointWriter {
             e.error = None;
         });
         if updated {
-            self.append_event(CheckpointEvent::PhaseStarted {
+            self.append_event(CheckpointData::PhaseStarted {
                 at: now_rfc3339(),
                 identity: identity.clone(),
             });
@@ -237,7 +237,7 @@ impl CheckpointWriter {
                 return;
             }
         };
-        self.append_event(CheckpointEvent::PhaseCompleted {
+        self.append_event(CheckpointData::PhaseCompleted {
             at: now_rfc3339(),
             identity: identity.clone(),
             duration_secs,
@@ -262,7 +262,7 @@ impl CheckpointWriter {
                 return;
             }
         };
-        self.append_event(CheckpointEvent::PhaseFailed {
+        self.append_event(CheckpointData::PhaseFailed {
             at: now_rfc3339(),
             identity: identity.clone(),
             error: error.to_string(),
@@ -287,7 +287,7 @@ impl CheckpointWriter {
                 return;
             }
         };
-        self.append_event(CheckpointEvent::PhaseProgress {
+        self.append_event(CheckpointData::PhaseProgress {
             at: now_rfc3339(),
             identity: identity.clone(),
             op_counts: counts,
@@ -301,7 +301,7 @@ impl CheckpointWriter {
             e.identity.phase_hash = Some(hash);
         });
         if updated {
-            self.append_event(CheckpointEvent::PhaseHash {
+            self.append_event(CheckpointData::PhaseHash {
                 at: now_rfc3339(),
                 identity: identity.clone(),
                 hash_hex: hash_to_hex(&hash),
@@ -327,7 +327,7 @@ impl CheckpointWriter {
                 return;
             }
         };
-        self.append_event(CheckpointEvent::PhaseProgress {
+        self.append_event(CheckpointData::PhaseProgress {
             at: now_rfc3339(),
             identity: identity.clone(),
             op_counts: counts,
@@ -351,7 +351,7 @@ impl CheckpointWriter {
         coords: BTreeMap<String, serde_json::Value>,
         path: Vec<BTreeMap<String, serde_json::Value>>,
     ) {
-        self.append_event(CheckpointEvent::ScopeEnter {
+        self.append_event(CheckpointData::ScopeEnter {
             at: now_rfc3339(),
             kind: kind.to_string(),
             coords,
@@ -372,7 +372,7 @@ impl CheckpointWriter {
         path: Vec<BTreeMap<String, serde_json::Value>>,
         outcome: &str,
     ) {
-        self.append_event(CheckpointEvent::ScopeExit {
+        self.append_event(CheckpointData::ScopeExit {
             at: now_rfc3339(),
             kind: kind.to_string(),
             coords,
@@ -434,7 +434,7 @@ impl CheckpointWriter {
     /// not the in-memory mirror — the caller is responsible for
     /// updating the mirror first (so a reader-fold and the
     /// in-memory snapshot stay equivalent).
-    fn append_event(&self, event: CheckpointEvent) {
+    fn append_event(&self, event: CheckpointData) {
         let mut g = self.inner.lock().unwrap();
         let mut line = match serde_json::to_string(&event) {
             Ok(s) => s,

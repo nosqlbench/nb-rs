@@ -336,55 +336,27 @@ fn handle_of(v: &Value) -> &DatasetHandle {
 ///
 /// All per-cycle accessors take the resulting handle on a wire
 /// — the catalog/HTTP/mmap path is never on the cycle hot path.
-pub struct DatasetOpen {
-    meta: NodeMeta,
-}
-
-impl DatasetOpen {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "dataset_open".into(),
-                outs: vec![Port::handle("output")],
-                ins: vec![
-                    Slot::Wire(Port::str("source")),
-                    Slot::Wire(Port::str("facet")),
-                ],
-            },
+///
+/// Resolve failures used to fall through silently as `Value::None`
+/// so a downstream op wrapper could lift them. That pattern also
+/// let comprehension clause evaluation degrade silently (catalog
+/// miss → None → downstream `handle_of` panic → caught + swallowed
+/// → literal-list fallback splits the spec on a comma → garbage
+/// iter-var). We now panic with the underlying error: the engine's
+/// `enrich_eval_panic` adds node provenance, `eval_const_expr`
+/// traps the panic into `Result::Err`, and `evaluate_spec`
+/// propagates it as a clean clause-level diagnostic.
+#[crate::polydat_node(category = RealData)]
+fn dataset_open(source: &str, facet: &str) -> Arc<DatasetHandle> {
+    match DatasetHandle::open(source, facet) {
+        Ok(h) => Arc::new(h),
+        Err(e) => {
+            let msg = format!(
+                "dataset_open: failed to resolve '{source}' facet='{facet}': {e}"
+            );
+            crate::library::support::audit::error(&msg);
+            panic!("{msg}");
         }
-    }
-}
-
-impl Default for DatasetOpen {
-    fn default() -> Self { Self::new() }
-}
-
-impl PolydatNode for DatasetOpen {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let source = inputs[0].as_str();
-        let facet = inputs[1].as_str();
-        // Resolve failures used to fall through silently as
-        // `Value::None` so a downstream op wrapper could lift
-        // them. That pattern also let comprehension clause
-        // evaluation degrade silently (catalog miss → None →
-        // downstream `handle_of` panic → caught + swallowed →
-        // literal-list fallback splits the spec on a comma →
-        // garbage iter-var). We now panic with the underlying
-        // error: the engine's `enrich_eval_panic` adds node
-        // provenance, `eval_const_expr` traps the panic into
-        // `Result::Err`, and `evaluate_spec` propagates it as
-        // a clean clause-level diagnostic.
-        outputs[0] = match DatasetHandle::open(source, facet) {
-            Ok(h) => Value::handle(Arc::new(h)),
-            Err(e) => {
-                let msg = format!(
-                    "dataset_open: failed to resolve '{source}' facet='{facet}': {e}"
-                );
-                crate::library::support::audit::error(&msg);
-                panic!("{msg}");
-            }
-        };
     }
 }
 
@@ -394,46 +366,21 @@ impl PolydatNode for DatasetOpen {
 /// — used by group-level metadata accessors (`dataset_profile_count`,
 /// `dataset_facets`, ...) that operate on the dataset as a whole
 /// before any profile/facet is selected.
-pub struct DatasetGroupOpen {
-    meta: NodeMeta,
-}
-
-impl DatasetGroupOpen {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "dataset_group_open".into(),
-                outs: vec![Port::handle("output")],
-                ins: vec![Slot::Wire(Port::str("source"))],
-            },
+///
+/// Hard-fail on resolve failure — see `dataset_open` for the
+/// rationale. The Value::None pattern was a silent-degradation
+/// source for comprehension clause evaluation.
+#[crate::polydat_node(category = RealData)]
+fn dataset_group_open(source: &str) -> Arc<DatasetHandle> {
+    match DatasetHandle::open_group(source) {
+        Ok(h) => Arc::new(h),
+        Err(e) => {
+            let msg = format!(
+                "dataset_group_open: failed to resolve '{source}': {e}"
+            );
+            crate::library::support::audit::error(&msg);
+            panic!("{msg}");
         }
-    }
-}
-
-impl Default for DatasetGroupOpen {
-    fn default() -> Self { Self::new() }
-}
-
-impl PolydatNode for DatasetGroupOpen {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let source = inputs[0].as_str();
-        // Hard-fail on resolve failure — see `DatasetOpen::eval`
-        // for the rationale. The Value::None pattern was a
-        // silent-degradation source for comprehension clause
-        // evaluation (catalog miss on a fresh box → garbage
-        // iter-var values → malformed downstream output six
-        // layers from the actual fault).
-        outputs[0] = match DatasetHandle::open_group(source) {
-            Ok(h) => Value::handle(Arc::new(h)),
-            Err(e) => {
-                let msg = format!(
-                    "dataset_group_open: failed to resolve '{source}': {e}"
-                );
-                crate::library::support::audit::error(&msg);
-                panic!("{msg}");
-            }
-        };
     }
 }
 
@@ -1024,54 +971,37 @@ handle_metadata_node!(
 ///
 /// If prefix is empty, returns all profiles. Used by `for_each:`
 /// phase templates to discover profiles dynamically.
-pub struct MatchingProfiles {
-    meta: NodeMeta,
-}
-
-impl MatchingProfiles {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "matching_profiles".into(),
-                outs: vec![Port::str("output")],
-                ins: vec![
-                    Slot::Wire(Port::handle("group")),
-                    Slot::Wire(Port::str("prefix")),
-                ],
-            },
-        }
-    }
-}
-
-impl Default for MatchingProfiles {
-    fn default() -> Self { Self::new() }
-}
-
-impl PolydatNode for MatchingProfiles {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let group = group_of(handle_of(&inputs[0]));
-        let prefix = inputs[1].as_str();
-        let all = group.profile_names();
-        let mut matched: Vec<&str> = if prefix.is_empty() {
-            all.iter().map(|s| s.as_str()).collect()
-        } else {
-            all.iter()
-                .filter(|s| s.starts_with(prefix))
-                .map(|s| s.as_str())
-                .collect()
-        };
-        // Natural-order sort: alphabetic with numeric runs
-        // compared as numbers so `label_03` sorts before
-        // `label_10`. The upstream `group.profile_names()`
-        // orders by `base_count` (vectordata's choice — useful
-        // for index-based lookups), but `for_each` iteration
-        // wants stable, human-natural order so users see
-        // label_01, label_02, label_03 instead of whatever the
-        // size-sort happens to produce.
-        matched.sort_by(|a, b| natural_cmp(a, b));
-        outputs[0] = Value::Str(matched.join(",").into());
-    }
+///
+/// `group` declares its source-string auto-resolver via the
+/// `Resolved<GroupResolver, _>` marker wrapper — the macro reads
+/// `<Resolved<GroupResolver, TestDataGroup> as Wire>::RESOLVER` at
+/// codegen and emits the matching `FuncSig.default_resolver`
+/// (`DefaultResolver::Group`).
+#[crate::polydat_node(category = RealData)]
+fn matching_profiles(
+    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, TestDataGroup>,
+    prefix: &str,
+) -> String {
+    let group: &TestDataGroup = &group;
+    let all = group.profile_names();
+    let mut matched: Vec<&str> = if prefix.is_empty() {
+        all.iter().map(|s| s.as_str()).collect()
+    } else {
+        all.iter()
+            .filter(|s| s.starts_with(prefix))
+            .map(|s| s.as_str())
+            .collect()
+    };
+    // Natural-order sort: alphabetic with numeric runs
+    // compared as numbers so `label_03` sorts before
+    // `label_10`. The upstream `group.profile_names()`
+    // orders by `base_count` (vectordata's choice — useful
+    // for index-based lookups), but `for_each` iteration
+    // wants stable, human-natural order so users see
+    // label_01, label_02, label_03 instead of whatever the
+    // size-sort happens to produce.
+    matched.sort_by(|a, b| natural_cmp(a, b));
+    matched.join(",")
 }
 
 /// Natural ordering: split each string into alternating text
@@ -1122,139 +1052,68 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 /// Signature: `dataset_profile_name_at(group, index: u64) -> (String)`
 ///
 /// Index wraps modulo the number of profiles.
-pub struct DatasetProfileNameAt {
-    meta: NodeMeta,
-}
-
-impl DatasetProfileNameAt {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "dataset_profile_name_at".into(),
-                outs: vec![Port::str("output")],
-                ins: vec![
-                    Slot::Wire(Port::handle("group")),
-                    Slot::Wire(Port::u64("index")),
-                ],
-            },
-        }
-    }
-}
-
-impl Default for DatasetProfileNameAt {
-    fn default() -> Self { Self::new() }
-}
-
-impl PolydatNode for DatasetProfileNameAt {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let group = group_of(handle_of(&inputs[0]));
-        let idx = inputs[1].as_u64() as usize;
-        let names = group.profile_names();
-        outputs[0] = if names.is_empty() {
-            Value::Str(String::new().into())
-        } else {
-            Value::Str(names[idx % names.len()].clone().into())
-        };
+#[crate::polydat_node(category = RealData)]
+fn dataset_profile_name_at(
+    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, TestDataGroup>,
+    index: u64,
+) -> String {
+    let group: &TestDataGroup = &group;
+    let names = group.profile_names();
+    if names.is_empty() {
+        String::new()
+    } else {
+        names[(index as usize) % names.len()].clone()
     }
 }
 
 /// Return the base vector count for the profile at a given index.
 ///
 /// Signature: `profile_base_count(group, index: u64) -> (u64)`
-pub struct ProfileBaseCount {
-    meta: NodeMeta,
-}
-
-impl ProfileBaseCount {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "profile_base_count".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::handle("group")),
-                    Slot::Wire(Port::u64("index")),
-                ],
-            },
-        }
-    }
-}
-
-impl Default for ProfileBaseCount {
-    fn default() -> Self { Self::new() }
-}
-
-impl PolydatNode for ProfileBaseCount {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let group = group_of(handle_of(&inputs[0]));
-        let idx = inputs[1].as_u64() as usize;
-        let names = group.profile_names();
-        let result = if names.is_empty() {
-            0
-        } else {
-            let name = &names[idx % names.len()];
-            group
-                .profile(name)
-                .and_then(|view| view.base_count())
-                .unwrap_or(0)
-        };
-        outputs[0] = Value::U64(result);
+#[crate::polydat_node(category = RealData)]
+fn profile_base_count(
+    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, TestDataGroup>,
+    index: u64,
+) -> u64 {
+    let group: &TestDataGroup = &group;
+    let names = group.profile_names();
+    if names.is_empty() {
+        0
+    } else {
+        let name = &names[(index as usize) % names.len()];
+        group
+            .profile(name)
+            .and_then(|view| view.base_count())
+            .unwrap_or(0)
     }
 }
 
 /// Return the comma-separated facet list for the profile at a given index.
 ///
 /// Signature: `profile_facets(group, index: u64) -> (String)`
-pub struct ProfileFacets {
-    meta: NodeMeta,
-}
-
-impl ProfileFacets {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "profile_facets".into(),
-                outs: vec![Port::str("output")],
-                ins: vec![
-                    Slot::Wire(Port::handle("group")),
-                    Slot::Wire(Port::u64("index")),
-                ],
-            },
-        }
-    }
-}
-
-impl Default for ProfileFacets {
-    fn default() -> Self { Self::new() }
-}
-
-impl PolydatNode for ProfileFacets {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let group = group_of(handle_of(&inputs[0]));
-        let idx = inputs[1].as_u64() as usize;
-        let names = group.profile_names();
-        let facets = if names.is_empty() {
-            String::new()
-        } else {
-            let name = &names[idx % names.len()];
-            match group.profile(name) {
-                Some(view) => {
-                    let manifest = view.facet_manifest();
-                    let mut fnames: Vec<&String> = manifest.keys().collect();
-                    fnames.sort();
-                    fnames
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                }
-                None => String::new(),
+#[crate::polydat_node(category = RealData)]
+fn profile_facets(
+    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, TestDataGroup>,
+    index: u64,
+) -> String {
+    let group: &TestDataGroup = &group;
+    let names = group.profile_names();
+    if names.is_empty() {
+        String::new()
+    } else {
+        let name = &names[(index as usize) % names.len()];
+        match group.profile(name) {
+            Some(view) => {
+                let manifest = view.facet_manifest();
+                let mut fnames: Vec<&String> = manifest.keys().collect();
+                fnames.sort();
+                fnames
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             }
-        };
-        outputs[0] = Value::Str(facets.into());
+            None => String::new(),
+        }
     }
 }
 
@@ -1576,38 +1435,12 @@ macro_rules! sig_handle_metadata {
 }
 
 /// Signatures for vector dataset access nodes (feature-gated).
+///
+/// `dataset_open` and `dataset_group_open` register themselves via the
+/// `#[polydat_node]` macro's own `NodeRegistration` channel.
 pub fn signatures() -> &'static [FuncSig] {
     use FuncCategory as C;
     &[
-        // ===== Resolvers =====
-        FuncSig {
-            name: "dataset_open", category: C::RealData, outputs: 1,
-            description: "open a dataset facet, returning a handle",
-            help: "Resolve a (source, facet) pair to a typed handle. The handle\nflows on a wire to per-cycle accessors, which downcast and read\nat the requested index — no per-cycle string lookup.\nProvenance follows source/facet inputs; with scope-extern\ninputs this evaluates once per iteration via the engine's\nstandard provenance caching.\nExample: const base := dataset_open(\"glove-25\", \"base\")",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "source", slot_type: SlotType::Wire, required: true, example: "\"glove-25\"", constraint: None },
-                ParamSpec { name: "facet", slot_type: SlotType::Wire, required: true, example: "\"base\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "dataset_group_open", category: C::RealData, outputs: 1,
-            description: "open a dataset group, returning a handle",
-            help: "Resolve a dataset to a group-level handle. Used by group\nmetadata accessors (dataset_profile_count, dataset_facets, ...)\nthat operate on TestDataGroup before any profile/facet is selected.\nExample: const group := dataset_group_open(\"glove-25\")",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "source", slot_type: SlotType::Wire, required: true, example: "\"glove-25\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-
         // ===== Per-cycle facet accessors (typed-vector outputs) =====
         sig_handle_indexed!("vector_at", DefaultResolver::Facet("base"),
             "access f32 vector by index",
@@ -1673,62 +1506,14 @@ pub fn signatures() -> &'static [FuncSig] {
         sig_handle_metadata!("dataset_profile_names", DefaultResolver::Group,
             "comma-separated list of profile names",
             "All profile names in canonical sort order (by base_count)."),
-        FuncSig {
-            name: "matching_profiles", category: C::RealData, outputs: 1,
-            description: "profile names matching a prefix",
-            help: "Profile names from a group handle that start with the given prefix.\nIf prefix is empty, returns all profile names. Used by for_each:\nphase templates to discover profiles dynamically.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "group", slot_type: SlotType::Wire, required: true, example: "group", constraint: None },
-                ParamSpec { name: "prefix", slot_type: SlotType::Wire, required: false, example: "\"label_\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: Some(DefaultResolver::Group),
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "dataset_profile_name_at", category: C::RealData, outputs: 1,
-            description: "profile name by index from sorted list",
-            help: "Profile name at a given index from the canonical sorted list.\nIndex wraps modulo profile count.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "group", slot_type: SlotType::Wire, required: true, example: "group", constraint: None },
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: Some(DefaultResolver::Group),
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "profile_base_count", category: C::RealData, outputs: 1,
-            description: "base vector count for profile at index",
-            help: "Base vector count of the profile at a given index in the dataset's\ncanonical sorted profile list.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "group", slot_type: SlotType::Wire, required: true, example: "group", constraint: None },
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: Some(DefaultResolver::Group),
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "profile_facets", category: C::RealData, outputs: 1,
-            description: "available facets for profile at index",
-            help: "Comma-separated facet names for the profile at a given index in\nthe dataset's canonical sorted profile list.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "group", slot_type: SlotType::Wire, required: true, example: "group", constraint: None },
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: Some(DefaultResolver::Group),
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `matching_profiles`, `dataset_profile_name_at`,
+        // `profile_base_count`, and `profile_facets` are now
+        // `#[polydat_node]`-emitted; they register their FuncSig
+        // via the macro's NodeRegistration entry. Their
+        // `Resolved<GroupResolver, TestDataGroup>` arg supplies
+        // the `default_resolver: Some(DefaultResolver::Group)`
+        // value to the emitted FuncSig automatically (Wire-trait
+        // RESOLVER projection — SRD-80b).
 
         // ===== Side-effect resolver =====
         FuncSig {
@@ -1759,8 +1544,8 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef
     // binding compiler; non-literal args (e.g. `printf` from a
     // string-interpolated source spec) wire directly.
     match name {
-        "dataset_open" => Some(Ok(Box::new(DatasetOpen::new()) as Box<dyn crate::ast::PolydatNode>)),
-        "dataset_group_open" => Some(Ok(Box::new(DatasetGroupOpen::new()) as Box<dyn crate::ast::PolydatNode>)),
+        // `dataset_open` and `dataset_group_open` register through
+        // their `#[polydat_node]`-emitted NodeRegistration entries.
         "vector_at" => Some(Ok(Box::new(VectorAt::new()) as Box<dyn crate::ast::PolydatNode>)),
         "query_vector_at" => Some(Ok(Box::new(QueryVectorAt::new()) as Box<dyn crate::ast::PolydatNode>)),
         "neighbor_indices_at" => Some(Ok(Box::new(NeighborIndicesAt::new()) as Box<dyn crate::ast::PolydatNode>)),
@@ -1778,10 +1563,9 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef
         "dataset_facets" => Some(Ok(Box::new(DatasetFacets::new()) as Box<dyn crate::ast::PolydatNode>)),
         "dataset_profile_count" => Some(Ok(Box::new(DatasetProfileCount::new()) as Box<dyn crate::ast::PolydatNode>)),
         "dataset_profile_names" => Some(Ok(Box::new(DatasetProfileNames::new()) as Box<dyn crate::ast::PolydatNode>)),
-        "matching_profiles" => Some(Ok(Box::new(MatchingProfiles::new()) as Box<dyn crate::ast::PolydatNode>)),
-        "dataset_profile_name_at" => Some(Ok(Box::new(DatasetProfileNameAt::new()) as Box<dyn crate::ast::PolydatNode>)),
-        "profile_base_count" => Some(Ok(Box::new(ProfileBaseCount::new()) as Box<dyn crate::ast::PolydatNode>)),
-        "profile_facets" => Some(Ok(Box::new(ProfileFacets::new()) as Box<dyn crate::ast::PolydatNode>)),
+        // `matching_profiles`, `dataset_profile_name_at`,
+        // `profile_base_count`, `profile_facets` register
+        // through the `#[polydat_node]`-emitted NodeRegistration.
         "dataset_prebuffer" => Some(Ok(Box::new(DatasetPrebuffer::new()) as Box<dyn crate::ast::PolydatNode>)),
         "metadata_value_at" => Some(Ok(Box::new(MetadataValueAt::new()) as Box<dyn crate::ast::PolydatNode>)),
         "predicate_value_at" => Some(Ok(Box::new(PredicateValueAt::new()) as Box<dyn crate::ast::PolydatNode>)),

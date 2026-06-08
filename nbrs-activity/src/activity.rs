@@ -1861,7 +1861,7 @@ impl Activity {
             };
             let update_binder = match crate::readouts::binder::build_event_binder_with_cli(
                 &activity.config.readouts,
-                crate::readouts::Event::Update,
+                crate::lifecycle::EventType::Update,
                 phase_status_default,
                 activity.config.cli_readout_override.as_deref(),
             ) {
@@ -1913,7 +1913,7 @@ impl Activity {
                     );
                     use crate::readouts::ReadoutBinder;
                     let mut sink = crate::readouts::StringSink::with_capacity(192);
-                    binder.fire(crate::readouts::Event::Update, &ctx, &mut sink);
+                    binder.fire(crate::lifecycle::EventType::Update, &ctx, &mut sink);
                     let rendered = sink.take();
                     // Push 6: capture the latest on_update
                     // render to the snapshot store. PK collapses
@@ -1923,8 +1923,8 @@ impl Activity {
                     use crate::readouts::ReadoutContext;
                     crate::readouts::snapshot::capture(
                         snapshot_writer.as_ref(),
-                        crate::readouts::Event::Update.slot_name(),
-                        crate::readouts::Event::Update.subject_kind().as_str(),
+                        crate::lifecycle::EventType::Update.slot_name(),
+                        crate::lifecycle::EventType::Update.subject_kind().as_str(),
                         &ctx.subject_id(),
                         "binder",
                         crate::readouts::snapshot::lod_str(crate::readouts::Lod::Labeled),
@@ -2354,19 +2354,19 @@ impl Activity {
                 };
                 if let Ok(mut binder) = crate::readouts::binder::build_event_binder_with_cli(
                     &activity.config.readouts,
-                    crate::readouts::Event::Update,
+                    crate::lifecycle::EventType::Update,
                     phase_status_default,
                     activity.config.cli_readout_override.as_deref(),
                 ) {
                     use crate::readouts::ReadoutBinder;
                     use crate::readouts::ReadoutContext;
                     let mut sink = crate::readouts::StringSink::with_capacity(192);
-                    binder.fire(crate::readouts::Event::Update, &final_ctx, &mut sink);
+                    binder.fire(crate::lifecycle::EventType::Update, &final_ctx, &mut sink);
                     let rendered_final = sink.take();
                     crate::readouts::snapshot::capture(
                         activity.config.snapshot_writer.as_ref(),
-                        crate::readouts::Event::Update.slot_name(),
-                        crate::readouts::Event::Update.subject_kind().as_str(),
+                        crate::lifecycle::EventType::Update.slot_name(),
+                        crate::lifecycle::EventType::Update.subject_kind().as_str(),
                         &final_ctx.subject_id(),
                         "binder",
                         crate::readouts::snapshot::lod_str(crate::readouts::Lod::Labeled),
@@ -2410,13 +2410,13 @@ impl Activity {
             };
             let rendered = match crate::readouts::build_event_binder(
                 &activity.config.readouts,
-                crate::readouts::Event::PhaseEnd,
+                crate::lifecycle::EventType::PhaseEnd,
                 phase_outcome_default,
             ) {
                 Ok(mut binder) => {
                     use crate::readouts::ReadoutBinder;
                     let mut sink = crate::readouts::StringSink::with_capacity(160);
-                    binder.fire(crate::readouts::Event::PhaseEnd, &ctx, &mut sink);
+                    binder.fire(crate::lifecycle::EventType::PhaseEnd, &ctx, &mut sink);
                     sink.take()
                 }
                 Err(e) => {
@@ -2433,8 +2433,8 @@ impl Activity {
                 use crate::readouts::ReadoutContext;
                 crate::readouts::snapshot::capture(
                     activity.config.snapshot_writer.as_ref(),
-                    crate::readouts::Event::PhaseEnd.slot_name(),
-                    crate::readouts::Event::PhaseEnd.subject_kind().as_str(),
+                    crate::lifecycle::EventType::PhaseEnd.slot_name(),
+                    crate::lifecycle::EventType::PhaseEnd.subject_kind().as_str(),
                     &ctx.subject_id(),
                     "binder",
                     crate::readouts::snapshot::lod_str(crate::readouts::Lod::Labeled),
@@ -2442,7 +2442,19 @@ impl Activity {
                 );
             }
             if !rendered.is_empty() {
-                crate::diag!(crate::observer::LogLevel::Info, "{}", rendered);
+                // SRD-81 push 1: the per-phase ✓ outcome is a typed
+                // `PhaseOutcome` projection, not a generic diagnostic.
+                // The terminal scrollback shows it; the TUI tree /
+                // active-phase panel render it natively; the TUI log
+                // panel (diagnostics-only) filters it out instead of
+                // garbling the multi-line ANSI as one Span. (push 1b
+                // replaces this pre-rendered string with a structured
+                // marker the sinks render from the snapshot.)
+                crate::observer::log_categorized(
+                    crate::observer::LogLevel::Info,
+                    crate::observer::LogCategory::PhaseOutcome,
+                    &rendered,
+                );
             }
         }
 
@@ -2634,6 +2646,7 @@ impl Activity {
 async fn daemon_dispatch(
     activity: Arc<Activity>,
     dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
+    pull_plans: Arc<Vec<crate::fixture::PullPlan>>,
     op_builder: Arc<crate::synthesis::OpBuilder>,
     template_idx: usize,
     op_name: String,
@@ -2643,7 +2656,15 @@ async fn daemon_dispatch(
     fiber.attach_dispenser_kernels(&dispensers);
     let dispenser = dispensers[template_idx].clone();
     let fields = crate::adapter::ResolvedFields::new(Vec::new(), Vec::new());
-    let pulls = crate::fixture::ResolvedPulls::empty();
+    // Resolve the wrapper-side pull plan against this daemon fiber's
+    // kernel — same as the cycle-pool path. Daemon ops carry wrappers
+    // too (notably `if:`, whose IF_COND wrapper registers a pull for
+    // its predicate); an empty `ResolvedPulls` would panic when that
+    // handle resolves. Captures the daemon reads (e.g. a `shared`
+    // cell written by an earlier stanza op gating `if: sstables > 1`)
+    // are visible here because the daemon dispatches at its op-walk
+    // position, after the writer op completed.
+    let pulls = fiber.resolve_pulls_for_idx(template_idx, &pull_plans[template_idx]);
     let cycle_wires = match fiber.per_op_kernel_mut(template_idx) {
         Some(p) => crate::wires::CycleWires::new(p),
         None => crate::wires::CycleWires::new(fiber.main_kernel_mut()),
@@ -2988,6 +3009,7 @@ async fn executor_task(
                     .map(std::time::Duration::from_millis);
                 let activity_d = activity.clone();
                 let dispensers_d = dispensers.clone();
+                let pull_plans_d = pull_plans.clone();
                 let op_builder_d = op_builder.clone();
                 let phase_arc_d = phase_name_arc.clone();
                 let op_name_d = template.name.clone();
@@ -2996,6 +3018,7 @@ async fn executor_task(
                     move |stop| {
                         let activity = activity_d;
                         let dispensers = dispensers_d;
+                        let pull_plans = pull_plans_d;
                         let op_builder = op_builder_d;
                         let phase_arc = phase_arc_d;
                         let op_name = op_name_d;
@@ -3006,6 +3029,7 @@ async fn executor_task(
                                 daemon_dispatch(
                                     activity.clone(),
                                     dispensers,
+                                    pull_plans,
                                     op_builder,
                                     template_idx,
                                     op_name.clone(),

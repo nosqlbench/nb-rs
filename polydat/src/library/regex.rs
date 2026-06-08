@@ -3,42 +3,24 @@
 
 //! Regex processing nodes.
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use regex::Regex;
 
-/// Regex replace: substitute all matches of a pattern.
-///
-/// Signature: `(input: String) -> (String)`
-/// Init params: `pattern`, `replacement`
-pub struct RegexReplace {
-    meta: NodeMeta,
-    re: Regex,
-    replacement: String,
-}
-
-impl RegexReplace {
-    pub fn new(pattern: &str, replacement: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "regex_replace".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-            re: Regex::new(pattern).expect("invalid regex"),
-            replacement: replacement.to_string(),
-        }
-    }
-}
-
-impl PolydatNode for RegexReplace {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let result = self.re.replace_all(inputs[0].as_str(), &self.replacement);
-        outputs[0] = Value::Str(result.into_owned().into());
-    }
-}
-
 impl crate::derive_support::PolydatSetup for Regex {}
+
+/// Regex replace: substitute all matches of a pattern with the
+/// replacement string. SRD-80b Phase E migration via two
+/// Const<&str> args + cached compiled Regex.
+#[crate::polydat_node(category = Regex)]
+fn regex_replace(
+    input: &str,
+    pattern: crate::derive_support::Const<&str>,
+    replacement: crate::derive_support::Const<&str>,
+    #[poly_const(compile_regex, from = pattern)]
+    re: &Regex,
+) -> String {
+    let _ = pattern;
+    re.replace_all(input, replacement.0).into_owned()
+}
 
 /// Build a Regex from a pattern. Panics on invalid pattern;
 /// the const-arg constraint (registered in the FuncSig the
@@ -125,16 +107,10 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a regex node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "regex_replace" => Some(Ok(Box::new(RegexReplace::new(
-            consts.first().map(|c| c.as_str()).unwrap_or(""),
-            consts.get(1).map(|c| c.as_str()).unwrap_or(""),
-        )))),
-        // `regex_match` / `regex_extract` route via
-        // proc-macro-emitted NodeRegistration per SRD-80 PR B.6.
-        _ => None,
-    }
+pub(crate) fn build_node(_name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
+    // All regex nodes route via proc-macro-emitted NodeRegistration
+    // (regex_match, regex_extract, regex_replace).
+    None
 }
 
 
@@ -148,10 +124,11 @@ crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn regex_replace_basic() {
-        let node = RegexReplace::new(r"\d+", "NUM");
+        let node = RegexReplace::new(r"\d+".to_string(), "NUM".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Str("abc 123 def 456".into())], &mut out);
         assert_eq!(out[0].as_str(), "abc NUM def NUM");
@@ -159,7 +136,7 @@ mod tests {
 
     #[test]
     fn regex_replace_no_match() {
-        let node = RegexReplace::new(r"\d+", "NUM");
+        let node = RegexReplace::new(r"\d+".to_string(), "NUM".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Str("no numbers here".into())], &mut out);
         assert_eq!(out[0].as_str(), "no numbers here");

@@ -192,6 +192,27 @@ pub fn push_transcript(command: &str, response: &str) {
     }
 }
 
+/// Push a single pre-rendered line to the transcript ring — e.g.
+/// a completion-suggestion row — with no `> ` command echo.
+/// Same ring and capacity discipline as [`push_transcript`]. Used
+/// to keep ephemeral console output inside the frame instead of
+/// scrolling it through the terminal.
+pub fn push_transcript_line(line: &str) {
+    let Ok(mut t) = TRANSCRIPT.lock() else { return; };
+    t.push_back(line.to_string());
+    while t.len() > TRANSCRIPT_CAPACITY {
+        t.pop_front();
+    }
+}
+
+/// Current number of lines in the transcript ring. Cheap change
+/// detector for the console renderer — when it differs from the
+/// last paint, the console (on the alternate screen) repaints to
+/// show new output, regardless of which source pushed it.
+pub fn transcript_len() -> usize {
+    TRANSCRIPT.lock().map(|t| t.len()).unwrap_or(0)
+}
+
 /// Snapshot the most recent `n` transcript lines in display
 /// order (oldest first). Returns `<= n` strings — fewer when
 /// the transcript is shorter than `n`.
@@ -311,6 +332,23 @@ mod tests {
             "> controls".to_string(),
             "foo=1".to_string(),
             "bar=0".to_string(),
+        ]);
+    }
+
+    /// `push_transcript_line` appends a single raw line (no `> `
+    /// echo prefix) — the path console completions / contained
+    /// output take into the frame.
+    #[test]
+    fn push_transcript_line_appends_raw() {
+        let _g = LOCK.lock().unwrap();
+        reset();
+        push_transcript("cmd", "resp");
+        push_transcript_line("a  b  c"); // e.g. a completion row
+        let tail = transcript_tail(10);
+        assert_eq!(tail, vec![
+            "> cmd".to_string(),
+            "resp".to_string(),
+            "a  b  c".to_string(),
         ]);
     }
 

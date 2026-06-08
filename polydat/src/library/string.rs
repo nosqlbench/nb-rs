@@ -3,8 +3,6 @@
 
 //! String generation and transformation nodes.
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
-
 // =================================================================
 // Combinations: mixed-radix character set mapping
 // =================================================================
@@ -352,45 +350,35 @@ fn char_buf(
 /// Select a line from a file by index, wrapping modulo line count.
 ///
 /// The file is read once at node construction (init time). The index
-/// input selects a line at cycle time, wrapping modulo the total
-/// number of lines.
-///
-/// Signature: `file_line_at(index: u64) -> (output: Str)`
-/// Const: `filename: Str` — path to file, read at construction
-pub struct FileLineAt {
-    meta: NodeMeta,
-    lines: Vec<String>,
+impl crate::derive_support::PolydatSetup for Vec<String> {}
+
+/// Read `filename` and split it into lines. Panics on file
+/// I/O failure; the macro's build-closure `catch_unwind`
+/// surfaces it as a clean compile error.
+fn read_file_lines(filename: &str) -> Vec<String> {
+    let content = std::fs::read_to_string(filename)
+        .unwrap_or_else(|e| panic!("failed to read file '{filename}': {e}"));
+    let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    if lines.is_empty() {
+        panic!("file '{filename}' has no lines");
+    }
+    lines
 }
 
-impl FileLineAt {
-    /// Read `filename` and prepare the line table.
-    ///
-    /// Returns an error if the file cannot be read or has no lines.
-    pub fn new(filename: &str) -> Result<Self, String> {
-        let content = std::fs::read_to_string(filename)
-            .map_err(|e| format!("failed to read file '{filename}': {e}"))?;
-        let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
-        if lines.is_empty() {
-            return Err(format!("file '{filename}' has no lines"));
-        }
-        Ok(Self {
-            meta: NodeMeta {
-                name: "file_line_at".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("index"))],
-            },
-            lines,
-        })
-    }
-}
-
-impl PolydatNode for FileLineAt {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let idx = inputs[0].as_u64() as usize;
-        outputs[0] = Value::Str(self.lines[idx % self.lines.len()].clone().into());
-    }
+/// Cycle-time line lookup over a pre-loaded text file. SRD-80b
+/// Phase E migration: `filename` is read at construction time
+/// via `#[poly_const]`; the cycle input selects a line modulo
+/// the total count.
+#[crate::polydat_node(category = String)]
+fn file_line_at(
+    index: u64,
+    filename: crate::derive_support::Const<&str>,
+    #[poly_const(read_file_lines, from = filename)]
+    lines: &Vec<String>,
+) -> String {
+    let _ = filename;
+    let idx = index as usize;
+    lines[idx % lines.len()].clone()
 }
 
 // =================================================================
@@ -462,17 +450,14 @@ fn str_upper(input: String) -> String {
 /// Try to build a string node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         // `combinations` routes through proc-macro-emitted
         // NodeRegistration per SRD-80 PR B.6.
         // `number_to_words` / `hashed_uuid` route through
         // proc-macro-emitted NodeRegistration per SRD-80 PR B.4.
         // `char_buf` routes via proc-macro-emitted NodeRegistration per SRD-80 PR B.6.
-        "file_line_at" => {
-            let path = consts.first().map(|c| c.as_str()).unwrap_or("");
-            Some(FileLineAt::new(path).map(|n| Box::new(n) as Box<dyn crate::ast::PolydatNode>))
-        }
+        // `file_line_at` routes via proc-macro-emitted NodeRegistration per SRD-80b Phase E.
         // `str_concat` routes via proc-macro NodeRegistration per SRD-80 PR B.9.
         // `str_lower` / `str_upper` route through the
         // proc-macro-emitted NodeRegistration per SRD-80 PR B.4.
@@ -485,6 +470,7 @@ crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     // --- Combinations tests ---
 
@@ -669,15 +655,12 @@ mod tests {
         assert_eq!(out[0].as_str(), "ÄPFEL");
     }
 
-    #[test]
-    fn str_lower_accepts_non_string_via_display() {
-        // Same display-form ingestion as str_concat — convenience for
-        // callers chaining `str_lower(format_u64(...))` style.
-        let node = StrLower::new();
-        let mut out = [Value::None];
-        node.eval(&[Value::U64(123)], &mut out);
-        assert_eq!(out[0].as_str(), "123");
-        node.eval(&[Value::Bool(true)], &mut out);
-        assert_eq!(out[0].as_str(), "true");
-    }
+    // `str_lower_accepts_non_string_via_display` retired: SRD-80b
+    // Wire trait dispatch panics on shape mismatch instead of
+    // silently display-coercing. Workload-level support for
+    // chained `str_lower(format_u64(...))` flows through assembler-
+    // inserted Str adapters (e.g. polyfill U64ToStr), not through
+    // a lying Wire impl. Tests that want to exercise the coercion
+    // path should construct a Str via `format_u64` upstream and
+    // feed that into str_lower's eval.
 }

@@ -48,6 +48,7 @@ use crate::reporter::TuiReporter;
 use crate::run_state_actor::{RunStateCmd, RunStateHandle};
 use crate::state::{EntryKind, LogEntry, LogSeverity, PhaseEntry, PhaseStatus, RunState};
 
+use nbrs_activity::lifecycle::EventType;
 use nbrs_activity::readouts as ro;
 
 /// Per-row `ReadoutContext` for the post-run summary's
@@ -98,7 +99,7 @@ impl ro::ReadoutContext for ScopeRowContext {
     fn status_metric_chips(&self) -> String { String::new() }
     fn depth_indent(&self) -> &str { "" }
     fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> ro::Event { ro::Event::EachStart }
+    fn event(&self) -> EventType { EventType::EachStart }
 }
 
 /// `ReadoutContext` for the post-run summary's session-scope
@@ -124,7 +125,7 @@ struct SessionSummaryContext {
 impl ro::ReadoutContext for SessionSummaryContext {
     fn subject_name(&self) -> &str { "session" }
     fn subject_id(&self) -> String { "session".to_string() }
-    fn event(&self) -> ro::Event { ro::Event::SessionEnd }
+    fn event(&self) -> EventType { EventType::SessionEnd }
     fn session_scenario_name(&self) -> &str { &self.scenario_name }
     fn session_workload_file(&self) -> &str { &self.workload_file }
     fn session_phases_completed(&self) -> usize { self.completed }
@@ -139,7 +140,7 @@ impl ro::ReadoutContext for SummaryRowContext {
     fn subject_seq(&self) -> Option<(usize, usize)> { self.seq }
     fn subject_labels(&self) -> &str { &self.labels }
     fn elapsed_secs(&self) -> f64 { self.duration_secs }
-    fn event(&self) -> ro::Event { ro::Event::PhaseEnd }
+    fn event(&self) -> EventType { EventType::PhaseEnd }
     fn subject_state(&self) -> ro::LifecycleState { self.state.clone() }
 }
 
@@ -372,6 +373,16 @@ impl nbrs_activity::observer::RunObserver for TuiObserver {
     }
 
     fn log(&self, level: nbrs_activity::observer::LogLevel, message: &str) {
+        self.log_categorized(
+            level, nbrs_activity::observer::LogCategory::Diagnostic, message);
+    }
+
+    fn log_categorized(
+        &self,
+        level: nbrs_activity::observer::LogLevel,
+        category: nbrs_activity::observer::LogCategory,
+        message: &str,
+    ) {
         let severity = match level {
             nbrs_activity::observer::LogLevel::Trace => LogSeverity::Debug,
             nbrs_activity::observer::LogLevel::Debug => LogSeverity::Debug,
@@ -381,6 +392,7 @@ impl nbrs_activity::observer::RunObserver for TuiObserver {
         };
         self.state.send(RunStateCmd::Log {
             severity,
+            category,
             message: message.to_string(),
         });
         // Stderr fallback fires both *before* the TUI claims

@@ -4,7 +4,7 @@
 //! Programmatic kernel construction via the assembler API.
 
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
-use polydat::library::hash::Hash64;
+use polydat::library::hash::Hash;
 use polydat::library::arithmetic::{Mod, MixedRadix};
 
 fn main() {
@@ -15,7 +15,7 @@ fn main() {
         vec![WireRef::input("cycle")]);
 
     // Hash region for a deterministic region code
-    asm.add_node("region_h", Box::new(Hash64::new()),
+    asm.add_node("region_h", Box::new(Hash::new()),
         vec![WireRef::node_port("decompose", 0)]);
     asm.add_node("region_code", Box::new(Mod::new(10000)),
         vec![WireRef::node("region_h")]);

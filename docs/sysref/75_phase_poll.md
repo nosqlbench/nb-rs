@@ -6,6 +6,36 @@ without violating Polydat invariants" line. No code lands until
 this SRD is reviewed against the Polydat invariants listed in
 §"Load-bearing invariants this SRD honours."
 
+> **⚠️ OUT OF DATE — NEEDS UPDATE TO MATCH SHIPPED CODE (2026-06-08).**
+> The synchronizer example in §"Workload surface" shows `trigger_compact`
+> as a *conditional regular op* (`if: …`, re-evaluated every poll
+> iteration). The shipped `ensure_compacted`
+> (`adapters/cql/workloads/full_cql_vector.yaml`) instead fires
+> `trigger_compact` as a **daemon op** (SRD-79).
+>
+> The load-bearing correction: a daemon op does **not** "fire once at
+> phase init". It dispatches **at its position in the cycle/op walk** —
+> `nbrs-activity/src/activity.rs`'s cycle loop spawns the daemon fiber
+> when the stanza walk reaches that op (pinned by the
+> `daemon_op_dispatches_at_cycle_pool_position` test). So daemon ordering
+> follows normal op declaration order: a regular op declared *before* a
+> daemon op runs to completion first.
+>
+> This ordering is what lets a synchronizer phase run a prerequisite op
+> (e.g. a synchronous `forceKeyspaceFlush`) to completion *before* the
+> daemon compaction trigger dispatches — i.e. it makes consolidating
+> flush + compact + await into a **single** phase (`finalize_index`)
+> correct, not just a multi-phase scenario group.
+>
+> TODO when this SRD is next revised: (1) rewrite §"Workload surface" +
+> §"Runner integration" around the daemon-based `trigger_compact`;
+> (2) state the daemon dispatch-at-op-position semantics explicitly and
+> cross-ref SRD-79; (3) fix the stale module doc in
+> `nbrs-activity/src/daemon_pool.rs` ("spawned at phase init" → "spawned
+> when the cycle-pool stanza walk reaches the daemon op"). Until then,
+> the shipped `ensure_compacted` phase is the source of truth, not this
+> draft's example.
+
 **Owner:** nbrs-workload (model), nbrs-activity (synthesis,
 runner / executor), workloads (consumers under
 `adapters/cql/workloads/`).

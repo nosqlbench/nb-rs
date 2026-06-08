@@ -7,14 +7,14 @@
 use polydat::compile::assembly::{PolydatAssembler, WireRef};
 use polydat::library::arithmetic::{Add, Div, Interleave, MixedRadix, Mod};
 use polydat::library::convert::U64ToString;
-use polydat::library::hash::{Hash64, HashRange};
+use polydat::library::hash::{Hash, HashRange};
 
 /// Simple linear chain: cycle → hash → mod → output
 #[test]
 fn simple_hash_mod_chain() {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
-    asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("h", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
     asm.add_node("m", Box::new(Mod::new(1000)), vec![WireRef::node("h")]);
     asm.add_output("result", WireRef::node("m"));
 
@@ -75,7 +75,7 @@ fn shared_intermediate() {
     // Hash the tenant coordinate
     asm.add_node(
         "tenant_h",
-        Box::new(Hash64::new()),
+        Box::new(Hash::new()),
         vec![WireRef::node_port("decompose", 0)],
     );
 
@@ -156,7 +156,7 @@ fn two_input_interleave() {
     );
     asm.add_node(
         "hashed",
-        Box::new(Hash64::new()),
+        Box::new(Hash::new()),
         vec![WireRef::node("mixed")],
     );
     asm.add_node(
@@ -186,7 +186,7 @@ fn two_input_interleave() {
 fn memoization_within_context() {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
-    asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("h", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
     asm.add_node("m", Box::new(Mod::new(1000)), vec![WireRef::node("h")]);
     asm.add_output("result", WireRef::node("m"));
 
@@ -203,7 +203,7 @@ fn memoization_within_context() {
 fn context_change_invalidates() {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
-    asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("h", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
     asm.add_output("result", WireRef::node("h"));
 
     let mut kernel = asm.compile().unwrap();
@@ -224,7 +224,7 @@ fn error_unknown_wire() {
 
     asm.add_node(
         "h",
-        Box::new(Hash64::new()),
+        Box::new(Hash::new()),
         vec![WireRef::input("nonexistent")],
     );
     asm.add_output("result", WireRef::node("h"));
@@ -238,10 +238,10 @@ fn error_unknown_wire() {
 fn error_arity_mismatch() {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
 
-    // Hash64 expects 1 input, give it 2
+    // Hash expects 1 input, give it 2
     asm.add_node(
         "h",
-        Box::new(Hash64::new()),
+        Box::new(Hash::new()),
         vec![WireRef::input("cycle"), WireRef::input("cycle")],
     );
     asm.add_output("result", WireRef::node("h"));
@@ -265,7 +265,7 @@ fn timeseries_workload_sketch() {
     // Tenant hash and code
     asm.add_node(
         "tenant_h",
-        Box::new(Hash64::new()),
+        Box::new(Hash::new()),
         vec![WireRef::node_port("decompose", 0)],
     );
     asm.add_node(
@@ -285,7 +285,7 @@ fn timeseries_workload_sketch() {
     );
     asm.add_node(
         "device_h",
-        Box::new(Hash64::new()),
+        Box::new(Hash::new()),
         vec![WireRef::node("td_interleave")],
     );
     asm.add_node(

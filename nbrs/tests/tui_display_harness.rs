@@ -1,0 +1,399 @@
+//! Fully-encapsulated E2E tests for the `tui=terminal` display
+//! sink's **console containment** and **surface restore** across
+//! display-mode transitions.
+//!
+//! These do NOT run a real workload. They spawn the
+//! `tui_display_harness` example — which drives the real display
+//! sink ([`nbrs_tui::log_only_sink::LogOnlySink`]) from a mock
+//! data source (the run-state actor) — under a
+//! [`shadow_terminal`] PTY, and lock-step it: send one state
+//! change over stdin, wait for the rendered cells, assert, send
+//! the next.
+//!
+//! Completed-phase history is NOT a managed screen region (that
+//! stateful-buffer strategy was removed): it lives in the
+//! scrollback as ordinary log lines, with the terminal's own
+//! alternate-screen save/restore preserving it across mode swaps.
+//! So these tests anchor on plain `log` lines as the stable
+//! primary surface and assert the console (REPL) frame opens on
+//! the alternate screen and restores the primary byte-exact on
+//! close — never leaking its output onto the primary scrollback.
+
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use shadow_terminal::shadow_terminal::Config;
+use shadow_terminal::steppable_terminal::SteppableTerminal;
+
+/// Path to the `tui_display_harness` example binary. Derived from
+/// the running test binary: `target/<profile>/deps/<test>` →
+/// `target/<profile>/examples/tui_display_harness`.
+fn harness_binary() -> PathBuf {
+    let mut p = std::env::current_exe().expect("current_exe");
+    p.pop(); // drop the test binary file name
+    if p.ends_with("deps") {
+        p.pop(); // deps → profile dir
+    }
+    p.push("examples");
+    p.push("tui_display_harness");
+    p
+}
+
+fn harness_config() -> Config {
+    let mut command: Vec<OsString> = Vec::new();
+    command.push(harness_binary().into());
+    Config {
+        width: 120,
+        height: 30,
+        command,
+        scrollback_size: 500,
+        scrollback_step: 5,
+    }
+}
+
+/// Step the terminal until `needle` shows up, or the deadline
+/// fires (panics with the last screen for context).
+async fn wait_for(stepper: &mut SteppableTerminal, needle: &str, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let _ = stepper.render_all_output().await;
+        if let Ok(s) = stepper.screen_as_string()
+            && s.contains(needle)
+        {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let _ = stepper.render_all_output().await;
+            let dump = stepper.screen_as_string().unwrap_or_default();
+            panic!("timed out waiting for {needle:?}\n--- screen ---\n{dump}");
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+}
+
+fn cmd(stepper: &SteppableTerminal, line: &str) {
+    stepper.send_command(line).expect("send harness command");
+}
+
+async fn screen(stepper: &mut SteppableTerminal) -> String {
+    let _ = stepper.render_all_output().await;
+    stepper.screen_as_string().unwrap_or_default()
+}
+
+/// The blank-vs-content shape of each screen row (trailing
+/// whitespace trimmed). Ignores the margin's advancing session clock
+/// and any padding, so a structural assertion catches injected /
+/// scrolled-in blank lines without being brittle to the wall clock.
+fn blank_shape(s: &str) -> Vec<bool> {
+    s.lines().map(|l| l.trim().is_empty()).collect()
+}
+
+/// Console (REPL) output is CONTAINED in the console frame: it
+/// renders inside the console (on the alternate screen) and, on
+/// close, the primary surface is restored without it — the output
+/// never leaks onto the primary scrollback. The old behaviour
+/// wrote command echo/response straight to stderr scrollback,
+/// which this guards against.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_output_is_contained_in_frame() {
+    const MARKER: &str = "CONSOLEMARKERZZ";
+
+    let mut stepper = SteppableTerminal::start(harness_config()).await
+        .expect("spawn harness under shadow terminal");
+
+    // A plain scrollback log line is the stable primary surface.
+    cmd(&stepper, "log baseline-anchor-line");
+    wait_for(&mut stepper, "baseline-anchor-line", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let primary = screen(&mut stepper).await;
+    assert!(!primary.contains(MARKER));
+
+    // Open the console; emit output — it renders inside the
+    // console (alternate screen).
+    cmd(&stepper, "window");
+    wait_for(&mut stepper, "REPL", Duration::from_secs(5)).await;
+    cmd(&stepper, &format!("out {MARKER}"));
+    wait_for(&mut stepper, MARKER, Duration::from_secs(5)).await;
+
+    // Close the console: the primary surface is restored exactly,
+    // and the console output is NOT on it (contained). Space the
+    // close past the 250 ms toggle debounce.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    cmd(&stepper, "window");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let after = screen(&mut stepper).await;
+    assert!(!after.contains(MARKER),
+        "console output must not leak onto the primary surface\n\
+         --- screen ---\n{after}");
+    assert_eq!(after, primary,
+        "primary surface must be restored byte-exact after console close");
+
+    let _ = stepper.kill();
+}
+
+/// Opening then closing the console must restore the primary
+/// terminal surface byte-exact — no residual gap, no re-stream.
+/// The console renders on the alternate screen, so the terminal
+/// saves the primary on open and restores it on close (the harness
+/// publishes no live status line, so the surface is otherwise
+/// stable). This is the regression guard for the "console toggle
+/// leaves residual state" report. Covers both the `~` bar and the
+/// `` ` `` window — both live on the alternate screen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_toggle_restores_surface_byte_exact() {
+    let mut stepper = SteppableTerminal::start(harness_config()).await
+        .expect("spawn harness under shadow terminal");
+    for i in 0..6 {
+        cmd(&stepper, &format!("log scrollback-line-{i}"));
+    }
+    wait_for(&mut stepper, "scrollback-line-5", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let s0 = screen(&mut stepper).await;
+
+    let dump = |label: &str, s: &str| {
+        eprintln!("===== {label} =====");
+        for (i, l) in s.lines().enumerate() {
+            eprintln!("{:>2}|{}", i + 1, l);
+        }
+    };
+
+    // --- window (`) open + close ---
+    cmd(&stepper, "window");
+    wait_for(&mut stepper, "REPL", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    cmd(&stepper, "window");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let after_window = screen(&mut stepper).await;
+    if after_window != s0 {
+        dump("S0", &s0);
+        dump("after window close", &after_window);
+    }
+    assert_eq!(s0, after_window,
+        "closing the window console must restore the surface byte-exact");
+
+    // --- bar (~) open + close ---
+    cmd(&stepper, "bar");
+    wait_for(&mut stepper, "REPL", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    cmd(&stepper, "bar");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let after_bar = screen(&mut stepper).await;
+    if after_bar != s0 {
+        dump("S0", &s0);
+        dump("after bar close", &after_bar);
+    }
+    assert_eq!(s0, after_bar,
+        "closing the bar console must restore the surface byte-exact");
+
+    let _ = stepper.kill();
+}
+
+/// The live status block changes height during a run (the memo line
+/// and the running-phase braille bar appear and disappear). Growing
+/// then shrinking it must NOT leave a fully-blank (no-margin) line
+/// wedged between the scrollback logs and the status — and it must
+/// not persist when no new logs follow (a long phase that only
+/// updates its status). This is the actual "injecting empty lines"
+/// regression.
+///
+/// Fixed by the shrink-slide in `log_only_sink`: when the status
+/// shrinks, the log area is slid down (reverse-index inside a scroll
+/// region excluding the status rows) so the freed rows fill with real
+/// log content and the unavoidable blank lands at the top of the
+/// screen (leading whitespace), never as a gap directly above the
+/// status / between events.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_height_change_leaves_no_blank_gap() {
+    let mut stepper = SteppableTerminal::start(harness_config()).await
+        .expect("spawn harness under shadow terminal");
+
+    // Fill the viewport so the content is contiguous (no natural top
+    // gap to confuse the assertion). Let the logs fully settle before
+    // touching the status, so the status-height changes are isolated
+    // from the log-emit path (otherwise a log batch and a height
+    // change land in the same redraw and interleave).
+    for i in 0..40 {
+        cmd(&stepper, &format!("log fill-line-{i:02}"));
+    }
+    wait_for(&mut stepper, "fill-line-39", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    cmd(&stepper, "status STAT-A| STAT-B");
+    wait_for(&mut stepper, "STAT-A", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    cmd(&stepper, "status STAT-A| STAT-B| STAT-C"); // grow 2 -> 3
+    wait_for(&mut stepper, "STAT-C", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    cmd(&stepper, "status STAT-A| STAT-B"); // shrink 3 -> 2
+    // No new logs after the shrink — mimic a long phase that only
+    // updates its status.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let s = screen(&mut stepper).await;
+
+    // No fully-blank line may sit between two content lines.
+    let lines: Vec<&str> = s.lines().collect();
+    for w in lines.windows(3) {
+        let mid_blank = w[1].trim().is_empty();
+        let neighbors_content = !w[0].trim().is_empty() && !w[2].trim().is_empty();
+        assert!(!(mid_blank && neighbors_content),
+            "status height change left a blank gap between content lines:\n{s}");
+    }
+
+    let _ = stepper.kill();
+}
+
+/// The user's actual regression: a log line emitted in the same redraw
+/// window as a status-height change (a scope-readout landing just as
+/// the phase's status block grows or shrinks). The absolute-positioned
+/// renderer stranded a blank between the logs and the status AND could
+/// DROP the colliding log entirely (it was written into the status
+/// region and overwritten by the re-pin). Follow-the-log keeps every
+/// log and leaves no gap between content.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn log_status_collision_keeps_logs_without_gap() {
+    let mut stepper = SteppableTerminal::start(harness_config()).await
+        .expect("spawn harness under shadow terminal");
+
+    for i in 0..6 {
+        cmd(&stepper, &format!("log fill-{i:02}"));
+    }
+    wait_for(&mut stepper, "fill-05", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    cmd(&stepper, "status RUN-A| RUN-B");
+    wait_for(&mut stepper, "RUN-A", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // Collision 1: a log + a status GROW, back to back (same poll
+    // window → same redraw).
+    cmd(&stepper, "log EVENT-ALPHA");
+    cmd(&stepper, "status RUN-A| RUN-B| MEMO");
+    wait_for(&mut stepper, "MEMO", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // Collision 2: a log + a status SHRINK, back to back.
+    cmd(&stepper, "log EVENT-BETA");
+    cmd(&stepper, "status RUN-A| RUN-B");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let s = screen(&mut stepper).await;
+
+    // Both colliding logs survived (the old renderer dropped them).
+    assert!(s.contains("EVENT-ALPHA"), "grow-colliding log was dropped:\n{s}");
+    assert!(s.contains("EVENT-BETA"), "shrink-colliding log was dropped:\n{s}");
+    // No fully-blank line wedged between two content lines.
+    let lines: Vec<&str> = s.lines().collect();
+    for w in lines.windows(3) {
+        let mid_blank = w[1].trim().is_empty();
+        let neighbors_content = !w[0].trim().is_empty() && !w[2].trim().is_empty();
+        assert!(!(mid_blank && neighbors_content),
+            "status/log collision left a blank gap between content:\n{s}");
+    }
+
+    let _ = stepper.kill();
+}
+
+/// A multi-line log block — a phase-outcome error readout (a CQL error
+/// + the offending statement + an embedded blank row + a `(+N more)`
+/// tail) — emitted in the same redraw window as a status height change.
+/// This is the real error-emission shape from a live run. The
+/// absolute-positioned renderer wrote logs into the status region and
+/// re-pinned over them, so the TAIL lines of a multi-row block could be
+/// dropped; follow-the-log emits the whole block (it scrolls) and draws
+/// the status beneath it. The embedded blank row carries the margin
+/// (it's log content, not a stranded gap), so it is not a fully-blank
+/// line between content.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multiline_error_block_emits_fully_with_status_change() {
+    let mut stepper = SteppableTerminal::start(harness_config()).await
+        .expect("spawn harness under shadow terminal");
+
+    // Fill the viewport so this mirrors a live run (status pinned at
+    // the bottom), not a sparse start.
+    for i in 0..30 {
+        cmd(&stepper, &format!("log fill-{i:02}"));
+    }
+    wait_for(&mut stepper, "fill-29", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    cmd(&stepper, "status RUNNING-A| RUNNING-B");
+    wait_for(&mut stepper, "RUNNING-A", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // The phase-outcome error block (`||` = the embedded blank row)
+    // lands together with a status grow (the running phase's memo
+    // appearing) — back to back, same poll window.
+    cmd(&stepper, "log ERRHEAD|ERRSTMT|ERRVALUES||ERRPLUS63");
+    cmd(&stepper, "status RUNNING-A| RUNNING-B| MEMO");
+    wait_for(&mut stepper, "MEMO", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let s = screen(&mut stepper).await;
+
+    // Every line of the block survived — including the TAIL, which the
+    // old renderer could overwrite.
+    for line in ["ERRHEAD", "ERRSTMT", "ERRVALUES", "ERRPLUS63"] {
+        assert!(s.contains(line), "error-block line {line:?} dropped:\n{s}");
+    }
+    // The status block landed too.
+    assert!(s.contains("MEMO") && s.contains("RUNNING-B"),
+        "status not drawn beneath the error block:\n{s}");
+    // No fully-blank (no-margin) line wedged between content — the
+    // embedded `||` blank carries the margin so it is NOT flagged.
+    let lines: Vec<&str> = s.lines().collect();
+    for w in lines.windows(3) {
+        let mid_blank = w[1].trim().is_empty();
+        let neighbors_content = !w[0].trim().is_empty() && !w[2].trim().is_empty();
+        assert!(!(mid_blank && neighbors_content),
+            "multi-line error block left a blank gap between content:\n{s}");
+    }
+
+    let _ = stepper.kill();
+}
+
+/// Swap-consistency smoke test: a Ctrl-T cycle (sink teardown +
+/// alt-screen save/restore + a fresh sink) over an unchanged snapshot
+/// must re-render the same blank-line structure with the top log line
+/// still visible — `display = f(snapshot)`, swap-invariant.
+///
+/// NOTE: this does NOT reproduce the live "blank lines accumulate per
+/// Ctrl-T" report. That bug depends on the real terminal's alternate-
+/// screen save/restore interacting with a *live, changing* status
+/// block; shadow-terminal's simplified swap nets to a no-op here, so
+/// this test passes both with and without the `first_paint` fix in
+/// `log_only_sink`. Kept as a genuine swap-invariant guard; the
+/// accumulation regression still needs a faithful reproduction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn swap_re_renders_surface_byte_identically() {
+    let mut stepper = SteppableTerminal::start(harness_config()).await
+        .expect("spawn harness under shadow terminal");
+
+    // Scrollback logs + a 2-row live status block (the `|` splits
+    // rows). The 2-row status is what makes scroll-on-growth fire.
+    cmd(&stepper, "log scroll-line-one");
+    cmd(&stepper, "log scroll-line-two");
+    cmd(&stepper, "status RUNNING phase| 120/s ok:100% c:1");
+    wait_for(&mut stepper, "RUNNING phase", Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let s0 = screen(&mut stepper).await;
+    let shape0 = blank_shape(&s0);
+
+    assert!(s0.contains("scroll-line-two"), "top log line visible in s0: {s0}");
+
+    // Three swaps; the snapshot never changes, so each must re-render
+    // the same blank-line structure with the top log line still
+    // visible. Pre-fix, the fresh sink's first paint scrolled the
+    // 2-row status block in, drifting content up and accumulating
+    // blank rows on every swap (so `scroll-line-two` walked off the
+    // top and the shape changed).
+    for i in 0..3 {
+        cmd(&stepper, "swap");
+        wait_for(&mut stepper, "RUNNING phase", Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let after = screen(&mut stepper).await;
+        assert_eq!(blank_shape(&after), shape0,
+            "swap #{i} must not change the blank-line structure \
+             (no injected/accumulated blanks)\n--- s0 ---\n{s0}\n\
+             --- after swap #{i} ---\n{after}");
+        assert!(after.contains("scroll-line-two"),
+            "swap #{i} must not scroll the top log line off the surface\n{after}");
+    }
+
+    let _ = stepper.kill();
+}

@@ -7,92 +7,98 @@
 //! and consume `Value::Json(std::sync::Arc::new(serde_json::Value))` directly, avoiding
 //! serialization/deserialization round-trips when passing structured
 //! data between nodes or to adapters that consume JSON natively.
+//!
+//! SRD-80b Phase E migration: every node in this module routes
+//! through `#[polydat_node]`. `JsonObject`'s historical "interleaved
+//! key/value pairs" gap (SRD-80b §"open question 2") is resolved
+//! compositionally: `json_with(key, value)` produces a single-pair
+//! partial Json, and the variadic `json_object(parts...)` merges
+//! them. Workload syntax:
+//!
+//! ```text
+//! record := json_object(
+//!     json_with("name", name_wire),
+//!     json_with("age", age_wire),
+//! )
+//! ```
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::Value;
 use serde_json::json;
 
 // =================================================================
 // Construction: build JSON values from inputs
 // =================================================================
 
-/// Build a JSON object from N named key-value pairs.
+/// Build a single-pair partial JSON object: `{ key: value }`.
 ///
-/// Signature: `(val_0: any, val_1: any, ...) -> (json)`
+/// Signature: `(value: any) -> (json)` with const `key: &str`.
 ///
-/// Keys are specified at init time. Values come from cycle-time wires.
-/// Each input is converted to its JSON representation:
-///   - U64 → JSON number
-///   - F64 → JSON number
+/// The compositional building block for `json_object`. Each
+/// `json_with` produces a one-entry Json Object that the variadic
+/// `json_object` merger flattens. The value is converted via
+/// `value_to_json`, so any `Value` variant works as the input:
+///   - U64 / F64 → JSON number
 ///   - Bool → JSON bool
 ///   - Str → JSON string
 ///   - Json → nested as-is
-pub struct JsonObject {
-    meta: NodeMeta,
-    keys: Vec<String>,
+///
+/// SRD-80b Phase E migration — resolves the historical "interleaved
+/// key/value pairs" gap (open question 2) by splitting the operator:
+/// const key paired with a single PolyWire value, no per-slot
+/// type modelling needed.
+#[crate::polydat_node(category = Json)]
+fn json_with(
+    key: crate::derive_support::Const<&str>,
+    value: Value,
+) -> std::sync::Arc<serde_json::Value> {
+    let mut m = serde_json::Map::new();
+    m.insert(key.0.to_string(), value_to_json(&value));
+    std::sync::Arc::new(serde_json::Value::Object(m))
 }
 
-impl JsonObject {
-    /// Create with field names. Input count must match key count.
-    pub fn new(keys: Vec<String>, input_types: Vec<PortType>) -> Self {
-        assert_eq!(keys.len(), input_types.len(),
-            "key count must match input count");
-        let inputs: Vec<Port> = keys.iter().zip(input_types.iter())
-            .map(|(k, &t)| Port::new(k.clone(), t))
-            .collect();
-        let slots: Vec<Slot> = inputs.iter().map(|p| Slot::Wire(p.clone())).collect();
-        Self {
-            meta: NodeMeta {
-                name: "json_object".into(),
-                outs: vec![Port::json("output")],
-                ins: slots,
-            },
-            keys,
+/// Merge N partial Json Objects into a single Json Object.
+///
+/// Signature: `(parts_0: json, parts_1: json, ...) -> (json)`
+///
+/// Variadic merger over Json inputs. Each input is expected to be a
+/// Json Object (typically produced by `json_with`); non-Object
+/// variants are silently skipped — keeping the operator
+/// composable with conditional `if(...)` branches that may yield
+/// `null`. Later parts shadow earlier on key collision.
+///
+/// SRD-80b Phase E migration — variadic `&[Value]`. Replaces the
+/// hand-written `JsonObject` which couldn't express interleaved
+/// const keys + per-slot wires in the workload DSL.
+#[crate::polydat_node(category = Json, variadic_min = 0)]
+fn json_object(parts: &[Value]) -> std::sync::Arc<serde_json::Value> {
+    let mut merged = serde_json::Map::new();
+    for v in parts {
+        if let Value::Json(arc) = v {
+            if let serde_json::Value::Object(map) = arc.as_ref() {
+                for (k, val) in map {
+                    merged.insert(k.clone(), val.clone());
+                }
+            }
         }
     }
-}
-
-impl PolydatNode for JsonObject {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let mut map = serde_json::Map::new();
-        for (i, key) in self.keys.iter().enumerate() {
-            map.insert(key.clone(), value_to_json(&inputs[i]));
-        }
-        outputs[0] = Value::Json(std::sync::Arc::new(serde_json::Value::Object(map)));
-    }
+    std::sync::Arc::new(serde_json::Value::Object(merged))
 }
 
 /// Build a JSON array from N inputs.
 ///
 /// Signature: `(elem_0: any, elem_1: any, ...) -> (json)`
-pub struct JsonArray {
-    meta: NodeMeta,
-}
-
-impl JsonArray {
-    pub fn new(input_types: Vec<PortType>) -> Self {
-        let inputs: Vec<Port> = input_types.iter().enumerate()
-            .map(|(i, &t)| Port::new(format!("elem_{i}"), t))
-            .collect();
-        let slots: Vec<Slot> = inputs.iter().map(|p| Slot::Wire(p.clone())).collect();
-        Self {
-            meta: NodeMeta {
-                name: "json_array".into(),
-                outs: vec![Port::json("output")],
-                ins: slots,
-            },
-        }
-    }
-}
-
-impl PolydatNode for JsonArray {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let arr: Vec<serde_json::Value> = inputs.iter().map(value_to_json).collect();
-        outputs[0] = Value::Json(std::sync::Arc::new(serde_json::Value::Array(arr)));
-    }
+///
+/// SRD-80b Phase E migration — `&[Value]` variadic. Per-element
+/// type fidelity isn't surfaced at eval (the body walks the
+/// elements through `value_to_json`, which dispatches on the
+/// `Value` variant), so the macro-emitted variadic shape is
+/// behaviourally equivalent to the hand-written per-slot-typed
+/// version. The macro emits `JsonArray::new(n_wires)` for the
+/// programmatic-construction signature.
+#[crate::polydat_node(category = Json, variadic_min = 0)]
+fn json_array(elems: &[Value]) -> std::sync::Arc<serde_json::Value> {
+    let arr: Vec<serde_json::Value> = elems.iter().map(value_to_json).collect();
+    std::sync::Arc::new(serde_json::Value::Array(arr))
 }
 
 /// Wrap a single value as a JSON value.
@@ -100,69 +106,35 @@ impl PolydatNode for JsonArray {
 /// Signature: `(input: any) -> (json)`
 ///
 /// Useful for promoting a scalar to JSON for further composition.
-pub struct ToJson {
-    meta: NodeMeta,
-}
-
-impl ToJson {
-    pub fn new(input_type: PortType) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "to_json".into(),
-                outs: vec![Port::json("output")],
-                ins: vec![Slot::Wire(Port::new("input", input_type))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for ToJson {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Json(std::sync::Arc::new(value_to_json(&inputs[0])));
-    }
+/// SRD-80b Phase E — PolyWire input, Json output. The macro's
+/// SameAsInput dispatch isn't applicable here (return type is
+/// Json, not Value), so the body coerces each variant through
+/// `value_to_json`.
+#[crate::polydat_node(category = Json)]
+fn to_json(input: Value) -> std::sync::Arc<serde_json::Value> {
+    std::sync::Arc::new(value_to_json(&input))
 }
 
 /// Merge two JSON objects into one (shallow merge, right wins).
 ///
 /// Signature: `(left: json, right: json) -> (json)`
-pub struct JsonMerge {
-    meta: NodeMeta,
-}
-
-impl Default for JsonMerge {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl JsonMerge {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "json_merge".into(),
-                outs: vec![Port::json("output")],
-                ins: vec![Slot::Wire(Port::json("left")), Slot::Wire(Port::json("right"))],
-            },
+///
+/// SRD-80b Phase E migration — `&serde_json::Value` inputs,
+/// `Arc<serde_json::Value>` output.
+#[crate::polydat_node(category = Json)]
+fn json_merge(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> std::sync::Arc<serde_json::Value> {
+    let mut result = left.clone();
+    if let (serde_json::Value::Object(base), serde_json::Value::Object(overlay)) =
+        (&mut result, right)
+    {
+        for (k, v) in overlay {
+            base.insert(k.clone(), v.clone());
         }
     }
-}
-
-impl PolydatNode for JsonMerge {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let left = inputs[0].as_json();
-        let right = inputs[1].as_json();
-        let mut result = left.clone();
-        if let (serde_json::Value::Object(base), serde_json::Value::Object(overlay)) =
-            (&mut result, right)
-        {
-            for (k, v) in overlay {
-                base.insert(k.clone(), v.clone());
-            }
-        }
-        outputs[0] = Value::Json(std::sync::Arc::new(result));
-    }
+    std::sync::Arc::new(result)
 }
 
 // =================================================================
@@ -171,36 +143,16 @@ impl PolydatNode for JsonMerge {
 
 /// Serialize a JSON value to a compact string.
 ///
-/// Signature: `(input: json) -> (String)`
+/// Signature: `json_to_str(input: json) -> (String)`
 ///
-/// This is also the auto-adapter for Json → Str.
-pub struct JsonToStr {
-    meta: NodeMeta,
-}
-
-impl Default for JsonToStr {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl JsonToStr {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "__json_to_string".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::json("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for JsonToStr {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(inputs[0].as_json().to_string().into());
-    }
+/// Workload-callable AND the auto-adapter the assembly phase inserts
+/// on Json → Str boundaries. SRD-80b Phase E migration —
+/// `&serde_json::Value` input. The struct name `JsonToStr`
+/// follows the snake_case → PascalCase rule and is what
+/// `compile::assembly` constructs for the auto-adapter slot.
+#[crate::polydat_node(category = Conversions)]
+fn json_to_str(input: &serde_json::Value) -> String {
+    input.to_string()
 }
 
 /// Serialize a JSON value to a pretty-printed string.
@@ -240,34 +192,17 @@ fn escape_json(input: String) -> String {
 
 /// Extract a field from a JSON object by key.
 ///
-/// Signature: `(input: json) -> (json)`
-/// Param: `key: String`
-pub struct JsonField {
-    meta: NodeMeta,
-    key: String,
-}
-
-impl JsonField {
-    pub fn new(key: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: format!("json_field[{key}]"),
-                outs: vec![Port::json("output")],
-                ins: vec![Slot::Wire(Port::json("input"))],
-            },
-            key: key.to_string(),
-        }
-    }
-}
-
-impl PolydatNode for JsonField {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let val = inputs[0].as_json();
-        outputs[0] = Value::Json(std::sync::Arc::new(
-            val.get(&self.key).cloned().unwrap_or(serde_json::Value::Null)
-        ));
-    }
+/// Extract a single field by key from a JSON object input.
+/// Returns the field's value (or `null` if missing).
+/// SRD-80b Phase E migration via scalar Const + borrow Json input.
+#[crate::polydat_node(category = Json)]
+fn json_field(
+    input: &serde_json::Value,
+    key: crate::derive_support::Const<&str>,
+) -> std::sync::Arc<serde_json::Value> {
+    std::sync::Arc::new(
+        input.get(&*key).cloned().unwrap_or(serde_json::Value::Null)
+    )
 }
 
 // =================================================================
@@ -308,45 +243,21 @@ fn value_to_json(v: &Value) -> serde_json::Value {
 /// shape silently degrades when the body isn't unary AND when
 /// the upstream wire is forced through a `JsonToStr` adapter
 /// that escapes newlines as `\n` literals.
-pub struct JsonText {
-    meta: NodeMeta,
-}
-
-impl Default for JsonText {
-    fn default() -> Self { Self::new() }
-}
-
-impl JsonText {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "json_text".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Json))],
-            },
+///
+/// SRD-80b Phase E migration — PolyWire input so non-Json values
+/// fall through their display form (a Str input is already
+/// textual; numeric/bool scalars render naturally), useful when
+/// the upstream wire is heterogeneous (e.g. a body extern that
+/// sometimes carries a string, sometimes a JSON value).
+#[crate::polydat_node(category = Json)]
+fn json_text(input: Value) -> String {
+    match &input {
+        Value::Json(j) => {
+            let mut buf = String::new();
+            walk_json_leaves(j, &mut buf);
+            buf
         }
-    }
-}
-
-impl PolydatNode for JsonText {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let text = match &inputs[0] {
-            Value::Json(j) => {
-                let mut buf = String::new();
-                walk_json_leaves(j, &mut buf);
-                buf
-            }
-            // Non-Json values pass through their display form —
-            // a Str input is already textual; numeric/bool
-            // scalars render naturally. Useful when the upstream
-            // wire is heterogeneous (e.g. a body extern that
-            // sometimes carries a string, sometimes a JSON
-            // value).
-            other => other.to_display_string(),
-        };
-        outputs[0] = Value::Str(text.into());
+        other => other.to_display_string(),
     }
 }
 
@@ -403,42 +314,20 @@ fn walk_json_leaves(j: &serde_json::Value, out: &mut String) {
 /// `extract_indices_from_json` behaviour in `nbrs_activity::validation`
 /// so workloads can swap from the old JSON-walk to this typed-wire
 /// path without recall-value drift.
-pub struct BodyColumnI32 {
-    meta: NodeMeta,
-    column: String,
-}
-
-impl BodyColumnI32 {
-    pub fn new(column: impl Into<String>) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "body_column_i32".into(),
-                outs: vec![Port::new("output", PortType::VecI32)],
-                ins: vec![Slot::Wire(Port::new("body", PortType::Json))],
-            },
-            column: column.into(),
-        }
-    }
-}
-
-impl PolydatNode for BodyColumnI32 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let json = match &inputs[0] {
-            Value::Json(j) => j,
-            // Non-JSON inputs produce an empty vector. The
-            // evaluator surfaces "no values" as a hard error;
-            // here we just produce the empty shape so the
-            // node's type contract holds.
-            _ => {
-                outputs[0] = Value::VecI32(crate::ast::SliceArc::from_vec(Vec::new()));
-                return;
-            }
-        };
-        let values = extract_column_i32(json, &self.column);
-        outputs[0] = Value::VecI32(crate::ast::SliceArc::from_vec(values));
-    }
+///
+/// SRD-80b Phase E migration — PolyWire body so the non-Json
+/// fallback ("empty vector, no panic") stays intact; `column`
+/// is a const string with no default (required workload arg).
+#[crate::polydat_node(category = Json)]
+fn body_column_i32(
+    body: Value,
+    column: crate::derive_support::Const<&str>,
+) -> Vec<i32> {
+    let json = match &body {
+        Value::Json(j) => j,
+        _ => return Vec::new(),
+    };
+    extract_column_i32(json, column.0)
 }
 
 /// Walk a JSON value extracting `column` from every row. Handles
@@ -491,143 +380,6 @@ fn json_value_as_i32(v: &serde_json::Value) -> Option<i32> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for JSON construction and serialization nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "to_json", category: C::Json,
-            outputs: 1, description: "promote value to JSON",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Promote a scalar value to a JSON value.\nU64 -> JSON number, F64 -> JSON number, Bool -> JSON bool,\nStr -> JSON string, Json -> passed through unchanged.\nParameters:\n  input — any wire value\nExample: to_json(hash(cycle))  // JSON number",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "json_to_str", category: C::Json,
-            outputs: 1, description: "serialize JSON to compact string",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Serialize a JSON value to a compact string representation.\nProduces minified JSON with no extra whitespace.\nParameters:\n  input — JSON wire input\nExample: json_to_str(to_json(hash(cycle)))  // \"42\"",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "json_text", category: C::Json,
-            outputs: 1, description: "flatten JSON leaves into newline-joined text",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "body", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Walk a JSON tree depth-first and concatenate every leaf value's\ntextual form into a newline-separated string. Strings keep any\nembedded newlines verbatim — multi-line content like CQL\n`create_statement` survives intact, so line-anchored regex\npatterns match against the actual schema text.\n\nUse for probe-phase regex matches over multi-row result\nbodies, e.g. `regex_match(json_text(body), \"(?im)^TABLE …\")`.\nParameters:\n  input — JSON wire input (the magic `body` extern shape).\nExample: json_text(body)  // multi-line text suitable for regex",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        // `escape_json` migrated to `#[polydat_node]`
-        // per SRD-80 PR B.4.
-        FuncSig {
-            name: "json_merge", category: C::Json, outputs: 1,
-            description: "shallow merge two JSON objects",
-            help: "Shallow-merge two JSON objects: keys in b override keys in a.\nBoth inputs must be JSON objects. Non-object inputs produce an error.\nUse to combine independently generated JSON fragments.\nParameters:\n  a — JSON object wire input (base)\n  b — JSON object wire input (overrides)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "array_len", category: C::Json, outputs: 1,
-            description: "count elements in a bracket-encoded array",
-            help: "Parse [a,b,c,...] and return the element count.\nWorks on JSON arrays and bracket-format vectors.\nReturns 0 for empty or non-array input.\nExample: array_len(metadata_indices_at(cycle, \"example\"))",
-            identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "array", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "array_at", category: C::Json, outputs: 1,
-            description: "access element at index in bracket-encoded array",
-            help: "Return the element at a given index from [a,b,c,...].\nIndex wraps modulo array length.\nReturns empty string for empty arrays.\nExample: array_at(neighbor_indices_at(0, \"example\"), cycle)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "array", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "body_column_i32", category: C::Json, outputs: 1,
-            description: "extract a column of integer values from a JSON result body",
-            help: "Walk a JSON result body and pull the named column from every row\nas a `VecI32` wire. Recognises `[{...},{...}]`, `{rows: [{...}]}` envelope,\nand single-row `{column: value}` shapes — the same shapes adapter\nResultBody::to_json() emits across CQL / HTTP / stdout drivers.\nUnparseable / missing per-row values are skipped (no zero-fill).\nUse to wire result-body columns into typed-vector wires that the\nrecall evaluator / custom metrics consume via ctx.wires.get.\nParameters:\n  body   — Json wire input (typically the magic `body` extern).\n  column — column name (compile-time const string).\nExample: result: { keys: body_column_i32(body, \"key\") }",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "body", slot_type: SlotType::Wire, required: true, example: "body", constraint: None },
-                ParamSpec { name: "column", slot_type: SlotType::ConstStr, required: true, example: "\"key\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "normalize_vector", category: C::Json, outputs: 1,
-            description: "L2-normalize a bracket-encoded float vector string",
-            help: "Parse [x,y,z,...], compute L2 norm, return normalized vector string.\nPasses through unchanged if input is not bracket-encoded or norm is zero.\nParameters:\n  vector — Str wire input\nExample: normalize_vector(random_vector(seed, 128))",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "vector", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "random_vector", category: C::Json, outputs: 1,
-            description: "generate deterministic float vector as bracket-encoded string",
-            help: "Generate a deterministic vector of `dim` f64 values in [min, max).\nSeed and dim are cycle-time wires; min and max are consts (default 0.0, 1.0).\nUses xxHash3 for each element — same seed always produces the same vector.\nParameters:\n  seed — u64 wire input\n  dim  — u64 wire input\n  min  — f64 const (default 0.0)\n  max  — f64 const (default 1.0)\nExample: random_vector(hash(cycle), 128, 0.0, 1.0)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "seed", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "dim", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "min", slot_type: SlotType::ConstF64, required: false, example: "0.0", constraint: None },
-                ParamSpec { name: "max", slot_type: SlotType::ConstF64, required: false, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
 // =================================================================
 // Vector operations: normalize and random generation
 // =================================================================
@@ -640,53 +392,26 @@ pub fn signatures() -> &'static [FuncSig] {
 /// effectively zero.
 ///
 /// Signature: `normalize_vector(vector: Str) -> (output: Str)`
-pub struct NormalizeVector {
-    meta: NodeMeta,
-}
-
-impl Default for NormalizeVector {
-    fn default() -> Self {
-        Self::new()
+///
+/// SRD-80b Phase E migration.
+#[crate::polydat_node(category = Json)]
+fn normalize_vector(vector: &str) -> String {
+    let trimmed = vector.trim();
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return vector.to_string();
     }
-}
-
-impl NormalizeVector {
-    /// Create a new NormalizeVector node.
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "normalize_vector".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::new("vector", PortType::Str))],
-            },
-        }
+    let inner = &trimmed[1..trimmed.len()-1];
+    let values: Vec<f64> = inner.split(',')
+        .filter_map(|v| v.trim().parse::<f64>().ok())
+        .collect();
+    let norm = values.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if norm < 1e-15 {
+        return vector.to_string();
     }
-}
-
-impl PolydatNode for NormalizeVector {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let s = inputs[0].as_str();
-        let trimmed = s.trim();
-        if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-            outputs[0] = Value::Str(s.to_string().into());
-            return;
-        }
-        let inner = &trimmed[1..trimmed.len()-1];
-        let values: Vec<f64> = inner.split(',')
-            .filter_map(|v| v.trim().parse::<f64>().ok())
-            .collect();
-        let norm = values.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if norm < 1e-15 {
-            outputs[0] = Value::Str(s.to_string().into());
-            return;
-        }
-        let normalized: Vec<String> = values.iter()
-            .map(|v| format!("{}", v / norm))
-            .collect();
-        outputs[0] = Value::Str(format!("[{}]", normalized.join(",")).into());
-    }
+    let normalized: Vec<String> = values.iter()
+        .map(|v| format!("{}", v / norm))
+        .collect();
+    format!("[{}]", normalized.join(","))
 }
 
 /// Generate a deterministic f64 vector as a bracket-encoded JSON array string.
@@ -697,46 +422,27 @@ impl PolydatNode for NormalizeVector {
 ///
 /// Signature: `random_vector(seed: u64, dim: u64) -> (output: Str)`
 /// Consts: `min: f64 = 0.0`, `max: f64 = 1.0`
-pub struct RandomVector {
-    meta: NodeMeta,
-    min: f64,
-    max: f64,
-}
-
-impl RandomVector {
-    /// Create a new RandomVector node with the given value range.
-    pub fn new(min: f64, max: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "random_vector".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![
-                    Slot::Wire(Port::u64("seed")),
-                    Slot::Wire(Port::u64("dim")),
-                ],
-            },
-            min,
-            max,
-        }
+///
+/// SRD-80b Phase E migration.
+#[crate::polydat_node(category = Json)]
+fn random_vector(
+    seed: u64,
+    dim: u64,
+    #[poly_default(0.0f64)] min: crate::derive_support::Const<f64>,
+    #[poly_default(1.0f64)] max: crate::derive_support::Const<f64>,
+) -> String {
+    let min_v = *min;
+    let max_v = *max;
+    let range = max_v - min_v;
+    let dim = dim as usize;
+    let mut h = seed;
+    let mut values = Vec::with_capacity(dim);
+    for _ in 0..dim {
+        h = xxhash_rust::xxh3::xxh3_64(&h.to_le_bytes());
+        let unit = (h as f64) / (u64::MAX as f64); // [0, 1)
+        values.push(format!("{}", min_v + range * unit));
     }
-}
-
-impl PolydatNode for RandomVector {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let seed = inputs[0].as_u64();
-        let dim = inputs[1].as_u64() as usize;
-        let range = self.max - self.min;
-        let mut h = seed;
-        let mut values = Vec::with_capacity(dim);
-        for _ in 0..dim {
-            h = xxhash_rust::xxh3::xxh3_64(&h.to_le_bytes());
-            let unit = (h as f64) / (u64::MAX as f64); // [0, 1)
-            values.push(format!("{}", self.min + range * unit));
-        }
-        outputs[0] = Value::Str(format!("[{}]", values.join(",")).into());
-    }
+    format!("[{}]", values.join(","))
 }
 
 // =================================================================
@@ -747,35 +453,18 @@ impl PolydatNode for RandomVector {
 ///
 /// Parses `[a,b,c,...]` and counts elements. Returns 0 for empty
 /// arrays or non-array input.
-pub struct ArrayLen {
-    meta: NodeMeta,
-}
-
-impl ArrayLen {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "array_len".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for ArrayLen {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let s = inputs[0].as_str();
-        let trimmed = s.trim();
-        if trimmed == "[]" || trimmed.is_empty() {
-            outputs[0] = Value::U64(0);
-        } else if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            let inner = &trimmed[1..trimmed.len() - 1];
-            outputs[0] = Value::U64(inner.split(',').count() as u64);
-        } else {
-            outputs[0] = Value::U64(0);
-        }
+///
+/// SRD-80b Phase E migration.
+#[crate::polydat_node(category = Json)]
+fn array_len(input: &str) -> u64 {
+    let trimmed = input.trim();
+    if trimmed == "[]" || trimmed.is_empty() {
+        0
+    } else if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        inner.split(',').count() as u64
+    } else {
+        0
     }
 }
 
@@ -783,74 +472,34 @@ impl PolydatNode for ArrayLen {
 ///
 /// `array_at(array_str, index)` → string element at position.
 /// Index wraps modulo array length. Returns "" for empty arrays.
-pub struct ArrayAt {
-    meta: NodeMeta,
-}
-
-impl ArrayAt {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "array_at".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![
-                    Slot::Wire(Port::new("array", PortType::Str)),
-                    Slot::Wire(Port::u64("index")),
-                ],
-            },
-        }
-    }
-}
-
-impl PolydatNode for ArrayAt {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let s = inputs[0].as_str();
-        let idx = inputs[1].as_u64() as usize;
-        let trimmed = s.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            let inner = &trimmed[1..trimmed.len() - 1];
-            let elements: Vec<&str> = inner.split(',').map(|e| e.trim()).collect();
-            if elements.is_empty() || (elements.len() == 1 && elements[0].is_empty()) {
-                outputs[0] = Value::Str(String::new().into());
-            } else {
-                outputs[0] = Value::Str(elements[idx % elements.len()].to_string().into());
-            }
-        } else {
-            outputs[0] = Value::Str(String::new().into());
-        }
-    }
-}
-
-/// Try to build a JSON node from a function name and const args.
 ///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "to_json" => Some(Ok(Box::new(ToJson::new(crate::ast::PortType::U64)))),
-        "json_to_str" => Some(Ok(Box::new(JsonToStr::new()))),
-        "json_text" => Some(Ok(Box::new(JsonText::new()))),
-        // `escape_json` routes through proc-macro-emitted NodeRegistration.
-        "json_merge" => Some(Ok(Box::new(JsonMerge::new()))),
-        "array_len" => Some(Ok(Box::new(ArrayLen::new()))),
-        "array_at" => Some(Ok(Box::new(ArrayAt::new()))),
-        "body_column_i32" => Some(Ok(Box::new(BodyColumnI32::new(
-            consts.first().map(|c| c.as_str()).unwrap_or(""),
-        )))),
-        "normalize_vector" => Some(Ok(Box::new(NormalizeVector::new()))),
-        "random_vector" => Some(Ok(Box::new(RandomVector::new(
-            consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
-            consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
-        )))),
-        _ => None,
+/// SRD-80b Phase E migration.
+#[crate::polydat_node(category = Json)]
+fn array_at(array: &str, index: u64) -> String {
+    let trimmed = array.trim();
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let elements: Vec<&str> = inner.split(',').map(|e| e.trim()).collect();
+        if elements.is_empty() || (elements.len() == 1 && elements[0].is_empty()) {
+            String::new()
+        } else {
+            elements[(index as usize) % elements.len()].to_string()
+        }
+    } else {
+        String::new()
     }
 }
 
+// SRD-80b Phase E: `signatures()` / `build_node()` / `register_nodes!`
+// retired — every node above registers via the proc-macro's
+// `NodeRegistration` inventory submission. `JsonObject` is now
+// macro-emitted variadic; the historical hand-written struct is
+// gone.
 
-crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, PortType, Value};
 
     #[test]
     fn body_column_i32_extracts_array_of_rows() {
@@ -860,7 +509,7 @@ mod tests {
             { "key": 17, "value": 0.4 },
             { "key": 42, "value": 0.3 },
         ])));
-        let node = BodyColumnI32::new("key");
+        let node = BodyColumnI32::new(PortType::Json, "key".to_string());
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
         let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32, got {:?}", out[0]) };
@@ -878,7 +527,7 @@ mod tests {
             ],
             "metadata": "ignored",
         })));
-        let node = BodyColumnI32::new("id");
+        let node = BodyColumnI32::new(PortType::Json, "id".to_string());
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
         let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32") };
@@ -894,7 +543,7 @@ mod tests {
             { "key": "not_an_int" },  // skipped
             { "key": 3 },
         ])));
-        let node = BodyColumnI32::new("key");
+        let node = BodyColumnI32::new(PortType::Json, "key".to_string());
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
         let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32") };
@@ -909,7 +558,7 @@ mod tests {
             { "key": "42" },
             { "key": "-7" },
         ])));
-        let node = BodyColumnI32::new("key");
+        let node = BodyColumnI32::new(PortType::Json, "key".to_string());
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
         let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32") };
@@ -919,7 +568,7 @@ mod tests {
     #[test]
     fn body_column_i32_empty_body_produces_empty_vec() {
         let body = Value::Json(std::sync::Arc::new(serde_json::json!([])));
-        let node = BodyColumnI32::new("key");
+        let node = BodyColumnI32::new(PortType::Json, "key".to_string());
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
         let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32") };
@@ -931,7 +580,7 @@ mod tests {
         // Defensive: non-JSON input shouldn't panic; the node's
         // type contract still holds. The evaluator surfaces a
         // "no values extracted" diagnostic downstream.
-        let node = BodyColumnI32::new("key");
+        let node = BodyColumnI32::new(PortType::Json, "key".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Str("not json".into())], &mut out);
         let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32") };
@@ -961,7 +610,7 @@ mod tests {
             },
         ])));
 
-        let node = JsonText::new();
+        let node = JsonText::new(PortType::Json);
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
 
@@ -984,17 +633,27 @@ mod tests {
         assert!(pat.is_match(&text), "regex should match the flattened schema text");
     }
 
+    /// Helper: drive `json_with(key, value)` through one eval and
+    /// return the resulting `Value::Json` partial-object. The
+    /// `value_pt` is the wire-type the test wants attached to the
+    /// PolyWire input port (`json_with` accepts any Value variant).
+    fn jw(key: &str, value_pt: PortType, value: Value) -> Value {
+        let node = JsonWith::new(key.to_string(), value_pt);
+        let mut out = [Value::None];
+        node.eval(&[value], &mut out);
+        std::mem::replace(&mut out[0], Value::None)
+    }
+
     #[test]
     fn json_object_basic() {
-        let node = JsonObject::new(
-            vec!["name".into(), "age".into(), "active".into()],
-            vec![PortType::Str, PortType::U64, PortType::Bool],
-        );
+        // Compositional form: three json_with parts merged.
+        let name = jw("name", PortType::Str, Value::Str("Alice".into()));
+        let age = jw("age", PortType::U64, Value::U64(30));
+        let active = jw("active", PortType::Bool, Value::Bool(true));
+
+        let node = JsonObject::new(3);
         let mut out = [Value::None];
-        node.eval(
-            &[Value::Str("Alice".into()), Value::U64(30), Value::Bool(true)],
-            &mut out,
-        );
+        node.eval(&[name, age, active], &mut out);
         let j = out[0].as_json();
         assert_eq!(j["name"], "Alice");
         assert_eq!(j["age"], 30);
@@ -1003,27 +662,55 @@ mod tests {
 
     #[test]
     fn json_object_nested() {
-        let inner = JsonObject::new(
-            vec!["x".into(), "y".into()],
-            vec![PortType::U64, PortType::U64],
-        );
+        // Inner object: { x: 10, y: 20 }.
+        let inner_x = jw("x", PortType::U64, Value::U64(10));
+        let inner_y = jw("y", PortType::U64, Value::U64(20));
+        let inner_node = JsonObject::new(2);
         let mut inner_out = [Value::None];
-        inner.eval(&[Value::U64(10), Value::U64(20)], &mut inner_out);
+        inner_node.eval(&[inner_x, inner_y], &mut inner_out);
 
-        let outer = JsonObject::new(
-            vec!["point".into()],
-            vec![PortType::Json],
+        // Outer: { point: <inner> }.
+        let point = jw(
+            "point",
+            PortType::Json,
+            std::mem::replace(&mut inner_out[0], Value::None),
         );
+        let outer = JsonObject::new(1);
         let mut out = [Value::None];
-        outer.eval(&[inner_out[0].clone()], &mut out);
+        outer.eval(&[point], &mut out);
         let j = out[0].as_json();
         assert_eq!(j["point"]["x"], 10);
         assert_eq!(j["point"]["y"], 20);
     }
 
     #[test]
+    fn json_object_later_part_wins_on_collision() {
+        // Documents the merge-order semantic: later json_with shadows
+        // earlier, mirroring how json_merge treats right-wins.
+        let first = jw("k", PortType::U64, Value::U64(1));
+        let second = jw("k", PortType::U64, Value::U64(2));
+        let node = JsonObject::new(2);
+        let mut out = [Value::None];
+        node.eval(&[first, second], &mut out);
+        assert_eq!(out[0].as_json()["k"], 2);
+    }
+
+    #[test]
+    fn json_object_skips_non_json_parts() {
+        // Composability with conditional branches that may yield
+        // non-Json (e.g. `if(cond, json_with(...), null)`).
+        let valid = jw("k", PortType::U64, Value::U64(1));
+        let node = JsonObject::new(2);
+        let mut out = [Value::None];
+        node.eval(&[valid, Value::None], &mut out);
+        let j = out[0].as_json();
+        assert_eq!(j["k"], 1);
+        assert_eq!(j.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
     fn json_array_basic() {
-        let node = JsonArray::new(vec![PortType::U64, PortType::Str, PortType::F64]);
+        let node = JsonArray::new(3);
         let mut out = [Value::None];
         node.eval(
             &[Value::U64(1), Value::Str("two".into()), Value::F64(3.0)],
@@ -1086,7 +773,7 @@ mod tests {
 
     #[test]
     fn json_field_basic() {
-        let node = JsonField::new("name");
+        let node = JsonField::new("name".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Json(std::sync::Arc::new(json!({"name": "Alice", "age": 30})))], &mut out);
         assert_eq!(out[0].as_json(), &json!("Alice"));
@@ -1094,7 +781,7 @@ mod tests {
 
     #[test]
     fn json_field_missing() {
-        let node = JsonField::new("missing");
+        let node = JsonField::new("missing".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::Json(std::sync::Arc::new(json!({"name": "Alice"})))], &mut out);
         assert!(out[0].as_json().is_null());

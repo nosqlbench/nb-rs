@@ -22,6 +22,11 @@ pub mod factory;
 pub mod factories;
 pub(crate) mod validate;
 
+/// Grammar-based free-name extraction — the canonical way for
+/// validators and the YAML-fusion layer to learn which names an
+/// expression references (no byte-scanning). See [`refs`].
+pub mod refs;
+
 /// Re-exported for external crates that register Polydat nodes via `register_nodes!`.
 pub use factory::ConstArg;
 mod modules;

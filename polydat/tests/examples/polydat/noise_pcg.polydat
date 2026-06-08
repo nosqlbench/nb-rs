@@ -7,5 +7,6 @@ noise := perlin_1d(cycle, 42, 0.01)
 pnoise := perlin_2d(cycle, cycle, 42, 0.01)
 snoise := simplex_2d(cycle, cycle, 99, 0.005)
 rng := pcg(cycle, 12345)
-shuffled := shuffle(cycle, 1000)
+// SRD-80b Phase E: shuffle now takes (input, feedback, size, min).
+shuffled := shuffle(cycle, 0x41, 1000, 0)
 walked := cycle_walk(cycle, 1000)

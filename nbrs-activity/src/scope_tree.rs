@@ -1610,7 +1610,7 @@ mod tests {
                 ParsedOp::simple("beta", "noop"),
             ],
             for_each: None, loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![],
+            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             poll: None,
             bindings: BindingsDef::default(),
                     });
@@ -1640,7 +1640,7 @@ mod tests {
             adapter: None, errors: None, tags: None,
             ops: vec![ParsedOp::simple("only", "noop")],
             for_each: None, loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![],
+            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             poll: None,
             bindings: BindingsDef::default(),
                     });
@@ -1662,7 +1662,7 @@ mod tests {
             adapter: None, errors: None, tags: None,
             ops: vec![ParsedOp::simple("foo", "noop")],
             for_each: None, loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![],
+            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             poll: None,
             bindings: BindingsDef::default(),
                     });

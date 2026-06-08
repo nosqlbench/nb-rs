@@ -825,10 +825,11 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 /// shared / final detection, type inference). Iteration coordinate
 /// (`cycle`) cascades from the parent — we never re-declare it here.
 /// Compose a phase scope's bindings source with SRD-75
-/// phase-poll augmentation when applicable. Returns the
-/// existing `BindingsDef` unchanged when `phase.poll` is
-/// `None`; otherwise produces a `BindingsDef::PolydatSource`
-/// that:
+/// phase-poll augmentation and/or phase-level `metrics:`
+/// augmentation when applicable. Returns the existing
+/// `BindingsDef` unchanged when the phase has neither `poll:`
+/// nor `metrics:`; otherwise produces a
+/// `BindingsDef::PolydatSource` that, for the poll case:
 ///
 /// - **Prepends** `shared <name>: u64 := 0` for each
 ///   capture name declared by the phase's ops. The
@@ -850,6 +851,18 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 ///   Evaluation Lifecycles" — re-evaluates per pull as
 ///   capture cells update).
 ///
+/// For the metrics case it appends an `extern phase_start: u64
+/// = 0` origin wire (set by the executor at the completion-time
+/// pull) and one `volatile __metric_<name> := <value>` per
+/// declared phase metric. `volatile` on the `__metric_<name>`
+/// binding excludes it from const-fold identity; a value that
+/// reads a clock should declare that read as its own `volatile`
+/// phase binding (e.g. `volatile now_ms := current_epoch_millis()`,
+/// metric `value: now_ms - phase_start`) so the non-deterministic
+/// node is acknowledged directly and the kernel compiles under
+/// `--strict`. The executor pulls each `__metric_<name>` once at
+/// phase completion and records it on the phase component.
+///
 /// Type inference is intentionally narrow in the
 /// initial ship: every capture lands as `u64` (the
 /// shape the canonical synchronizer-pattern workload
@@ -859,47 +872,57 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 /// workload author falls back to a different pattern.
 /// SRD-75 §"Open questions: Capture-type inference
 /// granularity" tracks the refinement.
-pub fn synthesize_phase_bindings_with_poll(
+pub fn synthesize_phase_scope_bindings(
     phase: &nbrs_workload::model::WorkloadPhase,
 ) -> Result<nbrs_workload::model::BindingsDef, String> {
     use nbrs_workload::model::BindingsDef;
-    let Some(poll) = phase.poll.as_ref() else {
+    let has_poll = phase.poll.is_some();
+    let has_metrics = !phase.metrics.is_empty();
+    // No phase-scope augmentation needed — pass the author's
+    // bindings through unchanged so a metrics/poll-free phase
+    // keeps its original (possibly empty) `BindingsDef`.
+    if !has_poll && !has_metrics {
         return Ok(phase.bindings.clone());
-    };
+    }
 
     // Walk every op in the phase, collect declared
     // capture names. The capture set is the union across
     // ops in the phase (the synchronizer pattern's
     // common case: one read-op captures all the state,
-    // a second trigger-op only reads via `if:`).
+    // a second trigger-op only reads via `if:`). Only
+    // relevant to the poll augmentation; empty otherwise.
     let mut capture_names: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    for op in &phase.ops {
-        for cap in &op.captures {
-            if seen.insert(cap.as_name.clone()) {
-                capture_names.push(cap.as_name.clone());
+    if has_poll {
+        for op in &phase.ops {
+            for cap in &op.captures {
+                if seen.insert(cap.as_name.clone()) {
+                    capture_names.push(cap.as_name.clone());
+                }
             }
         }
     }
 
     // Compose the augmented source.
     let mut source = String::new();
-    source.push_str(
-        "# SRD-75 phase-poll augmentation — synthesized.\n\
-         # Captures land here as shared cells; ops write through via\n\
-         # `ctx.wires.write` on their op-template kernel's import\n\
-         # slots (Rule 1 shared import → cell attached at spawn).\n",
-    );
-    for name in &capture_names {
-        // Polydat's `shared X := <literal>` form infers the type
-        // from the RHS literal (per SRD-13c
-        // §"Implementation: SharedCell-backed input slots"
-        // — `shared X := 0` lands as u64 via literal-fold).
-        // Captures default to u64 with init 0; numeric
-        // predicates compare cleanly, and TraversingDispenser's
-        // json_to_value coerces the response value into the
-        // matching Value variant.
-        source.push_str(&format!("shared {name} := 0\n"));
+    if has_poll {
+        source.push_str(
+            "# SRD-75 phase-poll augmentation — synthesized.\n\
+             # Captures land here as shared cells; ops write through via\n\
+             # `ctx.wires.write` on their op-template kernel's import\n\
+             # slots (Rule 1 shared import → cell attached at spawn).\n",
+        );
+        for name in &capture_names {
+            // Polydat's `shared X := <literal>` form infers the type
+            // from the RHS literal (per SRD-13c
+            // §"Implementation: SharedCell-backed input slots"
+            // — `shared X := 0` lands as u64 via literal-fold).
+            // Captures default to u64 with init 0; numeric
+            // predicates compare cleanly, and TraversingDispenser's
+            // json_to_value coerces the response value into the
+            // matching Value variant.
+            source.push_str(&format!("shared {name} := 0\n"));
+        }
     }
 
     let original_body: String = match &phase.bindings {
@@ -937,10 +960,38 @@ pub fn synthesize_phase_bindings_with_poll(
         }
     }
 
-    // The predicate is a regular cycle binding (NOT
-    // `const` — its upstream depends on per-cycle
-    // capture writes, so it must re-evaluate per pull).
-    source.push_str(&format!("__poll_until := {}\n", poll.until));
+    if has_poll {
+        // The predicate is a regular cycle binding (NOT
+        // `const` — its upstream depends on per-cycle
+        // capture writes, so it must re-evaluate per pull).
+        let poll = phase.poll.as_ref().expect("has_poll");
+        source.push_str(&format!("__poll_until := {}\n", poll.until));
+    }
+
+    if has_metrics {
+        // Phase-level `metrics:` — emit one `volatile
+        // __metric_<name> := <value>` per declared metric, plus the
+        // executor-injected `phase_start` origin wire. `volatile`
+        // acknowledges the nondeterminism of clock-reading values
+        // like `phase_elapsed(phase_start)` so the phase kernel
+        // compiles in strict mode (and excludes them from const-fold
+        // identity); for a deterministic value it is harmless. The
+        // executor pulls each `__metric_<name>` once at phase
+        // completion — see `executor::emit_phase_metrics`.
+        source.push_str(
+            "# Phase-level metrics — synthesized.\n\
+             # `phase_start` is set by the executor (epoch millis at\n\
+             # phase start) on the completion-time metric pull.\n\
+             extern phase_start: u64 = 0\n",
+        );
+        let mut entries: Vec<_> = phase.metrics.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, spec) in entries {
+            let binding = synthesize_metric_binding_name(name);
+            source.push_str(&format!(
+                "volatile {binding} := {expr}\n", expr = spec.value));
+        }
+    }
 
     Ok(BindingsDef::PolydatSource(source))
 }
@@ -1170,6 +1221,11 @@ pub(crate) fn scan_idents_in_polydat_source(src: &str) -> HashSet<String> {
             continue;
         }
         if c == '"' { in_string = true; continue; }
+        // `#` to end-of-line — YAML-style hash comment, matching the
+        // Polydat lexer (`dsl/lexer.rs` "Skip hash comments"). Without
+        // this, comment words inside a `bindings: |` block leak in as
+        // phantom wire references.
+        if c == '#' { in_line_comment = true; continue; }
         if c == '/' {
             if chars.peek() == Some(&'/') { chars.next(); in_line_comment = true; continue; }
             if chars.peek() == Some(&'*') { chars.next(); in_block_comment = true; continue; }
@@ -1211,7 +1267,10 @@ pub(crate) fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     for line in src.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with("//") { continue; }
+        // Skip blanks + line comments. `#` (YAML-style) and `//` are
+        // both Polydat line-comment forms (`dsl/lexer.rs`); neither
+        // declares a binding.
+        if line.is_empty() || line.starts_with("//") || line.starts_with('#') { continue; }
         // Drop modifier prefixes (`final const x := …`,
         // `shared y := …`) so the LHS ident is always the
         // last word before `:=` or `=`.
@@ -2733,6 +2792,32 @@ mod polydat_param_classifier_tests {
     use super::*;
 
     #[test]
+    fn scan_idents_skips_hash_comments() {
+        // `#` is a YAML-style line comment in Polydat (dsl/lexer.rs).
+        // The ident scanner must skip it too, or comment words leak in
+        // as phantom wire references (regression: finalize_index's
+        // bindings comments).
+        let src = "# Forwarding bindings: allow-list = bindings + params\n\
+                   pct := mul(active, 2)  # trailing comment with words\n";
+        let idents = scan_idents_in_polydat_source(src);
+        assert!(idents.contains("active"), "real ident must be found: {idents:?}");
+        for word in ["Forwarding", "bindings", "allow", "list", "params", "trailing", "comment", "words"] {
+            assert!(!idents.contains(word),
+                "comment word '{word}' must not be scanned as a wire ref: {idents:?}");
+        }
+    }
+
+    #[test]
+    fn scan_locally_declared_skips_hash_comment_lines() {
+        let src = "# total = sum of parts\n\
+                   shared sstables := 0\n";
+        let decls = scan_locally_declared_idents(src);
+        assert!(decls.contains("sstables"));
+        // `# total = ...` has an `=`; it must not be parsed as a decl.
+        assert!(!decls.contains("total"), "comment LHS must not declare: {decls:?}");
+    }
+
+    #[test]
     fn bare_identifier_classifier_accepts_idents_and_rejects_other_shapes() {
         assert!(is_bare_ident("sm"));
         assert!(is_bare_ident("source_model"));
@@ -3871,25 +3956,65 @@ extern keyspace: String
         );
     }
 
-    /// SRD-75 Push 2: `synthesize_phase_bindings_with_poll`
+    /// SRD-75 Push 2: `synthesize_phase_scope_bindings`
     /// returns the original bindings unchanged when
     /// `phase.poll` is `None`. The function is a no-op for
     /// non-poll phases; their synthesis path is unaffected.
     #[test]
-    fn synthesize_phase_bindings_with_poll_passthrough_when_no_poll() {
+    fn synthesize_phase_scope_bindings_passthrough_when_no_poll() {
         use nbrs_workload::model::{BindingsDef, WorkloadPhase};
         let phase = WorkloadPhase {
             bindings: BindingsDef::PolydatSource("k := 5\n".into()),
             poll: None,
             ..Default::default()
         };
-        let out = synthesize_phase_bindings_with_poll(&phase)
+        let out = synthesize_phase_scope_bindings(&phase)
             .expect("no-poll synthesis is a no-op");
         match out {
             BindingsDef::PolydatSource(s) => assert_eq!(s, "k := 5\n",
                 "no-poll should return the original bindings unchanged"),
             other => panic!("expected PolydatSource, got {other:?}"),
         }
+    }
+
+    /// A phase with a `metrics:` block (and no poll) synthesises an
+    /// `extern phase_start: u64 = 0` origin wire (set by the executor
+    /// at the completion-time pull) plus one
+    /// `volatile __metric_<name> := <value>` per metric. The phase's
+    /// own bindings are appended verbatim.
+    #[test]
+    fn synthesize_phase_scope_bindings_emits_metric_bindings() {
+        use nbrs_workload::model::{BindingsDef, MetricSpec, WorkloadPhase};
+        let mut metrics = std::collections::HashMap::new();
+        metrics.insert("time_to_index".to_string(), MetricSpec {
+            value: "current_epoch_millis() - phase_start".into(),
+            family: None, kind: None, unit: None, format: None,
+        });
+        let phase = WorkloadPhase {
+            bindings: BindingsDef::default(),
+            metrics,
+            poll: None,
+            ..Default::default()
+        };
+        let out = synthesize_phase_scope_bindings(&phase)
+            .expect("metrics synthesis");
+        let src = match out {
+            BindingsDef::PolydatSource(s) => s,
+            other => panic!("expected PolydatSource, got {other:?}"),
+        };
+        assert!(src.contains("extern phase_start: u64 = 0"),
+            "must inject the phase_start origin wire; got:\n{src}");
+        assert!(src.contains(
+            "volatile __metric_time_to_index := current_epoch_millis() - phase_start"),
+            "must emit the volatile metric binding; got:\n{src}");
+        // The emitted source must compile as a phase kernel body, with
+        // `__metric_time_to_index` surfacing as an output.
+        let kernel = polydat::dsl::compile_polydat(&src)
+            .unwrap_or_else(|e| panic!("compile failed:\n{src}\nerror: {e}"));
+        assert!(kernel.program().output_names().iter()
+            .any(|n| *n == "__metric_time_to_index"),
+            "metric binding must be a kernel output; outputs: {:?}",
+            kernel.program().output_names());
     }
 
     /// SRD-75 Push 2: when a phase has `poll:` and ops with
@@ -3900,7 +4025,7 @@ extern keyspace: String
     /// appended verbatim between the captures and the
     /// predicate.
     #[test]
-    fn synthesize_phase_bindings_with_poll_emits_shared_captures_and_predicate() {
+    fn synthesize_phase_scope_bindings_emits_shared_captures_and_predicate() {
         use nbrs_workload::bindpoints::CapturePoint;
         use nbrs_workload::model::{BindingsDef, ParsedOp, PhasePollSpec, WorkloadPhase};
         let mut op = ParsedOp::simple("read_state", "noop");
@@ -3931,7 +4056,7 @@ extern keyspace: String
             }),
             ..Default::default()
         };
-        let out = synthesize_phase_bindings_with_poll(&phase)
+        let out = synthesize_phase_scope_bindings(&phase)
             .expect("poll synthesis should succeed");
         let src = match out {
             BindingsDef::PolydatSource(s) => s,
@@ -3959,7 +4084,7 @@ extern keyspace: String
     /// the synthesizer surfaces the collision rather than
     /// silently shadowing.
     #[test]
-    fn synthesize_phase_bindings_with_poll_rejects_capture_name_collision() {
+    fn synthesize_phase_scope_bindings_rejects_capture_name_collision() {
         use nbrs_workload::bindpoints::CapturePoint;
         use nbrs_workload::model::{BindingsDef, ParsedOp, PhasePollSpec, WorkloadPhase};
         let mut op = ParsedOp::simple("read_state", "noop");
@@ -3982,7 +4107,7 @@ extern keyspace: String
             }),
             ..Default::default()
         };
-        let err = synthesize_phase_bindings_with_poll(&phase)
+        let err = synthesize_phase_scope_bindings(&phase)
             .expect_err("colliding capture name must error");
         assert!(err.contains("sstables") && err.contains("collision"),
             "expected error to name 'sstables' and 'collision'; got: {err}");

@@ -462,7 +462,11 @@ fn describe_keyspace_body_is_multirow_not_unary() {
          "create_statement": "CREATE VIRTUAL TABLE system_views.indexes (..."},
     ])));
 
-    let node = ExactlyOneValue::new();
+    // SRD-80b: ExactlyOneValue is now a PolyWire node; the macro
+    // emits `new(input_type)` taking the runtime port type of the
+    // upstream wire. We pass the body's own port type so the node's
+    // declared output type matches the test fixture.
+    let node = ExactlyOneValue::new(multi_row_body.port_type());
     let mut out = [Value::None];
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         node.eval(&[multi_row_body], &mut out);

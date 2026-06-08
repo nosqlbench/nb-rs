@@ -12,8 +12,9 @@
 //!    time, then extract variable-length slices at cycle time using
 //!    hash-based offset selection. Fast hot path — just a memcpy.
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 use xxhash_rust::xxh3::xxh3_64;
+#[cfg(test)]
+use crate::ast::{PolydatNode, Value};
 
 // =================================================================
 // Direct byte generation
@@ -84,39 +85,36 @@ impl ByteImage {
     }
 }
 
+/// Setup function: build the byte image from `image_size` + `seed`.
+/// Single-call construction-time invocation per node instance.
+fn build_byte_image(image_size: u64, seed: u64) -> ByteImage {
+    ByteImage::new(image_size as usize, seed)
+}
+
 /// Extract a fixed-size byte slice from a pre-built image.
 ///
-/// Signature: `(input: u64) -> (bytes)`
-/// Init params: `image_size`, `slice_size`, `seed`
+/// Signature: `byte_image_extract(input: u64) -> (output: bytes)`
+/// Const: `image_size: u64`, `slice_size: u64`, `seed: u64`
 ///
-/// The image is built at init time. Each cycle, the input u64 selects
-/// the extraction offset via modular arithmetic.
-pub struct ByteImageExtract {
-    meta: NodeMeta,
-    image: ByteImage,
-    slice_size: usize,
-}
-
-impl ByteImageExtract {
-    pub fn new(image_size: usize, slice_size: usize, seed: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "byte_image_extract".into(),
-                outs: vec![Port::new("output", PortType::Bytes)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            image: ByteImage::new(image_size, seed),
-            slice_size,
-        }
-    }
-}
-
-impl PolydatNode for ByteImageExtract {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let slice = self.image.extract(inputs[0].as_u64(), self.slice_size);
-        outputs[0] = Value::Bytes(slice.to_vec().into());
-    }
+/// The image is built at init time from `image_size` + `seed`. Each
+/// cycle, the input u64 selects the extraction offset via modular
+/// arithmetic and a `slice_size`-long span is copied out.
+///
+/// SRD-80b Phase E: migrated to `#[polydat_node]` via multi-source
+/// `#[poly_const(... from = (image_size, seed))]`. `slice_size` stays
+/// a per-node `Const<u64>` consumed in the body.
+#[crate::polydat_node(category = ByteBuffers)]
+fn byte_image_extract(
+    input: u64,
+    image_size: crate::derive_support::Const<u64>,
+    slice_size: crate::derive_support::Const<u64>,
+    seed: crate::derive_support::Const<u64>,
+    #[poly_const(build_byte_image, from = (image_size, seed))]
+    image: &ByteImage,
+) -> Vec<u8> {
+    let _ = image_size; // captured in `image`; field kept for workload-author surface
+    let _ = seed;
+    image.extract(input, *slice_size as usize).to_vec()
 }
 
 /// A pre-filled character image for fast text extraction.
@@ -173,51 +171,37 @@ impl CharImage {
     }
 }
 
+/// Setup function: build the character image from `charset` +
+/// `image_size` + `seed`. Single-call construction-time invocation.
+fn build_char_image(charset: &str, image_size: u64, seed: u64) -> CharImage {
+    CharImage::hashed(charset, image_size as usize, seed)
+}
+
 /// Extract a text slice from a pre-built character image.
 ///
-/// Signature: `(input: u64) -> (String)`
-/// Init params: `charset`, `image_size`, `slice_size`
+/// Signature: `char_image_extract(input: u64) -> (output: Str)`
+/// Const: `charset: Str`, `image_size: u64`, `slice_size: u64`,
+///        `seed: u64` (default 0)
 ///
 /// Equivalent to nosqlbench's `CharBufImage`. The image is filled
 /// from the charset at init time. Each cycle extracts a substring.
-pub struct CharImageExtract {
-    meta: NodeMeta,
-    image: CharImage,
-    slice_size: usize,
-}
-
-impl CharImageExtract {
-    pub fn new(charset: &str, image_size: usize, slice_size: usize) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "char_image_extract".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            image: CharImage::hashed(charset, image_size, 0),
-            slice_size,
-        }
-    }
-
-    pub fn with_seed(charset: &str, image_size: usize, slice_size: usize, seed: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "char_image_extract".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            image: CharImage::hashed(charset, image_size, seed),
-            slice_size,
-        }
-    }
-}
-
-impl PolydatNode for CharImageExtract {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let text = self.image.extract(inputs[0].as_u64(), self.slice_size);
-        outputs[0] = Value::Str(text.to_string().into());
-    }
+///
+/// SRD-80b Phase E: migrated to `#[polydat_node]` via multi-source
+/// `#[poly_const(... from = (charset, image_size, seed))]`.
+#[crate::polydat_node(category = ByteBuffers)]
+fn char_image_extract(
+    input: u64,
+    charset: crate::derive_support::Const<&str>,
+    image_size: crate::derive_support::Const<u64>,
+    slice_size: crate::derive_support::Const<u64>,
+    #[poly_default(0u64)] seed: crate::derive_support::Const<u64>,
+    #[poly_const(build_char_image, from = (charset, image_size, seed))]
+    image: &CharImage,
+) -> String {
+    let _ = charset;
+    let _ = image_size;
+    let _ = seed;
+    image.extract(input, *slice_size as usize).to_string()
 }
 
 // =================================================================
@@ -276,18 +260,10 @@ fn parse_charset(spec: &str) -> Vec<char> {
     chars
 }
 
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for byte buffer nodes.
-// All byte-buffer nodes (`u64_to_bytes`, `bytes_from_hash`,
-// `to_hex`, `from_hex`) migrated to `#[polydat_node]` per
-// SRD-80 PR B.13. No hand-written signatures or build_node
-// remain in this module.
+// All `#[polydat_node]`-authored byte-buffer nodes — including
+// `ByteImageExtract` and `CharImageExtract` (SRD-80b Phase E
+// multi-source `#[poly_const]` migration) — are auto-registered
+// via inventory.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,7 +318,7 @@ mod tests {
 
     #[test]
     fn char_image_extract_size() {
-        let node = CharImageExtract::new("A-Za-z0-9", 10000, 50);
+        let node = CharImageExtract::new("A-Za-z0-9".to_string(), 10000, 50, 0);
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
         assert_eq!(out[0].as_str().len(), 50);
@@ -350,7 +326,7 @@ mod tests {
 
     #[test]
     fn char_image_extract_charset() {
-        let node = CharImageExtract::new("A-Z", 1000, 20);
+        let node = CharImageExtract::new("A-Z".to_string(), 1000, 20, 0);
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
         assert!(out[0].as_str().chars().all(|c| c.is_ascii_uppercase()));
@@ -358,7 +334,7 @@ mod tests {
 
     #[test]
     fn char_image_extract_varied() {
-        let node = CharImageExtract::new("A-Za-z0-9", 10000, 30);
+        let node = CharImageExtract::new("A-Za-z0-9".to_string(), 10000, 30, 0);
         let mut out1 = [Value::None];
         let mut out2 = [Value::None];
         node.eval(&[Value::U64(0)], &mut out1);

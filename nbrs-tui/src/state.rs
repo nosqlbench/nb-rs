@@ -60,6 +60,12 @@ pub enum LogSeverity {
 pub struct LogEntry {
     pub severity: LogSeverity,
     pub message: String,
+    /// Provenance tag. Defaults to [`LogCategory::Diagnostic`];
+    /// phase start/end readout renders carry
+    /// [`LogCategory::PhaseLifecycle`] so the terminal sink can
+    /// keep them out of its scrollback (the managed phase-history
+    /// region shows them instead).
+    pub category: LogCategory,
     /// Wall-clock at log-entry creation. The dump uses
     /// this directly; the live TUI ignores it (it has its
     /// own scroll-based ordering).
@@ -73,6 +79,12 @@ pub struct LogEntry {
 pub use nbrs_activity::scene_tree::NodeKind as EntryKind;
 pub use nbrs_activity::scene_tree::PhaseStatus;
 pub use nbrs_activity::scene_tree::{SceneNode, SceneNodeId, SceneTree};
+
+// Provenance tag for log entries, owned by the observer layer.
+// Re-exported so `crate::state::LogCategory` reads naturally at
+// the sink call sites (mirrors the `EntryKind` / `PhaseStatus`
+// re-export pattern above).
+pub use nbrs_activity::observer::LogCategory;
 
 /// End-of-phase metrics snapshot attached to a completed phase.
 /// Mirrors the live progress bar so an expanded tree entry shows the
@@ -398,8 +410,21 @@ impl RunState {
     /// `log_seq_total` increments unconditionally so display sinks
     /// can detect new-since-last-drain without inspecting the ring.
     pub fn push_log(&mut self, severity: LogSeverity, message: String) {
+        self.push_log_categorized(severity, LogCategory::Diagnostic, message);
+    }
+
+    /// [`Self::push_log`] with an explicit [`LogCategory`]. The
+    /// category travels with the entry into the ring so the
+    /// terminal sink can filter phase-lifecycle lines out of its
+    /// scrollback at drain time.
+    pub fn push_log_categorized(
+        &mut self,
+        severity: LogSeverity,
+        category: LogCategory,
+        message: String,
+    ) {
         self.log_messages.push(LogEntry {
-            severity, message,
+            severity, message, category,
             at: std::time::SystemTime::now(),
         });
         if self.log_messages.len() > 200 {

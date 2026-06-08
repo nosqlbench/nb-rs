@@ -41,7 +41,7 @@
 //! before exiting.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -49,7 +49,7 @@ use std::time::Duration;
 use crate::display_sink::{DisplayInputs, DisplaySink, SinkHandle};
 use crate::key_watcher::{KeyWatcher, WatcherSignal};
 use crate::log_only_observer::LogOnlyObserver;
-use crate::log_only_sink::LogOnlySink;
+use crate::log_only_sink::{fresh_resume_cursor, LogOnlySink};
 use crate::run_state_actor::RunStateHandle;
 use crate::tui_sink::{TuiSink, TuiSinkSync};
 
@@ -144,7 +144,14 @@ fn run_supervision(
     //                       conflict).
     let sink_active_flag = observer.sink_active_flag();
     let inline_suppress = observer.inline_suppress_flag();
-    let mut active = match start_terminal(&observer, &state, runtime.clone()) {
+    // Cross-swap log cursor: each LogOnlySink writes its final
+    // `last_seen` here on shutdown and the next one (after a TUI
+    // swap) resumes from it, so the lines that scrolled under the
+    // alternate screen are re-emitted into the restored scrollback.
+    // Starts `RESUME_FRESH` so the very first sink seeds from the
+    // live `log_seq_total` instead.
+    let resume_from = fresh_resume_cursor();
+    let mut active = match start_terminal(&observer, &state, runtime.clone(), &resume_from) {
         Some(a) => a,
         None => {
             // No TTY — KeyWatcher refused. Fall through:
@@ -266,7 +273,7 @@ fn run_supervision(
         if let Some(t) = swap_to {
             active = match t {
                 Transition::TerminalToTui =>
-                    swap_to_tui(&observer, &state, active, runtime.clone()),
+                    swap_to_tui(&observer, &state, active, runtime.clone(), &resume_from),
                 Transition::TuiToTerminal => {
                     // Wait for the App thread to fully exit and
                     // restore the terminal before bringing the
@@ -283,7 +290,7 @@ fn run_supervision(
                     // `LogOnlySink::start`.
                     observer.inline_suppress_flag()
                         .store(false, Ordering::Release);
-                    match start_terminal(&observer, &state, runtime.clone()) {
+                    match start_terminal(&observer, &state, runtime.clone(), &resume_from) {
                         Some(a) => a,
                         None => {
                             // Lost the TTY (unexpected). Fall
@@ -327,6 +334,7 @@ fn start_terminal(
     observer: &Arc<LogOnlyObserver>,
     state: &RunStateHandle,
     runtime: Option<tokio::runtime::Handle>,
+    resume_from: &Arc<AtomicU64>,
 ) -> Option<ActiveSink> {
     // Stderr-only TTY case (stdin is piped/redirected — common
     // for `nbrs run ... 2>&1 | tee log.txt` or invocation under
@@ -347,7 +355,8 @@ fn start_terminal(
 
     let min_level = observer.min_level();
     let sink_active = observer.sink_active_flag();
-    let mut sink = LogOnlySink::new(min_level, sink_active);
+    let mut sink = LogOnlySink::new(min_level, sink_active)
+        .with_resume(resume_from.clone());
     if watcher.is_some() {
         sink = sink.with_keys(prompt_rx, runtime);
     }
@@ -365,6 +374,7 @@ fn swap_to_tui(
     state: &RunStateHandle,
     active: ActiveSink,
     runtime: Option<tokio::runtime::Handle>,
+    resume_from: &Arc<AtomicU64>,
 ) -> ActiveSink {
     // Tear down terminal mode first — the watcher disables
     // raw mode + releases stdin so the App can claim it.
@@ -391,7 +401,7 @@ fn swap_to_tui(
                 &mut std::io::stderr(),
                 b"Ctrl-T: TUI not yet ready (metrics scheduler pending) - retry once the run is underway\r\n",
             );
-            return start_terminal(observer, state, runtime)
+            return start_terminal(observer, state, runtime, resume_from)
                 .expect("re-entering terminal mode after deferred swap");
         }
     };

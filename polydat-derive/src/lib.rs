@@ -118,13 +118,139 @@ pub fn polydat_node(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    match generate(func, attrs) {
+    // SRD-80b Phase D1 — generic-over-Wire fanout. When the
+    // operator declares `instantiate(T1, T2, ...)`, the macro
+    // emits one full registration per type (per-instantiation
+    // struct + impl + NodeRegistration). The DSL function name
+    // stays shared; the Rust struct names get type-derived
+    // suffixes (`PassthroughU64`, `PassthroughF64`, ...).
+    if attrs.instantiate.is_empty() {
+        return match generate(func, attrs, None) {
+            Ok(ts) => ts.into(),
+            Err(e) => e.to_compile_error().into(),
+        };
+    }
+    match instantiate_and_generate(func, attrs) {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
     }
 }
 
+/// SRD-80b Phase D1 — fan out a generic-over-Wire function into
+/// one full instantiation per concrete type listed in
+/// `instantiate(...)`. Requires exactly one type parameter on
+/// the function; substitutes that parameter throughout args /
+/// return / body and emits a generate() call per instantiation
+/// with a type-derived struct-name suffix.
+fn instantiate_and_generate(
+    func: ItemFn,
+    attrs: NodeAttrs,
+) -> syn::Result<TokenStream2> {
+    let generics = &func.sig.generics;
+    // Exactly one type parameter is required. (Lifetimes and
+    // const params are not supported for instantiation.)
+    let type_params: Vec<&syn::TypeParam> = generics.type_params().collect();
+    if type_params.len() != 1 {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            format!(
+                "#[polydat_node(instantiate(...))] requires exactly one type \
+                 parameter on the function (got {}). Declare the function as \
+                 `fn name<T: Wire>(...) -> ...` and list concrete `Wire`-impl \
+                 types in the `instantiate(...)` clause.",
+                type_params.len(),
+            ),
+        ));
+    }
+    let type_param_ident = type_params[0].ident.clone();
+    let dsl_name = func.sig.ident.to_string();
+
+    let mut out = TokenStream2::new();
+    // Clone attrs minus the `instantiate` clause so the
+    // downstream generate() doesn't try to fan out again.
+    let mut shared_attrs = attrs.clone();
+    let instantiations = std::mem::take(&mut shared_attrs.instantiate);
+
+    for concrete in instantiations {
+        let mut inst_func = func.clone();
+        // Strip the generic parameter — the substituted form is
+        // no longer generic.
+        inst_func.sig.generics.params.clear();
+        inst_func.sig.generics.where_clause = None;
+        // Substitute T -> concrete throughout the function.
+        let mut subst = TypeSubst {
+            type_param: type_param_ident.clone(),
+            concrete: concrete.clone(),
+        };
+        syn::visit_mut::VisitMut::visit_item_fn_mut(&mut subst, &mut inst_func);
+        // Rename to a per-instantiation Rust identifier so the
+        // generated struct name carries the type suffix. The
+        // operator-facing DSL name stays `dsl_name`, passed
+        // through generate()'s name_override.
+        let suffix = type_suffix(&concrete);
+        let new_ident = syn::Ident::new(
+            &format!("{dsl_name}_{}", suffix.to_lowercase()),
+            inst_func.sig.ident.span(),
+        );
+        inst_func.sig.ident = new_ident;
+        let emit = generate(inst_func, shared_attrs.clone(), Some(dsl_name.clone()))?;
+        out.extend(emit);
+    }
+    Ok(out)
+}
+
+/// Derive a struct-name suffix from a Rust type. Used by Phase
+/// D1 instantiate to disambiguate the per-instantiation struct
+/// names. `u64` → "U64"; `String` → "String"; `Arc<[u8]>` →
+/// "ArcU8"; `SliceArc<f32>` → "SliceArcF32". The strategy
+/// strips angle brackets / refs / punctuation and uppercases
+/// each segment's first character.
+fn type_suffix(ty: &Type) -> String {
+    let raw = type_to_string(ty);
+    let mut out = String::new();
+    let mut capitalize_next = true;
+    for c in raw.chars() {
+        if c.is_alphanumeric() {
+            if capitalize_next {
+                out.extend(c.to_uppercase());
+                capitalize_next = false;
+            } else {
+                out.push(c);
+            }
+        } else {
+            capitalize_next = true;
+        }
+    }
+    if out.is_empty() { "Inst".to_string() } else { out }
+}
+
+/// syn visitor that substitutes a single named type parameter
+/// with a concrete type throughout an item function. Used by
+/// the SRD-80b Phase D1 fanout to produce per-instantiation
+/// copies of a generic-over-Wire function.
+struct TypeSubst {
+    type_param: syn::Ident,
+    concrete: Type,
+}
+
+impl syn::visit_mut::VisitMut for TypeSubst {
+    fn visit_type_mut(&mut self, ty: &mut Type) {
+        if let Type::Path(p) = ty {
+            if p.qself.is_none() && p.path.is_ident(&self.type_param) {
+                *ty = self.concrete.clone();
+                return;
+            }
+        }
+        syn::visit_mut::visit_type_mut(self, ty);
+    }
+}
+
+// Make NodeAttrs cloneable for the Phase D1 fanout (we need a
+// copy per instantiation; the original parsed-once Attrs is the
+// shared template).
+
 /// Parsed `#[polydat_node(...)]` attribute parameters.
+#[derive(Clone)]
 struct NodeAttrs {
     /// `FuncCategory` variant name — required (no default).
     /// Forcing the operator to declare the category keeps the
@@ -145,6 +271,16 @@ struct NodeAttrs {
     /// Free-fn signature: `fn(&Node) -> Vec<u64>`. Macro emits
     /// `jit_constants(&self) -> <path>(self)`.
     jit_constants_override: Option<syn::ExprPath>,
+    /// SRD-80b Phase F (S18) — `decompose = path`. When set, the
+    /// macro emits `impl FusedNode for <Struct>` whose
+    /// `decomposed(&self)` delegates to the named free function.
+    /// Free-fn signature: `fn(&Self) -> DecomposedGraph`. The
+    /// fusion compiler reaches the equivalent unfused subgraph
+    /// through this path. Operators with bespoke fusion logic
+    /// can still `impl FusedNode` by hand alongside the macro
+    /// emission — the attribute is the canonical sugar for the
+    /// "decompose by calling one free fn" case.
+    decompose: Option<syn::ExprPath>,
     /// SRD-80 PR B.7 — declared `Purity` (Pure / SideChannel /
     /// Nondeterministic). Defaults to `Pure` (the trait
     /// default). Macro emits `fn purity(&self) -> Purity::<expr>`
@@ -181,6 +317,15 @@ struct NodeAttrs {
     /// absent. Length must match tuple arity — operator gets a
     /// compile error otherwise.
     output_names: Option<Vec<Ident>>,
+    /// SRD-80b Phase D1 — generic-over-Wire instantiation policy
+    /// (SRD-80b §"Open questions" item 1). For a function
+    /// declared `fn pp<T: Wire>(input: T) -> T`, the macro emits
+    /// one full instantiation per type listed here (per-instance
+    /// struct + impl + NodeRegistration). The DSL function name
+    /// is shared across instantiations; per-instantiation build
+    /// closures guard on `<T as Wire>::PORT` so only the matching
+    /// one claims the call.
+    instantiate: Vec<Type>,
 }
 
 fn parse_attrs(attr: TokenStream2) -> syn::Result<NodeAttrs> {
@@ -199,11 +344,13 @@ fn parse_attrs(attr: TokenStream2) -> syn::Result<NodeAttrs> {
     let mut no_jit = false;
     let mut compiled_u64_override: Option<syn::ExprPath> = None;
     let mut jit_constants_override: Option<syn::ExprPath> = None;
+    let mut decompose: Option<syn::ExprPath> = None;
     let mut purity: Option<syn::Expr> = None;
     let mut identity: Option<syn::Expr> = None;
     let mut commutativity: Option<Ident> = None;
     let mut variadic_min: Option<syn::LitInt> = None;
     let mut output_names: Option<Vec<Ident>> = None;
+    let mut instantiate: Vec<Type> = Vec::new();
 
     for item in items {
         match item {
@@ -269,6 +416,17 @@ fn parse_attrs(attr: TokenStream2) -> syn::Result<NodeAttrs> {
                             ));
                         };
                         jit_constants_override = Some(p.clone());
+                    }
+                    "decompose" => {
+                        let syn::Expr::Path(p) = &nv.value else {
+                            return Err(syn::Error::new_spanned(
+                                &nv.value,
+                                "`decompose` value must be a path to a free \
+                                 function with signature \
+                                 `fn(&Self) -> DecomposedGraph`.",
+                            ));
+                        };
+                        decompose = Some(p.clone());
                     }
                     "purity" => {
                         // Accept either:
@@ -353,12 +511,25 @@ fn parse_attrs(attr: TokenStream2) -> syn::Result<NodeAttrs> {
                         }
                         output_names = Some(names.into_iter().collect());
                     }
+                    "instantiate" => {
+                        let types: Punctuated<Type, Token![,]> =
+                            list.parse_args_with(Punctuated::parse_terminated)?;
+                        if types.is_empty() {
+                            return Err(syn::Error::new_spanned(
+                                &list,
+                                "`instantiate(...)` requires at least one type. \
+                                 List the concrete `Wire`-impl types that should \
+                                 get their own per-instantiation registrations.",
+                            ));
+                        }
+                        instantiate = types.into_iter().collect();
+                    }
                     other => {
                         return Err(syn::Error::new_spanned(
                             &key,
                             format!(
                                 "#[polydat_node] does not recognize list-form key `{other}`. \
-                                 PR B.10 list keys: `output_names(...)`.",
+                                 Recognised: `output_names(...)`, `instantiate(...)`.",
                             ),
                         ));
                     }
@@ -377,11 +548,13 @@ fn parse_attrs(attr: TokenStream2) -> syn::Result<NodeAttrs> {
         no_jit,
         compiled_u64_override,
         jit_constants_override,
+        decompose,
         purity,
         identity,
         commutativity,
         variadic_min,
         output_names,
+        instantiate,
     })
 }
 
@@ -411,6 +584,14 @@ struct ClassifiedArg {
 enum ArgKind {
     Wire,
     Const(ConstShape),
+    /// SRD-80b Phase C — `Const<Vec<C>>` workload-list const.
+    /// Inner ConstShape gives the element type (u64/f64/bool/Str).
+    /// The macro emits ONE ParamSpec in the FuncSig with the
+    /// inner element's slot type, sets `Arity::VariadicConsts`,
+    /// and at build time collects every matching ConstArg from
+    /// the tail of `consts[..]` into a `Vec<inner>` field.
+    /// Eval hands the body a `Const(self.field.clone())`.
+    ConstVec(ConstShape),
     /// `&T` argument with `#[poly_setup(<fn_path>, from = <arg>)]`.
     /// Generates a struct field of type `T`, computed once in
     /// `new()` by calling `<fn_path>(<source>)` where `<source>`
@@ -463,19 +644,6 @@ impl VariadicElement {
         }
     }
 
-    /// JIT-eligible elements that fit the u64 buffer. Str/String/
-    /// Value can't ride the JIT path.
-    fn as_jit_element(self) -> Option<JitType> {
-        match self {
-            VariadicElement::U64  => Some(JitType::U64),
-            VariadicElement::F64  => Some(JitType::F64),
-            VariadicElement::Bool => Some(JitType::Bool),
-            VariadicElement::BorrowedStr
-            | VariadicElement::OwnedString
-            | VariadicElement::Value => None,
-        }
-    }
-
     /// Expression that converts a single `&Value` to the body's
     /// element type. Used to build the per-call slice in eval().
     fn extract_from_value(self) -> TokenStream2 {
@@ -497,11 +665,13 @@ struct SetupSpec {
     /// Operator-provided constructor path, e.g.
     /// `ParsedPattern::from_pattern`.
     setup_fn: syn::Expr,
-    /// Name of the const arg whose field-value is passed to
-    /// `setup_fn`. Single-source only; nodes needing derived
-    /// state from multiple consts inline-compute in the body
-    /// (see InvLerp / Remap as examples).
-    source_arg: syn::Ident,
+    /// Names of the const args whose field-values are passed to
+    /// `setup_fn`. Empty when declared as `from = ()` — the
+    /// setup fn takes no arguments and captures session-static
+    /// state (env, system clock, etc.). Length 1 for the common
+    /// single-source case (`from = ident`); length N for
+    /// multi-source `from = (a, b, c)` per SRD-80b amendment.
+    source_args: Vec<syn::Ident>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -654,6 +824,54 @@ fn classify_type(ty: &Type) -> Option<ConstShape> {
     }
 }
 
+/// SRD-80b Phase C — detect `Const<Vec<T>>` in arg position.
+/// Returns the inner element shape on match. Distinct path
+/// from [`classify_type`]: the macro recognises the variadic-
+/// const shape before the scalar `Const<T>` shape, so a
+/// signature using `Const<Vec<u64>>` doesn't get misclassified.
+fn classify_const_vec(ty: &Type) -> Option<ConstShape> {
+    // Outer must be Const<...>.
+    let syn::Type::Path(p) = ty else { return None; };
+    let last = p.path.segments.last()?;
+    if last.ident != "Const" { return None; }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else { return None; };
+    let inner = args.args.iter().find_map(|a| {
+        if let syn::GenericArgument::Type(t) = a { Some(t) } else { None }
+    })?;
+    // Inner must be Vec<X>.
+    let syn::Type::Path(vp) = inner else { return None; };
+    let vlast = vp.path.segments.last()?;
+    if vlast.ident != "Vec" { return None; }
+    let syn::PathArguments::AngleBracketed(vargs) = &vlast.arguments else { return None; };
+    let velem = vargs.args.iter().find_map(|a| {
+        if let syn::GenericArgument::Type(t) = a { Some(t) } else { None }
+    })?;
+    let s = type_to_string(velem);
+    match s.as_str() {
+        "u64"            => Some(ConstShape::U64),
+        "f64"            => Some(ConstShape::F64),
+        "bool"           => Some(ConstShape::Bool),
+        "String"         => Some(ConstShape::Str),
+        "& str" | "&str" => Some(ConstShape::Str),
+        _ => None,
+    }
+}
+
+/// SRD-80b dynamic-output shape — detect
+/// `DynamicOutputs<T>` in return position. Returns the inner
+/// element type `T` on match. The macro pairs this with the
+/// function's `Const<Vec<C>>` arg to compute the output port
+/// count at construction time.
+fn classify_dynamic_outputs(ty: &Type) -> Option<Type> {
+    let syn::Type::Path(p) = ty else { return None; };
+    let last = p.path.segments.last()?;
+    if last.ident != "DynamicOutputs" { return None; }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else { return None; };
+    args.args.iter().find_map(|a| {
+        if let syn::GenericArgument::Type(t) = a { Some(t.clone()) } else { None }
+    })
+}
+
 /// Extract a `#[poly_default(EXPR)]` attribute from an arg's
 /// outer attributes, if present. Returns the inner expression
 /// token stream so the build closure can use it as the
@@ -682,35 +900,58 @@ fn parse_wire_constraint(attrs: &[syn::Attribute]) -> syn::Result<Option<Ident>>
     Ok(None)
 }
 
-/// Extract a `#[poly_const(<fn_expr>, from = <arg>)]` attribute
+/// Extract a `#[poly_const(<fn_expr>, from = <source>)]` attribute
 /// from an arg's outer attributes, if present. Returns the
-/// constructor expression and the source-arg identifier.
+/// constructor expression and the source identifiers.
 ///
-/// SRD-80 PR B.12 — `poly_setup` retired in favour of
-/// `poly_const`. Conceptually, both primitive `Const<T>` args
-/// and `&T` args with `#[poly_const]` are workload-compile-
-/// time-known values; the umbrella name is "Const".
-///
-/// Single-source only. Nodes that derive state from multiple
-/// consts inline-compute in the body (see InvLerp / Remap),
-/// because the multi-source machinery covered a scenario no
-/// current node actually needs.
-fn parse_poly_const(attrs: &[syn::Attribute]) -> syn::Result<Option<(syn::Expr, syn::Ident)>> {
+/// SRD-80b — `from` accepts three shapes:
+///   - `from = ()` — empty source. Setup fn takes no args;
+///     captures session-static state (env, system clock).
+///   - `from = ident` — single source. Setup fn called as
+///     `setup_fn(ident_value)`.
+///   - `from = (a, b, c)` — multi-source (SRD-80b amendment).
+///     Setup fn called as `setup_fn(a_value, b_value, c_value)`.
+///     Order matches the tuple. Each name must reference a
+///     `Const<T>` arg declared in the same function signature.
+fn parse_poly_const(attrs: &[syn::Attribute]) -> syn::Result<Option<(syn::Expr, Vec<syn::Ident>)>> {
     for attr in attrs {
         if !attr.path().is_ident("poly_const") { continue; }
-        let parser = |input: syn::parse::ParseStream| -> syn::Result<(syn::Expr, syn::Ident)> {
+        let parser = |input: syn::parse::ParseStream| -> syn::Result<(syn::Expr, Vec<syn::Ident>)> {
             let fn_expr: syn::Expr = input.parse()?;
             let _comma: Token![,] = input.parse()?;
             let from_kw: syn::Ident = input.parse()?;
             if from_kw != "from" {
                 return Err(syn::Error::new_spanned(
                     from_kw,
-                    "#[poly_const(...)] requires a `from = <arg>` clause",
+                    "#[poly_const(...)] requires a `from = <source>` clause. \
+                     Supported shapes: `from = ()` (empty), `from = ident` \
+                     (single), `from = (a, b, c)` (multi-source).",
                 ));
             }
             let _eq: Token![=] = input.parse()?;
-            let source_arg: syn::Ident = input.parse()?;
-            Ok((fn_expr, source_arg))
+            // Parenthesised forms: `from = ()` or `from = (a, b, c)`.
+            if input.peek(syn::token::Paren) {
+                let inner;
+                let _paren = syn::parenthesized!(inner in input);
+                if inner.is_empty() {
+                    return Ok((fn_expr, Vec::new()));
+                }
+                let parsed: Punctuated<syn::Ident, Token![,]> =
+                    Punctuated::parse_terminated(&inner)?;
+                if parsed.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        from_kw,
+                        "#[poly_const(..., from = (...))] — the parenthesised \
+                         form expects a comma-separated list of source-arg \
+                         identifiers, or an empty `()` for session-static \
+                         setup.",
+                    ));
+                }
+                return Ok((fn_expr, parsed.into_iter().collect()));
+            }
+            // Bare `from = ident` — single source.
+            let source: syn::Ident = input.parse()?;
+            Ok((fn_expr, vec![source]))
         };
         let parsed = attr.parse_args_with(parser)?;
         return Ok(Some(parsed));
@@ -780,6 +1021,24 @@ fn classify_wrapper_wire(ty: &Type) -> Option<WrapperWire> {
     {
         return Some(WrapperWire::Json);
     }
+    // `Arc<str>` — Str port via the dedicated Wire impl. Don't
+    // route through Handle (str isn't Sized so the Handle's
+    // `Value::handle<T: Sized>` constructor would reject it).
+    if let Some(inner) = strip_arc(ty)
+        && let syn::Type::Path(p) = inner
+        && p.path.is_ident("str")
+    {
+        return None;
+    }
+    // `Arc<dyn Any + Send + Sync>` — Handle via the dedicated
+    // Wire impl. Fall through to trait dispatch rather than
+    // the structural Handle path (which expects a concrete
+    // Arc<ConcreteT> for the downcast).
+    if let Some(inner) = strip_arc(ty)
+        && matches!(inner, syn::Type::TraitObject(_))
+    {
+        return None;
+    }
     // Any other `Arc<T>` is a Handle.
     if strip_arc(ty).is_some() {
         return Some(WrapperWire::Handle);
@@ -837,6 +1096,127 @@ fn path_contains_segment(p: &syn::TypePath, name: &str) -> bool {
 /// For a `Handle` arg, extract the inner T (the downcast target).
 fn extract_handle_inner(ty: &Type) -> Option<Type> {
     strip_arc(ty).cloned()
+}
+
+/// `Option<T>` recognition. Returns `true` if the type's last
+/// path segment is `Option` with a single generic argument. Used
+/// to decide whether to auto-emit `accepts_none_inputs() -> true`
+/// — the runtime kernel's SRD-74 Rule 1 short-circuits `Value::None`
+/// inputs on opt-in nodes; `Option<T>` wires are the canonical
+/// opt-in shape.
+fn is_option_arg(ty: &Type) -> bool {
+    let syn::Type::Path(p) = ty else { return false; };
+    let Some(last) = p.path.segments.last() else { return false; };
+    if last.ident != "Option" { return false; }
+    matches!(&last.arguments,
+        syn::PathArguments::AngleBracketed(args)
+            if args.args.iter().any(|a| matches!(a, syn::GenericArgument::Type(_))))
+}
+
+/// Borrow-shape detection for SRD-80b Wire cutover. The macro
+/// dispatches owned types through `<T as Wire>::extract` / `::inject`;
+/// borrow shapes are recognised syntactically and emitted as
+/// direct `match`-on-`Value` extraction at the eval call site.
+/// This keeps the [`Wire`] trait bound at `Sized + 'static` without
+/// needing lifetime parameters.
+///
+/// Returns the matched `Value::<Variant>(inner)` pattern and the
+/// accessor expression that yields the body's expected borrow.
+#[derive(Clone)]
+enum BorrowWire {
+    /// `&str`  → `Value::Str(arc)` → `arc.as_ref()` (`&str`).
+    Str,
+    /// `&[u8]` → `Value::Bytes(arc)` → `arc.as_ref()` (`&[u8]`).
+    Bytes,
+    /// `&serde_json::Value` → `Value::Json(j)` → `j.as_ref()`.
+    Json,
+    /// `&[T]` for T in {f32, i32, f64, i64, f16, i16} — typed
+    /// vector borrow. Variant tracked separately so we can emit
+    /// the right `Value::Vec*` arm; element type is recovered
+    /// from the syntactic recognition.
+    Vec(&'static str /* variant name */, TokenStream2 /* PortType expr */),
+}
+
+fn is_borrow_wire_shape(ty: &Type) -> Option<BorrowWire> {
+    let syn::Type::Reference(r) = ty else { return None; };
+    if r.mutability.is_some() { return None; }
+    match &*r.elem {
+        // `&str`
+        syn::Type::Path(p) if p.path.is_ident("str") => Some(BorrowWire::Str),
+        // `&[T]` — bytes (T=u8) and typed vectors.
+        syn::Type::Slice(slc) => {
+            if let syn::Type::Path(p) = &*slc.elem {
+                if p.path.is_ident("u8") {
+                    return Some(BorrowWire::Bytes);
+                }
+                let elem_name = p.path.segments.last()?.ident.to_string();
+                let (variant, port_expr) = match elem_name.as_str() {
+                    "f32" => ("VecF32", quote!(polydat::ast::PortType::VecF32)),
+                    "i32" => ("VecI32", quote!(polydat::ast::PortType::VecI32)),
+                    "f64" => ("VecF64", quote!(polydat::ast::PortType::VecF64)),
+                    "i64" => ("VecI64", quote!(polydat::ast::PortType::VecI64)),
+                    "f16" => ("VecF16", quote!(polydat::ast::PortType::VecF16)),
+                    "i16" => ("VecI16", quote!(polydat::ast::PortType::VecI16)),
+                    _ => return None,
+                };
+                return Some(BorrowWire::Vec(variant, port_expr));
+            }
+            None
+        }
+        // `&serde_json::Value` — recognise by last segment `Value`
+        // alongside `serde_json` somewhere in the path.
+        syn::Type::Path(p) if last_segment_is(p, "Value")
+            && path_contains_segment(p, "serde_json") => Some(BorrowWire::Json),
+        _ => None,
+    }
+}
+
+/// Token stream for extracting a borrow-shape wire from
+/// `&inputs[idx]`. The macro emits this directly (no trait
+/// dispatch) so the borrow's lifetime is bound to the eval
+/// call's `&inputs` borrow naturally — no `unsafe transmute`.
+fn borrow_extract_tokens(shape: BorrowWire, input_expr: TokenStream2) -> TokenStream2 {
+    match shape {
+        BorrowWire::Str => quote! {
+            match #input_expr {
+                polydat::ast::Value::Str(__arc) => __arc.as_ref(),
+                __other => panic!("expected Str wire, got {__other:?}"),
+            }
+        },
+        BorrowWire::Bytes => quote! {
+            match #input_expr {
+                polydat::ast::Value::Bytes(__arc) => __arc.as_ref(),
+                __other => panic!("expected Bytes wire, got {__other:?}"),
+            }
+        },
+        BorrowWire::Json => quote! {
+            match #input_expr {
+                polydat::ast::Value::Json(__arc) => __arc.as_ref(),
+                __other => panic!("expected Json wire, got {__other:?}"),
+            }
+        },
+        BorrowWire::Vec(variant, _port) => {
+            let v = syn::Ident::new(variant, proc_macro2::Span::call_site());
+            quote! {
+                match #input_expr {
+                    polydat::ast::Value::#v(__arc) => __arc.as_slice(),
+                    __other => panic!(
+                        concat!("expected ", stringify!(#v), " wire, got {:?}"),
+                        __other),
+                }
+            }
+        }
+    }
+}
+
+/// Token stream for the static `PortType` of a borrow-shape wire.
+fn borrow_port_type(shape: &BorrowWire) -> TokenStream2 {
+    match shape {
+        BorrowWire::Str  => quote!(polydat::ast::PortType::Str),
+        BorrowWire::Bytes => quote!(polydat::ast::PortType::Bytes),
+        BorrowWire::Json => quote!(polydat::ast::PortType::Json),
+        BorrowWire::Vec(_, port_expr) => port_expr.clone(),
+    }
 }
 
 /// SRD-80 PR B.13 — typed-vector classifier. Recognises three
@@ -932,17 +1312,49 @@ fn classify_variadic(ty: &Type) -> Option<VariadicElement> {
     }
 }
 
-fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
+/// SRD-80b Phase 5 S16 — detect `Result<T, E>` return type for
+/// fallible-construction nodes. Returns `Some(T)` (the Ok type)
+/// when the return is a `Result<T, _>`; `None` otherwise. Matches
+/// any path ending in `Result` so both bare `Result` and fully
+/// qualified `std::result::Result` work.
+///
+/// The Err arm is consumed for its `Into<String>` projection at
+/// emission time, so we don't pin its shape here — any E that
+/// satisfies `Into<String>` (including `String` itself) is fine.
+fn classify_result_return(ty: &Type) -> Option<Type> {
+    let syn::Type::Path(p) = ty else { return None; };
+    let last = p.path.segments.last()?;
+    if last.ident != "Result" { return None; }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else { return None; };
+    // Two args expected: <Ok, Err>. Tolerate `Result<T>` (rare alias)
+    // by requiring at least one type arg.
+    let mut tys = args.args.iter().filter_map(|a| match a {
+        syn::GenericArgument::Type(t) => Some(t.clone()),
+        _ => None,
+    });
+    tys.next()
+}
+
+fn generate(
+    func: ItemFn,
+    attrs: NodeAttrs,
+    dsl_name_override: Option<String>,
+) -> syn::Result<TokenStream2> {
     let fn_name = &func.sig.ident;
     // SRD-80 PR B.7: strip `r#` from raw identifiers (`fn r#mod`,
-    // `fn r#type`, etc.) so the DSL function name and the
-    // PascalCase struct identifier both come out clean.
+    // `fn r#type`, etc.) so the Rust struct name comes out clean.
     let fn_name_raw = fn_name.to_string();
-    let func_name_str = fn_name_raw
+    let rust_name_str = fn_name_raw
         .strip_prefix("r#")
         .unwrap_or(&fn_name_raw)
         .to_string();
-    let struct_name = format_ident!("{}", to_camel_case(&func_name_str));
+    let struct_name = format_ident!("{}", to_camel_case(&rust_name_str));
+    // SRD-80b Phase D1 — when instantiating a generic-over-Wire
+    // function, the per-instantiation copies have suffixed Rust
+    // names (`passthrough_u64`, `passthrough_f64`) but share a
+    // single DSL function name from the original declaration.
+    let is_instantiation = dsl_name_override.is_some();
+    let func_name_str = dsl_name_override.unwrap_or_else(|| rust_name_str.clone());
     let category = &attrs.category;
 
     // Classify each function arg: wire or const? Reject any
@@ -996,7 +1408,7 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                         ));
                     }
                     ArgKind::PolyWire
-                } else if let Some((setup_fn, source_arg)) = setup_attr {
+                } else if let Some((setup_fn, source_args)) = setup_attr {
                     // `#[poly_const(...)]` requires `&T` arg type.
                     let inner_ty = classify_borrowed(&declared_ty)
                         .ok_or_else(|| syn::Error::new_spanned(
@@ -1014,7 +1426,30 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                              Const arg, not on the derived setup arg.",
                         ));
                     }
-                    ArgKind::Setup(SetupSpec { inner_ty, setup_fn, source_arg })
+                    ArgKind::Setup(SetupSpec { inner_ty, setup_fn, source_args })
+                } else if let Some(inner) = classify_const_vec(&declared_ty) {
+                    // SRD-80b Phase C — `Const<Vec<C>>` variadic
+                    // workload-list. `poly_default` doesn't apply
+                    // (the empty list IS the default); other
+                    // attributes don't compose.
+                    if default_value.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            pat_ty,
+                            "#[poly_default(...)] cannot combine with \
+                             `Const<Vec<C>>`; the empty Vec IS the implicit \
+                             default. Use `Const<C>` with a poly_default \
+                             literal for a single-value default instead.",
+                        ));
+                    }
+                    if setup_attr.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            pat_ty,
+                            "`Const<Vec<C>>` doesn't combine with \
+                             #[poly_const(...)]; route the derived state \
+                             from a scalar `Const<C>` source instead.",
+                        ));
+                    }
+                    ArgKind::ConstVec(inner)
                 } else {
                     match classify_type(&declared_ty) {
                         Some(shape) => ArgKind::Const(shape),
@@ -1036,9 +1471,69 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
         }
     }
 
+    // SRD-80b Phase C — `Const<Vec<C>>` consumes the tail of
+    // `consts[..]` at build time, so at most one ConstVec arg is
+    // allowed per node and it must be the last const arg in
+    // declaration order. Validate before emission.
+    {
+        let const_vec_positions: Vec<usize> = args.iter().enumerate()
+            .filter_map(|(i, a)| if matches!(a.kind, ArgKind::ConstVec(_)) { Some(i) } else { None })
+            .collect();
+        if const_vec_positions.len() > 1 {
+            return Err(syn::Error::new_spanned(
+                &args[const_vec_positions[1]].declared_ty,
+                "#[polydat_node] supports at most one `Const<Vec<C>>` arg \
+                 per function; the variadic-const surface consumes the \
+                 tail of the consts slice and a second one would have no \
+                 entries to claim.",
+            ));
+        }
+        if let Some(&pos) = const_vec_positions.first() {
+            // Any Const(_) declared AFTER the ConstVec would never
+            // bind (its index ≥ ConstVec's tail-start).
+            for later in &args[pos + 1..] {
+                if matches!(later.kind, ArgKind::Const(_)) {
+                    return Err(syn::Error::new_spanned(
+                        &later.declared_ty,
+                        "scalar `Const<T>` arg declared after a \
+                         `Const<Vec<C>>` arg is unreachable — the variadic \
+                         consumes everything from its position to the end \
+                         of the consts slice. Move the scalar consts BEFORE \
+                         the `Const<Vec<C>>` in the function signature.",
+                    ));
+                }
+            }
+        }
+    }
+
     // Map a bare wire-arg type to a PortType expression.
+    //
+    // SRD-80b: the canonical answer is `<#ty as Wire>::PORT` —
+    // any owned type that impls [`Wire`] is admitted, and adding
+    // a new wire type means adding one Wire impl (no macro
+    // source change). Three exceptions stay structural because
+    // they can't be expressed through the trait:
+    //
+    //   1. Borrow shapes (`&str`, `&[u8]`, `&[T]`,
+    //      `&serde_json::Value`) — `Wire` is `Sized + 'static`
+    //      so borrowed refs can't impl it. The macro emits the
+    //      literal `PortType` here and direct `match`-on-`Value`
+    //      extraction elsewhere.
+    //
+    //   2. `Arc<T>` Handle (non-special T) — would conflict with
+    //      the concrete `Arc<[u8]>` / `Arc<serde_json::Value>`
+    //      impls if expressed as a blanket. Kept as inline
+    //      downcast at the extract site; port type is the static
+    //      `Handle`.
+    //
+    //   3. PolyWire (`Value`-typed wire) — polymorphic at
+    //      runtime; no static `PortType`. The `ArgKind::PolyWire`
+    //      path handles this independently of `wire_port_type_for`.
+    //
+    // Everything else — including `Option<T>`, `Ext<T>`, and any
+    // future combinator added by impl'ing `Wire` — flows through
+    // trait dispatch.
     let wire_port_type_for = |ty: &Type| -> syn::Result<TokenStream2> {
-        // SRD-80 PR B.11: wrapper types via structural match.
         if let Some(kind) = classify_wrapper_wire(ty) {
             return Ok(match kind {
                 WrapperWire::Bytes  => quote!(polydat::ast::PortType::Bytes),
@@ -1052,30 +1547,14 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                 WrapperWire::VecI16 => quote!(polydat::ast::PortType::VecI16),
             });
         }
-        let s = type_to_string(ty);
-        match s.as_str() {
-            "u64"          => Ok(quote!(polydat::ast::PortType::U64)),
-            "f64"          => Ok(quote!(polydat::ast::PortType::F64)),
-            // SRD-80 PR B.14 — narrow integer + f32 widths.
-            "u32"          => Ok(quote!(polydat::ast::PortType::U32)),
-            "i32"          => Ok(quote!(polydat::ast::PortType::I32)),
-            "i64"          => Ok(quote!(polydat::ast::PortType::I64)),
-            "f32"          => Ok(quote!(polydat::ast::PortType::F32)),
-            "bool"         => Ok(quote!(polydat::ast::PortType::Bool)),
-            "& str" | "&str" | "String"
-                           => Ok(quote!(polydat::ast::PortType::Str)),
-            other => Err(syn::Error::new_spanned(
-                ty,
-                format!(
-                    "#[polydat_node] does not yet support wire-arg type `{other}`. \
-                     Supported wire types: u64, f64, bool, &str/String, \
-                     Arc<[u8]>/Vec<u8>/&[u8] (Bytes), \
-                     Arc<serde_json::Value>/&serde_json::Value (Json), \
-                     Arc<T> (Handle). \
-                     For const args, wrap as `Const<T>`. Ext arrives in a later PR.",
-                ),
-            )),
+        if let Some(borrow) = is_borrow_wire_shape(ty) {
+            return Ok(borrow_port_type(&borrow));
         }
+        // Fall through to trait dispatch — `<T as Wire>::PORT` is
+        // a const associated, evaluable at codegen time. Types
+        // without a `Wire` impl produce a clean E0277 at the
+        // function's call site, naming the missing trait bound.
+        Ok(quote!(<#ty as polydat::derive_support::Wire>::PORT))
     };
 
     // Build the NodeMeta `ins` slot list — one entry per arg,
@@ -1088,18 +1567,37 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
         match &a.kind {
             ArgKind::Wire => {
                 let pt = wire_port_type_for(&a.declared_ty)?;
+                let ty = &a.declared_ty;
                 // SRD-80 PR B.14: optional `#[constraint(Variant)]`.
-                let port_expr = if let Some(variant) = &a.wire_constraint {
+                let constraint_chain = if let Some(variant) = &a.wire_constraint {
                     quote! {
-                        polydat::ast::Port::new(#name_str, #pt)
-                            .with_constraint(
-                                polydat::dsl::const_constraints::ConstConstraint::#variant)
+                        .with_constraint(
+                            polydat::dsl::const_constraints::ConstConstraint::#variant)
                     }
                 } else {
-                    quote!(polydat::ast::Port::new(#name_str, #pt))
+                    quote!()
+                };
+                // SRD-80b in-spirit — `Wire::WIRE_COST` is read
+                // from the trait at codegen. Owned/non-borrow
+                // wire types route here; borrow shapes don't
+                // impl Wire so they get the default Data cost
+                // (the WireCost::Config opt-in only applies to
+                // owned types wrapped in `Config<T>`).
+                let cost_chain = if is_borrow_wire_shape(ty).is_none()
+                    && classify_wrapper_wire(ty) != Some(WrapperWire::Handle)
+                {
+                    quote! {
+                        .with_cost(<#ty as polydat::derive_support::Wire>::WIRE_COST)
+                    }
+                } else {
+                    quote!()
                 };
                 slot_exprs.push(quote! {
-                    polydat::ast::Slot::Wire(#port_expr)
+                    polydat::ast::Slot::Wire(
+                        polydat::ast::Port::new(#name_str, #pt)
+                            #constraint_chain
+                            #cost_chain
+                    )
                 });
             }
             ArgKind::Const(shape) => {
@@ -1141,6 +1639,34 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                 // (Handled in the new() body via a separate pass —
                 // see `variadic_slot_extends` below.)
             }
+            ArgKind::ConstVec(inner) => {
+                // SRD-80b — `Const<Vec<C>>` emits a `Slot::Const`
+                // entry when the inner element has a matching
+                // `ConstValue::Vec*` variant (u64, f64). This
+                // makes the captured list visible to JIT slot-
+                // walkers and introspection (`jit_constants_from_slots`).
+                // For element types without a parallel
+                // `ConstValue` variant (bool, Str), no slot is
+                // emitted; the FuncSig's `Arity::VariadicConsts`
+                // tracks the surface and the stored Vec<C> field
+                // is the canonical storage.
+                let field_name = &a.name;
+                match inner {
+                    ConstShape::U64 => slot_exprs.push(quote! {
+                        polydat::ast::Slot::Const {
+                            name: #name_str.into(),
+                            value: polydat::ast::ConstValue::VecU64(#field_name.clone()),
+                        }
+                    }),
+                    ConstShape::F64 => slot_exprs.push(quote! {
+                        polydat::ast::Slot::Const {
+                            name: #name_str.into(),
+                            value: polydat::ast::ConstValue::VecF64(#field_name.clone()),
+                        }
+                    }),
+                    _ => {}
+                }
+            }
         }
     }
     // For each variadic arg, also emit a runtime loop that
@@ -1173,13 +1699,15 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
             let name_str = a.name.to_string();
             // Variadic args declare `required: false` — they accept
             // any count from `variadic_min` (default 0) upward.
+            // `ConstVec` follows the same pattern (empty is valid).
             let required = match &a.kind {
-                ArgKind::Variadic(_) => false,
+                ArgKind::Variadic(_) | ArgKind::ConstVec(_) => false,
                 _ => a.default_value.is_none(),
             };
             let slot_type = match &a.kind {
                 ArgKind::Wire | ArgKind::PolyWire | ArgKind::Variadic(_) => quote!(polydat::ast::SlotType::Wire),
                 ArgKind::Const(shape) => shape.slot_type_tokens(),
+                ArgKind::ConstVec(inner) => inner.slot_type_tokens(),
                 ArgKind::Setup(_) => return None,
             };
             Some(quote! {
@@ -1196,7 +1724,7 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
 
     // Output type. The simple case requires a concrete return
     // type (-> T); unit / unspecified isn't supported.
-    let ret_ty = match &func.sig.output {
+    let declared_ret_ty = match &func.sig.output {
         ReturnType::Default => {
             return Err(syn::Error::new_spanned(
                 &func.sig,
@@ -1206,12 +1734,72 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
         }
         ReturnType::Type(_, t) => (**t).clone(),
     };
+    // SRD-80b Phase 5 S16 — fallible construction. When the body
+    // returns `Result<T, E>`, the macro treats T as the effective
+    // node-output type and emits a `try_new(...) -> Result<Self,
+    // String>` constructor that runs the body once at
+    // construction, caches the Ok value, and propagates Err. Only
+    // valid for nodes with no wire/polywire inputs — the body has
+    // to be fully resolvable at construction.
+    let fallible_inner_ty: Option<Type> = classify_result_return(&declared_ret_ty);
+    let is_fallible = fallible_inner_ty.is_some();
+    let ret_ty = fallible_inner_ty.clone().unwrap_or_else(|| declared_ret_ty.clone());
     let ret_is_polywire = classify_polywire(&ret_ty);
+
+    if is_fallible {
+        // Wire / polywire / variadic inputs are not supported in
+        // fallible mode: the body executes once at construction,
+        // not per-eval. Const args are fine — they're all known
+        // by the time `try_new` runs.
+        for a in &args {
+            match &a.kind {
+                ArgKind::Wire | ArgKind::PolyWire | ArgKind::Variadic(_) => {
+                    return Err(syn::Error::new_spanned(
+                        &a.declared_ty,
+                        "fallible-construction nodes (-> Result<T, E>) must \
+                         have only Const args. Wire/PolyWire/variadic inputs \
+                         can't be evaluated at construction time. Use the \
+                         #[poly_const(setup_fn, from = ...)] shape instead \
+                         when per-eval inputs are needed.",
+                    ));
+                }
+                ArgKind::Setup(_) | ArgKind::Const(_) | ArgKind::ConstVec(_) => {}
+            }
+        }
+    }
 
     // SRD-80 PR B.10: detect tuple-typed return for multi-output.
     let tuple_ret_elems: Option<Vec<Type>> = match &ret_ty {
         syn::Type::Tuple(t) => Some(t.elems.iter().cloned().collect()),
         _ => None,
+    };
+
+    // SRD-80b dynamic-output shape — detect `DynamicOutputs<T>`
+    // return and locate the `Const<Vec<C>>` arg whose length
+    // drives the output port count at construction.
+    let dynamic_outputs_inner: Option<Type> = classify_dynamic_outputs(&ret_ty);
+    let dynamic_outputs_count_arg: Option<syn::Ident> = if dynamic_outputs_inner.is_some() {
+        let const_vec_args: Vec<&syn::Ident> = args.iter()
+            .filter_map(|a| match &a.kind {
+                ArgKind::ConstVec(_) => Some(&a.name),
+                _ => None,
+            })
+            .collect();
+        if const_vec_args.len() != 1 {
+            return Err(syn::Error::new_spanned(
+                &ret_ty,
+                format!(
+                    "`DynamicOutputs<T>` return requires exactly one \
+                     `Const<Vec<C>>` arg to drive the output port count \
+                     (got {}). Declare one `Const<Vec<C>>` arg whose length \
+                     determines the number of output ports.",
+                    const_vec_args.len(),
+                ),
+            ));
+        }
+        Some(const_vec_args[0].clone())
+    } else {
+        None
     };
 
     if tuple_ret_elems.is_some() && ret_is_polywire {
@@ -1240,15 +1828,31 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
             .map(wire_port_type_for)
             .collect::<syn::Result<Vec<_>>>()?
     } else if ret_is_polywire {
-        let polywire_arg = args.iter().find(|a| matches!(a.kind, ArgKind::PolyWire))
-            .ok_or_else(|| syn::Error::new_spanned(
+        // Prefer a singleton PolyWire arg for SameAsInput
+        // dispatch; fall back to a variadic `&[Value]` arg
+        // (split-halves shape) whose runtime element types
+        // drive the output polymorphism. The static slot
+        // gets a `PortType::U64` placeholder (assembler skips
+        // type-check for these); eval enforces uniformity.
+        if let Some(polywire_arg) = args.iter().find(|a| matches!(a.kind, ArgKind::PolyWire)) {
+            let pt_ident = format_ident!("{}_type", polywire_arg.name);
+            vec![quote!(#pt_ident)]
+        } else if args.iter().any(|a| matches!(&a.kind, ArgKind::Variadic(VariadicElement::Value))) {
+            vec![quote!(polydat::ast::PortType::U64)]
+        } else {
+            return Err(syn::Error::new_spanned(
                 &ret_ty,
                 "function returns `Value` but has no `Value` arg — the macro \
-                 needs at least one PolyWire arg to source the runtime port \
-                 type for the output (SameAsInput dispatch).",
-            ))?;
-        let pt_ident = format_ident!("{}_type", polywire_arg.name);
-        vec![quote!(#pt_ident)]
+                 needs at least one PolyWire (`Value`) arg or a `&[Value]` \
+                 variadic to source the runtime port type for the output.",
+            ));
+        }
+    } else if let Some(inner) = &dynamic_outputs_inner {
+        // Single per-element port type for the dynamic case.
+        // The count is determined at construction time; this
+        // entry is used by the codegen as the port type each
+        // output port carries.
+        vec![wire_port_type_for(inner)?]
     } else {
         vec![wire_port_type_for(&ret_ty)?]
     };
@@ -1281,20 +1885,29 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
         (None, None) => vec!["output".to_string()],
     };
 
-    let output_count = output_port_types.len();
+    let output_count = if dynamic_outputs_inner.is_some() { 0 } else { output_port_types.len() };
+    // SRD-80b: `0` in the FuncSig signals "dynamic, determined at
+    // compile time" (existing FuncSig convention from the doc).
     let output_count_lit = syn::LitInt::new(&output_count.to_string(), proc_macro2::Span::call_site());
 
-    let output_type_tokens: TokenStream2 = if ret_is_polywire {
-        let idx = first_polywire_idx.unwrap();
-        let i = syn::Index::from(idx);
-        quote!(polydat::dsl::registry::OutputType::SameAsInput(#i))
-    } else {
-        quote!(polydat::dsl::registry::OutputType::Fixed)
+    // When return is `Value`, prefer SameAsInput dispatch
+    // against a singleton PolyWire arg; for the split-halves
+    // `&[Value]` case there's no singleton to point at, so
+    // fall back to OutputType::Fixed (the static slot's
+    // placeholder PortType is used and eval enforces type
+    // uniformity).
+    let output_type_tokens: TokenStream2 = match (ret_is_polywire, first_polywire_idx) {
+        (true, Some(idx)) => {
+            let i = syn::Index::from(idx);
+            quote!(polydat::dsl::registry::OutputType::SameAsInput(#i))
+        }
+        _ => quote!(polydat::dsl::registry::OutputType::Fixed),
     };
 
     // Struct fields. Wire/PolyWire/Variadic → no field (arity
     // reflected in `meta.ins.len()`); Const → owned-typed field;
-    // Setup → field of the borrowed inner type.
+    // ConstVec → Vec<inner>; Setup → field of the borrowed
+    // inner type.
     let struct_fields: Vec<TokenStream2> = args.iter()
         .filter_map(|a| match &a.kind {
             ArgKind::Wire | ArgKind::PolyWire | ArgKind::Variadic(_) => None,
@@ -1302,6 +1915,11 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                 let n = &a.name;
                 let ft = shape.field_type_tokens();
                 Some(quote!(pub #n: #ft))
+            }
+            ArgKind::ConstVec(inner) => {
+                let n = &a.name;
+                let ft = inner.field_type_tokens();
+                Some(quote!(pub #n: Vec<#ft>))
             }
             ArgKind::Setup(spec) => {
                 let n = &a.name;
@@ -1325,6 +1943,11 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                 let ft = shape.field_type_tokens();
                 Some(quote!(#n: #ft))
             }
+            ArgKind::ConstVec(inner) => {
+                let n = &a.name;
+                let ft = inner.field_type_tokens();
+                Some(quote!(#n: Vec<#ft>))
+            }
             ArgKind::Setup(_) => None,
             ArgKind::PolyWire => {
                 let n = format_ident!("{}_type", a.name);
@@ -1340,8 +1963,29 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
 
     // SRD-80 PR B.9: append a single `n_wires: usize` parameter
     // to `new()` when the function declares any variadic arg.
-    // Only one variadic arg is supported in this PR.
+    // SRD-80b split-halves variadic: TWO variadics in succession
+    // share a single `n_wires` param (interpreted as "count per
+    // half"). The macro emits 2*n_wires wire slots and slices
+    // the inputs at the midpoint at eval time. Used by `pick`'s
+    // `(b0,...,bN,v0,...,vN)` workload syntax per SRD-66.
     let has_variadic = args.iter().any(|a| matches!(a.kind, ArgKind::Variadic(_)));
+    let variadic_count = args.iter().filter(|a| matches!(a.kind, ArgKind::Variadic(_))).count();
+    if variadic_count > 2 {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "`#[polydat_node]` supports at most two variadic `&[T]` args (split-halves shape). \
+             Functions declaring more than two are not expressible in any SRD-80b shape.",
+        ));
+    }
+    let is_split_halves = variadic_count == 2;
+    // Positional index of each Variadic arg in declaration
+    // order, used by `arg_bindings` to slice `inputs` at the
+    // midpoint in split-halves mode.
+    let variadic_positions: std::collections::HashMap<String, usize> = args.iter()
+        .filter(|a| matches!(a.kind, ArgKind::Variadic(_)))
+        .enumerate()
+        .map(|(i, a)| (a.name.to_string(), i))
+        .collect();
     let new_params: Vec<TokenStream2> = if has_variadic {
         let mut v = new_params;
         v.push(quote!(n_wires: usize));
@@ -1350,12 +1994,25 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
         new_params
     };
 
-    // Build a lookup from arg name → ConstShape so the Setup
-    // pre-compute step can dispatch on the source's shape to
-    // produce the right access expression.
-    let const_shape_by_name: std::collections::HashMap<String, ConstShape> = args.iter()
+    // Build a lookup from arg name → const-shape category so the
+    // Setup pre-compute step can dispatch on the source's shape
+    // to produce the right access expression.
+    #[derive(Clone, Copy)]
+    enum ConstSourceShape {
+        /// Scalar `Const<u64>` / `Const<f64>` / `Const<bool>`.
+        ScalarValue,
+        /// `Const<&str>` / `Const<String>` — backing field is
+        /// `String`; setup fn typically wants `&str`.
+        ScalarStr,
+        /// `Const<Vec<C>>` — backing field is `Vec<C>`; setup fn
+        /// typically wants `&Vec<C>` or `&[C]`.
+        VecValues,
+    }
+    let const_shape_by_name: std::collections::HashMap<String, ConstSourceShape> = args.iter()
         .filter_map(|a| match &a.kind {
-            ArgKind::Const(shape) => Some((a.name.to_string(), *shape)),
+            ArgKind::Const(ConstShape::Str) => Some((a.name.to_string(), ConstSourceShape::ScalarStr)),
+            ArgKind::Const(_)               => Some((a.name.to_string(), ConstSourceShape::ScalarValue)),
+            ArgKind::ConstVec(_)            => Some((a.name.to_string(), ConstSourceShape::VecValues)),
             _ => None,
         })
         .collect();
@@ -1365,27 +2022,45 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
     // locals before those values are moved into self.
     let setup_precomputes: Vec<TokenStream2> = args.iter()
         .filter_map(|a| match &a.kind {
-            ArgKind::Wire | ArgKind::Const(_) | ArgKind::PolyWire | ArgKind::Variadic(_) => None,
+            ArgKind::Wire | ArgKind::Const(_) | ArgKind::ConstVec(_) | ArgKind::PolyWire | ArgKind::Variadic(_) => None,
             ArgKind::Setup(spec) => {
                 let n = &a.name;
                 let setup_fn = &spec.setup_fn;
-                let src = &spec.source_arg;
-                let src_shape = const_shape_by_name.get(&src.to_string());
-                let src_expr = match src_shape {
-                    Some(ConstShape::Str)  => quote!(#src.as_str()),
-                    Some(_)                => quote!(#src),
-                    None => {
-                        return Some(syn::Error::new(
-                            src.span(),
-                            format!(
-                                "#[poly_const(... from = {src})] — `{src}` \
-                                 is not declared as a `Const<T>` arg in the \
-                                 same function signature."),
-                        ).to_compile_error());
-                    }
-                };
+                // SRD-80b amendment — `source_args` may be empty
+                // (session-static setup), single (the common
+                // case), or multi (joint derivation). Per-source
+                // access dispatch reads each named const's
+                // shape and emits the right body-side expression.
+                let mut src_exprs: Vec<TokenStream2> = Vec::new();
+                let mut err: Option<TokenStream2> = None;
+                for src in &spec.source_args {
+                    let shape = const_shape_by_name.get(&src.to_string());
+                    let expr = match shape {
+                        Some(ConstSourceShape::ScalarStr)   => quote!(#src.as_str()),
+                        Some(ConstSourceShape::ScalarValue) => quote!(#src),
+                        // ConstVec source: pass a borrow of the
+                        // Vec. Setup fn signatures like
+                        // `fn build(w: &Vec<f64>)` or
+                        // `fn build(w: &[f64])` both work via
+                        // Deref / unsized coercion.
+                        Some(ConstSourceShape::VecValues)   => quote!(&#src),
+                        None => {
+                            err = Some(syn::Error::new(
+                                src.span(),
+                                format!(
+                                    "#[poly_const(... from = ... {src} ...)] — \
+                                     `{src}` is not declared as a `Const<T>` \
+                                     arg in the same function signature."),
+                            ).to_compile_error());
+                            break;
+                        }
+                    };
+                    src_exprs.push(expr);
+                }
+                if let Some(e) = err { return Some(e); }
+                let call = quote!(#setup_fn( #( #src_exprs ),* ));
                 Some(quote! {
-                    let #n = #setup_fn(#src_expr);
+                    let #n = #call;
                 })
             }
         })
@@ -1397,7 +2072,7 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
     let new_field_inits: Vec<TokenStream2> = args.iter()
         .filter_map(|a| match &a.kind {
             ArgKind::Wire | ArgKind::PolyWire | ArgKind::Variadic(_) => None,
-            ArgKind::Const(_) | ArgKind::Setup(_) => {
+            ArgKind::Const(_) | ArgKind::ConstVec(_) | ArgKind::Setup(_) => {
                 let n = &a.name;
                 Some(quote!(#n))
             }
@@ -1417,11 +2092,14 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                     let idx = syn::Index::from(wire_idx);
                     wire_idx += 1;
                     let ty = &a.declared_ty;
-                    // SRD-80 PR B.11: `Arc<T>` Handle args
-                    // bypass FromValue (no blanket impl —
-                    // would conflict with the Json
-                    // Arc<serde_json::Value> impl). Emit the
-                    // downcast inline.
+                    // SRD-80b Phase B — dispatch:
+                    //   1. `Arc<T>` Handle (non-special T) → inline
+                    //      downcast (no blanket impl works).
+                    //   2. Borrow shape (`&str`, `&[u8]`, `&[T]`,
+                    //      `&serde_json::Value`) → direct
+                    //      `match`-on-`Value`. Lifetime is naturally
+                    //      `&inputs[i]`'s; no `unsafe` transmute.
+                    //   3. Otherwise → `<#ty as Wire>::extract`.
                     if classify_wrapper_wire(ty) == Some(WrapperWire::Handle) {
                         let inner = extract_handle_inner(ty)
                             .expect("Handle classification implies Arc<T> shape");
@@ -1433,9 +2111,14 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                                 other => panic!("expected Handle, got {other:?}"),
                             };
                         }
+                    } else if let Some(borrow) = is_borrow_wire_shape(ty) {
+                        let extract = borrow_extract_tokens(borrow, quote!(&inputs[#idx]));
+                        quote! {
+                            let #n = #extract;
+                        }
                     } else {
                         quote! {
-                            let #n = <#ty as polydat::derive_support::FromValue>::from_value(&inputs[#idx]);
+                            let #n = <#ty as polydat::derive_support::Wire>::extract(&inputs[#idx]);
                         }
                     }
                 }
@@ -1466,16 +2149,43 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                     }
                 }
                 ArgKind::Variadic(elem) => {
-                    // SRD-80 PR B.9: variadic — materialise
-                    // a Vec<T> from the inputs slice (per-element
-                    // extraction), then bind the body local as
-                    // `&[T]`. Allocates a Vec per call on the
-                    // Phase 1 path; the JIT path bypasses this.
+                    // SRD-80 PR B.9 + SRD-80b split-halves —
+                    // materialise a Vec<T> from the inputs
+                    // slice (per-element extraction), then bind
+                    // the body local as `&[T]`. In single-
+                    // variadic mode, the slice is `inputs` (all
+                    // of them after the leading wires consumed
+                    // their indices). In split-halves mode, the
+                    // first variadic gets `inputs[0..n_wires]`
+                    // and the second gets `inputs[n_wires..]`.
                     let extractor = elem.extract_from_value();
                     let owned = format_ident!("__{}_owned", a.name);
+                    // Split-halves divides `inputs` at the
+                    // midpoint at eval time. `inputs.len() / 2`
+                    // is the per-half count; first variadic
+                    // gets the low half, second gets the high.
+                    let slice_expr = if is_split_halves {
+                        let pos = variadic_positions[&a.name.to_string()];
+                        if pos == 0 {
+                            quote!({ let __half = inputs.len() / 2; &inputs[..__half] })
+                        } else {
+                            quote!({ let __half = inputs.len() / 2; &inputs[__half..] })
+                        }
+                    } else {
+                        quote!(inputs)
+                    };
                     quote! {
-                        let #owned: Vec<_> = inputs.iter().map(#extractor).collect();
+                        let #owned: Vec<_> = #slice_expr.iter().map(#extractor).collect();
                         let #n: &[_] = #owned.as_slice();
+                    }
+                }
+                ArgKind::ConstVec(_) => {
+                    // SRD-80b Phase C — `Const<Vec<C>>` body view:
+                    // clone the cached Vec and wrap in `Const`.
+                    // (Per-cycle clone matches the Wire-trait
+                    // convention; JIT-ineligible by design.)
+                    quote! {
+                        let #n = polydat::derive_support::Const(self.#n.clone());
                     }
                 }
             }
@@ -1486,6 +2196,11 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
     // (in declaration order), pull from `consts: &[ConstArg]`
     // by index; fall back to the `poly_default` value if the
     // slice is shorter than the const arg list.
+    //
+    // For `ConstVec` args, collect every remaining entry from
+    // `consts[i..]` into a `Vec<inner>` via the inner shape's
+    // extractor — this consumes the tail of the consts slice
+    // (only one ConstVec arg per function, enforced earlier).
     let mut const_idx_for_extract = 0usize;
     let const_extracts: Vec<TokenStream2> = args.iter()
         .filter_map(|a| match &a.kind {
@@ -1521,6 +2236,23 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                     };
                 })
             }
+            ArgKind::ConstVec(inner) => {
+                let n = &a.name;
+                let i = const_idx_for_extract;
+                // ConstVec consumes everything from index `i`
+                // onward. const_idx_for_extract is intentionally
+                // NOT bumped — by construction (validated below)
+                // there's at most one ConstVec arg and it must be
+                // the last arg, so no subsequent Const reads need
+                // a higher base index.
+                let i_lit = syn::LitInt::new(&i.to_string(), proc_macro2::Span::call_site());
+                let extract_one = inner.extract_from_const_arg(quote!(c));
+                Some(quote! {
+                    let #n: Vec<_> = consts[#i_lit..].iter()
+                        .map(|c| #extract_one)
+                        .collect();
+                })
+            }
         })
         .collect();
 
@@ -1530,7 +2262,7 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
     let mut new_call_args: Vec<TokenStream2> = args.iter()
         .filter_map(|a| match &a.kind {
             ArgKind::Wire | ArgKind::Setup(_) | ArgKind::Variadic(_) => None,
-            ArgKind::Const(_) => {
+            ArgKind::Const(_) | ArgKind::ConstVec(_) => {
                 let n = &a.name;
                 Some(quote!(#n))
             }
@@ -1551,7 +2283,14 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
     // multi-variadic lands, this extraction needs the per-arg
     // split logic).
     let variadic_n_wires_extract: TokenStream2 = if has_variadic {
-        quote! { let n_wires: usize = _wires.len(); }
+        // Split-halves: assembler hands TOTAL wires; new() takes
+        // the per-half count, so divide by 2 here too (matches
+        // the variadic_ctor field's `n / 2`).
+        if is_split_halves {
+            quote! { let n_wires: usize = _wires.len() / 2; }
+        } else {
+            quote! { let n_wires: usize = _wires.len(); }
+        }
     } else {
         quote!()
     };
@@ -1588,13 +2327,91 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                     });
                     wire_idx += 1;
                 }
-                ArgKind::Const(_) | ArgKind::Setup(_) => {}
+                ArgKind::Const(_) | ArgKind::ConstVec(_) | ArgKind::Setup(_) => {}
             }
         }
         out
     };
 
     let block = &func.block;
+
+    // SRD-80b in-spirit `default_resolver` emission. Each wire
+    // arg's `Wire::RESOLVER` const exposes the auto-resolver
+    // intent at codegen time; the cascade picks the first
+    // non-None among the wire-typed args. Non-Resolved wire
+    // types contribute `None` (the trait default), so this
+    // collapses cleanly to a no-resolver FuncSig for the
+    // overwhelming majority of nodes.
+    let default_resolver_field: TokenStream2 = {
+        // Borrow shapes (`&str`, `&[u8]`, ...) don't impl `Wire`,
+        // and `PolyWire` is excluded by ArgKind; only the
+        // owned-type wire args contribute resolver intent.
+        let wire_tys: Vec<&Type> = args.iter()
+            .filter_map(|a| match &a.kind {
+                ArgKind::Wire if is_borrow_wire_shape(&a.declared_ty).is_none()
+                    && classify_wrapper_wire(&a.declared_ty) != Some(WrapperWire::Handle)
+                    => Some(&a.declared_ty),
+                _ => None,
+            })
+            .collect();
+        if wire_tys.is_empty() {
+            quote!(None)
+        } else {
+            // Build a right-to-left match cascade so the first
+            // wire arg with a Some(_) resolver wins. Each step:
+            //   match <ty as Wire>::RESOLVER { Some(r) => Some(r), None => <rest> }
+            let mut acc = quote!(None);
+            for ty in wire_tys.iter().rev() {
+                acc = quote! {
+                    match <#ty as polydat::derive_support::Wire>::RESOLVER {
+                        Some(__r) => Some(__r),
+                        None => #acc,
+                    }
+                };
+            }
+            acc
+        }
+    };
+
+    // SRD-80b Phase D1 — when multiple instantiations share a
+    // DSL function name, each per-instantiation build closure
+    // must claim only the call that matches its own concrete
+    // wire types. The guard checks `wire_types[i]` against
+    // `<#ty as Wire>::PORT` for every wire-position arg. The
+    // factory walks all matching registrations and the first to
+    // accept (return `Some(Ok(...))`) wins; mismatches fall
+    // through to the next instantiation.
+    let port_guard: TokenStream2 = if is_instantiation {
+        let mut wi: usize = 0;
+        let mut checks: Vec<TokenStream2> = Vec::new();
+        for a in &args {
+            match &a.kind {
+                ArgKind::Wire | ArgKind::PolyWire => {
+                    let i = syn::Index::from(wi);
+                    let ty = &a.declared_ty;
+                    // PolyWire stays opaque (Value isn't a Wire impl);
+                    // skip it from the guard.
+                    if !classify_polywire(ty) {
+                        checks.push(quote! {
+                            if _wire_types.get(#i) != Some(&<#ty as polydat::derive_support::Wire>::PORT) {
+                                return None;
+                            }
+                        });
+                    }
+                    wi += 1;
+                }
+                ArgKind::Variadic(_) => {
+                    // Variadic — claims any tail; instantiation
+                    // selection on variadic generic-over-Wire
+                    // isn't supported in this pass.
+                }
+                _ => {}
+            }
+        }
+        quote! { #( #checks )* }
+    } else {
+        quote!()
+    };
 
     // Emit `Default` only when there are no const args AND no
     // setup args. Both require captured values to construct.
@@ -1607,6 +2424,25 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                 fn default() -> Self { Self::new() }
             }
         }
+    };
+
+    // SRD-80b Phase F (S18) — `#[polydat_node(decompose =
+    // path)]` emits the FusedNode impl by delegating to the
+    // named free function. Operators with bespoke fusion
+    // logic (e.g. WeightedPick whose `decomposed()` body
+    // builds a spec string) can still write their own
+    // `impl FusedNode` block alongside the macro emission;
+    // both compose because `decompose` is opt-in.
+    let fused_node_impl: TokenStream2 = if let Some(path) = &attrs.decompose {
+        quote! {
+            impl polydat::compile::fusion::FusedNode for #struct_name {
+                fn decomposed(&self) -> polydat::compile::fusion::DecomposedGraph {
+                    #path(self)
+                }
+            }
+        }
+    } else {
+        quote!()
     };
 
     // ── SRD-80 PR B.7 — JIT eligibility + hook emission ──
@@ -1629,7 +2465,9 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
             .map(|a| match &a.kind {
                 ArgKind::Wire => wire_type_to_jit_type(&a.declared_ty),
                 ArgKind::Const(shape) => const_shape_to_jit_type(*shape),
-                ArgKind::Setup(_) | ArgKind::PolyWire => None,
+                // ConstVec is JIT-ineligible (the JIT u64 buffer
+                // has no slot shape for a variable-length list).
+                ArgKind::Setup(_) | ArgKind::PolyWire | ArgKind::ConstVec(_) => None,
                 // SRD-80 PR B.9: variadic JIT — only `&[u64]`
                 // rides the Phase 2 closure cleanly (the buffer
                 // IS the slice). For f64/bool/Str variadics
@@ -1684,7 +2522,16 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
         })
         .collect();
 
-    let body_fn_def: TokenStream2 = if use_shared_body {
+    let body_fn_def: TokenStream2 = if is_fallible {
+        // SRD-80b Phase 5 S16 — fallible body. Body returns the
+        // declared Result<T, E>; try_new runs it once at
+        // construction and propagates Err as String via Into.
+        quote! {
+            #[inline(always)]
+            #[allow(unused_variables)]
+            fn __polydat_body( #( #body_params ),* ) -> #declared_ret_ty #block
+        }
+    } else if use_shared_body {
         quote! {
             #[inline(always)]
             #[allow(unused_variables)]
@@ -1695,25 +2542,104 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
     };
 
     // Helper: emit `outputs[idx] = <conversion>(value)` for a
-    // given element type. SRD-80 PR B.11: Handle (`Arc<T>` for
-    // non-special T) bypasses IntoValue (no blanket impl) and
-    // upcasts inline via `Value::handle`.
+    // given element type. SRD-80b Phase B — owned types route
+    // through `<T as Wire>::inject`; Handle keeps its inline
+    // upcast (no blanket impl works). Returning a borrow shape
+    // (`&str`, `&[u8]`, etc.) from a node body is unusual but
+    // supported: the borrow's `into()` already exists for the
+    // canonical `Value` constructor; we emit that directly.
     let output_assign = |idx_lit: TokenStream2, elem_ty: &Type, local: TokenStream2| -> TokenStream2 {
         if classify_wrapper_wire(elem_ty) == Some(WrapperWire::Handle) {
             quote! {
                 outputs[#idx_lit] = polydat::ast::Value::handle(#local);
             }
+        } else if classify_polywire(elem_ty) {
+            // PolyWire return: body returns `Value` directly, move
+            // it into the outputs slot. No trait dispatch — Value
+            // has no static port type (it's polymorphic at runtime).
+            quote! {
+                outputs[#idx_lit] = #local;
+            }
+        } else if let Some(borrow) = is_borrow_wire_shape(elem_ty) {
+            // Borrow-typed returns: construct the matching Value
+            // variant from the borrow via the existing
+            // `Into<Value>` / Arc::from path. `&str` →
+            // `Value::Str(arc)`; `&[u8]` → `Value::Bytes(arc)`;
+            // typed-vec borrows → `Value::Vec*(SliceArc::from(slice))`.
+            match borrow {
+                BorrowWire::Str => quote! {
+                    outputs[#idx_lit] = polydat::ast::Value::Str((#local).into());
+                },
+                BorrowWire::Bytes => quote! {
+                    outputs[#idx_lit] = polydat::ast::Value::Bytes((#local).into());
+                },
+                BorrowWire::Json => quote! {
+                    outputs[#idx_lit] = polydat::ast::Value::Json(::std::sync::Arc::new((#local).clone()));
+                },
+                BorrowWire::Vec(variant, _) => {
+                    let v = syn::Ident::new(variant, proc_macro2::Span::call_site());
+                    quote! {
+                        outputs[#idx_lit] = polydat::ast::Value::#v(polydat::ast::SliceArc::from_vec((#local).to_vec()));
+                    }
+                }
+            }
         } else {
             quote! {
-                outputs[#idx_lit] = <#elem_ty as polydat::derive_support::IntoValue>::into_value(#local);
+                outputs[#idx_lit] = <#elem_ty as polydat::derive_support::Wire>::inject(#local);
             }
+        }
+    };
+
+    // SRD-80b `DynamicOutputs<T>` — build the `outs:` vec at
+    // construction from the driving `Const<Vec<C>>` arg's
+    // length. Used by both the infallible `new()` and the
+    // fallible `try_new()` paths below.
+    let outs_build: TokenStream2 = if let (Some(inner), Some(count_arg)) =
+        (&dynamic_outputs_inner, &dynamic_outputs_count_arg)
+    {
+        quote! {
+            let outs: Vec<polydat::ast::Port> = (0..#count_arg.len())
+                .map(|__i| polydat::ast::Port::new(
+                    format!("d{}", __i),
+                    <#inner as polydat::derive_support::Wire>::PORT,
+                ))
+                .collect();
+        }
+    } else {
+        quote! {
+            let outs = vec![ #(
+                polydat::ast::Port::new(#output_names_strs, #output_port_types)
+            ),* ];
         }
     };
 
     // SRD-80 PR B.10/B.11: result → outputs translation. For
     // single-output, write `outputs[0] = ...(result)`. For
-    // tuple-output, destructure and per-element write.
-    let result_to_outputs: TokenStream2 = if let Some(elems) = &tuple_ret_elems {
+    // tuple-output, destructure and per-element write. For
+    // SRD-80b `DynamicOutputs<T>`, iterate the returned Vec
+    // and inject each element via the inner type's Wire impl.
+    let result_to_outputs: TokenStream2 = if let Some(inner) = &dynamic_outputs_inner {
+        let inject_one = if classify_polywire(inner) {
+            quote!(__elem)
+        } else if let Some(borrow) = is_borrow_wire_shape(inner) {
+            match borrow {
+                BorrowWire::Str => quote!(polydat::ast::Value::Str((__elem).into())),
+                BorrowWire::Bytes => quote!(polydat::ast::Value::Bytes((__elem).into())),
+                BorrowWire::Json => quote!(polydat::ast::Value::Json(::std::sync::Arc::new((__elem).clone()))),
+                BorrowWire::Vec(variant, _) => {
+                    let v = syn::Ident::new(variant, proc_macro2::Span::call_site());
+                    quote!(polydat::ast::Value::#v(polydat::ast::SliceArc::from_vec((__elem).to_vec())))
+                }
+            }
+        } else {
+            quote!(<#inner as polydat::derive_support::Wire>::inject(__elem))
+        };
+        quote! {
+            for (__i, __elem) in result.0.into_iter().enumerate() {
+                outputs[__i] = #inject_one;
+            }
+        }
+    } else if let Some(elems) = &tuple_ret_elems {
         let locals: Vec<Ident> = (0..elems.len())
             .map(|i| format_ident!("__r_{}", i))
             .collect();
@@ -1765,9 +2691,13 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
     //   (c) Otherwise → don't override the trait default
     //       (returns None).
     let compiled_u64_impl: TokenStream2 = if let Some(path) = &attrs.compiled_u64_override {
+        // SRD-80b in-spirit refinement — pass `&self` to the
+        // override fn so setup-derived state (round_keys,
+        // half_bits, etc.) is reachable. The override fn
+        // signature is now `fn(&Self) -> CompiledU64Op`.
         quote! {
             fn compiled_u64(&self) -> Option<polydat::ast::CompiledU64Op> {
-                Some(Box::new(#path))
+                Some(#path(self))
             }
         }
     } else if jit_eligible && !attrs.no_jit {
@@ -1785,8 +2715,8 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                     let n = &a.name;
                     Some(quote!(let #n = self.#n;))
                 }
-                ArgKind::Setup(_) | ArgKind::PolyWire => {
-                    unreachable!("setup/polywire excludes JIT eligibility")
+                ArgKind::Setup(_) | ArgKind::PolyWire | ArgKind::ConstVec(_) => {
+                    unreachable!("setup/polywire/constvec excludes JIT eligibility")
                 }
             })
             .collect();
@@ -1814,7 +2744,7 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                         // this branch is only reached for u64 elems.)
                         quote!(let #n: &[u64] = inputs;)
                     }
-                    ArgKind::Setup(_) | ArgKind::PolyWire => unreachable!(),
+                    ArgKind::Setup(_) | ArgKind::PolyWire | ArgKind::ConstVec(_) => unreachable!(),
                 }
             })
             .collect();
@@ -1831,17 +2761,15 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
             let writes: Vec<TokenStream2> = tuple_jits.iter().enumerate()
                 .map(|(i, jt)| {
                     let local = &locals[i];
-                    let mut out_idx = jt.write_to_u64_buffer(quote!(#local));
                     // `write_to_u64_buffer` always emits `outputs[0] = ...`.
-                    // For multi-output we need to rewrite to `outputs[i] = ...`.
-                    // Rebuild from the JitType's conversion directly:
+                    // For multi-output we need `outputs[i] = ...`, so we
+                    // emit the per-JitType conversion directly here.
                     let idx = syn::Index::from(i);
-                    out_idx = match jt {
+                    match jt {
                         JitType::U64 => quote!(outputs[#idx] = #local;),
                         JitType::F64 => quote!(outputs[#idx] = #local.to_bits();),
                         JitType::Bool => quote!(outputs[#idx] = if #local { 1 } else { 0 };),
-                    };
-                    out_idx
+                    }
                 })
                 .collect();
             quote! {
@@ -1986,16 +2914,60 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
     let has_const_arg = args.iter().any(|a| matches!(a.kind, ArgKind::Const(_)));
     let has_polywire = args.iter().any(|a| matches!(a.kind, ArgKind::PolyWire));
     let variadic_ctor_field: TokenStream2 = if has_variadic && !has_const_arg && !has_polywire {
-        quote!(Some(|n| Box::new(#struct_name::new(n))))
+        // Split-halves: assembler passes TOTAL wire count; the
+        // struct's `new()` takes per-half count, so divide by 2.
+        if is_split_halves {
+            quote!(Some(|n| Box::new(#struct_name::new(n / 2))))
+        } else {
+            quote!(Some(|n| Box::new(#struct_name::new(n))))
+        }
     } else {
         quote!(None)
     };
 
+    // SRD-80b Phase C — `Option<T>` arg auto-emits
+    // `accepts_none_inputs() -> true`. The runtime kernel's
+    // SRD-74 Rule 1 propagation short-circuits `Value::None`
+    // inputs by default; `Option<T>` is the canonical opt-in
+    // shape that wants None routed to the body instead.
+    // SRD-80b in-spirit rule — `Option<T>` wire args declare
+    // None-tolerance via the type system; PolyWire (`Value`) args
+    // ARE inherently None-tolerant (`Value::None` is just one of
+    // the polymorphic variants). Both opt the node out of the
+    // kernel-Rule-1 short-circuit.
+    let has_none_aware_arg = args.iter().any(|a| match &a.kind {
+        ArgKind::Wire => is_option_arg(&a.declared_ty),
+        ArgKind::PolyWire => true,
+        _ => false,
+    });
+    let accepts_none_impl: TokenStream2 = if has_none_aware_arg {
+        quote! {
+            fn accepts_none_inputs(&self) -> bool { true }
+        }
+    } else {
+        quote!()
+    };
+
+    // SRD-80b Phase C — `Const<Vec<C>>` implies
+    // `Arity::VariadicConsts`. Mutually exclusive with the
+    // wire-variadic case (the macro rejects mixing them earlier).
+    let has_const_vec = args.iter().any(|a| matches!(a.kind, ArgKind::ConstVec(_)));
     let arity_field: TokenStream2 = if has_variadic {
-        let min_wires = attrs.variadic_min.as_ref()
-            .map(|v| quote!(#v))
-            .unwrap_or_else(|| quote!(0));
+        // SRD-80b split-halves: `variadic_min` is interpreted
+        // as PAIRS count; the FuncSig advertises 2× as total
+        // wires so the assembler enforces the right floor.
+        let min_wires = match (&attrs.variadic_min, is_split_halves) {
+            (Some(v), true)  => quote!(2 * (#v)),
+            (Some(v), false) => quote!(#v),
+            (None, _)        => quote!(0),
+        };
         quote!(polydat::dsl::registry::Arity::VariadicWires { min_wires: #min_wires })
+    } else if has_const_vec {
+        // min_consts = 0 by default; the workload-list shape
+        // permits empty lists. Authors who want a minimum
+        // declare it via `#[poly_default]` on the inner type or
+        // by validating in the body.
+        quote!(polydat::dsl::registry::Arity::VariadicConsts { min_consts: 0 })
     } else {
         quote!(polydat::dsl::registry::Arity::Fixed)
     };
@@ -2006,15 +2978,73 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
         quote!(polydat::ast::Commutativity::Positional)
     };
 
-    let result = quote! {
-        pub struct #struct_name {
-            meta: polydat::ast::NodeMeta,
-            #( #struct_fields, )*
-        }
-
-        #default_impl
-
-        impl #struct_name {
+    // SRD-80b Phase 5 S16 — fallible-mode emission. When the body
+    // returns Result<T, E>, the macro:
+    //   * adds a cached `__polydat_cached: T` struct field,
+    //   * replaces `new(...)` with `try_new(...) -> Result<Self, String>`,
+    //   * runs the body once inside try_new, captures Ok into the
+    //     cache, propagates Err via Into<String>,
+    //   * makes eval read the cached value (no per-eval body call).
+    let (ctor_emission, eval_emission, build_call_emission): (TokenStream2, TokenStream2, TokenStream2) = if is_fallible {
+        // body-arg pass list. In try_new() Const args arrive as
+        // their `field_type_tokens()` form (String for Str, raw
+        // primitive otherwise) and need wrapping as `Const<T>` for
+        // the body's declared signature. Setup args are locals
+        // produced by `setup_precomputes` — body takes `&local`.
+        let body_arg_passes: Vec<TokenStream2> = args.iter()
+            .map(|a| {
+                let n = &a.name;
+                match &a.kind {
+                    ArgKind::Const(shape) => shape.wrap_as_const(quote!(#n)),
+                    ArgKind::Setup(_) => quote!(&#n),
+                    // Wire / PolyWire / Variadic are rejected
+                    // earlier for fallible nodes — unreachable.
+                    _ => quote!(#n),
+                }
+            })
+            .collect();
+        // Local wrapping: each Const arg comes in as the wrapper
+        // (matching new_params), so we forward it directly. The
+        // body receives `Const<T>` and unwraps via .0 or .as_str()
+        // in its own code.
+        let try_new = quote! {
+            pub fn try_new( #( #new_params ),* ) -> ::std::result::Result<Self, String> {
+                #( #setup_precomputes )*
+                let mut ins: Vec<polydat::ast::Slot> = vec![ #( #slot_exprs ),* ];
+                #( #variadic_slot_extends )*
+                #outs_build
+                // Invoke the body once; propagate Err as String.
+                let __polydat_cached = match Self::__polydat_body( #( #body_arg_passes ),* ) {
+                    Ok(v) => v,
+                    Err(e) => return Err(Into::<String>::into(e)),
+                };
+                Ok(Self {
+                    meta: polydat::ast::NodeMeta {
+                        name: #func_name_str.into(),
+                        ins,
+                        outs,
+                    },
+                    #( #new_field_inits, )*
+                    __polydat_cached,
+                })
+            }
+        };
+        // eval reads the cached value; no body call.
+        let out_assign = output_assign(quote!(0), &ret_ty, quote!(self.__polydat_cached.clone()));
+        let ev = quote! {
+            #[allow(unused_variables)]
+            { #out_assign }
+        };
+        // build closure: call try_new and propagate Err.
+        let bc = quote! {
+            Some(match #struct_name::try_new( #( #new_call_args ),* ) {
+                Ok(n) => Ok(Box::new(n) as Box<dyn polydat::ast::PolydatNode>),
+                Err(e) => Err(e),
+            })
+        };
+        (try_new, ev, bc)
+    } else {
+        let ctor = quote! {
             pub fn new( #( #new_params ),* ) -> Self {
                 // SRD-80 PR B.6: setup pre-computes (FnOnce-
                 // equivalent — emitted once by the macro,
@@ -2025,9 +3055,7 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                 // variadic args append N slots per `n_wires`.
                 let mut ins: Vec<polydat::ast::Slot> = vec![ #( #slot_exprs ),* ];
                 #( #variadic_slot_extends )*
-                let outs = vec![ #(
-                    polydat::ast::Port::new(#output_names_strs, #output_port_types)
-                ),* ];
+                #outs_build
                 Self {
                     meta: polydat::ast::NodeMeta {
                         name: #func_name_str.into(),
@@ -2037,6 +3065,51 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                     #( #new_field_inits, )*
                 }
             }
+        };
+        let ev = quote!(#eval_body);
+        // Wrap `new()` in `catch_unwind` so that panics from
+        // `#[poly_const]` setup functions (Regex parse failures,
+        // file-not-found from filename consts, "value:weight"
+        // parse failures, etc.) surface as build-closure `Err`
+        // values rather than unwinding through the compile path.
+        // The runtime sees `name` here as the DSL-registered
+        // function name; the message is prefixed for traceability.
+        let bc = quote! {
+            Some(match ::std::panic::catch_unwind(
+                ::std::panic::AssertUnwindSafe(|| #struct_name::new( #( #new_call_args ),* ))
+            ) {
+                Ok(node) => Ok(Box::new(node) as Box<dyn polydat::ast::PolydatNode>),
+                Err(panic) => {
+                    let msg = panic.downcast_ref::<&str>().copied()
+                        .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+                        .unwrap_or("<non-string panic>");
+                    Err(format!("{}: construction failed: {}", #func_name_str, msg))
+                }
+            })
+        };
+        (ctor, ev, bc)
+    };
+
+    // Cached field for fallible mode. T = `ret_ty` (the Ok inner).
+    let cached_field: TokenStream2 = if is_fallible {
+        quote!(__polydat_cached: #ret_ty,)
+    } else {
+        quote!()
+    };
+
+    let result = quote! {
+        pub struct #struct_name {
+            meta: polydat::ast::NodeMeta,
+            #( #struct_fields, )*
+            #cached_field
+        }
+
+        #default_impl
+
+        #fused_node_impl
+
+        impl #struct_name {
+            #ctor_emission
 
             // SRD-80 PR B.7: shared `__polydat_body` extracted
             // when the node is JIT-eligible. Both `eval()` and
@@ -2053,12 +3126,13 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                 inputs: &[polydat::ast::Value],
                 outputs: &mut [polydat::ast::Value],
             ) {
-                #eval_body
+                #eval_emission
             }
 
             #compiled_u64_impl
             #jit_constants_impl
             #purity_impl
+            #accepts_none_impl
         }
 
         // SRD-80 PR B.2/B.3/B.5 — link-time registration via
@@ -2079,7 +3153,7 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                     params: &[ #( #param_specs ),* ],
                     arity: #arity_field,
                     commutativity: #commutativity_field,
-                    default_resolver: None,
+                    default_resolver: #default_resolver_field,
                     output_type: #output_type_tokens,
                 },
             ];
@@ -2093,10 +3167,11 @@ fn generate(func: ItemFn, attrs: NodeAttrs) -> syn::Result<TokenStream2> {
                 consts: &[polydat::dsl::factory::ConstArg],
             ) -> Option<Result<Box<dyn polydat::ast::PolydatNode>, String>> {
                 if name != #func_name_str { return None; }
+                #port_guard
                 #( #const_extracts )*
                 #( #polywire_extracts )*
                 #variadic_n_wires_extract
-                Some(Ok(Box::new(#struct_name::new( #( #new_call_args ),* ))))
+                #build_call_emission
             }
 
             ::polydat::inventory::submit! {

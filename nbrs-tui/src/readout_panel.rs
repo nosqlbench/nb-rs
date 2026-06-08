@@ -18,6 +18,7 @@
 
 use std::time::Instant;
 
+use nbrs_activity::lifecycle::EventType;
 use nbrs_activity::readouts as ro;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -46,13 +47,13 @@ pub struct PhaseRowContext {
     consumed: u64,
     refresh_tick: u64,
     use_color: bool,
-    event: ro::Event,
+    event: EventType,
 }
 
 impl PhaseRowContext {
     /// Build a context for a phase that is currently running
     /// (live counters from `ActivePhase`). Fires under
-    /// [`Event::Update`] — the refresh-tick event the TUI
+    /// [`EventType::Update`] — the refresh-tick event the TUI
     /// re-renders against every frame.
     pub fn live(
         phase: &PhaseEntry,
@@ -76,13 +77,13 @@ impl PhaseRowContext {
             consumed: live.ops_started,
             refresh_tick,
             use_color: true,
-            event: ro::Event::Update,
+            event: EventType::Update,
         }
     }
 
     /// Build a context for a phase that has reached a
     /// terminal state (completed / failed / pending).
-    /// Fires under `Event::PhaseEnd` so `phase_outcome` /
+    /// Fires under `EventType::PhaseEnd` so `phase_outcome` /
     /// `phase_summary` produce their final-state forms.
     pub fn terminal(phase: &PhaseEntry) -> Self {
         let state = match &phase.status {
@@ -113,7 +114,7 @@ impl PhaseRowContext {
             consumed: cycles_completed,
             refresh_tick: 0,
             use_color: true,
-            event: ro::Event::PhaseEnd,
+            event: EventType::PhaseEnd,
         }
     }
 }
@@ -134,7 +135,7 @@ impl ro::ReadoutContext for PhaseRowContext {
     fn consumed(&self) -> u64 { self.consumed }
     fn refresh_tick(&self) -> u64 { self.refresh_tick }
     fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> ro::Event { self.event }
+    fn event(&self) -> EventType { self.event }
     fn eta_secs(&self) -> Option<f64> {
         if self.cycles_total == 0 || self.elapsed <= 0.0 { return None; }
         let rate = self.ops_finished as f64 / self.elapsed;
@@ -156,27 +157,27 @@ pub fn render_phase_readouts(
     phase: &PhaseEntry,
     live: Option<&ActivePhase>,
     refresh_tick: u64,
-) -> (Vec<Line<'static>>, ro::Event) {
+) -> (Vec<Line<'static>>, EventType) {
     use ro::ReadoutBinder;
 
     // Pick the right context shape and event:
-    //  - Live phase → Event::Update with phase_status's
+    //  - Live phase → EventType::Update with phase_status's
     //    full progress / rate / counters / ETA chip.
-    //  - Terminal phase → Event::PhaseEnd with phase_outcome's
+    //  - Terminal phase → EventType::PhaseEnd with phase_outcome's
     //    ✓ DONE summary (or phase_summary's [!!] failure).
-    let (event, ctx_box): (ro::Event, Box<dyn ro::ReadoutContext>) = if let Some(a) = live {
+    let (event, ctx_box): (EventType, Box<dyn ro::ReadoutContext>) = if let Some(a) = live {
         let ctx = PhaseRowContext::live(phase, a, refresh_tick);
-        (ro::Event::Update, Box::new(ctx))
+        (EventType::Update, Box::new(ctx))
     } else {
         let ctx = PhaseRowContext::terminal(phase);
-        (ro::Event::PhaseEnd, Box::new(ctx))
+        (EventType::PhaseEnd, Box::new(ctx))
     };
 
     // Seed default bindings on first use of this slot.
     if binder.slot_len(event) == 0 {
         let default = match event {
-            ro::Event::Update => ro::Registry::lookup("phase_status"),
-            ro::Event::PhaseEnd => ro::Registry::lookup("phase_outcome"),
+            EventType::Update => ro::Registry::lookup("phase_status"),
+            EventType::PhaseEnd => ro::Registry::lookup("phase_outcome"),
             _ => None,
         };
         if let Some(handle) = default {
@@ -221,7 +222,7 @@ fn apply_focus_tint(line: Line<'static>) -> Line<'static> {
 
 /// Convenience: same idea as [`render_phase_readouts`] but
 /// for the per-frame status header at the top of the active-
-/// phase detail block. Always fires `Event::Update` and
+/// phase detail block. Always fires `EventType::Update` and
 /// always returns at least one line (an empty placeholder if
 /// the binder produces no output, to keep panel layout
 /// stable across phases that haven't started rendering yet).
@@ -278,7 +279,7 @@ mod tests {
         phase.duration_secs = Some(0.42);
 
         let (lines, event) = render_phase_readouts(&mut binder, &phase, None, 0);
-        assert_eq!(event, ro::Event::PhaseEnd);
+        assert_eq!(event, EventType::PhaseEnd);
         assert!(!lines.is_empty(), "completed phase should render at least one line");
     }
 
@@ -296,7 +297,7 @@ mod tests {
         // tint the lines.
         use ro::{BinderKey, ReadoutBinder};
         binder.on_key(BinderKey::CycleFocusNext);
-        assert!(binder.focus_for(ro::Event::PhaseEnd).is_some(),
+        assert!(binder.focus_for(EventType::PhaseEnd).is_some(),
             "cycle should land focus somewhere");
 
         let (tinted, _) = render_phase_readouts(&mut binder, &phase, None, 0);

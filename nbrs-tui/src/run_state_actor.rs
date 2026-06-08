@@ -84,6 +84,7 @@ pub enum RunStateCmd {
     /// Append a log line to the ring buffer.
     Log {
         severity: LogSeverity,
+        category: crate::state::LogCategory,
         message: String,
     },
     /// Latency frame ingest from the metrics scheduler. Updates
@@ -406,8 +407,8 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         RunStateCmd::RunFinished => {
             state.finished = true;
         }
-        RunStateCmd::Log { severity, message } => {
-            state.push_log(severity, message);
+        RunStateCmd::Log { severity, category, message } => {
+            state.push_log_categorized(severity, category, message);
         }
         RunStateCmd::LatencyFrame { min, p50, p90, p99, p999, max } => {
             state.min_nanos  = min;

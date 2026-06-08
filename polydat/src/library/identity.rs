@@ -3,7 +3,7 @@
 
 //! Identity and constant nodes.
 
-use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// Passthrough: output equals input. SRD-80 PR B.8 — polymorphic
 /// via PolyWire. The runtime port type is resolved by the
@@ -55,92 +55,53 @@ impl PolydatNode for PortPassthrough {
 
 /// Emit a fixed u64 value (no inputs).
 ///
-/// Signature: `const(value: u64) -> (u64)`
+/// Signature: `const_u64(value: u64) -> (u64)`
 ///
 /// Source node that always produces the same u64 regardless of cycle.
 /// Use for injecting literal parameters into a DAG, such as a fixed
 /// partition key, an epoch timestamp base, or an addend for `add`.
 /// Takes no inputs, so it sits at a DAG root.
 ///
-/// JIT level: P2 (compiled_u64 emits a captured constant).
-pub struct ConstU64 {
-    meta: NodeMeta,
-    value: u64,
-}
-
-impl ConstU64 {
-    pub fn new(value: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "const".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::const_u64("value", value)],
-            },
-            value,
-        }
-    }
-}
-
-impl PolydatNode for ConstU64 {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(self.value);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let value = self.value;
-        Some(Box::new(move |_inputs, outputs| {
-            outputs[0] = value;
-        }))
-    }
+/// JIT level: P2 (compiled_u64 emits a captured constant via the
+/// `#[polydat_node]`-emitted body capture).
+///
+/// SRD-80b Phase E migration: `Const<u64>` arg → owned `u64` field;
+/// macro auto-emits the matching `compiled_u64()` constant-capture
+/// fast path. Operator-facing rename `const` → `const_u64` aligns
+/// with the per-type naming scheme already used for `const_f64` /
+/// `const_bool` (see `library::fixed`).
+#[crate::polydat_node(category = Math)]
+fn const_u64(value: crate::derive_support::Const<u64>) -> u64 {
+    *value
 }
 
 /// Emit a fixed string value (no inputs).
 ///
-/// Signature: `const_str(value: String) -> (String)`
+/// Signature: `const_str(value: String) -> (Arc<str>)`
 ///
 /// Source node that always produces the same string regardless of cycle.
 /// Use for injecting literal string parameters into a DAG, such as a
 /// fixed table name, a static label, or a separator for string
 /// concatenation pipelines.
 ///
-/// JIT level: P1 (String output; no compiled_u64 path).
-pub struct ConstStr {
-    meta: NodeMeta,
-    /// `Arc<str>` so per-cycle `eval` emissions share a single
-    /// heap allocation across every kernel that uses this node
-    /// — `Value::Str` clones become atomic increments, not
-    /// heap copies. Matches the grammar's "final" / "init"
-    /// shareability intent.
-    value: std::sync::Arc<str>,
+/// JIT level: P1 (Str output; no compiled_u64 path).
+///
+/// SRD-80b Phase E migration: `Const<&str>` source captures the
+/// owned `String`; `#[poly_const]` derives an `Arc<str>` cache at
+/// construction time, so per-cycle eval is a refcount bump on a
+/// single heap allocation — matches the previous shared-Arc
+/// behaviour (one heap allocation across every kernel using the
+/// node). The macro emits `ConstStr::new(value: String)`.
+fn const_str_arc(s: &str) -> std::sync::Arc<str> {
+    std::sync::Arc::from(s)
 }
 
-impl ConstStr {
-    pub fn new(value: impl Into<std::sync::Arc<str>>) -> Self {
-        let value: std::sync::Arc<str> = value.into();
-        Self {
-            meta: NodeMeta {
-                name: "const_str".into(),
-                outs: vec![Port::str("output")],
-                ins: vec![Slot::const_str("value", value.to_string())],
-            },
-            value,
-        }
-    }
-}
-
-impl PolydatNode for ConstStr {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.value.clone());
-    }
-    // No compiled_u64 — String output.
+#[crate::polydat_node(category = Diagnostic)]
+fn const_str(
+    #[poly_default("")] value: crate::derive_support::Const<&str>,
+    #[poly_const(const_str_arc, from = value)] cached: &std::sync::Arc<str>,
+) -> std::sync::Arc<str> {
+    cached.clone()
 }
 
 /// Emit a fixed [`Value::Handle`] (no inputs).

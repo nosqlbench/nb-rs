@@ -8,7 +8,8 @@
 //! contract.
 
 use super::buf::ReadoutBuf;
-use super::context::{ReadoutContext, SubjectKind};
+use super::context::ReadoutContext;
+use crate::lifecycle::SubjectKind;
 
 /// Level-of-Detail axis. See SRD-63 §3.
 ///

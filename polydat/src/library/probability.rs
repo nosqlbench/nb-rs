@@ -4,15 +4,30 @@
 //! Probability modeling nodes.
 //!
 //! Deterministic building blocks for modeling probabilistic behavior in
-//! Polydat graphs. All nodes are pure functions — "randomness" comes from
-//! hashing the input, not from a stateful RNG. The same input always
-//! produces the same output.
+//! Polydat graphs. All hash-based nodes are pure functions — "randomness"
+//! comes from hashing the input, not from a stateful RNG. The same input
+//! always produces the same output.
 //!
 //! Primary use cases: model adapter result kernels (simulated latency,
 //! error injection, bimodal distributions), but usable anywhere in a
 //! Polydat pipeline.
+//!
+//! SRD-80b Phase E migration: every probability node goes through
+//! `#[polydat_node]`. `DefaultOr` rides the SRD-80b in-spirit rule
+//! that PolyWire (`Value`-typed) args auto-emit
+//! `accepts_none_inputs() -> true`, so the body's coalesce logic
+//! sees `Value::None` instead of the kernel's Rule 1 short-circuit.
+//!
+//! `OneOf` rides the `Const<Vec<String>>` workload-list shape; its
+//! non-empty-values check now fires at eval time rather than at
+//! construction (the macro-emitted `new()` is infallible).
+//! `OneOfWeighted` rides the `#[poly_const]` setup pattern, parsing
+//! the spec once into a cached `WeightedTable`.
 
-use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::Value;
+#[cfg(test)]
+use crate::ast::{PolydatNode, PortType};
+use crate::derive_support::{Const, PolydatSetup};
 use xxhash_rust::xxh3::xxh3_64;
 
 /// Convert a u64 hash to a value in the unit interval [0.0, 1.0).
@@ -23,9 +38,13 @@ fn hash_to_unit(v: u64) -> f64 {
     (v as f64) / ((u64::MAX as f64) + 1.0)
 }
 
+// ---------------------------------------------------------------------------
+// FairCoin: 50/50 binary outcome from a hashed input.
+// ---------------------------------------------------------------------------
+
 /// Fair coin flip: returns 0 or 1 with 50/50 probability.
 ///
-/// Signature: `fair_coin(input: u64) -> (u64)`
+/// Signature: `fair_coin(input: u64) -> u64`
 ///
 /// Equivalent to `mod(hash(input), 2)`. Use when you need a simple
 /// binary decision with equal weight — for example, choosing between
@@ -33,48 +52,21 @@ fn hash_to_unit(v: u64) -> f64 {
 ///
 /// Deterministic: the same input always produces the same output.
 ///
-/// JIT level: P2 (compiled_u64 closure; xxh3 call prevents full inlining).
-pub struct FairCoin {
-    meta: NodeMeta,
+/// JIT level: P2 — the macro auto-emits `compiled_u64` from the
+/// scalar `u64 -> u64` body.
+#[crate::polydat_node(category = Probability)]
+fn fair_coin(input: u64) -> u64 {
+    let h = xxh3_64(&input.to_le_bytes());
+    h % 2
 }
 
-impl Default for FairCoin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FairCoin {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "fair_coin".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for FairCoin {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let h = xxh3_64(&inputs[0].as_u64().to_le_bytes());
-        outputs[0] = Value::U64(h % 2);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            let h = xxh3_64(&inputs[0].to_le_bytes());
-            outputs[0] = h % 2;
-        }))
-    }
-}
+// ---------------------------------------------------------------------------
+// UnfairCoin: biased binary outcome from a hashed input.
+// ---------------------------------------------------------------------------
 
 /// Unfair coin flip: returns 1 with probability `p`, else 0.
 ///
-/// Signature: `unfair_coin(input: u64, p: f64) -> (u64)`
+/// Signature: `unfair_coin(input: u64, p: f64) -> u64`
 ///
 /// The `p` parameter is an init-time constant in [0.0, 1.0]. The input
 /// is hashed to a unit interval and compared against `p`: if the hashed
@@ -94,56 +86,24 @@ impl PolydatNode for FairCoin {
 /// sample sizes the fraction converges to `p`, but any given
 /// window may vary.
 ///
-/// JIT level: P2 (compiled_u64 closure).
-pub struct UnfairCoin {
-    meta: NodeMeta,
-    p: f64,
+/// JIT level: P2 — macro-emitted compiled closure captures `p`.
+#[crate::polydat_node(category = Probability)]
+fn unfair_coin(input: u64, p: Const<f64>) -> u64 {
+    if !(0.0..=1.0).contains(&*p) {
+        panic!("unfair_coin probability p must be in [0.0, 1.0], got {}", *p);
+    }
+    let h = xxh3_64(&input.to_le_bytes());
+    let unit = hash_to_unit(h);
+    if unit < *p { 1 } else { 0 }
 }
 
-impl UnfairCoin {
-    pub fn new(p: f64) -> Self {
-        assert!(
-            (0.0..=1.0).contains(&p),
-            "unfair_coin probability p must be in [0.0, 1.0], got {p}"
-        );
-        Self {
-            meta: NodeMeta {
-                name: "unfair_coin".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_f64("p", p),
-                ],
-            },
-            p,
-        }
-    }
-}
-
-impl PolydatNode for UnfairCoin {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let h = xxh3_64(&inputs[0].as_u64().to_le_bytes());
-        let unit = hash_to_unit(h);
-        outputs[0] = Value::U64(if unit < self.p { 1 } else { 0 });
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let p = self.p;
-        Some(Box::new(move |inputs, outputs| {
-            let h = xxh3_64(&inputs[0].to_le_bytes());
-            let unit = hash_to_unit(h);
-            outputs[0] = if unit < p { 1 } else { 0 };
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> { vec![self.p.to_bits()] }
-}
+// ---------------------------------------------------------------------------
+// Select: 3-way conditional selection between two u64 values.
+// ---------------------------------------------------------------------------
 
 /// Binary conditional selection: returns `if_true` when `cond != 0`, else `if_false`.
 ///
-/// Signature: `select(cond: u64, if_true: u64, if_false: u64) -> (u64)`
+/// Signature: `select(cond: u64, if_true: u64, if_false: u64) -> u64`
 ///
 /// Three wire inputs. All inputs are always evaluated (no short-circuit)
 /// because Polydat is a DAG, not a control flow graph. Use to pick between
@@ -156,58 +116,24 @@ impl PolydatNode for UnfairCoin {
 /// Combine with `fair_coin`, `unfair_coin`, or `n_of` for the condition,
 /// and any pair of compatible values for the branches.
 ///
-/// JIT level: P3 (branchless conditional move).
-pub struct Select {
-    meta: NodeMeta,
+/// JIT level: P3 — macro-emitted compiled closure is a branchless
+/// conditional move when the LLVM optimiser folds the if.
+#[crate::polydat_node(category = Probability)]
+fn select(cond: u64, if_true: u64, if_false: u64) -> u64 {
+    if cond != 0 { if_true } else { if_false }
 }
 
-impl Default for Select {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// ---------------------------------------------------------------------------
+// Chance: like UnfairCoin but the output is an f64-bit-encoded 0.0/1.0.
+// ---------------------------------------------------------------------------
 
-impl Select {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "select".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("cond")),
-                    Slot::Wire(Port::u64("if_true")),
-                    Slot::Wire(Port::u64("if_false")),
-                ],
-            },
-        }
-    }
-}
-
-impl PolydatNode for Select {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let cond = inputs[0].as_u64();
-        outputs[0] = if cond != 0 {
-            Value::U64(inputs[1].as_u64())
-        } else {
-            Value::U64(inputs[2].as_u64())
-        };
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            outputs[0] = if inputs[0] != 0 { inputs[1] } else { inputs[2] };
-        }))
-    }
-}
-
-/// Probability chance returning f64: returns 1.0 with probability `p`, else 0.0.
+/// Probability chance returning f64-bits in u64 form: returns
+/// `1.0_f64.to_bits()` with probability `p`, else `0.0_f64.to_bits()`.
 ///
-/// Signature: `chance(input: u64, p: f64) -> (u64)`
+/// Signature: `chance(input: u64, p: f64) -> u64`
 ///
-/// Like `unfair_coin` but returns 0.0 or 1.0 as f64 (bit-encoded in the
-/// u64 output buffer). Use when the result feeds directly into f64
+/// Like `unfair_coin` but the u64 output carries the bit-pattern of
+/// an f64 (0.0 or 1.0). Use when the result feeds directly into f64
 /// arithmetic without an explicit type conversion step:
 ///
 /// ```polydat
@@ -216,58 +142,26 @@ impl PolydatNode for Select {
 ///
 /// The `p` parameter is an init-time constant in [0.0, 1.0].
 ///
-/// JIT level: P2 (compiled_u64 closure).
-pub struct Chance {
-    meta: NodeMeta,
-    p: f64,
+/// JIT level: P2 — macro-emitted compiled closure captures `p`.
+#[crate::polydat_node(category = Probability)]
+fn chance(input: u64, p: Const<f64>) -> u64 {
+    if !(0.0..=1.0).contains(&*p) {
+        panic!("chance probability p must be in [0.0, 1.0], got {}", *p);
+    }
+    let h = xxh3_64(&input.to_le_bytes());
+    let unit = hash_to_unit(h);
+    let result: f64 = if unit < *p { 1.0 } else { 0.0 };
+    result.to_bits()
 }
 
-impl Chance {
-    pub fn new(p: f64) -> Self {
-        assert!(
-            (0.0..=1.0).contains(&p),
-            "chance probability p must be in [0.0, 1.0], got {p}"
-        );
-        Self {
-            meta: NodeMeta {
-                name: "chance".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_f64("p", p),
-                ],
-            },
-            p,
-        }
-    }
-}
-
-impl PolydatNode for Chance {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let h = xxh3_64(&inputs[0].as_u64().to_le_bytes());
-        let unit = hash_to_unit(h);
-        let result: f64 = if unit < self.p { 1.0 } else { 0.0 };
-        outputs[0] = Value::U64(result.to_bits());
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let p = self.p;
-        Some(Box::new(move |inputs, outputs| {
-            let h = xxh3_64(&inputs[0].to_le_bytes());
-            let unit = hash_to_unit(h);
-            let result: f64 = if unit < p { 1.0 } else { 0.0 };
-            outputs[0] = result.to_bits();
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> { vec![self.p.to_bits()] }
-}
+// ---------------------------------------------------------------------------
+// NofM: deterministic exact-count selection (renamed operator surface
+// stays `n_of`; struct emitted as `NOf`).
+// ---------------------------------------------------------------------------
 
 /// N-of-M deterministic fractional selection.
 ///
-/// Signature: `n_of(input: u64, n: u64, m: u64) -> (u64)`
+/// Signature: `n_of(input: u64, n: u64, m: u64) -> u64`
 ///
 /// Returns 1 for exactly `n` out of every `m` consecutive inputs, 0
 /// otherwise. Which specific inputs are selected within each window
@@ -285,52 +179,21 @@ impl PolydatNode for Chance {
 /// ```
 ///
 /// Both `n` and `m` are init-time constant parameters. Panics if
-/// `m == 0` or `n > m`.
+/// `m == 0` or `n > m` (preserved from the Phase E migration —
+/// the relational check can't ride on a per-param `ParamSpec`
+/// constraint, so the assertion lives in the body and fires on
+/// the first eval).
 ///
-/// JIT level: P2 (compiled_u64 closure).
-pub struct NofM {
-    meta: NodeMeta,
-    n: u64,
-    m: u64,
-}
-
-impl NofM {
-    pub fn new(n: u64, m: u64) -> Self {
-        assert!(m > 0, "n_of: m must be > 0");
-        assert!(n <= m, "n_of: n ({n}) must be <= m ({m})");
-        Self {
-            meta: NodeMeta {
-                name: "n_of".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_u64("n", n),
-                    Slot::const_u64("m", m),
-                ],
-            },
-            n,
-            m,
-        }
+/// JIT level: P2 — macro-emitted compiled closure captures n and m.
+#[crate::polydat_node(category = Probability)]
+fn n_of(input: u64, n: Const<u64>, m: Const<u64>) -> u64 {
+    if *m == 0 {
+        panic!("n_of: m must be > 0");
     }
-}
-
-impl PolydatNode for NofM {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let input = inputs[0].as_u64();
-        outputs[0] = Value::U64(n_of_m_eval(input, self.n, self.m));
+    if *n > *m {
+        panic!("n_of: n ({}) must be <= m ({})", *n, *m);
     }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let n = self.n;
-        let m = self.m;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = n_of_m_eval(inputs[0], n, m);
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> { vec![self.n, self.m] }
+    n_of_m_eval(input, *n, *m)
 }
 
 /// Core n-of-m evaluation: hash the input's position within its window
@@ -362,9 +225,21 @@ fn n_of_m_eval(input: u64, n: u64, m: u64) -> u64 {
     if rank < n { 1 } else { 0 }
 }
 
+// ---------------------------------------------------------------------------
+// OneOf: uniform selection from a Const<Vec<String>> workload-list.
+//
+// SRD-80b Phase E: migrated via `Const<Vec<C>>`. The macro's
+// VariadicConsts arity consumes every trailing string literal in
+// the call site as the `values` vector, matching the pre-migration
+// "all constants" call shape. Non-empty check stays in the body
+// and fires on first eval; the workload-author-facing
+// `validate_node` entry below trips at assembly time so a bad
+// `one_of(cycle)` call never reaches eval.
+// ---------------------------------------------------------------------------
+
 /// Uniform selection from N constant string values.
 ///
-/// Signature: `one_of(input: u64, values...) -> (String)`
+/// Signature: `one_of(input: u64, values...) -> String`
 ///
 /// Takes one wire input (u64) and N constant string values captured at
 /// construction time. Hashes the input, takes mod N, and returns the
@@ -377,78 +252,47 @@ fn n_of_m_eval(input: u64, n: u64, m: u64) -> u64 {
 /// color := one_of(cycle, "red", "green", "blue")
 /// ```
 ///
-/// JIT level: P1 only (String output prevents compiled_u64).
-pub struct OneOf {
-    meta: NodeMeta,
-    values: Vec<String>,
+/// JIT level: P1 only — `Const<Vec<C>>` is JIT-ineligible by design
+/// (per derive_support), so no compiled_u64 path.
+#[crate::polydat_node(category = Probability)]
+fn one_of(input: u64, values: Const<Vec<String>>) -> String {
+    assert!(!values.is_empty(), "one_of: values must be non-empty");
+    let h = xxh3_64(&input.to_le_bytes());
+    let idx = (h % values.len() as u64) as usize;
+    values[idx].clone()
 }
 
-impl OneOf {
-    /// Create a new `OneOf` node with the given constant values.
-    ///
-    /// Panics if `values` is empty.
-    pub fn new(values: Vec<String>) -> Self {
-        assert!(!values.is_empty(), "one_of: values must be non-empty");
-        Self {
-            meta: NodeMeta {
-                name: "one_of".into(),
-                outs: vec![Port::str("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            values,
-        }
-    }
+// ---------------------------------------------------------------------------
+// OneOfWeighted: weighted selection driven by a parsed const spec.
+//
+// SRD-80b Phase E: migrated via `#[poly_const]` setup. The spec
+// is parsed once at construction into a `WeightedTable`, then a
+// borrow of the cached struct is handed to the eval body. Bad
+// specs panic inside `parse_weighted_spec`, which the macro
+// invokes from `OneOfWeighted::new`, preserving the
+// construction-time panic contract.
+// ---------------------------------------------------------------------------
+
+/// Pre-parsed value table for `one_of_weighted`. The cumulative
+/// vector is normalised so the last entry is exactly 1.0, letting
+/// the eval body locate the matching bucket with a single binary
+/// search.
+pub struct WeightedTable {
+    /// Output values in declaration order.
+    pub values: Vec<String>,
+    /// Cumulative weights, normalised to [0.0, 1.0]. The last
+    /// entry is always 1.0.
+    pub cumulative: Vec<f64>,
 }
 
-impl PolydatNode for OneOf {
-    fn meta(&self) -> &NodeMeta { &self.meta }
+impl PolydatSetup for WeightedTable {}
 
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let h = xxh3_64(&inputs[0].as_u64().to_le_bytes());
-        let idx = (h % self.values.len() as u64) as usize;
-        outputs[0] = Value::Str(self.values[idx].clone().into());
-    }
-}
-
-/// Weighted selection from a spec string, returning a String.
-///
-/// Signature: `one_of_weighted(input: u64) -> (String)`
-///
-/// The `spec` parameter is an init-time constant string with the format
-/// `"value:weight,value:weight,..."`. Weights are positive numbers that
-/// do not need to sum to any particular total — they are normalized
-/// internally. Example: `"red:60,blue:30,green:10"`.
-///
-/// Implementation: at init time, weights are normalized to cumulative
-/// proportions. At eval time, the input is hashed to the unit interval
-/// and a binary search locates the matching bucket.
-///
-/// Use when outcomes have unequal probability — error codes with
-/// realistic frequency distributions, region selection weighted by
-/// traffic share, etc.
-///
-/// ```polydat
-/// status := one_of_weighted(cycle, "200:80,404:10,500:5,503:5")
-/// ```
-///
-/// JIT level: P1 only (String output prevents compiled_u64).
-pub struct OneOfWeighted {
-    meta: NodeMeta,
-    values: Vec<String>,
-    /// Cumulative weights, normalized to [0.0, 1.0]. The last entry is
-    /// always 1.0.
-    cumulative: Vec<f64>,
-}
-
-impl OneOfWeighted {
-    /// Create a new `OneOfWeighted` node from a spec string.
-    ///
-    /// Spec format: `"value:weight,value:weight,..."` where weights are
-    /// positive numbers. Delimiter can be `,` or `;`.
-    ///
-    /// Panics if the spec is empty, any weight is non-positive, or the
-    /// total weight is zero.
-    pub fn new(spec: &str) -> Self {
+impl WeightedTable {
+    /// Single-call setup. The `#[polydat_node]` macro invokes
+    /// this exactly once in the generated `OneOfWeighted::new()`.
+    /// Panics on a malformed spec — same diagnostics as the
+    /// pre-migration hand-written constructor.
+    pub fn parse(spec: &str) -> Self {
         let mut values = Vec::new();
         let mut weights = Vec::new();
         for elem in spec.split([';', ',']) {
@@ -477,44 +321,64 @@ impl OneOfWeighted {
             *last = 1.0;
         }
 
-        Self {
-            meta: NodeMeta {
-                name: "one_of_weighted".into(),
-                outs: vec![Port::str("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            values,
-            cumulative,
-        }
+        Self { values, cumulative }
     }
 }
 
-impl PolydatNode for OneOfWeighted {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let h = xxh3_64(&inputs[0].as_u64().to_le_bytes());
-        let unit = hash_to_unit(h);
-        // Binary search: find the first cumulative entry >= unit.
-        let idx = match self.cumulative.binary_search_by(|c| {
-            c.partial_cmp(&unit).unwrap()
-        }) {
-            Ok(i) => i,
-            Err(i) => i,
-        };
-        // Clamp to valid range (should not be needed, but defensive).
-        let idx = idx.min(self.values.len() - 1);
-        outputs[0] = Value::Str(self.values[idx].clone().into());
-    }
+/// Weighted selection from a spec string, returning a String.
+///
+/// Signature: `one_of_weighted(input: u64, spec: &str) -> String`
+///
+/// The `spec` parameter is an init-time constant string with the format
+/// `"value:weight,value:weight,..."`. Weights are positive numbers that
+/// do not need to sum to any particular total — they are normalised
+/// internally. Example: `"red:60,blue:30,green:10"`.
+///
+/// Implementation: at init time, weights are normalised to cumulative
+/// proportions. At eval time, the input is hashed to the unit interval
+/// and a binary search locates the matching bucket.
+///
+/// Use when outcomes have unequal probability — error codes with
+/// realistic frequency distributions, region selection weighted by
+/// traffic share, etc.
+///
+/// ```polydat
+/// status := one_of_weighted(cycle, "200:80,404:10,500:5,503:5")
+/// ```
+///
+/// JIT level: P1 only (String output prevents compiled_u64).
+#[crate::polydat_node(category = Probability)]
+fn one_of_weighted(
+    input: u64,
+    spec: Const<&str>,
+    #[poly_const(WeightedTable::parse, from = spec)] table: &WeightedTable,
+) -> String {
+    let _ = spec;
+    let h = xxh3_64(&input.to_le_bytes());
+    let unit = hash_to_unit(h);
+    // Binary search: find the first cumulative entry >= unit.
+    let idx = match table.cumulative.binary_search_by(|c| {
+        c.partial_cmp(&unit).unwrap()
+    }) {
+        Ok(i) => i,
+        Err(i) => i,
+    };
+    // Clamp to valid range (should not be needed, but defensive).
+    let idx = idx.min(table.values.len() - 1);
+    table.values[idx].clone()
 }
+
+// ---------------------------------------------------------------------------
+// Blend: weighted linear blend of two f64 values carried as u64-bits.
+// ---------------------------------------------------------------------------
 
 /// Weighted linear blend of two f64 values.
 ///
-/// Signature: `blend(a: u64, b: u64) -> (u64)`
+/// Signature: `blend(a: u64, b: u64, mix: f64) -> u64`
 ///
 /// Computes `a * (1.0 - mix) + b * mix` where `mix` is an init-time
 /// constant in [0.0, 1.0]. Inputs `a` and `b` are f64 values carried
-/// in the u64 buffer via `to_bits`/`from_bits`.
+/// in the u64 buffer via `to_bits` / `from_bits`.
 ///
 /// Use when you need to crossfade between two signal sources —
 /// blending a fast-path latency model with a slow-path model,
@@ -524,359 +388,48 @@ impl PolydatNode for OneOfWeighted {
 /// blended := blend(fast_latency, slow_latency, 0.3)
 /// ```
 ///
-/// JIT level: P2 (compiled_u64 closure).
-pub struct Blend {
-    meta: NodeMeta,
-    mix: f64,
+/// JIT level: P2 — macro-emitted compiled closure captures `mix`.
+#[crate::polydat_node(category = Probability)]
+fn blend(a: u64, b: u64, mix: Const<f64>) -> u64 {
+    if !(0.0..=1.0).contains(&*mix) {
+        panic!("blend: mix must be in [0.0, 1.0], got {}", *mix);
+    }
+    let a_f = f64::from_bits(a);
+    let b_f = f64::from_bits(b);
+    let result = a_f * (1.0 - *mix) + b_f * *mix;
+    result.to_bits()
 }
 
-impl Blend {
-    /// Create a new `Blend` node with the given mix factor.
-    ///
-    /// `mix` must be in [0.0, 1.0]. A mix of 0.0 outputs pure `a`,
-    /// a mix of 1.0 outputs pure `b`.
-    pub fn new(mix: f64) -> Self {
-        assert!(
-            (0.0..=1.0).contains(&mix),
-            "blend: mix must be in [0.0, 1.0], got {mix}"
-        );
-        Self {
-            meta: NodeMeta {
-                name: "blend".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("a")),
-                    Slot::Wire(Port::u64("b")),
-                    Slot::const_f64("mix", mix),
-                ],
-            },
-            mix,
-        }
-    }
-}
-
-impl PolydatNode for Blend {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let a = f64::from_bits(inputs[0].as_u64());
-        let b = f64::from_bits(inputs[1].as_u64());
-        let result = a * (1.0 - self.mix) + b * self.mix;
-        outputs[0] = Value::U64(result.to_bits());
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let mix = self.mix;
-        Some(Box::new(move |inputs, outputs| {
-            let a = f64::from_bits(inputs[0]);
-            let b = f64::from_bits(inputs[1]);
-            let result = a * (1.0 - mix) + b * mix;
-            outputs[0] = result.to_bits();
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> { vec![self.mix.to_bits()] }
-}
+// ---------------------------------------------------------------------------
+// DefaultOr: None-aware coalesce. Migrated to `#[polydat_node]` via
+// PolyWire (`Value`-typed) args — the macro auto-emits
+// `accepts_none_inputs() -> true` because every PolyWire arg is
+// inherently None-tolerant (None is one of the polymorphic variants).
+// The return-type `Value` rides the `SameAsInput` output-type
+// dispatch keyed off the first PolyWire arg (`value`), preserving
+// the variant-preserving semantics: U64 in → U64 out, Str in → Str
+// out, etc.
+// ---------------------------------------------------------------------------
 
 /// Returns the first input if it is not `None`, otherwise the second.
 ///
+/// Signature: `default_or(value: Value, fallback: Value) -> Value`
+///
 /// This is the Polydat equivalent of SQL's `COALESCE` or Rust's
-/// `Option::unwrap_or`. Use it with `extern` inputs (captures)
-/// that may not have been set yet:
-///
-/// ```polydat
-/// extern username: String
-/// greeting := default_or(username, "anonymous")
-/// ```
-///
-/// If `username` has been set by a capture, `greeting` is that value.
-/// If not (still `None`), `greeting` is `"anonymous"`.
-pub struct DefaultOr {
-    meta: NodeMeta,
+/// `Option::unwrap_or`. The node is polymorphic over the `Value`
+/// variant — it passes whatever variant comes in (U64 / F64 / Bool /
+/// Str / etc.) through unchanged. The output port type tracks the
+/// first PolyWire arg's runtime port type via SRD-80b
+/// `OutputType::SameAsInput`.
+#[crate::polydat_node(category = Probability)]
+fn default_or(value: Value, fallback: Value) -> Value {
+    if matches!(value, Value::None) { fallback } else { value }
 }
 
-impl DefaultOr {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "default_or".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![
-                    Slot::Wire(Port::new("value", PortType::Str)),
-                    Slot::Wire(Port::new("fallback", PortType::Str)),
-                ],
-            },
-        }
-    }
-}
+// `default_or` now self-registers via `#[polydat_node]`; the
+// hand-written `signatures()` / `build_node()` / `register_nodes!`
+// entries from the pre-Phase-E form have been removed.
 
-impl PolydatNode for DefaultOr {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = if matches!(inputs[0], Value::None) {
-            inputs[1].clone()
-        } else {
-            inputs[0].clone()
-        };
-    }
-    /// `default_or` exists precisely to consume `Value::None` —
-    /// it's the canonical coalesce / fallback operator. Opt
-    /// out of the kernel-level SRD-74 Rule 1 propagation so
-    /// `None` reaches `eval` instead of short-circuiting.
-    fn accepts_none_inputs(&self) -> bool { true }
-}
-
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for probability and conditional selection nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "fair_coin", category: C::Probability,
-            outputs: 1, description: "50/50 binary outcome (0 or 1)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Fair coin flip: deterministically returns 0 or 1 with 50/50 probability.\nEquivalent to mod(hash(input), 2). Use for simple binary decisions\nlike choosing between two data centers or two code paths.\nParameters:\n  input — u64 wire input (hashed internally)\nExample: fair_coin(cycle)  // 0 or 1",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "unfair_coin", category: C::Probability,
-            outputs: 1, description: "biased coin: 1 with probability p, else 0",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "p", slot_type: SlotType::ConstF64, required: true, example: "0.5",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::RangeF64 { min: 0.0, max: 1.0 }) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Biased coin: returns 1 with probability p, else 0.\nThe input is hashed to [0,1) and compared against p.\nUse for modeling probabilistic events: error injection, cache miss rates.\nParameters:\n  input — u64 wire input (hashed internally)\n  p     — probability of returning 1 (f64 in [0.0, 1.0])\nExample: unfair_coin(cycle, 0.1)  // 10% chance of 1",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "select", category: C::Probability,
-            outputs: 1, description: "binary conditional: if_true when cond != 0, else if_false",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "cond", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "if_true", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "if_false", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Ternary conditional: returns if_true when cond != 0, else if_false.\nAll three inputs are always evaluated (no short-circuit — this is a DAG).\nCombine with fair_coin/unfair_coin/n_of for the condition wire.\nParameters:\n  cond     — u64 condition (0 = false, nonzero = true)\n  if_true  — value returned when cond != 0\n  if_false — value returned when cond == 0\nExample: select(unfair_coin(cycle, 0.1), slow_path, fast_path)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "chance", category: C::Probability,
-            outputs: 1, description: "like unfair_coin but returns f64 (0.0 or 1.0)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "p", slot_type: SlotType::ConstF64, required: true, example: "0.5",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::RangeF64 { min: 0.0, max: 1.0 }) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Like unfair_coin but returns 0.0 or 1.0 as f64.\nUse when the result feeds directly into f64 arithmetic\nwithout needing an explicit type conversion step.\nParameters:\n  input — u64 wire input (hashed internally)\n  p     — probability of returning 1.0 (f64 in [0.0, 1.0])\nExample: chance(cycle, 0.3)  // 30% chance of 1.0, else 0.0",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "n_of", category: C::Probability,
-            outputs: 1, description: "exactly n of every m inputs return 1",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "n", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
-                ParamSpec { name: "m", slot_type: SlotType::ConstU64, required: true, example: "10", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Deterministic fractional selection: exactly n out of every m inputs return 1.\nUnlike unfair_coin (probabilistic), n_of guarantees exact counts\nover each window of m consecutive inputs.\nParameters:\n  input — u64 wire input\n  n     — number of selected inputs per window (u64, n <= m)\n  m     — window size (u64, must be > 0)\nExample: n_of(cycle, 3, 10)  // exactly 3 of every 10 cycles are 1",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "one_of", category: C::Probability,
-            outputs: 1, description: "uniform selection from N constant values",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "values", slot_type: SlotType::ConstStr, required: true, example: "\"a,b,c\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Uniform selection from a comma-separated list of string values.\nHashes the input, picks one value with equal probability.\nUse for simple categorical selection when all outcomes are equally likely.\nParameters:\n  input  — u64 wire input (hashed internally)\n  values — comma-separated string values\nExample: one_of(cycle, \"red,green,blue\")",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "one_of_weighted", category: C::Probability,
-            outputs: 1, description: "weighted selection from 'val:weight,...' spec",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_one_of_weighted_spec)) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Weighted selection from a \"value:weight,...\" spec string.\nWeights are relative and do not need to sum to 1.\nUse for unequal-probability categorical selection.\nParameters:\n  input — u64 wire input (hashed internally)\n  spec  — comma-separated value:weight pairs\nExample: one_of_weighted(cycle, \"200:80,404:10,500:5,503:5\")",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "blend", category: C::Probability,
-            outputs: 1, description: "weighted mix: a*(1-mix) + b*mix",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "mix", slot_type: SlotType::ConstF64, required: true, example: "0.5",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::RangeF64 { min: 0.0, max: 1.0 }) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Weighted linear blend of two f64 wire inputs.\nResult = a * (1 - mix) + b * mix. At mix=0 you get pure a, at mix=1 pure b.\nParameters:\n  a   — first f64 wire input\n  b   — second f64 wire input\n  mix — blend factor (f64 in [0.0, 1.0])\nExample: blend(fast_latency, slow_latency, 0.3)  // 70% fast, 30% slow",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "default_or", category: C::Probability,
-            outputs: 1, description: "coalesce: return value if set, fallback if None",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "fallback", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Return the first input if it is not None, otherwise the second.\nUse with extern inputs (captures) that may not have been set yet.\nParameters:\n  value    — primary wire input (may be None if unset)\n  fallback — wire input used when value is None\nExample: default_or(username, \"anonymous\")",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-/// Try to build a probability node from a function name and const args.
-///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "fair_coin" => Some(Ok(Box::new(FairCoin::new()))),
-        "unfair_coin" => Some(Ok(Box::new(UnfairCoin::new(
-            consts.first().map(|c| c.as_f64()).unwrap_or(0.5),
-        )))),
-        "select" => Some(Ok(Box::new(Select::new()))),
-        "chance" => Some(Ok(Box::new(Chance::new(
-            consts.first().map(|c| c.as_f64()).unwrap_or(0.5),
-        )))),
-        "n_of" => Some(Ok(Box::new(NofM::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(1),
-            consts.get(1).map(|c| c.as_u64()).unwrap_or(2),
-        )))),
-        "one_of" => {
-            let values: Vec<String> = consts.iter().map(|c| c.as_str().to_string()).collect();
-            Some(Ok(Box::new(OneOf::new(values))))
-        }
-        "one_of_weighted" => Some(Ok(Box::new(OneOfWeighted::new(
-            consts.first().map(|c| c.as_str()).unwrap_or("a:1"),
-        )))),
-        "blend" => Some(Ok(Box::new(Blend::new(
-            consts.first().map(|c| c.as_f64()).unwrap_or(0.5),
-        )))),
-        "default_or" => Some(Ok(Box::new(DefaultOr::new()))),
-        _ => None,
-    }
-}
-
-
-/// Assembly-time constant validation for this module's nodes.
-///
-/// Each arm declares the constraints that let the corresponding
-/// `::new` stay infallible and branch-free (SRD 15 §"Const
-/// Constraint Metadata"). The factory calls this before `build_node`.
-pub(crate) fn validate_node(
-    name: &str,
-    consts: &[crate::dsl::factory::ConstArg],
-) -> Result<(), String> {
-    match name {
-        // n ≤ m and m > 0 — relational, not per-param. Stays
-        // imperative because no `ConstConstraint` can express a
-        // cross-arg comparison.
-        "n_of" => {
-            let n = consts.first().map(|c| c.as_u64()).unwrap_or(1);
-            let m = consts.get(1).map(|c| c.as_u64()).unwrap_or(2);
-            if m == 0 {
-                Err("m must be > 0".into())
-            } else if n > m {
-                Err(format!("n ({n}) must be <= m ({m})"))
-            } else {
-                Ok(())
-            }
-        }
-        // `one_of` requires at least one constant value but is
-        // declared with a single-arg `ParamSpec` that only covers
-        // the first one — variadic emptiness can't ride on a
-        // per-param constraint.
-        "one_of" => {
-            if consts.is_empty() {
-                Err("values must be non-empty".into())
-            } else {
-                Ok(())
-            }
-        }
-        // `unfair_coin`, `chance`, `blend` use `RangeF64` on their
-        // p / mix `ParamSpec`. `one_of_weighted` uses `StrParser`.
-        // Pass 1 enforces those — no need to re-check here.
-        _ => Ok(()),
-    }
-}
-
-/// Shared spec-format check for `one_of_weighted` — validates
-/// `"value:weight[;value:weight...]"` with positive real weights.
-fn validate_one_of_weighted_spec(spec: &str) -> Result<(), String> {
-    let mut saw_any = false;
-    let mut total = 0.0f64;
-    for elem in spec.split([';', ',']) {
-        let elem = elem.trim();
-        if elem.is_empty() { continue; }
-        let parts: Vec<&str> = elem.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(format!("expected 'value:weight', got '{elem}'"));
-        }
-        let w: f64 = parts[1].parse()
-            .map_err(|_| format!("invalid weight '{}'", parts[1]))?;
-        if w <= 0.0 {
-            return Err(format!("weight must be positive, got {w}"));
-        }
-        saw_any = true;
-        total += w;
-    }
-    if !saw_any {
-        return Err("spec must be non-empty".into());
-    }
-    if total <= 0.0 {
-        return Err(format!("total weight must be > 0, got {total}"));
-    }
-    Ok(())
-}
-
-crate::register_nodes!(signatures, build_node, validate_node);
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -993,7 +546,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "unfair_coin probability p must be in [0.0, 1.0]")]
     fn unfair_coin_rejects_invalid_p() {
-        UnfairCoin::new(1.5);
+        // SRD-80b Phase E: range assertion now fires on eval rather
+        // than at construction (macro-emitted `new` is infallible).
+        let node = UnfairCoin::new(1.5);
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(0)], &mut out);
     }
 
     // --- Select ---
@@ -1090,11 +647,11 @@ mod tests {
         assert_eq!(outputs[0], eval_out[0].as_u64());
     }
 
-    // --- NofM ---
+    // --- NofM (operator `n_of`, struct `NOf`) ---
 
     #[test]
     fn n_of_m_exact_count() {
-        let node = NofM::new(3, 10);
+        let node = NOf::new(3, 10);
         let mut out = [Value::None];
         // Check multiple windows
         for window in 0..10u64 {
@@ -1113,7 +670,7 @@ mod tests {
 
     #[test]
     fn n_of_m_all_selected() {
-        let node = NofM::new(5, 5);
+        let node = NOf::new(5, 5);
         let mut out = [Value::None];
         for i in 0..20u64 {
             node.eval(&[Value::U64(i)], &mut out);
@@ -1123,7 +680,7 @@ mod tests {
 
     #[test]
     fn n_of_m_none_selected() {
-        let node = NofM::new(0, 5);
+        let node = NOf::new(0, 5);
         let mut out = [Value::None];
         for i in 0..20u64 {
             node.eval(&[Value::U64(i)], &mut out);
@@ -1133,7 +690,7 @@ mod tests {
 
     #[test]
     fn n_of_m_deterministic() {
-        let node = NofM::new(2, 7);
+        let node = NOf::new(2, 7);
         let mut out1 = [Value::None];
         let mut out2 = [Value::None];
         for i in 0..50u64 {
@@ -1145,7 +702,7 @@ mod tests {
 
     #[test]
     fn n_of_m_compiled_u64() {
-        let node = NofM::new(3, 10);
+        let node = NOf::new(3, 10);
         let compiled = node.compiled_u64().expect("should have compiled_u64");
 
         // Check that compiled matches eval for a full window
@@ -1163,19 +720,25 @@ mod tests {
     #[test]
     #[should_panic(expected = "n_of: m must be > 0")]
     fn n_of_m_rejects_zero_m() {
-        NofM::new(0, 0);
+        // SRD-80b Phase E: relational check fires on eval (macro-emitted
+        // `new` is infallible; `validate_node` covers the assembly path).
+        let node = NOf::new(0, 0);
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(0)], &mut out);
     }
 
     #[test]
     #[should_panic(expected = "n_of: n (5) must be <= m (3)")]
     fn n_of_m_rejects_n_greater_than_m() {
-        NofM::new(5, 3);
+        let node = NOf::new(5, 3);
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(0)], &mut out);
     }
 
     #[test]
     fn n_of_m_not_first_n() {
         // Verify that the selected positions are shuffled, not just 0..n
-        let node = NofM::new(1, 10);
+        let node = NOf::new(1, 10);
         let mut out = [Value::None];
         let mut selected_positions = Vec::new();
         for window in 0..20u64 {
@@ -1265,14 +828,19 @@ mod tests {
     #[test]
     #[should_panic(expected = "one_of: values must be non-empty")]
     fn one_of_rejects_empty() {
-        OneOf::new(vec![]);
+        // SRD-80b Phase E: non-empty check fires on eval (macro-emitted
+        // `new` is infallible). Workload-author-facing assembly path
+        // catches this earlier via the macro's VariadicConsts arity.
+        let node = OneOf::new(vec![]);
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(0)], &mut out);
     }
 
     // --- OneOfWeighted ---
 
     #[test]
     fn one_of_weighted_selects_from_spec() {
-        let node = OneOfWeighted::new("red:60,blue:30,green:10");
+        let node = OneOfWeighted::new("red:60,blue:30,green:10".to_string());
         let mut out = [Value::None];
         for i in 0..100u64 {
             node.eval(&[Value::U64(i)], &mut out);
@@ -1286,7 +854,7 @@ mod tests {
 
     #[test]
     fn one_of_weighted_deterministic() {
-        let node = OneOfWeighted::new("a:50,b:50");
+        let node = OneOfWeighted::new("a:50,b:50".to_string());
         let mut out1 = [Value::None];
         let mut out2 = [Value::None];
         for i in 0..50u64 {
@@ -1298,7 +866,7 @@ mod tests {
 
     #[test]
     fn one_of_weighted_respects_weights() {
-        let node = OneOfWeighted::new("heavy:90,light:10");
+        let node = OneOfWeighted::new("heavy:90,light:10".to_string());
         let mut out = [Value::None];
         let mut heavy = 0u64;
         let n = 10_000u64;
@@ -1318,7 +886,7 @@ mod tests {
 
     #[test]
     fn one_of_weighted_single_value() {
-        let node = OneOfWeighted::new("only:1");
+        let node = OneOfWeighted::new("only:1".to_string());
         let mut out = [Value::None];
         for i in 0..20u64 {
             node.eval(&[Value::U64(i)], &mut out);
@@ -1328,7 +896,7 @@ mod tests {
 
     #[test]
     fn one_of_weighted_semicolon_delimiter() {
-        let node = OneOfWeighted::new("x:50;y:50");
+        let node = OneOfWeighted::new("x:50;y:50".to_string());
         let mut out = [Value::None];
         node.eval(&[Value::U64(0)], &mut out);
         let s = out[0].as_str().to_string();
@@ -1338,13 +906,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "one_of_weighted: spec must be non-empty")]
     fn one_of_weighted_rejects_empty() {
-        OneOfWeighted::new("");
+        OneOfWeighted::new("".to_string());
     }
 
     #[test]
     #[should_panic(expected = "one_of_weighted: expected 'value:weight'")]
     fn one_of_weighted_rejects_bad_format() {
-        OneOfWeighted::new("noweight");
+        OneOfWeighted::new("noweight".to_string());
     }
 
     // --- Blend ---
@@ -1435,20 +1003,28 @@ mod tests {
     #[test]
     #[should_panic(expected = "blend: mix must be in [0.0, 1.0]")]
     fn blend_rejects_invalid_mix() {
-        Blend::new(1.5);
+        // SRD-80b Phase E: range assertion fires on eval.
+        let node = Blend::new(1.5);
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(0), Value::U64(0)], &mut out);
     }
 
     #[test]
     #[should_panic(expected = "blend: mix must be in [0.0, 1.0]")]
     fn blend_rejects_negative_mix() {
-        Blend::new(-0.1);
+        let node = Blend::new(-0.1);
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(0), Value::U64(0)], &mut out);
     }
 
     // --- DefaultOr ---
 
     #[test]
     fn default_or_returns_value_when_not_none() {
-        let node = DefaultOr::new();
+        // Macro-emitted `new(value_type, fallback_type)` — PolyWire
+        // args contribute a `<argname>_type: PortType` ctor param
+        // each (SRD-80b).
+        let node = DefaultOr::new(PortType::Str, PortType::Str);
         let mut out = [Value::None];
         node.eval(&[Value::Str("alice".into()), Value::Str("fallback".into())], &mut out);
         assert_eq!(out[0].as_str(), "alice");
@@ -1456,7 +1032,7 @@ mod tests {
 
     #[test]
     fn default_or_returns_fallback_when_none() {
-        let node = DefaultOr::new();
+        let node = DefaultOr::new(PortType::Str, PortType::Str);
         let mut out = [Value::None];
         node.eval(&[Value::None, Value::Str("fallback".into())], &mut out);
         assert_eq!(out[0].as_str(), "fallback");
@@ -1464,7 +1040,7 @@ mod tests {
 
     #[test]
     fn default_or_works_with_u64() {
-        let node = DefaultOr::new();
+        let node = DefaultOr::new(PortType::U64, PortType::U64);
         let mut out = [Value::None];
         // Non-None u64 passes through
         node.eval(&[Value::U64(42), Value::U64(0)], &mut out);
@@ -1494,7 +1070,7 @@ mod tests {
             vec![]);
         // default_or wired to extern input + fallback
         asm.add_node("greeting",
-            Box::new(DefaultOr::new()),
+            Box::new(DefaultOr::new(PortType::Str, PortType::Str)),
             vec![WireRef::node("__port_captured_name"), WireRef::node("fallback")]);
         asm.add_output("greeting", WireRef::node("greeting"));
 

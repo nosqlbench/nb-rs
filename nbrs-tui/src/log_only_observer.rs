@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
-use nbrs_activity::observer::{LogLevel, PhaseProgressUpdate, RunObserver};
+use nbrs_activity::observer::{LogCategory, LogLevel, PhaseProgressUpdate, RunObserver};
 use nbrs_metrics::cadence::Cadences;
 use nbrs_metrics::metrics_query::MetricsQuery;
 use nbrs_metrics::scheduler::Reporter;
@@ -63,12 +63,12 @@ impl nbrs_activity::readouts::ReadoutContext for ScopeAncestorContext {
     fn status_metric_chips(&self) -> String { String::new() }
     fn depth_indent(&self) -> &str { "" }
     fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> nbrs_activity::readouts::Event {
+    fn event(&self) -> nbrs_activity::lifecycle::EventType {
         // Live mid-run scope-ancestor walker fires the
         // scope_header readout at the same boundary that
-        // `Event::EachStart` would fire it at — replay the
+        // `EventType::EachStart` would fire it at — replay the
         // live render path against historical state.
-        nbrs_activity::readouts::Event::EachStart
+        nbrs_activity::lifecycle::EventType::EachStart
     }
 }
 use crate::run_state_actor::{RunStateCmd, RunStateHandle};
@@ -430,12 +430,19 @@ impl RunObserver for LogOnlyObserver {
     }
 
     fn log(&self, level: LogLevel, message: &str) {
+        self.log_categorized(level, LogCategory::Diagnostic, message);
+    }
+
+    fn log_categorized(&self, level: LogLevel, category: LogCategory, message: &str) {
         // Snapshot side: every log entry is stored in the ring
-        // (capped at 200) with `log_seq_total` advanced. The
-        // active sink drains via the seq delta; the inspector
-        // socket reads the ring directly.
+        // (capped at 200) with `log_seq_total` advanced, carrying
+        // its `category` so the terminal sink can keep phase-
+        // lifecycle lines out of its scrollback. The active sink
+        // drains via the seq delta; the inspector socket reads the
+        // ring directly.
         self.state.send(RunStateCmd::Log {
             severity: level_to_severity(level),
+            category,
             message: message.to_string(),
         });
         // Stderr side: synchronous write — only when no sink

@@ -1396,7 +1396,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         });
     }
 
-    // SRD-63 Push 9a: fire `Event::SessionStart` once at the
+    // SRD-63 Push 9a: fire `EventType::SessionStart` once at the
     // workload root. Workloads bind structural rows to
     // this slot via `readouts: { on_session_start: … }`;
     // unbound slots stay quiet (no built-in default
@@ -1404,14 +1404,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // phased or single-activity branch below.
     {
         let session_ctx = crate::readout_context::LifecycleContext {
-            event: crate::readouts::Event::SessionStart,
+            event: crate::lifecycle::EventType::SessionStart,
             subject_name: session.id.clone(),
             subject_labels: String::new(),
             depth_indent: String::new(),
             use_color: crate::observer::use_color(),
         };
         crate::readout_context::fire_lifecycle(
-            crate::readouts::Event::SessionStart,
+            crate::lifecycle::EventType::SessionStart,
             &workload_readouts,
             None,
             &session_ctx,
@@ -1528,8 +1528,12 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // of patching params into multiple places (per-op binding
     // text substitution, per-kernel `final` injection in
     // `build_scope`). See `nbrs-activity::params`.
-    let params_kernel = crate::params::build_workload_params_kernel(&workload_params)
-        .map_err(|e| format!("workload params kernel: {e}"))?;
+    // `build_workload_params_kernel` already prefixes its error
+    // with "workload params kernel:" and appends the generated
+    // source for diagnosis — propagate it verbatim rather than
+    // re-wrapping (which doubled the prefix and dropped the
+    // source dump).
+    let params_kernel = crate::params::build_workload_params_kernel(&workload_params)?;
 
     // Build the workload kernel directly as a subscope of the
     // params kernel via the typed PolydatKernel-controlled
@@ -2084,6 +2088,26 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     //      pass-through).
                     let phase = phases.get(name.as_str())?;
                     if let Some(spec) = phase.for_each.as_ref() {
+                        if !phase.metrics.is_empty() {
+                            // Phase-level `metrics:` + phase-level
+                            // `for_each:` isn't supported in the
+                            // initial ship: the for_each scope
+                            // synthesiser doesn't yet thread the
+                            // metric-binding augmentation through, and
+                            // the per-iteration completion-pull
+                            // semantics want their own design pass.
+                            // Reject loudly rather than silently
+                            // dropping the metrics.
+                            crate::diag!(
+                                crate::observer::LogLevel::Error,
+                                "phase '{name}': phase-level `metrics:` + phase-level \
+                                 `for_each:` is not supported yet. Move the for_each to \
+                                 scenario-tree level (so each iteration is its own phase \
+                                 activation, each with its own metrics), or drop one. \
+                                 Phase will be skipped.",
+                            );
+                            return None;
+                        }
                         if phase.poll.is_some() {
                             // SRD-75: phase-poll + phase-level
                             // for_each isn't supported in the
@@ -2134,7 +2158,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         // any other phase-level bindings; phase-
                         // poll has no synthesizer-specific code
                         // path.
-                        let synth = match crate::scope::synthesize_phase_bindings_with_poll(phase) {
+                        let synth = match crate::scope::synthesize_phase_scope_bindings(phase) {
                             Ok(b) => b,
                             Err(e) => {
                                 crate::diag!(
@@ -2764,20 +2788,20 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // rows because their data is still sitting in an unclosed window.
     cadence_reporter.shutdown();
 
-    // SRD-63 Push 9a: fire `Event::SessionEnd` once after
+    // SRD-63 Push 9a: fire `EventType::SessionEnd` once after
     // the cadence shutdown but before `run_finished()`.
     // Both branches (phased + single-activity) converge
     // here, so a single fire covers every run shape.
     {
         let session_ctx = crate::readout_context::LifecycleContext {
-            event: crate::readouts::Event::SessionEnd,
+            event: crate::lifecycle::EventType::SessionEnd,
             subject_name: session.id.clone(),
             subject_labels: String::new(),
             depth_indent: String::new(),
             use_color: crate::observer::use_color(),
         };
         crate::readout_context::fire_lifecycle(
-            crate::readouts::Event::SessionEnd,
+            crate::lifecycle::EventType::SessionEnd,
             &workload_readouts,
             None,
             &session_ctx,
@@ -3554,22 +3578,37 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             match node {
                 nbrs_workload::model::ScenarioNode::Phase(_) => {}
                 nbrs_workload::model::ScenarioNode::Comprehension { comprehension, children } => {
-                    let mut deferred = ParamRefs::default();
-                    // Walk the algebra AST's (var, spec_expr)
-                    // pairs and scan each spec_expr for
-                    // `{name}` references.
-                    for (_, spec_expr) in comprehension.coordinate_specs() {
-                        scan_param_refs(&spec_expr, &mut deferred);
-                    }
-                    // Comprehension `{name}` placeholders resolve at
-                    // runtime, not at workload-validation time —
-                    // route them through `runtime_only_placeholders`
-                    // so they count as references (for the
+                    // Grammar-based source-reference extraction.
+                    // A comprehension clause `eh in eh_values`
+                    // carries `eh_values` as a *bare* source
+                    // reference (a `Generator`/`WorkloadParamList`
+                    // spec), and `(v) in (concat(foo))` carries
+                    // `foo` inside a function call. Byte-scanning
+                    // for `{name}` misses both. `referenced_source_names`
+                    // parses each spec with the Polydat expression
+                    // grammar (via `polydat::dsl::refs`) and returns
+                    // the free names structurally. These resolve at
+                    // runtime, so they count as references (for the
                     // declared-but-unreferenced check) but bypass
                     // the strict undeclared-placeholder guard.
-                    refs.runtime_only_placeholders.extend(deferred.placeholders);
-                    refs.expression_idents.extend(deferred.expression_idents);
-                    refs.templates.extend(deferred.templates);
+                    //
+                    // A dynamic param-list reference like
+                    // `limit in {k_{k}_limits}` surfaces as the
+                    // composite name `k_{k}_limits` (the inner
+                    // `{k}` is an iter-var hole filled at runtime).
+                    // Route composite names — those still carrying
+                    // a `{` — into `templates` so the structured
+                    // `template_matches` name-composition grammar
+                    // resolves them against `k_10_limits` /
+                    // `k_100_limits` / …; plain names go to the
+                    // runtime-placeholder set.
+                    for name in comprehension.referenced_source_names() {
+                        if name.contains('{') {
+                            refs.templates.push(name);
+                        } else {
+                            refs.runtime_only_placeholders.insert(name);
+                        }
+                    }
                     scan_scenario_nodes(children, refs);
                 }
                 nbrs_workload::model::ScenarioNode::DoWhile { condition, children, .. }
@@ -3938,6 +3977,16 @@ fn scan_polydat_binding_lhs(
             scan_input_decl_names(out, rest.trim());
             continue;
         }
+        // `extern` declarations (`extern name: type [= default]`,
+        // `extern (a: u64, b: f64)`) declare wire names just like
+        // `input` — same `name: type` shape. Without this, a
+        // `{name}` placeholder referencing an extern-declared wire
+        // (e.g. a same-op capture target) trips the
+        // undeclared-placeholder guard.
+        if let Some(rest) = line.strip_prefix("extern ") {
+            scan_input_decl_names(out, rest.trim());
+            continue;
+        }
         // Strip leading modifier (`const `, `cursor `, `shared `,
         // `volatile `); body is what follows. Modifiers can be
         // combined in a few cases (e.g. `shared const`,
@@ -4136,8 +4185,8 @@ fn format_scenario_tree(
 fn format_for_combinations(
     pairs: &[(String, String)],
     indent_prefix: &str,
+    color: bool,
 ) -> String {
-    let color = crate::observer::use_color();
     let kw_open  = if color { "\x1b[1;36m" } else { "" };
     let kw_close = if color { "\x1b[0m"    } else { "" };
     let bracket_open  = if color { "\x1b[2m" } else { "" };
@@ -4248,7 +4297,7 @@ fn format_scenario_nodes(
                             // `for` / ` in` are right-aligned
                             // so the `[` brackets land in the
                             // same column.
-                            format_for_combinations(&pairs, &indent)
+                            format_for_combinations(&pairs, &indent, crate::observer::use_color())
                         }
                     }
                 };
@@ -4828,6 +4877,21 @@ mod tests {
     }
 
     #[test]
+    fn scan_polydat_binding_lhs_picks_up_extern_decl() {
+        // `extern name: type [= default]` declares a wire just like
+        // `input` — a same-op capture target referenced via `{name}`
+        // must not trip the undeclared-placeholder guard.
+        let names = scan_to_set(
+            "extern active_compactions: u64 = 0\n\
+             extern completion_ratio: f64 = 0.0\n\
+             extern (a: u64, b: f64)\n");
+        assert!(names.contains("active_compactions"));
+        assert!(names.contains("completion_ratio"));
+        assert!(names.contains("a"));
+        assert!(names.contains("b"));
+    }
+
+    #[test]
     fn parse_dryrun_controls_sets_list_flag() {
         let cfg = DiagnosticConfig::parse("controls");
         assert!(cfg.list_controls);
@@ -4931,7 +4995,7 @@ mod tests {
             adapter: None, errors: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
-            checkpoint: None, status_metrics: vec![],
+            checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
         };
@@ -5076,22 +5140,20 @@ mod tests {
     /// `format_for_combinations` lays out vars and specs in
     /// column-aligned pairs. Each column is padded to the
     /// widest of its (var, spec) so corresponding entries
-    /// stack vertically. With NO_COLOR set (the test
-    /// process's default), the output contains no ANSI
-    /// escapes — easier to assert against.
+    /// stack vertically. The `color = false` argument forces
+    /// the no-ANSI branch so the assertion can pattern-match
+    /// the raw text — no dependency on the process's ambient
+    /// TTY / `NO_COLOR` state (which `observer::use_color()`
+    /// caches process-wide on first call and can't be undone
+    /// per-test).
     #[test]
     fn format_for_combinations_aligns_columns() {
-        // Force the no-color branch so the assertion can
-        // pattern-match the raw text.
-        // SAFETY: tests run in a fresh process; `NO_COLOR` only
-        // affects the local observer::use_color() call.
-        unsafe { std::env::set_var("NO_COLOR", "1"); }
         let pairs = vec![
             ("sm".to_string(),  "{sm_values}".to_string()),
             ("mnc".to_string(), "{mnc_values}".to_string()),
             ("alf_label".to_string(), "concat({alf_label_values})".to_string()),
         ];
-        let out = format_for_combinations(&pairs, "");
+        let out = format_for_combinations(&pairs, "", false);
         let lines: Vec<&str> = out.split('\n').collect();
         assert_eq!(lines.len(), 2, "MUST produce exactly 2 lines: {out:?}");
         assert!(lines[0].starts_with("for ["),
@@ -5120,7 +5182,6 @@ mod tests {
         // Closing brackets present on both lines.
         assert!(lines[0].ends_with(']'));
         assert!(lines[1].ends_with(']'));
-        unsafe { std::env::remove_var("NO_COLOR"); }
     }
 }
 

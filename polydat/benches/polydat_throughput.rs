@@ -229,12 +229,12 @@ fn bench_hybrid_identity_chain(c: &mut Criterion) {
 // Invalidation strategy benchmarks
 // =================================================================
 
-use polydat::library::hash::Hash64;
+use polydat::library::hash::Hash;
 use polydat::library::arithmetic::Mod;
 
 fn asm_hash_chain(depth: usize) -> PolydatAssembler {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-    asm.add_node("h0", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+    asm.add_node("h0", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
     for i in 1..depth {
         let name = format!("h{i}");
         let prev = format!("h{}", i - 1);

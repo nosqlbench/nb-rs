@@ -15,7 +15,8 @@
 //! Inputs are u64 coordinates mapped to a float domain via scaling.
 //! Outputs are f64 in [-1, 1] (raw noise) or [0, 1] (normalized).
 
-use crate::ast::{PolydatNode, NodeMeta, Port, Slot, Value};
+// Imports of `PolydatNode` / `Value` live in the `#[cfg(test)]`
+// module — the macro pulls in everything it needs by absolute path.
 
 // =================================================================
 // Permutation table (init-time artifact)
@@ -219,204 +220,93 @@ fn simplex_2d(
     simplex_2d_algo(perm, x as f64 * *frequency, y as f64 * *frequency)
 }
 
-/// Fractal Brownian motion (FBM): layered octaves of noise.
+// =================================================================
+// Fractal Brownian motion primitives
+// =================================================================
+
+/// FBM lacunarity (frequency multiplier per octave). Standard value.
+const FBM_LACUNARITY: f64 = 2.0;
+/// FBM persistence (amplitude multiplier per octave). Standard value.
+const FBM_PERSISTENCE: f64 = 0.5;
+
+fn fbm_1d(perm: &PermTable, base_x: f64, frequency: f64, octaves: u32) -> f64 {
+    let mut total = 0.0;
+    let mut freq = frequency;
+    let mut amp = 1.0;
+    let mut max_amp = 0.0;
+
+    for _ in 0..octaves {
+        total += perlin_1d_algo(perm, base_x * freq) * amp;
+        max_amp += amp;
+        freq *= FBM_LACUNARITY;
+        amp *= FBM_PERSISTENCE;
+    }
+
+    // Normalize to [-1, 1]
+    total / max_amp
+}
+
+fn fbm_2d(perm: &PermTable, base_x: f64, base_y: f64, frequency: f64, octaves: u32) -> f64 {
+    let mut total = 0.0;
+    let mut freq = frequency;
+    let mut amp = 1.0;
+    let mut max_amp = 0.0;
+
+    for _ in 0..octaves {
+        total += perlin_2d_algo(perm, base_x * freq, base_y * freq) * amp;
+        max_amp += amp;
+        freq *= FBM_LACUNARITY;
+        amp *= FBM_PERSISTENCE;
+    }
+
+    total / max_amp
+}
+
+/// 1D fractal Brownian motion: layered Perlin noise with decreasing
+/// amplitude at each octave. Produces rich, natural-looking signals.
+/// Output is f64, roughly in [-1, 1]. Lacunarity is fixed at 2.0 and
+/// persistence at 0.5 (standard FBM parameters).
 ///
 /// Signature: `(input: u64) -> (f64)`
 ///
-/// Each octave doubles the frequency and halves the amplitude,
-/// producing multi-scale detail. Output range grows with octaves
-/// but stays bounded.
-pub struct FractalNoise1D {
-    meta: NodeMeta,
-    perm: PermTable,
-    frequency: f64,
-    octaves: u32,
-    lacunarity: f64,
-    persistence: f64,
+/// SRD-80b Phase E — migrated from hand-written `impl PolydatNode`
+/// to `#[polydat_node]` with `PermTable` as a setup-derived field.
+/// Macro emits struct `FractalNoise1d`. Lacunarity / persistence
+/// remain fixed at the prior `with_params` defaults (2.0 / 0.5);
+/// the DSL never exposed them as parameters.
+#[crate::polydat_node(category = Noise)]
+fn fractal_noise_1d(
+    input: u64,
+    seed: crate::derive_support::Const<u64>,
+    frequency: crate::derive_support::Const<f64>,
+    #[poly_default(4u64)] octaves: crate::derive_support::Const<u64>,
+    #[poly_const(PermTable::new, from = seed)]
+    perm: &PermTable,
+) -> f64 {
+    fbm_1d(perm, input as f64, *frequency, *octaves as u32)
 }
 
-impl FractalNoise1D {
-    /// Create with standard parameters.
-    ///
-    /// - `octaves`: number of noise layers (1-8 typical)
-    /// - `lacunarity`: frequency multiplier per octave (default 2.0)
-    /// - `persistence`: amplitude multiplier per octave (default 0.5)
-    pub fn new(seed: u64, frequency: f64, octaves: u32) -> Self {
-        Self::with_params(seed, frequency, octaves, 2.0, 0.5)
-    }
-
-    pub fn with_params(
-        seed: u64, frequency: f64, octaves: u32,
-        lacunarity: f64, persistence: f64,
-    ) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "fractal_noise_1d".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            perm: PermTable::new(seed),
-            frequency,
-            octaves,
-            lacunarity,
-            persistence,
-        }
-    }
-}
-
-impl PolydatNode for FractalNoise1D {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let base_x = inputs[0].as_u64() as f64;
-        let mut total = 0.0;
-        let mut freq = self.frequency;
-        let mut amp = 1.0;
-        let mut max_amp = 0.0;
-
-        for _ in 0..self.octaves {
-            total += perlin_1d_algo(&self.perm, base_x * freq) * amp;
-            max_amp += amp;
-            freq *= self.lacunarity;
-            amp *= self.persistence;
-        }
-
-        // Normalize to [-1, 1]
-        outputs[0] = Value::F64(total / max_amp);
-    }
-}
-
-/// 2D Fractal Brownian motion.
+/// 2D fractal Brownian motion: layered Perlin noise in 2D. Produces
+/// terrain-like spatial variation. Lacunarity is fixed at 2.0 and
+/// persistence at 0.5 (standard FBM parameters).
 ///
 /// Signature: `(x: u64, y: u64) -> (f64)`
-pub struct FractalNoise2D {
-    meta: NodeMeta,
-    perm: PermTable,
-    frequency: f64,
-    octaves: u32,
-    lacunarity: f64,
-    persistence: f64,
+#[crate::polydat_node(category = Noise)]
+fn fractal_noise_2d(
+    x: u64,
+    y: u64,
+    seed: crate::derive_support::Const<u64>,
+    frequency: crate::derive_support::Const<f64>,
+    #[poly_default(4u64)] octaves: crate::derive_support::Const<u64>,
+    #[poly_const(PermTable::new, from = seed)]
+    perm: &PermTable,
+) -> f64 {
+    fbm_2d(perm, x as f64, y as f64, *frequency, *octaves as u32)
 }
-
-impl FractalNoise2D {
-    pub fn new(seed: u64, frequency: f64, octaves: u32) -> Self {
-        Self::with_params(seed, frequency, octaves, 2.0, 0.5)
-    }
-
-    pub fn with_params(
-        seed: u64, frequency: f64, octaves: u32,
-        lacunarity: f64, persistence: f64,
-    ) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "fractal_noise_2d".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![Slot::Wire(Port::u64("x")), Slot::Wire(Port::u64("y"))],
-            },
-            perm: PermTable::new(seed),
-            frequency,
-            octaves,
-            lacunarity,
-            persistence,
-        }
-    }
-}
-
-impl PolydatNode for FractalNoise2D {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let base_x = inputs[0].as_u64() as f64;
-        let base_y = inputs[1].as_u64() as f64;
-        let mut total = 0.0;
-        let mut freq = self.frequency;
-        let mut amp = 1.0;
-        let mut max_amp = 0.0;
-
-        for _ in 0..self.octaves {
-            total += perlin_2d_algo(&self.perm, base_x * freq, base_y * freq) * amp;
-            max_amp += amp;
-            freq *= self.lacunarity;
-            amp *= self.persistence;
-        }
-
-        outputs[0] = Value::F64(total / max_amp);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for coherent noise nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        // `perlin_1d` / `perlin_2d` / `simplex_2d` migrated to
-        // `#[polydat_node]` per SRD-80 PR B.6.
-        FuncSig {
-            name: "fractal_noise_1d", category: C::Noise,
-            outputs: 1, description: "1D fractal Brownian motion",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true, example: "42", constraint: None },
-                ParamSpec { name: "frequency", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-                ParamSpec { name: "octaves", slot_type: SlotType::ConstU64, required: false, example: "4", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "1D fractal Brownian motion: layered Perlin noise with decreasing\namplitude at each octave. Produces rich, natural-looking signals.\nOutput is f64, roughly in [-1, 1].\nParameters:\n  input     — u64 wire input\n  seed      — permutation table seed (u64)\n  frequency — base spatial frequency (f64)\n  octaves   — number of noise layers (u64, default 4)\nExample: fractal_noise_1d(cycle, 42, 0.02, 4)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "fractal_noise_2d", category: C::Noise,
-            outputs: 1, description: "2D fractal Brownian motion",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "x", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "y", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true, example: "42", constraint: None },
-                ParamSpec { name: "frequency", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-                ParamSpec { name: "octaves", slot_type: SlotType::ConstU64, required: false, example: "4", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "2D fractal Brownian motion: layered Perlin noise in 2D.\nProduces terrain-like spatial variation.\nParameters:\n  x, y      — u64 coordinate wire inputs\n  seed      — permutation table seed (u64)\n  frequency — base spatial frequency (f64)\n  octaves   — number of noise layers (u64, default 4)\nExample: fractal_noise_2d(row, col, 42, 0.05, 4)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-/// Try to build a noise node from a function name and const args.
-///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        // `perlin_1d` / `perlin_2d` / `simplex_2d` route via
-        // proc-macro-emitted NodeRegistration per SRD-80 PR B.6.
-        "fractal_noise_1d" => Some(Ok(Box::new(FractalNoise1D::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(0),
-            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.02),
-            consts.get(2).map(|c| c.as_u64() as u32).unwrap_or(4),
-        )))),
-        "fractal_noise_2d" => Some(Ok(Box::new(FractalNoise2D::new(
-            consts.first().map(|c| c.as_u64()).unwrap_or(0),
-            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.02),
-            consts.get(2).map(|c| c.as_u64() as u32).unwrap_or(4),
-        )))),
-        _ => None,
-    }
-}
-
-
-crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn perlin_1d_bounded() {
@@ -519,7 +409,7 @@ mod tests {
 
     #[test]
     fn fractal_1d_bounded() {
-        let node = FractalNoise1D::new(42, 0.01, 4);
+        let node = FractalNoise1d::new(42, 0.01, 4);
         let mut out = [Value::None];
         for i in 0..500u64 {
             node.eval(&[Value::U64(i)], &mut out);
@@ -533,7 +423,7 @@ mod tests {
         // FBM with 4 octaves should have more high-frequency variation
         // than a single octave
         let single = Perlin1d::new(42, 0.01);
-        let fbm = FractalNoise1D::new(42, 0.01, 4);
+        let fbm = FractalNoise1d::new(42, 0.01, 4);
         let mut s_out = [Value::None];
         let mut f_out = [Value::None];
         let mut s_changes = 0.0;
@@ -557,7 +447,7 @@ mod tests {
 
     #[test]
     fn fractal_2d_bounded() {
-        let node = FractalNoise2D::new(42, 0.01, 3);
+        let node = FractalNoise2d::new(42, 0.01, 3);
         let mut out = [Value::None];
         for x in 0..30u64 {
             for y in 0..30u64 {

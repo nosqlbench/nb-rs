@@ -262,18 +262,26 @@ fn fuzzable_sigs() -> Vec<FuncSig> {
         // synthesize array literals (`[1, 2, 3]`) for those.
         .filter(|s| !s.params.iter().any(|p| matches!(
             p.slot_type,
-            SlotType::ConstVecU64 | SlotType::ConstVecF64
+            SlotType::ConstVecU64 | SlotType::ConstVecF64 | SlotType::ConstVec
         )))
         // Context-dependent functions need runtime fixtures the
         // compile path doesn't provide for standalone sources.
         // `fft_analyze` is excluded because its constructor opens
         // a file at the path given by its string arg — random
-        // filenames would litter the cwd with empty files.
+        // filenames would litter the cwd with empty files. The
+        // `csv_*` / `jsonl_*` family was migrated in SRD-80b Phase E
+        // to do its file read at #[poly_const] setup time, which
+        // runs inside the build closure — random filenames panic
+        // the compile path. They share the same exclusion as
+        // `fft_analyze` until the macro grows a `Result`-returning
+        // setup attribute (Phase D extension).
         .filter(|s| !matches!(s.name,
             "metric" | "control" | "control_u64" | "control_bool"
             | "control_str" | "control_set" | "rate" | "concurrency"
             | "phase" | "session_id"
             | "fft_analyze"
+            | "csv_row" | "csv_row_count"
+            | "jsonl_row" | "jsonl_row_count" | "jsonl_field"
         ))
         .collect()
 }
@@ -312,7 +320,7 @@ fn generate_module(rng: &mut Rng, sigs: &[FuncSig], n_bindings: usize) -> String
                 SlotType::ConstU64 => format!("{}", rng.next_u64() % 100),
                 SlotType::ConstF64 => format!("{:.2}", rng.f64()),
                 SlotType::ConstStr => format!("\"s{}\"", rng.range(100)),
-                SlotType::ConstVecU64 | SlotType::ConstVecF64 => unreachable!(),
+                SlotType::ConstVecU64 | SlotType::ConstVecF64 | SlotType::ConstVec => unreachable!(),
             }
         };
 

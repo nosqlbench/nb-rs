@@ -55,9 +55,46 @@ pub fn parse_source(text: &str) -> Result<Source, SourceParseError> {
         });
     }
 
-    // Literal list: `[…]`
+    // SRD-18f string comprehension: a wholly-quoted string in
+    // source position. Quote-kind selects the iteration interior:
+    //   - double `"…"` → iterable: token-strip (comma/semicolon/
+    //     whitespace; colons etc. retained) into a literal list.
+    //   - single `'…'` → atomic: one whole-string element.
+    // (Outside the source slot a quoted token is a plain string
+    // literal; this branch only runs because we're parsing a
+    // comprehension source.)
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let values = super::super::source::split_string_comprehension(inner)
+            .into_iter()
+            .map(|t| parse_literal_value(t))
+            .collect();
+        return Ok(Source::Literal { values });
+    }
+    if trimmed.len() >= 2 && trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        return Ok(Source::Literal { values: vec![LiteralValue::String(inner.to_string())] });
+    }
+
+    // List comprehension sugar `[…]` (SRD-18f Stage 2).
+    //   - Pure-literal list (numbers / bools / quoted strings,
+    //     no spread, no bare references) → `Source::Literal`,
+    //     baked at parse time with a static cardinality (the
+    //     historical fast path, unchanged).
+    //   - Otherwise — any bare-identifier *reference* element or
+    //     a `…`/`...` spread — defers to `Source::Generator`
+    //     carrying the bracket text verbatim, so the runtime
+    //     evaluator (`eval::try_eval_bracket_list`) resolves each
+    //     element against the kernel and applies spread peeling.
     if trimmed.starts_with('[') && trimmed.ends_with(']') {
-        return parse_literal_list(&trimmed[1..trimmed.len() - 1]);
+        let inner = &trimmed[1..trimmed.len() - 1];
+        if bracket_is_pure_literal(inner) {
+            return parse_literal_list(inner);
+        }
+        return Ok(Source::Generator {
+            expr: trimmed.to_string(),
+            cardinality_hint: None,
+        });
     }
 
     // Range: contains `..` and starts with a number-ish.
@@ -156,6 +193,30 @@ fn parse_literal_list(inner: &str) -> Result<Source, SourceParseError> {
         .collect();
 
     Ok(Source::Literal { values })
+}
+
+/// True when every element of a bracket list is a pure literal
+/// (integer, float, bool, or quoted string) and there is no
+/// spread (`…`/`...`). Such lists bake to `Source::Literal` at
+/// parse time. A bare-identifier element (a reference) or a
+/// spread makes the list eval-time (`Source::Generator`).
+/// SRD-18f Stage 2.
+fn bracket_is_pure_literal(inner: &str) -> bool {
+    let elems: Vec<&str> = inner.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    if elems.is_empty() {
+        return true; // `[]` is a (degenerate) literal list
+    }
+    elems.iter().all(|e| {
+        if e.ends_with('…') || e.ends_with("...") {
+            return false; // spread → eval-time
+        }
+        e.eq_ignore_ascii_case("true")
+            || e.eq_ignore_ascii_case("false")
+            || ((e.starts_with('"') && e.ends_with('"'))
+                || (e.starts_with('\'') && e.ends_with('\'')))
+            || e.parse::<i64>().is_ok()
+            || e.parse::<f64>().is_ok()
+    })
 }
 
 fn parse_literal_value(s: &str) -> LiteralValue {
@@ -351,6 +412,34 @@ mod tests {
     }
 
     #[test]
+    fn double_quoted_source_is_string_comprehension_striped() {
+        // SRD-18f §3.2: double-quoted source → token-strip.
+        let s = parse_source(r#""rerank_def, rerank_1x, rerank_2x""#).unwrap();
+        match s {
+            Source::Literal { values } => {
+                assert_eq!(values, vec![
+                    LiteralValue::String("rerank_def".into()),
+                    LiteralValue::String("rerank_1x".into()),
+                    LiteralValue::String("rerank_2x".into()),
+                ]);
+            }
+            other => panic!("expected striped Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_quoted_source_is_atomic() {
+        // SRD-18f §3.2: single-quoted source → one whole element.
+        let s = parse_source("'rerank_def, rerank_1x'").unwrap();
+        match s {
+            Source::Literal { values } => {
+                assert_eq!(values, vec![LiteralValue::String("rerank_def, rerank_1x".into())]);
+            }
+            other => panic!("expected atomic Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn int_range_inclusive() {
         let s = parse_source("1..=10").unwrap();
         assert!(matches!(s, Source::IntRange { lo: 1, hi: 11, step: 1 }));
@@ -376,15 +465,23 @@ mod tests {
     }
 
     #[test]
-    fn literal_string_list_bare() {
+    fn bracket_bare_words_are_references_not_strings() {
+        // SRD-18f Stage 2: bare-word bracket elements are wire
+        // *references*, not string literals — so the list defers
+        // to a Generator (resolved at eval time) rather than
+        // baking `["a","b","c"]`. To get string literals, quote
+        // them (see `literal_quoted_strings`).
         let s = parse_source("[a, b, c]").unwrap();
         match s {
-            Source::Literal { values } => {
-                assert_eq!(values.len(), 3);
-                assert_eq!(values[0], LiteralValue::String("a".into()));
-            }
-            other => panic!("expected Literal, got {other:?}"),
+            Source::Generator { expr, .. } => assert_eq!(expr, "[a, b, c]"),
+            other => panic!("expected deferred Generator, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn bracket_with_spread_defers_to_generator() {
+        let s = parse_source("[xs…]").unwrap();
+        assert!(matches!(s, Source::Generator { .. }), "spread list must defer: {s:?}");
     }
 
     #[test]

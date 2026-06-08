@@ -3,7 +3,7 @@
 
 //! SRD-44a — Checkpoint event taxonomy.
 //!
-//! `CheckpointEvent` is the on-disk record type for the
+//! `CheckpointData` is the on-disk record type for the
 //! append-only `checkpoint.jsonl` event log. Every state-
 //! changing observation is one variant; serde tags each line
 //! with a `"type"` discriminator so a reader can drop
@@ -23,7 +23,7 @@ use super::storage::OpCounts;
 /// SRD-44a §"Reader behaviour").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum CheckpointEvent {
+pub enum CheckpointData {
     /// First line of every fresh invocation's section. Resume
     /// increments `invocation` and writes a fresh `session_start`
     /// to **continue** the same JSONL — no separate file rotation.
@@ -135,7 +135,7 @@ pub enum CheckpointEvent {
     },
 }
 
-impl CheckpointEvent {
+impl CheckpointData {
     /// RFC 3339 timestamp this event was tagged with. All
     /// variants carry one; the helper avoids a match in the
     /// fold loop.
@@ -151,6 +151,35 @@ impl CheckpointEvent {
             | Self::PhaseHash { at, .. }
             | Self::ScopeEnter { at, .. }
             | Self::ScopeExit { at, .. } => at,
+        }
+    }
+
+    /// The lifecycle kind-tag this durable record corresponds
+    /// to, tying an on-disk [`CheckpointData`] record back to
+    /// the in-memory [`crate::lifecycle::EventType`] that the
+    /// readout binder fires on. `None` for records that have no
+    /// lifecycle fire point — structural / metadata records
+    /// (a pre-map `PhaseDeclared` declaration, a `PhaseHash`
+    /// binding) are written to the log but never fire a readout
+    /// slot, so they have no kind-tag.
+    pub fn event_type(&self) -> Option<crate::lifecycle::EventType> {
+        use crate::lifecycle::EventType;
+        match self {
+            Self::SessionStart { .. } => Some(EventType::SessionStart),
+            Self::SessionEnd { .. } => Some(EventType::SessionEnd),
+            // Pre-map declaration record — no lifecycle fire point.
+            Self::PhaseDeclared { .. } => None,
+            Self::PhaseStarted { .. } => Some(EventType::PhaseStart),
+            Self::PhaseProgress { .. } => Some(EventType::Update),
+            // Both terminal states fire the phase-end slot
+            // (`phase_outcome` / `error_readout` bind there).
+            Self::PhaseCompleted { .. } | Self::PhaseFailed { .. } => {
+                Some(EventType::PhaseEnd)
+            }
+            // Metadata update — binds the program hash, no fire.
+            Self::PhaseHash { .. } => None,
+            Self::ScopeEnter { .. } => Some(EventType::ScopeStart),
+            Self::ScopeExit { .. } => Some(EventType::ScopeEnd),
         }
     }
 }
@@ -201,7 +230,7 @@ mod tests {
 
     #[test]
     fn session_start_round_trip_via_serde() {
-        let e = CheckpointEvent::SessionStart {
+        let e = CheckpointData::SessionStart {
             at: "2026-05-07T12:00:00Z".into(),
             version: 1,
             session: "test".into(),
@@ -210,9 +239,9 @@ mod tests {
         };
         let line = serde_json::to_string(&e).unwrap();
         assert!(line.contains("\"type\":\"session_start\""), "line: {line}");
-        let parsed: CheckpointEvent = serde_json::from_str(&line).unwrap();
+        let parsed: CheckpointData = serde_json::from_str(&line).unwrap();
         match parsed {
-            CheckpointEvent::SessionStart { invocation, .. } => {
+            CheckpointData::SessionStart { invocation, .. } => {
                 assert_eq!(invocation, 1);
             }
             _ => panic!("expected SessionStart"),
@@ -226,7 +255,7 @@ mod tests {
         // forward-compat policy. (The "ignore unknown types"
         // semantics live in the reader, not in serde.)
         let line = r#"{"type":"future_event","at":"2026-05-07T12:00:00Z"}"#;
-        let r: Result<CheckpointEvent, _> = serde_json::from_str(line);
+        let r: Result<CheckpointData, _> = serde_json::from_str(line);
         assert!(r.is_err(), "unknown type must error at parse");
     }
 }

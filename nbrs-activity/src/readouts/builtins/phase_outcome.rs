@@ -52,8 +52,9 @@
 
 use std::fmt::Write as _;
 
+use crate::lifecycle::SubjectKind;
 use crate::readouts::buf::ReadoutBuf;
-use crate::readouts::context::{ReadoutContext, SubjectKind};
+use crate::readouts::context::ReadoutContext;
 use crate::readouts::format::ballot_bar;
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
@@ -632,7 +633,7 @@ fn render_expanded_value(
     );
 
     let errors_block = render_outcome_errors_block(
-        outcome_errors, depth_indent, red, dim, reset,
+        outcome_errors, errors, depth_indent, red, dim, reset,
     );
     let mut tmp = String::with_capacity(384);
     let _ = write!(
@@ -670,6 +671,7 @@ fn render_expanded_value(
 ///   `      op-resolved: <text>`    (when populated)
 fn render_outcome_errors_block(
     errors: &[crate::phase_outcome::PhaseErrorDetail],
+    total: u64,
     indent: &str,
     red: &str,
     dim: &str,
@@ -716,6 +718,15 @@ fn render_outcome_errors_block(
             let _ = write!(&mut out,
                 "\n{indent}      {dim}op-resolved:{reset} {r}");
         }
+    }
+    // The capture buffer (PHASE_ERROR_CAPTURE_CAP) can fill before
+    // all errors arrive; note the shortfall so the listed set isn't
+    // mistaken for the complete record.
+    let captured = errors.len() as u64;
+    if captured < total {
+        let _ = write!(&mut out,
+            "\n{indent}    {dim}(+{} more occurred — not captured (buffer cap)){reset}",
+            total - captured);
     }
     out
 }
@@ -1060,7 +1071,11 @@ fn render_labeled_value_failed(
     let class_label = first.map(|e| e.class.as_str()).unwrap_or("phase_failed");
     let message = first.map(|e| e.message.as_str()).unwrap_or("unknown error");
     let elapsed = ctx.elapsed_secs();
-    let extra_count = errors.len().saturating_sub(1);
+    // `+N more` is relative to the TRUE error count (`err_count =
+    // ctx.errors()`, the uncapped `errors_total`), not the capped
+    // `outcome_errors` buffer length — otherwise a 200-error phase
+    // reads "+63 more" when 199 more actually occurred.
+    let extra_count = err_count.saturating_sub(1);
     let extra_suffix = if extra_count > 0 {
         format!(" {dim}(+{extra_count} more){reset}")
     } else {
@@ -1382,7 +1397,7 @@ mod tests {
         fn status_metric_chips(&self) -> String { self.chips.clone() }
         fn depth_indent(&self) -> &str { &self.depth_indent }
         fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> crate::readouts::Event { crate::readouts::Event::PhaseEnd }
+        fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::PhaseEnd }
         fn outcome_status(&self) -> crate::phase_outcome::PhaseStatus {
             self.outcome_status
         }
@@ -1465,12 +1480,61 @@ mod tests {
     }
 
     fn render_at(ctx: &TestCtx, lod: Lod, mode: ContentMode) -> String {
+        // Isolate every LOD render from the process-global
+        // `LAST_RENDERED_COORDS` tracker, exactly as the
+        // [`render`] helper does: take the serial guard and reset
+        // the tracker so a prior render (in this test or another
+        // running concurrently) can't make this one elide its
+        // coords as "unchanged". Without this the completed-phase
+        // summary path (`summarize_changed_only`) intermittently
+        // dropped the coords line under cargo-test's parallel
+        // runner. No production code holds this lock — realtime
+        // readout dispatch is single-threaded; the guard exists
+        // only to serialise the test task pool. (No guard-holding
+        // helper calls `render_at`, so re-entrancy can't occur.)
+        let _serial = SERIAL_TEST_GUARD.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Ok(mut g) = LAST_RENDERED_COORDS.lock() {
+            *g = String::new();
+        }
         let mut s = String::new();
         let mut buf = StringBuf::new(&mut s);
         PhaseOutcomeReadout.render(
             ctx, lod, mode, &ReadoutOptions::new(), &mut buf,
         );
         s
+    }
+
+    /// Regression: two identical completed-phase renders must
+    /// BOTH show their scope coords. Before `render_at` reset the
+    /// global coord tracker, the second render diffed against the
+    /// first and elided the coords (`summarize_changed_only`) —
+    /// the intermittent `expanded_value_*` failure under parallel
+    /// test execution. With the reset each render is independent.
+    #[test]
+    fn render_at_isolates_each_render_from_prior_tracker() {
+        let ctx = TestCtx {
+            phase_name: "ann_query".into(),
+            phase_seq: Some((1, 8)),
+            phase_labels: "profile=alpha, k=10".into(),
+            cycles_completed: 100,
+            cycles_total: 100,
+            ops_ok: 99,
+            errors: 1,
+            retries: 0,
+            concurrency: 4,
+            elapsed_secs: 1.5,
+            consumed: 100,
+            chips: " recall_at_10:79.62% latency_p99:1.23ms".into(),
+            ..Default::default()
+        };
+        let first = render_at(&ctx, Lod::Expanded, ContentMode::Value);
+        let second = render_at(&ctx, Lod::Expanded, ContentMode::Value);
+        assert!(first.contains("profile=alpha, k=10"),
+            "first render should carry coords: {first}");
+        assert!(second.contains("profile=alpha, k=10"),
+            "second render must NOT elide coords (tracker must reset \
+             per render_at call): {second}");
     }
 
     #[test]
@@ -1744,6 +1808,10 @@ mod tests {
         let ctx = TestCtx {
             phase_name: "p".into(),
             elapsed_secs: 1.0,
+            // True error count == captured (3); `+N more` is now
+            // derived from the true `errors()` counter, not the
+            // captured-buffer length.
+            errors: 3,
             outcome_status: crate::phase_outcome::PhaseStatus::Failed,
             outcome_errors: vec![
                 mk_err("A", "msg-a"),

@@ -1,9 +1,9 @@
 //! E2E test for SRD-63 Push 9a: every lifecycle event
 //! actually fires.
 //!
-//! Each `Event` variant has a slot the workload `readouts:`
-//! block can bind. Before Push 9a, only `Event::Update`
-//! and `Event::PhaseEnd` were produced anywhere — the
+//! Each `EventType` variant has a slot the workload `readouts:`
+//! block can bind. Before Push 9a, only `EventType::Update`
+//! and `EventType::PhaseEnd` were produced anywhere — the
 //! other 7 (`SessionStart` / `SessionEnd` /
 //! `PhaseStart` / `EachStart` / `EachEnd` /
 //! `ScopeStart` / `ScopeEnd`) parsed bindings cleanly
@@ -173,7 +173,7 @@ readouts:
 
 scenarios:
   default:
-    - for_each: "p in alpha"
+    - for_each: "p in 'alpha'"
       phases: [run]
 
 phases:

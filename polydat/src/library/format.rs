@@ -15,18 +15,26 @@
 //! - `{:X}` — uppercase hex (u64)
 //! - `{:b}` — binary (u64)
 //! - `{:o}` — octal (u64)
+//!
+//! SRD-80b Phase E: migrated from a hand-written `impl PolydatNode for
+//! Printf` to `#[polydat_node]` + `Const<&str>` (the format string) +
+//! `#[poly_const]` cached `ParsedFormat` + `&[Value]` variadic wires.
+//! The cached `ParsedFormat` is computed once at construction (in the
+//! `parse_format` setup-fn) so per-eval work is just iterating the
+//! pre-parsed segments.
 
-use crate::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::Value;
+use crate::derive_support::PolydatSetup;
 
 /// A parsed format segment: either literal text or a placeholder.
 #[derive(Debug, Clone)]
-enum Segment {
+pub enum Segment {
     Literal(String),
     Placeholder(FormatSpec),
 }
 
 #[derive(Debug, Clone)]
-struct FormatSpec {
+pub struct FormatSpec {
     /// Input index (sequential, 0-based)
     index: usize,
     /// Optional width
@@ -38,6 +46,17 @@ struct FormatSpec {
     /// Conversion: 'd' (decimal, default), 'x' (hex), 'X' (HEX), 'b' (binary), 'o' (octal)
     conversion: char,
 }
+
+/// Pre-parsed format string cached on the `Printf` node. The
+/// `#[polydat_node]` macro invokes `parse_format` once at
+/// construction; eval reads the segments directly with no
+/// per-call parsing.
+#[derive(Debug, Clone)]
+pub struct ParsedFormat {
+    segments: Vec<Segment>,
+}
+
+impl PolydatSetup for ParsedFormat {}
 
 /// Printf-style N→1 formatting node. Variadic: accepts 0..N wire inputs.
 ///
@@ -51,112 +70,65 @@ struct FormatSpec {
 /// `printf("user-{:05}-score-{:.1}", id, score)` → "user-00042-score-98.6"
 ///
 /// All Value types are accepted at eval time regardless of declared port
-/// types. The format specifier determines how each value renders.
+/// types (the variadic slots advertise `PortType::Str` but the body
+/// dispatches on `Value` variants). The format specifier determines how
+/// each value renders.
 ///
-/// JIT level: P1 (String output).
-pub struct Printf {
-    meta: NodeMeta,
-    segments: Vec<Segment>,
-}
-
-impl Printf {
-    /// Create from a format string with explicit input port types.
-    pub fn new(fmt: &str, input_types: &[PortType]) -> Self {
-        let segments = parse_format(fmt);
-        let placeholder_count = segments.iter().filter(|s| matches!(s, Segment::Placeholder(_))).count();
-        assert_eq!(
-            placeholder_count, input_types.len(),
-            "format string has {placeholder_count} placeholders but {n} input types provided",
-            n = input_types.len()
-        );
-
-        let inputs: Vec<Port> = input_types
-            .iter()
-            .enumerate()
-            .map(|(i, &typ)| Port::new(format!("in_{i}"), typ))
-            .collect();
-        let slots: Vec<Slot> = inputs.iter().map(|p| Slot::Wire(p.clone())).collect();
-
-        Self {
-            meta: NodeMeta {
-                name: "printf".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: slots,
-            },
-            segments,
-        }
-    }
-
-    /// Create from a format string with N wire inputs, all typed as u64.
-    ///
-    /// For variadic DSL use. Port types are declared as u64 but the eval
-    /// method accepts any Value type — the assembler skips type checking
-    /// for printf inputs.
-    pub fn variadic(fmt: &str, wire_count: usize) -> Self {
-        let segments = parse_format(fmt);
-        let inputs: Vec<Port> = (0..wire_count)
-            .map(|i| Port::new(format!("in_{i}"), PortType::U64))
-            .collect();
-        let slots: Vec<Slot> = inputs.iter().map(|p| Slot::Wire(p.clone())).collect();
-        Self {
-            meta: NodeMeta {
-                name: "printf".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: slots,
-            },
-            segments,
-        }
-    }
-}
-
-impl PolydatNode for Printf {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        // SRD-73 follow-up: None propagation through string
-        // interpolation. If any REFERENCED input is Value::None,
-        // the whole result is Value::None — not the literal text
-        // "None" (which was the pre-fix Debug-formatting path),
-        // not Value::Str("").
-        //
-        // Rationale: Value::None is the canonical "absent"
-        // sentinel. The Polydat Kernel's `lookup` / `get_constant`
-        // already treat None-valued outputs as "not present in
-        // this scope" and fall through to the parent scope.
-        // String interpolation is the surface where that
-        // discipline was being silently broken — an unresolved
-        // `{X}` in a source-level string literal compiles to a
-        // `printf` call with the unresolved name's slot, and
-        // when that slot evaluates to None the printf result
-        // should likewise be None so the binding doesn't
-        // shadow upstream defaults.
-        //
-        // SQL-style propagation: any None input → None output.
-        // Only inputs actually referenced by a `{}` placeholder
-        // are checked (not unused trailing args).
-        for seg in &self.segments {
-            if let Segment::Placeholder(spec) = seg
-                && matches!(&inputs[spec.index], Value::None)
-            {
-                outputs[0] = Value::None;
-                return;
+/// SRD-73 follow-up: None propagation through string interpolation.
+/// If any REFERENCED input is `Value::None`, the whole result is
+/// `Value::None`. The body itself doesn't materialise this —
+/// the Polydat kernel's SRD-74 Rule 1 guard (engines.rs) emits
+/// `Value::None` on every output for any node whose inputs
+/// include `Value::None` and which doesn't opt into
+/// `accepts_none_inputs`. Printf doesn't opt in, so the kernel
+/// guard fires before this body is invoked at production time.
+///
+/// Rationale: `Value::None` is the canonical "absent" sentinel.
+/// The Polydat Kernel's `lookup` / `get_constant` already treat
+/// None-valued outputs as "not present in this scope" and fall
+/// through to the parent scope. String interpolation is the
+/// surface where that discipline was being silently broken — an
+/// unresolved `{X}` in a source-level string literal compiles
+/// to a `printf` call with the unresolved name's slot, and when
+/// that slot evaluates to None the printf result should likewise
+/// be None so the binding doesn't shadow upstream defaults. The
+/// canonical end-to-end coverage for this lives in
+/// `tests/scope_composition.rs::const_with_unbound_interpolation_*`.
+#[crate::polydat_node(category = Formatting)]
+fn printf(
+    format: Const<&str>,
+    #[poly_const(ParsedFormat::from_format_str, from = format)]
+    parsed: &ParsedFormat,
+    parts: &[polydat::ast::Value],
+) -> String {
+    let mut result = String::new();
+    for seg in &parsed.segments {
+        match seg {
+            Segment::Literal(s) => result.push_str(s),
+            Segment::Placeholder(spec) => {
+                let val = match parts.get(spec.index) {
+                    Some(v) => v,
+                    None => panic!(
+                        "printf: format references input #{} but only {} wire input(s) supplied",
+                        spec.index,
+                        parts.len(),
+                    ),
+                };
+                let formatted = format_value(val, spec);
+                result.push_str(&formatted);
             }
         }
+    }
+    result
+}
 
-        let mut result = String::new();
-        for seg in &self.segments {
-            match seg {
-                Segment::Literal(s) => result.push_str(s),
-                Segment::Placeholder(spec) => {
-                    let val = &inputs[spec.index];
-                    let formatted = format_value(val, spec);
-                    result.push_str(&formatted);
-                }
-            }
-        }
-        outputs[0] = Value::Str(result.into());
+impl ParsedFormat {
+    /// Setup-fn for `#[poly_const(...)]`: parse a format string
+    /// into a list of segments. Called once at node construction;
+    /// the resulting `ParsedFormat` is cached on the struct field
+    /// and borrowed by every eval call.
+    pub fn from_format_str(fmt: &str) -> Self {
+        Self { segments: parse_format(fmt) }
     }
 }
 
@@ -315,77 +287,14 @@ fn parse_spec(spec: &str, index: usize) -> FormatSpec {
     result
 }
 
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for string formatting nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "printf", category: C::Formatting,
-            outputs: 1, description: "printf-style formatting: printf(fmt, a, b, ...) -> String",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "format", slot_type: SlotType::ConstStr, required: true, example: "\"%d\"", constraint: None },
-            ],
-            arity: Arity::VariadicWires { min_wires: 0 },
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Printf-style string formatting with positional wire inputs.\nFormat string uses Rust-style {} placeholders with optional specifiers:\n  {:05} zero-pad, {:.2} precision, {:x} hex, {:X} HEX, {:b} binary, {:o} octal.\nParameters:\n  format   — format string constant (e.g. \"user-{:05}-score-{:.1}\")\n  input... — wire inputs matched positionally to placeholders\nExample: printf(\"id={:08x} val={:.2}\", hash(cycle), score)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-/// Try to build a format node from a function name, const args, and wire refs.
-///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "printf" => {
-            let fmt = consts.first()
-                .map(|c| c.as_str())
-                .unwrap_or("{}");
-            // Reject format/wire-count mismatches at assembly time
-            // so `Printf::new`'s placeholder/types assertion can't
-            // fire from a DSL call. The user-facing diagnostic is
-            // clearer than the constructor panic and the node stays
-            // infallible (SRD 15 §"Input Validity Model").
-            let placeholder_count = parse_format(fmt)
-                .iter()
-                .filter(|s| matches!(s, Segment::Placeholder(_)))
-                .count();
-            if placeholder_count != wires.len() {
-                return Some(Err(format!(
-                    "printf: format has {placeholder_count} placeholders but {} wire inputs supplied",
-                    wires.len(),
-                )));
-            }
-            // Infer input types: all wire inputs default to u64.
-            // The Printf node handles any Value type at eval time,
-            // so u64 ports work as the default — the actual value
-            // type is determined by what's wired upstream.
-            let types: Vec<crate::ast::PortType> = (0..wires.len()).map(|_| crate::ast::PortType::U64).collect();
-            Some(Ok(Box::new(Printf::new(fmt, &types))))
-        }
-        _ => None,
-    }
-}
-
-crate::register_nodes!(signatures, build_node);
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::PolydatNode;
 
     #[test]
     fn printf_simple() {
-        let node = Printf::new("hello {}", &[PortType::U64]);
+        let node = Printf::new("hello {}".to_string(), 1);
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
         assert_eq!(out[0].as_str(), "hello 42");
@@ -393,7 +302,7 @@ mod tests {
 
     #[test]
     fn printf_multiple() {
-        let node = Printf::new("{} + {} = {}", &[PortType::U64, PortType::U64, PortType::U64]);
+        let node = Printf::new("{} + {} = {}".to_string(), 3);
         let mut out = [Value::None];
         node.eval(&[Value::U64(1), Value::U64(2), Value::U64(3)], &mut out);
         assert_eq!(out[0].as_str(), "1 + 2 = 3");
@@ -401,7 +310,7 @@ mod tests {
 
     #[test]
     fn printf_zero_pad() {
-        let node = Printf::new("{:05}", &[PortType::U64]);
+        let node = Printf::new("{:05}".to_string(), 1);
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
         assert_eq!(out[0].as_str(), "00042");
@@ -409,7 +318,7 @@ mod tests {
 
     #[test]
     fn printf_hex() {
-        let node = Printf::new("{:x}", &[PortType::U64]);
+        let node = Printf::new("{:x}".to_string(), 1);
         let mut out = [Value::None];
         node.eval(&[Value::U64(255)], &mut out);
         assert_eq!(out[0].as_str(), "ff");
@@ -417,7 +326,7 @@ mod tests {
 
     #[test]
     fn printf_hex_upper() {
-        let node = Printf::new("{:X}", &[PortType::U64]);
+        let node = Printf::new("{:X}".to_string(), 1);
         let mut out = [Value::None];
         node.eval(&[Value::U64(255)], &mut out);
         assert_eq!(out[0].as_str(), "FF");
@@ -425,7 +334,7 @@ mod tests {
 
     #[test]
     fn printf_precision() {
-        let node = Printf::new("{:.2}", &[PortType::F64]);
+        let node = Printf::new("{:.2}".to_string(), 1);
         let mut out = [Value::None];
         node.eval(&[Value::F64(3.14159)], &mut out);
         assert_eq!(out[0].as_str(), "3.14");
@@ -433,7 +342,7 @@ mod tests {
 
     #[test]
     fn printf_mixed() {
-        let node = Printf::new("id={:05} val={:.1}", &[PortType::U64, PortType::F64]);
+        let node = Printf::new("id={:05} val={:.1}".to_string(), 2);
         let mut out = [Value::None];
         node.eval(&[Value::U64(7), Value::F64(98.6)], &mut out);
         assert_eq!(out[0].as_str(), "id=00007 val=98.6");
@@ -441,7 +350,7 @@ mod tests {
 
     #[test]
     fn printf_literal_braces() {
-        let node = Printf::new("{{escaped}} {}", &[PortType::U64]);
+        let node = Printf::new("{{escaped}} {}".to_string(), 1);
         let mut out = [Value::None];
         node.eval(&[Value::U64(1)], &mut out);
         assert_eq!(out[0].as_str(), "{escaped} 1");
@@ -449,7 +358,7 @@ mod tests {
 
     #[test]
     fn printf_no_placeholders() {
-        let node = Printf::new("just text", &[]);
+        let node = Printf::new("just text".to_string(), 0);
         let mut out = [Value::None];
         node.eval(&[], &mut out);
         assert_eq!(out[0].as_str(), "just text");
@@ -457,7 +366,7 @@ mod tests {
 
     #[test]
     fn printf_string_input() {
-        let node = Printf::new("hello {}", &[PortType::Str]);
+        let node = Printf::new("hello {}".to_string(), 1);
         let mut out = [Value::None];
         node.eval(&[Value::Str("world".into())], &mut out);
         assert_eq!(out[0].as_str(), "hello world");
@@ -467,44 +376,30 @@ mod tests {
     // None propagation (SRD-73 follow-up)
     //
     // String interpolation evaluates to Value::None when any
-    // referenced input is Value::None. Distinguishing the
-    // "absent" sentinel from an empty-string-that-is-present
-    // is required for the Polydat scope chain's fall-through
-    // semantics: lookup() filters Value::None out of a scope's
-    // outputs, so a const whose RHS interpolation yields None
-    // doesn't shadow the parent scope — workload-param defaults
-    // win. Silently substituting the literal text "None" (the
-    // pre-fix _ => format!("{val:?}") path) corrupted wire-
-    // protocol bytes, e.g. sent `'source_model': 'None'` to a
-    // CQL cluster when the intended iter-var shadow was unbound.
+    // referenced input is Value::None. Pre-migration, the body
+    // implemented this check directly. Post-migration (SRD-80b
+    // Phase E), the canonical None-propagation surface is the
+    // Polydat kernel's SRD-74 Rule 1 guard (engines.rs): any
+    // node whose inputs include Value::None and which doesn't
+    // override `accepts_none_inputs` emits None on every output
+    // BEFORE the body is invoked. The body therefore never
+    // observes a None-tainted `parts` slice at production time.
+    //
+    // End-to-end coverage of the kernel-level None-propagation
+    // through printf lives in `tests/scope_composition.rs`
+    // (`const_with_unbound_interpolation_falls_through_to_outer`).
+    // The direct-eval unit tests that previously asserted the
+    // redundant body-side check are intentionally retired —
+    // they tested defense-in-depth at a layer the macro
+    // migration removed.
     // ────────────────────────────────────────────────────────
 
     #[test]
-    fn printf_none_input_yields_none() {
-        let node = Printf::new("hello {}", &[PortType::Str]);
-        // Start `out` non-None so we prove the eval overwrote it.
-        let mut out = [Value::Str("untouched".into())];
-        node.eval(&[Value::None], &mut out);
-        assert!(matches!(out[0], Value::None), "got: {:?}", out[0]);
-    }
-
-    #[test]
-    fn printf_partial_none_taints_whole_result() {
-        // Multi-placeholder: a single None argument taints the
-        // entire result. Mirrors SQL NULL propagation and Rust's
-        // `?`: any absent input yields an absent output.
-        let node = Printf::new("a={} b={}", &[PortType::U64, PortType::U64]);
-        let mut out = [Value::Str("untouched".into())];
-        node.eval(&[Value::U64(1), Value::None], &mut out);
-        assert!(matches!(out[0], Value::None), "got: {:?}", out[0]);
-    }
-
-    #[test]
     fn printf_all_present_unchanged() {
-        // Sanity: with no None inputs the existing path is
-        // unchanged. This is the regression guard for the
-        // overwhelming common case.
-        let node = Printf::new("a={} b={}", &[PortType::U64, PortType::U64]);
+        // Sanity: a multi-arg format with no None inputs. This
+        // is the regression guard for the overwhelming common
+        // case the body actually handles.
+        let node = Printf::new("a={} b={}".to_string(), 2);
         let mut out = [Value::None];
         node.eval(&[Value::U64(1), Value::U64(2)], &mut out);
         assert_eq!(out[0].as_str(), "a=1 b=2");
@@ -512,10 +407,9 @@ mod tests {
 
     #[test]
     fn printf_no_placeholders_still_renders() {
-        // Edge: a format with no placeholders is unaffected by
-        // None propagation (nothing to be None about). The
-        // result is the literal string.
-        let node = Printf::new("static text", &[]);
+        // Edge: a format with no placeholders. The result is
+        // the literal string.
+        let node = Printf::new("static text".to_string(), 0);
         let mut out = [Value::None];
         node.eval(&[], &mut out);
         assert_eq!(out[0].as_str(), "static text");

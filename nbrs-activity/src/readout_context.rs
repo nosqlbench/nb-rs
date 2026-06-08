@@ -19,7 +19,8 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::readouts::{Event, LifecycleState, ReadoutContext};
+use crate::lifecycle::EventType;
+use crate::readouts::{LifecycleState, ReadoutContext};
 
 /// Snapshot of everything `phase_outcome` needs to render at
 /// `Lod::Labeled / ContentMode::Value`. Constructed at
@@ -74,7 +75,7 @@ impl ReadoutContext for ActivityReadoutContext {
     fn status_metric_chips(&self) -> String { self.status_metric_chips.clone() }
     fn depth_indent(&self) -> &str { &self.depth_indent }
     fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> Event { Event::PhaseEnd }
+    fn event(&self) -> EventType { EventType::PhaseEnd }
     fn subject_state(&self) -> LifecycleState {
         // Mirror the outcome status onto the lifecycle axis
         // so existing consumers that branch on `subject_state`
@@ -122,7 +123,7 @@ impl ReadoutContext for ActivityReadoutContext {
 /// lifecycle readouts don't depend on per-cycle progress;
 /// the `Default` impl on the trait handles those.
 pub struct LifecycleContext {
-    pub event: crate::readouts::Event,
+    pub event: crate::lifecycle::EventType,
     pub subject_name: String,
     pub subject_labels: String,
     pub depth_indent: String,
@@ -144,7 +145,7 @@ impl ReadoutContext for LifecycleContext {
     fn status_metric_chips(&self) -> String { String::new() }
     fn depth_indent(&self) -> &str { &self.depth_indent }
     fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> crate::readouts::Event { self.event }
+    fn event(&self) -> crate::lifecycle::EventType { self.event }
     fn subject_state(&self) -> LifecycleState {
         // Lifecycle events fire at the boundary; the
         // subject is in transition. `Running` is the safe
@@ -159,7 +160,7 @@ impl ReadoutContext for LifecycleContext {
 }
 
 /// Per-tick context for the inline-status refresh thread
-/// (Push 2). Identifies as [`Event::Update`]; carries a
+/// (Push 2). Identifies as [`EventType::Update`]; carries a
 /// monotonic refresh tick for spinner cycling, the full
 /// activity name with leaf coord, and pre-formatted
 /// adapter / batch tails (the iteration over registered
@@ -211,7 +212,7 @@ impl ReadoutContext for InlineRefreshContext {
     fn batch_info_text(&self) -> String { self.batch_info_text.clone() }
     fn depth_indent(&self) -> &str { &self.depth_indent }
     fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> Event { Event::Update }
+    fn event(&self) -> EventType { EventType::Update }
     fn refresh_tick(&self) -> u64 { self.refresh_tick }
     fn phase_memo(&self) -> &str { &self.memo }
     /// SRD-63 Push 9f: derive ETA from `cycles_total -
@@ -245,7 +246,7 @@ impl ReadoutContext for InlineRefreshContext {
 /// with no built-in default and no workload binding)
 /// produce no output.
 pub fn fire_lifecycle(
-    event: crate::readouts::Event,
+    event: crate::lifecycle::EventType,
     bindings: &nbrs_workload::model::ReadoutsBindings,
     default: Option<crate::readouts::BakedBody>,
     ctx: &dyn crate::readouts::ReadoutContext,
@@ -275,7 +276,18 @@ pub fn fire_lifecycle(
     if rendered.trim().is_empty() {
         return; // no bound body for this slot — quiet exit
     }
-    crate::diag!(crate::observer::LogLevel::Info, "{}", rendered);
+    // Tag phase start/end renders so the terminal sink can keep
+    // them out of its scrollback — they are mirrored by its
+    // managed phase-history region. Scope / iteration / session
+    // slots stay `Diagnostic` (they have no region counterpart;
+    // scope nodes are stored-`Pending` and never appear there).
+    let category = match event {
+        crate::lifecycle::EventType::PhaseStart | crate::lifecycle::EventType::PhaseEnd =>
+            crate::observer::LogCategory::PhaseLifecycle,
+        _ => crate::observer::LogCategory::Diagnostic,
+    };
+    crate::observer::log_categorized(
+        crate::observer::LogLevel::Info, category, &rendered);
 
     // Snapshot capture per Push 6. Subject identity comes
     // straight from the context: `subject_kind` from the

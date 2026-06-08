@@ -22,8 +22,9 @@
 
 use std::fmt::Write as _;
 
+use crate::lifecycle::SubjectKind;
 use crate::readouts::buf::ReadoutBuf;
-use crate::readouts::context::{ReadoutContext, SubjectKind};
+use crate::readouts::context::ReadoutContext;
 use crate::readouts::format::{braille_bar, format_eta, format_rate, spinner_frame};
 use crate::readouts::readout::{ContentMode, Lod, Readout, ReadoutOptions};
 
@@ -426,7 +427,7 @@ fn render_compact(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::readouts::Event;
+    use crate::lifecycle::EventType;
     use crate::readouts::buf::StringBuf;
 
     #[derive(Default)]
@@ -475,7 +476,7 @@ mod tests {
         fn batch_info_text(&self) -> String { self.batch.clone() }
         fn depth_indent(&self) -> &str { &self.depth_indent }
         fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> Event { Event::Update }
+        fn event(&self) -> EventType { EventType::Update }
         fn refresh_tick(&self) -> u64 { self.refresh_tick }
     }
 
@@ -554,7 +555,7 @@ mod tests {
             fn status_metric_chips(&self) -> String { String::new() }
             fn depth_indent(&self) -> &str { "" }
             fn use_color(&self) -> bool { false }
-            fn event(&self) -> Event { Event::Update }
+            fn event(&self) -> EventType { EventType::Update }
             fn refresh_tick(&self) -> u64 { 0 }
             fn phase_memo(&self) -> &str { "compacting tableX" }
         }

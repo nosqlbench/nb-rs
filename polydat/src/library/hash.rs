@@ -2,12 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Hash function nodes.
+//!
+//! SRD-80b S8 (Phase E): migrated from hand-written
+//! `impl PolydatNode for X` blocks to `#[polydat_node]`
+//! free-function authoring. The macro emits the struct,
+//! `new()`, `eval()`, `compiled_u64()` (auto-emitted because
+//! every arg + return maps to a `JitType`), `jit_constants()`
+//! (carrying the captured `Const<...>` field values), and
+//! the inventory registration.
+//!
+//! Greenfield rename: the historical `Hash64` Rust struct
+//! is now `Hash` — the macro derives PascalCase struct names
+//! from the snake_case function ident, and the operator-facing
+//! DSL name "hash" already matched. No alias shim per
+//! SRD-80b §"No transitional aliases".
 
-use crate::ast::{
-    CompiledU64Op,
-    PolydatNode, NodeMeta, Port, Slot, Value,
-};
 use crate::compile::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
+use crate::derive_support::Const;
 use xxhash_rust::xxh3::xxh3_64;
 
 /// 64-bit hash using xxHash3.
@@ -21,43 +32,9 @@ use xxhash_rust::xxh3::xxh3_64;
 /// samplers, or any node that expects pseudo-random input.
 ///
 /// JIT level: P2 (compiled_u64 closure; xxh3 call prevents full inlining).
-pub struct Hash64 {
-    meta: NodeMeta,
-}
-
-impl Default for Hash64 {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Hash64 {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "hash".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-        }
-    }
-}
-
-impl PolydatNode for Hash64 {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let v = inputs[0].as_u64();
-        outputs[0] = Value::U64(xxh3_64(&v.to_le_bytes()));
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        Some(Box::new(|inputs, outputs| {
-            outputs[0] = xxh3_64(&inputs[0].to_le_bytes());
-        }))
-    }
+#[crate::polydat_node(category = Hashing)]
+fn hash(input: u64) -> u64 {
+    xxh3_64(&input.to_le_bytes())
 }
 
 /// Hash a u64 into a bounded range `[0, max)`.
@@ -71,46 +48,9 @@ impl PolydatNode for Hash64 {
 /// one composable node.
 ///
 /// JIT level: P2 (compiled_u64 closure with captured `max`).
-pub struct HashRange {
-    meta: NodeMeta,
-    max: u64,
-}
-
-impl HashRange {
-    pub fn new(max: u64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "hash_range".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_u64("max", max),
-                ],
-            },
-            max,
-        }
-    }
-}
-
-impl PolydatNode for HashRange {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let v = inputs[0].as_u64();
-        let h = xxh3_64(&v.to_le_bytes());
-        outputs[0] = Value::U64(h % self.max);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let max = self.max;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = xxh3_64(&inputs[0].to_le_bytes()) % max;
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> { vec![self.max] }
+#[crate::polydat_node(category = Hashing)]
+fn hash_range(input: u64, max: Const<u64>) -> u64 {
+    xxh3_64(&input.to_le_bytes()) % *max
 }
 
 impl FusedNode for HashRange {
@@ -118,7 +58,7 @@ impl FusedNode for HashRange {
     fn decomposed(&self) -> DecomposedGraph {
         use crate::library::arithmetic::Mod;
         let mut g = DecomposedGraph::new(1);
-        let h = g.add_node(Box::new(Hash64::new()), vec![DecomposedWire::Input(0)]);
+        let h = g.add_node(Box::new(Hash::new()), vec![DecomposedWire::Input(0)]);
         let m = g.add_node(Box::new(Mod::new(self.max)), vec![DecomposedWire::Node(h, 0)]);
         g.set_outputs(vec![DecomposedWire::Node(m, 0)]);
         g
@@ -134,55 +74,25 @@ impl FusedNode for HashRange {
 /// wiring separate `hash` + `unit_interval` + `lerp` nodes. Example:
 /// `hash_interval(cycle, 0.0, 360.0)` produces a random bearing.
 ///
-/// JIT level: P1 (no compiled_u64; output is f64, not u64).
-pub struct HashInterval {
-    meta: NodeMeta,
-    min: f64,
-    max: f64,
-}
-
-impl HashInterval {
-    pub fn new(min: f64, max: f64) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "hash_interval".into(),
-                outs: vec![Port::f64("output")],
-                ins: vec![
-                    Slot::Wire(Port::u64("input")),
-                    Slot::const_f64("min", min),
-                    Slot::const_f64("max", max),
-                ],
-            },
-            min,
-            max,
-        }
-    }
-}
-
-impl PolydatNode for HashInterval {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let v = inputs[0].as_u64();
-        let h = xxh3_64(&v.to_le_bytes());
-        // Map u64 to [0, 1) then scale to [min, max)
-        let unit = (h as f64) / (u64::MAX as f64);
-        outputs[0] = Value::F64(self.min + unit * (self.max - self.min));
-    }
+/// JIT level: P2 (compiled_u64 closure with captured `min`/`max`).
+#[crate::polydat_node(category = Hashing)]
+fn hash_interval(input: u64, min: Const<f64>, max: Const<f64>) -> f64 {
+    let h = xxh3_64(&input.to_le_bytes());
+    // Map u64 to [0, 1) then scale to [min, max)
+    let unit = (h as f64) / (u64::MAX as f64);
+    *min + unit * (*max - *min)
 }
 
 impl FusedNode for HashInterval {
     /// `hash_interval(x, lo, hi)` decomposes to `lerp(unit_interval(hash(x)), lo, hi)`.
     fn decomposed(&self) -> DecomposedGraph {
-        use crate::library::lerp::LerpConst;
+        use crate::library::lerp::Lerp;
         use crate::library::sampling::icd::UnitInterval;
         let mut g = DecomposedGraph::new(1);
-        let h = g.add_node(Box::new(Hash64::new()), vec![DecomposedWire::Input(0)]);
+        let h = g.add_node(Box::new(Hash::new()), vec![DecomposedWire::Input(0)]);
         let ui = g.add_node(Box::new(UnitInterval::new()), vec![DecomposedWire::Node(h, 0)]);
         let lerp = g.add_node(
-            Box::new(LerpConst::new(self.min, self.max)),
+            Box::new(Lerp::new(self.min, self.max)),
             vec![DecomposedWire::Node(ui, 0)],
         );
         g.set_outputs(vec![DecomposedWire::Node(lerp, 0)]);
@@ -190,52 +100,14 @@ impl FusedNode for HashInterval {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for hash-related nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "hash", category: C::Hashing, outputs: 1,
-            description: "64-bit xxHash3",
-            help: "Deterministic 64-bit hash using xxHash3.\nThis is the fundamental entropy source: feed a cycle counter in,\nget pseudo-random bits out. Hash before mod/lerp to avoid patterns.\nParameters:\n  input — any u64 value (typically a cycle ordinal)\nExample: hash(cycle) -> mod(1000)\nTheory: xxHash3 is a non-cryptographic hash with excellent\navalanche properties and very high throughput.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-/// Try to build a hash node from a function name and const args.
-///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "hash" => Some(Ok(Box::new(Hash64::new()))),
-        _ => None,
-    }
-}
-
-
-crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
-    fn hash64_deterministic() {
-        let node = Hash64::new();
+    fn hash_deterministic() {
+        let node = Hash::new();
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
         let first = out[0].as_u64();
@@ -244,8 +116,8 @@ mod tests {
     }
 
     #[test]
-    fn hash64_different_inputs_differ() {
-        let node = Hash64::new();
+    fn hash_different_inputs_differ() {
+        let node = Hash::new();
         let mut out1 = [Value::None];
         let mut out2 = [Value::None];
         node.eval(&[Value::U64(0)], &mut out1);

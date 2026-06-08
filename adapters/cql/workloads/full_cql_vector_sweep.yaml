@@ -90,20 +90,19 @@ params:
   # `mnc` → `maximum_node_connections` — the M parameter
   # of the hierarchical graph build (number of neighbors
   # each node retains in the proximity graph).
-#  mnc_values:       "8, 128"
-  mnc_values:       [8,128]
+  mnc_values:       "8, 128"
 
   # `bw` → `construction_beam_width` — the
   # efConstruction parameter (beam width used while
   # building the graph; larger → more accurate graph, more
   # build time).
 #  bw_values:        "50"
-  bw_values:        [50, 800]
+  bw_values:        "50, 800"
 
   # `eh` → `enable_hierarchy` — whether to build the
   # multi-layer HNSW structure (true) or the flat in-memory
   # variant (false).
-  eh_values:        [false, true]
+  eh_values:        "false, true"
 #  eh_values:        false
 
   # `nbo_v` (numeric value) + `nbo_label` (table-name-safe
@@ -113,10 +112,8 @@ params:
   # (`1.0 → "1p0"`) goes into the table name (CQL
   # identifiers can't contain `.`). Parallel-iter pair —
   # both lists must stay in lockstep length-wise.
-#  nbo_v_values:     "1.0"
-#  nbo_label_values: '"1p0"'
-  nbo_v_values:     [1.0, 3.0]
-  nbo_label_values: ["1p0", "3p0"]
+  nbo_v_values:     "1.0, 3.0"
+  nbo_label_values: "1p0, 3p0"
 
   # `alf_v` (numeric) + `alf_label` (string) → `alpha` —
   # the alpha pruning factor (RNG-pruning threshold used
@@ -143,7 +140,7 @@ params:
   #                  `sai_ann_rerank_k_max_value` guardrail).
   # Drives the `rerank_k` entry of the query's
   # `WITH ann_options = {...}` clause.
-  rerank_k_strategy_values: [rerank_def, rerank_1x, rerank_2x, rerank_lim]
+  rerank_k_strategy_values: "rerank_def, rerank_1x, rerank_2x, rerank_lim"
 
   # `pruning_strategy` → `use_pruning` — three detents with
   # the `pruning_<state>` prefix:
@@ -152,7 +149,7 @@ params:
   #   `pruning_off` — `use_pruning = false` (forces denser
   #                   traversal).
   #   `pruning_on`  — `use_pruning = true`.
-  pruning_strategy_values:  [pruning_def, pruning_off, pruning_on]
+  pruning_strategy_values:  "pruning_def, pruning_off, pruning_on"
 
   # `k` — the top-K count requested by the ANN query
   # (`SELECT … ORDER BY ANN OF ? LIMIT k`). Single-element
@@ -163,7 +160,7 @@ params:
   # `limit` — the `LIMIT` clause value passed to Cassandra.
   # Together with `k` controls how many candidates the
   # ANN traversal returns before the top-K cut.
-  limit_values:             [25,50,75,100]
+  limit_values:             "25, 50, 75, 100"
 #
 # Value taxonomy (for reference, used in the iter clauses):
 #
@@ -261,8 +258,8 @@ scenarios:
         # the parent), so the phase below reads them directly via
         # the scope chain — no `set:` needed.
         - for: |
-            rerank_k_strategy in rerank_def, rerank_lim, rerank_2x, rerank_4x, rerank_1k,
-            pruning_strategy in [pruning_def, pruning_off]
+            rerank_k_strategy in "rerank_def, rerank_lim, rerank_2x, rerank_4x, rerank_1k",
+            pruning_strategy in ["pruning_def", "pruning_off"],
             k in k_values,
             limit in {k_{k}_limits}
           phases:
@@ -388,18 +385,15 @@ scenarios:
                         # teardown is redundant.
                         - schema
                         - fknn_rampup_data
-                        # SRD-75 synchronizer pair: `ensure_flushed`
-                        # turns the memtable into SSTables, then
-                        # `ensure_compacted` polls observable state
-                        # (LiveSSTableCount + the Compactions array +
-                        # per-table pending task count) and
-                        # conditionally fires `forceKeyspaceCompaction`
-                        # only when the state shows drift + no work
-                        # in flight. Terminates when the table is
-                        # `sstables == 1` AND no active / pending
-                        # compactions remain.
-                        - ensure_flushed
-                        - ensure_compacted
+                        # One-phase finalization (inherited from
+                        # full_cql_vector.yaml via `extends:`):
+                        # flush → read SSTable count → conditionally
+                        # compact (daemon, `if: sstables > 1`,
+                        # long-poll) → poll `system_views.sstable_tasks`
+                        # until idle. Emits the `time_to_index`
+                        # phase-duration gauge plus live compaction
+                        # progress metrics.
+                        - finalize_index
                         # INNER comprehension: query-only params.
                         # Reified value lists are workload params so
                         # operators can pin individual axes for

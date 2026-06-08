@@ -1586,9 +1586,12 @@ mod tests {
     #[test]
     fn jit_shuffle() {
         // Create a real Shuffle to get its constants
-        use crate::library::sampling::metashift::Shuffle;
+        use crate::library::sampling::metashift::{Shuffle, feedback_for_size};
         use crate::ast::PolydatNode;
-        let node = Shuffle::new(0, 1000);
+        // SRD-80b Phase E — `Shuffle::new` now takes `(feedback, size, min)`.
+        // The bank-0 feedback for size=1000 is computed via the public helper.
+        let size = 1000u64;
+        let node = Shuffle::new(feedback_for_size(size), size, 0);
         let consts = node.jit_constants();
 
         let steps = vec![
@@ -1783,7 +1786,7 @@ mod tests {
     fn jit_lut_normal_distribution() {
         // Build a normal distribution LUT and verify JIT gives same results as P1
         use crate::library::sampling::icd;
-        let lut = icd::dist_normal(0.0, 1.0, icd::DEFAULT_RESOLUTION);
+        let lut = icd::dist_normal_lut(0.0, 1.0, icd::DEFAULT_RESOLUTION);
         let lut_ptr = lut.as_ptr() as u64;
         let lut_len = lut.len() as u64;
 
@@ -1902,26 +1905,27 @@ mod tests {
     #[test]
     fn classify_leaves_other_param_helpers_on_fallback() {
         use crate::library::param_helpers::{
-            Matches, RequiredU64, ThisOrU64,
+            Matches, Required, ThisOr,
         };
         // By design: required/this_or/matches stay on Phase-2.
         // classify_node must pick Fallback so the closure-based
         // eval runs instead of an uninitialized JIT op.
-        assert!(matches!(classify_node(&RequiredU64::new("x")), JitOp::Fallback));
-        assert!(matches!(classify_node(&ThisOrU64::new()), JitOp::Fallback));
+        assert!(matches!(classify_node(&Required::new("x".to_string())), JitOp::Fallback));
+        assert!(matches!(classify_node(&ThisOr::new()), JitOp::Fallback));
         assert!(matches!(classify_node(&Matches::new(r"^\d+$".to_string())), JitOp::Fallback));
     }
 
     #[test]
-    fn classify_routes_is_one_of_with_allow_list() {
-        use crate::library::param_helpers::IsOneOfU64;
-        let n = IsOneOfU64::new(vec![1, 3, 5, 7]);
-        match classify_node(&n) {
-            JitOp::IsOneOfCheck(allowed) => {
-                assert_eq!(allowed, vec![1, 3, 5, 7]);
-            }
-            other => panic!("expected IsOneOfCheck, got {other:?}"),
-        }
+    fn classify_routes_is_one_of_to_fallback() {
+        // SRD-80b Phase C — `is_one_of` migrated to the macro's
+        // `Const<Vec<C>>` shape, which is JIT-ineligible (the JIT
+        // u64 buffer has no slot shape for a variable-length
+        // captured list). The node now runs on the typed-eval
+        // path. A future `compiled_u64_override` could reinstate
+        // the JIT lowering if perf demands it.
+        use crate::library::param_helpers::IsOneOf;
+        let n = IsOneOf::new(vec![1, 3, 5, 7]);
+        assert!(matches!(classify_node(&n), JitOp::Fallback));
     }
 
     #[test]

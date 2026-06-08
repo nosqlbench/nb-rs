@@ -2380,6 +2380,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn array_literal_binding_error_is_actionable() {
+        // A list-valued binding (`const xs := [1, 2, 3]`) can't
+        // bind to a single wire. The diagnostic must name the
+        // binding, the shape it found, the location, and the
+        // sweep-axis fix — useful to a human and an AI alike.
+        let err = compile_polydat("input cycle: u64\nconst eh_values := [1, 2, 3]\nout := cycle")
+            .expect_err("array-literal binding should be rejected");
+        assert!(err.contains("eh_values"), "names the binding: {err}");
+        assert!(err.contains("array literal"), "names the shape: {err}");
+        assert!(err.contains("sweep axis") || err.contains("comprehension"),
+            "offers the sweep-axis fix: {err}");
+        // Location present (line:col), not a contextless message.
+        assert!(err.contains(':'), "carries a source location: {err}");
+    }
+
+    #[test]
     fn embedding_error_display_includes_source_text() {
         let e = EmbeddingError::LifecycleMismatch {
             source: "hash(cycle)".to_string(),

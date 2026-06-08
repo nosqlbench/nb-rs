@@ -3,8 +3,6 @@
 
 //! Datetime and epoch function nodes.
 
-use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value};
-
 /// Scale a u64 to epoch milliseconds by multiplying by a factor.
 ///
 /// Signature: `(input: u64) -> (u64)`
@@ -129,12 +127,11 @@ fn epoch_ms_to_iso(epoch_ms: u64) -> String {
 // Signature declarations for the DSL registry
 // ---------------------------------------------------------------------------
 
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
+use crate::dsl::registry::FuncSig;
 
 /// Signatures for datetime nodes.
 pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
+    
     &[
         // `epoch_scale` migrated to `#[polydat_node]` per SRD-80 PR B.13.
         // `epoch_offset` migrated to `#[polydat_node]` per SRD-80 PR B.13.
@@ -146,7 +143,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a datetime node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
     match name {
         // `epoch_scale` / `epoch_offset` route via proc-macro
         // NodeRegistration per SRD-80 PR B.13.
@@ -161,6 +158,7 @@ crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn epoch_scale_seconds() {

@@ -808,12 +808,12 @@ mod tests {
     use crate::compile::assembly::{PolydatAssembler, WireRef};
     use crate::ast::Value;
     use crate::library::arithmetic::Mod;
-    use crate::library::hash::Hash64;
+    use crate::library::hash::Hash;
 
     #[test]
     fn hash_mod_fuses_to_hash_range() {
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("h", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
         asm.add_node("m", Box::new(Mod::new(100)), vec![WireRef::node("h")]);
         asm.add_output("out", WireRef::node("m"));
 
@@ -832,7 +832,7 @@ mod tests {
     #[test]
     fn fusion_skipped_when_intermediate_has_consumers() {
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("h", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
         asm.add_node("m", Box::new(Mod::new(100)), vec![WireRef::node("h")]);
         // Also wire hash output to a second consumer.
         asm.add_node("m2", Box::new(Mod::new(50)), vec![WireRef::node("h")]);

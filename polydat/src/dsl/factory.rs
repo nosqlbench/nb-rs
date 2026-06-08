@@ -24,11 +24,20 @@ use crate::dsl::registry;
 ///
 /// `pub` visibility is required so that `NodeRegistration::build` function
 /// pointers (which are `pub` fields) can name this type.
+#[derive(Debug, Clone)]
 pub enum ConstArg {
     Int(u64),
     Float(f64),
     Str(String),
     FloatArray(#[allow(dead_code)] Vec<f64>),
+    /// SRD-80b Phase C — workload-list const carrier for the
+    /// `Const<Vec<C>>` shape. Each inner [`ConstArg`] is one
+    /// element; `<Vec<C> as ConstSource>::extract` walks the
+    /// list and calls `C::extract` per element. Distinct from
+    /// [`FloatArray`] because the latter is the array-literal
+    /// lowering for the `ConstVecF64` slot type while `List`
+    /// is the typed-element variadic-const slot.
+    List(Vec<ConstArg>),
 }
 
 impl ConstArg {
@@ -150,72 +159,13 @@ pub fn build_node(
     }
 
     // --- Sampling functions without a dedicated node module ---
-    match func {
-        // `identity` migrated to `#[polydat_node]` per SRD-80
-        // PR B.8 — routes via the proc-macro-emitted
-        // NodeRegistration instead of this hand-dispatch.
-
-        "lut_sample" | "icd_normal" => {
-            use crate::library::sampling::icd::IcdSample;
-            return Ok(Box::new(IcdSample::normal(
-                consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
-                consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
-            )));
-        }
-        "icd_exponential" | "dist_exponential" => {
-            use crate::library::sampling::icd::IcdSample;
-            return Ok(Box::new(IcdSample::exponential(
-                consts.first().map(|c| c.as_f64()).unwrap_or(1.0),
-            )));
-        }
-        "dist_normal" => {
-            use crate::library::sampling::icd::IcdSample;
-            return Ok(Box::new(IcdSample::normal(
-                consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
-                consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
-            )));
-        }
-        "dist_uniform" => {
-            use crate::library::sampling::icd::IcdSample;
-            return Ok(Box::new(IcdSample::uniform(
-                consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
-                consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
-            )));
-        }
-        "dist_pareto" => {
-            use crate::library::sampling::icd::IcdSample;
-            return Ok(Box::new(IcdSample::pareto(
-                consts.first().map(|c| c.as_f64()).unwrap_or(1.0),
-                consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
-            )));
-        }
-        "dist_zipf" => {
-            use crate::library::sampling::icd::IcdSample;
-            return Ok(Box::new(IcdSample::zipf(
-                consts.first().map(|c| c.as_u64()).unwrap_or(100),
-                consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
-            )));
-        }
-        "histribution" => {
-            // Assembly-time spec validation — the node's constructor
-            // calls `parse_histribution` which asserts on malformed
-            // input; we catch it here first so the builder stays
-            // infallible (SRD 15 §"Const Constraint Metadata").
-            let spec = consts.first().map(|c| c.as_str()).unwrap_or("1");
-            if let Err(e) = validate_histribution_spec(spec) {
-                return Err(format!("bad constant histribution: spec: {e}"));
-            }
-            return Ok(Box::new(crate::library::sampling::histribution::Histribution::new(spec)));
-        }
-        "dist_empirical" => {
-            let spec = consts.first().map(|c| c.as_str()).unwrap_or("0.0 1.0");
-            if let Err(e) = validate_dist_empirical_spec(spec) {
-                return Err(format!("bad constant dist_empirical: spec: {e}"));
-            }
-            return Ok(Box::new(crate::library::sampling::lut::EmpiricalSample::from_spec(spec)));
-        }
-        _ => {}
-    }
+    //
+    // `identity` migrated to `#[polydat_node]` per SRD-80 PR B.8.
+    // `dist_*` / `icd_*` / `histribution` / `dist_empirical`
+    // migrated to `#[polydat_node]` via `#[poly_const]` setup
+    // (SRD-80b Phase E); the inventory-registered build closure
+    // now handles each name, so the hand-dispatch arms here are
+    // gone.
 
     // --- Registry variadic fallback ---
     if let Some(sig) = registry::lookup(func)
@@ -267,51 +217,3 @@ fn check_param_constraints(
     Ok(())
 }
 
-/// Validate a `histribution` spec string at assembly time.
-///
-/// Mirrors the semantics of
-/// [`crate::library::sampling::histribution::parse_histribution`] but returns
-/// a structured error instead of panicking, so the factory can reject
-/// malformed specs before the node is ever constructed.
-fn validate_histribution_spec(spec: &str) -> Result<(), String> {
-    let labeled = spec.contains(':');
-    let mut any = false;
-    for elem in spec.split([' ', ',', ';']) {
-        let elem = elem.trim();
-        if elem.is_empty() { continue; }
-        if labeled {
-            let parts: Vec<&str> = elem.splitn(2, ':').collect();
-            if parts.len() != 2 {
-                return Err(format!("all elements must be labeled: '{elem}'"));
-            }
-            parts[0].parse::<u64>()
-                .map_err(|_| format!("invalid label '{}'", parts[0]))?;
-            parts[1].parse::<f64>()
-                .map_err(|_| format!("invalid weight '{}'", parts[1]))?;
-        } else {
-            elem.parse::<f64>()
-                .map_err(|_| format!("invalid weight '{elem}'"))?;
-        }
-        any = true;
-    }
-    if !any {
-        return Err("spec must not be empty".into());
-    }
-    Ok(())
-}
-
-/// Validate a `dist_empirical` spec string at assembly time.
-fn validate_dist_empirical_spec(spec: &str) -> Result<(), String> {
-    let mut count = 0usize;
-    for tok in spec.split([' ', ',', ';']) {
-        let tok = tok.trim();
-        if tok.is_empty() { continue; }
-        tok.parse::<f64>()
-            .map_err(|_| format!("invalid data point '{tok}'"))?;
-        count += 1;
-    }
-    if count < 2 {
-        return Err(format!("needs at least 2 data points, got {count}"));
-    }
-    Ok(())
-}

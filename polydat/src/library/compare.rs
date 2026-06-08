@@ -23,10 +23,6 @@
 //! mix them with bitwise operators (`a < b & c < d`) without
 //! widening, and pass them as the `cond` input to `select_*`.
 
-use crate::ast::{
-    CompiledU64Op, PolydatNode, NodeMeta, Port, Slot, Value,
-};
-
 // SRD-80 PR B.7 — `cmp_u64_node!` / `cmp_f64_node!` declarative
 // macros retired. The `#[polydat_node]` proc-macro auto-emits
 // the same Phase-2 closure + `jit_constants` from a typed
@@ -152,8 +148,7 @@ fn select_str(cond: u64, a: String, b: String) -> String {
 // Registry wiring
 // ---------------------------------------------------------------------------
 
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
+use crate::dsl::registry::FuncSig;
 
 // SELECT_*_PARAMS / SELECT_STR_PARAMS retired with the
 // select_{u64,f64,str} migrations to `#[polydat_node]`.
@@ -204,7 +199,7 @@ crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::Value;
+    use crate::ast::{PolydatNode, Value};
 
     fn run(node: &dyn PolydatNode, ins: Vec<Value>) -> Value {
         let mut outs = vec![Value::U64(0)];

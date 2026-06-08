@@ -491,7 +491,7 @@ fn weighted_u64_valid() {
 
 #[test]
 fn weighted_pick_valid() {
-    let mut k = polydat("out := weighted_pick(hash(cycle), 0.5, 10, 0.5, 20)");
+    let mut k = polydat("out := weighted_pick(hash(cycle), \"10:0.5;20:0.5\")");
     for cycle in 0..100 {
         let v = eval_u64(&mut k, cycle);
         assert!(v == 10 || v == 20, "cycle={cycle} gave {v}");
@@ -690,7 +690,10 @@ fn cycle_walk_bounded() {
 
 #[test]
 fn shuffle_bounded() {
-    let mut k = polydat("out := shuffle(cycle, 0, 100)");
+    // SRD-80b Phase E — `shuffle` now takes `(input, feedback, size, min)`.
+    // feedback=0x41 is the bank-0 polynomial for width 7 (size=100 needs
+    // 7 LFSR bits; see polydat/src/library/sampling/metashift_banks.inc).
+    let mut k = polydat("out := shuffle(cycle, 0x41, 100, 0)");
     for cycle in 0..100 {
         let v = eval_u64(&mut k, cycle);
         assert!(v < 100, "cycle={cycle} gave {v}");
@@ -699,7 +702,8 @@ fn shuffle_bounded() {
 
 #[test]
 fn shuffle_bijective() {
-    let mut k = polydat("out := shuffle(cycle, 0, 100)");
+    // SRD-80b Phase E — `shuffle` now takes `(input, feedback, size, min)`.
+    let mut k = polydat("out := shuffle(cycle, 0x41, 100, 0)");
     let mut seen = std::collections::HashSet::new();
     for cycle in 0..100 {
         let v = eval_u64(&mut k, cycle);
@@ -1873,6 +1877,7 @@ fn every_registered_function_compiles() {
         // Weighted
         ("weighted_strings", "input cycle: u64\nout := weighted_strings(hash(cycle), \"a:0.5;b:0.5\")".into()),
         ("weighted_u64", "input cycle: u64\nout := weighted_u64(hash(cycle), \"10:0.5;20:0.5\")".into()),
+        ("weighted_pick", "input cycle: u64\nout := weighted_pick(hash(cycle), \"10:0.5;20:0.5\")".into()),
         ("one_of_weighted", "input cycle: u64\nout := one_of_weighted(hash(cycle), \"a:0.5;b:0.5\")".into()),
         // String input
         ("html_encode", "input cycle: u64\ns := format_u64(cycle, 10)\nout := html_encode(s)".into()),
@@ -1993,6 +1998,7 @@ fn every_registered_function_compiles() {
                     SlotType::ConstStr => args.push("\"test\"".into()),
                     SlotType::ConstVecU64 => args.push("100".into()),
                     SlotType::ConstVecF64 => args.push("1.0".into()),
+                    SlotType::ConstVec => args.push("100".into()),
                 }
             }
             if args.is_empty() && sig.is_variadic() {

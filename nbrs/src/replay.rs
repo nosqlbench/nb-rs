@@ -292,8 +292,9 @@ fn render_outcome(
 ) -> String {
     use nbrs_activity::readouts::{
         Lod, ContentMode, ReadoutContext,
-        ReadoutOptions, Event,
+        ReadoutOptions,
     };
+    use nbrs_activity::lifecycle::EventType;
     use nbrs_activity::readouts::buf::StringBuf;
     use nbrs_activity::phase_outcome::{
         PhaseStatus, PhaseErrorDetail, ResumeCursor,
@@ -313,7 +314,7 @@ fn render_outcome(
         fn subject_labels(&self) -> &str { self.labels }
         fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
         fn use_color(&self) -> bool { self.use_color }
-        fn event(&self) -> Event { Event::PhaseEnd }
+        fn event(&self) -> EventType { EventType::PhaseEnd }
         fn outcome_status(&self) -> PhaseStatus { self.status }
         fn outcome_errors(&self) -> &[PhaseErrorDetail] { &self.errors }
         fn outcome_resume_cursor(&self) -> Option<&ResumeCursor> { None }

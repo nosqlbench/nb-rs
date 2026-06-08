@@ -68,8 +68,8 @@ fn constant_folding_compiles_and_folds() {
     let (mut kernel, log) = compile_with_events(&source);
 
     // Should have folded base and seed
-    assert!(has_event(&log, |e| matches!(e, CompileEvent::ConstantFolded { node, .. } if node == "const")),
-        "base (const 42) should be folded\n{}", log.format());
+    assert!(has_event(&log, |e| matches!(e, CompileEvent::ConstantFolded { node, .. } if node == "const_u64")),
+        "base (const_u64 42) should be folded\n{}", log.format());
     assert!(has_event(&log, |e| matches!(e, CompileEvent::ConstantFolded { node, .. } if node == "hash")),
         "seed (hash of base) should be folded\n{}", log.format());
 

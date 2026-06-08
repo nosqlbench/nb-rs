@@ -1487,7 +1487,7 @@ impl PolydatProgram {
                 Value::U64(v) => Box::new(ConstU64::new(*v)),
                 Value::F64(v) => Box::new(ConstF64::new(*v)),
                 Value::Bool(v) => Box::new(ConstU64::new(if *v { 1 } else { 0 })),
-                Value::Str(s) => Box::new(ConstStr::new(s.clone())),
+                Value::Str(s) => Box::new(ConstStr::new(s.to_string())),
                 // Handles (e.g. `init prebuffered = dataset_prebuffer(...)`)
                 // get a dedicated `ConstHandle` replacement so the original
                 // side-effect-bearing node is removed from the program.

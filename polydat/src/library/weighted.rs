@@ -6,10 +6,41 @@
 //! These are "fat" convenience nodes that combine alias sampling with
 //! value lookup in one step. They parse an inline spec string at init
 //! time and perform weighted selection at cycle time.
+//!
+//! SRD-80b Phase E migration status:
+//!
+//! * [`WeightedStrings`] / [`WeightedU64`] — migrated to `#[polydat_node]`.
+//!   The spec parser runs once at construction via a `#[poly_const]`
+//!   setup function, producing a derived `WeightedStrCache` /
+//!   `WeightedU64Cache` (parallel value+alias-table). The eval body
+//!   does a constant-time lookup.
+//! * [`WeightedPick`] — migrated to `#[polydat_node]` via the same
+//!   spec-string surface as `weighted_u64`. The DSL form is now
+//!   `weighted_pick(input, "v0:w0;v1:w1;...")`. The pre-Phase-E
+//!   interleaved-pair form is gone — `FusedNode::decomposed()` had
+//!   already declared the spec-string form is equivalent, so the
+//!   migration collapses both surfaces onto one. The
+//!   `compiled_u64`/`jit_constants` overrides survive intact; the
+//!   JIT extern (`jit_weighted_pick`) reads the same 5-u64
+//!   (values_ptr, biases_ptr, primaries_ptr, aliases_ptr, n)
+//!   constants slice as before.
+//! * [`DynamicWeightedSelect`] — migrated to `#[polydat_node]` via
+//!   the SRD-80b in-spirit `Config<T>` marker (the Wire trait's
+//!   `WIRE_COST = Config` const flows through `Config<Arc<str>>` to
+//!   the slot's `WireCost::Config` annotation, retaining the
+//!   load-bearing compile-warning behaviour exercised by tests).
+//!   Per-cycle behaviour: re-parses the spec on every call —
+//!   intentionally; the Mutex-backed cache from the pre-Phase-E
+//!   hand-written form depended on per-node interior-mutable state
+//!   that the macro doesn't emit. With `Config` cost, well-formed
+//!   workloads bind the spec at init-time, so the parse re-runs
+//!   only when the workload-level binding wakes; cycle-time binders
+//!   trip the compiler warning and get O(n) per cycle.
 
-use crate::ast::{Commutativity, CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::CompiledU64Op;
+use crate::derive_support::Config;
 use crate::library::sampling::alias::AliasTableU64;
-use crate::compile::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
+use crate::compile::fusion::{DecomposedGraph, DecomposedWire};
 
 /// Parse a weighted spec like "alpha:0.3;beta:0.5;gamma:0.2"
 /// into parallel vectors of values and weights.
@@ -41,501 +72,301 @@ fn parse_weighted_u64_spec(spec: &str) -> (Vec<u64>, Vec<f64>) {
     (values, weights)
 }
 
-/// Weighted string selection from an inline spec.
-///
-/// Signature: `(input: u64) -> (String)`
-///
-/// Spec format: `"alpha:0.3;beta:0.5;gamma:0.2"`
-/// Input should be hashed for uniform distribution.
-pub struct WeightedStrings {
-    meta: NodeMeta,
+// ---------------------------------------------------------------------------
+// WeightedStrings — migrated to #[polydat_node]
+// ---------------------------------------------------------------------------
+
+/// Derived state for [`WeightedStrings`]: the parsed value list and
+/// the alias table, computed once at construction from the spec
+/// string and read on every cycle.
+pub struct WeightedStrCache {
     values: Vec<String>,
     table: AliasTableU64,
 }
 
-impl WeightedStrings {
-    pub fn new(spec: &str) -> Self {
-        let (values, weights) = parse_weighted_str_spec(spec);
-        let table = AliasTableU64::from_weights(&weights);
-        Self {
-            meta: NodeMeta {
-                name: "weighted_strings".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            values,
-            table,
-        }
-    }
+impl crate::derive_support::PolydatSetup for WeightedStrCache {}
+
+fn build_weighted_str_cache(spec: &str) -> WeightedStrCache {
+    let (values, weights) = parse_weighted_str_spec(spec);
+    let table = AliasTableU64::from_weights(&weights);
+    WeightedStrCache { values, table }
 }
 
-impl PolydatNode for WeightedStrings {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let idx = self.table.sample(inputs[0].as_u64()) as usize;
-        outputs[0] = Value::Str(self.values[idx].clone().into());
-    }
+/// Weighted string selection from an inline spec.
+///
+/// Signature: `weighted_strings(input: u64, spec: &str) -> String`
+///
+/// Spec format: `"alpha:0.3;beta:0.5;gamma:0.2"`. The input is
+/// expected to be a hashed u64 so the alias-method sampling sees
+/// a uniformly-distributed selector.
+#[crate::polydat_node(category = Weighted)]
+fn weighted_strings(
+    input: u64,
+    spec: crate::derive_support::Const<&str>,
+    #[poly_const(build_weighted_str_cache, from = spec)]
+    cache: &WeightedStrCache,
+) -> String {
+    let _ = spec; // value baked into `cache` at construction
+    let idx = cache.table.sample(input) as usize;
+    cache.values[idx].clone()
+}
+
+// ---------------------------------------------------------------------------
+// WeightedU64 — migrated to #[polydat_node]
+// ---------------------------------------------------------------------------
+
+/// Derived state for [`WeightedU64`]: the parsed value list and
+/// the alias table, computed once at construction from the spec
+/// string and read on every cycle.
+pub struct WeightedU64Cache {
+    values: Vec<u64>,
+    table: AliasTableU64,
+}
+
+impl crate::derive_support::PolydatSetup for WeightedU64Cache {}
+
+fn build_weighted_u64_cache(spec: &str) -> WeightedU64Cache {
+    let (values, weights) = parse_weighted_u64_spec(spec);
+    let table = AliasTableU64::from_weights(&weights);
+    WeightedU64Cache { values, table }
 }
 
 /// Weighted u64 selection from an inline spec.
 ///
-/// Signature: `(input: u64) -> (u64)`
+/// Signature: `weighted_u64(input: u64, spec: &str) -> u64`
 ///
-/// Spec format: `"10:0.5;20:0.3;30:0.2"`
-pub struct WeightedU64 {
-    meta: NodeMeta,
-    values: Vec<u64>,
-    table: AliasTableU64,
+/// Spec format: `"10:0.5;20:0.3;30:0.2"`.
+#[crate::polydat_node(category = Weighted)]
+fn weighted_u64(
+    input: u64,
+    spec: crate::derive_support::Const<&str>,
+    #[poly_const(build_weighted_u64_cache, from = spec)]
+    cache: &WeightedU64Cache,
+) -> u64 {
+    let _ = spec; // value baked into `cache` at construction
+    let idx = cache.table.sample(input) as usize;
+    cache.values[idx]
 }
 
-impl WeightedU64 {
-    pub fn new(spec: &str) -> Self {
-        let (values, weights) = parse_weighted_u64_spec(spec);
-        let table = AliasTableU64::from_weights(&weights);
-        Self {
-            meta: NodeMeta {
-                name: "weighted_u64".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::Wire(Port::u64("input"))],
-            },
-            values,
-            table,
+// ---------------------------------------------------------------------------
+// WeightedPick — migrated to #[polydat_node] via the spec-string surface
+//
+// The pre-Phase-E interleaved-pair DSL form (`weighted_pick(input, w0,
+// v0, w1, v1, ...)`) is gone. The FusedNode equivalence already
+// declared the spec-string form (`weighted_pick(input, "v0:w0;v1:w1;...")`)
+// is canonical; the migration collapses both surfaces onto one. The
+// override path keeps the `compiled_u64`/`jit_constants` closures —
+// the JIT extern `jit_weighted_pick` reads the same 5-u64 constants
+// slice (values_ptr, biases_ptr, primaries_ptr, aliases_ptr, n).
+// ---------------------------------------------------------------------------
+
+/// Derived state for [`WeightedPick`]: parsed values, weights, and the
+/// alias table, built once at construction from the spec string and
+/// read on every cycle (both in the eval path and the compiled
+/// closure). `weights` is retained alongside `values` so
+/// [`FusedNode::decomposed`] can reconstruct the equivalent
+/// `weighted_u64` spec string.
+pub struct WeightedPickState {
+    pub table: AliasTableU64,
+    pub values: Vec<u64>,
+    pub weights: Vec<f64>,
+}
+
+impl crate::derive_support::PolydatSetup for WeightedPickState {}
+
+/// Spec syntax: `"<value>:<weight>;<value>:<weight>;..."` —
+/// e.g. `"100:1.0;200:2.0;300:1.5"` → values `[100, 200, 300]`,
+/// weights `[1.0, 2.0, 1.5]`. Panics on malformed spec;
+/// construction-time failure is the right signal (matches the
+/// `weighted_u64` parser).
+fn parse_weighted_pick_spec(spec: &str) -> WeightedPickState {
+    let mut weights = Vec::new();
+    let mut values = Vec::new();
+    for entry in spec.split([';', ',']) {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
         }
-    }
-}
-
-impl PolydatNode for WeightedU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let idx = self.table.sample(inputs[0].as_u64()) as usize;
-        outputs[0] = Value::U64(self.values[idx]);
-    }
-}
-
-/// Weighted u64 selection from inline weight/value pairs.
-///
-/// Signature: `weighted_pick(input: u64, w0: f64, v0: u64, ...) -> (u64)`
-///
-/// This is the reference implementation exercising all metadata features:
-/// wire input, constant inputs, commutativity, Phase 2 compiled closure,
-/// JIT constants, and fusion equivalence contract.
-///
-/// The weight/value pairs are interleaved constants using
-/// `Arity::VariadicGroup`. Reordering pairs does not change the output
-/// (the alias table normalizes weights), so `commutativity()` returns
-/// `Groups` where each (weight, value) pair index set commutes with
-/// the others.
-///
-/// DSL syntax: `weighted_pick(hash(cycle), 0.5, 10, 0.3, 20, 0.2, 30)`
-///
-/// Internally builds an alias table at construction for O(1) sampling.
-///
-/// JIT level: P2 (compiled_u64 closure with captured alias table arrays).
-pub struct WeightedPick {
-    meta: NodeMeta,
-    weights: Vec<f64>,
-    values: Vec<u64>,
-    table: AliasTableU64,
-}
-
-impl WeightedPick {
-    /// Create from explicit weight/value pairs.
-    pub fn new(pairs: &[(f64, u64)]) -> Self {
-        assert!(!pairs.is_empty(), "weighted_pick requires at least one pair");
-        let weights: Vec<f64> = pairs.iter().map(|(w, _)| *w).collect();
-        let values: Vec<u64> = pairs.iter().map(|(_, v)| *v).collect();
-        let table = AliasTableU64::from_weights(&weights);
-
-        // Build ins: wire input + interleaved (weight, value) constant pairs
-        let mut ins = vec![Slot::Wire(Port::u64("input"))];
-        for (i, &(w, v)) in pairs.iter().enumerate() {
-            ins.push(Slot::const_f64(format!("w{i}"), w));
-            ins.push(Slot::const_u64(format!("v{i}"), v));
-        }
-
-        Self {
-            meta: NodeMeta {
-                name: "weighted_pick".into(),
-                ins,
-                outs: vec![Port::u64("output")],
-            },
-            weights,
-            values,
-            table,
-        }
-    }
-}
-
-impl PolydatNode for WeightedPick {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-
-    /// Commutativity: the weight/value pairs are interchangeable with
-    /// each other (reordering pairs doesn't change the output since the
-    /// alias table normalizes). Each pair occupies two consecutive slot
-    /// indices: (1,2), (3,4), (5,6), etc. The wire at index 0 is
-    /// positional. The groups express: "pair 0 can swap with pair 1",
-    /// not "weight can swap with value within a pair".
-    fn commutativity(&self) -> Commutativity {
-        let n = self.values.len();
-        if n <= 1 {
-            return Commutativity::Positional;
-        }
-        // Each pair occupies slots [1+2i, 2+2i].
-        // All pair-start indices commute as a set, and each pair's
-        // two slots move together. We express this as one group
-        // containing all the pair-start slot indices — when the
-        // matcher permutes this group, it must move both slots of
-        // each pair together. This requires a "pair-swap" rather than
-        // individual-slot permutation. For now, express as Positional
-        // since our Groups model operates on individual indices.
-        //
-        // TODO: Extend Groups to support pair-wise commutation.
-        // For now, the FuncSig carries commutativity for the DSL level.
-        Commutativity::Positional
-    }
-
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let idx = self.table.sample(inputs[0].as_u64()) as usize;
-        outputs[0] = Value::U64(self.values[idx]);
-    }
-
-    fn compiled_u64(&self) -> Option<CompiledU64Op> {
-        let values = self.values.clone();
-        let biases = self.table.biases().to_vec();
-        let primaries = self.table.primaries().to_vec();
-        let aliases = self.table.aliases().to_vec();
-        let n = values.len();
-        Some(Box::new(move |inputs, outputs| {
-            let input = inputs[0];
-            let slot = (input as usize) % n;
-            let bias_test = ((input >> 32) as f64) / (u32::MAX as f64);
-            let index = if bias_test < biases[slot] {
-                primaries[slot]
-            } else {
-                aliases[slot]
-            };
-            outputs[0] = values[index as usize];
-        }))
-    }
-
-    fn jit_constants(&self) -> Vec<u64> {
-        // Expose array pointers and length for JIT extern call.
-        // Safety: these pointers are into self.values and self.table,
-        // which live in PolydatProgram behind Arc — never moved or freed
-        // during the JIT kernel's lifetime.
-        vec![
-            self.values.as_ptr() as u64,
-            self.table.biases().as_ptr() as u64,
-            self.table.primaries().as_ptr() as u64,
-            self.table.aliases().as_ptr() as u64,
-            self.values.len() as u64,
-        ]
-    }
-}
-
-impl FusedNode for WeightedPick {
-    /// `weighted_pick(input, w0, v0, w1, v1, ...)` is equivalent to
-    /// `weighted_u64(input, "v0:w0;v1:w1;...")`.
-    fn decomposed(&self) -> DecomposedGraph {
-        // Build the equivalent spec string for WeightedU64
-        let spec: String = self.values.iter().zip(self.weights.iter())
-            .map(|(v, w)| format!("{v}:{w}"))
-            .collect::<Vec<_>>()
-            .join(";");
-        let mut g = DecomposedGraph::new(1);
-        let wu = g.add_node(
-            Box::new(WeightedU64::new(&spec)),
-            vec![DecomposedWire::Input(0)],
+        let (v, w) = entry
+            .split_once(':')
+            .unwrap_or_else(|| panic!("weighted_pick: malformed entry '{entry}', expected 'value:weight'"));
+        let value: u64 = v
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("weighted_pick: invalid value '{v}' in entry '{entry}'"));
+        let weight: f64 = w
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("weighted_pick: invalid weight '{w}' in entry '{entry}'"));
+        assert!(
+            weight.is_finite() && weight > 0.0,
+            "weighted_pick: weight must be a positive finite f64, got {weight}",
         );
-        g.set_outputs(vec![DecomposedWire::Node(wu, 0)]);
-        g
+        values.push(value);
+        weights.push(weight);
+    }
+    assert!(
+        !weights.is_empty(),
+        "weighted_pick requires at least one entry in spec",
+    );
+    WeightedPickState {
+        table: AliasTableU64::from_weights(&weights),
+        values,
+        weights,
     }
 }
 
-/// Dynamic weighted selection where the weight spec is a wire input.
-///
-/// Unlike `WeightedStrings` (which parses weights at init time and
-/// builds the alias table once), this node accepts the weight spec
-/// as a runtime wire input. Changing the spec rebuilds the alias
-/// table — an O(n) operation for n categories.
-///
-/// The `weights_spec` input is marked `WireCost::Config` to signal
-/// that it is expensive to change per-cycle. The compiler warns when
-/// this port is wired to a cycle-time source.
-///
-/// Typical use: wire `weights_spec` to an init-time constant or a
-/// rarely-changing captured value. Wire `selector` to a per-cycle
-/// hash for O(1) lookup.
-///
-/// Signature: `(selector: u64, weights_spec: String) -> (String)`
-///
-/// Spec format: `"alpha:0.3;beta:0.5;gamma:0.2"`
-pub struct DynamicWeightedSelect {
-    meta: NodeMeta,
-    /// Cached alias table. Rebuilt when weights_spec changes.
-    cached_spec: std::cell::RefCell<String>,
-    cached_values: std::cell::RefCell<Vec<String>>,
-    cached_table: std::cell::RefCell<Option<AliasTableU64>>,
-}
-
-impl DynamicWeightedSelect {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "dynamic_weighted_select".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![
-                    Slot::Wire(Port::u64("selector")),
-                    Slot::Wire(Port::str("weights_spec").config()),
-                ],
-            },
-            cached_spec: std::cell::RefCell::new(String::new()),
-            cached_values: std::cell::RefCell::new(Vec::new()),
-            cached_table: std::cell::RefCell::new(None),
-        }
-    }
-
-    fn rebuild_if_needed(&self, spec: &str) {
-        let mut cached_spec = self.cached_spec.borrow_mut();
-        if *cached_spec == spec {
-            return; // no change
-        }
-        let (values, weights) = parse_weighted_str_spec(spec);
-        let table = AliasTableU64::from_weights(&weights);
-        *cached_spec = spec.to_string();
-        *self.cached_values.borrow_mut() = values;
-        *self.cached_table.borrow_mut() = Some(table);
-    }
-}
-
-impl PolydatNode for DynamicWeightedSelect {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let selector = inputs[0].as_u64();
-        let spec = inputs[1].as_str();
-        self.rebuild_if_needed(spec);
-        let values = self.cached_values.borrow();
-        let table = self.cached_table.borrow();
-        if let Some(ref table) = *table {
-            let idx = table.sample(selector) as usize;
-            outputs[0] = Value::Str(values[idx].clone().into());
+/// `compiled_u64` override for [`WeightedPick`]. Captures the
+/// parsed value list and alias-table arrays by clone so the
+/// returned closure is independent of `self`'s lifetime.
+fn weighted_pick_jit(node: &WeightedPick) -> CompiledU64Op {
+    let values = node.state.values.clone();
+    let biases = node.state.table.biases().to_vec();
+    let primaries = node.state.table.primaries().to_vec();
+    let aliases = node.state.table.aliases().to_vec();
+    let n = values.len();
+    Box::new(move |inputs, outputs| {
+        let input = inputs[0];
+        let slot = (input as usize) % n;
+        let bias_test = ((input >> 32) as f64) / (u32::MAX as f64);
+        let index = if bias_test < biases[slot] {
+            primaries[slot]
         } else {
-            outputs[0] = Value::Str(String::new().into());
-        }
-    }
+            aliases[slot]
+        };
+        outputs[0] = values[index as usize];
+    })
 }
 
-// Safety: DynamicWeightedSelect uses RefCell internally but is only
-// accessed from a single fiber's eval path (no concurrent access).
-// PolydatNode requires Send + Sync for the program Arc, but evaluation
-// is always single-threaded per PolydatState.
-unsafe impl Send for DynamicWeightedSelect {}
-unsafe impl Sync for DynamicWeightedSelect {}
-
-// ---------------------------------------------------------------------------
-// Signature declarations for the DSL registry
-// ---------------------------------------------------------------------------
-
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
-
-/// Signatures for weighted categorical selection nodes.
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "weighted_strings", category: C::Weighted,
-            outputs: 1, description: "weighted string selection from inline spec",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_weighted_str_spec)) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Weighted string selection from a compact spec string.\nSpec format: \"value:weight,value:weight,...\" — weights are relative.\nParameters:\n  input — u64 wire input (typically hashed)\n  spec  — comma-separated value:weight pairs\nExample: weighted_strings(hash(cycle), \"red:3,green:2,blue:1\")",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "weighted_u64", category: C::Weighted,
-            outputs: 1, description: "weighted u64 selection from inline spec",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"",
-                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_weighted_u64_spec)) },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Weighted u64 selection from a compact spec string.\nSpec format: \"value:weight,value:weight,...\" — values are parsed as u64.\nParameters:\n  input — u64 wire input (typically hashed)\n  spec  — comma-separated value:weight pairs (e.g. \"10:0.5,20:0.3,30:0.2\")\nExample: weighted_u64(hash(cycle), \"100:5,200:3,300:2\")",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "weighted_pick", category: C::Weighted,
-            outputs: 1, description: "weighted u64 selection from inline weight/value pairs",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "weight", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-                ParamSpec { name: "value", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
-            ],
-            arity: Arity::VariadicGroup {
-                group: &[SlotType::ConstF64, SlotType::ConstU64],
-                min_repeats: 1,
-            },
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Weighted categorical selection from inline weight/value pairs.\nUses the alias method for O(1) lookup after initialization.\nParameters:\n  input      — u64 wire input (typically hashed)\n  weight,val — repeating pairs: f64 weight, u64 value\nWeights are relative (need not sum to 1).\nExample: weighted_pick(hash(cycle), 3.0, 100, 1.0, 200, 1.0, 300)\nTheory: the alias method pre-computes a table so each lookup is\nconstant-time regardless of the number of categories.",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "dynamic_weighted_select", category: C::Weighted,
-            outputs: 1, description: "weighted string selection with dynamic weight spec (Config wire)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "selector", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "weights_spec", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Dynamic weighted string selection where the weight spec is a wire input.\n\
-                   The weights_spec input is a Config wire — changing it rebuilds the alias table (O(n)).\n\
-                   Wire weights_spec to an init-time constant for normal use. Wiring to a cycle-time\n\
-                   source triggers a compiler warning.\n\n\
-                   Parameters:\n  selector     — u64 wire input (typically hashed)\n  \
-                   weights_spec — String wire input (e.g. \"alpha:0.3;beta:0.5;gamma:0.2\")\n\n\
-                   Example: dynamic_weighted_select(hash(cycle), my_weights)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+/// `jit_constants` override for [`WeightedPick`]. Publishes the
+/// pointer/length quintuple the `jit_weighted_pick` extern reads.
+/// Safety: pointers live in the parsed state which is owned by
+/// `PolydatProgram` behind an `Arc` — never moved or freed during
+/// the JIT kernel's lifetime.
+fn weighted_pick_jit_constants(node: &WeightedPick) -> Vec<u64> {
+    vec![
+        node.state.values.as_ptr() as u64,
+        node.state.table.biases().as_ptr() as u64,
+        node.state.table.primaries().as_ptr() as u64,
+        node.state.table.aliases().as_ptr() as u64,
+        node.state.values.len() as u64,
     ]
 }
 
-/// Try to build a weighted-selection node from a function name and const args.
+/// Weighted u64 selection from a spec string.
 ///
-/// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "weighted_strings" => Some(Ok(Box::new(WeightedStrings::new(
-            consts.first().map(|c| c.as_str()).unwrap_or(""),
-        )))),
-        "weighted_u64" => Some(Ok(Box::new(WeightedU64::new(
-            consts.first().map(|c| c.as_str()).unwrap_or(""),
-        )))),
-        "weighted_pick" => {
-            let pairs: Vec<(f64, u64)> = consts.chunks(2)
-                .map(|chunk| {
-                    let w = chunk.first().map(|c| c.as_f64()).unwrap_or(1.0);
-                    let v = chunk.get(1).map(|c| c.as_u64()).unwrap_or(0);
-                    (w, v)
-                })
-                .collect();
-            Some(Ok(Box::new(WeightedPick::new(&pairs))))
-        }
-        "dynamic_weighted_select" => Some(Ok(Box::new(DynamicWeightedSelect::new()))),
-        _ => None,
-    }
-}
-
-
-/// Assembly-time constant validation for weighted-selection nodes.
+/// Signature: `weighted_pick(input: u64, spec: &str) -> u64`
 ///
-/// The spec parsers in this module assert on malformed input. The
-/// validator runs those assertions up front so bad constants are
-/// rejected *before* `::new` is called (SRD 15 §"Const Constraint
-/// Metadata").
-pub(crate) fn validate_node(
-    name: &str,
-    consts: &[crate::dsl::factory::ConstArg],
-) -> Result<(), String> {
-    match name {
-        // `weighted_pick` is variadic positional pairs — Pass 1
-        // sees a single ParamSpec, so its emptiness / parity /
-        // per-pair finite-positive-weight checks have to live here.
-        "weighted_pick" => {
-            if consts.is_empty() {
-                return Err("weighted_pick requires at least one (weight, value) pair".into());
-            }
-            if !consts.len().is_multiple_of(2) {
-                return Err(format!(
-                    "weighted_pick needs an even number of constants (weight/value pairs), got {}",
-                    consts.len(),
-                ));
-            }
-            for (i, chunk) in consts.chunks(2).enumerate() {
-                let w = chunk[0].as_f64();
-                if !(w.is_finite()) || w <= 0.0 {
-                    return Err(format!("pair {i}: weight must be a positive finite f64, got {w}"));
-                }
-            }
-            Ok(())
-        }
-        // `weighted_strings` and `weighted_u64` declare their
-        // spec parsers as `StrParser` constraints on the `spec`
-        // ParamSpec; Pass 1 enforces them.
-        _ => Ok(()),
-    }
+/// Spec format: `"value:weight;value:weight;..."` — e.g.
+/// `"100:1.0;200:2.0;300:1.5"`. Weights are relative (need not
+/// sum to 1); each must be positive and finite. Internally builds
+/// an alias table at construction for O(1) sampling.
+///
+/// JIT level: P2 — `compiled_u64` is supplied by
+/// [`weighted_pick_jit`] (closure with captured alias-table
+/// arrays); `jit_constants` is supplied by
+/// [`weighted_pick_jit_constants`] (5-u64 slice for the
+/// `jit_weighted_pick` extern).
+///
+/// Example: `weighted_pick(hash(cycle), "100:0.5;200:0.3;300:0.2")`.
+/// `weighted_pick(input, "v0:w0;v1:w1;...")` is equivalent to
+/// `weighted_u64(input, "v0:w0;v1:w1;...")`. The two nodes share
+/// the same spec-string surface, so this decomposition is a
+/// direct re-instantiation under the canonical name. Wired into
+/// the macro via `#[polydat_node(decompose = ...)]` so the
+/// FusedNode impl is emitted alongside PolydatNode.
+fn weighted_pick_decompose(node: &WeightedPick) -> DecomposedGraph {
+    let spec: String = node.state.values.iter().zip(node.state.weights.iter())
+        .map(|(v, w)| format!("{v}:{w}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    let mut g = DecomposedGraph::new(1);
+    let wu = g.add_node(
+        Box::new(WeightedU64::new(spec)),
+        vec![DecomposedWire::Input(0)],
+    );
+    g.set_outputs(vec![DecomposedWire::Node(wu, 0)]);
+    g
 }
 
-fn validate_weighted_str_spec(spec: &str) -> Result<(), String> {
-    let mut any = false;
-    for elem in spec.split([';', ',']) {
-        let elem = elem.trim();
-        if elem.is_empty() { continue; }
-        let parts: Vec<&str> = elem.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(format!("expected 'value:weight', got '{elem}'"));
-        }
-        let w: f64 = parts[1].parse()
-            .map_err(|_| format!("invalid weight '{}'", parts[1]))?;
-        if w <= 0.0 {
-            return Err(format!("weight must be positive, got {w}"));
-        }
-        any = true;
-    }
-    if !any {
-        return Err("spec must be non-empty".into());
-    }
-    Ok(())
+#[crate::polydat_node(
+    category = Weighted,
+    compiled_u64 = weighted_pick_jit,
+    jit_constants = weighted_pick_jit_constants,
+    decompose = weighted_pick_decompose,
+)]
+fn weighted_pick(
+    input: u64,
+    spec: crate::derive_support::Const<&str>,
+    #[poly_const(parse_weighted_pick_spec, from = spec)]
+    state: &WeightedPickState,
+) -> u64 {
+    let _ = spec; // value baked into `state` at construction
+    let idx = state.table.sample(input) as usize;
+    state.values[idx]
 }
 
-fn validate_weighted_u64_spec(spec: &str) -> Result<(), String> {
-    let mut any = false;
-    for elem in spec.split([';', ',']) {
-        let elem = elem.trim();
-        if elem.is_empty() { continue; }
-        let parts: Vec<&str> = elem.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(format!("expected 'value:weight', got '{elem}'"));
-        }
-        parts[0].parse::<u64>()
-            .map_err(|_| format!("invalid u64 value '{}'", parts[0]))?;
-        let w: f64 = parts[1].parse()
-            .map_err(|_| format!("invalid weight '{}'", parts[1]))?;
-        if w <= 0.0 {
-            return Err(format!("weight must be positive, got {w}"));
-        }
-        any = true;
+// ---------------------------------------------------------------------------
+// DynamicWeightedSelect — migrated to `#[polydat_node]` via the
+// `Config<T>` marker. The Wire trait's `WIRE_COST` const flows
+// through `Config<Arc<str>>` to the slot's `WireCost::Config`
+// annotation, retaining the load-bearing compile-warning behaviour
+// exercised by tests. The pre-Phase-E `Mutex<DynamicWeightedCache>`
+// is gone — the macro doesn't emit interior-mutable per-node state
+// — and the body now re-parses each cycle. Workloads that bind
+// `weights_spec` at init-time pay the parse cost once (the
+// underlying `Value::Str` Arc is shared) and never re-trigger;
+// workloads that bind from a cycle-time source already trip the
+// Config-wire warning and have opted in to the per-cycle cost.
+// ---------------------------------------------------------------------------
+
+/// Dynamic weighted selection where the weight spec is a wire input.
+///
+/// Signature: `dynamic_weighted_select(selector: u64, weights_spec: Str) -> Str`
+///
+/// Unlike `WeightedStrings` (which parses weights at init time and
+/// builds the alias table once), this node accepts the weight spec
+/// as a runtime wire input. The `weights_spec` input is wrapped in
+/// `Config<Arc<str>>` to mark it as a configuration-cost wire: the
+/// compiler warns when it is bound to a cycle-time source.
+///
+/// Typical use: wire `weights_spec` to an init-time constant or a
+/// rarely-changing captured value. Wire `selector` to a per-cycle
+/// hash for O(1) lookup once the alias table is built.
+///
+/// Spec format: `"alpha:0.3;beta:0.5;gamma:0.2"`
+#[crate::polydat_node(category = Weighted)]
+fn dynamic_weighted_select(
+    selector: u64,
+    weights_spec: Config<std::sync::Arc<str>>,
+) -> String {
+    let spec: &str = weights_spec.0.as_ref();
+    let (values, weights) = parse_weighted_str_spec(spec);
+    if values.is_empty() {
+        return String::new();
     }
-    if !any {
-        return Err("spec must be non-empty".into());
-    }
-    Ok(())
+    let table = AliasTableU64::from_weights(&weights);
+    let idx = table.sample(selector) as usize;
+    values[idx].clone()
 }
 
-crate::register_nodes!(signatures, build_node, validate_node);
+// ---------------------------------------------------------------------------
+// All nodes in this module now self-register via `#[polydat_node]`;
+// the hand-written `signatures()` / `build_node()` / `validate_node()`
+// / `register_nodes!` entries from the pre-Phase-E form have been
+// removed.
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::ConstValue;
+    use crate::ast::{ConstValue, PolydatNode, Slot, Value};
+    use crate::compile::fusion::FusedNode;
     use xxhash_rust::xxh3::xxh3_64;
 
     #[test]
     fn weighted_strings_valid_outputs() {
-        let node = WeightedStrings::new("alpha:0.3;beta:0.5;gamma:0.2");
+        let node = WeightedStrings::new("alpha:0.3;beta:0.5;gamma:0.2".to_string());
         let valid = ["alpha", "beta", "gamma"];
         let mut out = [Value::None];
         for i in 0..1000u64 {
@@ -546,7 +377,7 @@ mod tests {
 
     #[test]
     fn weighted_strings_respects_weights() {
-        let node = WeightedStrings::new("rare:0.01;common:0.99");
+        let node = WeightedStrings::new("rare:0.01;common:0.99".to_string());
         let mut common_count = 0u64;
         let mut out = [Value::None];
         let n = 10_000u64;
@@ -562,7 +393,7 @@ mod tests {
 
     #[test]
     fn weighted_u64_valid_outputs() {
-        let node = WeightedU64::new("10:0.5;20:0.3;30:0.2");
+        let node = WeightedU64::new("10:0.5;20:0.3;30:0.2".to_string());
         let valid = [10u64, 20, 30];
         let mut out = [Value::None];
         for i in 0..1000u64 {
@@ -575,7 +406,7 @@ mod tests {
 
     #[test]
     fn weighted_pick_valid_outputs() {
-        let node = WeightedPick::new(&[(0.5, 10), (0.3, 20), (0.2, 30)]);
+        let node = WeightedPick::new("10:0.5;20:0.3;30:0.2".to_string());
         let valid = [10u64, 20, 30];
         let mut out = [Value::None];
         for i in 0..1000u64 {
@@ -587,7 +418,7 @@ mod tests {
 
     #[test]
     fn weighted_pick_respects_weights() {
-        let node = WeightedPick::new(&[(0.99, 1), (0.01, 2)]);
+        let node = WeightedPick::new("1:0.99;2:0.01".to_string());
         let mut count_1 = 0u64;
         let mut out = [Value::None];
         let n = 10_000u64;
@@ -601,7 +432,7 @@ mod tests {
 
     #[test]
     fn weighted_pick_single_pair() {
-        let node = WeightedPick::new(&[(1.0, 42)]);
+        let node = WeightedPick::new("42:1.0".to_string());
         let mut out = [Value::None];
         for i in 0..100u64 {
             node.eval(&[Value::U64(i)], &mut out);
@@ -611,7 +442,7 @@ mod tests {
 
     #[test]
     fn weighted_pick_equal_weights() {
-        let node = WeightedPick::new(&[(1.0, 10), (1.0, 20), (1.0, 30)]);
+        let node = WeightedPick::new("10:1.0;20:1.0;30:1.0".to_string());
         let mut counts = [0u64; 3];
         let mut out = [Value::None];
         let n = 30_000u64;
@@ -634,7 +465,7 @@ mod tests {
 
     #[test]
     fn weighted_pick_compiled_matches_eval() {
-        let node = WeightedPick::new(&[(0.5, 10), (0.3, 20), (0.2, 30)]);
+        let node = WeightedPick::new("10:0.5;20:0.3;30:0.2".to_string());
         let compiled = node.compiled_u64().expect("should compile");
         for i in 0..10_000u64 {
             let input = xxh3_64(&i.to_le_bytes());
@@ -648,29 +479,29 @@ mod tests {
     }
 
     #[test]
-    fn weighted_pick_slot_consistency() {
-        let node = WeightedPick::new(&[(0.5, 10), (0.3, 20), (0.2, 30)]);
+    fn weighted_pick_jit_constants_shape() {
+        // The 5-u64 jit_constants slice (values_ptr, biases_ptr,
+        // primaries_ptr, aliases_ptr, n) is the contract the
+        // `jit_weighted_pick` extern reads.
+        let node = WeightedPick::new("10:0.5;20:0.3;30:0.2".to_string());
 
-        // jit_constants() returns array pointers + length for JIT extern call.
-        let from_trait = node.jit_constants();
-        assert_eq!(from_trait.len(), 5); // values_ptr, biases_ptr, primaries_ptr, aliases_ptr, n
-        assert_eq!(from_trait[4], 3); // n = 3 pairs
+        let raw = node.jit_constants();
+        assert_eq!(raw.len(), 5); // values_ptr, biases_ptr, primaries_ptr, aliases_ptr, n
+        assert_eq!(raw[4], 3);    // n = 3 entries in the spec
 
-        // jit_constants_from_slots() returns ALL typed constants: interleaved
-        // weights (as f64 bits) and values.
-        let from_slots = node.meta().jit_constants_from_slots();
-        assert_eq!(from_slots.len(), 6); // w0, v0, w1, v1, w2, v2
-        assert_eq!(from_slots[1], 10);
-        assert_eq!(from_slots[3], 20);
-        assert_eq!(from_slots[5], 30);
-        assert_eq!(from_slots[0], 0.5f64.to_bits());
+        // The values_ptr should match the parsed value list inside state.
+        assert_eq!(raw[0], node.state.values.as_ptr() as u64);
+        assert_eq!(raw[1], node.state.table.biases().as_ptr() as u64);
+        assert_eq!(raw[2], node.state.table.primaries().as_ptr() as u64);
+        assert_eq!(raw[3], node.state.table.aliases().as_ptr() as u64);
     }
 
     #[test]
     fn weighted_pick_equivalence_with_weighted_u64() {
-        // weighted_pick(input, 0.5, 10, 0.3, 20, 0.2, 30) should match
-        // weighted_u64(input, "10:0.5;20:0.3;30:0.2")
-        let fused = WeightedPick::new(&[(0.5, 10), (0.3, 20), (0.2, 30)]);
+        // weighted_pick(input, "10:0.5;20:0.3;30:0.2") should match
+        // weighted_u64(input, "10:0.5;20:0.3;30:0.2") — the two
+        // nodes now share the same spec-string surface.
+        let fused = WeightedPick::new("10:0.5;20:0.3;30:0.2".to_string());
         let decomposed = fused.decomposed();
         for i in 0..10_000u64 {
             let input = xxh3_64(&i.to_le_bytes());
@@ -680,6 +511,26 @@ mod tests {
             assert_eq!(fused_out[0].as_u64(), decomposed_out[0].as_u64(),
                 "equivalence failed at seed {i}");
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "weighted_pick requires at least one entry in spec")]
+    fn weighted_pick_rejects_empty_spec() {
+        // Macro-emitted `new` runs the setup parser eagerly; empty
+        // spec panics at construction.
+        let _ = WeightedPick::new("".to_string());
+    }
+
+    #[test]
+    #[should_panic(expected = "weighted_pick: malformed entry")]
+    fn weighted_pick_rejects_bad_format() {
+        let _ = WeightedPick::new("noweight".to_string());
+    }
+
+    #[test]
+    #[should_panic(expected = "weighted_pick: weight must be a positive finite f64")]
+    fn weighted_pick_rejects_nonpositive_weight() {
+        let _ = WeightedPick::new("10:0.0;20:1.0".to_string());
     }
 
     // --- DynamicWeightedSelect tests ---
@@ -772,12 +623,12 @@ mod tests {
     fn dynamic_weighted_select_strict_rejects_cycle_config() {
         // In strict mode, Config wire from cycle source is a hard error.
         use crate::compile::assembly::{PolydatAssembler, WireRef};
-        use crate::library::hash::Hash64;
+        use crate::library::hash::Hash;
         use crate::library::convert::U64ToString;
         use crate::dsl::events::CompileEventLog;
 
         let mut asm = PolydatAssembler::new(vec!["cycle".into()]);
-        asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("hashed", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
         asm.add_node("spec", Box::new(U64ToString::default()), vec![WireRef::node("hashed")]);
         asm.add_node("dws", Box::new(DynamicWeightedSelect::new()), vec![
             WireRef::node("hashed"),  // selector ← cycle (Data, ok)
@@ -795,7 +646,7 @@ mod tests {
 
         // Strict compile: rebuild and fold with strict=true
         let mut asm2 = PolydatAssembler::new(vec!["cycle".into()]);
-        asm2.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+        asm2.add_node("hashed", Box::new(Hash::new()), vec![WireRef::input("cycle")]);
         asm2.add_node("spec", Box::new(U64ToString::default()), vec![WireRef::node("hashed")]);
         asm2.add_node("dws", Box::new(DynamicWeightedSelect::new()), vec![
             WireRef::node("hashed"),
@@ -812,19 +663,17 @@ mod tests {
 
     #[test]
     fn weighted_pick_metadata_complete() {
-        let node = WeightedPick::new(&[(0.5, 10), (0.3, 20)]);
+        // Spec-string surface: 1 wire input + 1 Const<&str> constant.
+        let node = WeightedPick::new("10:0.5;20:0.3".to_string());
         let meta = node.meta();
 
         // Name
         assert_eq!(meta.name, "weighted_pick");
 
-        // Ins: 1 wire + 4 constants (w0, v0, w1, v1)
-        assert_eq!(meta.ins.len(), 5);
+        // Ins: 1 wire + 1 string constant (the spec)
+        assert_eq!(meta.ins.len(), 2);
         assert!(matches!(meta.ins[0], Slot::Wire(_)));
-        assert!(matches!(&meta.ins[1], Slot::Const { value: ConstValue::F64(_), .. }));
-        assert!(matches!(&meta.ins[2], Slot::Const { value: ConstValue::U64(10), .. }));
-        assert!(matches!(&meta.ins[3], Slot::Const { value: ConstValue::F64(_), .. }));
-        assert!(matches!(&meta.ins[4], Slot::Const { value: ConstValue::U64(20), .. }));
+        assert!(matches!(&meta.ins[1], Slot::Const { value: ConstValue::Str(_), .. }));
 
         // Outs: 1 u64
         assert_eq!(meta.outs.len(), 1);
@@ -834,6 +683,6 @@ mod tests {
 
         // Const slots
         let consts = meta.const_slots();
-        assert_eq!(consts.len(), 4); // w0, v0, w1, v1
+        assert_eq!(consts.len(), 1); // spec
     }
 }

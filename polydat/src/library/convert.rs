@@ -9,8 +9,6 @@
 //! - **Explicit conversions**: user-placed nodes for lossy, formatted,
 //!   or parameterized conversions. These require deliberate intent.
 
-use crate::ast::{CompiledU64Op, PolydatNode, NodeMeta, Port, PortType, Slot, Value};
-
 /// Convert u64 to its decimal string representation.
 ///
 /// Signature: `__u64_to_string(input: u64) -> (String)`
@@ -264,41 +262,18 @@ fn zero_pad_u64(input: u64, #[poly_default(10)] width: crate::derive_support::Co
 // Signature declarations for the DSL registry
 // ---------------------------------------------------------------------------
 
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
+use crate::dsl::registry::{FuncCategory, FuncSig};
 
 /// Signatures for type conversion nodes.
 pub fn signatures() -> &'static [FuncSig] {
+    #[allow(unused_imports)]
     use FuncCategory as C;
     &[
-        FuncSig {
-            name: "unit_interval", category: C::Conversions, outputs: 1,
-            description: "normalize u64 to f64 in [0, 1)",
-            help: "Convert a u64 to an f64 in [0.0, 1.0) by dividing by 2^64.\nBridges the integer hash domain into the probability domain.\nFeed the result to lerp, distribution samplers, or coin flips.\nParameters:\n  input — u64 wire input (typically hashed)\nExample: unit_interval(hash(cycle)) -> lerp(0.0, 100.0)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "clamp_f64", category: C::Conversions,
-            outputs: 1, description: "clamp f64 to [min, max]",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-                ParamSpec { name: "min", slot_type: SlotType::ConstF64, required: true, example: "0.0", constraint: None },
-                ParamSpec { name: "max", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: crate::ast::Commutativity::Positional,
-            help: "Clamp an f64 value to [min, max].\nUse after distributions with unbounded tails (normal, Cauchy)\nto enforce domain constraints, or to guard against edge values.\nParameters:\n  input — f64 wire input\n  min   — lower bound (inclusive, f64)\n  max   — upper bound (inclusive, f64)\nExample: clamp_f64(icd_normal(hash(cycle), 50.0, 10.0), 0.0, 100.0)",
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-        },
+        // `unit_interval` / `clamp_f64` migrated to `#[polydat_node]`
+        // per SRD-80b Phase E (library/sampling/icd.rs). The macro
+        // emits both FuncSig (via inventory) and the matching
+        // builder, so this signatures() list no longer carries them
+        // and the corresponding `build_node` arms are gone.
         // `to_f64` / `f64_to_u64` / `round_to_u64` / `floor_to_u64` /
         // `ceil_to_u64` / `discretize` / `format_u64` migrated to
         // `#[polydat_node]` per SRD-80 PR B.14.
@@ -315,20 +290,15 @@ fn to_f64(input: u64) -> f64 { input as f64 }
 /// Try to build a conversion node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "unit_interval" => Some(Ok(Box::new(crate::library::sampling::icd::UnitInterval::new()))),
-        "clamp_f64" => Some(Ok(Box::new(crate::library::sampling::icd::ClampF64::new(
-            consts.first().map(|c| c.as_f64()).unwrap_or(f64::MIN),
-            consts.get(1).map(|c| c.as_f64()).unwrap_or(f64::MAX),
-        )))),
-        // `to_f64` / `f64_to_u64` / `round_to_u64` / `floor_to_u64` /
-        // `ceil_to_u64` / `discretize` / `format_u64` route via
-        // proc-macro NodeRegistration per SRD-80 PR B.14.
-        // `format_f64` / `zero_pad_u64` route through proc-macro-emitted
-        // NodeRegistration per SRD-80 PR B.5.
-        _ => None,
-    }
+pub(crate) fn build_node(_name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
+    // `unit_interval` / `clamp_f64` route via macro-emitted
+    // NodeRegistration per SRD-80b Phase E (sampling/icd.rs).
+    // `to_f64` / `f64_to_u64` / `round_to_u64` / `floor_to_u64` /
+    // `ceil_to_u64` / `discretize` / `format_u64` route via
+    // proc-macro NodeRegistration per SRD-80 PR B.14.
+    // `format_f64` / `zero_pad_u64` route through proc-macro-emitted
+    // NodeRegistration per SRD-80 PR B.5.
+    None
 }
 
 
@@ -349,6 +319,7 @@ crate::register_nodes!(signatures, build_node, validate_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{PolydatNode, Value};
 
     #[test]
     fn f64_to_u64_truncates() {
