@@ -645,6 +645,7 @@ phases:
           extern completion_ratio:   f64 = 0.0
           extern progress:           u64 = 0
           extern total:              u64 = 0
+        # extern versus const versus shared here?
         raw: |
           SELECT completion_ratio, progress, total
             FROM system_views.sstable_tasks
@@ -665,6 +666,7 @@ phases:
           timeout_ms: 14400000
           max_error_retries: 5
           metric_name: compaction_wait_time_s
+          # TODO: Timeout error handling behavior must be obvious and configurable for poll
         memo:
           after: "compacting {keyspace}.{table}: ratio {completion_ratio}, {progress}/{total} bytes ({active_compactions} task(s) in flight)"
         metrics:
