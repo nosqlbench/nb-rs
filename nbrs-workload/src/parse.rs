@@ -12,7 +12,8 @@ use polydat::iteration::comprehension::spec::{
     parse_clause, parse_clause_list, ComprehensionSpec, ForSpec,
 };
 use crate::model::{
-    BindingsDef, MetricSpec, ParsedOp, ScenarioNode, Workload, WorkloadPhase,
+    BindingsDef, MetricSpec, ParsedOp, ScenarioNode, StopConditionSpec, Workload,
+    WorkloadPhase,
 };
 use crate::template::expand_templates;
 
@@ -237,9 +238,18 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // bakes them at activity-init time.
     let readouts = parse_readouts_block(obj.get("readouts"))?;
 
+    // SRD-83 — top-level `stop_when:` (workload-shell conditions), same
+    // shape as the per-phase block.
+    let stop_when: Vec<crate::model::StopConditionSpec> = match obj.get("stop_when") {
+        Some(v) => serde_json::from_value(v.clone())
+            .map_err(|e| format!("invalid top-level `stop_when` block: {e}"))?,
+        None => Vec::new(),
+    };
+
     Ok(Workload {
         description, scenarios, ops: all_ops, bindings: doc_bindings,
         params: resolved_params, phases, phase_order, declared_params,
+        stop_when,
         report, report_warnings, scenario_parse_errors,
         status_metrics: doc_status_metrics,
         readouts,
@@ -1150,6 +1160,18 @@ fn parse_phases(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let error_rate_max = phase_obj.get("error_rate_max")
+            .and_then(|v| v.as_f64());
+
+        // SRD-83 — `stop_when:` is a list of {when, trigger?, effect?}.
+        // StopConditionSpec derives Deserialize, so deserialize the
+        // sub-tree directly; surface a malformed block as a parse error.
+        let stop_when: Vec<StopConditionSpec> = match phase_obj.get("stop_when") {
+            Some(v) => serde_json::from_value(v.clone())
+                .map_err(|e| format!("invalid `stop_when` block: {e}"))?,
+            None => Vec::new(),
+        };
+
         let tags = phase_obj.get("tags")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
@@ -1376,6 +1398,8 @@ fn parse_phases(
             rate,
             adapter,
             errors,
+            error_rate_max,
+            stop_when,
             tags,
             ops: inline_ops,
             for_each,

@@ -16,6 +16,60 @@ mod inner {
     use crate::scheduler::Reporter;
     use crate::snapshot::{Metric, MetricFamily, MetricSet, MetricType, MetricValue};
 
+    /// Latest-execution metadata rows for keys matching `key_like`
+    /// (a `LIKE` pattern), from `execution_metadata` at the highest
+    /// `exec_id` that carries such a key. Falls back to legacy
+    /// `session_metadata` for dbs written before the per-execution
+    /// metadata split. The natural read for "the report/summary/etc.
+    /// definitions of the most recent execution".
+    pub fn latest_execution_metadata_like(
+        conn: &Connection,
+        key_like: &str,
+    ) -> Vec<(String, String)> {
+        let rows: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT key, value FROM execution_metadata \
+                 WHERE key LIKE ?1 \
+                   AND exec_id = (SELECT MAX(exec_id) FROM execution_metadata WHERE key LIKE ?1) \
+                 ORDER BY key",
+            )
+            .and_then(|mut s| {
+                s.query_map([key_like], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map(|it| it.filter_map(Result::ok).collect())
+            })
+            .unwrap_or_default();
+        if !rows.is_empty() {
+            return rows;
+        }
+        conn.prepare("SELECT key, value FROM session_metadata WHERE key LIKE ?1 ORDER BY key")
+            .and_then(|mut s| {
+                s.query_map([key_like], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map(|it| it.filter_map(Result::ok).collect())
+            })
+            .unwrap_or_default()
+    }
+
+    /// Latest-execution single value for an exact `key`. Same
+    /// fallback rule as [`latest_execution_metadata_like`].
+    pub fn latest_execution_metadata_value(conn: &Connection, key: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT value FROM execution_metadata \
+             WHERE key = ?1 \
+               AND exec_id = (SELECT MAX(exec_id) FROM execution_metadata WHERE key = ?1)",
+            [key],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .or_else(|| {
+            conn.query_row(
+                "SELECT value FROM session_metadata WHERE key = ?1",
+                [key],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        })
+    }
+
     pub struct SqliteReporter {
         conn: Connection,
         /// `metric_family.name → metric_family.id`.
@@ -139,12 +193,35 @@ mod inner {
             }
         }
 
-        /// Store a session metadata key-value pair.
+        /// Store a session-INVARIANT metadata key-value pair. Use
+        /// [`Self::set_execution_metadata`] for anything that varies
+        /// per execution (the common case) so a `refine`'s newer
+        /// execution doesn't clobber a prior execution's value.
         pub fn set_metadata(&mut self, key: &str, value: &str) {
             self.conn.execute(
                 "INSERT OR REPLACE INTO session_metadata (key, value) VALUES (?1, ?2)",
                 params![key, value],
             ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite metadata write: {e}")); 0 });
+        }
+
+        /// Store a per-execution metadata key-value pair under
+        /// `(session, exec_id)`. Each execution keeps its own value;
+        /// readers select the execution they want (latest by default).
+        pub fn set_execution_metadata(
+            &mut self,
+            session: &str,
+            exec_id: u64,
+            key: &str,
+            value: &str,
+        ) {
+            self.conn.execute(
+                "INSERT OR REPLACE INTO execution_metadata (session, exec_id, key, value) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![session, exec_id as i64, key, value],
+            ).unwrap_or_else(|e| {
+                crate::diag::warn(&format!("warning: sqlite execution metadata write: {e}"));
+                0
+            });
         }
 
         fn create_schema(&mut self) -> Result<(), String> {
@@ -291,9 +368,30 @@ mod inner {
                     -- path here is permissive.
                     labels_spec TEXT NOT NULL
                 );
+                -- Session-INVARIANT metadata only (the session id).
+                -- Anything that varies per execution (start/end time,
+                -- workload/scenario, params, report & summary defs)
+                -- lives in `execution_metadata`, keyed by exec_id —
+                -- a flat `(key)` PK here would let a `refine`'s newer
+                -- execution silently clobber a prior execution's value.
                 CREATE TABLE IF NOT EXISTS session_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT
+                );
+                -- SRD-77 — per-execution metadata. Keyed by
+                -- (session, exec_id, key) so each execution in a
+                -- refined session keeps its own values; readers pick
+                -- the execution they want (latest by default). No FK
+                -- to `executions`: metadata is written during run
+                -- setup, before the `executions` row exists, and it's
+                -- logically scoped to the current execution by
+                -- construction.
+                CREATE TABLE IF NOT EXISTS execution_metadata (
+                    session TEXT NOT NULL,
+                    exec_id INTEGER NOT NULL,
+                    key     TEXT NOT NULL,
+                    value   TEXT,
+                    PRIMARY KEY (session, exec_id, key)
                 );
                 -- Indexes for read paths.
                 --
@@ -1534,29 +1632,20 @@ mod inner {
             // enumerates only the `table` items, stripping the
             // kind/name/label prelude so the returned spec is
             // the body the table renderer expects.
-            let mut stmt = match self.conn.prepare(
-                "SELECT key, value FROM session_metadata \
-                 WHERE key LIKE 'report.%' ORDER BY rowid"
-            ) {
-                Ok(s) => s,
-                Err(_) => return Vec::new(),
-            };
+            // Latest execution's report defs (per-execution metadata),
+            // falling back to legacy session_metadata.
             let mut out = Vec::new();
-            if let Ok(iter) = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            }) {
-                for entry in iter.flatten() {
-                    let mut lines = entry.1.lines();
-                    let head = match lines.next() { Some(h) => h, None => continue };
-                    let name = match head.strip_prefix("table ") {
-                        Some(rest) => rest.trim().to_string(),
-                        None => continue,
-                    };
-                    let body: String = lines
-                        .filter(|l| !l.starts_with("label ") && !l.starts_with("target "))
-                        .collect::<Vec<_>>().join("\n");
-                    out.push((name, body));
-                }
+            for entry in latest_execution_metadata_like(&self.conn, "report.%") {
+                let mut lines = entry.1.lines();
+                let head = match lines.next() { Some(h) => h, None => continue };
+                let name = match head.strip_prefix("table ") {
+                    Some(rest) => rest.trim().to_string(),
+                    None => continue,
+                };
+                let body: String = lines
+                    .filter(|l| !l.starts_with("label ") && !l.starts_with("target "))
+                    .collect::<Vec<_>>().join("\n");
+                out.push((name, body));
             }
             out
         }
@@ -3658,6 +3747,7 @@ pub use inner::SqliteShutdownGuard;
 pub use inner::{
     ReportConfig, ReportAggregate, NativeSample, ExemplarRow,
     PhaseOutcomeRow, PhaseErrorRow,
+    latest_execution_metadata_like, latest_execution_metadata_value,
 };
 
 /// Split a summary name into `(basename, format)`.

@@ -1,0 +1,119 @@
+#!/usr/bin/env nbrs
+# stop_conditions_coverage.yaml — Thematic coverage workload for
+# SRD-83 stop conditions across execution shell levels (SRD-82).
+#
+# A stop condition is a polydat `when:` predicate over the shell's
+# live runtime-state wires. Those wires are INJECTED by the executor
+# each evaluation tick — the activity drain loop re-snapshots
+# `op_count` / `error_count` / `error_rate` / `elapsed_ms` every ~5 ms
+# at the PHASE shell, and the walker re-snapshots `children_*` once per
+# finished phase at the WORKLOAD shell. So a threshold predicate trips
+# deterministically the moment the live (time-evolving) value crosses
+# it — there is no separate "inject a wire" step; the runtime state IS
+# the time-based injection.
+#
+# Each scenario isolates ONE time-evolving wire at ONE shell level:
+#
+#   phase_op_count    — PHASE shell, `op_count`     (climbs 1 per op)
+#   phase_elapsed_ms  — PHASE shell, `elapsed_ms`   (wall clock, ms)
+#   workload_children — WORKLOAD shell, `children_done` (1 per phase)
+#
+# Behaviour today (the two-axis Outcome effect mapping is a later
+# SRD-83 step): a PHASE-level trip fails the phase, so the session
+# exits non-zero with the reason on stderr; the WORKLOAD-level trip
+# halts the remaining walk gracefully, so the session exits zero but
+# the later phase is never dispatched.
+#
+# Self-contained: runs on the default adapter with no extra params
+# (phases pace themselves via `rate:`). Run any scenario individually —
+# always under a sandbox --session-path; never from the project root,
+# which would write session state into ./sessions:
+#   nbrs run workload=examples/workloads/stop_conditions_coverage.yaml \
+#            scenario=<name> --session-path /tmp/sc/session
+
+# ── WORKLOAD shell (SRD-82 outermost) ────────────────────────────
+# After two child phases COMPLETE, `children_done >= 2` trips and the
+# walker halts the remaining walk. This is declared at the workload
+# scope (`each: workload`), so it rides the workload root kernel. It is
+# inert for the single-phase phase-level scenarios below: those phases
+# FAIL (children_failed increments, children_done does not), so the
+# predicate never reaches 2.
+stop_when:
+  - when: "children_done >= 2"
+    each: workload
+
+scenarios:
+
+  # ── PHASE shell — op_count wire ──────────────────────────────
+  # op_count climbs one per finished op. `op_count > 25` trips at
+  # ~op 26; `cycles: 600` is far beyond that, so a run that reaches
+  # 600 ops is the regression signal (bounded ~2.4 s at 4 ms/op, so a
+  # broken predicate can't hang the suite).
+  phase_op_count:
+    - phase_op_trip
+
+  # ── PHASE shell — elapsed_ms wire (time-based) ───────────────
+  phase_elapsed_ms:
+    - phase_time_trip
+
+  # ── WORKLOAD shell — children_done wire ──────────────────────
+  # step_a + step_b complete (children_done → 2) → the workload
+  # condition trips → step_c is never dispatched.
+  workload_children:
+    - step_a
+    - step_b
+    - step_c
+
+phases:
+
+  # `op_count > 25` over a 600-cycle phase. Each op echoes OP_TICK,
+  # so the count of OP_TICK lines in stdout is the op_count at stop.
+  # `rate: 250` (ops/sec) paces dispatch at ~4 ms/op with the generic
+  # activity rate limiter — adapter-agnostic, so this runs as-is on the
+  # default adapter (no `result-latency`, no `adapter=` needed). The
+  # pacing gives the drain loop's ~5 ms stop-condition checks time to
+  # observe op_count cross the threshold before the 600 cycles drain.
+  phase_op_trip:
+    cycles: 600
+    concurrency: 1
+    rate: 250
+    stop_when:
+      - when: "op_count > 25"
+    ops:
+      tick:
+        stmt: "OP_TICK"
+
+  # `elapsed_ms > 150` — the phase wall clock, not an op count. At
+  # 250 ops/sec this trips around op ~37, but the trigger is TIME: a
+  # slower-paced phase would trip at fewer ops.
+  phase_time_trip:
+    cycles: 600
+    concurrency: 1
+    rate: 250
+    stop_when:
+      - when: "elapsed_ms > 150"
+    ops:
+      tick:
+        stmt: "TIME_TICK"
+
+  # Three quick always-succeeding phases for the workload-shell
+  # scenario. STEP_A / STEP_B print; STEP_C must not (skipped on the
+  # workload trip after step_b completes).
+  step_a:
+    cycles: 2
+    concurrency: 1
+    ops:
+      mark:
+        stmt: "STEP_A"
+  step_b:
+    cycles: 2
+    concurrency: 1
+    ops:
+      mark:
+        stmt: "STEP_B"
+  step_c:
+    cycles: 2
+    concurrency: 1
+    ops:
+      mark:
+        stmt: "STEP_C"

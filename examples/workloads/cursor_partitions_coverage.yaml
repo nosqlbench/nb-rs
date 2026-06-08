@@ -26,6 +26,29 @@
 #   Fraction   — number containing `.` e.g.  0.53       → 53% of extent
 #   Literal    — bare integer          e.g.  100        → absolute ordinal 100
 #
+# A Form 2 list may end with one TAIL TOKEN that consumes the
+# unallocated remainder of the extent:
+#
+#   `*`        — remainder as ONE partition          "2%,10%,*"
+#   `...`      — repeat the preceding delta until
+#                the extent is used up               "90%,1%,..."
+#   `*/N`      — remainder divided into N equal
+#                partitions                          "90%,*/10"
+#   `*/recipe` — remainder shaped by recipe
+#                weights                             "90%,*/fib:5"
+#
+# Entry modifiers inside a Form 2 list:
+#
+#   `<delta>xN` — finite repetition                  "90%,1%x10"
+#   `~<delta>`  — gap: consume without emitting      "10%,~80%,10%"
+#
+# The whole spec follows the token grammar
+# `chunking [in window] [order]`:
+#
+#   `in start..end` — scope the chunking to a window "linear:4 in 20%..100%"
+#   order keyword   — unchanged | smallest_first |
+#                     largest_first | random          "fib:5 largest_first"
+#
 # `partitions(spec [, extent])` is the stdlib node that parses
 # the spec and materialises it against the given ordinal extent
 # (default 100 — so pure-percentage specs resolve in `[0, 100)`
@@ -51,19 +74,37 @@
 # end_ordinal,partition_count}` projections that the workload can
 # interpolate or read via stdlib helpers (`start_of(p)`, `end_of(p)`,
 # `idx_of(p)`, `cardinality(p)`, `mod_in(n,p)`, `at(p,i)`,
-# `clamp_in(n,p)`).
+# `clamp_in(n,p)`, `count_of(p)`, `random_in(p,seed)`,
+# `subdivide(p,n)`), or through the scalar dotted wires
+# (`q.cursor.idx`, `.partition_count`, `.start_pct`, `.end_pct`,
+# `.start_ordinal`, `.end_ordinal`) which also interpolate in
+# `{...}` text contexts.
 #
 # ── Scenario themes (one per shape) ───────────────────────────
 #   - Form 1 single sub-range, all number forms + brackets
 #   - Form 2 delta lists (pct, fraction, literal, mixed, with/without `*`)
+#   - Form 2 tail tokens (`...` fill, `*/N` split, `*/recipe`
+#     shaped) + their equivalence with explicit enumeration
+#   - Form 2 entry modifiers (`xN` repetition, `~` gaps)
+#   - Windowed chunking (`in start..end`)
+#   - Ordering suffix (largest_first / random)
 #   - Form 3 pre-baked recipes (linear, ratios, bin, fib, ln,
 #                                mul, geom, zipf, pareto,
 #                                front_heavy, back_heavy)
 #   - Cursor `over` clause: workload-param, iter-var, cross-cursor
 #   - Stdlib partition functions (cardinality, start/end_of,
-#                                  idx_of, mod_in, at, clamp_in)
+#                                  idx_of, mod_in, at, clamp_in,
+#                                  random_in, subdivide)
+#   - Scalar `q.cursor.*` dotted projections (bindings + text)
+#   - Partition-bound open-extent cursors (until_* over p)
+#   - Nested subdivision (`subdivide(outer, n)` as a source)
 #   - Reified custom-named cursor parameter
 #   - Cursor without `over` ignores the parameter
+#
+# Operator surfaces covered by the matching test file (no
+# scenario needed): phase-scoped CLI overrides
+# (`over_cursor_phase.cursor=`, `over_*.cursor=`) and the
+# `partition i/n [lo..hi)` status banner.
 
 params:
   # Workload-level default — exercised by the `over_workload_param`
@@ -90,7 +131,7 @@ scenarios:
   # ─────────────────────────────────────────────────────────────
 
   # Spec `"0..53%"` against extent 1000 → [0, 530).
-  # Percentage form: `53%` resolves to floor(53/100 * 1000) = 530.
+  # Percentage form: `53%` resolves to round(53/100 * 1000) = 530 (every partition boundary is the exact cumulative position, rounded once).
   form1_percentage_end:
     - form1_pct_phase
 
@@ -202,6 +243,138 @@ scenarios:
       phases: [emit_p]
 
   # ─────────────────────────────────────────────────────────────
+  # Form 2 tail tokens — `...` fill and `*/N` split
+  #
+  # Three spellings of "the first 90%, then the rest in ten
+  # 1%-of-the-whole chunks" — same partitions, different specs:
+  #
+  #   "90%,1%,…(×10)"  — explicit enumeration: chunk SIZE is
+  #                      declared against the whole; count is
+  #                      emergent.
+  #   "90%,1%,..."     — fill: repeat the last delta until the
+  #                      extent is used up. Size-anchored: change
+  #                      the head and the chunks stay 1% each.
+  #   "90%,*/10"       — split: divide the remainder into 10.
+  #                      Count-anchored: change the head and the
+  #                      chunk size rescales, the count stays 10.
+  #
+  # They coincide only because 100% - 90% = 10 × 1%.
+  # ─────────────────────────────────────────────────────────────
+
+  # Spec `"90%,1%,..."` resolved against default extent 100 →
+  #   [0, 90), [90, 91), [91, 92), … [99, 100)   (11 partitions)
+  # The fill token repeats the preceding 1% delta until the
+  # extent is used up. A final chunk smaller than the repeated
+  # delta is emitted truncated, never dropped.
+  form2_fill:
+    - for: "p in partitions(\"90%,1%,...\")"
+      phases: [emit_p]
+
+  # Spec `"90%,*/10"` resolved against default extent 100 →
+  #   [0, 90), [90, 91), [91, 92), … [99, 100)   (11 partitions)
+  # The split token divides the remainder into 10 near-equal
+  # partitions (sizes differ by at most one ordinal; rounding
+  # slack is distributed, not accumulated).
+  form2_star_split:
+    - for: "p in partitions(\"90%,*/10\")"
+      phases: [emit_p]
+
+  # Spec `"*/4"` resolved against default extent 100 →
+  #   [0, 25), [25, 50), [50, 75), [75, 100)
+  # Degenerate no-head case: the remainder is the whole extent,
+  # so `*/N` alone resolves exactly like `linear:N`.
+  form2_star_split_whole:
+    - for: "p in partitions(\"*/4\")"
+      phases: [emit_p]
+
+  # Spec `"3,2,..."` resolved against extent 10 →
+  #   [0, 3), [3, 5), [5, 7), [7, 9), [9, 10)
+  # Literal-delta fill: the final chunk truncates at the extent
+  # (1 ordinal instead of 2) — "until used up" emits the short
+  # tail rather than dropping it.
+  form2_fill_truncates:
+    - for: "p in partitions(\"3,2,...\", 10)"
+      phases: [emit_p]
+
+  # Spec `"90%,1%x10"` resolved against default extent 100 →
+  # the same 11 partitions as the fill / split spellings.
+  # `<delta>xN` is finite repetition: size AND count both
+  # declared (the fourth spelling of the 90/10 family).
+  form2_repetition:
+    - for: "p in partitions(\"90%,1%x10\")"
+      phases: [emit_p]
+
+  # Spec `"10%,~80%,10%"` resolved against default extent 100 →
+  #   [0, 10) idx=0, [90, 100) idx=1
+  # `~<delta>` is a gap: it consumes extent without emitting a
+  # partition. The walk stays contiguous; the emitted set skips
+  # the gap; idx numbers count emitted partitions only.
+  form2_gap:
+    - for: "p in partitions(\"10%,~80%,10%\")"
+      phases: [emit_p]
+
+  # Spec `"50%,*/ratios:1,3"` resolved against extent 1000 →
+  #   [0, 500), [500, 625), [625, 1000)
+  # `*/recipe:args` shapes the remainder by the recipe's
+  # normalised weights (here 25% / 75% of the 500-ordinal
+  # remainder). `*/N` is the equal-count special case.
+  form2_star_shaped:
+    - for: "p in partitions(\"50%,*/ratios:1,3\", 1000)"
+      phases: [emit_p]
+
+  # ─────────────────────────────────────────────────────────────
+  # Windowed chunking — `<chunking> in <window>`
+  #
+  # The `in` clause scopes the chunking to a Form 1 window; the
+  # chunking resolves against the window's range, so percentages
+  # inside it are WINDOW-relative. Without `in`, the chunking
+  # spans the whole extent.
+  # ─────────────────────────────────────────────────────────────
+
+  # Spec `"linear:4 in 20%..100%"` against extent 1000 →
+  # window [200, 1000), four 200-ordinal chunks:
+  #   [200, 400), [400, 600), [600, 800), [800, 1000)
+  windowed_chunking:
+    - for: "p in partitions(\"linear:4 in 20%..100%\", 1000)"
+      phases: [emit_p]
+
+  # ─────────────────────────────────────────────────────────────
+  # Ordering suffix — `unchanged | smallest_first | largest_first | random`
+  #
+  # A trailing order keyword reorders the resolved list for
+  # iteration. The size sorts are NAMED FOR THEIR AXIS:
+  # `smallest_first` / `largest_first` key on partition
+  # CARDINALITY (stable). Position order is always the
+  # generation order for a contiguous list — that's `unchanged`
+  # — so the bare direction words `ascending` / `descending`
+  # are rejected with a diagnostic teaching these spellings.
+  # `random` is a deterministic shuffle seeded from the spec
+  # text (same spec → same order, every run). Partition `idx`
+  # keeps identifying the generation position, so the emitted
+  # idx sequence shows the iteration schedule.
+  #
+  # `unchanged` and `random` are a deliberate common-subset
+  # vocabulary with comprehension traversal orders (SRD 18c);
+  # comprehensions additionally offer algorithm-specific
+  # strategies that do not apply to partition lists, and the
+  # size sorts are partition-specific (the size axis only
+  # exists for interval lists).
+  # ─────────────────────────────────────────────────────────────
+
+  # `fib:5 largest_first` → iteration starts at the largest
+  # partition (generated last): idx sequence 4, 3, 2, 1, 0.
+  order_largest_first:
+    - for: "p in partitions(\"fib:5 largest_first\")"
+      phases: [emit_p]
+
+  # `linear:4 random` → a deterministic permutation of the four
+  # quarter-partitions. The matching test runs the scenario
+  # twice and asserts identical sequences.
+  order_random:
+    - for: "p in partitions(\"linear:4 random\")"
+      phases: [emit_p]
+
+  # ─────────────────────────────────────────────────────────────
   # Form 3 — pre-baked recipes
   #
   # A recipe `name:args` expands to a weight list, which is then
@@ -281,7 +454,7 @@ scenarios:
   # `"ln:5"` → [ln 2, ln 3, ln 4, ln 5, ln 6]
   #         ≈ [0.693, 1.099, 1.386, 1.609, 1.792]  sum ≈ 6.58
   # Normalised → ~10.5%, ~16.7%, ~21.1%, ~24.4%, ~27.2%
-  # → [0, 10), [10, 27), [27, 48), [48, 72), [72, 100).
+  # → [0, 11), [11, 27), [27, 48), [48, 73), [73, 100).
   #
   # The defining property is that GAPS between adjacent weights
   # SHRINK as the index grows: 1.099 - 0.693 = 0.406, then 0.288,
@@ -480,8 +653,8 @@ scenarios:
 
   # Shape 2: `over p` — names the iter-var bound by the enclosing
   # `for:`. The spec `partitions("linear:3", 1000)` resolves
-  # against extent 1000 to three equal partitions:
-  #   [0, 333), [333, 666), [666, 1000)
+  # against extent 1000 to three near-equal partitions:
+  #   [0, 333), [333, 667), [667, 1000)   (slack-distributed rounding)
   # The phase runs three times; per iteration `q` narrows to the
   # active partition.
   over_iter_var:
@@ -568,6 +741,79 @@ scenarios:
   fn_clamp_in:
     - for: "p in partitions(\"linear:1\", 100)"
       phases: [fn_clamp_in_phase]
+
+  # Same single-partition [0, 100). The phase iterates 5 cycles
+  # and emits `random_in(p, cycle)` — a deterministic xxHash3
+  # mapping of the seed into the partition's range. The test
+  # asserts every value lands in [0, 100) and that re-running
+  # the scenario reproduces the same sequence (hash, not RNG).
+  fn_random_in:
+    - for: "p in partitions(\"linear:1\", 100)"
+      phases: [fn_random_in_phase]
+
+  # `subdivide(p, n)` splits one partition into n near-equal
+  # sub-partitions (indices restart at 0, `base_extent`
+  # propagates, boundaries match the `*/N` spec token). The
+  # phase subdivides [0, 100) into 4 and emits the resulting
+  # PartitionList's display form.
+  fn_subdivide:
+    - for: "p in partitions(\"linear:1\", 100)"
+      phases: [fn_subdivide_phase]
+
+  # ─────────────────────────────────────────────────────────────
+  # Scalar `q.cursor.*` dotted projections
+  #
+  # A cursor declared with `over` exposes its resolved partition
+  # as typed scalar wires alongside the Ext value: `q.cursor.idx`,
+  # `.partition_count`, `.start_pct`, `.end_pct`, `.start_ordinal`,
+  # `.end_ordinal`. Dotted access flattens onto plain wires
+  # (`q__cursor__idx`), so the projections work in bindings AND
+  # in `{...}` text interpolation alike. Same values as the
+  # stdlib helper spellings (`idx_of(q.cursor)` etc.).
+  # ─────────────────────────────────────────────────────────────
+
+  # Three iterations of linear:3 against extent 1000; the phase
+  # reads every scalar projection through the dotted form and
+  # one directly in the op template's text context.
+  dotted_projections:
+    - for: "p in partitions(\"linear:3\", 1000)"
+      phases: [dotted_phase]
+
+  # ─────────────────────────────────────────────────────────────
+  # Partition-bound open-extent cursors
+  #
+  # An `until_*` cursor declared `over p` walks base-sized
+  # chunks within the partition's range and terminates the
+  # moment the partition is exhausted, whether or not the
+  # policy's time / pass / count target was reached. The base
+  # keeps its meaning (pass counting stays base-relative); the
+  # partition end is a hard cap on growth.
+  # ─────────────────────────────────────────────────────────────
+
+  # `until_passes(10, 5)` wants 5 passes of 10 = 50 cycles, but
+  # the partition [0, 25) caps it: 10 + 10 + 5 = 25 emits.
+  open_extent_over:
+    - for: "p in partitions(\"0..25\", 100)"
+      phases: [open_extent_phase]
+
+  # ─────────────────────────────────────────────────────────────
+  # Nested subdivision — `subdivide(outer, n)` as a source
+  #
+  # A coarse outer iteration over two partitions, each split
+  # into a fine inner iteration of 2 sub-partitions, without
+  # re-parsing a spec. The inner clause resolves `outer` through
+  # the kernel's scope chain (kernel-aware comprehension source,
+  # SRD 71 §"Modulo and other index-arithmetic compositions").
+  #
+  # `"50%,*"` against extent 1000 → [0, 500), [500, 1000); each
+  # subdivides into two 250-ordinal windows → four leaf runs:
+  #   [0, 250), [250, 500), [500, 750), [750, 1000)
+  # ─────────────────────────────────────────────────────────────
+  hierarchical_sweep:
+    - for: "outer in partitions(\"50%,*\", 1000)"
+      phases:
+        - for: "inner in subdivide(outer, 2)"
+          phases: [emit_inner]
 
   # ─────────────────────────────────────────────────────────────
   # Reified custom-named cursor parameters
@@ -825,6 +1071,84 @@ phases:
       emit:
         adapter: stdout
         stmt: "cp/fn clamp_in v={v}"
+
+  fn_random_in_phase:
+    # random_in(p, cycle) hashes the cycle into [0..100) — every
+    # value inside the partition, deterministic per seed.
+    cycles: 5
+    concurrency: 1
+    bindings: |
+      v := random_in(p, cycle)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/fn random_in v={v}"
+
+  fn_subdivide_phase:
+    # subdivide(p, 4) over [0..100) → PartitionList[4] =
+    # [0..25),[25..50),[50..75),[75..100). Emitted via the
+    # list's display form.
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      subs := subdivide(p, 4)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/fn subdivide subs={subs}"
+
+  # ── Scalar dotted projection phase ────────────────────────────
+
+  dotted_phase:
+    # Every scalar projection read via the dotted form in
+    # bindings, plus one (`end_ordinal`) interpolated directly
+    # in the op template's text context to prove the `{...}`
+    # path resolves dotted names too.
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over p
+      i := q.cursor.idx
+      n := q.cursor.partition_count
+      lo := q.cursor.start_ordinal
+      hi := q.cursor.end_ordinal
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/dotted i={i} n={n} lo={lo} hi={hi} ord={q.cursor.end_ordinal}"
+
+  # ── Nested subdivision phase ──────────────────────────────────
+
+  emit_inner:
+    # One line per (outer, inner) pair: the outer window the
+    # inner sub-partition came from, and the inner bounds.
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      oi := idx_of(outer)
+      ii := idx_of(inner)
+      lo := start_of(inner)
+      hi := end_of(inner)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/nested outer={oi} inner={ii} lo={lo} hi={hi}"
+
+  # ── Partition-bound open-extent phase ─────────────────────────
+
+  open_extent_phase:
+    # `until_passes(10, 5)` over partition [0, 25): the policy
+    # wants 50 cycles but the partition cap exhausts the source
+    # at 25. No `cycles:` — the cursor's extent drives the loop;
+    # the test counts emit lines.
+    concurrency: 1
+    bindings: |
+      cursor q = until_passes(10, 5) over p
+      n := q
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/open_extent n={n}"
 
   # ── Reified params phases ─────────────────────────────────────
 

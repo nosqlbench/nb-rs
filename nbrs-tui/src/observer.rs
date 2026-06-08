@@ -887,6 +887,25 @@ pub fn unreached_phase_exit_code(
             && matches!(p.status, PhaseStatus::Pending))
         .collect();
     if unreached.is_empty() { return None; }
+    // A user-initiated stop (Ctrl-C) intentionally leaves later phases
+    // unrun — that's not an error, and dumping the whole pending list is
+    // noise. Exit with the conventional SIGINT code, no phase dump (the
+    // "graceful shutdown requested" notice already fired). The dump below
+    // is reserved for the genuine case: a phase failed and stopped the
+    // run, leaving downstream phases stranded.
+    if nbrs_activity::session_signals::stop_requested() {
+        return Some(130);
+    }
+    // An SRD-83 workload-shell stop condition also intentionally halts
+    // the walk, deliberately leaving the tail phases unrun. That is a
+    // graceful early stop, not stranding-by-failure (a failed phase
+    // exits via the `run_result` error path before this check). Treat
+    // it like Ctrl-C: no warning, clean exit. The trip was already
+    // logged ("workload stop condition tripped … halting remaining
+    // walk"), so the skip is not silent.
+    if nbrs_activity::session_signals::graceful_stop_requested() {
+        return None;
+    }
     eprintln!();
     eprintln!("warning: {} pre-mapped phase(s) were not executed:",
         unreached.len());

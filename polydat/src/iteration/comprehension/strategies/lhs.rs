@@ -18,6 +18,20 @@
 //! 1-axis Lhs is degenerate (equivalent to Shuffle); spec
 //! §5.8 emits a warning when this composition is detected
 //! (handled in `validate.rs`).
+//!
+//! ## References
+//!
+//! - M. D. McKay, R. J. Beckman, W. J. Conover, "A Comparison of
+//!   Three Methods for Selecting Values of Input Variables in the
+//!   Analysis of Output from a Computer Code," *Technometrics* 21(2)
+//!   (1979), 239–245.
+//!   doi:[10.2307/1268522](https://doi.org/10.2307/1268522). The
+//!   original Latin Hypercube design.
+//! - The defining property: with `N` samples each axis is stratified
+//!   into `N` equal bins and **each bin is hit exactly once** — i.e.
+//!   the per-axis stratum assignment is a permutation of `0..N`. This
+//!   marginal-stratification guarantee is verified in
+//!   `tests::lhs_latin_property_each_axis_is_a_permutation`.
 
 use super::{
     EvaluatedInput, MultiIndex, Strategy, Tuple, index_fn_dim, index_fn_size,
@@ -169,6 +183,36 @@ mod tests {
         let axis_1: std::collections::HashSet<u64> = out.iter().map(|mi| mi[1]).collect();
         assert_eq!(axis_0.len(), 10);
         assert_eq!(axis_1.len(), 10);
+    }
+
+    #[test]
+    fn lhs_latin_property_each_axis_is_a_permutation() {
+        // McKay/Beckman/Conover 1979: the defining marginal property
+        // — for N samples over a continuous box, each axis's N strata
+        // are exactly {0,1,…,N-1} (each bin used once). On a
+        // continuous box the stratum index passes through unscaled,
+        // so the per-axis value set must equal the full 0..N range.
+        use crate::iteration::comprehension::cardinality::{Interval, ProductMeasure};
+        let n = 16u64;
+        let idx = IndexFn::Continuous {
+            intervals: vec![
+                Interval::closed(0.0, 1.0),
+                Interval::closed(0.0, 1.0),
+                Interval::closed(0.0, 1.0),
+            ],
+            measure: ProductMeasure::Uniform,
+        };
+        let out = lhs_multi_indices(&idx, Some(n));
+        assert_eq!(out.len(), n as usize);
+        let expected: std::collections::BTreeSet<u64> = (0..n).collect();
+        for axis in 0..3 {
+            let got: std::collections::BTreeSet<u64> =
+                out.iter().map(|mi| mi[axis]).collect();
+            assert_eq!(
+                got, expected,
+                "axis {axis}: LHS strata must be a permutation of 0..{n}"
+            );
+        }
     }
 
     #[test]

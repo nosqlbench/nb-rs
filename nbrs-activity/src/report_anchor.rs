@@ -300,14 +300,12 @@ pub fn resolve(
 fn scenarios_in_session(
     conn: &rusqlite::Connection,
 ) -> Result<BTreeSet<String>, String> {
+    // `scenario` is per-execution metadata; read the latest
+    // execution's (falls back to legacy session_metadata).
     let mut out = BTreeSet::new();
-    let mut stmt = conn.prepare(
-        "SELECT value FROM session_metadata WHERE key = 'scenario'",
-    ).map_err(|e| format!("session_metadata query: {e}"))?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| format!("scenario rows: {e}"))?;
-    for row in rows {
-        let v = row.map_err(|e| format!("scenario row decode: {e}"))?;
+    if let Some(v) =
+        nbrs_metrics::reporters::sqlite::latest_execution_metadata_value(conn, "scenario")
+    {
         out.insert(v);
     }
     Ok(out)

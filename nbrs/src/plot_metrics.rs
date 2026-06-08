@@ -267,6 +267,23 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             {
                 opts.series_labels.push(k.to_string());
             }
+        } else if let Some(rest) = line.strip_prefix("color:").map(str::trim) {
+            // Channel encoding: hue keyed to the value of this label
+            // (one color per distinct value), instead of one color per
+            // series. `color: off` / `none` reverts to color-by-series.
+            opts.color_label = match rest {
+                "" | "off" | "none" => None,
+                k => Some(k.to_string()),
+            };
+        } else if let Some(rest) = line.strip_prefix("shape:").map(str::trim) {
+            // Channel encoding: marker shape keyed to the value of this
+            // label (one shape per distinct value). Orthogonal to
+            // `color:`. `shape: off` / `none` reverts to the single
+            // `marker` shape.
+            opts.shape_label = match rest {
+                "" | "off" | "none" => None,
+                k => Some(k.to_string()),
+            };
         } else if let Some(rest) = line.strip_prefix("x1:").map(str::trim) {
             // Paired-coordinate mode: x-positions come from
             // the *values* of this metricsql query, paired
@@ -285,6 +302,12 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             // sample. Only meaningful with paired `x1:`/`y1:`.
             opts.reduce = Some(parse_reduce_op(rest)
                 .map_err(|e| format!("reduce: {e}"))?);
+        } else if let Some(rest) = line.strip_prefix("executions:").map(str::trim) {
+            // How metric instances are selected across executions in
+            // a (refined) session: `latest-per-instance` (default),
+            // `all`, `latest`, or a specific `<exec_id>`.
+            opts.execution_selection = parse_execution_selection(rest)
+                .map_err(|e| format!("executions: {e}"))?;
         } else if let Some(rest) = line.strip_prefix("point-label1:").map(str::trim) {
             // Per-point text annotation source:
             //   * `*`        → Vary (auto-discover labels
@@ -672,6 +695,10 @@ struct PlotMetricsOpts {
     /// option default) → `ReduceOp::Avg`. Set via the
     /// `reduce:` directive.
     reduce: Option<ReduceOp>,
+    /// How metric instances are selected across the executions in
+    /// the session store. Set via the `executions:` directive
+    /// (`latest-per-instance` (default) / `all` / `latest` / `<n>`).
+    execution_selection: nbrs_metricsql::adapters::sqlite::ExecutionSelection,
     /// Per-point label annotation source. `None` ⇒ no
     /// per-point text. Configured via the long-form
     /// `point-label1:` directive, or the third positional
@@ -787,6 +814,20 @@ struct PlotMetricsOpts {
     marker: Option<String>,
     /// Marker radius in pixels. `None` ⇒ 3.
     marker_size: Option<f32>,
+    /// Channel encoding — color hue keyed to the *value* of this
+    /// label (one hue per distinct value), instead of one hue per
+    /// series. Lets a dense `series:` tuple (e.g. one line per
+    /// index-build cell) still read by a meaningful axis: all series
+    /// sharing this label's value get the same color. `None` ⇒ legacy
+    /// color-by-series-index. The legend then keys to the channel
+    /// (the distinct values) rather than every series.
+    color_label: Option<String>,
+    /// Channel encoding — marker shape keyed to the *value* of this
+    /// label (one shape per distinct value, cycling
+    /// [`crate::palette::MARKER_CYCLE`]). Orthogonal to `color_label`,
+    /// so `color: A` + `shape: B` is a recoverable color×shape grid.
+    /// `None` ⇒ the single `marker` shape (legacy).
+    shape_label: Option<String>,
     /// Hard-coded axis bounds. `None` for any side ⇒ derive
     /// from data with a 5% padding band. When set, that side's
     /// bound is used verbatim — useful for cross-plot
@@ -1463,6 +1504,25 @@ fn parse_reduce_op(s: &str) -> Result<ReduceOp, String> {
     }
 }
 
+/// Parse an `executions:` report directive into an
+/// [`nbrs_metricsql::adapters::sqlite::ExecutionSelection`].
+/// Accepts `latest-per-instance` (default), `all`, `latest`, or a
+/// bare execution id `<n>`.
+pub(crate) fn parse_execution_selection(
+    s: &str,
+) -> Result<nbrs_metricsql::adapters::sqlite::ExecutionSelection, String> {
+    use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+    match s.trim() {
+        "latest-per-instance" | "per-instance" | "" => Ok(ExecutionSelection::LatestPerInstance),
+        "all" => Ok(ExecutionSelection::All),
+        "latest" => Ok(ExecutionSelection::Latest),
+        other => other.parse::<u64>().map(ExecutionSelection::Specific).map_err(|_| format!(
+            "unknown execution selection `{other}` (expected: \
+             latest-per-instance, all, latest, or an execution id)"
+        )),
+    }
+}
+
 /// Decomposed pair from one of the compact `y1:` shorthand
 /// forms. Carries the two expanded metricsql expressions
 /// (one for x, one for y) plus an optional point-label
@@ -2134,6 +2194,8 @@ impl Default for PlotMetricsOpts {
             x_label: None,
             x_query: None,
             reduce: None,
+            execution_selection:
+                nbrs_metricsql::adapters::sqlite::ExecutionSelection::LatestPerInstance,
             point_label1: None,
             series_labels: Vec::new(),
             filters: Vec::new(),
@@ -2162,6 +2224,8 @@ impl Default for PlotMetricsOpts {
             line_width: None,
             marker: None,
             marker_size: None,
+            color_label: None,
+            shape_label: None,
             x_min: None,
             x_max: None,
             y_min: None,
@@ -2249,8 +2313,10 @@ pub fn is_no_data_error(msg: &str) -> bool {
     msg.contains(PLOT_NO_DATA_PREFIX)
 }
 
-/// Entry point — called from `plot::plot_command` when the
-/// first arg isn't `polydat`.
+/// Entry point for `nbrs report plot` / `nbrs plot` (the metrics-db
+/// plotting path), dispatched from `report_cmd` and the post-run
+/// report step in `run.rs`. Distinct from `wiring visualize`, which
+/// plots a wiring expression through the plotter adapter.
 pub fn plot_metrics_command(args: &[String]) {
     register_bundled_font();
 
@@ -2447,7 +2513,7 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
             .filter(|s| s.as_str() != "*")
             .cloned().collect();
         aggregated = pair_xy_coordinates(
-            &query_db, xq, yq, &series_labels, reduce,
+            &query_db, xq, yq, &series_labels, reduce, opts.execution_selection,
         )?;
         if aggregated.is_empty() {
             return Err(format!(
@@ -2459,7 +2525,7 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
         // Classic label-driven path: y-query (metricsql or
         // legacy SQL) → rows → bucket_rows → aggregate.
         rows = if let Some(q) = opts.query.as_deref() {
-            let r = rows_via_metricsql(&query_db, q)
+            let r = rows_via_metricsql(&query_db, q, opts.execution_selection)
                 .map_err(|e| format!("metricsql failed against '{}': {e}", query_db.display()))?;
             eprintln!("plot: y1 query against '{}': `{q}` → {} row(s)",
                 query_db.display(), r.len());
@@ -2582,7 +2648,7 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
             Some(q) => q,
             None => continue,  // shouldn't happen post-validate, but safe
         };
-        let rows2 = rows_via_metricsql(&query_db, q)
+        let rows2 = rows_via_metricsql(&query_db, q, opts.execution_selection)
             .map_err(|e| format!("{} metricsql failed against '{}': {e}",
                 axis.name, query_db.display()))?;
         eprintln!("plot: {} query against '{}': `{q}` → {} row(s)",
@@ -3570,24 +3636,18 @@ struct DbRow {
 fn series_via_metricsql(
     db_path: &Path,
     expr: &str,
+    selection: nbrs_metricsql::adapters::sqlite::ExecutionSelection,
 ) -> Result<Vec<nbrs_metricsql::eval::Series>, String> {
     use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
     use nbrs_metricsql::eval::{EvalContext, evaluate};
 
+    // SRD-77 — the DataSource applies the execution selection (default
+    // per-instance-latest); no implicit single-`exec_id` injection.
     let ds = SqliteDataSource::open(db_path)
-        .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
-    let mut parsed = nbrs_metricsql::parse(expr)
+        .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?
+        .with_execution_selection(selection);
+    let parsed = nbrs_metricsql::parse(expr)
         .map_err(|e| format!("parse metricsql: {e}"))?;
-    // SRD-77 — inject the implicit `exec_id="<latest>"` so the
-    // plot's series default to the latest execution.
-    {
-        let session_dir = db_path.parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_default();
-        let resolved = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
-            .specific_id();
-        nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut parsed, resolved);
-    }
     let (start_ms, end_ms) = match latest_sample_window(db_path) {
         Some((s, e)) => (s, e),
         None => return Ok(Vec::new()),
@@ -3605,24 +3665,21 @@ fn series_via_metricsql(
         .map_err(|e| format!("evaluate metricsql: {e}"))
 }
 
-fn rows_via_metricsql(db_path: &Path, expr: &str) -> Result<Vec<DbRow>, String> {
+fn rows_via_metricsql(
+    db_path: &Path,
+    expr: &str,
+    selection: nbrs_metricsql::adapters::sqlite::ExecutionSelection,
+) -> Result<Vec<DbRow>, String> {
     use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
     use nbrs_metricsql::eval::{EvalContext, evaluate};
 
+    // SRD-77 — the DataSource applies the execution selection
+    // (default per-instance-latest); no single-`exec_id` injection.
     let ds = SqliteDataSource::open(db_path)
-        .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
-    let mut parsed = nbrs_metricsql::parse(expr)
+        .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?
+        .with_execution_selection(selection);
+    let parsed = nbrs_metricsql::parse(expr)
         .map_err(|e| format!("parse metricsql: {e}"))?;
-    // SRD-77 — inject `exec_id="<latest>"` for the same reason
-    // as the series-emitting path above.
-    {
-        let session_dir = db_path.parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_default();
-        let resolved = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
-            .specific_id();
-        nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut parsed, resolved);
-    }
     // Anchor at the latest sample timestamp in the db so the
     // instant query picks up the freshest values. Lookback
     // covers cadence skew (counters and summaries land within
@@ -3843,6 +3900,7 @@ fn pair_xy_coordinates(
     y_query: &str,
     series_labels: &[String],
     reduce: ReduceOp,
+    selection: nbrs_metricsql::adapters::sqlite::ExecutionSelection,
 ) -> Result<BTreeMap<String, Vec<PlotPoint>>, String> {
     use std::collections::HashMap;
     type LabelKey = Vec<(String, String)>;
@@ -3855,8 +3913,8 @@ fn pair_xy_coordinates(
         k
     }
 
-    let x_series = series_via_metricsql(db_path, x_query)?;
-    let y_series = series_via_metricsql(db_path, y_query)?;
+    let x_series = series_via_metricsql(db_path, x_query, selection)?;
+    let y_series = series_via_metricsql(db_path, y_query, selection)?;
     eprintln!("plot: x1 query against '{}': `{x_query}` → {} series",
         db_path.display(), x_series.len());
     eprintln!("plot: y1 query against '{}': `{y_query}` → {} series",
@@ -3912,47 +3970,60 @@ fn pair_xy_coordinates(
             y_only += 1;
             continue;
         };
-        let mut pairs: Vec<(i64, f64, f64)> = s.samples.iter()
+        let y_vals: Vec<(i64, f64)> = s.samples.iter()
             .filter(|sm| sm.value.is_finite())
-            .filter_map(|sm| x_ts_map.get(&bucket_ts(sm.timestamp_ms))
-                .map(|xv| (sm.timestamp_ms, *xv, sm.value)))
+            .map(|sm| (sm.timestamp_ms, sm.value))
             .collect();
-        if pairs.is_empty() { continue; }
-        pairs.sort_by_key(|(ts, _, _)| *ts);
-        let sample_count = pairs.len();
+        if y_vals.is_empty() { continue; }
 
         let labels_map: std::collections::HashMap<String, String> = s.labels.iter()
             .filter(|(k, _)| k != "__name__")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        // For Avg / Last the point summarises `sample_count`
-        // inputs. For None each input becomes its own point
-        // with sample_count = 1. Each emitted point carries
-        // the full source-series labels so the renderer's
-        // `point-label1:` directive can surface them.
+        // `Avg` / `Last` are instant (Pareto) reductions: each series
+        // collapses to ONE point pairing the aggregate x with the
+        // aggregate y — INDEPENDENT of sample timestamps. A live,
+        // in-flight execution flushes cycles_total (x) on a cadence
+        // whose timestamp is newer than its last completed-cell
+        // recall_mean (y), so a per-timestamp join would wrongly drop
+        // the whole series. `None` is a range reduction and genuinely
+        // wants per-instant paired samples, so it keeps the join.
+        // Each point carries the full source-series labels so the
+        // renderer's `point-label1:` directive can surface them.
         let reduced: Vec<PlotPoint> = match reduce {
             ReduceOp::Avg => {
-                let n = sample_count as f64;
-                let (sx, sy) = pairs.iter().fold((0.0_f64, 0.0_f64),
-                    |(ax, ay), (_, x, y)| (ax + x, ay + y));
+                let xs: Vec<f64> = x_ts_map.values().copied().collect();
+                if xs.is_empty() { continue; }
+                let x_mean = xs.iter().sum::<f64>() / xs.len() as f64;
+                let y_mean = y_vals.iter().map(|(_, v)| *v).sum::<f64>() / y_vals.len() as f64;
                 vec![PlotPoint {
-                    x: sx / n, y: sy / n, count: sample_count,
+                    x: x_mean, y: y_mean, count: y_vals.len(),
                     labels: labels_map.clone(),
                 }]
             }
             ReduceOp::Last => {
-                let (_, x, y) = *pairs.last().unwrap();
+                let Some(x_last) = x_ts_map.iter()
+                    .max_by_key(|(ts, _)| **ts).map(|(_, v)| *v) else { continue };
+                let (_, y_last) = *y_vals.iter().max_by_key(|(ts, _)| *ts).unwrap();
                 vec![PlotPoint {
-                    x, y, count: sample_count,
+                    x: x_last, y: y_last, count: y_vals.len(),
                     labels: labels_map.clone(),
                 }]
             }
-            ReduceOp::None => pairs.iter()
-                .map(|(_, x, y)| PlotPoint {
-                    x: *x, y: *y, count: 1,
-                    labels: labels_map.clone(),
-                }).collect(),
+            ReduceOp::None => {
+                let mut pairs: Vec<(i64, f64, f64)> = y_vals.iter()
+                    .filter_map(|(ts, yv)| x_ts_map.get(&bucket_ts(*ts))
+                        .map(|xv| (*ts, *xv, *yv)))
+                    .collect();
+                if pairs.is_empty() { continue; }
+                pairs.sort_by_key(|(ts, _, _)| *ts);
+                pairs.iter()
+                    .map(|(_, x, y)| PlotPoint {
+                        x: *x, y: *y, count: 1,
+                        labels: labels_map.clone(),
+                    }).collect()
+            }
         };
 
         let series_key = series_tuple_key(&labels_map, series_labels);
@@ -4507,7 +4578,9 @@ fn render_plot(
         draw_chart(&root, series, &rendered_secondary, &title, &x_axis, &y_axis,
             x_range, y_range, metric,
             opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
-            opts.marker.as_deref(), opts.marker_size, legend_spec, legend_explicit,
+            opts.marker.as_deref(), opts.marker_size,
+            opts.color_label.as_deref(), opts.shape_label.as_deref(),
+            legend_spec, legend_explicit,
             &opts.series_overrides,
             x_log, y_log,
             x_ticks, y_ticks,
@@ -4522,7 +4595,9 @@ fn render_plot(
         draw_chart(&root, series, &rendered_secondary, &title, &x_axis, &y_axis,
             x_range, y_range, metric,
             opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
-            opts.marker.as_deref(), opts.marker_size, legend_spec, legend_explicit,
+            opts.marker.as_deref(), opts.marker_size,
+            opts.color_label.as_deref(), opts.shape_label.as_deref(),
+            legend_spec, legend_explicit,
             &opts.series_overrides,
             x_log, y_log,
             x_ticks, y_ticks,
@@ -4836,7 +4911,12 @@ fn resolve_tick_spec(
             Ok(source.extract_axis_values(axis))
         }
         TickSpec::Query(expr) => {
-            let rows = rows_via_metricsql(query_db, expr)
+            // Tick values define an axis range; use the default
+            // per-instance-latest selection.
+            let rows = rows_via_metricsql(
+                query_db, expr,
+                nbrs_metricsql::adapters::sqlite::ExecutionSelection::LatestPerInstance,
+            )
                 .map_err(|e| format!(
                     "tick metricsql `{expr}` against '{}': {e}",
                     query_db.display()))?;
@@ -5073,6 +5153,41 @@ fn format_datapoint(y: f64) -> String {
     }
 }
 
+/// Vertices of the legend-key marker glyph for `shape`, centered at
+/// `c` with half-extent `s`, as a single filled polygon. Returning a
+/// plain `Vec` (rendered via one concrete `Polygon`) keeps every
+/// legend swatch one element type — composes like the line
+/// `PathElement` with no boxing, unlike a per-shape `DynElement`
+/// which would force `DB: 'a` against the borrowed backend. Mirrors
+/// the per-datapoint marker `match` closely enough that shape→series
+/// is recoverable from the key in grayscale (circle → octagon, plus
+/// / cross → plus outline).
+fn marker_poly(shape: &str, c: (i32, i32), s: i32) -> Vec<(i32, i32)> {
+    let (cx, cy) = c;
+    match shape {
+        "none" => vec![],
+        "square" => vec![(cx - s, cy - s), (cx + s, cy - s), (cx + s, cy + s), (cx - s, cy + s)],
+        "triangle" => vec![(cx, cy - s), (cx + s, cy + s), (cx - s, cy + s)],
+        "diamond" => vec![(cx, cy - s), (cx + s, cy), (cx, cy + s), (cx - s, cy)],
+        "plus" | "cross" => {
+            let t = (s / 2).max(1);
+            vec![
+                (cx - t, cy - s), (cx + t, cy - s), (cx + t, cy - t), (cx + s, cy - t),
+                (cx + s, cy + t), (cx + t, cy + t), (cx + t, cy + s), (cx - t, cy + s),
+                (cx - t, cy + t), (cx - s, cy + t), (cx - s, cy - t), (cx - t, cy - t),
+            ]
+        }
+        // circle → regular octagon (h ≈ 0.7·s), a round-enough key glyph.
+        _ => {
+            let h = (s * 7) / 10;
+            vec![
+                (cx + s, cy), (cx + h, cy + h), (cx, cy + s), (cx - h, cy + h),
+                (cx - s, cy), (cx - h, cy - h), (cx, cy - s), (cx + h, cy - h),
+            ]
+        }
+    }
+}
+
 fn draw_chart<DB>(
     root: &DrawingArea<DB, plotters::coord::Shift>,
     series: &BTreeMap<String, Vec<PlotPoint>>,
@@ -5088,6 +5203,10 @@ fn draw_chart<DB>(
     line_width: Option<f32>,
     marker_shape: Option<&str>,
     marker_size: Option<f32>,
+    // Channel encoding: color hue keyed to this label's value.
+    color_label: Option<&str>,
+    // Channel encoding: marker shape keyed to this label's value.
+    shape_label: Option<&str>,
     legend_spec: LegendSpec,
     legend_explicit: bool,
     series_overrides: &[PlotStyleOverride],
@@ -5219,6 +5338,29 @@ where
     // legend. See `natural_str_cmp`.
     let mut series_sorted: Vec<(&String, &Vec<PlotPoint>)> = series.iter().collect();
     series_sorted.sort_by(|(a, _), (b, _)| natural_str_cmp(a, b));
+
+    // Channel encoding (`color:` / `shape:`): when set, color and/or
+    // marker shape are keyed to the *value* of a chosen label rather
+    // than the series index, so a dense `series:` tuple (one line per
+    // index-build cell) still reads by a meaningful axis. Precompute
+    // each channel's distinct values in natural-sort order — the
+    // ordinal into that list selects the hue / shape, stable across
+    // every series. The per-series legend is then suppressed in favour
+    // of a compact channel legend drawn after the loop.
+    let channel_mode = color_label.is_some() || shape_label.is_some();
+    let distinct_label_values = |label: &str| -> Vec<String> {
+        let mut vals: Vec<String> = series.keys()
+            .filter_map(|k| parse_series_key_to_labels(k).get(label).cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter().collect();
+        vals.sort_by(|a, b| natural_str_cmp(a, b));
+        vals
+    };
+    let color_values: Vec<String> =
+        color_label.map(distinct_label_values).unwrap_or_default();
+    let shape_values: Vec<String> =
+        shape_label.map(distinct_label_values).unwrap_or_default();
+
     for (idx, (series_name, points)) in series_sorted.into_iter().enumerate() {
         // Find the first matching per-series style override (if
         // any). Fields the override sets win over the cascade
@@ -5231,15 +5373,43 @@ where
         let series_palette = ov.and_then(|o| o.palette.as_deref())
             .map(|s| crate::palette::resolve_or_default(Some(s)))
             .unwrap_or(palette);
+        // Channel ordinals (`color:` / `shape:`): the position of this
+        // series' channel-label value among the distinct values. All
+        // series sharing the value share the hue / shape.
+        let series_labels_map = (channel_mode || y_legend_format.is_some())
+            .then(|| parse_series_key_to_labels(series_name));
+        let channel_color_idx = color_label.zip(series_labels_map.as_ref())
+            .and_then(|(cl, m)| m.get(cl))
+            .and_then(|val| color_values.iter().position(|x| x == val));
+        let channel_shape = shape_label.zip(series_labels_map.as_ref())
+            .and_then(|(sl, m)| m.get(sl))
+            .and_then(|val| shape_values.iter().position(|x| x == val))
+            .map(crate::palette::series_marker);
         let color = ov.and_then(|o| o.color.as_deref())
             .and_then(parse_hex_color_for_override)
-            .unwrap_or_else(|| crate::palette::series_color(series_palette, idx));
+            .unwrap_or_else(|| crate::palette::series_color(
+                series_palette, channel_color_idx.unwrap_or(idx)));
         let stroke_width = ov.and_then(|o| o.width)
             .map(|w| stroke(w.max(0.0)))
             .unwrap_or(default_stroke);
         let line_kind = ov.and_then(|o| o.line.as_deref()).unwrap_or(default_line);
-        let marker_kind = ov.and_then(|o| o.marker.as_deref())
-            .unwrap_or(default_marker);
+        let ov_marker = ov.and_then(|o| o.marker.as_deref());
+        // Precedence: explicit per-series `style …:marker=` override
+        // wins; then the `shape:` channel; then `marker: auto` (cycle a
+        // distinct shape per series); else the single default marker.
+        let marker_kind = if let Some(m) = ov_marker {
+            if m == "auto" { crate::palette::series_marker(idx) } else { m }
+        } else if let Some(shape) = channel_shape {
+            shape
+        } else if default_marker == "auto" {
+            crate::palette::series_marker(idx)
+        } else {
+            default_marker
+        };
+        // Owned copy for the legend closures (which are `move` and
+        // outlive the borrow of any per-series override), so the
+        // legend key carries this series' marker shape.
+        let marker_for_legend = marker_kind.to_string();
         let m_size = ov.and_then(|o| o.size)
             .map(|s| msize(s.max(0.0) as i32))
             .unwrap_or(default_m_size);
@@ -5256,6 +5426,13 @@ where
         };
         let xy_pts: Vec<(f64, f64)> = points.iter().map(|p| (p.x, p.y)).collect();
 
+        // In channel mode (`color:`/`shape:`) the legend keys to the
+        // channels (a compact entry per distinct value, drawn after
+        // the loop), so the per-series legend entry is suppressed —
+        // otherwise every one of the (potentially hundreds of) series
+        // would get its own line in the box.
+        let register_series_label = !channel_mode;
+
         // Line component — solid (default), dashed, dotted (visual
         // approximation: short dashes), or none.
         match line_kind {
@@ -5266,14 +5443,22 @@ where
                 let swatch_len = fz(20);
                 let swatch_dash = fz(4) as u32;
                 let swatch_gap = fz(4) as u32;
-                chart.draw_series(plotters::series::DashedLineSeries::new(
+                let anno = chart.draw_series(plotters::series::DashedLineSeries::new(
                     xy_pts.iter().cloned(), dash, gap, color.stroke_width(stroke_width),
                 ))
-                .map_err(|e| format!("draw dashed line: {e}"))?
-                .label(series_label_for_legend.clone())
-                .legend(move |(x, y)| plotters::element::DashedPathElement::new(
-                    vec![(x, y), (x + swatch_len, y)], swatch_dash, swatch_gap,
-                    color.stroke_width(stroke_width)));
+                .map_err(|e| format!("draw dashed line: {e}"))?;
+                if register_series_label {
+                    anno.label(series_label_for_legend.clone())
+                    .legend(move |(x, y)| {
+                        EmptyElement::at((x, y))
+                            + plotters::element::DashedPathElement::new(
+                                vec![(0, 0), (swatch_len, 0)], swatch_dash, swatch_gap,
+                                color.stroke_width(stroke_width))
+                            + Polygon::new(
+                                marker_poly(&marker_for_legend, (swatch_len / 2, 0), m_size),
+                                color.filled())
+                    });
+                }
             }
             "dotted" => {
                 let dash = fz(2) as u32;
@@ -5281,23 +5466,39 @@ where
                 let swatch_len = fz(20);
                 let swatch_dash = fz(2) as u32;
                 let swatch_gap = fz(3) as u32;
-                chart.draw_series(plotters::series::DashedLineSeries::new(
+                let anno = chart.draw_series(plotters::series::DashedLineSeries::new(
                     xy_pts.iter().cloned(), dash, gap, color.stroke_width(stroke_width),
                 ))
-                .map_err(|e| format!("draw dotted line: {e}"))?
-                .label(series_label_for_legend.clone())
-                .legend(move |(x, y)| plotters::element::DashedPathElement::new(
-                    vec![(x, y), (x + swatch_len, y)], swatch_dash, swatch_gap,
-                    color.stroke_width(stroke_width)));
+                .map_err(|e| format!("draw dotted line: {e}"))?;
+                if register_series_label {
+                    anno.label(series_label_for_legend.clone())
+                    .legend(move |(x, y)| {
+                        EmptyElement::at((x, y))
+                            + plotters::element::DashedPathElement::new(
+                                vec![(0, 0), (swatch_len, 0)], swatch_dash, swatch_gap,
+                                color.stroke_width(stroke_width))
+                            + Polygon::new(
+                                marker_poly(&marker_for_legend, (swatch_len / 2, 0), m_size),
+                                color.filled())
+                    });
+                }
             }
             _ => {
                 let swatch_len = fz(20);
-                chart.draw_series(LineSeries::new(
+                let anno = chart.draw_series(LineSeries::new(
                     xy_pts.iter().cloned(), color.stroke_width(stroke_width)))
-                    .map_err(|e| format!("draw line: {e}"))?
-                    .label(series_label_for_legend.clone())
-                    .legend(move |(x, y)| PathElement::new(
-                        vec![(x, y), (x + swatch_len, y)], color.stroke_width(stroke_width)));
+                    .map_err(|e| format!("draw line: {e}"))?;
+                if register_series_label {
+                    anno.label(series_label_for_legend.clone())
+                    .legend(move |(x, y)| {
+                        EmptyElement::at((x, y))
+                            + PathElement::new(vec![(0, 0), (swatch_len, 0)],
+                                color.stroke_width(stroke_width))
+                            + Polygon::new(
+                                marker_poly(&marker_for_legend, (swatch_len / 2, 0), m_size),
+                                color.filled())
+                    });
+                }
             }
         }
 
@@ -5312,12 +5513,16 @@ where
                     .map_err(|e| format!("draw circles: {e}"))?;
             }
             "square" => {
-                let off = m_size as f64;
+                // Pixel-space marker (anchored at the data point via
+                // EmptyElement): `marker_poly` offsets are backend
+                // pixels, so the glyph keeps a fixed size regardless of
+                // the axis data-range. A data-space offset would scale
+                // with the value units — fatal on a narrow axis (e.g.
+                // recall ∈ [0.93, 1.0], where a ±3-*unit* square fills
+                // the whole chart).
                 chart.draw_series(xy_pts.iter().map(|p| {
-                    Rectangle::new(
-                        [(p.0 - off, p.1 - off), (p.0 + off, p.1 + off)],
-                        color.filled(),
-                    )
+                    EmptyElement::at(*p)
+                        + Polygon::new(marker_poly("square", (0, 0), m_size), color.filled())
                 })).map_err(|e| format!("draw squares: {e}"))?;
             }
             "triangle" => {
@@ -5326,14 +5531,9 @@ where
                     .map_err(|e| format!("draw triangles: {e}"))?;
             }
             "diamond" => {
-                let off = m_size as f64;
                 chart.draw_series(xy_pts.iter().map(|p| {
-                    Polygon::new(vec![
-                        (p.0, p.1 - off),
-                        (p.0 + off, p.1),
-                        (p.0, p.1 + off),
-                        (p.0 - off, p.1),
-                    ], color.filled())
+                    EmptyElement::at(*p)
+                        + Polygon::new(marker_poly("diamond", (0, 0), m_size), color.filled())
                 })).map_err(|e| format!("draw diamonds: {e}"))?;
             }
             "plus" => {
@@ -5342,16 +5542,16 @@ where
                     .map_err(|e| format!("draw plus: {e}"))?;
             }
             "cross" => {
-                let off = m_size as f64;
+                let off = m_size;
                 chart.draw_series(xy_pts.iter().flat_map(|p| {
-                    let p = *p;
+                    let sw = color.stroke_width(stroke_width);
+                    // Two backend-pixel strokes anchored at the data
+                    // point (see `square` for why pixel-space, not data).
                     [
-                        PathElement::new(vec![
-                            (p.0 - off, p.1 - off), (p.0 + off, p.1 + off),
-                        ], color.stroke_width(stroke_width)),
-                        PathElement::new(vec![
-                            (p.0 - off, p.1 + off), (p.0 + off, p.1 - off),
-                        ], color.stroke_width(stroke_width)),
+                        EmptyElement::at(*p)
+                            + PathElement::new(vec![(-off, -off), (off, off)], sw),
+                        EmptyElement::at(*p)
+                            + PathElement::new(vec![(-off, off), (off, -off)], sw),
                     ]
                 })).map_err(|e| format!("draw crosses: {e}"))?;
             }
@@ -5404,6 +5604,49 @@ where
                 chart.draw_series(annotated.into_iter().map(|(p, txt)| {
                     Text::new(txt, (p.x, p.y), style.clone())
                 })).map_err(|e| format!("draw point labels: {e}"))?;
+            }
+        }
+    }
+
+    // Channel legend (`color:` / `shape:`). The per-series legend was
+    // suppressed above; emit one compact entry per distinct channel
+    // value instead — a colored line+dot swatch for each `color:`
+    // value, a neutral-hue shape swatch for each `shape:` value — so
+    // color→value and shape→value stay recoverable from the key
+    // regardless of how many series the plot drew. Each entry is a
+    // zero-length series (no visible marks) carrying only the legend
+    // annotation — the same trick the pending-axis placeholder uses.
+    if channel_mode {
+        let neutral = plotters::style::RGBColor(80, 80, 80);
+        let swatch_len = fz(20);
+        if let Some(clabel) = color_label {
+            for (i, val) in color_values.iter().enumerate() {
+                let col = crate::palette::series_color(palette, i);
+                let label = format!("{clabel}={val}");
+                chart.draw_series(LineSeries::new(
+                    Vec::<(f64, f64)>::new().into_iter(),
+                    col.stroke_width(default_stroke)))
+                    .map_err(|e| format!("draw color-channel legend: {e}"))?
+                    .label(label)
+                    .legend(move |(x, y)| EmptyElement::at((x, y))
+                        + PathElement::new(vec![(0, 0), (swatch_len, 0)],
+                            col.stroke_width(default_stroke))
+                        + Circle::new((swatch_len / 2, 0), default_m_size, col.filled()));
+            }
+        }
+        if let Some(slabel) = shape_label {
+            for (i, val) in shape_values.iter().enumerate() {
+                let shape = crate::palette::series_marker(i).to_string();
+                let label = format!("{slabel}={val}");
+                chart.draw_series(LineSeries::new(
+                    Vec::<(f64, f64)>::new().into_iter(),
+                    neutral.stroke_width(default_stroke)))
+                    .map_err(|e| format!("draw shape-channel legend: {e}"))?
+                    .label(label)
+                    .legend(move |(x, y)| EmptyElement::at((x, y))
+                        + Polygon::new(
+                            marker_poly(&shape, (swatch_len / 2, 0), default_m_size),
+                            neutral.filled()));
             }
         }
     }
@@ -6010,6 +6253,673 @@ fn strip_line_comments(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_query_coalesces_across_executions() {
+        // SRD-77 data-oriented guard: a refined session has two
+        // executions — exec 1 ran limit=25 at t1; a LATER refine
+        // (exec 2, +1h) added limit=50 without re-running limit=25.
+        // The plot query must show BOTH points — coalescing per
+        // metric instance across executions (per-instance-latest, the
+        // default), not collapsing to the newest execution's data.
+        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use rusqlite::params;
+
+        let dir = std::env::temp_dir().join("nbrs_report_coalesce_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("metrics.db");
+        let _ = std::fs::remove_file(&db);
+        // Real schema, via the writer.
+        {
+            let _ = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
+        }
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        // Executions first (metric_instance FKs to them).
+        conn.execute("INSERT INTO executions (session,exec_id,verb,started_at_nanos) \
+                      VALUES ('s',1,'run',0)", []).unwrap();
+        conn.execute("INSERT INTO executions (session,exec_id,verb,started_at_nanos) \
+                      VALUES ('s',2,'refine',0)", []).unwrap();
+        conn.execute("INSERT INTO metric_family (name,type) VALUES ('recall_mean','gauge')", [])
+            .unwrap();
+        let fam: i64 = conn.query_row(
+            "SELECT id FROM metric_family WHERE name='recall_mean'", [], |r| r.get(0)).unwrap();
+        let mut insert = |exec: i64, limit: &str, ts: i64, mean: f64| {
+            // Canonical spec + instance_label rows the same way the
+            // writer does: every label (incl. exec_id/session) is an
+            // instance_label row; __name__ excluded from the spec body.
+            let mut labels = vec![
+                ("exec_id".to_string(), exec.to_string()),
+                ("limit".to_string(), limit.to_string()),
+                ("phase".to_string(), "query".to_string()),
+                ("session".to_string(), "s".to_string()),
+            ];
+            labels.sort();
+            let body: String = labels.iter()
+                .map(|(k, v)| format!("{k}=\"{v}\"")).collect::<Vec<_>>().join(",");
+            let spec = format!("recall_mean{{{body}}}");
+            conn.execute(
+                "INSERT INTO metric_instance (family_id, spec, session, exec_id) \
+                 VALUES (?1,?2,'s',?3)", params![fam, spec, exec]).unwrap();
+            let iid: i64 = conn.query_row(
+                "SELECT id FROM metric_instance WHERE spec=?1", params![spec], |r| r.get(0)).unwrap();
+            conn.execute(
+                "INSERT INTO instance_label (instance_id,key,value) \
+                 VALUES (?1,'__name__','recall_mean')", params![iid]).unwrap();
+            for (k, v) in &labels {
+                conn.execute("INSERT INTO instance_label (instance_id,key,value) VALUES (?1,?2,?3)",
+                    params![iid, k, v]).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO sample_value (instance_id,timestamp_ms,interval_ms,mean) \
+                 VALUES (?1,?2,0,?3)", params![iid, ts, mean]).unwrap();
+        };
+        let t1 = 1_000_000_i64;
+        let t2 = t1 + 3_600_000; // +1h, well outside the instant-query lookback
+        insert(1, "25", t1, 0.80);
+        insert(2, "50", t2, 0.90);
+        drop(conn);
+
+        let series = series_via_metricsql(&db, "recall_mean", ExecutionSelection::LatestPerInstance)
+            .expect("series_via_metricsql");
+        let limits: std::collections::BTreeSet<String> = series.iter()
+            .flat_map(|s| s.labels.iter().filter(|(k, _)| k == "limit").map(|(_, v)| v.clone()))
+            .collect();
+        assert!(
+            limits.contains("25") && limits.contains("50"),
+            "plot query must coalesce both executions' instances; got: {limits:?}"
+        );
+    }
+
+    #[test]
+    fn paired_plot_query_coalesces_across_executions() {
+        // The exact `recall_vs_qps_by_strategy` shape: the compact
+        // `(cycles_total_rate, recall_mean){…} by (…)` paired form →
+        // `pair_xy_coordinates` with `avg(...) by (...)`. Refined
+        // session: exec 1 ran limit=25 at t1; exec 2 (+1h) added
+        // limit=50. The plot must produce a point for BOTH.
+        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use rusqlite::params;
+
+        let dir = std::env::temp_dir().join("nbrs_paired_coalesce_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("metrics.db");
+        let _ = std::fs::remove_file(&db);
+        { let _ = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap(); }
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO executions (session,exec_id,verb,started_at_nanos) VALUES ('s',1,'run',0)", []).unwrap();
+        conn.execute("INSERT INTO executions (session,exec_id,verb,started_at_nanos) VALUES ('s',2,'refine',0)", []).unwrap();
+        for (fam, ty) in [("cycles_total", "counter"), ("recall_mean", "gauge")] {
+            conn.execute("INSERT INTO metric_family (name,type) VALUES (?1,?2)", params![fam, ty]).unwrap();
+        }
+        let fam_id = |name: &str| -> i64 {
+            conn.query_row("SELECT id FROM metric_family WHERE name=?1", params![name], |r| r.get(0)).unwrap()
+        };
+        // insert(family, value_col, exec, limit, ts, value/count)
+        let mut insert = |fam: &str, exec: i64, limit: &str, ts: i64, count: Option<i64>, mean: Option<f64>| {
+            let mut labels = vec![
+                ("exec_id".to_string(), exec.to_string()),
+                ("limit".to_string(), limit.to_string()),
+                ("phase".to_string(), "query".to_string()),
+                ("session".to_string(), "s".to_string()),
+            ];
+            labels.sort();
+            let body: String = labels.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect::<Vec<_>>().join(",");
+            let spec = format!("{fam}{{{body}}}");
+            conn.execute("INSERT INTO metric_instance (family_id, spec, session, exec_id) VALUES (?1,?2,'s',?3)",
+                params![fam_id(fam), spec, exec]).unwrap();
+            let iid: i64 = conn.query_row("SELECT id FROM metric_instance WHERE spec=?1", params![spec], |r| r.get(0)).unwrap();
+            conn.execute("INSERT INTO instance_label (instance_id,key,value) VALUES (?1,'__name__',?2)", params![iid, fam]).unwrap();
+            for (k, v) in &labels {
+                conn.execute("INSERT INTO instance_label (instance_id,key,value) VALUES (?1,?2,?3)", params![iid, k, v]).unwrap();
+            }
+            conn.execute("INSERT INTO sample_value (instance_id,timestamp_ms,interval_ms,count,mean) VALUES (?1,?2,1000,?3,?4)",
+                params![iid, ts, count, mean]).unwrap();
+        };
+        let t1 = 1_000_000_i64;
+        let t2 = t1 + 3_600_000;
+        insert("cycles_total", 1, "25", t1, Some(100), None); // rate 100
+        insert("recall_mean", 1, "25", t1, None, Some(0.80));
+        insert("cycles_total", 2, "50", t2, Some(200), None); // rate 200
+        insert("recall_mean", 2, "50", t2, None, Some(0.90));
+        drop(conn);
+
+        let pts = pair_xy_coordinates(
+            &db,
+            "avg(cycles_total_rate{phase=\"query\"}) by (limit)",
+            "avg(recall_mean{phase=\"query\"}) by (limit)",
+            &["limit".to_string()],
+            ReduceOp::Avg,
+            ExecutionSelection::LatestPerInstance,
+        ).expect("pair_xy_coordinates");
+        let n_points: usize = pts.values().map(|v| v.len()).sum();
+        assert_eq!(n_points, 2,
+            "paired plot must have a point for each execution's instance \
+             (limit=25 from exec 1, limit=50 from exec 2); got {n_points}: {pts:?}");
+    }
+
+    #[test]
+    fn stored_plot_path_defaults_to_per_instance_latest() {
+        // The `nbrs report all` path: run_stored_result builds
+        // [spec, --db, --output] and calls parse_args → render_one.
+        // The resulting opts MUST default to per-instance-latest so a
+        // refined session's report coalesces across executions.
+        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        let opts = parse_args(&[
+            "mean recall_mean over limit".to_string(),
+            "--db".to_string(),
+            std::env::temp_dir().join("nonexistent.db").to_string_lossy().into_owned(),
+        ]).expect("parse_args");
+        assert_eq!(
+            opts.execution_selection,
+            ExecutionSelection::LatestPerInstance,
+            "stored/report plots must default to per-instance-latest"
+        );
+    }
+
+    #[test]
+    fn report_survives_latest_execution_without_the_metric() {
+        // The EXACT reported scenario, written through the PRODUCTION
+        // metric writer (`reporter.report`) so the test can't drift
+        // from the real schema: 3 executions; recall_mean ran in
+        // exec 1 and 2, but the latest refine (exec 3) produced none
+        // of it (it re-ran index-build phases — modeled here by a
+        // different family under exec 3). Pinning to the global-latest
+        // execution (3) yields an EMPTY plot — the reported bug.
+        // Per-instance-latest coalesces from exec 2.
+        use nbrs_metrics::labels::Labels;
+        use nbrs_metrics::scheduler::Reporter;
+        use nbrs_metrics::snapshot::MetricSet;
+        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join("nbrs_latest_empty_exec_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("metrics.db");
+        let _ = std::fs::remove_file(&db);
+
+        {
+            let mut reporter =
+                nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
+            for (exec, verb) in [(1u64, "run"), (2, "refine"), (3, "refine")] {
+                reporter.insert_execution_start("s", exec, verb, None, 0, "", "");
+            }
+            // recall_mean under exec 1 and 2 (same logical instance —
+            // k=10); a different family under exec 3 so exec 3 has no
+            // recall_mean at all.
+            for (family, exec, value) in [
+                ("recall_mean", "1", 0.80),
+                ("recall_mean", "2", 0.85),
+                ("build_progress", "3", 1.0),
+            ] {
+                let mut snap = MetricSet::new(Duration::from_secs(1));
+                snap.insert_gauge(
+                    family,
+                    Labels::of("session", "s").with("exec_id", exec).with("k", "10"),
+                    value,
+                    Instant::now(),
+                );
+                reporter.report(&snap);
+            }
+            reporter.flush();
+        }
+
+        // The reported bug: pinning to the global-latest execution
+        // (3) yields nothing — exec 3 has no recall_mean.
+        let pinned_to_latest =
+            series_via_metricsql(&db, "recall_mean{exec_id=\"3\"}", ExecutionSelection::All)
+                .expect("series_via_metricsql");
+        assert!(pinned_to_latest.is_empty(),
+            "global-latest exec (3) has no recall_mean → empty (the reported bug)");
+
+        // The fix: per-instance-latest coalesces from exec 2.
+        let coalesced =
+            series_via_metricsql(&db, "recall_mean", ExecutionSelection::LatestPerInstance)
+                .expect("series_via_metricsql");
+        assert_eq!(coalesced.len(), 1,
+            "per-instance-latest finds recall from the newest exec that has it");
+        assert_eq!(
+            coalesced[0].labels.iter().find(|(k, _)| k == "exec_id").map(|(_, v)| v.as_str()),
+            Some("2"),
+            "coalesced recall comes from exec 2 (exec 3 had none)"
+        );
+    }
+
+    #[test]
+    fn live_in_flight_execution_plots_on_paired_chart() {
+        // The reported LIVE scenario, written through the production
+        // writer: 3 executions, the 3rd still RUNNING (disposition
+        // NULL). The `recall_vs_qps_by_strategy` shape pairs
+        // cycles_total_rate (x) with recall_mean (y). Mid-run, the
+        // in-flight execution's cadence-flushed cycles_total carries
+        // a NEWER timestamp than its last completed-cell recall_mean
+        // — the one thing the earlier paired test didn't model. The
+        // plot MUST still produce a point for the in-flight execution.
+        use nbrs_metrics::labels::Labels;
+        use nbrs_metrics::scheduler::Reporter;
+        use nbrs_metrics::snapshot::MetricSet;
+        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use rusqlite::params;
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join("nbrs_live_inflight_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("metrics.db");
+        let _ = std::fs::remove_file(&db);
+        {
+            let mut reporter =
+                nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
+            reporter.insert_execution_start("s", 1, "run", None, 0, "", "");
+            // No disposition update for exec 3 → in-flight (NULL).
+            reporter.insert_execution_start("s", 3, "refine", None, 0, "", "");
+            // (is_counter, exec_id, k, value)
+            let writes: [(bool, &str, &str, f64); 4] = [
+                (true, "1", "10", 100.0),
+                (false, "1", "10", 0.80),
+                (true, "3", "20", 200.0),
+                (false, "3", "20", 0.90),
+            ];
+            for (is_counter, exec, k, val) in writes {
+                let mut snap = MetricSet::new(Duration::from_secs(1));
+                let labels = Labels::of("session", "s")
+                    .with("exec_id", exec)
+                    .with("phase", "pvs_query_sweep")
+                    .with("k", k);
+                if is_counter {
+                    snap.insert_counter("cycles_total", labels, val as u64, Instant::now());
+                } else {
+                    snap.insert_gauge("recall_mean", labels, val, Instant::now());
+                }
+                reporter.report(&snap);
+            }
+            reporter.flush();
+        }
+        // Stamp timestamps: exec 1 (completed) is aligned; exec 3
+        // (in-flight) has cycles_total ticking 5s AFTER its last
+        // completed-cell recall_mean.
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            let upd = |fam: &str, exec: i64, ts: i64| {
+                conn.execute(
+                    "UPDATE sample_value SET timestamp_ms=?1 WHERE instance_id IN \
+                     (SELECT mi.id FROM metric_instance mi \
+                      JOIN metric_family f ON f.id=mi.family_id \
+                      WHERE mi.exec_id=?2 AND f.name=?3)",
+                    params![ts, exec, fam],
+                ).unwrap();
+            };
+            upd("cycles_total", 1, 1_000_000);
+            upd("recall_mean", 1, 1_000_000);
+            upd("recall_mean", 3, 10_000_000);
+            upd("cycles_total", 3, 10_005_000);
+        }
+
+        let pts = pair_xy_coordinates(
+            &db,
+            "avg(cycles_total_rate{phase=\"pvs_query_sweep\"}) by (k)",
+            "avg(recall_mean{phase=\"pvs_query_sweep\"}) by (k)",
+            &["k".to_string()],
+            ReduceOp::Avg,
+            ExecutionSelection::LatestPerInstance,
+        ).expect("pair_xy_coordinates");
+        let n: usize = pts.values().map(|v| v.len()).sum();
+        assert_eq!(n, 2,
+            "both the completed (k=10) and the in-flight (k=20) executions must \
+             plot a point, despite the in-flight cadence skew; got {n}: {pts:?}");
+    }
+
+    #[test]
+    fn paired_plot_keeps_every_complete_combo_drops_only_incomplete() {
+        // Mirrors `recall_vs_qps_by_strategy` with several strategy
+        // combos across a completed exec and an in-flight refine.
+        // EVERY combo that has BOTH cycles_total and recall_mean must
+        // plot a point (regardless of which execution produced each,
+        // or of in-flight cadence skew). A combo with cycles_total but
+        // no recall_mean yet (an in-flight query cell mid-run) is the
+        // ONLY thing that legitimately drops.
+        use nbrs_metrics::labels::Labels;
+        use nbrs_metrics::scheduler::Reporter;
+        use nbrs_metrics::snapshot::MetricSet;
+        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use rusqlite::params;
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join("nbrs_multicombo_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("metrics.db");
+        let _ = std::fs::remove_file(&db);
+
+        // (rerank, pruning, exec_id, has_recall)
+        let combos: &[(&str, &str, &str, bool)] = &[
+            ("rerank_def", "pruning_def", "1", true),   // complete (exec 1)
+            ("rerank_lim", "pruning_def", "1", true),   // complete (exec 1)
+            ("rerank_def", "pruning_off", "1", true),   // complete (exec 1)
+            ("rerank_def", "pruning_def", "2", true),   // re-run in-flight (exec 2)
+            ("rerank_lim", "pruning_off", "2", false),  // in-flight, recall not done yet
+        ];
+        {
+            let mut reporter =
+                nbrs_metrics::reporters::sqlite::SqliteReporter::new(&db).unwrap();
+            reporter.insert_execution_start("s", 1, "run", None, 0, "", "");
+            reporter.insert_execution_start("s", 2, "refine", None, 0, "", ""); // in-flight
+            for (rerank, pruning, exec, has_recall) in combos {
+                let base = || Labels::of("session", "s")
+                    .with("exec_id", *exec)
+                    .with("phase", "pvs_query_sweep")
+                    .with("rerank_k_strategy", *rerank)
+                    .with("pruning_strategy", *pruning)
+                    .with("k", "10").with("limit", "50");
+                let mut c = MetricSet::new(Duration::from_secs(1));
+                c.insert_counter("cycles_total", base(), 100, Instant::now());
+                reporter.report(&c);
+                if *has_recall {
+                    let mut r = MetricSet::new(Duration::from_secs(1));
+                    r.insert_gauge("recall_mean", base(), 0.9, Instant::now());
+                    reporter.report(&r);
+                }
+            }
+            reporter.flush();
+        }
+        // In-flight cadence skew: exec 2's cycles_total ticks AFTER
+        // its recall_mean.
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute("UPDATE sample_value SET timestamp_ms = instance_id * 1000", []).unwrap();
+            conn.execute(
+                "UPDATE sample_value SET timestamp_ms = timestamp_ms + 9000000 \
+                 WHERE instance_id IN (SELECT mi.id FROM metric_instance mi \
+                   JOIN metric_family f ON f.id=mi.family_id \
+                   WHERE mi.exec_id=2 AND f.name='cycles_total')", []).unwrap();
+        }
+
+        let pts = pair_xy_coordinates(
+            &db,
+            "avg(cycles_total_rate{phase=\"pvs_query_sweep\"}) by (rerank_k_strategy,pruning_strategy,k,limit)",
+            "avg(recall_mean{phase=\"pvs_query_sweep\"}) by (rerank_k_strategy,pruning_strategy,k,limit)",
+            &["rerank_k_strategy".to_string(), "pruning_strategy".to_string()],
+            ReduceOp::Avg,
+            ExecutionSelection::LatestPerInstance,
+        ).expect("pair_xy_coordinates");
+        let n: usize = pts.values().map(|v| v.len()).sum();
+        assert_eq!(n, 3,
+            "the 3 combos with both metrics must plot ((def,def) re-run, (lim,def), \
+             (def,off)); only the in-flight recall-less (lim,off) drops. got {n}: {pts:?}");
+    }
+
+    #[test]
+    fn report_metricsql_queries_produce_several_series() {
+        // End-to-end check of the ACTUAL `recall_vs_qps_by_strategy`
+        // queries against realistic session data: a 2x2 strategy grid
+        // (rerank x pruning) averaged over an outer dimension (sm),
+        // across a completed run and an in-flight refine, plus a
+        // non-query phase that the regex filter must exclude. Each
+        // metricsql query must yield SEVERAL series, and the paired
+        // plot must produce one point per strategy combo.
+        use nbrs_metrics::labels::Labels;
+        use nbrs_metrics::reporters::sqlite::SqliteReporter;
+        use nbrs_metrics::scheduler::Reporter;
+        use nbrs_metrics::snapshot::MetricSet;
+        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join("nbrs_several_series_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("metrics.db");
+        let _ = std::fs::remove_file(&db);
+
+        // Doesn't capture `reporter` — takes it per call, so no borrow
+        // conflict with the nested loops.
+        let report_metric = |reporter: &mut SqliteReporter, counter: bool, labels: Labels, c: u64, r: f64| {
+            let mut snap = MetricSet::new(Duration::from_secs(1));
+            if counter {
+                snap.insert_counter("cycles_total", labels, c, Instant::now());
+            } else {
+                snap.insert_gauge("recall_mean", labels, r, Instant::now());
+            }
+            reporter.report(&snap);
+        };
+
+        let reranks = ["rerank_def", "rerank_lim"];
+        let prunings = ["pruning_def", "pruning_off"];
+        let sms = ["OTHER", "ADA002"];
+        {
+            let mut reporter = SqliteReporter::new(&db).unwrap();
+            reporter.insert_execution_start("s", 1, "run", None, 0, "", "");
+            reporter.insert_execution_start("s", 2, "refine", None, 0, "", "");
+            let cell = |exec: &str, rr: &str, pr: &str, sm: &str| {
+                Labels::of("session", "s").with("exec_id", exec)
+                    .with("phase", "pvs_query_sweep")
+                    .with("rerank_k_strategy", rr).with("pruning_strategy", pr)
+                    .with("k", "10").with("limit", "50").with("sm", sm)
+            };
+            // exec 1: every strategy x sm combo, both metrics.
+            for rr in reranks {
+                for pr in prunings {
+                    for sm in sms {
+                        report_metric(&mut reporter, true, cell("1", rr, pr, sm), 100, 0.0);
+                        report_metric(&mut reporter, false, cell("1", rr, pr, sm), 0, 0.90);
+                    }
+                }
+            }
+            // exec 2 (in-flight): re-run one combo with newer recall.
+            report_metric(&mut reporter, true, cell("2", "rerank_def", "pruning_def", "OTHER"), 200, 0.0);
+            report_metric(&mut reporter, false, cell("2", "rerank_def", "pruning_def", "OTHER"), 0, 0.95);
+            // A non-query phase the `phase=~"pvs_query_sweep"` filter
+            // must exclude (cycles only, no recall).
+            report_metric(&mut reporter, true,
+                Labels::of("session", "s").with("exec_id", "1").with("phase", "fknn_rampup").with("k", "10"),
+                999, 0.0);
+            reporter.flush();
+        }
+
+        let x_q = "avg(cycles_total_rate{phase=~\"pvs_query_sweep\"}) \
+                   by (rerank_k_strategy,pruning_strategy,k,limit)";
+        let y_q = "avg(recall_mean{phase=~\"pvs_query_sweep\"}) \
+                   by (rerank_k_strategy,pruning_strategy,k,limit)";
+
+        // Each query yields one series per strategy combo (averaged
+        // over sm), 4 total — and the non-query phase is excluded.
+        let x_series = series_via_metricsql(&db, x_q, ExecutionSelection::LatestPerInstance)
+            .expect("x query");
+        let y_series = series_via_metricsql(&db, y_q, ExecutionSelection::LatestPerInstance)
+            .expect("y query");
+        assert_eq!(x_series.len(), 4,
+            "x query must produce 4 series (rerank x pruning), got {}: {:?}",
+            x_series.len(),
+            x_series.iter().map(|s| s.labels.clone()).collect::<Vec<_>>());
+        assert_eq!(y_series.len(), 4,
+            "y query must produce 4 series, got {}", y_series.len());
+        assert!(
+            x_series.iter().all(|s| !s.labels.iter().any(|(k, v)| k == "phase" && v == "fknn_rampup")),
+            "the non-query phase must be filtered out");
+
+        // The paired plot must produce one point per strategy combo.
+        let pts = pair_xy_coordinates(
+            &db, x_q, y_q,
+            &["rerank_k_strategy".to_string(), "pruning_strategy".to_string(), "k".to_string()],
+            ReduceOp::Avg, ExecutionSelection::LatestPerInstance,
+        ).expect("pair_xy_coordinates");
+        assert_eq!(pts.len(), 4,
+            "several series expected (one per strategy combo); got {}: {:?}",
+            pts.len(), pts.keys().collect::<Vec<_>>());
+        let total: usize = pts.values().map(|v| v.len()).sum();
+        assert_eq!(total, 4, "one point per strategy combo; got {total}");
+    }
+
+    /// Runs the real `recall_vs_qps_by_strategy` queries against the
+    /// CURRENT latest session db. `#[ignore]` so it never runs (or
+    /// fails) in the normal suite — invoke it against a live run with:
+    ///   cargo test -p nbrs --bin nbrs \
+    ///     report_queries_against_latest_session_db -- --ignored --nocapture
+    /// It prints what each query yields and FAILS if `recall_mean`
+    /// exists but the by-strategy grouping produces nothing — i.e. the
+    /// recall metric is missing the rerank/pruning/k/limit labels the
+    /// plot groups on (the data-shape bug, distinct from the query
+    /// code which `report_metricsql_queries_produce_several_series`
+    /// proves correct).
+    #[test]
+    #[ignore]
+    fn report_queries_against_latest_session_db() {
+        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        // Run via `cargo test`, `latest_metrics_db()` points at the
+        // TMPDIR sandbox — not your real `sessions/latest`. So prefer
+        // an explicit `NBRS_TEST_DB=...`, then the cwd-relative
+        // `sessions/latest` / `logs/latest`, then the default.
+        let db = std::env::var("NBRS_TEST_DB").ok()
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.exists())
+            .or_else(|| ["sessions/latest/metrics.db", "logs/latest/metrics.db"]
+                .iter().map(std::path::PathBuf::from).find(|p| p.exists()))
+            .unwrap_or_else(nbrs_activity::session::latest_metrics_db);
+        if !db.exists() {
+            eprintln!("no session db found (tried NBRS_TEST_DB, sessions/latest, \
+                       logs/latest, default {}) — nothing to check", db.display());
+            return;
+        }
+        eprintln!("checking queries against {}", db.display());
+        let x_q = "avg(cycles_total_rate{phase=~\"pvs_query_sweep\"}) \
+                   by (rerank_k_strategy,pruning_strategy,k,limit)";
+        let y_q = "avg(recall_mean{phase=~\"pvs_query_sweep\"}) \
+                   by (rerank_k_strategy,pruning_strategy,k,limit)";
+        let dump = |label: &str, q: &str| -> usize {
+            let s = series_via_metricsql(&db, q, ExecutionSelection::LatestPerInstance)
+                .unwrap_or_default();
+            eprintln!("{label}: `{q}` → {} series", s.len());
+            for ser in s.iter().take(12) { eprintln!("    {:?}", ser.labels); }
+            s.len()
+        };
+        let nx = dump("x (cycles_total_rate)", x_q);
+        let ny = dump("y (recall_mean)", y_q);
+
+        // What dimensions does recall_mean ACTUALLY carry? (across all
+        // executions, so an empty result truly means "no recall".)
+        let raw = series_via_metricsql(&db, "recall_mean", ExecutionSelection::All)
+            .unwrap_or_default();
+        eprintln!("raw recall_mean (all executions) → {} series; sample labels:", raw.len());
+        for ser in raw.iter().take(5) {
+            let mut keys: Vec<&str> = ser.labels.iter().map(|(k, _)| k.as_str()).collect();
+            keys.sort();
+            eprintln!("    keys={keys:?}  labels={:?}", ser.labels);
+        }
+
+        if !raw.is_empty() {
+            assert!(ny > 0,
+                "recall_mean has {} series but the by-(rerank_k_strategy,pruning_strategy,k,limit) \
+                 query produced 0 — your recall_mean instances are missing one of those grouping \
+                 labels (or their phase != 'pvs_query_sweep'). See the printed keys above.",
+                raw.len());
+            assert!(nx > 0,
+                "recall_mean produced series but cycles_total_rate produced 0 — \
+                 the qps axis has no data for those phases.");
+        }
+    }
+
+    #[test]
+    fn marker_auto_cycles_and_renders() {
+        // The cycle hands each series a distinct literature shape,
+        // wrapping after four.
+        assert_eq!(crate::palette::series_marker(0), "circle");
+        assert_eq!(crate::palette::series_marker(1), "square");
+        assert_eq!(crate::palette::series_marker(2), "triangle");
+        assert_eq!(crate::palette::series_marker(3), "diamond");
+        assert_eq!(crate::palette::series_marker(4), "circle");
+
+        // Each legend glyph is one concrete polygon (vertex counts).
+        assert_eq!(marker_poly("square", (0, 0), 4).len(), 4);
+        assert_eq!(marker_poly("triangle", (0, 0), 4).len(), 3);
+        assert_eq!(marker_poly("diamond", (0, 0), 4).len(), 4);
+        assert_eq!(marker_poly("circle", (0, 0), 4).len(), 8); // octagon
+        assert!(marker_poly("none", (0, 0), 4).is_empty());
+
+        // End-to-end: a 3-series chart with `marker: auto` renders
+        // (marker overlay + per-series legend polygon) without error.
+        register_bundled_font();
+        let out = std::env::temp_dir().join("nbrs-marker-auto-smoke.png");
+        {
+            let root = BitMapBackend::new(&out, (480, 320)).into_drawing_area();
+            let mut series: BTreeMap<String, Vec<PlotPoint>> = BTreeMap::new();
+            for (name, base) in [("alpha", 1.0), ("beta", 2.0), ("gamma", 3.0)] {
+                series.insert(name.to_string(), (0..4).map(|i| PlotPoint {
+                    x: i as f64,
+                    y: base + i as f64 * 0.1,
+                    count: 1,
+                    labels: std::collections::HashMap::new(),
+                }).collect());
+            }
+            let res = draw_chart(
+                &root, &series, &[], "title", "x", "y",
+                0.0..3.0, 0.0..4.0, "metric",
+                None, None, None, Some("auto"), None,
+                None, None,
+                LegendSpec::Position(SeriesLabelPosition::UpperRight), false,
+                &[], false, false, &[], &[], None,
+                DatapointsMode::None, None, &[], 1.0,
+            );
+            assert!(res.is_ok(), "marker:auto render failed: {res:?}");
+            root.present().expect("present chart");
+        }
+        assert!(
+            std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false),
+            "expected a non-empty PNG at {}", out.display());
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn color_and_shape_channel_directives_parse() {
+        // `color:` / `shape:` set the channel labels; `off`/`none`
+        // clear them back to legacy per-series-index styling.
+        let opts = parse_spec(
+            "x over y\nseries: a,b\ncolor: rerank_k_strategy\nshape: pruning_strategy")
+            .unwrap();
+        assert_eq!(opts.color_label.as_deref(), Some("rerank_k_strategy"));
+        assert_eq!(opts.shape_label.as_deref(), Some("pruning_strategy"));
+        let opts = parse_spec("x over y\ncolor: off\nshape: none").unwrap();
+        assert_eq!(opts.color_label, None);
+        assert_eq!(opts.shape_label, None);
+    }
+
+    #[test]
+    fn channel_mode_renders_with_narrow_axis() {
+        // Regression: pixel-space markers. With color/shape keyed to
+        // labels and a NARROW y data-range (recall ∈ [0.93, 1.0]), the
+        // `square`/`diamond` glyphs must stay a few pixels — a
+        // data-space offset would fill the whole chart. Render must
+        // succeed and leave the markers as bounded glyphs.
+        register_bundled_font();
+        let out = std::env::temp_dir().join("nbrs-channel-smoke.png");
+        {
+            let root = BitMapBackend::new(&out, (480, 320)).into_drawing_area();
+            // Series keyed by (rerank, pruning) so the channel extractor
+            // finds the label values in the series name.
+            let mut series: BTreeMap<String, Vec<PlotPoint>> = BTreeMap::new();
+            for rerank in ["rerank_def", "rerank_lim"] {
+                for pruning in ["pruning_def", "pruning_off"] {
+                    let key = format!("rerank={rerank}, pruning={pruning}");
+                    series.insert(key, (0..4).map(|i| PlotPoint {
+                        x: 70.0 + i as f64,
+                        // Narrow range near 1.0 — the bug's trigger.
+                        y: 0.94 + i as f64 * 0.01,
+                        count: 1,
+                        labels: std::collections::HashMap::new(),
+                    }).collect());
+                }
+            }
+            let res = draw_chart(
+                &root, &series, &[], "title", "x", "y",
+                65.0..75.0, 0.93..1.0, "metric",
+                None, None, None, None, None,
+                Some("rerank"), Some("pruning"),
+                LegendSpec::Position(SeriesLabelPosition::LowerRight), false,
+                &[], false, false, &[], &[], None,
+                DatapointsMode::None, None, &["rerank".into(), "pruning".into()], 1.0,
+            );
+            assert!(res.is_ok(), "channel render failed: {res:?}");
+            root.present().expect("present chart");
+        }
+        assert!(
+            std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false),
+            "expected a non-empty PNG at {}", out.display());
+        let _ = std::fs::remove_file(&out);
+    }
 
     #[test]
     fn agg_prefix_rewrites_to_dotted() {

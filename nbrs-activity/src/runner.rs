@@ -28,10 +28,10 @@ use nbrs_workload::tags::TagFilter;
 pub const KNOWN_PARAMS: &[&str] = &[
     // Activity-level
     "adapter", "driver", "workload", "op", "cycles", "concurrency",
-    "rate", "errors", "seq", "tags", "format",
+    "rate", "errors", "error_rate_max", "seq", "tags", "format",
     "filename", "separator", "header", "color",
     "stanza_concurrency", "sc", "scenario", "dryrun", "summary", "metrics", "limit",
-    "profiler", "profiler_callgraph", "tui",
+    "profiler", "profiler_callgraph", "tui", "inspector",
     "latency-cadences", "latency_cadences",
     "jobname", "instance", "prompush_apikeyfile",
     "resume", "resume_latest", "force_retry_failed",
@@ -581,6 +581,21 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let mut error_spec = merged_params.get("errors")
         .cloned()
         .unwrap_or_else(|| ".*:warn,stop".to_string());
+    // Feature B — session-wide error-rate circuit-breaker default.
+    // A phase fails once >this share of its ops error (after a
+    // minimum op count). Per-phase `error_rate_max:` overrides it;
+    // set `error_rate_max=1` (or higher) to disable. Default 0.1.
+    let error_rate_max: Option<f64> = match merged_params.get("error_rate_max") {
+        Some(s) => match s.trim().parse::<f64>() {
+            Ok(v) if v >= 0.0 => Some(v),
+            _ => {
+                eprintln!("error: error_rate_max must be a non-negative number \
+                           (e.g. 0.1 = 10%); got '{s}'");
+                std::process::exit(2);
+            }
+        },
+        None => Some(0.1),
+    };
     // SRD-44 §"--force-retry-failed": when set on a resume
     // invocation, prepend a `.*:retry,warn` rule to the errors
     // cascade so any failure surfaces a retry rather than the
@@ -934,7 +949,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             ));
         }
         for w in &workload.report_warnings {
-            eprintln!("warning: report: {w}");
+            crate::diag!(crate::observer::LogLevel::Warn, "report: {w}");
         }
     }
 
@@ -1265,13 +1280,20 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let sqlite_path = session.metrics_path();
     let sqlite_reporter = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&sqlite_path)
         .map(|mut r| {
+            // `session` is the one session-INVARIANT key; everything
+            // else varies per execution and goes to
+            // execution_metadata so a refine doesn't clobber a prior
+            // execution's values.
+            let exec_id = session.execution.exec_id;
+            let sid = session.id.clone();
             r.set_metadata("session", &session.id);
-            r.set_metadata("workload", &session.workload);
-            r.set_metadata("scenario", &session.scenario);
-            r.set_metadata("start_time", &format!("{}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
+            r.set_execution_metadata(&sid, exec_id, "workload", &session.workload);
+            r.set_execution_metadata(&sid, exec_id, "scenario", &session.scenario);
+            r.set_execution_metadata(&sid, exec_id, "start_time", &format!("{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
             for (k, v) in &merged_params {
-                r.set_metadata(&format!("param.{k}"), v);
+                r.set_execution_metadata(&sid, exec_id, &format!("param.{k}"), v);
             }
             // Reproducibility: stash the raw workload YAML and the
             // CLI params verbatim so the metrics db alone is enough
@@ -1284,7 +1306,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             //     WHERE key='cli_params';"  (one key=value per line)
             // No file-tree dependency, no inferred reconstruction.
             if let Some(yaml) = workload_source_text.as_deref() {
-                r.set_metadata("workload_yaml", yaml);
+                r.set_execution_metadata(&sid, exec_id, "workload_yaml", yaml);
             }
             // CLI params (the raw `params` HashMap before merge with
             // workload defaults) — these are the operator's actual
@@ -1295,7 +1317,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             let cli_text: String = cli_keys.iter()
                 .filter_map(|k| params.get(*k).map(|v| format!("{k}={v}")))
                 .collect::<Vec<_>>().join("\n");
-            r.set_metadata("cli_params", &cli_text);
+            r.set_execution_metadata(&sid, exec_id, "cli_params", &cli_text);
             crate::diag!(crate::observer::LogLevel::Info, "metrics: {}",
                 sqlite_path.display());
 
@@ -2447,8 +2469,65 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let initial_scene_tree_path = vec![crate::checkpoint::PathSegment::Scenario(
             scenario_name.to_string(),
         )];
+        // SRD-82 — the session root error policy. Every shell resolves
+        // its own from this (inherit or derive); equal configs share
+        // one instance, parsed once per session.
+        let root_error_policy = crate::error_policy::ErrorPolicy::root(
+            crate::error_policy::PolicyConfig::new(error_spec.clone(), error_rate_max),
+        );
+        // SRD-83 — build the workload execution shell (SRD-82's
+        // outermost shell). Its stop conditions are the workload's
+        // `stop_when:` declarations whose `each:` names the workload
+        // itself (`self`/`workload`), compiled once against the
+        // workload root's cached kernel — the same native-scope binding
+        // every other shell uses, never a conjured root. The remaining
+        // `each: phase` declarations fan out to the per-phase activity
+        // build (see `executor.rs`); the unfiltered list rides on
+        // `ExecCtx.workload_stop_when` for that gathering.
+        //
+        // The error-rate breach stays a per-phase concern (each phase
+        // already trips on its own `error_rate_max`), so no default
+        // error-rate condition is installed at the workload aggregate.
+        let workload_shell = {
+            use nbrs_workload::model::ScopeLevel;
+            let declared: Vec<String> = workload.stop_when.iter()
+                .filter(|c| c.each.iter().any(|l| matches!(l,
+                    ScopeLevel::SelfScope | ScopeLevel::Workload)))
+                .map(|c| c.when.clone())
+                .collect();
+            let set = match scope_tree.nodes[scope_tree.root].cached_kernel.get() {
+                Some(root_kernel) if !declared.is_empty() => {
+                    crate::stop_conditions::StopConditionSet::build_for_phase(
+                        root_kernel, None, &declared,
+                    ).unwrap_or_else(|e| {
+                        crate::diag!(crate::observer::LogLevel::Error,
+                            "workload stop-condition compile failed: {e}");
+                        crate::stop_conditions::StopConditionSet::empty()
+                    })
+                }
+                _ => crate::stop_conditions::StopConditionSet::empty(),
+            };
+            std::sync::Arc::new(crate::workload_shell::WorkloadShell::new(set))
+        };
+
+        // SRD-71 P3 — phase-scoped CLI parameter overrides
+        // (`<phase-pattern>.<param>=<value>`). Parsed from the raw
+        // args (parse_params skips dotted keys), validated against
+        // the declared phase names so a never-matching pattern is
+        // a startup error instead of a silent no-op.
+        let phase_param_overrides = std::sync::Arc::new(
+            crate::phase_params::parse_overrides(&args)?,
+        );
+        crate::phase_params::validate_against_phases(
+            &phase_param_overrides,
+            phases.keys().map(|s| s.as_str()),
+        )?;
+
         let mut exec_ctx = crate::executor::ExecCtx {
             phases: phases.clone(),
+            phase_param_overrides,
+            workload_shell,
+            workload_stop_when: workload.stop_when.clone(),
             workload_readouts: workload_readouts.clone(),
             cli_readout_override: cli_readout_override.clone(),
             workload_params: workload_params.clone(),
@@ -2482,6 +2561,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             concurrency,
             rate,
             error_spec: error_spec.clone(),
+            error_rate_max,
+            error_policy: root_error_policy,
             session_id: session_id.clone(),
             exec_id,
             workload_name: session.workload.clone(),
@@ -2786,7 +2867,10 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // MUST happen before reading any sink for the summary — otherwise
     // short phases (e.g. ann_query under a 30s cadence) contribute no
     // rows because their data is still sitting in an unclosed window.
+    let _teardown_t = std::time::Instant::now();
     cadence_reporter.shutdown();
+    crate::diag!(crate::observer::LogLevel::Debug,
+        "shutdown: cadence reporter flush+join {:?}", _teardown_t.elapsed());
 
     // SRD-63 Push 9a: fire `EventType::SessionEnd` once after
     // the cadence shutdown but before `run_finished()`.
@@ -2866,13 +2950,15 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let end_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs())
             .unwrap_or(0);
-        reporter.set_metadata("end_time", &end_time.to_string());
-        reporter.set_metadata("phase_count", &phases.len().to_string());
-        reporter.set_metadata("scenario_count", &scenarios.len().to_string());
+        let sid = session.id.clone();
+        let exec_id = session.execution.exec_id;
+        reporter.set_execution_metadata(&sid, exec_id, "end_time", &end_time.to_string());
+        reporter.set_execution_metadata(&sid, exec_id, "phase_count", &phases.len().to_string());
+        reporter.set_execution_metadata(&sid, exec_id, "scenario_count", &scenarios.len().to_string());
         if let Some(wf) = workload_file.as_deref() {
-            reporter.set_metadata("workload_file", wf);
+            reporter.set_execution_metadata(&sid, exec_id, "workload_file", wf);
         }
-        reporter.set_metadata("adapter", &driver);
+        reporter.set_execution_metadata(&sid, exec_id, "adapter", &driver);
     }
 
     if !active_summaries.is_empty() {
@@ -2889,6 +2975,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 // ingests, so the db-fallback path in
                 // `nbrs report` round-trips through the same
                 // parser the workload uses.
+                let sid = session.id.clone();
+                let exec_id = session.execution.exec_id;
                 for item in workload_report.items() {
                     // Single emission point: the workload-side
                     // serializer. The db-fallback path in
@@ -2896,8 +2984,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     // through `parse_persisted_item`, which
                     // uses the same grammar — round-trip safe.
                     let value = item.to_yaml_directive_string();
-                    reporter.set_metadata(
-                        &format!("report.{}", item.name), &value);
+                    reporter.set_execution_metadata(
+                        &sid, exec_id, &format!("report.{}", item.name), &value);
                 }
 
                 // Stable ordering for consistent output across
@@ -3404,6 +3492,18 @@ fn scan_expression_idents(body: &str, out: &mut std::collections::HashSet<String
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
+        // Skip `//` line comments — checked BEFORE the string-literal
+        // scan below, because an apostrophe in comment prose (`hasn't`,
+        // `don't`) would otherwise be read as an unterminated string
+        // delimiter and swallow every identifier to end-of-input,
+        // falsely flagging a later-referenced param as unused.
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
         // Skip string literals.
         if b == b'"' || b == b'\'' {
             let quote = b;
@@ -4469,7 +4569,7 @@ const RECOGNIZED_BARE_FLAGS: &[&str] = &[
 /// bare equivalents. Backtick and other quote-like characters
 /// are deliberately not handled — they carry shell-evaluation
 /// semantics that don't survive into our argv.
-fn elide_outer_quotes(s: &str) -> &str {
+pub(crate) fn elide_outer_quotes(s: &str) -> &str {
     let bytes = s.as_bytes();
     if bytes.len() < 2 {
         return s;
@@ -4536,6 +4636,13 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
         let stripped = unquoted.trim_start_matches('-');
         if let Some(eq_pos) = stripped.find('=') {
             let key = stripped[..eq_pos].to_string();
+            // Dotted keys (without path separators) are SRD-71
+            // phase-scoped overrides (`<phase-pattern>.<param>=`),
+            // parsed by `crate::phase_params::parse_overrides` —
+            // not workload params.
+            if key.contains('.') && !key.contains('/') && !key.contains('\\') {
+                continue;
+            }
             let value = elide_outer_quotes(&stripped[eq_pos + 1..]).to_string();
             params.insert(key, value);
         } else if arg.ends_with(".yaml") || arg.ends_with(".yml") {
@@ -4992,7 +5099,7 @@ mod tests {
 
         let phase = WorkloadPhase {
             cycles: None, concurrency: None, rate: None,
-            adapter: None, errors: None, tags: None,
+            adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),

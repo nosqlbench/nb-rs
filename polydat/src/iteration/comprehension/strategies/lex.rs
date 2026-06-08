@@ -7,6 +7,14 @@
 //! varies fastest in a cartesian. `Lex` is the only strategy
 //! whose materialization is `Streaming` (R1: compiles to
 //! `ORDER_STREAMING`, not `ORDER_MATERIALIZE`).
+//!
+//! ## References
+//!
+//! - D. E. Knuth, *The Art of Computer Programming*, Vol. 4A:
+//!   Combinatorial Algorithms, Part 1, §7.2.1.1 ("Generating all
+//!   n-tuples"). Lexicographic / mixed-radix order — the rightmost
+//!   coordinate is least significant and varies fastest. Cross-checked
+//!   in `tests::lex_multi_indices_is_mixed_radix_order`.
 
 use super::{
     EvaluatedInput, MultiIndex, Strategy, Tuple, index_fn_dim, index_fn_size,
@@ -102,6 +110,22 @@ mod tests {
         let inp = input_with(vec![tup(1), tup(2), tup(3)], vec![3]);
         let result = Lex.apply(&inp, None);
         assert_eq!(result, inp.tuples);
+    }
+
+    #[test]
+    fn lex_multi_indices_is_mixed_radix_order() {
+        // Knuth TAOCP 4A §7.2.1.1: mixed-radix order, rightmost axis
+        // least significant. A 2×3 lattice enumerates as
+        // (0,0)(0,1)(0,2)(1,0)(1,1)(1,2).
+        let idx = IndexFn::Lattice { axis_sizes: vec![2, 3] };
+        let out = lex_multi_indices(&idx, None);
+        assert_eq!(
+            out,
+            vec![
+                vec![0, 0], vec![0, 1], vec![0, 2],
+                vec![1, 0], vec![1, 1], vec![1, 2],
+            ]
+        );
     }
 
     #[test]

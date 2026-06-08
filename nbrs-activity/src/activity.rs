@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 
-use nbrs_errorhandler::ErrorRouter;
 use nbrs_metrics::instruments::counter::Counter;
 use nbrs_metrics::instruments::histogram::Histogram;
 use nbrs_metrics::instruments::timer::Timer;
@@ -34,6 +33,21 @@ pub struct ActivityConfig {
     pub rate: Option<f64>,
     pub sequencer: SequencerType,
     pub error_spec: String,
+    /// Error-rate circuit breaker: fail the phase early when the
+    /// fraction of errored ops exceeds this threshold (e.g. `0.1`
+    /// = 10%). Evaluated only after at least
+    /// [`ERROR_RATE_MIN_OPS`] ops so a small phase can't trip on a
+    /// single error. `None` disables it; a value `>= 1.0` also
+    /// effectively disables it (the rate never exceeds 1.0).
+    /// Resolved per phase as the workload's `error_rate_max:` field
+    /// over the session-wide default. Installed as the default SRD-83
+    /// stop condition (`error_rate > error_rate_max`).
+    pub error_rate_max: Option<f64>,
+    /// SRD-83 — the phase's declared stop-condition predicates (the
+    /// `when:` of each `stop_when:` entry). Compiled into scope-bound
+    /// `ScopedExpr`s alongside the default error-rate condition and
+    /// evaluated per tick.
+    pub stop_when: Vec<String>,
     pub max_retries: u32,
     /// Maximum number of ops within a stanza that execute concurrently.
     pub stanza_concurrency: usize,
@@ -126,6 +140,8 @@ impl Default for ActivityConfig {
             rate: None,
             sequencer: SequencerType::Bucket,
             error_spec: ".*:warn,stop".into(),
+            error_rate_max: None,
+            stop_when: Vec::new(),
             max_retries: 3,
             stanza_concurrency: 1,
             source_factory: None,
@@ -611,7 +627,16 @@ pub struct Activity {
     pub labels: Labels,
     pub metrics: Arc<ActivityMetrics>,
     pub op_sequence: OpSequence,
-    pub error_router: ErrorRouter,
+    /// SRD-83 — this phase node's own scope kernel (the structural
+    /// walk's `cached_kernel`). Stop-condition predicates bind to THIS
+    /// native scope as it sits, not a conjured root. `None` when the
+    /// phase has no installed kernel (then no conditions evaluate).
+    pub phase_kernel: Option<Arc<polydat::kernel::PolydatKernel>>,
+    /// SRD-82 — the phase shell's [`crate::error_policy::ErrorPolicy`]
+    /// (op router + aggregate guard), resolved at scope-init from the
+    /// parent policy so equal configs share one instance. Built
+    /// standalone only on the test/library path ([`Self::with_params`]).
+    pub error_policy: Arc<crate::error_policy::ErrorPolicy>,
     /// Source factory — creates per-fiber readers. All phases go through
     /// sources. `cycles: N` desugars to `range(0, N)`.
     source_factory: Arc<dyn polydat::iteration::source::DataSourceFactory>,
@@ -795,9 +820,23 @@ impl Activity {
         op_sequence: OpSequence,
         params: std::collections::HashMap<String, String>,
     ) -> Self {
+        // Library / test path: no session root policy, so build a
+        // standalone (un-shared) policy from the config. The real
+        // execution path resolves the shared instance from the parent
+        // policy and passes it to `with_params_and_sigdigs`.
+        let error_policy = crate::error_policy::ErrorPolicy::standalone(
+            crate::error_policy::PolicyConfig::new(
+                config.error_spec.clone(),
+                config.error_rate_max,
+            ),
+        );
         Self::with_params_and_sigdigs(
             config, parent_labels, op_sequence, params,
             nbrs_metrics::instruments::histogram::DEFAULT_HDR_SIGDIGS,
+            error_policy,
+            // This shim is the no-phase-kernel path (tests / library use);
+            // the executor's run_phase path passes the phase node's kernel.
+            None,
         )
     }
 
@@ -814,14 +853,11 @@ impl Activity {
         op_sequence: OpSequence,
         params: std::collections::HashMap<String, String>,
         sigdigs: u8,
+        error_policy: Arc<crate::error_policy::ErrorPolicy>,
+        phase_kernel: Option<Arc<polydat::kernel::PolydatKernel>>,
     ) -> Self {
         let labels = parent_labels.clone();
         let metrics = Arc::new(ActivityMetrics::with_sigdigs(&labels, sigdigs));
-        let error_router = ErrorRouter::parse(&config.error_spec)
-            .unwrap_or_else(|e| {
-                crate::diag!(crate::observer::LogLevel::Warn, "warning: invalid error spec '{}': {e}; using default (warn,stop)", config.error_spec);
-                ErrorRouter::default_stop()
-            });
         // All phases go through sources. cycles: N desugars to range(0, N).
         // Named cursors in Polydat provide their own factory via config.source_factory.
         let source_factory: Arc<dyn polydat::iteration::source::DataSourceFactory> = config.source_factory
@@ -835,7 +871,8 @@ impl Activity {
             labels,
             metrics,
             op_sequence,
-            error_router,
+            error_policy,
+            phase_kernel,
             source_factory,
             workload_params: Arc::new(params),
             stop_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2073,6 +2110,37 @@ impl Activity {
         let mut last_seen_cycles = activity.metrics.cycles_completed();
         let mut stuck_since = std::time::Instant::now();
         let mut last_logged_count = activity.config.concurrency;
+        // SRD-83 — compile this phase's stop conditions (the default
+        // `error_rate > error_rate_max` plus any declared `stop_when:`
+        // predicates) as scope-bound `ScopedExpr`s, evaluated per tick
+        // below. Fire at most once per phase.
+        //
+        // The predicates bind to this phase node's OWN scope kernel
+        // (`activity.phase_kernel`, the structural walk's cached kernel),
+        // so they read the phase's wires as they sit — no conjured root.
+        // (Distribution to other shell levels via `each:` is the broader
+        // SRD-83 shell-evaluation follow-up; this binds the phase-level
+        // conditions to their native phase scope.)
+        let mut policy_tripped = false;
+        let phase_start = std::time::Instant::now();
+        let mut stop_conditions = match &activity.phase_kernel {
+            Some(kernel) => crate::stop_conditions::StopConditionSet::build_for_phase(
+                kernel,
+                activity.config.error_rate_max,
+                &activity.config.stop_when,
+            )
+            .unwrap_or_else(|e| {
+                // A predicate that won't compile is the workload author's
+                // bug; dryrun is where it should be rejected. At runtime,
+                // log loudly and run with no stop conditions rather than
+                // abort the phase on a synthesis error.
+                crate::diag!(crate::observer::LogLevel::Error,
+                    "activity '{}': stop-condition compile failed: {e}",
+                    activity.config.name);
+                crate::stop_conditions::StopConditionSet::empty()
+            }),
+            None => crate::stop_conditions::StopConditionSet::empty(),
+        };
         loop {
             fiber_pool.reap_finished();
             let n = fiber_pool.tracked_count();
@@ -2089,6 +2157,46 @@ impl Activity {
             // Either signal moving resets the stuck timer; only
             // when both are flat for the full 30 s do we warn.
             let cycles = activity.metrics.cycles_completed();
+            // SRD-83 — evaluate the phase's stop conditions against a
+            // fresh runtime-state snapshot (the Tick firing event). The
+            // first predicate that trips stops the shell: fibers drain at
+            // their next cycle boundary and the phase-end outcome becomes
+            // Failed. (The per-condition `effect` → two-axis Outcome
+            // mapping lands with SRD-82 Part 1; for now a trip is Failed.)
+            if !policy_tripped && !stop_conditions.is_empty() {
+                let state = crate::stop_conditions::RuntimeState {
+                    op_count: cycles,
+                    error_count: activity.metrics.errors_total.get(),
+                    elapsed_ms: phase_start.elapsed().as_millis() as u64,
+                    ..Default::default()
+                };
+                if let Some(reason) = stop_conditions.evaluate(&state) {
+                    policy_tripped = true;
+                    let msg = format!("stop condition tripped ({reason}) — failing phase");
+                    crate::diag!(crate::observer::LogLevel::Error,
+                        "activity '{}': {msg}", activity.config.name);
+                    if let Ok(mut slot) = activity.stop_reason.lock()
+                        && slot.is_none()
+                    {
+                        *slot = Some(format!("[{reason}] {msg}"));
+                    }
+                    if let Ok(mut errs) = activity.phase_errors.lock() {
+                        errs.push(crate::phase_outcome::PhaseErrorDetail {
+                            class: reason,
+                            message: msg,
+                            op_name: None,
+                            cycle: None,
+                            op_template: None,
+                            op_resolved: None,
+                            at_nanos: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_nanos() as u64).unwrap_or(0),
+                            retryable: false,
+                        });
+                    }
+                    activity.stop_flag.store(true, Ordering::Relaxed);
+                }
+            }
             let count_changed = n != last_seen_count;
             let cycles_changed = cycles != last_seen_cycles;
             if count_changed || cycles_changed {
@@ -3149,7 +3257,7 @@ async fn executor_task(
                     Err(e) => {
                         let duration_nanos = service_start.elapsed().as_nanos() as u64;
                         let inner = e.error();
-                        let detail = activity.error_router.handle_error(
+                        let detail = activity.error_policy.router.handle_error(
                             &inner.error_name, &inner.message, cycle, duration_nanos,
                         );
                         activity.metrics.errors_total.inc();

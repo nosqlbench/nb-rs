@@ -21,7 +21,7 @@ phases:
 
 scenarios:
   default:
-    - phase: warmup
+    - warmup
 
 # Two output files plus an orphan plot. Notice the indentation
 # is purely cosmetic — the `file` directive's scope is order-

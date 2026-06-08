@@ -172,6 +172,28 @@ impl LogOnlyObserver {
         self
     }
 
+    /// The console-owning-adapter display mode: a console-owning adapter
+    /// (stdout to a terminal, plotter) holds an **interactive** terminal,
+    /// so its compositing rule is *don't project to the console at all* —
+    /// the screen is the adapter's. This yields the whole console
+    /// projection (`sink_active`, the same flag a real sink raises to
+    /// claim the surface) and the inline `✓` status line
+    /// (`inline_suppress`). Every signal — banners, the scope/phase
+    /// readouts, completion notices — still flows through the channel to
+    /// `session.log` (the file write in
+    /// [`crate::observer::log_categorized`] is independent of these
+    /// flags); it just isn't rendered to *this* surface.
+    ///
+    /// Only applied on an interactive TTY: a non-interactive run
+    /// (pipe/file) keeps stdout and stderr as separate streams, so the
+    /// console projection flows to stderr as usual and CI/tests capture
+    /// it.
+    pub fn reserve_console_for_adapter(self) -> Self {
+        self.sink_active.store(true, Ordering::Release);
+        self.inline_suppress.store(true, Ordering::Release);
+        self
+    }
+
     /// Returns the shared coordination flag. The owner of the
     /// active log-rendering sink flips this to `true` while
     /// rendering and back to `false` on shutdown. This is the
@@ -423,9 +445,9 @@ impl RunObserver for LogOnlyObserver {
 
     fn run_finished(&self) {
         self.state.send(RunStateCmd::RunFinished);
-        // Re-emit the canonical end-of-run marker through
-        // `observer::log` so session.log captures it (matches the
-        // legacy StderrObserver behaviour).
+        // Re-emit the canonical end-of-run marker through the observer
+        // so session.log captures it. `RunLifecycle` category so a
+        // console-owning adapter can keep it off the console.
         nbrs_activity::observer::log(LogLevel::Info, "all phases complete");
     }
 

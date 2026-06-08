@@ -49,7 +49,7 @@ inventory::submit! {
     AdapterRegistration {
         names: || &["cql"],
         known_params: || &[CQL_DRIVER_PARAM],
-        display_preference: || DisplayPreference::Auto,
+        display_preference: |_params| DisplayPreference::Auto,
         create: |params| Box::pin(instantiate_with_driver("cql", CQL_DRIVER_PARAM, params)),
     }
 }

@@ -77,9 +77,34 @@ use std::sync::Mutex;
 /// [`Self::from_connection`] don't have a path and thus
 /// can't drive mtime-based invalidation; their cache layer
 /// has to fall back to TTL + manual `invalidate()`.
+/// How a metric instance is selected across the executions in a
+/// (possibly `refine`-d) session store. Reports default to
+/// [`LatestPerInstance`](ExecutionSelection::LatestPerInstance).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionSelection {
+    /// For each logical metric instance (its dimensional labels,
+    /// ignoring `exec_id`/`session`), keep only the data from the
+    /// NEWEST execution that produced it. A `refine`'s unchanged-phase
+    /// instances survive from their original execution. The default.
+    LatestPerInstance,
+    /// No execution filtering — every matching sample across every
+    /// execution is included.
+    All,
+    /// Only the single newest execution (max `exec_id`); instances
+    /// that only ran in older executions are excluded.
+    Latest,
+    /// One specific `exec_id`.
+    Specific(u64),
+}
+
+impl Default for ExecutionSelection {
+    fn default() -> Self { Self::LatestPerInstance }
+}
+
 pub struct SqliteDataSource {
     conn: Mutex<Connection>,
     db_path: Option<PathBuf>,
+    selection: ExecutionSelection,
 }
 
 impl SqliteDataSource {
@@ -156,8 +181,47 @@ impl SqliteDataSource {
              PRAGMA mmap_size  = 268435456;",
         ).map_err(|e| DataSourceError::new(format!("apply pragmas: {e}")))?;
         register_regexp(&conn)?;
-        Ok(Self { conn: Mutex::new(conn), db_path: None })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            db_path: None,
+            selection: ExecutionSelection::default(),
+        })
     }
+
+    /// Set how metric instances are selected across executions.
+    /// Defaults to [`ExecutionSelection::LatestPerInstance`].
+    pub fn with_execution_selection(mut self, selection: ExecutionSelection) -> Self {
+        self.selection = selection;
+        self
+    }
+}
+
+/// Among `series` (which carry an `exec_id` label), keep only the one
+/// from the newest execution for each logical instance — its labels
+/// excluding `exec_id`/`session`. Ties (shouldn't happen — exec_ids
+/// are distinct) keep the first seen.
+fn retain_latest_per_instance(series: Vec<Series>) -> Vec<Series> {
+    use std::collections::{HashMap, HashSet};
+    let mut best: HashMap<Vec<(String, String)>, (i64, usize)> = HashMap::new();
+    for (i, s) in series.iter().enumerate() {
+        let exec = s.labels.iter()
+            .find(|(k, _)| k == "exec_id")
+            .and_then(|(_, v)| v.parse::<i64>().ok())
+            .unwrap_or(0);
+        let mut logical: Vec<(String, String)> = s.labels.iter()
+            .filter(|(k, _)| k != "exec_id" && k != "session")
+            .cloned()
+            .collect();
+        logical.sort();
+        match best.get(&logical) {
+            Some(&(e, _)) if e >= exec => {}
+            _ => { best.insert(logical, (exec, i)); }
+        }
+    }
+    let keep: HashSet<usize> = best.values().map(|(_, i)| *i).collect();
+    series.into_iter().enumerate()
+        .filter_map(|(i, s)| keep.contains(&i).then_some(s))
+        .collect()
 }
 
 /// Register a connection-scoped `REGEXP(pattern, value)`
@@ -274,13 +338,23 @@ impl DataSource for SqliteDataSource {
         //    silent fictional precision.
         let stat_expr = resolved.stat_expr;
         let interval_proj = if resolved.is_rate { ", sv.interval_ms" } else { "" };
+        // Execution selection (SRD-77). `Specific` / `Latest` narrow
+        // at the SQL level; `LatestPerInstance` fetches every
+        // execution and picks the newest per logical instance in a
+        // post-pass (below); `All` does no filtering.
+        let exec_filter = match self.selection {
+            ExecutionSelection::Specific(n) => format!("AND mi.exec_id = {n} "),
+            ExecutionSelection::Latest => "AND mi.exec_id = \
+                (SELECT MAX(exec_id) FROM metric_instance WHERE family_id = ?1) ".to_string(),
+            ExecutionSelection::All | ExecutionSelection::LatestPerInstance => String::new(),
+        };
         let sql = format!(
             "SELECT mi.id, sv.timestamp_ms, {stat_expr}{interval_proj} \
              FROM metric_instance mi \
              JOIN sample_value sv ON sv.instance_id = mi.id \
              WHERE mi.family_id = ?1 \
                AND sv.timestamp_ms >= ?2 AND sv.timestamp_ms <= ?3 \
-               {label_filter} \
+               {label_filter} {exec_filter}\
              ORDER BY mi.id, sv.timestamp_ms"
         );
 
@@ -360,6 +434,13 @@ impl DataSource for SqliteDataSource {
                 &conn, last,
                 &resolved.virtual_name, current_samples,
             )?);
+        }
+        // `LatestPerInstance`: among the series fetched across all
+        // executions, keep only the newest execution's data per
+        // logical instance. (`Specific`/`Latest`/`All` already
+        // applied their filter in SQL or not at all.)
+        if self.selection == ExecutionSelection::LatestPerInstance {
+            out = retain_latest_per_instance(out);
         }
         Ok(out)
     }
@@ -1845,6 +1926,88 @@ mod tests {
     fn parse_labels_spec_handles_empty_input() {
         assert_eq!(parse_labels_spec(""), Vec::<(String, String)>::new());
         assert_eq!(parse_labels_spec("   "), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn execution_selection_latest_per_instance_vs_all() {
+        // Models a refined session: the `op=read` instance was
+        // re-run (exists under exec 1 AND exec 2); the `op=write`
+        // instance was an unchanged phase (only exec 1).
+        let build = || {
+            let conn = make_schema();
+            let r1 = make_instance(&conn, "recall", "gauge", &[("op", "read"), ("exec_id", "1")]);
+            let r2 = make_instance(&conn, "recall", "gauge", &[("op", "read"), ("exec_id", "2")]);
+            let w1 = make_instance(&conn, "recall", "gauge", &[("op", "write"), ("exec_id", "1")]);
+            add_gauge_sample(&conn, r1, 0, 0.80);
+            add_gauge_sample(&conn, r2, 0, 0.95); // newer execution, better recall
+            add_gauge_sample(&conn, w1, 0, 0.50);
+            conn
+        };
+        let name = || vec![Matcher {
+            label: "__name__".into(), op: MatcherOp::Eq, value: "recall".into(),
+        }];
+
+        // All: every execution's instance is included.
+        let all = open_ds(build())
+            .with_execution_selection(ExecutionSelection::All)
+            .fetch(&name(), 0, 1000).expect("fetch all");
+        assert_eq!(all.len(), 3, "All keeps every execution's instance");
+
+        // LatestPerInstance (the default): newest execution per
+        // logical instance — read from exec 2, write from exec 1.
+        let latest = open_ds(build())
+            .with_execution_selection(ExecutionSelection::LatestPerInstance)
+            .fetch(&name(), 0, 1000).expect("fetch latest-per-instance");
+        assert_eq!(latest.len(), 2, "one series per logical instance");
+        let read = latest.iter().find(|s| lookup(s, "op") == Some("read"))
+            .expect("read series present");
+        assert_eq!(lookup(read, "exec_id"), Some("2"), "read comes from newest execution");
+        assert_eq!(read.samples[0].value, 0.95);
+        let write = latest.iter().find(|s| lookup(s, "op") == Some("write"))
+            .expect("write series survives from its only execution");
+        assert_eq!(lookup(write, "exec_id"), Some("1"));
+        assert_eq!(write.samples[0].value, 0.50);
+
+        // Default (no explicit selection) matches LatestPerInstance.
+        let defaulted = open_ds(build()).fetch(&name(), 0, 1000).expect("fetch default");
+        assert_eq!(defaulted.len(), 2, "default is per-instance-latest");
+    }
+
+    #[test]
+    fn cross_execution_report_query_coalesces() {
+        use crate::eval::{EvalContext, evaluate};
+        // Refined session: exec 1 ran limit=25 at t1; a LATER refine
+        // (exec 2, 1h later) added limit=50 without re-running
+        // limit=25. A report over the session must COALESCE: both
+        // limit=25 (newest exec that has it = exec 1) and limit=50
+        // (exec 2) must appear — the report shouldn't collapse to a
+        // single execution's data.
+        let conn = make_schema();
+        let t1 = 1_000_000_i64;
+        let t2 = t1 + 3_600_000; // +1h
+        let r25 = make_instance(&conn, "recall", "gauge", &[("limit", "25"), ("exec_id", "1")]);
+        let r50 = make_instance(&conn, "recall", "gauge", &[("limit", "50"), ("exec_id", "2")]);
+        add_gauge_sample(&conn, r25, t1, 0.80);
+        add_gauge_sample(&conn, r50, t2, 0.90);
+        let ds = open_ds(conn); // default = LatestPerInstance
+
+        // Mirror the report path's instant query: the window spans
+        // every sample (`latest_sample_window` = [min,max]) and the
+        // instant projection uses a 5-minute stale lookback.
+        let ctx = EvalContext {
+            data: &ds, start_ms: t1, end_ms: t2, step_ms: 60_000,
+            lookback_ms: Some(300_000),
+            query_start_ms: Some(t1), query_end_ms: Some(t2),
+        };
+        let ast = crate::parse("recall").expect("parse");
+        let series = evaluate(&ctx, &ast).expect("evaluate");
+        let limits: std::collections::BTreeSet<&str> =
+            series.iter().filter_map(|s| lookup(s, "limit")).collect();
+        assert!(limits.contains("50"),
+            "exec 2's new instance (limit=50) must appear: {limits:?}");
+        assert!(limits.contains("25"),
+            "exec 1's instance (limit=25) must coalesce in, not be dropped \
+             by the recency window: {limits:?}");
     }
 
     #[test]

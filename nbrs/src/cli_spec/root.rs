@@ -25,6 +25,7 @@ pub fn root() -> Command {
         subcommands: vec![
             crate::run::spec(),
             crate::refine::spec(),
+            crate::session_cmd::spec(),
             crate::inspector::spec(),
             crate::report_cmd::spec(),
             crate::report_cmd::plot_alias_spec(),

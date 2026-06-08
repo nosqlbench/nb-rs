@@ -306,6 +306,12 @@ pub enum Expr {
         field: String,
         span: Span,
     },
+    /// `<expr> as <type>` — SRD-84 Part 1b type-coercion cast. An
+    /// *optional, alignment-only* type-fusion infill: a no-op when the
+    /// inner expression's type already matches the target, otherwise
+    /// the compiler inserts the SRD-79 fusion adapter (or errors if no
+    /// valid fusion exists). The cast's type is its target.
+    Cast(Box<Expr>, crate::ast::PortType, Span),
 }
 
 /// Binary arithmetic operator kind.
@@ -346,6 +352,17 @@ pub enum BinOpKind {
     Le,
     /// `>=` — desugars to `u64_ge` / `f64_ge`. Output type is `u64`.
     Ge,
+    /// `&&` — eager logical-and (SRD-84 Part 1). Desugars to
+    /// `u64_and(a != 0, b != 0)`: both operands evaluate, each is
+    /// normalised to truthiness (`0`/`1`), and the bitwise-and of two
+    /// truthiness values is logical-and. Output type is `u64` (`0`/`1`).
+    /// Lowest precedence, below comparison. Short-circuit is a deferred
+    /// optimisation (SRD-84 §"eager").
+    And,
+    /// `||` — eager logical-or (SRD-84 Part 1). Desugars to
+    /// `u64_or(a != 0, b != 0)`. Output type is `u64` (`0`/`1`). Binds
+    /// looser than `&&`.
+    Or,
 }
 
 /// A typed parameter in a module signature.

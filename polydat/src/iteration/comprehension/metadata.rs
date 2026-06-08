@@ -670,13 +670,15 @@ fn strategy_working_set(
             let dim = lattice_dim(idx).max(1);
             n.saturating_mul(dim as u64)
         }
-        // Extrema: O(N * 2^N) for Lattice; or 2^K for Continuous K-D box.
-        (StrategyName::Extrema, Some(idx), Some(k)) => {
-            let dim = lattice_dim(idx);
-            // working set is min(k, 2^dim) corners
-            let corners = if dim >= 64 { u64::MAX } else { 1u64 << dim };
-            k.min(corners)
-        }
+        // Extrema (SRD-18d §214): `/k` selects the first k *strata*
+        // (interior count 0..k-1), not k tuples — the output is
+        // `≥ 2^dim` corners for k≥1 and grows to the full space. The
+        // materialize step buffers the whole input regardless, so the
+        // safe working-set bound is the input cardinality. (A tight
+        // first-k-strata sum would need per-axis interior sizes;
+        // deferred — over-reporting here is safe, under-reporting is
+        // not.)
+        (StrategyName::Extrema, Some(idx), Some(_k)) => index_fn_cardinality(idx),
         // Shells / Diagonal / Antidiagonal: per-emitted O(N).
         (StrategyName::Shells, Some(_), Some(n))
         | (StrategyName::Diagonal, Some(_), Some(n))

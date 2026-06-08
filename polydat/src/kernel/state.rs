@@ -671,9 +671,19 @@ impl PolydatKernel {
         {
             return Some(v.clone());
         }
-        let idx = self.program.find_input(name)?;
-        let v = self.state.read_input_value(idx);
-        if matches!(v, Value::None) { None } else { Some(v) }
+        if let Some(idx) = self.program.find_input(name) {
+            let v = self.state.read_input_value(idx);
+            return if matches!(v, Value::None) { None } else { Some(v) };
+        }
+        // Dotted names follow the established field-access wire
+        // convention (`a.b` lowers to the wire `a__b`), so a
+        // text-context reference like `{q.cursor.idx}` resolves
+        // through the same flattening the DSL compiler applies.
+        if name.contains('.') {
+            let flattened = name.replace('.', "__");
+            return self.lookup(&flattened);
+        }
+        None
     }
 
     /// Bind this kernel's extern inputs from an outer scope kernel.

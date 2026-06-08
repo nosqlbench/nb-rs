@@ -13,6 +13,7 @@ shebangs — make them executable and run directly.
 ### workloads/
 - `math_and_bitwise.yaml` — All infix operators, auto-widening
 - `cartesian_space.yaml` — Mixed-radix coordinate decomposition
+- `op_inline_forms.yaml` — How `op=` is detected and de-sugared (Polydat block vs text template), with the explicit YAML equivalent for each CLI form
 - `conditional_ops.yaml` — `if:` field for per-cycle op skipping
 - `feature_showcase.yaml` — Phases, scenarios, params, conditions
 - `service_model.yaml` — Multi-table, ratios, `delay:` latency injection

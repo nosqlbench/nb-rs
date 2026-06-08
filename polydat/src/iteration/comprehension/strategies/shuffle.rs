@@ -16,6 +16,18 @@
 //! into the IR interpreter (Phase 7), the seed will be
 //! threaded from the streamer's per-instance state instead.
 //!
+//! ## References
+//!
+//! - R. A. Fisher & F. Yates, *Statistical Tables for Biological,
+//!   Agricultural and Medical Research*, 3rd ed. (1948), the original
+//!   shuffle. The in-place O(n) form (used via [`super::prng::Prng::shuffle`])
+//!   is R. Durstenfeld, "Algorithm 235: Random permutation,"
+//!   *Comm. ACM* 7(7) (1964), 420.
+//!   doi:[10.1145/364520.364540](https://doi.org/10.1145/364520.364540);
+//!   see also Knuth, *TAOCP* Vol. 2 §3.4.2 (Algorithm P). Correctness
+//!   = the output is a *permutation* of the input (each element
+//!   exactly once), verified in `tests::apply_preserves_elements`.
+//!
 //! Accepts any non-`None` `IndexFn` including continuous —
 //! Shuffle over continuous works by sampling per the
 //! underlying measure (the IR layer dispatches the actual

@@ -872,15 +872,18 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 /// workload author falls back to a different pattern.
 /// SRD-75 §"Open questions: Capture-type inference
 /// granularity" tracks the refinement.
+
 pub fn synthesize_phase_scope_bindings(
     phase: &nbrs_workload::model::WorkloadPhase,
 ) -> Result<nbrs_workload::model::BindingsDef, String> {
     use nbrs_workload::model::BindingsDef;
     let has_poll = phase.poll.is_some();
     let has_metrics = !phase.metrics.is_empty();
-    // No phase-scope augmentation needed — pass the author's
-    // bindings through unchanged so a metrics/poll-free phase
-    // keeps its original (possibly empty) `BindingsDef`.
+    // No phase-scope augmentation needed — pass the author's bindings
+    // through unchanged so a metrics/poll-free phase keeps its original
+    // (possibly empty) `BindingsDef`. Stop conditions do NOT augment the
+    // matter (they are scope-bound `ScopedExpr`s built against the phase
+    // kernel), so they don't force synthesis here.
     if !has_poll && !has_metrics {
         return Ok(phase.bindings.clone());
     }
@@ -992,6 +995,12 @@ pub fn synthesize_phase_scope_bindings(
                 "volatile {binding} := {expr}\n", expr = spec.value));
         }
     }
+
+    // SRD-83 stop conditions are NOT synthesized into the phase matter.
+    // Each predicate is compiled as a scope-bound `ScopedExpr`
+    // (`stop_conditions::compile_stop_condition`) against the *built*
+    // phase kernel and evaluated per trigger — authored phase bindings
+    // and evaluated stop predicates stay orthogonal concerns.
 
     Ok(BindingsDef::PolydatSource(source))
 }
@@ -2248,6 +2257,13 @@ pub fn build_scope(
         // should surface as unresolved.
         let mut unresolved: Vec<&String> = referenced.iter()
             .filter(|n| !satisfied.contains(n.as_str()))
+            // Dotted names follow the field-access wire
+            // convention (`q.cursor.idx` reads the wire
+            // `q__cursor__idx`) — check the flattened spelling
+            // the same way kernel lookup does.
+            .filter(|n| {
+                !n.contains('.') || !satisfied.contains(n.replace('.', "__").as_str())
+            })
             .filter(|n| !n.starts_with("__"))
             .filter(|n| polydat::dsl::registry::lookup(n).is_none())
             .collect();

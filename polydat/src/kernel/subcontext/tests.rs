@@ -55,6 +55,57 @@ fn finalize_compiles_simple_polydat_source_block() {
 }
 
 #[test]
+fn finalize_compiles_a_caller_native_expr_stub() {
+    // SRD-84 Part 3, end to end: a binding built in Rust becomes a real
+    // kernel output, and the ONLY string anywhere is the predicate
+    // *text* — parsed once, at the boundary. Nothing re-renders the
+    // binding back to source to re-parse it; that is the whole contrast
+    // with the `BodyFragment::PolydatSource` path in the test above.
+    use crate::dsl::stub::ExprStub;
+
+    // A parent kernel + its subcontext builder are the standard
+    // construction harness (SRD-67): matter is submitted to `b`, and
+    // `finalize()` compiles it as a child against the parent.
+    let parent = parent_kernel();
+    let mut b = parent.subcontext_builder();
+    b.context(SourceContext::new("stub"));
+
+    // Build the stub entirely in Rust:
+    //   parse("5 > 3")     the single boundary parse of author text;
+    //                      from here on we hold an AST, never a string.
+    //   returning::<u64>() binds the return type AT THE CALL SITE via
+    //                      the `Wire` trait — the Rust `u64` *is* the
+    //                      polydat `U64` — wrapping the expression in the
+    //                      Part 1b `as u64` cast (a no-op here, since a
+    //                      comparison already yields U64 truthiness).
+    //   volatile()         re-evaluate on every pull (a predicate's
+    //                      per-trigger semantics).
+    //   into_statement()   the `volatile __pred := (5 > 3) as u64`
+    //                      binding, as a typed AST `Statement`.
+    let stub_stmt = ExprStub::parse("__pred", "5 > 3")
+        .expect("the predicate parses")
+        .returning::<u64>()
+        .volatile()
+        .into_statement();
+
+    // Submit it as GRAMMAR-SAFE matter — `Statements`, not
+    // `PolydatSource(String)`. The builder consumes the AST directly,
+    // with no lex/parse round-trip; an ungrammatical fragment is
+    // impossible to express on this path.
+    b.body(BodyFragment::Statements(vec![stub_stmt]));
+
+    // Finalize compiles the matter against the parent and yields the
+    // child module. The assertion's load-bearing claim: the stub's name
+    // surfaced as a genuine kernel output — i.e. it became a real
+    // binding the engine can pull, not just inert text.
+    let module = b.finalize().expect("the grammar-safe stub compiles");
+    assert!(
+        module.program().output_names().iter().any(|n| *n == "__pred"),
+        "the stub's binding must surface as a kernel output",
+    );
+}
+
+#[test]
 fn finalize_rejects_unbound_import() {
     let parent = parent_kernel();
     let mut b = parent.subcontext_builder();

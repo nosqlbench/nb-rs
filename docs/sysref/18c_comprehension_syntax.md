@@ -129,11 +129,11 @@ x in 0..100..(100/5)      # 0, 20, 40, 60, 80   (5 buckets)
 x in 0..=100..(100/4)     # 0, 25, 50, 75, 100  (5 endpoints)
 ```
 
-Or via a `subdivide(start, end, n)` stdlib helper for
+Or via a `linear_starts(start, end, n)` stdlib helper for
 readability:
 
 ```text
-x in subdivide(0, 100, 5)
+x in linear_starts(0, 100, 5)
 ```
 
 **Semantics:**
@@ -167,10 +167,9 @@ place. Each returns a `Vec<Value>` like a literal list.
 | `geometric(start, factor, n)` | `start, start*factor, …` (n terms) | Float-friendly |
 | `geometric_until(start, factor, max)` | `start, start*factor, …` ≤ `max` | |
 | `binomial(n)` | `C(n,0), C(n,1), …, C(n,n)` | |
-| `subdivide(start, end, n)` | Sugar for half-open range with computed step | |
-| `subdivide_inclusive(start, end, n)` | Sugar for closed range with computed step | |
+| `linear_starts(start, end, n)` | The starts of `n` equal subdivisions of `[start, end)` — half-open, `end` never emitted | Splitting a `Partition` into sub-partitions is `subdivide(p, n)` (SRD 71) |
 | `log_steps(start, end, n)` | `n` log-spaced points from `start` to `end` | |
-| `linear_steps(start, end, n)` | Sugar for `subdivide_inclusive` | |
+| `linear_steps(start, end, n)` | `n` fence-post points covering `[start, end]`, both ends emitted | |
 
 ### `all(<cursor>)` — iterate a cursor's full extent
 
@@ -530,6 +529,22 @@ silently mix or merge. The parser merges:
   order: halton/50
 ```
 
+> **Partition-spec ordering is a common subset.** The cursor
+> partition spec language (SRD 71) accepts a trailing order
+> keyword inside the spec string itself —
+> `cursor='fib:5 largest_first'` — limited to four words:
+> `unchanged`, `smallest_first`, `largest_first`, `random`
+> (the size sorts keyed on partition cardinality and named for
+> that axis; `random` a spec-seeded deterministic shuffle).
+> `unchanged` and `random` mean the same thing in both
+> vocabularies; the size sorts are partition-specific, and the
+> algorithm-specific strategies here (`halton`, `extrema`,
+> `lex/N`, …) are comprehension-only and do not apply to
+> partition lists. A partition list iterated by a `for:` clause
+> can of course still take this section's `order` clause — that
+> reorders the *iteration*, downstream of whatever order the
+> spec itself produced.
+
 ### Common YAML shape mappings
 
 | YAML | Equivalent Polydat text |
@@ -650,7 +665,7 @@ layer needing to know about any of it.
 3. **Layer 6 — SI suffixes.** Lexer-only. Orthogonal,
    safe to land any time after lexer support is in.
 4. **Layer 3 — named generators** (`fib`, `pow2`, `geometric`,
-   `binomial`, `subdivide`, `log_steps`). Each is one stdlib
+   `binomial`, `linear_starts`, `log_steps`). Each is one stdlib
    node + a short test. Land in any order.
 5. **Sequencer expansions** (`bucket`, `concat_seq`,
    `interval_seq`). Reuse `nbrs-activity::opseq` algorithms.

@@ -33,6 +33,13 @@ use nbrs_workload::model::{ScenarioNode, WorkloadPhase};
 #[derive(Clone)]
 pub struct ExecCtx {
     pub phases: HashMap<String, WorkloadPhase>,
+    /// SRD-71 P3 — phase-scoped CLI parameter overrides
+    /// (`<phase-pattern>.<param>=<value>`). Resolved per phase
+    /// at scope activation (exact name beats glob; ambiguous
+    /// globs are fatal) and written onto the phase's kernel
+    /// locally so the standard scope chain serves the
+    /// overridden value to everything below.
+    pub phase_param_overrides: Arc<Vec<crate::phase_params::PhaseParamOverride>>,
     /// Workload-level `readouts:` bindings (SRD-63 §5).
     /// Threaded through ActivityConfig at phase construction
     /// so each activity-init step builds a binder seeded
@@ -112,6 +119,16 @@ pub struct ExecCtx {
     pub concurrency: usize,
     pub rate: Option<f64>,
     pub error_spec: String,
+    /// Session-wide error-rate circuit-breaker default (Feature B).
+    /// Each phase resolves its effective threshold as its own
+    /// `error_rate_max:` over this. `None` = disabled by default.
+    pub error_rate_max: Option<f64>,
+    /// SRD-82 — the current (inherited) [`crate::error_policy::ErrorPolicy`]
+    /// at this point in the walk. Seeded with the session root policy
+    /// (from `error_spec` + `error_rate_max`); each phase shell resolves
+    /// its own from this via `resolve_child`, inheriting or deriving a
+    /// value-equality-shared instance.
+    pub error_policy: Arc<crate::error_policy::ErrorPolicy>,
     /// Session identifier for metric labeling. Surfaces as
     /// the `session` dimensional label on every per-component
     /// metric via [`Self::labels`].
@@ -239,6 +256,23 @@ pub struct ExecCtx {
     /// Bindings descent pushes the matched scope_idx; restored
     /// on the way out.
     pub current_scope_idx: crate::scope_tree::ScopeNodeIdx,
+    /// SRD-83 — the workload execution shell (SRD-82's outermost
+    /// shell). Holds the live child-phase aggregate (`children_*`,
+    /// `op_count`, `error_count`) and the workload's compiled stop
+    /// conditions. Shared (`Arc`) across cloned task contexts so a
+    /// phase finishing anywhere in the scenario tree feeds the same
+    /// accumulator; `run_phase` calls `record_phase` per outcome and
+    /// the walker consults `should_stop` before each sibling. See
+    /// [`crate::workload_shell::WorkloadShell`].
+    pub workload_shell: Arc<crate::workload_shell::WorkloadShell>,
+    /// SRD-83 — the workload-level `stop_when:` declarations, kept so
+    /// the per-phase activity build can gather the ones whose `each:`
+    /// names `phase` (distributing a workload declaration down to each
+    /// phase shell) alongside the phase's own predicates. The
+    /// `each ∋ {self, workload}` subset drives `workload_shell` and is
+    /// already compiled into it; this is the unfiltered source for the
+    /// structural `each:` fan-out at the phase level.
+    pub workload_stop_when: Vec<nbrs_workload::model::StopConditionSpec>,
 }
 
 /// Workload YAML source kept alongside the parsed model so
@@ -475,6 +509,22 @@ async fn run_siblings_concurrently(
             // Drop the permit we just acquired — it would
             // otherwise sit unused until the dispatch loop
             // exits.
+            drop(permit);
+            break;
+        }
+        // SRD-83 — workload-shell stop. A stop condition tripped at
+        // some prior phase outcome (anywhere in the tree) latched the
+        // shell's `walk_stop`; halt dispatch of the remaining siblings.
+        // This is the broad halt the local `first_err` cascade can't
+        // give — it reaches every dispatch loop at every depth, so a
+        // trip in one subtree stops not-yet-started phases in sibling
+        // subtrees too (the scenario stop-on-error default). In-flight
+        // siblings (Bounded(N>1)) still drain at the join below;
+        // cooperatively aborting them is the SRD-82 Part 4 follow-up.
+        if ctx.workload_shell.should_stop() {
+            crate::diag!(crate::observer::LogLevel::Debug,
+                "workload shell stopped — halting dispatch of remaining \
+                 siblings at depth {depth}");
             drop(permit);
             break;
         }
@@ -2302,6 +2352,53 @@ async fn run_phase(
         }
         // ───────────────────────────────────────────────────────────
 
+        // SRD-71 P3 — apply phase-scoped CLI parameter overrides
+        // before anything reads params on this kernel (the cursor
+        // `over <param>` pull below is the primary consumer).
+        // Resolution per param: exact phase name beats glob;
+        // distinct globs both matching is fatal. The write lands
+        // on this phase's local slot, so the standard scope chain
+        // serves the overridden value to everything below. A
+        // literal-pattern override naming a param this phase has
+        // no slot for gets a warning (the operator named THIS
+        // phase); glob matches skip silently — a glob
+        // legitimately spans phases that don't all consume the
+        // param.
+        if !ctx.phase_param_overrides.is_empty() {
+            let chosen = crate::phase_params::resolve_for_phase(
+                &ctx.phase_param_overrides, phase_name,
+            ).map_err(|e| format!("{polydat_context}: {e}"))?;
+            for (ov, dialect) in chosen {
+                use polydat::kernel::{Dataflow, WriteError};
+                match kernel.set_wire(
+                    &ov.param,
+                    polydat::ast::Value::Str(ov.value.clone().into()),
+                ) {
+                    Ok(()) => {
+                        crate::diag!(crate::observer::LogLevel::Info,
+                            "phase '{phase_name}': param `{}` overridden to `{}` \
+                             (CLI `{}.{}=`)",
+                            ov.param, ov.value, ov.pattern.source(), ov.param);
+                    }
+                    Err(WriteError::UnknownWire { .. }) => {
+                        if dialect == crate::phase_filter::PhaseDialect::Literal {
+                            crate::diag!(crate::observer::LogLevel::Warn,
+                                "phase '{phase_name}': override `{}.{}=` names a \
+                                 param this phase does not consume — no wire \
+                                 named `{}` in its scope",
+                                ov.pattern.source(), ov.param, ov.param);
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "{polydat_context}: phase-scoped override `{}.{}=`: {e}",
+                            ov.pattern.source(), ov.param,
+                        ).into());
+                    }
+                }
+            }
+        }
+
         // Resolve cursor extents whose `range(...)` bounds depend on
         // wire-bound externs (e.g., `vector_count("{dataset}:{profile}")`
         // where `dataset` and `profile` are iter-var externs). The
@@ -2356,7 +2453,20 @@ async fn run_phase(
                             .and_then(|s| s.extent)
                             .unwrap_or(0)
                     });
-                match resolve_over(&value, cursor_extent) {
+                // Writes one of the `<source>__cursor*` slots by
+                // name; looking the slots up by name is the
+                // contract from process_cursor.
+                let mut write_slot = |suffix: &str, v: polydat::ast::Value| {
+                    let slot = format!("{name}__cursor{suffix}");
+                    if let Some(idx) = kernel.program().find_input(&slot) {
+                        kernel.state().set_input(idx, v);
+                    }
+                };
+                use polydat::ast::Value as PValue;
+                let open_extent = !matches!(
+                    cursor_kind, polydat::iteration::source::CursorKind::Range,
+                );
+                match resolve_over(&value, cursor_extent, open_extent) {
                     Ok(Some(partition)) => {
                         // Narrow the source factory's range using
                         // the partition's bounds.
@@ -2367,19 +2477,41 @@ async fn run_phase(
                         // Write the resolved Partition into the
                         // `<source>__cursor` input slot so downstream
                         // partition-typed nodes (mod_in, cardinality,
-                        // etc.) can consume it. Looking up the slot
-                        // by name is the contract from process_cursor.
-                        let cursor_slot_name = format!("{name}__cursor");
-                        if let Some(idx) = kernel.program().find_input(&cursor_slot_name) {
-                            kernel.state().set_input(
-                                idx,
-                                polydat::ast::Value::from_partition(partition),
-                            );
+                        // etc.) can consume it, and its scalar
+                        // projections into the `<source>__cursor__*`
+                        // slots that `<source>.cursor.<field>` dotted
+                        // access reads (SRD 71 §"Cursor metadata
+                        // wires").
+                        write_slot("__idx", PValue::U64(partition.idx));
+                        write_slot("__partition_count", PValue::U64(partition.count.max(1)));
+                        write_slot("__start_pct", PValue::F64(partition.start_pct));
+                        write_slot("__end_pct", PValue::F64(partition.end_pct));
+                        write_slot("__start_ordinal", PValue::U64(partition.start_ord));
+                        write_slot("__end_ordinal", PValue::U64(partition.end_ord));
+                        // SRD 71 §"Status / report integration":
+                        // the phase-status banner reflects
+                        // partition iteration — 1-based index for
+                        // display, condensed effective range.
+                        // Suppressed for single-partition specs
+                        // and non-iterating runs (count <= 1).
+                        // Routed through the canonical observer
+                        // channel: session.log + stderr + sink.
+                        if partition.count > 1 {
+                            crate::diag!(crate::observer::LogLevel::Info,
+                                "phase '{phase_name}': partition {}/{} [{}..{})",
+                                partition.idx + 1, partition.count,
+                                partition.start_ord, partition.end_ord);
                         }
+                        write_slot("", PValue::from_partition(partition));
                     }
                     Ok(None) => {
                         // Value::None — over expression evaluated to
-                        // nothing; treat as no narrowing.
+                        // nothing; no narrowing. The scalar slots
+                        // still describe the effective (full)
+                        // extent so `q.cursor.*` reads stay
+                        // truthful: one partition spanning
+                        // [0, extent).
+                        write_slot("__end_ordinal", PValue::U64(cursor_extent));
                     }
                     Err(e) => {
                         return Err(format!(
@@ -2631,17 +2763,30 @@ async fn run_phase(
             // SRD 71: narrow `[0, extent)` to `[start_ord, end_ord)`
             // when the cursor was declared with `over`. Falls back
             // to the full range when no narrowing applies.
+            let partitioned = runtime_cursor_partition.contains_key(&schema.name);
             let (range_start, range_end) = runtime_cursor_partition
                 .get(&schema.name)
                 .copied()
                 .unwrap_or((0, extent));
             let effective_extent = range_end.saturating_sub(range_start);
             use polydat::iteration::source as src;
+            // For the extending kinds, the declared `base` (the
+            // per-pass chunk size, carried in `extent`) keeps its
+            // meaning under partition narrowing: the source walks
+            // base-sized chunks within `[start_ord, end_ord)` and
+            // the partition end is a hard cap (`bounded`), per
+            // SRD 71 §"Interaction with existing cursor surface".
+            // A base larger than the partition clamps to it.
+            let chunk = extent.min(effective_extent);
             // Effective extension delta — `runtime_cursor_delta`
             // when the workload supplied an explicit `delta` arg,
-            // else the cursor's narrowed extent.
+            // else the (possibly clamped) base chunk.
             let delta = runtime_cursor_delta.get(&schema.name).copied()
-                .unwrap_or(effective_extent);
+                .unwrap_or(chunk);
+            // Apply the partition cap to an extending factory.
+            let bound = |f: src::ExtendingRangeSourceFactory| {
+                if partitioned { f.bounded(range_end) } else { f }
+            };
             match &schema.cursor_kind {
                 src::CursorKind::Range => {
                     Some(Arc::new(
@@ -2653,27 +2798,27 @@ async fn run_phase(
                     let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
                         src::UntilElapsedPolicy { min_ms, delta },
                     );
-                    Some(Arc::new(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, effective_extent, policy)
-                    ) as Arc<dyn src::DataSourceFactory>)
+                    Some(Arc::new(bound(
+                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, chunk, policy)
+                    )) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingPasses { .. } => {
                     let min_passes = runtime_cursor_min_passes.get(&schema.name).copied().unwrap_or(0);
                     let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
                         src::UntilPassesPolicy { min_passes, delta },
                     );
-                    Some(Arc::new(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, effective_extent, policy)
-                    ) as Arc<dyn src::DataSourceFactory>)
+                    Some(Arc::new(bound(
+                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, chunk, policy)
+                    )) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingCount { .. } => {
                     let min_count = runtime_cursor_min_count.get(&schema.name).copied().unwrap_or(0);
                     let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
                         src::UntilCountPolicy { min_count, delta },
                     );
-                    Some(Arc::new(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, effective_extent, policy)
-                    ) as Arc<dyn src::DataSourceFactory>)
+                    Some(Arc::new(bound(
+                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, chunk, policy)
+                    )) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingElapsedAndPasses { .. } => {
                     let min_ms = runtime_cursor_min_ms.get(&schema.name).copied().unwrap_or(0);
@@ -2687,9 +2832,9 @@ async fn run_phase(
                     let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
                         src::AndPolicy { policies: vec![elapsed, passes] },
                     );
-                    Some(Arc::new(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, effective_extent, policy)
-                    ) as Arc<dyn src::DataSourceFactory>)
+                    Some(Arc::new(bound(
+                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, chunk, policy)
+                    )) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingElapsedOrPasses { .. } => {
                     let min_ms = runtime_cursor_min_ms.get(&schema.name).copied().unwrap_or(0);
@@ -2703,9 +2848,9 @@ async fn run_phase(
                     let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
                         src::OrPolicy { policies: vec![elapsed, passes] },
                     );
-                    Some(Arc::new(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, effective_extent, policy)
-                    ) as Arc<dyn src::DataSourceFactory>)
+                    Some(Arc::new(bound(
+                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, chunk, policy)
+                    )) as Arc<dyn src::DataSourceFactory>)
                 }
             }
         } else {
@@ -2892,6 +3037,25 @@ async fn run_phase(
         rate: phase.rate.or(ctx.rate),
         sequencer: ctx.seq_type,
         error_spec: phase.errors.clone().unwrap_or_else(|| ctx.error_spec.clone()),
+        error_rate_max: phase.error_rate_max.or(ctx.error_rate_max),
+        // SRD-83 — the declared stop conditions that distribute to THIS
+        // phase, gathered structurally from two sources, never inferred
+        // from a predicate's content:
+        //   1. the phase's OWN `stop_when:` whose `each:` names `self`
+        //      (the declaring phase) or `phase`;
+        //   2. the WORKLOAD's `stop_when:` whose `each:` names `phase`
+        //      (a workload declaration fanned out to every phase shell;
+        //      a workload `each: self`/`workload` stays at the workload
+        //      shell and is compiled into `ctx.workload_shell` instead).
+        stop_when: phase.stop_when.iter()
+            .filter(|c| c.each.iter().any(|l| matches!(l,
+                nbrs_workload::model::ScopeLevel::SelfScope
+                | nbrs_workload::model::ScopeLevel::Phase)))
+            .chain(ctx.workload_stop_when.iter()
+                .filter(|c| c.each.iter().any(|l| matches!(l,
+                    nbrs_workload::model::ScopeLevel::Phase))))
+            .map(|c| c.when.clone())
+            .collect(),
         max_retries: 3,
         stanza_concurrency: 1,
         source_factory,
@@ -3062,8 +3226,23 @@ async fn run_phase(
     let sigdigs = nbrs_metrics::instruments::histogram::resolve_hdr_sigdigs(
         &phase_component.read().unwrap_or_else(|e| e.into_inner()),
     );
+    // SRD-82 — bind the phase shell's ErrorPolicy at scope-init by
+    // resolving from the inherited policy. Equal config → inherits the
+    // parent (shared); an override derives a value-equality-shared
+    // instance. Resolved once here; the activity holds it.
+    let phase_error_policy = ctx.error_policy.resolve_child(Some(
+        crate::error_policy::PolicyConfig::new(
+            config.error_spec.clone(),
+            config.error_rate_max,
+        ),
+    ));
+    // SRD-83 — this phase node's own scope kernel; stop-condition
+    // predicates bind to it (their native scope), not a conjured root.
+    let phase_kernel = ctx.scope_tree.phase_node_by_name(phase_name)
+        .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned());
     let mut activity = Activity::with_params_and_sigdigs(
         config, &labels, op_sequence, ctx.workload_params.clone(), sigdigs,
+        phase_error_policy, phase_kernel,
     );
     // SRD-32a Push 3 — propagate the workload-root
     // wrapper-order override and CLI default-order tiebreaker
@@ -3438,6 +3617,11 @@ async fn run_phase(
     }
 
     let phase_duration = phase_start.elapsed().as_secs_f64();
+    // SRD-83 — this child phase's op / error totals, folded into the
+    // workload shell's aggregate at each outcome path below. `cycles`
+    // is ops dispatched; `errors_total` is the counted op errors.
+    let phase_op_count = progress_metrics.cycles_completed();
+    let phase_error_count = progress_metrics.errors_total.get();
     if stopped {
         // Pull the first triggering error captured by the
         // activity's stop_flag setter (activity.rs per-cycle
@@ -3549,6 +3733,21 @@ async fn run_phase(
                     "checkpoint flush after phase '{phase_name}' failed: {e}");
             }
         }
+        // SRD-83 — fold this failed child into the workload shell. A
+        // workload `children_failed > 0` (stop-on-error) condition trips
+        // here; the walk-stop it latches halts sibling phases the local
+        // `Err` cascade can't reach (concurrent / cross-subtree). The
+        // session-level failure itself rides on this `Err` (which exits
+        // before the unreached-phase check), so the graceful-stop flag
+        // is moot on this path but set for symmetry with the success one.
+        if let Some(reason) = ctx.workload_shell
+            .record_phase(true, phase_op_count, phase_error_count)
+        {
+            crate::session_signals::request_graceful_stop();
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "workload stop condition tripped ({reason}) after phase \
+                 '{phase_name}' — halting remaining walk");
+        }
         return Err(format!("phase '{phase_name}' {detail_msg}"));
     }
 
@@ -3609,6 +3808,22 @@ async fn run_phase(
             crate::diag!(crate::observer::LogLevel::Warn,
                 "checkpoint flush after phase '{phase_name}' completed: {e}");
         }
+    }
+    // SRD-83 — fold this completed child into the workload shell. A
+    // workload-level stop condition (e.g. `op_count > N`,
+    // `children_done >= K`) may trip on the new aggregate even though
+    // this phase succeeded; the latch halts the remaining walk. This
+    // is a GRACEFUL stop — nothing failed — so flag it so the
+    // end-of-run unreached-phase check treats the deliberately-skipped
+    // tail like a Ctrl-C stop (no "phases were not executed" warning,
+    // clean exit) rather than as stranded-by-failure.
+    if let Some(reason) = ctx.workload_shell
+        .record_phase(false, phase_op_count, phase_error_count)
+    {
+        crate::session_signals::request_graceful_stop();
+        crate::diag!(crate::observer::LogLevel::Warn,
+            "workload stop condition tripped ({reason}) after phase \
+             '{phase_name}' — halting remaining walk");
     }
     Ok(())
 }
@@ -3815,27 +4030,54 @@ fn parse_var_in_expr(spec: &str) -> (String, String) {
 ///
 /// Accepts:
 /// - `Value::Str(spec)` — parse `spec` as a partition spec,
-///   resolve against `[0, extent)`, use partition 0.
+///   resolve against `[0, extent)`. Must be single-partition.
 /// - `Value::Ext(Partition)` — already resolved, use directly.
-/// - `Value::Ext(PartitionSpec)` — resolve against `[0, extent)`,
-///   use partition 0.
-/// - `Value::Ext(PartitionList)` — already resolved, use entry 0.
+/// - `Value::Ext(PartitionSpec)` — resolve against `[0, extent)`.
+///   Must be single-partition.
+/// - `Value::Ext(PartitionList)` — already resolved. Must hold
+///   exactly one partition.
 /// - `Value::None` — no narrowing applied.
+///
+/// A cursor consumes its `over` source directly, so a
+/// multi-partition spec here is a startup error per SRD 71
+/// §"Single-partition / no-iteration form" — only an enclosing
+/// `for:` iteration can walk a multi-partition list, and the
+/// diagnostic points the author at that form. Silently using
+/// partition 0 would run a fraction of the requested work.
 ///
 /// Returns `Ok(None)` for the no-narrowing case so the caller
 /// keeps the cursor's full extent. Returns `Err` on a malformed
-/// spec, empty partition list, or unsupported value type.
+/// spec, an empty or multi-partition list, or an unsupported
+/// value type.
+///
+/// `open_extent` marks `until_*` cursors: they have no closed
+/// extent to resolve a spec against (their "extent" is just the
+/// per-pass base chunk), so spec-shaped sources (Str /
+/// PartitionSpec) are rejected with guidance, and
+/// already-resolved Partition values pass through with their
+/// absolute ordinals intact — no proportional reprojection, per
+/// SRD 71's open-question resolution (recourse (b): resolve the
+/// spec against an explicit reference extent first, e.g.
+/// `partitions(spec, N)`).
 fn resolve_over(
     value: &polydat::ast::Value,
     extent: u64,
+    open_extent: bool,
 ) -> Result<Option<polydat::iteration::cursor_partition::Partition>, String> {
     use polydat::iteration::cursor_partition::{parse, resolve, Partition};
     use polydat::ast::Value;
 
-    let first_of = |parts: Vec<Partition>| -> Result<Partition, String> {
-        parts.into_iter().next().ok_or_else(|| {
-            "partition list is empty — spec produced no partitions".to_string()
-        })
+    let single_of = |parts: Vec<Partition>| -> Result<Partition, String> {
+        match parts.len() {
+            0 => Err("partition list is empty — spec produced no partitions".to_string()),
+            1 => Ok(parts.into_iter().next().unwrap()),
+            n => Err(format!(
+                "spec resolves to {n} partitions, but this cursor consumes it \
+                 directly (no enclosing `for:` iteration). Iterate the list with \
+                 `for: \"p in <param>.partitions\"` and declare the cursor \
+                 `over p`, or supply a single-partition spec"
+            )),
+        }
     };
 
     // SRD 71: when a `Partition` value flows into `over` from a
@@ -3848,13 +4090,19 @@ fn resolve_over(
     // contract. When `base_extent == extent`, the ordinals are
     // already correct; pass through unchanged.
     let reproject = |p: &Partition| -> Partition {
-        if p.base_extent == extent || extent == 0 {
+        // Open-extent cursors have no meaningful resolution
+        // target — the resolved partition's absolute ordinals
+        // ARE the bounds (SRD 71: the partition's cardinality
+        // becomes the hard upper bound the policy converges
+        // toward).
+        if open_extent || p.base_extent == extent || extent == 0 {
             return *p;
         }
         let start_ord = ((p.start_pct / 100.0) * extent as f64).round() as u64;
         let end_ord   = ((p.end_pct   / 100.0) * extent as f64).round() as u64;
         Partition {
             idx: p.idx,
+            count: p.count,
             start_ord,
             end_ord,
             start_pct: p.start_pct,
@@ -3863,24 +4111,36 @@ fn resolve_over(
         }
     };
 
+    let reject_spec_for_open = || -> String {
+        "an open-extent cursor (`until_*`) has no extent to resolve a \
+         partition spec against — its declared size is just the per-pass \
+         base chunk. Resolve the spec against an explicit reference extent \
+         first (`for: \"p in partitions(<spec>, <extent>)\"`) and declare \
+         the cursor `over p`".to_string()
+    };
+
     match value {
         Value::None => Ok(None),
         Value::Str(s) => {
+            if open_extent {
+                return Err(reject_spec_for_open());
+            }
             let spec = parse(s.as_ref())?;
             let parts = resolve(&spec, 0, extent)?;
-            Ok(Some(first_of(parts)?))
+            Ok(Some(single_of(parts)?))
         }
         Value::Ext(b) => {
             if let Some(p) = value.as_partition() {
                 Ok(Some(reproject(p)))
             } else if let Some(spec) = value.as_partition_spec() {
+                if open_extent {
+                    return Err(reject_spec_for_open());
+                }
                 let parts = resolve(spec, 0, extent)?;
-                Ok(Some(first_of(parts)?))
+                Ok(Some(single_of(parts)?))
             } else if let Some(list) = value.as_partition_list() {
-                let first = list.as_slice().first().ok_or_else(|| {
-                    "partition list is empty — spec produced no partitions".to_string()
-                })?;
-                Ok(Some(reproject(first)))
+                let single = single_of(list.as_slice().to_vec())?;
+                Ok(Some(reproject(&single)))
             } else {
                 Err(format!(
                     "`over` expression produced an Ext value of unexpected type `{}` — \

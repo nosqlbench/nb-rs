@@ -13,6 +13,18 @@
 //! the same PCG that powers polydat's `pcg(position)` GK
 //! node.
 //!
+//! ## References
+//!
+//! - M. E. O'Neill, "PCG: A Family of Simple Fast Space-Efficient
+//!   Statistically Good Algorithms for Random Number Generation,"
+//!   Harvey Mudd College Computer Science Tech. Report
+//!   HMC-CS-2014-0905 (2014). <https://www.pcg-random.org/paper.html>.
+//!   The generator is the PCG-RXS-M-XS member of that family (see
+//!   [`crate::library::pcg`]).
+//! - [`Prng::shuffle`] is the Fisher–Yates / Durstenfeld in-place
+//!   permutation (Comm. ACM Algorithm 235, 1964; Knuth *TAOCP* Vol. 2
+//!   §3.4.2 Algorithm P).
+//!
 //! Determinism: same `(seed, stream)` → same sequence on
 //! every materialization. The strategy layer captures the
 //! seed at order-instantiation time (per spec §3.6's

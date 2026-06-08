@@ -30,6 +30,7 @@ mod report_cmd;
 mod report_scratch;
 mod refine;
 mod run;
+mod session_cmd;
 mod summary;
 mod watch_trigger;
 #[allow(dead_code)]

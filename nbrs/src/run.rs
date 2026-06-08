@@ -79,9 +79,38 @@ pub async fn run_command(args: &[String]) {
     // Adapters that need raw terminal output (e.g. plotter)
     // override TUI detection — checked at startup before any
     // adapter is constructed.
-    let adapter_name = params.get("adapter").or(params.get("driver"))
-        .map(|s| s.as_str()).unwrap_or("stdout");
-    let adapter_pref = nbrs_activity::adapter::adapter_display_preference(adapter_name);
+    let explicit_adapter = params.get("adapter").or(params.get("driver"))
+        .map(|s| s.as_str());
+    let has_workload = params.contains_key("workload")
+        || param_args.iter().any(|a|
+            (a.ends_with(".yaml") || a.ends_with(".yml")) && !a.contains('='));
+    let adapter_name = explicit_adapter.unwrap_or("stdout");
+    // Console-ownership (the adapter writes its own output to the
+    // terminal, so the dashboard must yield) is a property of an
+    // EXPLICIT console-owning adapter (stdout-to-terminal, plotter), or
+    // the implicit `stdout` default of an inline-op run. A workload
+    // supplies its adapters per-phase (typically cql / http), so a
+    // workload run with no top-level `adapter=` override is NOT
+    // console-owning — it gets the normal dashboard. Without this guard
+    // a `workload=…` run with no `adapter=` would default to `stdout`,
+    // reserve the console, and suppress the ENTIRE run display.
+    let adapter_pref = match explicit_adapter {
+        Some(a) => nbrs_activity::adapter::adapter_display_preference(a, &params),
+        None if has_workload => nbrs_activity::adapter::DisplayPreference::Auto,
+        None => nbrs_activity::adapter::adapter_display_preference("stdout", &params),
+    };
+
+    // A console-owning adapter (stdout-to-terminal, plotter) on an
+    // INTERACTIVE terminal owns the screen: stdout and stderr both land
+    // on it, so any diagnostic on stderr interleaves with the adapter's
+    // own output. In that case the console is reserved for the adapter
+    // and ALL nbrs system signals — the in-run sink stream AND the
+    // post-run summary — go to `session.log` only. Non-TTY (pipes/CI)
+    // keeps diagnostics on stderr (a separate stream); `dryrun=` always
+    // shows since its output IS the requested result.
+    let silent_console = adapter_pref == nbrs_activity::adapter::DisplayPreference::Off
+        && is_tty
+        && params.get("dryrun").is_none();
 
     // Three-mode lattice. Default is `terminal` for interactive
     // sessions: line-mode rendering driven by the snapshot stream
@@ -100,9 +129,11 @@ pub async fn run_command(args: &[String]) {
         if let Some(req) = user_tui
             && req != "off"
         {
-            eprintln!(
-                "display: adapter '{adapter_name}' requires exclusive terminal — \
-                 forcing tui=off (overriding tui={req})"
+            nbrs_activity::diag!(
+                nbrs_activity::observer::LogLevel::Warn,
+                "display: adapter '{adapter_name}' writes its own output to the \
+                 terminal — forcing tui=off (overriding tui={req}) so the dashboard \
+                 doesn't overwrite it; run detail is still captured in the log"
             );
         }
         "off"
@@ -171,17 +202,25 @@ pub async fn run_command(args: &[String]) {
     // (read-only fs, socket name collision) don't abort the run;
     // the inspector just stays disabled with a warning.
     let runtime_handle = tokio::runtime::Handle::try_current().ok();
-    let _inspector_join = match nbrs_tui::inspector_server::spawn(
-        run_state.clone(), runtime_handle.clone(),
-    ) {
-        Ok((path, join)) => {
-            eprintln!("inspector socket: {}", path.display());
-            Some(join)
+    // The inspector socket is the out-of-band endpoint for
+    // `nbrs attach`; the in-process run (TUI, observer, RunState) never
+    // reads it. Most runs are never attached to, so it's OFF by default
+    // — a per-run socket plus an announcement line is just noise. Opt in
+    // with `inspector=on` when you intend to attach to a long workload.
+    let inspector_enabled = params.get("inspector")
+        .map(|v| matches!(v.as_str(), "on" | "true" | "1"))
+        .unwrap_or(false);
+    let _inspector_join = if inspector_enabled {
+        match nbrs_tui::inspector_server::spawn(run_state.clone(), runtime_handle.clone()) {
+            Ok((_path, join)) => Some(join),
+            Err(e) => {
+                nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Warn,
+                    "inspector endpoint disabled: {e}");
+                None
+            }
         }
-        Err(e) => {
-            eprintln!("warning: inspector endpoint disabled: {e}");
-            None
-        }
+    } else {
+        None
     };
 
     if tui_mode != "on" {
@@ -214,6 +253,11 @@ pub async fn run_command(args: &[String]) {
         let dryrun_phase_default = cli_params.get("dryrun")
             .map(|s| s.split(',').any(|f| f.trim() == "phase" || f.trim() == "controls"))
             .unwrap_or(false);
+        // A console-owning adapter (stdout to the terminal, plotter)
+        // forced tui=off because it writes its own output there. Raise
+        // the stderr floor to Warn so the Info-level run-detail
+        // (session/metrics banners, phase walk, shutdown notices) stays
+        // in the session log only and doesn't bury the adapter's output.
         let default_min_level = if dryrun_phase_default {
             nbrs_activity::observer::LogLevel::Warn
         } else {
@@ -251,7 +295,8 @@ pub async fn run_command(args: &[String]) {
             .and_then(|s| match nbrs_metrics::cadence::Cadences::parse(s) {
                 Ok(c) => Some(c),
                 Err(e) => {
-                    eprintln!("warning: latency-cadences='{s}': {e} — using defaults");
+                    nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Warn,
+                        "latency-cadences='{s}': {e} — using defaults");
                     None
                 }
             })
@@ -259,6 +304,11 @@ pub async fn run_command(args: &[String]) {
         let observer_concrete = nbrs_tui::log_only_observer::LogOnlyObserver::new(
             run_state.clone(), cadences,
         ).with_min_level(stderr_min_level);
+        let observer_concrete = if silent_console {
+            observer_concrete.reserve_console_for_adapter()
+        } else {
+            observer_concrete
+        };
         let observer_arc = std::sync::Arc::new(observer_concrete);
         let observer: std::sync::Arc<dyn nbrs_activity::observer::RunObserver> =
             observer_arc.clone();
@@ -344,7 +394,7 @@ pub async fn run_command(args: &[String]) {
         // From here down the terminal is back in cooked mode
         // (or we never claimed it — `tui=off` path). Post-run
         // reports / errors are safe to print.
-        print_post_run_reports(args, &run_state, &run_result);
+        print_post_run_reports(args, &run_state, &run_result, silent_console);
 
         if let Err(e) = run_result {
             eprintln!("error: {e}");
@@ -375,7 +425,8 @@ pub async fn run_command(args: &[String]) {
         .and_then(|s| match Cadences::parse(s) {
             Ok(c) => Some(c),
             Err(e) => {
-                eprintln!("warning: latency-cadences='{s}': {e} — using defaults");
+                nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Warn,
+                    "latency-cadences='{s}': {e} — using defaults");
                 None
             }
         })
@@ -416,7 +467,9 @@ pub async fn run_command(args: &[String]) {
 
     // From here down the terminal is back in cooked mode.
     // Shared with the `tui=terminal` / `tui=off` path above.
-    print_post_run_reports(args, &run_state, &run_result);
+    // tui=on never overlaps a console-owning adapter, so the summary
+    // always prints here (silent_console is false on this path).
+    print_post_run_reports(args, &run_state, &run_result, silent_console);
 
     if let Err(ref e) = run_result {
         eprintln!("error: {e}");
@@ -456,6 +509,7 @@ fn print_post_run_reports(
     args: &[String],
     run_state: &nbrs_tui::run_state_actor::RunStateHandle,
     run_result: &Result<(), String>,
+    silent_console: bool,
 ) {
     // Resolve the *active* session dir for this run. When the
     // user passed `--session-path`, `--logs-dir`, or
@@ -502,11 +556,18 @@ fn print_post_run_reports(
                     }
                 }
             } else {
-                eprintln!("summary ({ext}): {}", path.display());
+                nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Info,
+                    "summary ({ext}): {}", path.display());
             }
         }
     }
-    print_post_run_summary(run_state, run_result);
+    // The post-run summary is an nbrs system signal, not adapter
+    // output — when a console-owning adapter holds an interactive
+    // terminal it goes to `session.log` only (the phase outcomes are
+    // already there); the console stays the adapter's.
+    if !silent_console {
+        print_post_run_summary(run_state, run_result);
+    }
 }
 
 /// Render every persisted plot item from
@@ -521,22 +582,12 @@ fn auto_render_plots(session_dir: &std::path::Path) {
         Ok(c) => c,
         Err(_) => return,
     };
-    let mut stmt = match conn.prepare(
-        "SELECT key, value FROM session_metadata \
-         WHERE key LIKE 'report.%' ORDER BY rowid"
-    ) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let rows = match stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    }) {
-        Ok(it) => it,
-        Err(_) => return,
-    };
+    // Latest execution's report defs (per-execution metadata), with a
+    // legacy session_metadata fallback.
+    let entries =
+        nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(&conn, "report.%");
     let mut idx: usize = 0;
     let mut total: usize = 0;
-    let entries: Vec<(String, String)> = rows.flatten().collect();
     for (_key, value) in &entries {
         idx += 1;
         let mut lines = value.lines();
@@ -579,7 +630,8 @@ fn auto_render_plots(session_dir: &std::path::Path) {
         total += 1;
     }
     if total > 0 {
-        eprintln!("auto-render: {total} plot{} rendered (SRD-46)",
+        nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Info,
+            "auto-render: {total} plot{} rendered (SRD-46)",
             if total == 1 { "" } else { "s" });
     }
 }
@@ -601,12 +653,11 @@ fn auto_inject_details(session_dir: &std::path::Path) {
         Err(_) => return,
     };
 
+    // Per-execution metadata for the latest execution (falls back to
+    // legacy session_metadata, which still holds the invariant
+    // `session` key).
     let read_meta = |key: &str| -> Option<String> {
-        conn.query_row(
-            "SELECT value FROM session_metadata WHERE key = ?1",
-            [key],
-            |r| r.get::<_, String>(0),
-        ).ok()
+        nbrs_metrics::reporters::sqlite::latest_execution_metadata_value(&conn, key)
     };
 
     let session_id = read_meta("session").unwrap_or_else(|| "?".into());
@@ -651,16 +702,12 @@ fn auto_inject_details(session_dir: &std::path::Path) {
     let mut files: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     files.insert("summary.md".into());
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT value FROM session_metadata WHERE key LIKE 'report.%'"
-    ) {
-        if let Ok(iter) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            for value in iter.flatten() {
-                for line in value.lines() {
-                    if let Some(rest) = line.strip_prefix("target ") {
-                        files.insert(rest.trim().to_string());
-                    }
-                }
+    for (_k, value) in
+        nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(&conn, "report.%")
+    {
+        for line in value.lines() {
+            if let Some(rest) = line.strip_prefix("target ") {
+                files.insert(rest.trim().to_string());
             }
         }
     }
@@ -670,7 +717,8 @@ fn auto_inject_details(session_dir: &std::path::Path) {
         if let Err(e) = crate::report::write_named_section_first(
             &path, "run_details", "Run Details", &body,
         ) {
-            eprintln!("warning: details auto-inject failed on '{}': {e}",
+            nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Warn,
+                "details auto-inject failed on '{}': {e}",
                 path.display());
         }
     }

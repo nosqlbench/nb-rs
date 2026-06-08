@@ -84,6 +84,103 @@ impl PhaseStatus {
             PhaseStatus::CursorSuspended => "cursor_suspended",
         }
     }
+
+    /// SRD-82 Part 1 — the two-axis view of this status. The inverse
+    /// of [`Outcome::to_status`]. Lossy in reverse (the single status
+    /// can't distinguish `Completed + Failed` from
+    /// `Interrupted + Failed`), so the storage migration that makes the
+    /// axes canonical on [`PhaseOutcome`] will supersede this for
+    /// produced outcomes; today every producer goes through the
+    /// standard mapping below.
+    pub fn to_outcome(&self) -> Outcome {
+        match self {
+            PhaseStatus::Completed => Outcome::completed(),
+            PhaseStatus::Failed => Outcome::failed(),
+            PhaseStatus::Skipped => Outcome::skipped(),
+            PhaseStatus::CursorSuspended => Outcome::interrupted(),
+        }
+    }
+}
+
+/// SRD-82 Part 1 — **how much** of a shell's work ran. Orthogonal to
+/// [`Validity`]: a result can be `Interrupted` yet `Succeeded`
+/// (re-usable partial progress) or `Completed` yet `Failed` (ran fully
+/// but the result is garbage).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Disposition {
+    /// In flight (not a terminal outcome).
+    Running,
+    /// Ran to its natural end.
+    Completed,
+    /// Stopped before its natural end (a signal, a stop condition).
+    Interrupted,
+    /// Never started (filtered / unreached / resume-skipped).
+    Skipped,
+}
+
+/// SRD-82 Part 1 — whether the produced result is **usable**.
+/// Orthogonal to [`Disposition`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Validity {
+    /// The result is trustworthy.
+    Succeeded,
+    /// The result is not trustworthy — do not rely on it.
+    Failed,
+}
+
+/// SRD-82 Part 1 — the two-axis result of any execution shell, and the
+/// `effect` of an SRD-83 stop condition. The four meaningful
+/// quadrants: `Completed+Succeeded` (clean), `Completed+Failed` (ran
+/// fully, garbage), `Interrupted+Succeeded` (partial, re-usable),
+/// `Interrupted+Failed` (partial, discard).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Outcome {
+    pub disposition: Disposition,
+    pub validity: Validity,
+}
+
+impl Outcome {
+    pub const fn new(disposition: Disposition, validity: Validity) -> Self {
+        Self { disposition, validity }
+    }
+    /// Ran fully, result trustworthy.
+    pub const fn completed() -> Self {
+        Self::new(Disposition::Completed, Validity::Succeeded)
+    }
+    /// Stopped early, result untrustworthy — the SRD-83 `fail` effect
+    /// / a `StopCause::Fault`.
+    pub const fn failed() -> Self {
+        Self::new(Disposition::Interrupted, Validity::Failed)
+    }
+    /// Stopped early, partial result usable — the SRD-83 `stop` effect
+    /// / a `StopCause::Interrupt` (e.g. user Ctrl-C, budget met).
+    pub const fn interrupted() -> Self {
+        Self::new(Disposition::Interrupted, Validity::Succeeded)
+    }
+    /// Never started.
+    pub const fn skipped() -> Self {
+        Self::new(Disposition::Skipped, Validity::Succeeded)
+    }
+
+    /// The result is not trustworthy (the session-level red mark).
+    pub fn is_failure(&self) -> bool {
+        matches!(self.validity, Validity::Failed)
+    }
+
+    /// Project onto the legacy display [`PhaseStatus`]. Lossy:
+    /// `Completed+Failed` and `Interrupted+Failed` both render
+    /// `Failed`; `Interrupted+Succeeded` renders `CursorSuspended`
+    /// (re-usable partial).
+    pub fn to_status(&self) -> PhaseStatus {
+        match (self.disposition, self.validity) {
+            (_, Validity::Failed) => PhaseStatus::Failed,
+            (Disposition::Skipped, _) => PhaseStatus::Skipped,
+            (Disposition::Interrupted, Validity::Succeeded) => PhaseStatus::CursorSuspended,
+            (_, Validity::Succeeded) => PhaseStatus::Completed,
+        }
+    }
 }
 
 /// Session-wide pass/fail disposition. Projected from the
@@ -316,6 +413,14 @@ impl PhaseOutcome {
         self.errors.first().map(|e| e.message.as_str())
     }
 
+    /// SRD-82 Part 1 — the two-axis [`Outcome`]. Derived from `status`
+    /// today (every producer goes through the standard mapping); once
+    /// the axes become the stored canonical (the storage migration),
+    /// this returns them directly and `status` becomes the projection.
+    pub fn outcome(&self) -> Outcome {
+        self.status.to_outcome()
+    }
+
     /// SRD-76 Push 3 — project this outcome into the
     /// storage-layer row shape used by
     /// [`nbrs_metrics::reporters::sqlite::SqliteReporter::write_phase_outcome`].
@@ -452,5 +557,42 @@ mod tests {
         let parsed: PhaseOutcome = serde_json::from_str(&json)
             .expect("deserialise");
         assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn two_axis_outcome_projects_to_and_from_status() {
+        // The four constructors land in the right quadrants.
+        assert_eq!(Outcome::completed(),
+            Outcome::new(Disposition::Completed, Validity::Succeeded));
+        assert_eq!(Outcome::failed(),
+            Outcome::new(Disposition::Interrupted, Validity::Failed));
+        assert_eq!(Outcome::interrupted(),
+            Outcome::new(Disposition::Interrupted, Validity::Succeeded));
+
+        // Validity drives is_failure, orthogonal to disposition.
+        assert!(Outcome::failed().is_failure());
+        assert!(!Outcome::interrupted().is_failure());
+        assert!(!Outcome::completed().is_failure());
+
+        // Projection to the legacy status: a Completed-but-Failed phase
+        // and an Interrupted-but-Failed phase both render Failed; an
+        // Interrupted-but-Succeeded phase is re-usable (CursorSuspended).
+        assert_eq!(Outcome::completed().to_status(), PhaseStatus::Completed);
+        assert_eq!(Outcome::failed().to_status(), PhaseStatus::Failed);
+        assert_eq!(
+            Outcome::new(Disposition::Completed, Validity::Failed).to_status(),
+            PhaseStatus::Failed);
+        assert_eq!(Outcome::interrupted().to_status(), PhaseStatus::CursorSuspended);
+        assert_eq!(Outcome::skipped().to_status(), PhaseStatus::Skipped);
+
+        // Inverse: status → the standard two-axis mapping.
+        assert_eq!(PhaseStatus::Completed.to_outcome(), Outcome::completed());
+        assert_eq!(PhaseStatus::Failed.to_outcome(), Outcome::failed());
+        assert_eq!(PhaseStatus::CursorSuspended.to_outcome(), Outcome::interrupted());
+
+        // PhaseOutcome surfaces the two-axis view.
+        let oc = PhaseOutcome::completed(PhaseIdentity::new("p", ""), 1.0);
+        assert_eq!(oc.outcome(), Outcome::completed());
+        assert!(!oc.outcome().is_failure());
     }
 }

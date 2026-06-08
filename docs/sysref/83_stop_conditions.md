@@ -1,0 +1,355 @@
+# SRD-83 — Stop Conditions (Predicate-Triggered, Daemon-Scheduled)
+
+**Status:** DRAFT — the stop-condition system for execution shells.
+**Orthogonal to** SRD-82's error handling: error handling decides what
+to do with an individual error; stop conditions decide whether to stop
+a shell based on predicates over its accumulated state. Neither
+subsumes the other.
+
+**Owner:** nbrs-activity (executor shells, daemon scheduler, the
+runtime-state wires), polydat (predicate compilation against shell
+state), nbrs-workload (the `stop_when:` configuration surface).
+
+**Cross-refs:**
+- [SRD-82](82_uniform_execution_shells.md) — Execution shells, the
+  two-axis `Outcome`, and the cooperative abort mechanism
+  (`stop_flag` / `StopCause`). A stop condition's *effect* is an
+  `Outcome` and its enforcement is SRD-82 Part 4's abort. SRD-83
+  supplies the *decision* layer that triggers it; it replaces the
+  `AggregateGuard`-as-error-handler stopgap.
+- [SRD-18b](18b_scenario_tree_and_scheduler.md) — One polydat kernel
+  per scope node. Stop-condition predicates compile in the shell's
+  own scope and read its runtime-state wires.
+- [SRD-11](11_polydat_evaluation.md) — Const vs dynamic lifecycles.
+  Runtime-state wires (`op_count`, `error_rate`, `elapsed_ms`) are
+  volatile externs the executor injects, like the `phase_start` /
+  `now_ms` pattern.
+- [SRD-02](02_concurrency_model.md) — Daemon timers are async tasks;
+  no blocking primitives in the firing path.
+- [SRD-23](23_dynamic_controls.md) — Actor + ArcSwap async control
+  surface; the daemon scheduler follows the same lock-free shape.
+
+---
+
+## Why this exists
+
+Stopping a shell early has nothing to do with *how an individual error
+is handled*. It's a function of the shell's accumulated state:
+"too many ops have errored," "we've run long enough," "a child
+failed," "the recall target was met." Folding that into the error
+router (the `AggregateGuard` breach) conflated two orthogonal axes:
+
+- **Error handling** (SRD-82, `ErrorPolicy.router`): per-op — match an
+  error name, decide count / warn / retry / stop / fail.
+- **Stop conditions** (this SRD): per-shell — evaluate a *predicate*
+  over accumulated state at a *trigger*, and if true, stop the shell
+  with a chosen *effect*.
+
+They compose: the error handler increments error counters, which feed
+the `error_rate` wire, which a stop condition reads. Neither owns the
+other.
+
+The motivating need, verbatim: *"I want to check whether the op count
+is over 50 and the error rate is over 10%, but I only want to check
+every 10 seconds."* That is one stop condition: a predicate, plus a
+trigger that controls evaluation cadence.
+
+---
+
+## Part 1 — A stop condition is (predicate, trigger, effect)
+
+```rust
+pub struct StopCondition {
+    /// A polydat expression over the shell's runtime-state wires,
+    /// evaluating to bool. Compiled in the shell's scope.
+    when: PolydatPredicate,
+    /// When to evaluate `when` (Part 3).
+    trigger: Trigger,
+    /// The Outcome the shell adopts if `when` is true (Part 5).
+    effect: StopEffect,
+}
+```
+
+A shell carries a **list** of these (its `stop_when:`). On each
+trigger firing, the matching conditions' predicates are evaluated; the
+first true one stops the shell with its effect. Stop conditions are
+resolved/inherited down the shell tree the same way an `ErrorPolicy`
+is (SRD-82 Part 3a: depth-inherit, breadth-share) — a child inherits
+its parent's conditions unless it declares its own.
+
+---
+
+## Part 2 — Predicates are polydat over runtime-state wires
+
+The predicate is **polydat**, not a bespoke mini-language. When a stop
+condition is declared for a shell layer, its predicate is compiled —
+**at shell-layer construction, once** — as an SRD-84 **shape 2**
+[`ScopedExpr`] *bound to that shell's scope kernel*: a scope-bound,
+callable expression over the scope's runtime-state wires. Evaluating at
+a trigger is then `RuntimeState::trips(&mut expr)` — inject the live
+state, read the predicate's truthiness — never an ad-hoc per-trigger
+compile.
+
+> **Implemented 2026-06-09** (`nbrs-activity::stop_conditions`):
+> `compile_stop_condition(phase_kernel, idx, when) -> ScopedExpr` builds
+> the runtime-state externs as SRD-84 shape-1 `GraphMatter`
+> (`extern_wire::<T: Wire>`, constructed not parsed), binds the
+> `u64`-truthiness predicate stub, and `ScopedExpr::bind`s it as a
+> sub-context of the phase kernel. **The predicate is not baked into the
+> phase kernel's own matter** — it is a separate sub-context, so authored
+> phase bindings and evaluated stop predicates stay orthogonal concerns.
+> (This supersedes the interim `volatile __stop_cond_<i>` matter
+> synthesis.) Tested: `compiles_and_trips_a_scoped_stop_condition`.
+
+The runtime-state wires are injected as volatile externs on that same
+kernel (SRD-11):
+
+| Wire | Meaning |
+|------|---------|
+| `op_count` / `cycle_count` | ops dispatched / cycles completed so far |
+| `error_count` | errors recorded so far |
+| `error_rate` | `error_count / op_count` (0 when no ops) |
+| `elapsed_ms` / `elapsed_s` | wall time since the shell started |
+| `children_total` / `children_failed` / `children_done` | child-shell outcomes (scenario/scope shells) |
+
+So the example predicate is literally:
+
+```text
+op_count > 50 && error_rate > 0.1
+```
+
+Authors get the full polydat surface — arithmetic, comparison,
+`if(...)`, named intermediate consts — so conditions like
+`elapsed_s > 30 && recall_mean < 0.8` or `children_failed > 0` are just
+expressions. The wire set is extensible; new shell state becomes a new
+volatile extern, no predicate-language change.
+
+### Distribution — the `each:` selector (declared, never inferred)
+
+A declaration carries an explicit **distribution selector** naming the
+scope *levels* it rides along with — `each: <level | [levels]>` over a
+closed set aligned to `ScopeKind`: `self | op | phase | scenario |
+workload` (`self` = the declaring node). The declaration's written
+location bounds the subtree; `each:` names the descendant levels.
+
+The matter walk distributes by a purely **structural** rule — a node
+matches when `node.level ∈ each` *and* the node is inside the declaring
+subtree (two equality checks). It never inspects the predicate's
+content. One declaration → one compiled handle **per matched node**,
+each reading *that* shell's runtime-state, so `error_rate > 0.1` at a
+phase node is the phase's rate and the same text at the enclosing
+scenario node is the scenario's aggregate. **Placement is declared and
+structural; binding is to the native scope; nothing is inferred.**
+`error_rate_max: X` is sugar for `{ when: "error_rate > X", each:
+[phase] }`.
+
+> **Implemented 2026-06-09 (phase-level slice).** `ScopeLevel` +
+> `StopConditionSpec.each` (`nbrs-workload::model`); the executor filters
+> each phase's applicable conditions (`each ∋ {self, phase}`) and binds
+> them — via `StopConditionSet::build_for_phase` — against the phase
+> node's **own** `cached_kernel` (`Activity.phase_kernel`, the structural
+> walk's native scope; the conjured-root stopgap is gone). The
+> drain-loop Tick evaluates them (`RuntimeState::trips`). Scenario /
+> workload-level distribution needs shell-level evaluation
+> (`children_*` aggregation + firing events at those levels) — the
+> follow-up.
+
+---
+
+## Part 3 — Triggers and the firing-event enum
+
+Stop conditions are a **phase- and scenario-layer concern only**. The
+inner shells — stanza, op, cycle — deliberately raise **no**
+stop-condition firing events: their SRD-82 error handlers already wrap
+those scopes, and firing a lifecycle event per stanza or per cycle
+would be needless overhead on the hot path. So the firing-event set is
+small and lives at the phase and scenario layers:
+
+```rust
+/// Firing events the executor raises for stop-condition evaluation.
+/// Phase- and scenario-layer only — never per stanza / op / cycle.
+pub enum FiringEvent {
+    PhaseStart,    // a phase shell begins
+    PhaseEnd,      // a phase shell ends — also the scenario's
+                   // "a child finished" signal, so a scenario's
+                   // `children_failed > 0` is evaluated here (no
+                   // separate per-child event)
+    Tick(TimerId), // a timer daemon fired (Part 4); its schedule is
+                   // Every (a fixed "tick timer") or Settle (periodic
+                   // backoff). Hooked at the phase AND scenario layer.
+}
+```
+
+A predicate is **not** evaluated continuously. `PhaseStart` / `PhaseEnd`
+are raised inline by the walker at the (coarse, cheap) phase boundary;
+`PhaseEnd` doubles as the scenario's child-finished signal. `Tick`
+comes from a per-layer timer daemon and decouples evaluation cadence
+from the work rate — the example's "only check every 10 seconds," and
+the settle backoff. A `trigger:` defaults sensibly per condition kind
+(rate predicates → the settle `Tick`; `children_failed` → `PhaseEnd`).
+
+---
+
+## Part 4 — Daemon-scheduled timings and named backoffs
+
+Each execution layer owns a set of **daemon tasks** that manage trigger
+timings **asynchronously**, off the work path (reusing the activity's
+`DaemonPool`; SRD-02 — async, lock-free, no blocking in the firing
+path). A timing daemon's only job is to raise `Tick(id)` on a schedule;
+the shell evaluates the conditions bound to that timer.
+
+Schedules are **named, symbolic backoffs** — incremental timings that
+start eager and relax as a layer settles into its pattern:
+
+```rust
+pub enum BackoffSchedule {
+    /// Fixed interval.
+    Every(Duration),
+    /// Eager → relaxed: start at `initial`, grow by `factor` each
+    /// fire up to `max`. Resets on a state-change signal.
+    Settle { initial: Duration, max: Duration, factor: f64 },
+}
+```
+
+Named presets: `eager` (tight fixed), `settle` (the default for error
+conditions: e.g. start ~1 s, grow to ~30 s), `lazy` (coarse fixed).
+
+**The standard error-condition daemon.** Every shell gets, by default,
+one `settle`-scheduled timing daemon that fires evaluation of its
+rate/error stop conditions — **eagerly at first, then less often as the
+shell settles**. This is exactly what catches a fast-failing config
+(the all-error query cells) within the first second or two, without
+paying a per-cycle predicate cost once a long phase has stabilized. The
+initial / max / factor are configurable; `settle` is the default.
+
+---
+
+## Part 5 — Effects are two-axis Outcomes enforced cooperatively
+
+A condition's `effect` is the `Outcome` the shell adopts when its
+predicate fires — a `(Disposition, Validity)` pair (SRD-82 Part 1):
+
+| `effect:` shorthand | Outcome | `StopCause` |
+|---------------------|---------|-------------|
+| `fail` | `Interrupted + Failed` | `Fault` |
+| `stop` | `Interrupted + Succeeded` | `Interrupt` |
+
+`fail` is the error-rate breach (the result is not trustworthy);
+`stop` is a clean early halt (budget/time met — keep the partial
+result). Enforcement is **not** new machinery: the firing sets the
+SRD-82 `stop_flag` + `StopCause`, fibers drain at their next boundary,
+and the phase-end outcome records the chosen axes. A scenario shell's
+fired condition aborts in-flight siblings via the same cooperative path
+(SRD-82 Part 4).
+
+---
+
+## Part 6 — Orthogonality and reconciliation
+
+Two systems, composing, neither owning the other:
+
+```
+ErrorPolicy (SRD-82)         StopConditions (this SRD)
+  per-op error routing         per-shell state predicates
+  count/warn/retry/stop/fail   when(polydat) @ trigger → effect(Outcome)
+        │                              ▲
+        └── increments error_count ────┘  (read as the error_rate wire)
+```
+
+Reconciling the landed SRD-82 work:
+
+- **The error-rate breach moves out of `ErrorPolicy`.** The
+  `AggregateGuard` (`nbrs-errorhandler/src/aggregate.rs`) is retired;
+  the breach becomes a default stop condition
+  `when: "op_count > 50 && error_rate > 0.1"`, `trigger: settle`,
+  `effect: fail`. `ErrorPolicy` keeps only its `router`; its `guard`
+  field is removed.
+- **Scenario "stop on error" is a default stop condition**, not an
+  error-router rule: `when: "children_failed > 0"`, `trigger: PhaseEnd`
+  (a child phase ending is the scenario's child-finished signal),
+  `effect: fail` with `Fault` cause → `Interrupted + Failed` on the
+  scenario. This closes SRD-82's Part 4 gap (a failed phase now stops
+  the workload) as a stop condition.
+- The drain-loop delegation to `error_policy.guard.assess(...)` is
+  replaced by the shell's stop-condition evaluation on its settle
+  daemon's `Tick`.
+
+---
+
+## Part 7 — Configuration surface
+
+```yaml
+phases:
+  query_sweep:
+    stop_when:
+      - when: "op_count > 50 && error_rate > 0.1"   # polydat predicate
+        trigger: settle        # named backoff; eager → relaxed
+        effect: fail           # Interrupted + Failed
+      - when: "elapsed_s > 600"
+        trigger: { every: 5s }
+        effect: stop           # Interrupted + Succeeded (budget met)
+```
+
+Defaults (inherited, overridable per shell): the session installs the
+two default conditions above (rate breach + child-failed) so the
+out-of-the-box behaviour is "fail fast on a broken config, stop the
+workload on a failed phase" without any `stop_when:` in the workload.
+
+---
+
+## Part 8 — Migration
+
+1. **Runtime-state wires.** ✅ DONE (`nbrs-activity/src/stop_conditions.rs`).
+   `RuntimeState { op_count, error_count, elapsed_ms, children_* }` +
+   `error_rate()` + the `wire::*` name vocabulary +
+   `inject_into<D: Dataflow>` (per-wire `find_input` + `set_wire_idx`,
+   skipping wires a predicate doesn't reference). Tested against a real
+   compiled predicate kernel (inject by name → volatile re-evaluation).
+   Step 2 declares these `op_count`/`error_rate`/… as volatile externs
+   on the phase/scenario scope kernel at construction.
+2. **Predicate compile (cohesive).** At shell-layer construction, fold
+   each `when:` into the shell's scope kernel as an output binding —
+   compiled once, with the runtime-state wires as its inputs — so
+   evaluation is a single output pull, never an ad-hoc per-trigger
+   compile. Phase and scenario layers only.
+3. **Firing events + daemon scheduler.** Define the small `FiringEvent`
+   set (`PhaseStart` / `PhaseEnd` / `Tick`); raise `PhaseStart` /
+   `PhaseEnd` inline at the walker's phase boundary (no per-stanza /
+   per-cycle events); add `Every`- and `settle`-scheduled timing
+   daemons to the `DaemonPool` at the phase and scenario layers that
+   raise `Tick`.
+4. **Effects.** Map `fail`/`stop` to `StopCause::{Fault,Interrupt}` and
+   the two-axis `Outcome` (depends on SRD-82 Part 1).
+5. **Retire the `AggregateGuard` breach.** Replace the drain-loop
+   `guard.assess` delegation with stop-condition evaluation; drop
+   `ErrorPolicy.guard`; install the default conditions.
+
+Step 3's event raising + 1's wires are the load-bearing new surface;
+the rest reuses SRD-82's abort and SRD-18b's per-scope kernel.
+
+---
+
+## Invariants (axioms this SRD adds)
+
+- **Stop conditions are orthogonal to error handling.** A stop
+  condition never decides per-op error disposition; an error handler
+  never decides shell termination. They communicate only through
+  shared state wires (`error_rate`).
+- **A stop condition is (polydat predicate, trigger, effect).**
+  Predicates are polydat over runtime-state wires — no bespoke
+  condition language. Effects are two-axis Outcomes.
+- **Predicates compile cohesively into the shell's scope kernel at
+  construction.** A `when:` is an output binding of the shell's scope
+  (one kernel, built once, SRD-18b); evaluation is a single output
+  pull against volatile state, never an ad-hoc per-trigger compile.
+- **Stop conditions live at the phase and scenario layers only.** The
+  stanza / op / cycle shells raise no stop-condition firing events —
+  their error handlers suffice; firing per cycle would be needless hot-
+  path overhead. The firing set is `PhaseStart` / `PhaseEnd` / `Tick`
+  (fixed or settle), and `PhaseEnd` is the scenario's child-finished
+  signal.
+- **Evaluation is triggered, not continuous.** Rate/error conditions
+  default to a `settle` backoff (eager → relaxed) so a broken config is
+  caught fast and a settled phase pays little.
+- **Timing is daemon-managed and async.** Trigger cadence lives in
+  per-layer (phase / scenario) daemon tasks, never in the work path.

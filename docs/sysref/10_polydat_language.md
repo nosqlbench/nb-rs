@@ -1,5 +1,12 @@
 # 10: Polydat Language and Compilation — nbrs-side framing
 
+> **Planned (SRD-84):** add `&&` / `||` boolean operators (eager
+> truthiness combinators; short-circuit deferred) at the **lowest**
+> precedence — two-char lexer tokens distinct from bitwise `&`/`|` — and
+> a uniform `<expr> as <type>` type-coercion cast (an optional,
+> idempotent type-fusion infill into the SRD-79 layer). See
+> [SRD-84](84_grammar_safe_matter.md) Parts 1 + 1b.
+
 The Generation Kernel (GK) is a deterministic data generation
 engine. It transforms named u64 input tuples into typed
 output variates via a directed acyclic graph (DAG) of composable

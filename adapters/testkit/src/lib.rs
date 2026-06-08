@@ -711,7 +711,7 @@ inventory::submit! {
             "result-capacity", "result-overload",
             "result-throw-at", "result-throw-name",
         ],
-        display_preference: || nbrs_activity::adapter::DisplayPreference::Auto,
+        display_preference: |_params| nbrs_activity::adapter::DisplayPreference::Auto,
         create: |params| Box::pin(async move {
             Ok(std::sync::Arc::new(ModelAdapter::with_config(ModelConfig {
                 stdout: StdoutConfig::from_params(&params),

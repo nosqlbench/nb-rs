@@ -140,6 +140,24 @@ pub fn series_color(palette: Palette, series_idx: usize) -> plotters::style::RGB
     rgb(palette[series_idx % palette.len()])
 }
 
+/// Distinct point-marker shapes, cycled per series for
+/// literature-style plots where lines must be told apart by point
+/// shape (grayscale print, dense overlap, color-blind readers) and
+/// not just hue. Order is chosen so adjacent series differ
+/// maximally; every name is one the renderer knows (the marker
+/// `match` in `plot_metrics`). The legend swatch carries the same
+/// shape, so shape→series is recoverable from the key.
+pub const MARKER_CYCLE: &[&str] =
+    &["circle", "square", "triangle", "diamond"];
+
+/// Pick one marker shape by series index, wrapping when the cycle
+/// runs out. Parallel to [`series_color`]: a plot's `marker: auto`
+/// resolves each series to `series_marker(idx)`, giving every line a
+/// distinct point shape the way colors are distinct per series.
+pub fn series_marker(series_idx: usize) -> &'static str {
+    MARKER_CYCLE[series_idx % MARKER_CYCLE.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

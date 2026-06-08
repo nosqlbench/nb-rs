@@ -171,7 +171,7 @@ already track counts per (phase, op-template). No new state.
 | `palette <name\|N>` | Color sequence | line colors | cell-highlight colors |
 | `line=<style>` | Line dash: `solid`, `dashed`, `dotted`, `dashdot`, `none` | yes | ignored on cascade |
 | `width=<n>` | Stroke width (px) | yes | ignored on cascade |
-| `marker=<shape>` | Point shape: `none`, `circle`, `square`, `triangle`, `diamond`, `plus`, `cross` | yes | ignored on cascade |
+| `marker=<shape>` | Point shape: `auto`, `none`, `circle`, `square`, `triangle`, `diamond`, `plus`, `cross`. `auto` cycles a distinct shape per series (circle→square→triangle→diamond, wrapping) — literature-style, so lines are distinguishable in grayscale; the legend key carries each series' shape. A per-series `marker=<shape>` override still wins. | yes | ignored on cascade |
 | `size=<n>` | Marker radius (px) | yes | ignored on cascade |
 | `color=#RRGGBB` | Override per-figure / per-series color | yes | default text color |
 | `over <x>` | X-axis label key | yes | yes |

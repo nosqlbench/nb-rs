@@ -80,6 +80,9 @@ pub mod scope_tree;
 pub mod scope_flattening;
 pub mod scene_tree;
 pub mod phase_filter;
+/// SRD-71 P3 phase-scoped CLI parameter overrides
+/// (`<phase-pattern>.<param>=<value>`).
+pub mod phase_params;
 /// SRD-76 phase outcome disposition (structured
 /// per-phase status + error list).
 pub mod phase_outcome;
@@ -104,6 +107,9 @@ pub mod trace_router;
 pub mod session;
 pub mod runner;
 pub mod executor;
+pub mod error_policy;
+pub mod stop_conditions;
+pub mod workload_shell;
 pub mod resource_pool;
 pub mod describe;
 pub mod wrappers;

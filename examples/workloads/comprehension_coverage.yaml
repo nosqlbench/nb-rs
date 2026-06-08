@@ -15,7 +15,7 @@
 #   - Forms (single, multi-clause, array, union, subspace union)
 #   - `where` filter
 #   - Range operator (half-open, inclusive, step)
-#   - Named generators (fib, pow2, geometric, subdivide, …)
+#   - Named generators (fib, pow2, geometric, linear_starts, …)
 #   - Set operators (union, intersect, diff)
 #   - Traversal orders (lex, lex/N truncation)
 #   - Tuple LHS / parallel-iter (zip)
@@ -132,9 +132,9 @@ scenarios:
     - for: "n in geometric(1, 2, 5)"
       phases: [emit_n]
 
-  gen_subdivide:
+  gen_linear_starts:
     # 5 half-open subdivisions of [0.0, 1.0] → 0.0, 0.2, 0.4, 0.6, 0.8.
-    - for: "n in subdivide(0.0, 1.0, 5)"
+    - for: "n in linear_starts(0.0, 1.0, 5)"
       phases: [emit_n]
 
   gen_linear_steps:

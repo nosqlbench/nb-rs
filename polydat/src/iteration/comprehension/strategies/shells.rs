@@ -12,6 +12,18 @@
 //!
 //! Emission within a shell uses Lex order as tiebreak so the
 //! walk is fully deterministic.
+//!
+//! ## References
+//!
+//! - The shell metric is the Chebyshev / L∞ (max-norm) distance,
+//!   named for P. L. Chebyshev; see e.g. M. M. Deza & E. Deza,
+//!   *Encyclopedia of Distances*, 4th ed., Springer (2016), §1.1.
+//!   A "shell" is the set of points at a fixed L∞ distance from the
+//!   centre — the square (hyper-cube) ring at radius `d`. This
+//!   differs from [`super::extrema`], whose strata are by *interior
+//!   count* (k-faces), not a distance. Outermost-first ordering and
+//!   the shell metric are cross-checked in
+//!   `tests::shells_are_chebyshev_strata_outermost_first`.
 
 use super::{
     EvaluatedInput, MultiIndex, Strategy, Tuple, index_fn_size,
@@ -148,6 +160,28 @@ mod tests {
                 "expected distance 2.0, got {chebyshev:?}"
             );
         }
+    }
+
+    #[test]
+    fn shells_are_chebyshev_strata_outermost_first() {
+        // 5×5 about centre (2,2): three L∞ shells — radius 2 (the 16
+        // boundary points), radius 1 (the 8-point inner ring), radius
+        // 0 (the centre). The full walk visits them outermost-first,
+        // so Chebyshev distance is monotonically non-increasing.
+        let idx = IndexFn::Lattice { axis_sizes: vec![5, 5] };
+        let out = shells_multi_indices(&idx, None);
+        assert_eq!(out.len(), 25);
+        let dists: Vec<f64> = out.iter().map(|mi| chebyshev_distance(mi, &[2.0, 2.0])).collect();
+        assert!(
+            dists.windows(2).all(|w| w[0] >= w[1] - 1e-9),
+            "shell distances not outermost-first: {dists:?}"
+        );
+        // Exactly three distinct radii {2,1,0} with the documented
+        // populations 16 / 8 / 1.
+        let r2 = dists.iter().filter(|d| (**d - 2.0).abs() < 1e-9).count();
+        let r1 = dists.iter().filter(|d| (**d - 1.0).abs() < 1e-9).count();
+        let r0 = dists.iter().filter(|d| **d < 1e-9).count();
+        assert_eq!((r2, r1, r0), (16, 8, 1));
     }
 
     #[test]

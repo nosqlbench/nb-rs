@@ -480,43 +480,53 @@ fn parse_expr(p: &mut Parser) -> Result<Expr, String> {
 /// Pratt parser core: parse expression with minimum binding power.
 ///
 /// Precedence levels (lowest to highest):
-///   Level 1: `==` `!=`               — bp (1, 2)
-///   Level 2: `<` `>` `<=` `>=`       — bp (3, 4)
-///   Level 3: `|`  (BitOr)            — bp (5, 6)
-///   Level 4: `^`  (BitXor)           — bp (7, 8)
-///   Level 5: `&`  (BitAnd)           — bp (9, 10)
-///   Level 6: `<<` `>>` (Shl/Shr)     — bp (11, 12)
-///   Level 7: `+` `-` (Add/Sub)       — bp (13, 14)
-///   Level 8: `*` `/` `%`             — bp (15, 16)
-///   Level 9: `**` (Pow, right)       — bp (18, 17)
+///   Level 0a: `||` (logical Or)      — bp (1, 2)
+///   Level 0b: `&&` (logical And)     — bp (3, 4)
+///   Level 1: `==` `!=`               — bp (5, 6)
+///   Level 2: `<` `>` `<=` `>=`       — bp (7, 8)
+///   Level 3: `|`  (BitOr)            — bp (9, 10)
+///   Level 4: `^`  (BitXor)           — bp (11, 12)
+///   Level 5: `&`  (BitAnd)           — bp (13, 14)
+///   Level 6: `<<` `>>` (Shl/Shr)     — bp (15, 16)
+///   Level 7: `+` `-` (Add/Sub)       — bp (17, 18)
+///   Level 8: `*` `/` `%`             — bp (19, 20)
+///   Level 9: `**` (Pow, right)       — bp (22, 21)
 ///   Level 10: `-` `!` (unary, in parse_atom)
 ///
-/// Comparison ops sit below all arithmetic/bitwise so
-/// `a + b < c * d` parses as `(a + b) < (c * d)`. Equality is
-/// below relational so `a < b == c` parses as `(a < b) == c`,
-/// matching C/Rust convention.
+/// SRD-84 Part 1: `||` / `&&` sit *below* comparison (the lowest
+/// bands) so `a > b && c > d` parses as `(a > b) && (c > d)`, and
+/// `||` binds looser than `&&` (C/Rust convention). Comparison ops
+/// sit below arithmetic/bitwise so `a + b < c * d` parses as
+/// `(a + b) < (c * d)`; equality below relational so `a < b == c`
+/// parses as `(a < b) == c`.
 fn parse_expr_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, String> {
     let mut lhs = parse_atom(p)?;
+    // SRD-84 Part 1b — `as <type>` postfix cast binds tightly to the
+    // atom (Rust convention): `a + b as u64` is `a + (b as u64)`;
+    // parenthesise to cast a whole sub-expression.
+    lhs = parse_postfix_as(p, lhs)?;
 
     loop {
         let op = match p.peek() {
-            TokenKind::EqEq      => Some((BinOpKind::Eq,    1,  2)),
-            TokenKind::BangEq    => Some((BinOpKind::Ne,    1,  2)),
-            TokenKind::Lt        => Some((BinOpKind::Lt,    3,  4)),
-            TokenKind::Gt        => Some((BinOpKind::Gt,    3,  4)),
-            TokenKind::LtEq      => Some((BinOpKind::Le,    3,  4)),
-            TokenKind::GtEq      => Some((BinOpKind::Ge,    3,  4)),
-            TokenKind::Pipe      => Some((BinOpKind::BitOr,  5,  6)),
-            TokenKind::Caret     => Some((BinOpKind::BitXor, 7,  8)),
-            TokenKind::Ampersand => Some((BinOpKind::BitAnd, 9, 10)),
-            TokenKind::ShiftLeft => Some((BinOpKind::Shl,   11, 12)),
-            TokenKind::ShiftRight=> Some((BinOpKind::Shr,   11, 12)),
-            TokenKind::Plus      => Some((BinOpKind::Add,   13, 14)),
-            TokenKind::Minus     => Some((BinOpKind::Sub,   13, 14)),
-            TokenKind::Star      => Some((BinOpKind::Mul,   15, 16)),
-            TokenKind::Slash     => Some((BinOpKind::Div,   15, 16)),
-            TokenKind::Percent   => Some((BinOpKind::Mod,   15, 16)),
-            TokenKind::StarStar  => Some((BinOpKind::Pow,   18, 17)), // right-associative
+            TokenKind::PipePipe  => Some((BinOpKind::Or,     1,  2)),
+            TokenKind::AmpAmp    => Some((BinOpKind::And,    3,  4)),
+            TokenKind::EqEq      => Some((BinOpKind::Eq,     5,  6)),
+            TokenKind::BangEq    => Some((BinOpKind::Ne,     5,  6)),
+            TokenKind::Lt        => Some((BinOpKind::Lt,     7,  8)),
+            TokenKind::Gt        => Some((BinOpKind::Gt,     7,  8)),
+            TokenKind::LtEq      => Some((BinOpKind::Le,     7,  8)),
+            TokenKind::GtEq      => Some((BinOpKind::Ge,     7,  8)),
+            TokenKind::Pipe      => Some((BinOpKind::BitOr,  9, 10)),
+            TokenKind::Caret     => Some((BinOpKind::BitXor,11, 12)),
+            TokenKind::Ampersand => Some((BinOpKind::BitAnd,13, 14)),
+            TokenKind::ShiftLeft => Some((BinOpKind::Shl,   15, 16)),
+            TokenKind::ShiftRight=> Some((BinOpKind::Shr,   15, 16)),
+            TokenKind::Plus      => Some((BinOpKind::Add,   17, 18)),
+            TokenKind::Minus     => Some((BinOpKind::Sub,   17, 18)),
+            TokenKind::Star      => Some((BinOpKind::Mul,   19, 20)),
+            TokenKind::Slash     => Some((BinOpKind::Div,   19, 20)),
+            TokenKind::Percent   => Some((BinOpKind::Mod,   19, 20)),
+            TokenKind::StarStar  => Some((BinOpKind::Pow,   22, 21)), // right-associative
             _ => None,
         };
 
@@ -529,6 +539,27 @@ fn parse_expr_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, String> {
     }
 
     Ok(lhs)
+}
+
+/// SRD-84 Part 1b — parse trailing `as <type>` casts on an expression.
+/// `as` is a *soft* keyword (contextual): only the postfix `as <type>`
+/// form is a cast; `as` is otherwise a normal identifier.
+fn parse_postfix_as(p: &mut Parser, mut expr: Expr) -> Result<Expr, String> {
+    while matches!(p.peek(), TokenKind::Ident(s) if s.as_str() == "as") {
+        let span = p.span();
+        p.advance(); // consume `as`
+        let ty_name = match p.peek() {
+            TokenKind::Ident(name) => name.clone(),
+            other => return Err(format!(
+                "expected a type name after `as`, found {other:?}")),
+        };
+        p.advance(); // consume the type name
+        let port_type = crate::ast::PortType::from_keyword(&ty_name)
+            .ok_or_else(|| format!(
+                "unknown type `{ty_name}` in `... as {ty_name}` cast"))?;
+        expr = Expr::Cast(Box::new(expr), port_type, span);
+    }
+    Ok(expr)
 }
 
 /// Parse an atomic expression: literal, identifier, function call,
@@ -578,10 +609,7 @@ fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
                 // Function call: name(args...)
                 parse_call(p, name, span)
             } else if matches!(p.peek(), TokenKind::Dot) {
-                // Source field projection: base.ordinal
-                p.advance(); // consume '.'
-                let field = p.expect_ident()?;
-                Ok(Expr::FieldAccess { source: name, field, span })
+                parse_field_chain(p, name, span)
             } else {
                 Ok(Expr::Ident(name, span))
             }
@@ -593,9 +621,7 @@ fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
             p.advance();
             let name = "input".to_string();
             if matches!(p.peek(), TokenKind::Dot) {
-                p.advance();
-                let field = p.expect_ident()?;
-                Ok(Expr::FieldAccess { source: name, field, span })
+                parse_field_chain(p, name, span)
             } else {
                 Ok(Expr::Ident(name, span))
             }
@@ -609,9 +635,7 @@ fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
             p.advance();
             let name = "cursor".to_string();
             if matches!(p.peek(), TokenKind::Dot) {
-                p.advance();
-                let field = p.expect_ident()?;
-                Ok(Expr::FieldAccess { source: name, field, span })
+                parse_field_chain(p, name, span)
             } else {
                 Ok(Expr::Ident(name, span))
             }
@@ -624,9 +648,7 @@ fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
             p.advance();
             let name = "over".to_string();
             if matches!(p.peek(), TokenKind::Dot) {
-                p.advance();
-                let field = p.expect_ident()?;
-                Ok(Expr::FieldAccess { source: name, field, span })
+                parse_field_chain(p, name, span)
             } else {
                 Ok(Expr::Ident(name, span))
             }
@@ -825,6 +847,25 @@ fn parse_placeholder_body(body: &str, _span: Span) -> Result<Expr, String> {
     }
     let tokens = crate::dsl::lexer::lex(body)?;
     parse_expression(tokens)
+}
+
+/// Parse a dotted field-access chain (`a.b`, `q.cursor.idx`) —
+/// the base name has already been consumed and the parser sits
+/// on the first `.`. Intermediate levels flatten into the
+/// source using the established `__` wire convention, so
+/// `q.cursor.idx` yields `FieldAccess { source: "q__cursor",
+/// field: "idx" }` — the same shape one-level access lowers to,
+/// reading the wire `q__cursor__idx`.
+fn parse_field_chain(p: &mut Parser, base: String, span: Span) -> Result<Expr, String> {
+    p.advance(); // consume the first '.'
+    let mut source = base;
+    let mut field = p.expect_ident()?;
+    while matches!(p.peek(), TokenKind::Dot) {
+        p.advance();
+        source = format!("{source}__{field}");
+        field = p.expect_ident()?;
+    }
+    Ok(Expr::FieldAccess { source, field, span })
 }
 
 /// Parse `name(args...)` — the name has already been consumed.
@@ -1664,6 +1705,37 @@ mod tests {
     fn parse_cursor_over_does_not_swallow_following_statement() {
         let f = parse_str("cursor q = range(0, 100) over p\nother := 42");
         assert_eq!(f.statements.len(), 2);
+    }
+
+    #[test]
+    fn parse_chained_field_access_flattens_intermediate_levels() {
+        // SRD 71 scalar projections: `q.cursor.idx` reads the
+        // wire `q__cursor__idx` — intermediate dot levels
+        // flatten into the FieldAccess source using the same
+        // `__` convention one-level access lowers to.
+        let f = parse_str("i := q.cursor.idx");
+        match &f.statements[0] {
+            Statement::Binding(b) => match &b.value {
+                Expr::FieldAccess { source, field, .. } => {
+                    assert_eq!(source, "q__cursor");
+                    assert_eq!(field, "idx");
+                }
+                other => panic!("expected FieldAccess, got {other:?}"),
+            },
+            other => panic!("expected binding, got {other:?}"),
+        }
+        // Deeper chains keep flattening.
+        let f = parse_str("x := a.b.c.d");
+        match &f.statements[0] {
+            Statement::Binding(b) => match &b.value {
+                Expr::FieldAccess { source, field, .. } => {
+                    assert_eq!(source, "a__b__c");
+                    assert_eq!(field, "d");
+                }
+                other => panic!("expected FieldAccess, got {other:?}"),
+            },
+            other => panic!("expected binding, got {other:?}"),
+        }
     }
 
     #[test]

@@ -39,7 +39,7 @@ scenarios:
   # Baseline: set: shadows a workload-param via a constant
   # (no iter-var involved). Should print `mode=verbose`.
   baseline_constant:
-    - set: { mode: verbose }
+    - set: { mode: "verbose" }
       phases:
         - announce_mode
 

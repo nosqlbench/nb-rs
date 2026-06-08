@@ -783,8 +783,20 @@ impl PolydatProgram {
     }
 
     /// Resolve an output name to its (node_index, port_index).
+    ///
+    /// Dotted names follow the field-access wire convention
+    /// (`q.cursor.idx` is the wire `q__cursor__idx`), so a
+    /// text-context reference resolves through the same
+    /// flattening the DSL compiler applies — mirroring
+    /// `PolydatKernel::lookup`.
     pub fn resolve_output(&self, name: &str) -> Option<(usize, usize)> {
-        self.output_map.get(name).copied()
+        if let Some(found) = self.output_map.get(name).copied() {
+            return Some(found);
+        }
+        if name.contains('.') {
+            return self.output_map.get(&name.replace('.', "__")).copied();
+        }
+        None
     }
 
     /// Resolve an output index to its (node_index, port_index).

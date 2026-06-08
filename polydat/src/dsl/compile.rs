@@ -999,6 +999,8 @@ fn infer_auto_extern_type(
         Expr::UnaryNeg(inner, _) | Expr::UnaryBitNot(inner, _) => {
             infer_auto_extern_type(inner, asm)
         }
+        // SRD-84 Part 1b — a cast's type is its target.
+        Expr::Cast(_, ty, _) => Some(*ty),
         Expr::Call(call) => {
             // Each call we recognize here is one fewer
             // boundary-adapter `… → Ext` warning at runtime.
@@ -1570,6 +1572,39 @@ impl Compiler {
                 vec![WireRef::input(&cursor_input_name)],
             );
             asm.add_output(&cursor_input_name, WireRef::node(&cursor_input_name));
+            // SRD 71 §"Cursor metadata wires": scalar projections
+            // of the resolved partition, as plain typed slots —
+            // `<source>.cursor.idx` and friends parse as chained
+            // field access and flatten onto these wires. The
+            // executor writes them alongside the Ext slot at
+            // phase setup; defaults here cover the no-narrowing
+            // case (idx 0, count 1, full-extent pcts; the
+            // ordinal pair is patched by the executor once the
+            // cursor's extent is known).
+            use crate::ast::{PortType, Value};
+            let scalar_slots: [(&str, Value, PortType); 6] = [
+                ("idx",             Value::U64(0),    PortType::U64),
+                ("partition_count", Value::U64(1),    PortType::U64),
+                ("start_pct",       Value::F64(0.0),  PortType::F64),
+                ("end_pct",         Value::F64(100.0), PortType::F64),
+                ("start_ordinal",   Value::U64(0),    PortType::U64),
+                ("end_ordinal",     Value::U64(0),    PortType::U64),
+            ];
+            for (field, default, port_type) in scalar_slots {
+                let slot = format!("{cursor_input_name}__{field}");
+                asm.add_input(
+                    &slot,
+                    default,
+                    port_type,
+                    crate::kernel::InputKind::ExternalWrite,
+                );
+                self.input_names.push(slot.clone());
+                let pass = Box::new(
+                    crate::library::identity::PortPassthrough::new(&slot, port_type),
+                );
+                asm.add_node(&slot, pass, vec![WireRef::input(&slot)]);
+                asm.add_output(&slot, WireRef::node(&slot));
+            }
             Some(raw_name)
         } else {
             None
@@ -2380,19 +2415,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn array_literal_binding_error_is_actionable() {
-        // A list-valued binding (`const xs := [1, 2, 3]`) can't
-        // bind to a single wire. The diagnostic must name the
-        // binding, the shape it found, the location, and the
-        // sweep-axis fix — useful to a human and an AI alike.
-        let err = compile_polydat("input cycle: u64\nconst eh_values := [1, 2, 3]\nout := cycle")
-            .expect_err("array-literal binding should be rejected");
-        assert!(err.contains("eh_values"), "names the binding: {err}");
-        assert!(err.contains("array literal"), "names the shape: {err}");
-        assert!(err.contains("sweep axis") || err.contains("comprehension"),
-            "offers the sweep-axis fix: {err}");
-        // Location present (line:col), not a contextless message.
-        assert!(err.contains(':'), "carries a source location: {err}");
+    fn array_literal_binding_compiles_as_string() {
+        // A list-valued binding (`const xs := [1, 2, 3]`) is a sweep
+        // axis / interpolation value, not a scalar wire. polydat has no
+        // const-vector node, so it binds to a `ConstStr` holding the
+        // list's literal text rather than failing the compile — which
+        // is what lets list-valued workload params (`limit_values:
+        // [25]`) load.
+        let result = compile_polydat(
+            "input cycle: u64\nconst eh_values := [1, 2, 3]\nout := cycle",
+        );
+        assert!(
+            result.is_ok(),
+            "array-literal binding should compile (binds as a string const), got: {:?}",
+            result.err(),
+        );
+        // The resolved value is the comma-joined, bracket-free form a
+        // sweep-axis param carries (so a `WorkloadParamList` source
+        // splits it on `, ` exactly like a string-valued sweep param).
+        let kernel = result.unwrap();
+        match kernel.get_constant("eh_values") {
+            Some(crate::ast::Value::Str(s)) => assert_eq!(s.as_ref(), "1, 2, 3"),
+            other => panic!("expected eh_values = Str(\"1, 2, 3\"), got {other:?}"),
+        }
     }
 
     #[test]
@@ -3456,5 +3501,68 @@ mod tests {
             Some(crate::ast::PortType::Handle),
             "dataset_prebuffer auto-extern MUST be Handle, not Ext",
         );
+    }
+
+    /// SRD-84 Part 1 — `&&` / `||` as eager truthiness combinators:
+    /// correct results, lowest precedence (below comparison; `||`
+    /// looser than `&&`), and truthiness normalisation (a value is
+    /// "true" iff non-zero — which raw bitwise would get wrong).
+    #[test]
+    fn logical_and_or_eval_precedence_and_truthiness() {
+        let eval = |src: &str| -> u64 {
+            compile_polydat(src)
+                .unwrap_or_else(|e| panic!("compile `{src}`: {e}"))
+                .pull("out").as_u64()
+        };
+        // Basic && / ||.
+        assert_eq!(eval("out := 60 > 50 && 20 > 10"), 1, "both true");
+        assert_eq!(eval("out := 40 > 50 && 20 > 10"), 0, "first false");
+        assert_eq!(eval("out := 40 > 50 || 20 > 10"), 1, "second true");
+        assert_eq!(eval("out := 40 > 50 || 5 > 10"), 0, "neither");
+        // Precedence: && sits below comparison, || below && —
+        // `1>0 && 0>1 || 5>0` == `((1>0)&&(0>1)) || (5>0)` == `(1&&0)||1` == 1.
+        assert_eq!(eval("out := 1 > 0 && 0 > 1 || 5 > 0"), 1,
+            "|| binds looser than &&, both below comparison");
+        // Truthiness: 6 && 1 → both non-zero → 1. Raw bitwise 6 & 1 = 0,
+        // so this proves the `!= 0` normalisation, not a bitwise and.
+        assert_eq!(eval("out := 6 && 1"), 1, "non-zero && non-zero → 1 (not bitwise)");
+        assert_eq!(eval("out := 6 && 0"), 0, "non-zero && zero → 0");
+        assert_eq!(eval("out := 0 || 0"), 0, "zero || zero → 0");
+        assert_eq!(eval("out := 0 || 7"), 1, "zero || non-zero → 1");
+        // Parentheses override precedence (already supported; locked here).
+        assert_eq!(eval("out := (1 + 2) * 3"), 9, "parens: add before mul");
+        assert_eq!(eval("out := 1 + 2 * 3"), 7, "no parens: mul binds tighter");
+        assert_eq!(eval("out := 1 > 0 || 0 > 1 && 0 > 1"), 1,
+            "no parens: && tighter → 1 || (0 && 0) = 1");
+        assert_eq!(eval("out := (1 > 0 || 0 > 1) && 0 > 1"), 0,
+            "parens group the ||: (1 || 0) && 0 = 0");
+    }
+
+    /// SRD-84 Part 1b — `<expr> as <type>` cast: alignment-only type
+    /// fusion (no-op when aligned, SRD-79 adapter otherwise), tight
+    /// (atom-binding) precedence, and an error when no fusion exists.
+    #[test]
+    fn as_cast_type_fusion_and_precedence() {
+        let f64_of = |src: &str| compile_polydat(src)
+            .unwrap_or_else(|e| panic!("compile `{src}`: {e}")).pull("out").as_f64();
+        let u64_of = |src: &str| compile_polydat(src)
+            .unwrap_or_else(|e| panic!("compile `{src}`: {e}")).pull("out").as_u64();
+        // u64 → f64 widening fusion (allowed under `as`).
+        assert_eq!(f64_of("out := 5 as f64"), 5.0);
+        // Narrowing f64 → u64 is NOT allowed under `as` (ambiguous
+        // rounding); the author chooses an explicit conversion.
+        assert!(compile_polydat("out := 7.9 as u64").is_err(),
+            "narrowing f64 → u64 under `as` is rejected");
+        assert_eq!(u64_of("out := f64_to_u64(7.9)"), 7, "explicit truncate");
+        assert_eq!(u64_of("out := round_to_u64(7.9)"), 8, "explicit round");
+        // Aligned cast is a no-op.
+        assert_eq!(u64_of("out := 42 as u64"), 42);
+        // `as` binds to the atom: `5 / 2 as f64` == `5 / (2 as f64)` ==
+        // 2.5, not `(5 / 2) as f64` == 2.0.
+        assert_eq!(f64_of("out := 5 / 2 as f64"), 2.5);
+        assert_eq!(f64_of("out := (5 / 2) as f64"), 2.0);
+        // No valid fusion → compile error.
+        assert!(compile_polydat("out := \"x\" as f64").is_err(),
+            "str → f64 has no defined fusion → error");
     }
 }

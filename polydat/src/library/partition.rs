@@ -19,12 +19,23 @@
 //!                   the partition.
 //! - `at`          — bounds-checked offset into the partition.
 //! - `clamp_in`    — saturating projection into the partition.
+//! - `random_in`   — hash-mapped ordinal inside the partition,
+//!                   deterministic per seed.
+//! - `subdivide`   — split a partition into n near-equal
+//!                   sub-partitions.
 //! - `partitions`  — parse a string spec into a `PartitionList`.
 //!
-//! All eight functions are deterministic and JIT-friendly at the
-//! call site (the partition value is effectively-const for a
-//! scope activation, so the eval reduces to a small constant
+//! All of these are deterministic and JIT-friendly at the call
+//! site (the partition value is effectively-const for a scope
+//! activation, so the eval reduces to a small constant
 //! arithmetic expression).
+//!
+//! Naming note: `subdivide` here takes a *partition* and
+//! returns sub-partitions. The numeric comprehension generator
+//! that yields evenly spaced *values* over a `[start, end)`
+//! interval is `linear_starts(start, end, n)` (with
+//! `linear_steps` as its inclusive fence-post sibling) — see
+//! SRD 18c.
 
 use crate::derive_support::Ext;
 use crate::iteration::cursor_partition::{Partition, PartitionList};
@@ -51,6 +62,15 @@ fn end_of(partition: Ext<Partition>) -> u64 {
 #[crate::polydat_node(category = Arithmetic)]
 fn idx_of(partition: Ext<Partition>) -> u64 {
     partition.idx
+}
+
+/// Total number of partitions in the list this partition was
+/// resolved as part of. `1` for a single-partition spec. The
+/// function spelling of the `partition_count` projection —
+/// pairs with `idx_of` for "i of n" labelling.
+#[crate::polydat_node(category = Arithmetic)]
+fn count_of(partition: Ext<Partition>) -> u64 {
+    partition.count
 }
 
 /// `mod_in(n, p) = p.start_ord + (n mod cardinality(p))`. Maps an
@@ -92,6 +112,38 @@ fn clamp_in(n: u64, partition: Ext<Partition>) -> u64 {
     }
 }
 
+/// `random_in(p, seed)` — deterministic hash-mapped ordinal
+/// inside the partition: `p.start_ord + hash(seed) mod
+/// cardinality(p)`. Same xxHash3 entropy source as `hash(...)`,
+/// so equal seeds always land on the same ordinal. Use for
+/// random-access patterns that must stay inside the active
+/// partition; prefer `mod_in` when sequential coverage matters.
+/// Degenerate cardinality=0 returns the partition's start.
+#[crate::polydat_node(category = Hashing)]
+fn random_in(partition: Ext<Partition>, seed: u64) -> u64 {
+    let card = partition.cardinality();
+    if card == 0 {
+        partition.start_ord
+    } else {
+        partition.start_ord + xxhash_rust::xxh3::xxh3_64(&seed.to_le_bytes()) % card
+    }
+}
+
+/// `subdivide(p, n)` — split a partition into `n` contiguous
+/// sub-partitions whose sizes differ by at most one ordinal.
+/// Indices restart at 0; `base_extent` propagates from the
+/// parent; the percentage fields interpolate the parent's
+/// span. Boundaries match the `*/N` spec tail token exactly
+/// (both route through the same splitter). Panics at eval time
+/// when `n` is 0 or exceeds the partition's cardinality —
+/// every sub-partition must be non-empty.
+#[crate::polydat_node(category = Arithmetic)]
+fn subdivide(partition: Ext<Partition>, n: u64) -> Ext<PartitionList> {
+    let parts = crate::iteration::cursor_partition::subdivide_partition(&partition, n)
+        .unwrap_or_else(|e| panic!("{e}"));
+    Ext(PartitionList(std::sync::Arc::new(parts)))
+}
+
 /// Parse a string spec into a `PartitionList`. The base extent
 /// for resolution comes from a constant arg (default 100, so
 /// pure-percentage specs produce partitions in [0, 100) ordinal
@@ -117,6 +169,7 @@ mod tests {
     fn fixture(idx: u64, start: u64, end: u64) -> Partition {
         Partition {
             idx,
+            count: idx + 1,
             start_ord: start,
             end_ord: end,
             start_pct: 0.0,
@@ -204,6 +257,84 @@ mod tests {
             node.eval(&[Value::U64(n), p.clone()], &mut out);
             assert_eq!(out[0].as_u64(), expected, "clamp_in({n}) over [100, 200)");
         }
+    }
+
+    #[test]
+    fn random_in_deterministic_and_bounded() {
+        let node = RandomIn::new();
+        let mut out = [Value::None];
+        let p = Value::from_partition(fixture(0, 100, 200));
+        let mut first = Vec::new();
+        for seed in 0..32u64 {
+            node.eval(&[p.clone(), Value::U64(seed)], &mut out);
+            let v = out[0].as_u64();
+            assert!((100..200).contains(&v), "random_in(seed={seed}) = {v} outside [100, 200)");
+            first.push(v);
+        }
+        // Deterministic: same seeds, same ordinals.
+        for (seed, expected) in first.iter().enumerate() {
+            node.eval(&[p.clone(), Value::U64(seed as u64)], &mut out);
+            assert_eq!(out[0].as_u64(), *expected);
+        }
+        // Not constant across seeds.
+        assert!(first.windows(2).any(|w| w[0] != w[1]));
+    }
+
+    #[test]
+    fn random_in_zero_cardinality_returns_start() {
+        let node = RandomIn::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::from_partition(fixture(0, 100, 100)), Value::U64(7)], &mut out);
+        assert_eq!(out[0].as_u64(), 100);
+    }
+
+    #[test]
+    fn subdivide_splits_into_near_equal_contiguous_parts() {
+        let node = Subdivide::new();
+        let mut out = [Value::None];
+        let parent = Partition {
+            idx: 1,
+            count: 2,
+            start_ord: 900,
+            end_ord: 1000,
+            start_pct: 90.0,
+            end_pct: 100.0,
+            base_extent: 1000,
+        };
+        node.eval(&[Value::from_partition(parent), Value::U64(10)], &mut out);
+        let list = out[0].as_partition_list().expect("PartitionList");
+        assert_eq!(list.len(), 10);
+        let subs = list.as_slice();
+        assert_eq!(subs[0].start_ord, 900);
+        assert_eq!(subs[9].end_ord, 1000);
+        for (i, s) in subs.iter().enumerate() {
+            assert_eq!(s.idx, i as u64, "indices restart at 0");
+            assert_eq!(s.cardinality(), 10);
+            assert_eq!(s.base_extent, 1000, "base_extent propagates");
+        }
+        for w in subs.windows(2) {
+            assert_eq!(w[0].end_ord, w[1].start_ord, "contiguous");
+        }
+        // Percentage fields interpolate the parent's span.
+        assert!((subs[0].start_pct - 90.0).abs() < 1e-9);
+        assert!((subs[4].end_pct - 95.0).abs() < 1e-9);
+        assert!((subs[9].end_pct - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    #[should_panic(expected = "non-empty sub-partitions")]
+    fn subdivide_finer_than_cardinality_panics() {
+        let node = Subdivide::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::from_partition(fixture(0, 0, 5)), Value::U64(10)], &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be >= 1")]
+    fn subdivide_zero_count_panics() {
+        let node = Subdivide::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::from_partition(fixture(0, 0, 100)), Value::U64(0)], &mut out);
     }
 
     #[test]

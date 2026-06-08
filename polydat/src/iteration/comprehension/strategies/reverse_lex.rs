@@ -7,6 +7,13 @@
 //! family: accepts any non-`None` IndexFn (per spec §3.6's
 //! per-strategy table). Continuous input is rejected (no
 //! canonical reverse over a measure).
+//!
+//! ## References
+//!
+//! - The reverse of the lexicographic / mixed-radix order of
+//!   [`super::lex`] (Knuth, *TAOCP* Vol. 4A §7.2.1.1) — equivalently
+//!   colex from the high end. The exact reversal is cross-checked in
+//!   `tests::reverse_lex_multi_indices_2d`.
 
 use super::{EvaluatedInput, MultiIndex, Strategy, Tuple, index_fn_size, lex::lex_multi_indices};
 use crate::iteration::comprehension::metadata::IndexFn;

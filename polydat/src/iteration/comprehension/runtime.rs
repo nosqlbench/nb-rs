@@ -779,14 +779,17 @@ mod tests {
                 },
             ]),
             StrategyName::Extrema,
-            None,
+            // SRD-18d §214: `extrema/1` = the corner stratum. (Bare
+            // `extrema`/`None` is now the full 9-tuple space reordered
+            // corners-first; `/1` selects just the corners.)
+            Some(1),
         );
         let parent = empty_kernel();
         let canonical = empty_kernel();
         let params = HashMap::new();
         let tuples = evaluate_for_iteration(&comp, &parent, &canonical, &params, |_| Ok(()))
             .unwrap();
-        // 3x3 lattice → 4 corners.
+        // 3x3 lattice → 4 corners (interior count 0) via the indexed form.
         assert_eq!(tuples.len(), 4);
         // Each corner pairs an extreme k with an extreme limit.
         for t in &tuples {

@@ -8,6 +8,16 @@
 //! Discrete `Lattice` with ≥2 axes is the native shape;
 //! 1-axis input is degenerate (collapses to Lex). Continuous
 //! rejected.
+//!
+//! ## References
+//!
+//! - G. Cantor, "Ein Beitrag zur Mannigfaltigkeitslehre," *Crelle's
+//!   Journal* 84 (1878), 242–258. The anti-diagonal enumeration of
+//!   ℕ×ℕ by ascending coordinate sum (the construction underlying the
+//!   Cantor pairing function) is exactly this strategy's order:
+//!   tuples are grouped by `Σ index` and emitted Lex within a group.
+//!   Cross-checked against the canonical 3×3 enumeration in
+//!   `tests::diagonal_matches_cantor_enumeration_3x3`.
 
 use super::{
     EvaluatedInput, MultiIndex, Strategy, Tuple, index_fn_size,
@@ -196,6 +206,32 @@ mod tests {
         assert_eq!(out[1], vec![0, 1]);
         assert_eq!(out[2], vec![1, 0]);
         assert_eq!(out[3], vec![0, 2]);
+    }
+
+    #[test]
+    fn diagonal_matches_cantor_enumeration_3x3() {
+        // Cantor's anti-diagonal enumeration of a 3×3 grid: group by
+        // coordinate sum 0,1,2,3,4; Lex within each diagonal.
+        //   Σ=0: (0,0)
+        //   Σ=1: (0,1) (1,0)
+        //   Σ=2: (0,2) (1,1) (2,0)
+        //   Σ=3: (1,2) (2,1)
+        //   Σ=4: (2,2)
+        let idx = IndexFn::Lattice { axis_sizes: vec![3, 3] };
+        let out = diagonal_multi_indices(&idx, None, false);
+        assert_eq!(
+            out,
+            vec![
+                vec![0, 0],
+                vec![0, 1], vec![1, 0],
+                vec![0, 2], vec![1, 1], vec![2, 0],
+                vec![1, 2], vec![2, 1],
+                vec![2, 2],
+            ]
+        );
+        // Defining property: coordinate sums are non-decreasing.
+        let sums: Vec<u64> = out.iter().map(|mi| mi.iter().sum()).collect();
+        assert!(sums.windows(2).all(|w| w[0] <= w[1]), "sums not monotone: {sums:?}");
     }
 
     #[test]

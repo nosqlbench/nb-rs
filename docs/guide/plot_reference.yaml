@@ -45,7 +45,8 @@
 #   palette=wong         colorblind-safe palette name
 #   line=solid|dashed|dotted|none
 #   width=2              line width in pixels
-#   marker=circle|square|triangle|diamond|plus|cross|none
+#   marker=auto|circle|square|triangle|diamond|plus|cross|none
+#   (auto = distinct shape per series, literature-style; legend carries the shape)
 #   size=3               marker radius in pixels
 #   color=#aabbcc        explicit hex color (overrides palette)
 #   figure_width=1024    output dimensions
@@ -132,6 +133,27 @@ report:
       label "Auto-detect series discriminants"
       series: "*"
       y1: avg(latency_p99) by (k, profile, limit)
+
+    # ─── 1.5 Channel encoding (color: / shape:) ────────────────────
+    # When the series tuple is wide (one curve per sweep cell), color
+    # and marker shape can each be keyed to the VALUE of a chosen
+    # label instead of to the series index. All series sharing that
+    # value share the hue / shape, so a dense plot stays readable and
+    # the legend collapses to the channel keys (a handful of entries)
+    # instead of one entry per curve.
+    #   color: <label>   one hue per distinct value of <label>
+    #   shape: <label>   one marker shape per distinct value (cycles
+    #                    circle / square / triangle / diamond)
+    #   color: off|none  revert to color-by-series-index (default)
+    # `color:` and `shape:` are orthogonal — `color: A` + `shape: B`
+    # gives a recoverable color×shape grid. Example: one line per
+    # index-build cell, colored by query strategy, shaped by pruning.
+    plot p05b_channels
+      label "Color by strategy, shape by pruning"
+      series: sm, mnc, bw, rerank_k_strategy, pruning_strategy
+      color: rerank_k_strategy
+      shape: pruning_strategy
+      y1: avg(recall_mean) by (sm, mnc, bw, rerank_k_strategy, pruning_strategy, limit)
 
     # ═══════════════════════════════════════════════════════════════
     # SECTION 2 — X axis
@@ -470,7 +492,7 @@ report:
       y1: avg(recall_mean) by (limit)
 
     # ─── 10.3 Markers ──────────────────────────────────────────────
-    # `marker=circle|square|triangle|diamond|plus|cross|none`,
+    # `marker=auto|circle|square|triangle|diamond|plus|cross|none`,
     # `size=N` for the marker radius in pixels.
     plot p44_markers
       marker=triangle

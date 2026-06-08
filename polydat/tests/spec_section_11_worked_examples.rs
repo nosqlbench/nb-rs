@@ -66,16 +66,14 @@ fn spec_11_1_single_cartesian_basic_dispense() {
 fn spec_11_2_filter_then_extrema_truncated() {
     let cart = Comprehension::cartesian(vec![clause("k", &[1, 5, 10]), clause("limit", &[10, 50, 100])]);
     let filtered = Comprehension::filter(cart, "true");
-    let ast = Comprehension::order(filtered, StrategyName::Extrema, Some(5));
-    // §11.2: cardinality is BoundedAtMost(5) after the
-    // truncation cap. The interpreter's current Extrema
-    // naive-form emits up to `truncation` tuples; the
-    // indexed-form push-down (which would emit exactly the
-    // 2² = 4 lattice corners) is the Phase 7 follow-up
-    // documented in the implementation plan.
+    // SRD-18d §214: `extrema/k` truncates by *strata* (interior
+    // count), not by tuple count. `extrema/1` keeps the first stratum
+    // — exactly the 2² = 4 lattice corners — via the indexed form.
+    // (A higher `/k` would add edges / interior, up to the full
+    // 9-tuple space.)
+    let ast = Comprehension::order(filtered, StrategyName::Extrema, Some(1));
     let tuples = dispense(&ast);
-    assert!(tuples.len() <= 5);
-    assert!(!tuples.is_empty());
+    assert_eq!(tuples.len(), 4);
 }
 
 // ---- §11.3 Union of differently-modified sub-spaces ----
@@ -132,8 +130,9 @@ fn spec_11_6_form_a_order_then_filter() {
     let ordered = Comprehension::order(cart, StrategyName::Extrema, Some(4));
     let form_a = Comprehension::filter(ordered, "true"); // simplified: trivially true
     let tuples = dispense(&form_a);
-    // Extrema gives 4 corners; filter "true" keeps all 4.
-    assert_eq!(tuples.len(), 4);
+    // SRD-18d §214: a 3×3 has 3 strata (corners 4, edges 4, center 1);
+    // `extrema/4` keeps all of them → 9. Filter "true" keeps all 9.
+    assert_eq!(tuples.len(), 9);
 }
 
 #[test]
@@ -143,7 +142,8 @@ fn spec_11_6_form_b_filter_then_order() {
     let filtered = Comprehension::filter(cart, "true");
     let form_b = Comprehension::order(filtered, StrategyName::Extrema, Some(4));
     let tuples = dispense(&form_b);
-    assert_eq!(tuples.len(), 4);
+    // Same 9 as form_a (filter-then-order == order-then-filter here).
+    assert_eq!(tuples.len(), 9);
 }
 
 // ---- §11.7 Bounded zip ----

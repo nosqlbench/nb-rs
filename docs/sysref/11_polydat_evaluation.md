@@ -1,5 +1,15 @@
 # 11: Polydat Evaluation Model — nbrs-side framing
 
+> **Planned (SRD-84):** `&&` / `||` land as **eager** truthiness
+> combinators (both operands evaluate → `U64` 1/0); short-circuit is a
+> deferred optimization (needs conditional-pull — out of scope now).
+> The `<expr> as <type>` cast (Part 1b) is an **optional, alignment-only**
+> type-fusion infill into the SRD-79 layer. Part 3 formalises the
+> **truthiness contract**: predicates resolve to `U64` 1/0 (comparisons
+> already do), an indeterminate value takes a stub's declared
+> truthy/falsy default, and Rust-generic stubs bind their return type
+> via the SRD-80b `Wire` trait. See [SRD-84](84_grammar_safe_matter.md).
+
 The substrate half of this SRD (program/state split,
 provenance-based invalidation, the two evaluation lifecycles,
 the const binding contract Plan A/B, non-deterministic node

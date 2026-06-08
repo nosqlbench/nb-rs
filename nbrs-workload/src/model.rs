@@ -41,6 +41,13 @@ pub struct Workload {
     /// the workload YAML for deterministic default scenario execution.
     #[serde(default)]
     pub phase_order: Vec<String>,
+    /// SRD-83 — workload-shell stop conditions. Declarations distribute
+    /// by their `each:` selector: `each: phase` applies the predicate at
+    /// every phase, while `each: [self, workload]` evaluates it at the
+    /// workload shell itself (reading the `children_*` aggregate of
+    /// child phase outcomes).
+    #[serde(default)]
+    pub stop_when: Vec<StopConditionSpec>,
     /// Param names declared in the workload YAML `params:` section.
     /// Used to detect unrecognized CLI params. Does not include
     /// ad-hoc CLI params.
@@ -653,6 +660,77 @@ mod summary_config_tests {
     }
 }
 
+/// SRD-83 — a scope-tree *level* a stop condition distributes to. The
+/// `each:` selector names one or more of these; the matter walk binds
+/// the predicate at every node of a named level inside the declaring
+/// subtree (a declared, structural fan-out — never inferred from the
+/// predicate's content). Aligned to the executor's `ScopeKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeLevel {
+    /// The declaring scope node itself (whatever its kind).
+    #[serde(rename = "self")]
+    SelfScope,
+    /// Every op-template node.
+    Op,
+    /// Every phase node.
+    Phase,
+    /// Every scenario node.
+    Scenario,
+    /// The workload root (the whole-run aggregate).
+    Workload,
+}
+
+fn default_each() -> Vec<ScopeLevel> {
+    // Absent `each:` → the declaring scope only. To fan a workload-level
+    // declaration out per-phase, the author writes `each: phase`.
+    vec![ScopeLevel::SelfScope]
+}
+
+/// Accept either a single level (`each: phase`) or a list
+/// (`each: [phase, scenario]`) — the scalar is sugar for a one-element
+/// set.
+fn de_each<'de, D>(d: D) -> Result<Vec<ScopeLevel>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(ScopeLevel),
+        Many(Vec<ScopeLevel>),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(level) => vec![level],
+        OneOrMany::Many(levels) => levels,
+    })
+}
+
+/// SRD-83 — one stop condition declared on a shell. A polydat
+/// `when:` predicate over runtime-state wires (`op_count`,
+/// `error_rate`, `elapsed_ms`, `children_failed`, …), an `each:`
+/// distribution selector (which scope levels it rides along with), a
+/// `trigger:` (a firing event or named backoff — step 3), and an
+/// `effect:` (`fail` → Interrupted+Failed, `stop` →
+/// Interrupted+Succeeded — step 4). When the predicate is true at its
+/// trigger, the shell stops with the effect.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StopConditionSpec {
+    /// Polydat predicate over runtime-state wires, evaluating to bool.
+    pub when: String,
+    /// Scope levels this predicate distributes to (the declared fan-out;
+    /// see [`ScopeLevel`]). Defaults to the declaring scope (`self`).
+    #[serde(default = "default_each", deserialize_with = "de_each")]
+    pub each: Vec<ScopeLevel>,
+    /// Firing trigger. `None` → a sensible default per condition kind
+    /// (rate predicates → settle backoff; `children_*` → phase-end).
+    #[serde(default)]
+    pub trigger: Option<String>,
+    /// Effect on fire: `"fail"` or `"stop"`. `None` → `fail`.
+    #[serde(default)]
+    pub effect: Option<String>,
+}
+
 /// A workload phase: runs as a separate Activity with its own
 /// cycle count, concurrency, rate limit, and op selection.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -675,6 +753,18 @@ pub struct WorkloadPhase {
     /// Error routing spec override.
     #[serde(default)]
     pub errors: Option<String>,
+    /// Error-rate circuit breaker override (e.g. `0.1` = fail this
+    /// phase once >10% of its ops error). Overrides the session-wide
+    /// `error_rate_max=` default. A value `>= 1.0` disables it for
+    /// this phase.
+    #[serde(default)]
+    pub error_rate_max: Option<f64>,
+    /// SRD-83 — stop conditions for this phase shell. Each is a polydat
+    /// predicate over runtime-state wires, plus a firing trigger and an
+    /// effect. Evaluated at triggers; a true predicate stops the phase
+    /// with its effect.
+    #[serde(default)]
+    pub stop_when: Vec<StopConditionSpec>,
     /// Tag filter to select ops from blocks (e.g., `"block:schema"`).
     #[serde(default)]
     pub tags: Option<String>,

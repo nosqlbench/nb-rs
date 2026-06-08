@@ -1,6 +1,9 @@
 * (5) Add bundled workloads
-* (4) start formalizing nbrs runtime & generalize execution model
-  * (4) define the embedded expr contract
+* (4) start formalizing nbrs runtime
+* [x] generalize execution model
+* [x] define the embedded expr contract
+* [x] standardize error handler
+* [x] add stop conditions
 * (4) finalize http driver op template forms and capabilities
 * (3) incorporate (standardize) JSON serdes standard types and into template forms
 * (3) audit docs

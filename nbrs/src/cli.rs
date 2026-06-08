@@ -35,8 +35,8 @@ pub fn print_usage() {
     eprintln!("  nbrs describe wiring stdlib          List standard library modules");
     eprintln!("  nbrs describe wiring dag <file>      Render a wiring source file as DOT/Mermaid/SVG");
     eprintln!("  nbrs bench wiring <expr>    Benchmark a wiring expression at all compilation levels");
-    eprintln!("  nbrs plot wiring <expr>     Evaluate a wiring expression and plot outputs to terminal");
-    eprintln!("  nbrs plot wiring <file>     Plot a wiring file's outputs to the terminal");
+    eprintln!("  nbrs wiring visualize <expr> Evaluate a wiring expression and plot outputs to terminal");
+    eprintln!("  nbrs wiring visualize <file> Plot a wiring file's outputs to the terminal");
     eprintln!("  nbrs web [bind=0.0.0.0] [port=8080]  Start the web dashboard");
     eprintln!("  nbrs web --daemon             Start web dashboard in the background");
     eprintln!("  nbrs web --stop               Stop a running background web dashboard");

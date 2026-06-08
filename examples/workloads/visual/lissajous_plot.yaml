@@ -11,17 +11,20 @@
 
 params:
   adapter: plotter
-  mode: parametric
   a: "3"
   b: "2"
   phase: "90"
   cycles: "3000"
 
+# Params inject as bare wires into the binding scope — reference them
+# by name (NOT `{a}`: braces are YAML string-interpolation only and are
+# rejected inside a Polydat expression). `mode` is omitted; the plotter
+# infers `parametric` from the `x`/`y` op-field names.
 bindings: |
   input cycle: u64
   t := to_f64(cycle) * 0.005
-  x := sin(t * {a})
-  y := sin(t * {b} + to_f64({phase}) * 0.01745329)
+  x := sin(t * a)
+  y := sin(t * b + to_f64(phase) * 0.01745329)
 
 ops:
   point:

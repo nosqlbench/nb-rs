@@ -173,6 +173,12 @@ pub enum StdoutFormat {
     Raw,
 }
 
+/// Canonical format names accepted by [`StdoutFormat::parse`], in
+/// declaration order. Single source for the parse error message AND
+/// `format=` shell-completion suggestions, so the two never drift.
+pub const FORMAT_NAMES: &[&str] =
+    &["stmt", "readout", "assignments", "json", "csv", "tsv", "raw"];
+
 impl StdoutFormat {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.to_lowercase().as_str() {
@@ -184,7 +190,7 @@ impl StdoutFormat {
             "tsv" => Ok(Self::Tsv),
             "raw" => Ok(Self::Raw),
             other => Err(format!(
-                "unknown format: '{other}'. Available: stmt, readout, assignments, json, csv, tsv, raw"
+                "unknown format: '{other}'. Available: {}", FORMAT_NAMES.join(", ")
             )),
         }
     }
@@ -988,8 +994,27 @@ inventory::submit! {
     nbrs_activity::adapter::AdapterRegistration {
         names: || &["stdout"],
         known_params: || &["filename", "format", "separator", "header", "color", "fields"],
-        display_preference: || nbrs_activity::adapter::DisplayPreference::Auto,
+        display_preference: |params| {
+            // Writing op output to the console conflicts with the TUI
+            // (the dashboard would mangle/staircase the raw lines), so
+            // prefer tui=off there and let the log sink capture the run
+            // detail. When `filename=` redirects output to a file, the
+            // console is free and the adapter is TUI-compatible.
+            let to_console = params.get("filename")
+                .map(|f| f.eq_ignore_ascii_case("stdout"))
+                .unwrap_or(true);
+            if to_console {
+                nbrs_activity::adapter::DisplayPreference::Off
+            } else {
+                nbrs_activity::adapter::DisplayPreference::Auto
+            }
+        },
         create: |params| Box::pin(async move {
+            // Reject an unknown `format=` rather than silently falling
+            // back to the default (`feedback_never_ignore_silently`).
+            if let Some(f) = params.get("format") {
+                StdoutFormat::parse(f)?;
+            }
             Ok(std::sync::Arc::new(StdoutAdapter::with_config(StdoutConfig::from_params(&params)))
                 as std::sync::Arc<dyn nbrs_activity::adapter::DriverAdapter>)
         }),

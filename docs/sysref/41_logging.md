@@ -1,29 +1,105 @@
 # 41: Logging and Diagnostics
 
-Diagnostic output uses stderr for operational messages and
-structured event streams for compiler transparency.
+Every nbrs **system signal** — startup banners, the phase walk, metrics
+setup, lifecycle readouts, run-completion notices, the post-run summary
+— routes through the observer/sink traits. The sink's per-mode wiring
+decides the surface (TUI panel, stderr, or `session.log`). The console
+is owned by the **adapter**: only adapter output (the stdout adapter's
+rendered fields, the plotter's canvas), user-requested report content,
+and fatal errors write to it directly.
+
+This is the load-bearing rule. A subsystem that reaches for
+`println!` / `eprintln!` to emit a system signal is a bug — it bypasses
+the sink, so the line never reaches `session.log`, can't be routed to
+the TUI panel, and clobbers a console-owning adapter's output.
 
 ---
 
-## Operational Logging
+## Output Routing
 
-All operational messages go to stderr:
+### The one rule
 
-```
-vectordata: resolved 'glove-25-angular' → https://...
-1 ops, 100 cycles, concurrency=10, adapter=cql
-nbrs: connecting to 127.0.0.1 (keyspace: <none>)
-nbrs: done.
-```
+| Output | Channel |
+|--------|---------|
+| Adapter result rendering (stdout fields, plotter canvas) | **stdout, directly** — the adapter owns the console |
+| User-requested report content (`summary=`, a rendered `.md`) | **stdout, directly** — it's the asked-for artifact |
+| Fatal error just before `process::exit` | **stderr, directly** — terminal reporting must be unconditional, not buffered behind the async sink |
+| Every other nbrs system signal | **the observer/sink** — `diag!` / `observer::log` / the readout binder |
+
+`diag!(level, …)` → `observer::log_categorized` is the only legal
+in-run output channel for system signals. It writes the line to
+`session.log` (always, at the retain level) **and** to the active
+sink's surface.
+
+### Severity + category determine the console
+
+The console floor defaults to `Info`; `session.log` retains down to
+`Debug`. Lines split along two axes — **level** (what reaches the
+console at all) and **category** (which surface, and whether a
+console-owning adapter suppresses it):
+
+| Signal | Level | Category | Console (normal) | Console (adapter owns it, §below) |
+|--------|-------|----------|------------------|-----------------------------------|
+| Startup banners (`N phases`, `session:`, `metrics:`, phase walk), shutdown notices, auto-purge | **Debug** | Diagnostic | hidden (below floor); `loglevel=debug` shows | hidden |
+| Run completion (`all phases complete`, `done.`) | Info | **RunLifecycle** | shown | **hidden** |
+| Inline `✓` progress / status line | — | (`phase_progress`) | shown | **hidden** |
+| Post-run summary (`session:`/`logs:`/`phases:`) | — | (`session_summary` readout) | shown | **hidden** |
+| User-bound readouts (`readouts:` block) | Info | Diagnostic / PhaseLifecycle | shown | **shown** |
+| Warnings / errors | Warn / Error | Diagnostic | shown | shown |
+
+There is no "SystemBanner" category: banners are demoted by **level**
+(Debug) in the existing channels. `RunLifecycle` is a lifecycle marker
+(peer to `PhaseLifecycle` / `PhaseOutcome`) so completion notices can be
+told apart from a *readout the user deliberately bound* — readouts stay
+visible. The categories are owned by [SRD 63](63_status_readouts.md) /
+[SRD 81](81_event_sourced_display.md).
+
+### Surface by mode
+
+The sink the observer drives is chosen per `tui=` mode; the *signals*
+are identical, only the surface differs:
+
+| Mode | Surface for system signals |
+|------|----------------------------|
+| `tui=on` | the TUI's log panel (alt-screen) |
+| `tui=terminal` (default interactive) | stderr line-mode, via `LogOnlySink` |
+| `tui=off` (piped/CI, or a console-owning adapter) | stderr, synchronous |
+| *(any)* | `session.log`, always (at the retain level) |
+
+A "no-terminal" run (piped, CI) still routes every signal through the
+sink — they reach stderr because the sink is *configured* to write
+there, not because of stray prints.
+
+### Console-owning adapters
+
+An adapter that writes its own output to the console declares
+[`DisplayPreference::Off`](30_adapter_interface.md) (the stdout adapter
+to a terminal; the plotter). That forces the dashboard off — it would
+overwrite the adapter's output. On an **interactive TTY** the adapter
+owns the whole screen (stdout and stderr both land on it), so the
+console is reserved for the adapter: banners are already log-only, and
+the `✓` status line, the run-completion notices (`RunLifecycle`), and
+the post-run summary are suppressed. User-bound readouts stay visible —
+those are output the user asked for. Everything suppressed is in
+`session.log`.
+
+This reservation is gated on `is_tty`. A **non-TTY** run (pipe/file)
+keeps stdout and stderr as separate streams, so system signals flow to
+stderr as usual and CI/tests capture them. `DisplayPreference` is
+params-aware: the stdout adapter is `Off` writing to the console
+(default / `filename=stdout`) and `Auto` when `filename=` redirects to
+a file (the console is free).
 
 ### Conventions
 
-- Prefix with subsystem: `vectordata:`, `nbrs:`, `validation:`
-- Warnings: `warning: <message>`
-- Errors: `error: <message>` followed by context
-- No timestamps in operational messages (the activity has metrics
-  for timing)
-- Adapter output goes to stdout; diagnostics to stderr
+- Prefix with subsystem: `vectordata:`, `metrics:`, `validation:`.
+- The `diag!` level conveys severity — don't also prefix `warning:` /
+  `error:` in the message body for `Warn` / `Error` lines.
+- No timestamps in console messages; the `session.log` projection adds
+  a wall-clock stamp, and metrics carry timing.
+- The inspector socket (`nbrs attach`'s out-of-band endpoint) is **off
+  by default**; opt in with `inspector=on`. It is not part of the
+  in-process display path — the in-process TUI/observer never read it.
 
 ---
 

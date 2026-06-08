@@ -74,39 +74,40 @@ fn expr_span(expr: &Expr) -> Span {
     match expr {
         Expr::IntLit(_, s) | Expr::FloatLit(_, s) | Expr::StringLit(_, s)
             | Expr::Ident(_, s) | Expr::UnaryNeg(_, s) | Expr::UnaryBitNot(_, s)
-            | Expr::ArrayLit(_, s) => *s,
+            | Expr::ArrayLit(_, s) | Expr::Cast(_, _, s) => *s,
         Expr::Call(c) => c.span,
         Expr::FieldAccess { span, .. } => *span,
         Expr::BinOp(..) => Span { line: 0, col: 0 },
     }
 }
 
-/// Human/AI-readable name for an expression's syntactic shape.
-/// Used in diagnostics so an "unsupported here" error can name
-/// *what* it found, not just that something failed.
-fn expr_kind(expr: &Expr) -> &'static str {
-    match expr {
-        Expr::Ident(..) => "identifier",
-        Expr::IntLit(..) => "integer literal",
-        Expr::FloatLit(..) => "float literal",
-        Expr::StringLit(..) => "string literal",
-        Expr::ArrayLit(..) => "array literal",
-        Expr::Call(..) => "function call",
-        Expr::BinOp(..) => "binary operation",
-        Expr::UnaryNeg(..) => "unary negation",
-        Expr::UnaryBitNot(..) => "unary bitwise-not",
-        Expr::FieldAccess { .. } => "field access",
+/// Render a list-literal binding value to the comma-joined string a
+/// sweep-axis param carries (e.g. `[25, 50]` → `25, 50`). polydat has
+/// no const-vector node, and a list-valued param is a sweep axis
+/// consumed by a comprehension `WorkloadParamList` source, which
+/// **splits the param's string value on `, ; ws`** and parses each
+/// token to its natural type. So the binding must produce the SAME
+/// bracket-free, unquoted form a string-valued sweep param uses
+/// (`limit_values: "25, 50"`) — wrapping it in `[...]` or quoting
+/// elements would leave un-splittable tokens and mistype the iter var.
+/// Elements are literals in every real case; a non-literal element
+/// (rare) renders as a `?` placeholder rather than failing the bind.
+fn render_list_literal(elems: &[Expr]) -> String {
+    fn elem(e: &Expr) -> String {
+        match e {
+            Expr::IntLit(v, _) => v.to_string(),
+            Expr::FloatLit(v, _) => {
+                if v.fract() == 0.0 { format!("{v:.1}") } else { format!("{v}") }
+            }
+            // Unquoted — matches the `"OTHER, ADA002"` string-list
+            // convention so the comprehension source splits cleanly.
+            Expr::StringLit(s, _) => s.clone(),
+            Expr::Ident(s, _) => s.clone(),
+            Expr::UnaryNeg(inner, _) => format!("-{}", elem(inner)),
+            _ => "?".to_string(),
+        }
     }
-}
-
-/// Best-effort iter-var name for a sweep-axis param, used only
-/// in a diagnostic hint. `eh_values` → `eh`; a name without the
-/// conventional `_values` suffix yields a generic `x`.
-fn singularize_axis(param: &str) -> String {
-    param.strip_suffix("_values")
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "x".to_string())
+    elems.iter().map(elem).collect::<Vec<_>>().join(", ")
 }
 
 fn wrap_to_f64(inner: Expr) -> Expr {
@@ -151,10 +152,17 @@ fn infer_expr_type(
         Expr::IntLit(_, _) => PortType::U64,
         Expr::FloatLit(_, _) => PortType::F64,
         Expr::StringLit(_, _) => PortType::Str,
+        // SRD-84 Part 1b — a cast's type is its target.
+        Expr::Cast(_, ty, _) => *ty,
         Expr::Ident(name, _) => {
-            // Coordinate inputs are always u64.
+            // An input's declared type. Coordinate inputs are u64, but
+            // an `f64` / `str` extern carries its declared type — must
+            // NOT be U64-defaulted, or an `f64` extern in a comparison
+            // (e.g. `error_rate > 0.1`) gets spuriously ToF64-widened
+            // (SRD-84 Part 1). Fall back to u64 for inputs with no
+            // recorded type (e.g. coordinate inputs).
             if input_names.contains(name) {
-                return PortType::U64;
+                return asm.input_type(name).unwrap_or(PortType::U64);
             }
             // Check if it's a known binding — look up output type from assembler.
             asm.output_type(name).unwrap_or(PortType::U64)
@@ -186,6 +194,9 @@ fn infer_expr_type(
                 BinOpKind::Eq | BinOpKind::Ne |
                 BinOpKind::Lt | BinOpKind::Gt |
                 BinOpKind::Le | BinOpKind::Ge => PortType::U64,
+                // SRD-84 Part 1 — logical `&&` / `||` produce a u64
+                // truthiness (0/1), like comparisons.
+                BinOpKind::And | BinOpKind::Or => PortType::U64,
                 _ => {
                     let lt = infer_expr_type(lhs, asm, input_names);
                     let rt = infer_expr_type(rhs, asm, input_names);
@@ -447,8 +458,8 @@ impl Compiler {
                                 }
                             }
                         }
-                        Expr::BinOp(..) | Expr::UnaryBitNot(..) => {
-                            // Inline arithmetic: desugar to an anonymous node
+                        Expr::BinOp(..) | Expr::UnaryBitNot(..) | Expr::Cast(..) => {
+                            // Inline arithmetic / cast: desugar to an anonymous node
                             let anon = self.anon_name();
                             self.compile_binding(asm, &[anon.clone()], expr)?;
                             wire_refs.push(WireRef::node(anon));
@@ -688,6 +699,34 @@ impl Compiler {
                     return Ok(());
                 }
 
+                // SRD-84 Part 1 — eager logical `&&` / `||`. Normalise
+                // each operand to truthiness (`x != 0` → 0/1), then
+                // bitwise-combine: the bitwise and/or of two truthiness
+                // values is the logical and/or. Both operands evaluate
+                // (eager; short-circuit is a deferred optimisation).
+                if matches!(op, BinOpKind::And | BinOpKind::Or) {
+                    let lhs_truthy = Expr::BinOp(
+                        lhs.clone(), BinOpKind::Ne,
+                        Box::new(Expr::IntLit(0, expr_span(lhs))));
+                    let rhs_truthy = Expr::BinOp(
+                        rhs.clone(), BinOpKind::Ne,
+                        Box::new(Expr::IntLit(0, expr_span(rhs))));
+                    let wa = self.compile_binop_operand(asm, &lhs_truthy)?;
+                    let wb = self.compile_binop_operand(asm, &rhs_truthy)?;
+                    let func = if matches!(op, BinOpKind::And) {
+                        "u64_and"
+                    } else {
+                        "u64_or"
+                    };
+                    let node = build_node(
+                        func, &[wa.clone(), wb.clone()],
+                        &[PortType::U64, PortType::U64], &[])?;
+                    let name = &targets[0];
+                    asm.add_node(name, node, vec![wa, wb]);
+                    self.all_names.push(name.clone());
+                    return Ok(());
+                }
+
                 let (func_name, need_widen_lhs, need_widen_rhs) = match op {
                     BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul |
                     BinOpKind::Div | BinOpKind::Mod => {
@@ -787,6 +826,10 @@ impl Compiler {
                         let widen_rhs = f64_path && rhs_type == PortType::U64;
                         (name, widen_lhs, widen_rhs)
                     }
+                    BinOpKind::And | BinOpKind::Or => unreachable!(
+                        "logical And/Or are desugared by the early-return \
+                         truthiness path above and never reach the func-name \
+                         dispatch"),
                 };
 
                 // Compile each operand. Simple identifiers and literals
@@ -876,40 +919,58 @@ impl Compiler {
                 asm.add_node(name, identity, vec![WireRef::node(&wire_name)]);
                 self.all_names.push(name.clone());
             }
-            other => {
-                let target = targets.first().map(String::as_str).unwrap_or("<anonymous>");
-                let span = expr_span(other);
-                let loc = if span.line > 0 {
-                    format!(" (at {}:{})", span.line, span.col)
+            Expr::ArrayLit(elems, _) => {
+                // A list literal bound to a wire — e.g. a list-valued
+                // workload param like `limit_values: [25]`. polydat has
+                // no const-vector node and these list params are sweep
+                // axes consumed as `{name}` interpolation /
+                // comprehension-source text, so bind the list to a
+                // `ConstStr` holding its literal text. (A wire that
+                // genuinely needs the elements as numbers can parse it
+                // with `str_to_vec_i32` / `str_to_vec_f32`.)
+                let name = &targets[0];
+                let rendered = render_list_literal(elems);
+                asm.add_node(name, Box::new(ConstStr::new(rendered)), vec![]);
+                self.all_names.push(name.clone());
+            }
+            Expr::Cast(inner, target, _) => {
+                // SRD-84 Part 1b — `<expr> as <type>`: an alignment-only
+                // type-fusion infill. Compile the inner expression; if
+                // its type already matches the target, pass it through
+                // unchanged (the cast is a no-op); otherwise insert the
+                // SRD-79 fusion adapter, or error if no valid fusion
+                // exists.
+                use crate::ast::PortType as PT;
+                let from = infer_expr_type(inner, asm, &self.input_names);
+                let inner_wire = self.compile_binop_operand(asm, inner)?;
+                let name = &targets[0];
+                let node: Box<dyn crate::ast::PolydatNode> = if from == *target {
+                    Box::new(crate::library::identity::PortPassthrough::new(name, *target))
                 } else {
-                    String::new()
+                    match (from, *target) {
+                        // Widening / parse fusions — alignment-only.
+                        (PT::U64, PT::F64) =>
+                            Box::new(crate::library::convert::ToF64::new()),
+                        (PT::Str, PT::U64) =>
+                            Box::new(crate::library::convert::StrToU64::new()),
+                        // SRD-84 Part 1b — `as` does NOT perform lossy
+                        // numeric narrowing: the rounding is a semantic
+                        // choice the author must make explicitly.
+                        (PT::F64, PT::U64) => return Err(
+                            "`as u64`: narrowing f64 → u64 is not allowed under \
+                             `as` — it loses precision and the rounding is \
+                             ambiguous. Choose explicitly: `f64_to_u64(x)` \
+                             (truncate), `round_to_u64(x)`, `floor_to_u64(x)`, \
+                             or `ceil_to_u64(x)`. `as` performs only widening / \
+                             alignment fusion (SRD-84 Part 1b)."
+                                .to_string()),
+                        (f, t) => return Err(format!(
+                            "`as {t:?}`: no type-fusion from {f:?} to {t:?} is \
+                             defined (SRD-84 Part 1b)")),
+                    }
                 };
-                let kind = expr_kind(other);
-                // Targeted guidance for the shapes operators
-                // actually hit. An array literal in binding
-                // position is the common one: a list-valued
-                // workload param (`eh_values: [false, true]`)
-                // is a sweep axis consumed by a comprehension,
-                // not a scalar binding.
-                let hint = match other {
-                    Expr::ArrayLit(..) => format!(
-                        "a list value `[...]` cannot be bound to a single wire. \
-                         If `{target}` is a sweep axis, reference it from a \
-                         comprehension instead — e.g. `for: \"{target_var} in {target}\"` \
-                         — rather than binding it directly. If you meant a \
-                         single value, supply one element (`{target}: <value>`).",
-                        target_var = singularize_axis(target),
-                    ),
-                    _ => format!(
-                        "binding values must be one of: function call `f(...)`, \
-                         identifier, integer / float / string literal, arithmetic \
-                         or comparison expression (`a + b`, `x < y`), unary `-x` / \
-                         `!x`, or field access `src.field`."
-                    ),
-                };
-                return Err(format!(
-                    "binding `{target}`: unsupported {kind} in binding value{loc}. {hint}"
-                ));
+                asm.add_node(name, node, vec![inner_wire]);
+                self.all_names.push(name.clone());
             }
         }
         Ok(())

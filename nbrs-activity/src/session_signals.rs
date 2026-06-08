@@ -48,6 +48,30 @@ pub fn request_stop() {
     flag().store(true, Ordering::Relaxed);
 }
 
+/// Shared "a stop condition gracefully halted the walk" flag. Distinct
+/// from [`SESSION_STOP`] (Ctrl-C): set when a workload-shell stop
+/// condition (SRD-83) intentionally halts the remaining walk. The
+/// end-of-run unreached-phase check consults it to distinguish an
+/// *intended* early stop (later phases deliberately skipped, not an
+/// error) from the genuine "a phase failed and stranded downstream
+/// phases" case.
+static GRACEFUL_STOP: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+
+/// True once a stop condition has gracefully halted the walk.
+#[inline]
+pub fn graceful_stop_requested() -> bool {
+    GRACEFUL_STOP.get()
+        .map(|f| f.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+/// Record that a stop condition gracefully halted the remaining walk
+/// (SRD-83 workload shell). Idempotent.
+pub fn request_graceful_stop() {
+    GRACEFUL_STOP.get_or_init(|| Arc::new(AtomicBool::new(false)))
+        .store(true, Ordering::Relaxed);
+}
+
 /// Install a tokio task that watches `ctrl_c()` and translates
 /// SIGINT into the two-stage shutdown described in the module
 /// doc. Idempotent — only the first call wins; subsequent calls

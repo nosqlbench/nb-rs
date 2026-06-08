@@ -152,7 +152,8 @@ fn describe_adapter(name: &str) {
     if aliases.len() > 1 {
         println!("  Aliases:        {}", aliases.join(", "));
     }
-    println!("  Display:        {:?}", (reg.display_preference)());
+    // Default-config preference (no params → e.g. stdout's console default).
+    println!("  Display:        {:?}", (reg.display_preference)(&std::collections::HashMap::new()));
 
     let adapter_params = (reg.known_params)();
     if !adapter_params.is_empty() {

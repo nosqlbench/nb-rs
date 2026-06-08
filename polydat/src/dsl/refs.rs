@@ -85,7 +85,8 @@ pub fn collect_expr_refs(expr: &Expr, out: &mut BTreeSet<String>) {
             collect_expr_refs(lhs, out);
             collect_expr_refs(rhs, out);
         }
-        Expr::UnaryNeg(inner, _) | Expr::UnaryBitNot(inner, _) => {
+        Expr::UnaryNeg(inner, _) | Expr::UnaryBitNot(inner, _)
+        | Expr::Cast(inner, _, _) => {
             collect_expr_refs(inner, out);
         }
         Expr::ArrayLit(elems, _) => {

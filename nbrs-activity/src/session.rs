@@ -346,6 +346,67 @@ pub fn session_dir_named(name: &str) -> PathBuf {
     default_sessions_root().join(name)
 }
 
+/// Point `<sessions-root>/latest` at `session_dir`, but only when
+/// the dir lives under the sessions root — a path the user
+/// redirected elsewhere (`--session-path /tmp/x`) is left alone,
+/// same guard as the startup hook. Best-effort: symlink failures
+/// warn rather than abort.
+pub fn point_latest_at(session_dir: &Path) {
+    let root = default_sessions_root();
+    if !target_is_under(&root, session_dir) {
+        return;
+    }
+    if std::fs::create_dir_all(&root).is_err() {
+        return;
+    }
+    let latest = root.join("latest");
+    let relative_target = relative_symlink_target(&latest, session_dir);
+    let _ = std::fs::remove_file(&latest);
+    let _ = std::os::unix::fs::symlink(&relative_target, &latest);
+}
+
+/// Initialize a NEW, empty session: create its directory, the
+/// `metrics.db` schema, and the invariant `session` metadata — but
+/// record NO execution (nothing has run). Points `latest` at it.
+/// A later `run`/`refine` attaches the first execution.
+///
+/// `explicit_path` overrides the default `<sessions-root>/<id>`
+/// location. `reuse` governs an already-populated directory.
+pub fn init_empty_session(
+    id: &str,
+    explicit_path: Option<&Path>,
+    reuse: SessionReuse,
+) -> Result<PathBuf, String> {
+    let dir = match explicit_path {
+        Some(p) => p.to_path_buf(),
+        None => default_session_dir(id),
+    };
+    let metrics_db = dir.join("metrics.db");
+    if metrics_db.exists() {
+        match reuse {
+            SessionReuse::Error => return Err(format!(
+                "session '{id}' already exists at {} — pass session-reuse=restart to \
+                 overwrite, session-reuse=resume to keep it, or choose another name",
+                dir.display(),
+            )),
+            SessionReuse::Restart => { let _ = std::fs::remove_file(&metrics_db); }
+            SessionReuse::Resume => return Ok(dir),
+        }
+    }
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create session dir {}: {e}", dir.display()))?;
+    {
+        // `SqliteReporter::new` creates the schema; writing the
+        // invariant `session` key seeds session_metadata. Dropping
+        // the reporter flushes (writes auto-commit).
+        let mut reporter = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&metrics_db)
+            .map_err(|e| format!("create metrics.db at {}: {e}", metrics_db.display()))?;
+        reporter.set_metadata("session", id);
+    }
+    point_latest_at(&dir);
+    Ok(dir)
+}
+
 pub fn default_sessions_root() -> PathBuf {
     if cwd_is_workspace_dir() {
         // Cargo-spawned invocation, cwd is a cargo workspace
@@ -1445,6 +1506,22 @@ fn latest_symlink_target(output_dir: &Path, logs: &Path, id: &str) -> PathBuf {
     }
     let latest = logs.join("latest");
     relative_symlink_target(&latest, output_dir)
+}
+
+/// UTC datetime components for session-name templating, derived
+/// from the same manual Gregorian math as [`format_timestamp`] (no
+/// chrono dependency). Returns `(year, month, day, hour, minute,
+/// second, epoch_millis, epoch_seconds)`.
+pub fn utc_datetime_fields() -> (u64, u64, u64, u64, u64, u64, u128, u64) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let millis = now.as_millis();
+    let day_count = secs / 86400;
+    let t = secs % 86400;
+    let (year, month, day) = days_to_ymd(day_count);
+    (year, month, day, t / 3600, (t % 3600) / 60, t % 60, millis, secs)
 }
 
 fn format_timestamp() -> String {

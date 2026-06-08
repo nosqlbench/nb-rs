@@ -191,7 +191,7 @@ inputs, in order:
 | `--agg` | closed set: `mean min max p50 p99 sum count` |
 | `--palette` | closed set: `wong cividis_5 ibm tol_bright tol_high_contrast tol_light tol_muted viridis_5` plus numeric indices |
 | `--line` | closed set: `solid dashed dotted dashdot none` |
-| `--marker` | closed set: `none circle square triangle diamond plus cross` |
+| `--marker` | closed set: `auto none circle square triangle diamond plus cross` (`auto` = per-series shape cycle) |
 | `--xscale` / `--yscale` | closed set: `linear log` |
 | `--metric` (positional after kind name) | metric names from the active db, filtered by kind |
 | `--name` (on `list`/`show`/`figure`/--add) | item names already defined in the workload + items already persisted in the session db |

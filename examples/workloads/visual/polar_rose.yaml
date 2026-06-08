@@ -14,14 +14,16 @@
 
 params:
   adapter: plotter
-  mode: polar
   k: "3"
   cycles: "3000"
 
+# `k` injects as a bare wire — reference it by name (braces are rejected
+# inside Polydat expressions). `mode` is omitted; the plotter infers
+# `polar` from the `r`/`theta` op-field names.
 bindings: |
   input cycle: u64
   theta := to_f64(cycle) * 0.01
-  r := cos(theta * {k})
+  r := cos(theta * k)
 
 ops:
   point:

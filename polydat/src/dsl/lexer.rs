@@ -114,8 +114,12 @@ pub enum TokenKind {
     ShiftRight,
     /// `&` (bitwise AND)
     Ampersand,
+    /// `&&` (logical AND — SRD-84 Part 1)
+    AmpAmp,
     /// `|` (bitwise OR)
     Pipe,
+    /// `||` (logical OR — SRD-84 Part 1)
+    PipePipe,
     /// `!` (unary bitwise NOT)
     Bang,
     /// `<` (less-than comparison)
@@ -422,8 +426,18 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                 continue;
             }
             '.' => { tokens.push(Token { kind: TokenKind::Dot, span }); pos += 1; col += 1; continue; }
-            '&' => { tokens.push(Token { kind: TokenKind::Ampersand, span }); pos += 1; col += 1; continue; }
-            '|' => { tokens.push(Token { kind: TokenKind::Pipe, span }); pos += 1; col += 1; continue; }
+            '&' => {
+                if pos + 1 < chars.len() && chars[pos + 1] == '&' {
+                    tokens.push(Token { kind: TokenKind::AmpAmp, span }); pos += 2; col += 2; continue;
+                }
+                tokens.push(Token { kind: TokenKind::Ampersand, span }); pos += 1; col += 1; continue;
+            }
+            '|' => {
+                if pos + 1 < chars.len() && chars[pos + 1] == '|' {
+                    tokens.push(Token { kind: TokenKind::PipePipe, span }); pos += 2; col += 2; continue;
+                }
+                tokens.push(Token { kind: TokenKind::Pipe, span }); pos += 1; col += 1; continue;
+            }
             '!' => {
                 if pos + 1 < chars.len() && chars[pos + 1] == '=' {
                     tokens.push(Token { kind: TokenKind::BangEq, span });

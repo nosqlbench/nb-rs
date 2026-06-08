@@ -27,7 +27,7 @@ state, and ends with a green CI.
 | 5 | Halton ordering | ✅ shipped — 5 tests |
 | 5b | Sobol ordering | ⏳ deferred — needs Joe-Kuo direction-number table |
 | 5c | LHS ordering (Latin Hypercube with seed) | ✅ shipped — Fisher-Yates seeded permutation + 6 tests |
-| 7 | Layer 3 — named generators (`fib`, `pow2`, `geometric`, `subdivide`, `log_steps`, `binomial`) | ✅ shipped — comprehension-layer dispatcher + 11 tests |
+| 7 | Layer 3 — named generators (`fib`, `pow2`, `geometric`, `linear_starts`, `log_steps`, `binomial`) | ✅ shipped — comprehension-layer dispatcher + 11 tests |
 | 8 | Sequencer expansions (`bucket`, `concat_seq`, `interval_seq`) — reuses `nbrs-activity::opseq` algorithms | ✅ shipped — both parallel-list and ratio-prefix shorthand forms + 4 tests |
 | 9 | Layer 5 — set operators (`concat`, `unique`, `interleave`, `intersect`, `subtract`, `cycle`, `reverse`, `take`, `skip`) | ✅ shipped — comprehension-layer dispatcher with recursive arg eval + 10 tests |
 | 10 | Index-space ordering rejection on Union mode (`validate_order_for_mode`) | ✅ shipped — 7 tests |
@@ -266,12 +266,13 @@ matter; pick a batch and land them.
 - [ ] `geometric(start, factor, n)`
 - [ ] `geometric_until(start, factor, max)`
 - [ ] `binomial(n)` — `C(n,0), …, C(n,n)`
-- [ ] `subdivide(start, end, n)` — half-open subdivision
-      sugar over Push 3's `range_step`
-- [ ] `subdivide_inclusive(start, end, n)`
+- [ ] `linear_starts(start, end, n)` — half-open subdivision
+      sugar over Push 3's `range_step` (originally landed as
+      `subdivide`; renamed when SRD 71's partition-typed
+      `subdivide(p, n)` took the bare name)
 - [ ] `log_steps(start, end, n)` — log-spaced
-- [ ] `linear_steps(start, end, n)` — alias for
-      `subdivide_inclusive`
+- [ ] `linear_steps(start, end, n)` — inclusive fence-post
+      form (the former `subdivide_inclusive` alias is retired)
 - [ ] Each registers as a normal Polydat stdlib node;
       composes with const folding.
 - [ ] Tests: typical sizes, `n=0`, large `n`, float

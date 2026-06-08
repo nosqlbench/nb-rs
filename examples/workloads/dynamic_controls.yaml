@@ -27,7 +27,7 @@
 #     `rate_adjust` feedback binding something to see: at
 #     `concurrency=8` everything fits, at `concurrency=24` the
 #     queue tips past the overload threshold and the error rate
-#     jumps — which trips the `if(err_rate > 0.05, 0.5, 1.05)`
+#     jumps — which trips the `select_f64(err_rate > 0.05, 0.5, 1.05)`
 #     branch and halves the live `rate` control until it recovers.
 #
 # Validators bracket every param so misconfiguration surfaces at
@@ -87,7 +87,7 @@ blocks:
       // ramps up). `control_set` is non-blocking — the spawn is
       // attributed to the `rate_adjust` binding in the committed
       // Versioned<RateSpec>::origin.
-      throttle_factor := if(err_rate > 0.05, 0.5, 1.05)
+      throttle_factor := select_f64(err_rate > 0.05, 0.5, 1.05)
       rate_adjust := control_set("rate",
                                  to_f64(control_u64("rate")) *
                                  throttle_factor)

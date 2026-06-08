@@ -54,7 +54,10 @@ pub fn query(args: &[String]) {
     // for the anchor-timestamp lookup so we read a coherent
     // view of the database.
     let ds = match SqliteDataSource::open(&parsed.db_path) {
-        Ok(ds) => ds,
+        // SRD-77 — coalesce across executions by default: each series
+        // comes from the newest execution that produced it.
+        Ok(ds) => ds.with_execution_selection(
+            nbrs_metricsql::adapters::sqlite::ExecutionSelection::LatestPerInstance),
         Err(e) => {
             eprintln!("nbrs metrics query: open db: {e}");
             std::process::exit(2);
@@ -81,28 +84,17 @@ pub fn query(args: &[String]) {
     };
     let step_ms = parsed.step_ms;
 
-    let mut expr = match nbrs_metricsql::parse(&parsed.query) {
+    // SRD-77 — the DataSource coalesces across executions
+    // (per-instance-latest); no implicit single-`exec_id` injection.
+    // An explicit `exec_id="N"` the operator typed survives as a
+    // normal label matcher.
+    let expr = match nbrs_metricsql::parse(&parsed.query) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("nbrs metrics query: parse: {e}");
             std::process::exit(2);
         }
     };
-    // SRD-77 — inject `exec_id="<latest>"` into every vector
-    // selector that doesn't already carry one. The operator
-    // typed a query; we wrap it in the implicit "show me the
-    // latest execution" qualifier. The reserved `"latest"`
-    // literal also resolves here (storage never sees the
-    // literal — the metric_instance reserved-word guard
-    // refuses it).
-    let session_dir = parsed.db_path.parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_default();
-    nbrs_activity::refine_plan::warn_multi_execution_default(&session_dir);
-    let resolved_exec_id = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
-        .specific_id();
-    nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut expr, resolved_exec_id);
-    let expr = expr;
     // Two query modes:
     //
     // - **Instant** (`--lookback 0`, the default): use

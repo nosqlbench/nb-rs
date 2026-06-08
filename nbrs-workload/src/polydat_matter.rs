@@ -323,6 +323,7 @@ mod tests {
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::PolydatSource("k := 5".into()),
             poll: None,
+            ..Default::default()
         };
         assert_eq!(phase.polydat_matter(), PolydatMatter::Definitions);
     }
@@ -338,6 +339,7 @@ mod tests {
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
+            ..Default::default()
         };
         assert_eq!(phase.polydat_matter(), PolydatMatter::Definitions);
     }
@@ -361,6 +363,7 @@ mod tests {
             checkpoint: None, status_metrics: vec![], metrics,
             bindings: BindingsDef::default(),
             poll: None,
+            ..Default::default()
         };
         assert_eq!(phase.polydat_matter(), PolydatMatter::Definitions);
     }
@@ -375,6 +378,7 @@ mod tests {
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
+            ..Default::default()
         };
         assert_eq!(phase.polydat_matter(), PolydatMatter::None);
     }
@@ -390,6 +394,7 @@ mod tests {
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
+            ..Default::default()
         };
         assert_eq!(phase.polydat_matter(), PolydatMatter::Readonly);
     }

@@ -1,6 +1,27 @@
 # SRD 71: Cursor Partitioning and the `cursor` Parameter
 
-*(DRAFT — design memo, not yet implemented)*
+**Status:** SHIPPED end-to-end (P1, P2, P3) — CLI quote elision
+(`parse_params`), the spec parser with all three forms, the
+tail tokens (`*`, `...`, `*/N`, `*/recipe`), entry modifiers
+(`xN` repetition, `~` gaps), windowed chunking (`in
+start..end`), the trailing order keyword (`unchanged` /
+`smallest_first` / `largest_first` / `random`), all eleven
+recipes, the `Partition` / `PartitionSpec` / `PartitionList`
+value types, the `partitions(spec[, extent])` source node, the
+`over` clause (param / literal / iter-var / cross-cursor
+shapes, with the multi-partition-direct startup error), the
+partition stdlib (`cardinality`, `start_of`, `end_of`,
+`idx_of`, `count_of`, `mod_in`, `at`, `clamp_in`, `random_in`,
+`subdivide`), the scalar `q.cursor.*` dotted wire projections,
+phase-scoped CLI overrides with globs
+(`*_query.cursor=fib:7`), partition-bound open-extent cursors
+(`until_*(...) over p` with the partition end as a hard cap),
+`subdivide(outer, n)` as a nested comprehension source, and the
+`partition i/n [lo..hi)` status banner. Behavioral coverage
+lives in `examples/workloads/cursor_partitions_coverage.yaml` +
+`nbrs/tests/cursor_partitions.rs`; the operator/author guide is
+`docs/guide/cursor_partitions.md`; the showcase example is
+`examples/workloads/timeboxed_partition_sweep.yaml`.
 
 ## Motivation
 
@@ -76,9 +97,12 @@ shell-evaluation semantics that don't survive into our argv.
 
 ### Cursor partition specs
 
-A spec resolves to a non-empty **contiguous** list of partitions.
-Each partition is a half-open ordinal range `[start_ord, end_ord)`
-within the cursor's declared extent `[base_start, base_end)`.
+A spec resolves to a non-empty, **ordered** list of partitions.
+Each partition is one contiguous half-open ordinal range
+`[start_ord, end_ord)` within the cursor's declared extent
+`[base_start, base_end)`; adjacent emitted partitions are
+contiguous unless a gap entry (`~<delta>`) skips a range
+between them.
 
 #### Number forms
 
@@ -100,12 +124,20 @@ meant `1.5%` (percentage) or `0.015` (fraction) or `15`
 "why did this run for ages" surprises.
 
 Resolution to absolute ordinals happens at phase setup, against
-the cursor's known base extent. Percentages and fractions are
-multiplied; literals are clamped to `[base_start, base_end]` with
-a diagnostic if the spec walks outside the extent. The
-`<wire>.cursor.start_pct` / `.end_pct` / `.start_ordinal` /
-`.end_ordinal` projection wires report both views post-resolution
-regardless of which form the operator typed.
+the cursor's known base extent. **One boundary rule everywhere:**
+every partition boundary is the *exact* cumulative position,
+rounded once (`round`, half-away-from-zero); sizes are boundary
+differences. Rounding slack is therefore distributed across a
+list instead of accumulating per entry — `linear:3` over 1000
+yields 333/334/333 covering the extent exactly, never
+333/333/333 with a silently dropped ordinal. Form 1 endpoints,
+Form 2 delta lists, recipe expansions, and `subdivide` / `*/N`
+splits all share this rule. Literals are clamped to
+`[base_start, base_end]` with a diagnostic if the spec walks
+outside the extent. The `<wire>.cursor.start_pct` / `.end_pct` /
+`.start_ordinal` / `.end_ordinal` projection wires report both
+views post-resolution regardless of which form the operator
+typed.
 
 #### Form 1 — single sub-range
 
@@ -146,15 +178,20 @@ literals can be mixed.
 1000,5000,*                      # literal deltas — first 1000, next 5000, remainder
 1000,10%,*                       # mixed — first 1000, next 10% of extent, remainder
 20%,30%                          # short list — partitions [(0%,20%), (20%,50%)], trailing 50% dropped
+90%,1%,...                       # fill — first 90%, then 1%-of-the-whole chunks until used up
+90%,*/10                         # split — first 90%, then the remainder divided into 10 chunks
+90%,*/fib:5                      # shaped — first 90%, then the remainder in Fibonacci proportions
+90%,1%x10                        # repetition — first 90%, then exactly ten 1% chunks
+10%,~80%,10%                     # gap — first 10%, skip 80%, last 10% (two partitions emitted)
 ```
 
 The literal `*` (or `*%` — the `%` is decorative here) is the
-"remainder" token; exactly one entry may be `*`, and it absorbs
-whatever ordinals are needed for the list to span the cursor's
-full extent. A list summing **exactly** to the extent doesn't
-need `*`. A list summing **less than** the extent without `*`
-drops the trailing gap. A list summing **more than** the extent
-is rejected at resolution time (parse time can't catch mixed
+"remainder" token; it absorbs whatever ordinals are needed for
+the list to span the cursor's full extent. A list summing
+**exactly** to the extent doesn't need `*`. A list summing
+**less than** the extent without a tail token drops the
+trailing gap. A list summing **more than** the extent is
+rejected at resolution time (parse time can't catch mixed
 literal/percentage lists because the extent isn't known until
 phase setup).
 
@@ -163,6 +200,169 @@ absorbs the missing percentage. A `*` in a list containing any
 literal absorbs whatever absolute-ordinal remainder is left
 after resolving the percentages and fractions against the actual
 extent.
+
+##### Tail tokens: `*`, `...`, `*/N`, `*/recipe`
+
+`*` is one of the **tail tokens** that consume the unallocated
+remainder. At most one tail token is allowed per list; `...`,
+`*/N`, and `*/recipe` must be the final entry (`*` may sit
+anywhere, since the remainder it absorbs is position-
+independent).
+
+| Token | Meaning | Anchoring |
+|-------|---------|-----------|
+| `*`   | Remainder as **one** partition | — |
+| `...` | **Repeat the preceding delta** until the extent is used up. A final chunk smaller than the repeated delta is emitted truncated, never dropped. | Chunk **size** is declared (against the whole extent, per the preceding delta's form); chunk **count** is emergent. |
+| `*/N` | Remainder **divided into N** partitions whose sizes differ by at most one ordinal. | Chunk **count** is declared; chunk **size** is emergent (remainder ÷ N). |
+| `*/recipe:args` | Remainder **shaped by a recipe's weights** (`*/fib:5`, `*/ratios:1,3`, …) — normalised weights apportion the remainder, cumulative-position rounding as everywhere. | Chunk **proportions** are declared; sizes are emergent (weight share of the remainder). |
+
+The canonical pair of "head plus chunked tail" specs:
+
+```
+90%,1%,...     # first 90%, then 1%-of-the-whole chunks until used up
+90%,*/10       # first 90%, then the remainder divided into 10 chunks
+```
+
+These coincide (eleven partitions: one 90%, ten 1%) only
+because `100% − 90% = 10 × 1%`. They are different specs:
+change the head to `85%` and the fill keeps 1% chunks (the
+count grows to 15), while the split keeps 10 chunks (each
+grows to 1.5%). A third member, `90%,1%x10` (finite
+repetition, below), declares size *and* count and coincides
+with both at this head.
+
+The divisor after `*/` is a chunk **count** (bare integer) or a
+**recipe**. `*/1%` is rejected at parse time with a diagnostic
+pointing at the fill form — allowing a size there would create
+a second spelling for what `1%,...` already says, and would
+make `*/1000` ambiguous between "1000 chunks" and "chunks of
+1000 ordinals" (bare integers mean ordinals everywhere else in
+a delta list, but a divisor is inherently a count — the same
+convention recipe arguments like `linear:4` already use).
+`*/linear:N` is likewise rejected with a hint at `*/N` — one
+canonical spelling for the equal-count split.
+
+`*/N` alone (no head) divides the whole extent: `*/16` resolves
+exactly like `linear:16`. They remain distinct specs — `*/16`
+says "the remainder in 16 parts" and composes with any head;
+`linear:16` is a whole-extent recipe.
+
+A `...` whose preceding delta resolves below one ordinal, a
+`*/N` with no remainder left, a `*/N` finer than the remainder
+(`N` > remaining ordinals), and a `*/recipe` weight whose share
+of the remainder rounds to zero ordinals are all
+resolution-time errors — tail-generated partitions must be
+non-empty. The same holds for a Form 1 range that rounds to
+zero ordinals (`cursor=0..1%` against a 10-ordinal extent is an
+error, not a silent no-op — an operator-explicit slice that
+runs nothing is the "why did this do nothing" trap). Plain
+delta-list entries are **not** held to this: auto-terminating
+recipes like `mul:0.5` legitimately produce sub-ordinal tail
+weights on small extents, and their zero-width entries iterate
+zero cycles by correct arithmetic.
+
+##### Entry modifiers: `xN` repetition, `~` gaps
+
+Two modifiers apply to individual sized entries of a delta
+list:
+
+**Finite repetition — `<delta>xN`.** `1%x5` contributes five 1%
+chunks; it expands at parse time and is exactly equivalent to
+writing the delta N times. Both size and count are declared, so
+nothing is emergent — the list still under- or over-sums like
+any other. `x0`, repetition of tail tokens, and repetition of
+gaps are parse errors (adjacent gaps are one gap — size it
+directly).
+
+**Gaps — `~<delta>`.** `~80%` consumes 80% of the extent
+without emitting a partition. The walk stays contiguous and
+ordered; the *emitted* partition set skips the gap's range.
+`idx` numbers count emitted partitions only. Gap sizes count
+toward the sized-delta total, so a following `*` / `*/N` /
+`*/recipe` absorbs only what head deltas *and* gaps leave:
+
+```
+10%,~80%,10%     # [0%,10%) and [90%,100%) — the middle 80% is never visited
+10%,~40%,*       # [0%,10%) and [50%,100%)
+```
+
+A gap wraps a sized value only (`~*` and friends are parse
+errors — to ignore the trailing remainder, just end the list
+without a tail token). A `...` immediately after a gap is a
+parse error: the fill repeats the preceding entry, and
+repeating a gap would emit nothing. A list consisting entirely
+of gaps emits no partitions and is rejected at parse time.
+
+##### Windowed chunking: `chunking in window`
+
+A whitespace-delimited `in` clause scopes any chunking spec to
+a Form 1 window:
+
+```
+linear:5 in 25%..75%      # the middle half, in 5 equal chunks
+1%,... in 90%..100%       # the last tenth, in 1%-of-the-window chunks
+90%,*/10 in 0..50%        # head/split structure applied to the first half
+0..50% in 50%..100%       # Form 1 composes too: [50%, 75%) of the whole
+```
+
+The window resolves against the cursor's full extent; the
+chunking then resolves against the **window's** range — every
+percentage and fraction inside the chunking is window-relative
+when computing sizes and boundaries. The resulting partitions'
+`start_pct` / `end_pct` / `base_extent` are labelled against
+the **full base frame**, not the window: a windowed partition
+`[200, 400)` of a 1000-domain carries pcts 20%..40% and
+`base_extent` 1000. The window affects sizing and placement
+only — this is what keeps the `over` clause's cross-extent
+reprojection correct (window-relative labels would collapse
+the window offset, reprojecting `[200, 400)` as if it started
+at the domain's origin). Without `in`, the chunking spans the
+whole extent (a window of `0..100%` in effect). At most one
+`in` clause; the window must be a `start..end` range with
+sized endpoints.
+
+This is the composition the flat forms can't express: Form 1
+selects a window, Forms 2/3 chunk a domain — `in` lets one
+spec do both.
+
+##### Ordering: trailing `unchanged | smallest_first | largest_first | random`
+
+A trailing order keyword reorders the **resolved list for
+iteration**:
+
+```
+fib:7 largest_first       # biggest slice first (coast-down)
+linear:16 random          # the 16 windows in a shuffled order
+90%,*/10 in 0..50% random # composes with everything above
+```
+
+- `unchanged` — generation order (the default; the explicit
+  word is accepted for self-documenting specs).
+- `smallest_first` / `largest_first` — sorted by
+  **cardinality**, stable (equal-sized partitions keep
+  generation order). The size sorts are named for their axis:
+  position-ascending is always the generation order for a
+  contiguous list, so a bare direction word (`ascending` /
+  `descending`) would be ambiguous between ordinal position
+  and size — those words are **rejected at parse time** with a
+  diagnostic teaching the axis-named spellings.
+- `random` — a deterministic Fisher–Yates shuffle seeded from
+  the spec text: the same spec yields the same order on every
+  run, so runs stay reproducible.
+
+Ordering changes only the list's iteration sequence.
+Partition `idx` keeps identifying the **generation position**
+(`fib:5 largest_first` iterates idx 4, 3, 2, 1, 0), so labels
+and metrics remain stable identifiers regardless of schedule.
+
+> **Common-subset note:** `unchanged` and `random` are
+> deliberately shared vocabulary with the comprehension
+> traversal orders (SRD 18c) — where a word exists in both
+> places it means the same thing. Comprehensions additionally
+> offer algorithm-specific strategies (sobol, halton, lhs,
+> shuffle-with-seed, …) that don't apply to partition lists;
+> `smallest_first` / `largest_first` are partition-specific
+> because the size axis only exists for interval lists.
 
 #### Form 3 — pre-baked ratio expansions
 
@@ -207,26 +407,41 @@ Brackets and `%` placement are forgiving per Form 1's examples.
 
 ### Cursor metadata wires
 
-Every cursor declaration `cursor q = <expr>` exposes a metadata
-namespace on the wire `q`:
+Every cursor declaration `cursor q = <expr> over <src>` exposes
+its resolved narrowing as the **`q.cursor`** projection — a
+`Partition` value the partition stdlib consumes directly:
+
+```
+i  := idx_of(q.cursor)        # 0-based partition index
+lo := start_of(q.cursor)      # absolute start ordinal (inclusive)
+hi := end_of(q.cursor)        # absolute end ordinal (exclusive)
+n  := cardinality(q.cursor)   # hi - lo
+qi := mod_in(cycle, q.cursor) # per-cycle ordinal inside the partition
+```
+
+This resolves through the standard Polydat scope chain and is
+visible to bindings, op-template fields, evaluations, and metric
+labels alike.
+
+The same fields are exposed as **scalar dotted wires** — typed
+input slots the dotted form flattens onto (`q.cursor.idx` reads
+the wire `q__cursor__idx`), usable in bindings and in `{...}`
+text interpolation identically:
 
 | Name                       | Type   | Meaning |
 |----------------------------|--------|---------|
-| `q.cursor.partition_count` | u64    | Number of partitions in the active spec. 1 when no spec is supplied. |
+| `q.cursor.partition_count` | u64    | Number of partitions in the resolved list. 1 when no spec / no narrowing. |
 | `q.cursor.idx`             | u64    | 0-based index of the active partition. 0 when no spec / no iteration. |
 | `q.cursor.start_pct`       | f64    | Start of the active partition, [0.0, 100.0). |
 | `q.cursor.end_pct`         | f64    | End of the active partition, (0.0, 100.0]. |
 | `q.cursor.start_ordinal`   | u64    | Absolute ordinal at the partition's start (inclusive). |
 | `q.cursor.end_ordinal`     | u64    | Absolute ordinal at the partition's end (exclusive). |
-| `q.cursor.partitions`      | list   | Full partition list for iteration. Elements are tuples `(idx, start_pct, end_pct, start_ord, end_ord)`. |
 
-These wires resolve through the standard Polydat scope chain. They are
-visible to bindings, op-template fields, evaluations, and metric
-labels alike — anywhere `{q.cursor.idx}` or `{q.cursor.end_pct}`
-interpolates.
-
-`q.cursor.partitions` is the only one that returns a list; the rest
-are scalars reflecting the current iteration step.
+The function spellings and the dotted spellings carry the same
+values — pick whichever reads better at the site (`count_of(p)`
+is the function form of `partition_count`). The slots exist on
+cursors declared with `over`; a narrowing that resolves to
+"no-op" still reports a truthful single full-extent partition.
 
 ### Comprehension syntax for partition iteration
 
@@ -281,22 +496,25 @@ comprehensions:
     - my_phase
 ```
 
-The cursor decl can also name the parameter's projection
-directly (skipping the `for:` scaffold) when the spec is single-
-partition:
+The cursor decl can also name the parameter directly (skipping
+the `for:` scaffold) when the spec is single-partition:
 
 ```yaml
 phases:
   my_phase:
     bindings: |
-      cursor q = range(0, N) over cursor.partitions
+      cursor q = range(0, N) over cursor
 ```
 
-The `over cursor.partitions` form follows whatever the
-parameter's current state is. With a single-partition spec, `q`
-narrows directly. With a multi-partition spec and no enclosing
-iteration, the cursor declaration is a startup error — the
-diagnostic names the cursor and the missing `for:` clause.
+The `over cursor` form follows whatever the parameter's current
+state is. With a single-partition spec, `q` narrows directly.
+With a multi-partition spec and no enclosing iteration, the
+cursor declaration is a startup error — the diagnostic points at
+the missing `for: "p in cursor.partitions"` iteration. (The
+`.partitions` projection is the *iteration* surface; the `over`
+clause takes the bare parameter name.) A quoted literal spec
+also works for workload-author-pinned narrowing:
+`over "0..53%"`.
 
 A cursor declared without `over` ignores `cursor=...` entirely;
 its extent is whatever its constructor expression evaluates to.
@@ -320,8 +538,8 @@ synthesised by scenario-tree iteration (e.g. `pvs_query` running
 inside `for: "table in vec_{profile}, ..."`), the *base* phase
 name is matched.
 
-The phase-name part may be a **glob** (`*`, `?`, `[abc]` per
-fnmatch):
+The phase-name part follows the [`phase_filter`] dialects
+(bareword / glob / regex — the same matcher `phases=` uses):
 
 ```
 phase42_*.cursor=fib:7         # all phases starting with phase42_
@@ -330,16 +548,34 @@ phase42_*.cursor=fib:7         # all phases starting with phase42_
 
 Resolution precedence (highest wins) at each phase:
 
-1. Phase-explicit glob match from CLI (most specific match wins
-   ties; ambiguous tie is a fatal error at startup).
-2. Workload-wide `cursor=...` from CLI.
-3. Phase's `params: { cursor: "..." }` block.
+1. Phase-scoped CLI override, exact (bareword) phase name.
+2. Phase-scoped CLI override, glob / regex match. Two
+   **distinct** non-literal patterns matching the same phase
+   for the same param is a fatal ambiguity at startup.
+3. Workload-wide `cursor=...` from CLI.
 4. Workload-level `params:` block default for `cursor`.
 5. No spec — cursor uses its declared extent unmodified.
 
+A phase-scoped pattern that matches **no** phase is a startup
+error — a pattern that can never fire is a typo, not a
+preference. An exact-name override naming a param the phase
+doesn't consume warns; a glob doing the same skips silently (a
+glob legitimately spans phases that don't all consume the
+param). Mechanically the override shadows the param on the
+phase's kernel locally, so everything below the phase resolves
+the overridden value through the standard scope chain — any
+param, not just `cursor`.
+
+(The design draft had a phase-level `params: { cursor: ... }`
+block between the CLI and workload levels. That level is
+intentionally dropped: reified custom-named params — below —
+are the one canonical author-side mechanism for per-phase
+defaults, and a second spelling would violate the no-aliases
+rule.)
+
 The user can **reify the operator surface** via a custom param
-name. The workload declares its own param name in `params:`, then
-each phase's `params:` references it:
+name: the workload declares its own params and binds each
+phase's cursor `over` the matching one:
 
 ```yaml
 params:
@@ -348,14 +584,12 @@ params:
 
 phases:
   warmup:
-    params:
-      cursor: "{warmup_cursor}"
-    # ...
+    bindings: |
+      cursor q = range(0, N) over warmup_cursor
 
   steady:
-    params:
-      cursor: "{steady_cursor}"
-    # ...
+    bindings: |
+      cursor q = range(0, N) over steady_cursor
 ```
 
 The operator overrides via `warmup_cursor=0..1%` (the workload's
@@ -376,11 +610,15 @@ A new `over <name>` clause attaches a cursor to a partition
 source. The clause names a wire that resolves through the
 standard scope chain to either:
 
-- An iter-var bound by an enclosing `for:` clause, or
-- A cursor parameter's `<param>.partitions` projection wire
-  (when the cursor is meant to follow the parameter directly
-  without an iteration scaffold — only valid for single-partition
-  specs).
+- An iter-var bound by an enclosing `for:` clause,
+- A cursor parameter, named bare (`over cursor`, `over
+  warmup_cursor`) — the cursor follows the parameter directly
+  without an iteration scaffold; only valid for single-partition
+  specs,
+- Another cursor's `.cursor` projection (`over q1.cursor`) —
+  cross-cursor composition, or
+- A quoted literal spec (`over "0..53%"`) — workload-author-
+  pinned narrowing that no parameter controls.
 
 ```
 cursor q = range(0, query_count(prebuffered)) over p
@@ -442,27 +680,28 @@ won't be partitioned silently.
 #### Single-partition / no-iteration form
 
 When the spec is a single partition and no scenario-level
-iteration is needed, the cursor names the parameter's projection
-wire directly:
+iteration is needed, the cursor names the parameter directly:
 
 ```yaml
 phases:
   ann_query:
     bindings: |
-      cursor q = range(0, query_count(prebuffered)) over cursor.partitions
+      cursor q = range(0, query_count(prebuffered)) over cursor
 ```
 
-`over cursor.partitions` means "follow the workload's `cursor`
-parameter's partition state, whatever it is." If the parameter
-is single-partition (`cursor=0..1%`), `q` narrows directly. A
+`over cursor` means "follow the workload's `cursor` parameter's
+partition state, whatever it is." If the parameter is
+single-partition (`cursor=0..1%`), `q` narrows directly. A
 multi-partition spec without an enclosing `for:` clause is a
 startup error that names the missing iteration and points the
-operator at the `over p` form.
+author at the `for: "p in cursor.partitions"` + `over p` form —
+silently running partition 0 would cover a fraction of the
+requested work.
 
 This is the form a "smoke-test friendly" workload uses — the
 operator can pass `cursor=0..1%` and any cursor declared `over
-cursor.partitions` narrows automatically, without the workload
-needing a `for:` scaffold for a single iteration.
+cursor` narrows automatically, without the workload needing a
+`for:` scaffold for a single iteration.
 
 #### Reified parameter names
 
@@ -544,12 +783,21 @@ For each cursor:
 2. Parse the spec into a partition list of
    `(start_pct, end_pct)` pairs.
 3. Compute absolute ordinals from the cursor's base extent
-   `[base_start, base_end)`:
-   - `start_ord = base_start + floor(start_pct * (base_end - base_start) / 100)`
-   - `end_ord   = base_start + floor(end_pct   * (base_end - base_start) / 100)`
-4. Install the partition list as the value of the
-   `<wire>.cursor.partitions` output (and seed the scalar
-   `.cursor.*` outputs with the partition-0 values).
+   `[base_start, base_end)`. Every boundary is the exact
+   cumulative position, rounded once:
+   - `boundary_i = base_start + round(exact_cumulative_position_i)`
+   - For pure-percentage entries this reduces to
+     `round(cum_pct * (base_end - base_start) / 100)`; literal
+     deltas contribute their exact integer size to the running
+     position. Rounding slack is distributed across the list
+     rather than accumulating per entry.
+   - `*/N` and `subdivide(p, n)` route through one shared
+     splitter (`split_evenly`): `boundary_i = start +
+     round(i * span / n)`, so the spec token and the stdlib
+     node produce identical boundaries.
+4. Install the resolved partition (the `over` result) in the
+   cursor's `<name>__cursor` input slot, where the partition
+   stdlib reads it as the `q.cursor` value.
 
 For cursors with **open extents** (`until_elapsed(...)` and friends),
 percentage-based partitioning has no obvious target. Two options:
@@ -638,22 +886,27 @@ another via standard composition.
 ### Value types
 
 **`PartitionSpec`** — the parsed-but-unresolved form. Carries the
-operator's spec literal as a structured value:
+operator's spec literal as a structured value
+(`polydat::iteration::cursor_partition`):
 
 ```
 PartitionSpec {
-    entries: Vec<PartitionEntry>,
+    chunking: Chunking,                  // what carves the domain
+    window:   Option<(Bound, Bound)>,    // `in start..end`
+    order:    PartitionOrder,            // trailing order keyword
 }
 
-PartitionEntry {
-    idx:        u64,        // 0-based position in the list
-    start:      Bound,      // Pct(f64) | Frac(f64) | Ord(u64)
-    end:        Bound,      // same; `*` resolves to extent at materialisation
-}
+Chunking =
+    SingleRange { start: Bound, end: Bound }      // Form 1
+  | DeltaList   { deltas: Vec<Bound> }            // Forms 2 + 3
+
+Bound = Pct(f64) | Frac(f64) | Ord(u64)           // sized
+      | Star | Fill | StarSplit(u64)              // tail tokens
+      | StarShaped(Vec<f64>)                      // `*/recipe` (normalised weights)
+      | Gap(Box<Bound>)                           // `~<sized>`
+
+PartitionOrder = Unchanged | SmallestFirst | LargestFirst | Random
 ```
-
-`PartitionSpec` is what `<param>.partitions` returns at workload
-scope before any cursor has bound it.
 
 **`Partition`** — a single resolved partition with concrete
 absolute ordinals. Materialised against a known base extent:
@@ -669,30 +922,34 @@ Partition {
 }
 ```
 
-`Partition.cardinality` = `end_ord - start_ord` is a derived
+`Partition.cardinality()` = `end_ord - start_ord` is a derived
 projection, not a stored field.
 
-Both types ride inside the `Value` enum the same way `Str` or
-`VecF32` already do (per the [[GK Types Are Flexible]] rule).
-`Vec<Partition>` is the natural list shape for the resolved
-partition list of a cursor.
+**`PartitionList`** — an `Arc`-backed `Vec<Partition>` carried as
+one value, so a whole resolved list can flow on a single wire
+(this is what `partitions(...)` and `<param>.partitions`
+produce, and what a `for:` clause unpacks partition-by-
+partition).
+
+All three ride inside the `Value` enum as `Value::Ext` reflected
+values (per the [[GK Types Are Flexible]] rule) — no dedicated
+enum variants, no sweeping `Value`-match changes.
 
 ### Where each type appears
 
 | Wire / expression                  | Value type                       |
 |------------------------------------|----------------------------------|
-| `<param>.partitions`               | `PartitionSpec`                  |
-| `<param>.partitions[i]`            | `PartitionEntry` (sub-projection)|
-| Iter-var `p` in `for: "p in <param>.partitions"` | `PartitionEntry`   |
+| `<param>.partitions` / `partitions(spec[, extent])` | `PartitionList` |
+| Iter-var `p` in `for: "p in <param>.partitions"` | `Partition` (one per iteration) |
 | `q.cursor` (a cursor wire's partition projection) | `Partition`       |
-| `q.cursor.partitions`              | `Vec<Partition>` resolved against `q`'s extent |
-| `q.cursor.idx` / `.start_ord` / …  | scalar projections of `q.cursor` |
+| `subdivide(p, n)`                  | `PartitionList`                  |
 
-The distinction is concrete: `PartitionEntry` is a description that
-hasn't been pinned to an extent; `Partition` is a fully resolved
-range. The runtime promotes `PartitionEntry → Partition` at cursor
-materialisation time when the cursor names a partition via `over`
-— the cursor's base extent is the resolution context.
+A `Partition` resolved against one extent and consumed by a
+cursor of another extent (e.g. `partitions("linear:3", 100)`
+narrowing a 1000-ordinal cursor) is **re-projected** from its
+percentage bounds against the consuming cursor's extent at
+materialisation time — the cursor's base extent is always the
+resolution context for its own narrowing.
 
 ### Functions that consume partitions
 
@@ -706,12 +963,24 @@ P3 JIT eligibility rules as the rest of the stdlib.
 | `start_of(p)`                  | `Partition → u64`                               | `p.start_ord`. |
 | `end_of(p)`                    | `Partition → u64`                               | `p.end_ord` (exclusive). |
 | `idx_of(p)`                    | `Partition → u64`                               | `p.idx`. |
+| `count_of(p)`                  | `Partition → u64`                               | `p.count` — total partitions in the list `p` was resolved as part of; 1 for single-partition specs. Function form of `partition_count`. |
 | `mod_in(n, p)`                 | `u64, Partition → u64`                          | `p.start_ord + (n mod cardinality(p))`. Maps an arbitrary integer into the partition's range, wrapping. |
 | `at(p, i)`                     | `Partition, u64 → u64`                          | `p.start_ord + i`. Errors at evaluation if `i ≥ cardinality(p)`. |
 | `clamp_in(n, p)`               | `u64, Partition → u64`                          | `max(p.start_ord, min(n, p.end_ord - 1))`. Saturating projection rather than modulo. |
-| `random_in(p, seed)`           | `Partition, u64 → u64`                          | `p.start_ord + hash(seed) mod cardinality(p)`. Deterministic per seed. |
-| `subdivide(p, n)`              | `Partition, u64 → Vec<Partition>`               | Splits `p` into `n` equal sub-partitions. Indices restart at 0; `base_extent` propagates. |
-| `resolve(spec, extent)`        | `PartitionSpec, u64 → Vec<Partition>`           | Promotes a raw spec to a list of resolved partitions against an explicit extent. Useful when the workload wants to use a spec without binding it to a cursor first. |
+| `random_in(p, seed)`           | `Partition, u64 → u64`                          | `p.start_ord + hash(seed) mod cardinality(p)`. Deterministic per seed (xxHash3, same entropy source as `hash`). |
+| `subdivide(p, n)`              | `Partition, u64 → PartitionList`                | Splits `p` into `n` near-equal sub-partitions (sizes differ by ≤ 1 ordinal; boundary math identical to the `*/N` tail token). Indices restart at 0 with `count = n`; `base_extent` propagates; pct fields interpolate the parent's span. Errors when `n` is 0 or exceeds `cardinality(p)`. Also usable directly as a comprehension source (`for: "inner in subdivide(outer, n)"`). |
+| `partitions(spec[, extent])`   | `Str[, u64] → PartitionList`                    | Parses a spec string and resolves it against `[0, extent)` (extent defaults to 100, so pure-percentage specs resolve in `[0, 100)` directly). The canonical "use a spec without binding it to a cursor first" entry — this is what `for:` clauses iterate. |
+
+(The design draft had a `resolve(spec, extent)` function;
+`partitions(spec[, extent])` is its shipped name — one node does
+parse + resolve.)
+
+**Naming note:** `subdivide` takes a *partition* and returns
+sub-partitions. The numeric comprehension generator yielding
+evenly spaced *values* over an interval is `linear_starts(start,
+end, n)` (half-open; `linear_steps` is the inclusive fence-post
+sibling) — see SRD 18c. The two were renamed apart so neither
+collides.
 
 Cursor constructors (`range`, `until_elapsed`, `until_passes`,
 `until_count`, and the composites) also accept partition-typed
@@ -721,56 +990,46 @@ partition into the constructor.
 
 ### `until_elapsed` over a computed partition
 
-With a `Partition` flowing into `until_elapsed`, the policy has a
-hard upper bound (the partition's cardinality) alongside its
-time bound (`min_ms`). The reservation loop walks within
-`[p.start_ord, p.end_ord)`; the extension policy projects
-remaining cycles from the observed rate the same way it does
-today, but capped at `cardinality(p)` so the cursor terminates
-the moment either the time or the partition is exhausted.
+With a `Partition` flowing into an `until_*` cursor, the policy
+gains a hard upper bound (the partition's end ordinal) alongside
+its time / pass / count bound. The reservation walks base-sized
+chunks within `[p.start_ord, p.end_ord)`; the extension policy
+makes its usual decisions, but growth clamps at the partition
+end — the cursor terminates the moment either the policy target
+or the partition is exhausted, whichever comes first. The
+declared `base` keeps its meaning (pass counting stays
+base-relative); a base larger than the partition clamps to it.
 
 ```yaml
-params:
-  cursor: "2%,10%,*%"
-
 scenarios:
   sweep:
-    - for: "p in cursor.partitions"
+    - for: "p in partitions(\"2%,10%,*\", 100000)"
       phases:
         - timed_per_partition
 
 phases:
   timed_per_partition:
     bindings: |
-      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
-      # Resolve `p` against the dataset's vector count first; the
-      # resulting `Partition` is what `until_elapsed` consumes.
-      part := resolve(p, vector_count(prebuffered))[0]
-      cursor q = until_elapsed(100, 10000) over part
-      query_vector := query_vector_at(prebuffered, q)
+      cursor q = until_elapsed(100, 10000) over p
+      row := q
 ```
 
-For each of the three iterations, `q` reserves up to one
-`vector_count`-fraction of ordinals from `prebuffered`,
-terminating when either 10 seconds elapses or the partition is
-fully consumed. The rate-projection math from
-[`UntilElapsedPolicy`](../../polydat/src/source.rs) gets
-the partition's cardinality as a natural ceiling — it converges
-geometrically on the time target but doesn't overshoot the
-partition.
+For each of the three iterations, `q` reserves 100-ordinal
+chunks inside the active partition, terminating when either
+10 seconds elapse or the partition is fully consumed — small
+partitions finish early (no wrap-around, no idling), oversized
+ones stop on time. The runnable showcase is
+`examples/workloads/timeboxed_partition_sweep.yaml`.
 
-A shorter sugar form, when the cursor's base extent is the
-natural resolution target:
-
-```
-cursor q = until_elapsed(100, 10000) over p
-```
-
-Here the `over p` lowering resolves `p` against `until_elapsed`'s
-declared base or against a phase-level "extent" wire if one is
-declared. If the cursor has no natural extent (no `range` portion
-to draw from), the spec must be in literal-ordinal form or routed
-through `resolve(...)` first.
+**No extent, no spec strings.** An open-extent cursor's declared
+size is just its per-pass base chunk — there is nothing to
+resolve a percentage *spec* against. `until_elapsed(...) over
+cursor` (or any spec-string source) is therefore a startup
+error with guidance: resolve the spec against an explicit
+reference extent first (`for: "p in partitions(<spec>,
+<extent>)"`) and bind `over p`. Already-resolved `Partition`
+values pass through with their absolute ordinals intact — no
+proportional reprojection onto the base chunk.
 
 ### Modulo and other index-arithmetic compositions
 
@@ -796,9 +1055,14 @@ is meant to consume each ordinal exactly once and the workload
 wants a hard error rather than wrap-around.
 
 `subdivide(p, n)` lets the workload create nested partitions
-without re-parsing a spec. A coarse-grained outer iteration
-followed by a fine-grained inner iteration of each outer
-partition:
+without re-parsing a spec — a bindings-context node
+(`subs := subdivide(p, 4)`) AND a comprehension source,
+boundary-identical to the `*/N` spec token in both roles. For
+the common flat case, prefer the spec form: `cursor=90%,*/10`
+already says "head plus remainder in ten" without any binding
+plumbing. The nested form shines when the outer iteration is
+itself meaningful (per-slice setup phases around a fine inner
+sweep):
 
 ```yaml
 scenarios:
@@ -810,10 +1074,11 @@ scenarios:
             - ann_query
 ```
 
-`outer` is a `PartitionEntry`; `subdivide` is overloaded to
-accept either a `Partition` or a `PartitionEntry` (the latter
-needs an extent — falls back to the consuming cursor's extent,
-same as `over`).
+The inner clause resolves `outer` through the kernel's scope
+chain (a kernel-aware comprehension source, like the set ops) —
+sub-partition indices restart at 0 with `count = n`, and the
+clause errors loudly when the name doesn't resolve to a
+`Partition` or the split would produce an empty sub-partition.
 
 ### Composing partitions across cursors
 
@@ -842,7 +1107,7 @@ within it.
 
 ### Smoke test against first 1% of vectors
 
-Workload declares its cursors with `over cursor.partitions` so
+Workload declares its cursors with `over cursor` so
 they follow the operator-set parameter without needing a
 scenario-level iteration:
 
@@ -850,11 +1115,11 @@ scenario-level iteration:
 phases:
   rampup:
     bindings: |
-      cursor row = range(0, vector_count(prebuffered)) over cursor.partitions
+      cursor row = range(0, vector_count(prebuffered)) over cursor
       # ...
   ann_query:
     bindings: |
-      cursor q = range(0, query_count(prebuffered)) over cursor.partitions
+      cursor q = range(0, query_count(prebuffered)) over cursor
       # ...
 ```
 
@@ -864,7 +1129,7 @@ Operator runs:
 nbrs run workload=full_cql_vector.yaml scenario=test_oracles cursor=0..1%
 ```
 
-Each cursor declared `over cursor.partitions` narrows to the
+Each cursor declared `over cursor` narrows to the
 first 1% of its base extent. Cursors not declared `over` anything
 keep their full extent. Phases without cursors (`schema`,
 `teardown`, `jolokia_*`) run unchanged.
@@ -923,17 +1188,17 @@ params:
 phases:
   warmup:
     bindings: |
-      cursor q = range(0, query_count(prebuffered)) over warmup_cursor.partitions
+      cursor q = range(0, query_count(prebuffered)) over warmup_cursor
       # ...
 
   steady:
     bindings: |
-      cursor q = range(0, query_count(prebuffered)) over steady_cursor.partitions
+      cursor q = range(0, query_count(prebuffered)) over steady_cursor
       # ...
 ```
 
 The operator overrides via `warmup_cursor=0..1%` — and the
-phase's cursor (named `over warmup_cursor.partitions`) follows
+phase's cursor (named `over warmup_cursor`) follows
 that parameter without needing a `for:` scaffold. Both phases
 are independently controlled because their cursors name distinct
 parameters.
@@ -950,28 +1215,43 @@ Every phase whose name ends in `_query` (e.g. `ann_query`,
 
 ## Phased delivery
 
-**P1 — Foundation.** CLI quote elision + cursor partition spec
+**P1 — Foundation. (SHIPPED)** CLI quote elision + cursor partition spec
 parser + `cursor` workload param + explicit `over <name>` clause
 on cursor declarations. Single-partition specs only;
 multi-partition is a parse-error pending P2. Phase-level
 `params: { cursor: ... }` plumbing. No glob support.
 
-**P2 — Partition iteration and type system.** Multi-partition
-specs accepted. `Partition` and `PartitionSpec` Polydat value types
-added; `<param>.partitions` projection wire exposed at workload
-scope. `for: "p in <param>.partitions"` comprehension form;
-phase-local cursors bind via `over p`. `<wire>.cursor.*`
-projections on cursor wires expose the resolved `Partition`.
-Stdlib partition functions: `cardinality`, `start_of`, `end_of`,
-`idx_of`, `mod_in`, `at`, `clamp_in`, `random_in`, `subdivide`,
-`resolve`. Pre-baked recipes (`linear`, `ratios`, `mul`, `bin`,
-`fib`, `ln`). `until_elapsed` / `until_passes` / `until_count`
-accept a `Partition` as the bound and converge within it.
+**P2 — Partition iteration and type system. (SHIPPED, two
+exceptions)** Multi-partition specs accepted, including the tail
+tokens `*` / `...` / `*/N` / `*/recipe`, the `xN` / `~` entry
+modifiers, `in` windows, and the trailing order keyword.
+`Partition`, `PartitionSpec`, and `PartitionList` Polydat value
+types added; `<param>.partitions` projection and the
+`partitions(spec[, extent])` node exposed as comprehension
+sources. `for: "p in <param>.partitions"`
+comprehension form; phase-local cursors bind via `over p`, with
+direct multi-partition consumption a startup error. The resolved
+`Partition` rides the cursor's `<name>__cursor` slot for the
+partition stdlib. Stdlib partition functions: `cardinality`,
+`start_of`, `end_of`, `idx_of`, `mod_in`, `at`, `clamp_in`,
+`random_in`, `subdivide`, `partitions`. All eleven pre-baked
+recipes. The scalar dotted `<wire>.cursor.*` projections ship as typed
+slots the dotted form flattens onto, and the `until_*` family
+accepts a `Partition` bound (partition end = hard cap on
+growth; spec strings rejected for open-extent cursors).
 
-**P3 — Operator-surface conveniences.** Phase-scoped CLI overrides
-(`phase.cursor=...`). Glob matching for phase scoping. Remaining
-pre-baked recipes (`geom`, `zipf`, `pareto`, `front_heavy`,
-`back_heavy`).
+**P3 — Operator-surface conveniences. (SHIPPED)** Phase-scoped
+CLI overrides (`phase.cursor=...`) with glob matching
+(`*_query.cursor=...`): exact name beats glob, two distinct
+globs matching the same phase for the same param is fatal, a
+pattern matching no phase is a startup error. Overrides shadow
+the param on the phase's kernel locally, so the standard scope
+chain serves the overridden value to everything below. The
+SRD's draft precedence chain had a phase-level
+`params: { cursor: ... }` block between the CLI and workload
+levels; that level is intentionally dropped — reified
+custom-named params are the one canonical author-side mechanism
+for per-phase defaults.
 
 ### Status / report integration
 
@@ -983,18 +1263,22 @@ partition <idx>/<count> [<start>..<end>)
 ```
 
 Where `<idx>` is 1-based for display, `<count>` is the total
-partition count, and `[<start>..<end>)` is the condensed effective
-range. The range uses ordinal form when the spec was literal /
-mixed-literal, percentage form when the spec was pure-percentage
-or pure-fraction. Examples:
+partition count, and `[<start>..<end>)` is the condensed
+effective range in **ordinal form** — the one representation
+that is always concrete post-resolution (tracking each spec's
+original number form through resolution would buy a cosmetic
+alternate rendering at the cost of spec-origin plumbing).
+Example:
 
 ```
-partition 3/7 [12000..18000)
-partition 3/7 [12%..18%)
+phase 'ann_query': partition 3/7 [12000..18000)
 ```
 
-For phases that run without an iteration (single-partition spec
-or no spec at all), the banner is suppressed.
+The banner is emitted once per partition-narrowed cursor at
+phase activation, through the canonical observer channel
+(session.log + stderr + sink). For phases that run without an
+iteration (single-partition spec, no spec, no narrowing), the
+banner is suppressed — `count <= 1` stays silent.
 
 Metric labels can carry the same projection via the cursor wire's
 `q.cursor.idx` / `q.cursor.start_ordinal` / `.end_ordinal` /
@@ -1016,28 +1300,35 @@ No new surface — the `where` clause already works against
 arbitrary list-valued comprehension sources; partition lists slot
 in naturally.
 
-## Open questions
+## Resolved questions
 
 - **Percentage specs against cursors with no natural extent.**
-  When `until_elapsed(base, min_ms)` is declared `over <p>` and
-  `p` is a `PartitionEntry` in pct/fraction form, there's no
-  obvious extent to resolve `p` against (the cursor itself has
-  no closed extent until the policy terminates). The workload
-  author has two recourses: (a) use literal-ordinal form in the
-  spec, or (b) route through `resolve(p, N)` against an
-  explicit reference extent (typically a dataset count). Open
-  question: should the runtime auto-resolve against a single
-  declared phase-level "reference extent" wire if one exists,
-  to spare authors the `resolve(...)` call? Proposed: no — the
-  explicit `resolve` keeps the dependency visible at the
+  RESOLVED as proposed: spec-shaped sources (strings, raw
+  `PartitionSpec` values) on an open-extent cursor are a
+  startup error with guidance — there is no extent to resolve
+  them against, and resolving against the per-pass base chunk
+  silently produced absurd narrowings. The author routes
+  through `partitions(spec, N)` against an explicit reference
+  extent and binds `over p`; already-resolved `Partition`
+  values pass through with absolute ordinals intact. No
+  auto-resolution against an ambient "reference extent" wire —
+  the explicit form keeps the dependency visible at the
   declaration site.
 
 ## Non-goals
 
-- **Non-contiguous partition lists.** Operators can chain workload
-  invocations for `0..10% then 60..70%`. The contiguous restriction
-  keeps the source-factory machinery simple (one `[start, end)`
-  range per partition iteration step).
+- **Non-contiguous *partitions*.** Each partition is one
+  `[start, end)` range — that's what keeps the source-factory
+  machinery simple (one contiguous reservation per iteration
+  step). The *emitted set* may skip ranges via gap entries
+  (`10%,~80%,10%` covers `0..10%` and `90..100%` in one spec),
+  which is the principled relaxation of the original "chain two
+  invocations" workaround: the walk stays ordered and each
+  emitted partition stays contiguous.
+- **Group repetition.** `(10%,~10%),...` — repeating a
+  *pattern* of entries (strided sampling) — is not in the
+  grammar. The fill token repeats exactly one sized delta, and
+  `...` after a gap is rejected rather than guessed at.
 - **Mid-activation partition resampling.** Partitions are
   effectively-const for the lifetime of one scope activation. The
   partition list itself never changes inside a single phase run.

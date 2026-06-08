@@ -1604,7 +1604,7 @@ mod tests {
         let mut phases = HashMap::new();
         phases.insert("p".into(), WorkloadPhase {
             cycles: None, concurrency: None, rate: None,
-            adapter: None, errors: None, tags: None,
+            adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
             ops: vec![
                 ParsedOp::simple("alpha", "noop"),
                 ParsedOp::simple("beta", "noop"),
@@ -1637,7 +1637,7 @@ mod tests {
         let mut phases = HashMap::new();
         phases.insert("p".into(), WorkloadPhase {
             cycles: None, concurrency: None, rate: None,
-            adapter: None, errors: None, tags: None,
+            adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
             ops: vec![ParsedOp::simple("only", "noop")],
             for_each: None, loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
@@ -1659,7 +1659,7 @@ mod tests {
         let mut phases = HashMap::new();
         phases.insert("p".into(), WorkloadPhase {
             cycles: None, concurrency: None, rate: None,
-            adapter: None, errors: None, tags: None,
+            adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
             ops: vec![ParsedOp::simple("foo", "noop")],
             for_each: None, loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),

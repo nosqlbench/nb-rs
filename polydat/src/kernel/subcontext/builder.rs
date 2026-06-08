@@ -765,7 +765,8 @@ fn collect_expr_idents(expr: &Expr, out: &mut std::collections::HashSet<String>)
             collect_expr_idents(a, out);
             collect_expr_idents(b, out);
         }
-        Expr::UnaryNeg(e, _) | Expr::UnaryBitNot(e, _) => collect_expr_idents(e, out),
+        Expr::UnaryNeg(e, _) | Expr::UnaryBitNot(e, _)
+        | Expr::Cast(e, _, _) => collect_expr_idents(e, out),
         Expr::FieldAccess { source, .. } => {
             // Source-field projections reference a source name,
             // not a wire — but the magic-extern set is a closed

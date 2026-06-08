@@ -771,8 +771,12 @@ pub struct AdapterRegistration {
     /// Extra param names this adapter accepts (for CLI validation).
     pub known_params: fn() -> &'static [&'static str],
     /// Display preference for TUI activation. Checked at startup before
-    /// any adapter is constructed — no connection overhead.
-    pub display_preference: fn() -> DisplayPreference,
+    /// any adapter is constructed — no connection overhead. Takes the
+    /// run params so an adapter whose terminal use depends on config can
+    /// decide (e.g. `stdout` wants the TUI off when it writes op output
+    /// to the console, but is TUI-compatible when `filename=` redirects
+    /// to a file).
+    pub display_preference: fn(&std::collections::HashMap<String, String>) -> DisplayPreference,
     /// Async factory: given params, create the adapter.
     /// Returns a boxed future so async connect is supported (e.g., CQL).
     pub create: fn(std::collections::HashMap<String, String>)
@@ -804,9 +808,12 @@ pub fn registered_driver_names() -> Vec<&'static str> {
 ///
 /// Returns `Auto` if the driver is not registered (unknown adapters are
 /// assumed TUI-compatible; construction will fail later with a clear error).
-pub fn adapter_display_preference(driver: &str) -> DisplayPreference {
+pub fn adapter_display_preference(
+    driver: &str,
+    params: &std::collections::HashMap<String, String>,
+) -> DisplayPreference {
     find_adapter_registration(driver)
-        .map(|reg| (reg.display_preference)())
+        .map(|reg| (reg.display_preference)(params))
         .unwrap_or(DisplayPreference::Auto)
 }
 

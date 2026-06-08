@@ -155,6 +155,12 @@ fn evaluate_spec_internal(
     if let Some(values) = try_eval_sequencer(&interpolated, kernel)? {
         return Ok(values);
     }
+    // SRD 71: kernel-aware partition sources — `subdivide(outer,
+    // n)` where `outer` is a partition iter-var bound by an
+    // enclosing `for:` clause.
+    if let Some(values) = try_eval_partition_call(&interpolated, kernel)? {
+        return Ok(values);
+    }
     match crate::dsl::compile::eval_const_expr(&interpolated) {
         // SRD-18f relaxed source resolution: a resolved value is
         // peeled one level if it has an iteration interior
@@ -413,6 +419,14 @@ pub fn pre_evaluate_clause(
         return Ok(values);
     }
     if let Some(values) = try_eval_sequencer(&interpolated, parent_kernel)? {
+        return Ok(values);
+    }
+    // SRD 71: kernel-aware partition sources, same as the
+    // runtime path. At pre-evaluation the outer iter-var may
+    // not be installed yet; `try_eval_partition_call` returns a
+    // single placeholder partition in that case so iter-var
+    // type detection still lands on `ext`.
+    if let Some(values) = try_eval_partition_call(&interpolated, parent_kernel)? {
         return Ok(values);
     }
     let value_str = match crate::dsl::compile::eval_const_expr(&interpolated) {
@@ -940,25 +954,25 @@ fn try_eval_generator(text: &str) -> Result<Option<Vec<Value>>, String> {
             let max    = parse_num_arg(arg_list[2], "geometric_until.max")?;
             Ok(Some(generate_geometric_until(start, factor, max)))
         }
-        "subdivide" => {
+        "linear_starts" => {
             if arg_list.len() != 3 {
-                return Err(format!("subdivide(start, end, n): expected 3 args, got {}",
+                return Err(format!("linear_starts(start, end, n): expected 3 args, got {}",
                     arg_list.len()));
             }
-            let start = parse_num_arg(arg_list[0], "subdivide.start")?;
-            let end   = parse_num_arg(arg_list[1], "subdivide.end")?;
-            let n     = parse_u64_arg(arg_list[2], "subdivide.n")?;
-            Ok(Some(generate_subdivide(start, end, n, false)))
+            let start = parse_num_arg(arg_list[0], "linear_starts.start")?;
+            let end   = parse_num_arg(arg_list[1], "linear_starts.end")?;
+            let n     = parse_u64_arg(arg_list[2], "linear_starts.n")?;
+            Ok(Some(generate_linear_points(start, end, n, false)))
         }
-        "subdivide_inclusive" | "linear_steps" => {
+        "linear_steps" => {
             if arg_list.len() != 3 {
-                return Err(format!("{name}(start, end, n): expected 3 args, got {}",
+                return Err(format!("linear_steps(start, end, n): expected 3 args, got {}",
                     arg_list.len()));
             }
-            let start = parse_num_arg(arg_list[0], &format!("{name}.start"))?;
-            let end   = parse_num_arg(arg_list[1], &format!("{name}.end"))?;
-            let n     = parse_u64_arg(arg_list[2], &format!("{name}.n"))?;
-            Ok(Some(generate_subdivide(start, end, n, true)))
+            let start = parse_num_arg(arg_list[0], "linear_steps.start")?;
+            let end   = parse_num_arg(arg_list[1], "linear_steps.end")?;
+            let n     = parse_u64_arg(arg_list[2], "linear_steps.n")?;
+            Ok(Some(generate_linear_points(start, end, n, true)))
         }
         "log_steps" => {
             if arg_list.len() != 3 {
@@ -1066,10 +1080,82 @@ fn generate_binomial(n: u64) -> Vec<Value> {
     out
 }
 
-/// Half-open subdivision of `[start, end)` into `n` parts
-/// (n elements). Inclusive form (`subdivide_inclusive`)
-/// covers `[start, end]` with `n` elements.
-fn generate_subdivide(start: f64, end: f64, n: u64, inclusive: bool) -> Vec<Value> {
+/// SRD 71: kernel-aware partition comprehension sources.
+///
+/// `subdivide(<ident>, n)` — resolve `<ident>` through the
+/// kernel's scope chain to a `Partition` (typically an iter-var
+/// bound by an enclosing `for:` clause) and split it into `n`
+/// sub-partitions, same boundary math as the `subdivide(p, n)`
+/// stdlib node and the `*/N` spec token:
+///
+/// ```yaml
+/// - for: "outer in partitions(\"50%,*\", 1000)"
+///   phases:
+///     - for: "inner in subdivide(outer, 5)"
+///       phases: [walk]
+/// ```
+///
+/// When the ident does not resolve (synthesis-time
+/// pre-evaluation probes the clause before the outer iteration
+/// installs its value), a single placeholder partition is
+/// returned so iter-var type detection still classifies the
+/// variable as `ext`. At runtime dispatch the value is always
+/// installed; a still-unresolved ident there falls out as an
+/// unresolved-clause error downstream, never a silent empty
+/// iteration.
+fn try_eval_partition_call(
+    text: &str,
+    kernel: &PolydatKernel,
+) -> Result<Option<Vec<Value>>, String> {
+    let Some((name, args)) = parse_func_call(text) else {
+        return Ok(None);
+    };
+    if name != "subdivide" {
+        return Ok(None);
+    }
+    let arg_list = split_args_top_level(args);
+    if arg_list.len() != 2 {
+        return Err(format!(
+            "subdivide(p, n): expected 2 arguments (a partition and a count), got {}",
+            arg_list.len()
+        ));
+    }
+    let src = arg_list[0].trim();
+    let n = parse_u64_arg(arg_list[1], "subdivide.n")?;
+    let Some(value) = kernel.lookup(src) else {
+        // Pre-evaluation probe: the outer iter-var isn't
+        // installed yet. Return one placeholder so the clause's
+        // iter-var type-detects as `ext`; real values arrive at
+        // runtime dispatch.
+        let placeholder = crate::iteration::cursor_partition::Partition {
+            idx: 0, count: 1, start_ord: 0, end_ord: 1,
+            start_pct: 0.0, end_pct: 100.0, base_extent: 1,
+        };
+        return Ok(Some(vec![Value::from_partition(placeholder)]));
+    };
+    let Some(p) = value.as_partition().copied() else {
+        return Err(format!(
+            "subdivide({src}, {n}): `{src}` resolved to {} — expected a \
+             Partition value (an iter-var from `for: \"p in partitions(...)\"` \
+             or a cursor's `.cursor` projection)",
+            value.to_display_string(),
+        ));
+    };
+    let subs = crate::iteration::cursor_partition::subdivide_partition(&p, n)?;
+    Ok(Some(subs.into_iter().map(Value::from_partition).collect()))
+}
+
+/// Evenly spaced numeric points over `[start, end]`.
+///
+/// Half-open form (`linear_starts`): the start of each of `n`
+/// equal subdivisions of `[start, end)` — `end` is never
+/// emitted. Inclusive form (`linear_steps`): `n` fence-post
+/// points covering `[start, end]`, both ends emitted.
+///
+/// These yield *values*, not partitions; splitting a
+/// `Partition` into sub-partitions is `subdivide(p, n)` in the
+/// partition stdlib (SRD 71).
+fn generate_linear_points(start: f64, end: f64, n: u64, inclusive: bool) -> Vec<Value> {
     if n == 0 { return Vec::new(); }
     let denom = if inclusive { (n.saturating_sub(1)).max(1) as f64 } else { n as f64 };
     let step = (end - start) / denom;
@@ -2021,7 +2107,7 @@ mod tests {
         // PortType::Ext and downstream `over <iter-var>` clauses
         // see the right shape.
         let p = crate::iteration::cursor_partition::Partition {
-            idx: 0, start_ord: 0, end_ord: 10,
+            idx: 0, count: 1, start_ord: 0, end_ord: 10,
             start_pct: 0.0, end_pct: 100.0, base_extent: 10,
         };
         let v = Value::from_partition(p);
@@ -2218,8 +2304,8 @@ mod tests {
     }
 
     #[test]
-    fn subdivide_half_open_5_points() {
-        let v = evaluate_spec("subdivide(0, 100, 5)", &empty_kernel()).unwrap();
+    fn linear_starts_half_open_5_points() {
+        let v = evaluate_spec("linear_starts(0, 100, 5)", &empty_kernel()).unwrap();
         // (100-0)/5 = 20 step. 0, 20, 40, 60, 80.
         if let [Value::F64(a), Value::F64(b), Value::F64(c), Value::F64(d), Value::F64(e)] = v.as_slice() {
             assert!((a - 0.0).abs() < 1e-12);
@@ -2231,8 +2317,8 @@ mod tests {
     }
 
     #[test]
-    fn subdivide_inclusive_5_points() {
-        let v = evaluate_spec("subdivide_inclusive(0, 100, 5)", &empty_kernel()).unwrap();
+    fn linear_steps_inclusive_5_points() {
+        let v = evaluate_spec("linear_steps(0, 100, 5)", &empty_kernel()).unwrap();
         // 0, 25, 50, 75, 100
         if let [Value::F64(a), Value::F64(b), Value::F64(c), Value::F64(d), Value::F64(e)] = v.as_slice() {
             assert!((a - 0.0).abs() < 1e-12);

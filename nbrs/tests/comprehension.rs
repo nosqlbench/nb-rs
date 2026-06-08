@@ -292,9 +292,9 @@ fn comprehension_gen_geometric() {
 }
 
 #[test]
-fn comprehension_gen_subdivide() {
-    // subdivide(0.0, 1.0, 5) → 0.0, 0.2, 0.4, 0.6, 0.8 (half-open).
-    let (stdout, stderr, ok) = run_scenario("gen_subdivide");
+fn comprehension_gen_linear_starts() {
+    // linear_starts(0.0, 1.0, 5) → 0.0, 0.2, 0.4, 0.6, 0.8 (half-open).
+    let (stdout, stderr, ok) = run_scenario("gen_linear_starts");
     assert!(ok, "scenario failed: {stderr}");
     let lines = lines_with_prefix(&stdout, "cmp/n ");
     assert_eq!(lines.len(), 5);

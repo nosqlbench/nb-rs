@@ -1052,36 +1052,21 @@ pub(crate) fn resolve_items(
         // declared workload param at session start
         // (`runner.rs:774`); here we read them back for the
         // expansion. Same substitution as the YAML path.
+        // Latest execution's params + report defs (per-execution
+        // metadata), with legacy session_metadata fallback.
         let mut params: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        if let Ok(mut pstmt) = conn.prepare(
-            "SELECT key, value FROM session_metadata WHERE key LIKE 'param.%'"
-        ) {
-            if let Ok(prows) = pstmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            }) {
-                for row in prows.flatten() {
-                    if let Some(name) = row.0.strip_prefix("param.") {
-                        params.insert(name.to_string(), row.1);
-                    }
-                }
+        for (k, v) in
+            nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(&conn, "param.%")
+        {
+            if let Some(name) = k.strip_prefix("param.") {
+                params.insert(name.to_string(), v);
             }
         }
-        let mut stmt = match conn.prepare(
-            "SELECT key, value FROM session_metadata \
-             WHERE key LIKE 'report.%' ORDER BY rowid"
-        ) {
-            Ok(s) => s,
-            Err(_) => return Ok(Vec::new()),
-        };
-        let rows = match stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        }) {
-            Ok(it) => it,
-            Err(_) => return Ok(Vec::new()),
-        };
+        let rows =
+            nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(&conn, "report.%");
         let mut out: Vec<ResolvedItem> = Vec::new();
         let default_style = nbrs_workload::report::Style::default();
-        for row in rows.flatten() {
+        for row in rows {
             // The db value is one item's persisted form (header
             // line + indented directives, per
             // `ReportItem::to_yaml_directive_string`). Delegate
@@ -1960,16 +1945,12 @@ fn discover_faceted_tuples(
         query_start_ms: Some(min_ts),
         query_end_ms: Some(max_ts),
     };
-    let mut parsed = nbrs_metricsql::parse(expr)
+    let parsed = nbrs_metricsql::parse(expr)
         .map_err(|e| format!("parse '{expr}': {e}"))?;
-    // SRD-77 — inject `exec_id="<latest>"` so facet discovery
-    // sees only the current execution's labels by default.
-    let session_dir = db_path.parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_default();
-    let resolved_exec_id = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
-        .specific_id();
-    nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut parsed, resolved_exec_id);
+    // SRD-77 — facet discovery coalesces across executions
+    // (per-instance-latest, the DataSource default), so a refined
+    // session's companion tables break down by every facet, not just
+    // the newest execution's.
     let series = evaluate(&ctx, &parsed)
         .map_err(|e| format!("evaluate '{expr}': {e}"))?;
     let mut seen: BTreeSet<Vec<String>> = BTreeSet::new();

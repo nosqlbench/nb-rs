@@ -257,6 +257,11 @@ impl SchedulerHandle {
         let cadence_reporter_for_stop = self.cadence_reporter.clone();
 
         let (frame_tx, frame_rx) = std::sync::mpsc::channel::<MetricSet>();
+        // Stop signal: lets the scheduler thread wake immediately out
+        // of its inter-tick wait instead of blocking shutdown for up to
+        // one full base interval (a 1s default → a visible end-of-run
+        // pause). `StopHandle::stop`/`drop` send `()` before joining.
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
 
         *running.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
@@ -285,7 +290,14 @@ impl SchedulerHandle {
 
                 let now = Instant::now();
                 if now < next_tick {
-                    thread::sleep(next_tick - now);
+                    // Interruptible wait: wake immediately when stop is
+                    // signalled, otherwise time out at the next tick. A
+                    // bare `thread::sleep` here blocked shutdown for up
+                    // to one full base interval.
+                    match stop_rx.recv_timeout(next_tick - now) {
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    }
                 }
                 next_tick += interval;
 
@@ -415,6 +427,7 @@ impl SchedulerHandle {
             root: root_for_stop,
             thread: Some(handle),
             frame_tx,
+            stop_tx,
         }
     }
 }
@@ -439,12 +452,16 @@ pub struct StopHandle {
     /// here instead of writing to reporters inline. The scheduler
     /// thread drains this channel on each tick.
     frame_tx: std::sync::mpsc::Sender<MetricSet>,
+    /// Wakes the scheduler thread out of its inter-tick wait so
+    /// shutdown joins promptly instead of waiting out a base interval.
+    stop_tx: std::sync::mpsc::Sender<()>,
 }
 
 impl StopHandle {
     /// Stop the scheduler and join the capture thread.
     pub fn stop(&mut self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        let _ = self.stop_tx.send(()); // wake the inter-tick wait
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
         }
@@ -470,6 +487,7 @@ impl StopHandle {
 impl Drop for StopHandle {
     fn drop(&mut self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        let _ = self.stop_tx.send(()); // wake the inter-tick wait
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
         }

@@ -297,3 +297,24 @@ Java nosqlbench had `Space` for many-to-many client/server
 topology testing. Dropped in nb-rs. Rust native drivers handle
 connection pooling internally. The adapter owns one driver
 instance; fibers share it via `Arc<dyn DriverAdapter>`.
+
+---
+
+## Display Preference
+
+Each adapter declares a `DisplayPreference` (registration-level,
+checked before construction, **params-aware**):
+
+| Value | Meaning |
+|-------|---------|
+| `Auto` | TUI-compatible — the dashboard may run alongside (most adapters) |
+| `Off`  | The adapter writes its own output to the console; the dashboard must not run, or it would overwrite that output |
+
+The stdout adapter is `Off` when writing to the **console** (default /
+`filename=stdout`) and `Auto` when `filename=` redirects to a **file**
+(the console is then free). The plotter is always `Off`. When the
+resolved adapter is `Off`, the run collapses to `tui=off`; on an
+*interactive* TTY it further reserves the console for the adapter's
+output (status line, run-completion notices, and post-run summary go to
+`session.log` only). The full routing contract is
+[SRD 41 §Output Routing](41_logging.md).

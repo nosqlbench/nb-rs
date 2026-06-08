@@ -148,8 +148,17 @@ fn render_metricsql_table(
     use nbrs_metricsql::eval::{EvalContext, evaluate};
     use std::collections::BTreeMap;
 
+    // SRD-77 — execution selection from the table's `executions:`
+    // directive (default per-instance-latest); the DataSource applies
+    // it, so no single-`exec_id` injection.
+    let selection = cfg.raw.lines()
+        .find_map(|l| l.trim().strip_prefix("executions:"))
+        .map(|v| crate::plot_metrics::parse_execution_selection(v.trim()))
+        .transpose()?
+        .unwrap_or(nbrs_metricsql::adapters::sqlite::ExecutionSelection::LatestPerInstance);
     let ds = SqliteDataSource::open(db_path)
-        .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
+        .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?
+        .with_execution_selection(selection);
     // Anchor the instant query at the latest sample in the db
     // with a wide lookback so cadence-skewed gauge writes still
     // resolve. Same anchor logic as `plot_metrics::rows_via_metricsql`.
@@ -184,17 +193,9 @@ fn render_metricsql_table(
     let group_keys: &[String] = cfg.group_by.as_slice();
     let mut by_group: BTreeMap<String, Vec<Option<f64>>> = BTreeMap::new();
     let n_cols = cfg.metricsql_columns.len();
-    // SRD-77 — resolve `latest` once per render so every
-    // column query in this table targets the same execution.
-    let session_dir = db_path.parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_default();
-    let resolved_exec_id = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
-        .specific_id();
     for (col_idx, (_col_name, expr)) in cfg.metricsql_columns.iter().enumerate() {
-        let mut parsed = nbrs_metricsql::parse(expr)
+        let parsed = nbrs_metricsql::parse(expr)
             .map_err(|e| format!("parse '{expr}': {e}"))?;
-        nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut parsed, resolved_exec_id);
         let series = evaluate(&ctx, &parsed)
             .map_err(|e| format!("evaluate '{expr}': {e}"))?;
         for s in series {

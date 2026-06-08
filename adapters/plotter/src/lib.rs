@@ -53,6 +53,10 @@ const PALETTE: [(u8, u8, u8); 10] = [
 ];
 
 pub struct PlotterConfig {
+    /// Rendering mode. `auto` (default) infers from the output field
+    /// NAMES — `x`/`y` → `parametric`, `r`/`theta` (or `radius`/`angle`,
+    /// `rho`/`phi`) → `polar`, otherwise a per-field line `plot`.
+    /// Explicit: `plot`, `parametric` (alias `xy`), `polar`.
     pub mode: String,
     pub width: usize,
     pub height: usize,
@@ -62,12 +66,130 @@ pub struct PlotterConfig {
     /// `lanes=x,y;z` → `[["x","y"], ["z"]]`.
     /// Empty means auto (one lane per field).
     pub lanes: Vec<Vec<String>>,
+    /// How to drive the canvas. `auto` (default) decides from the
+    /// terminal: a TTY animates live, a non-TTY (pipe/file) renders one
+    /// static snapshot. `single` always snapshots; `live` animates at
+    /// the default rate; `<n>`/`<n>hz` animates at `n` Hz.
+    /// `nbrs wiring visualize` is sugar for `render=single`.
+    pub render: RenderRequest,
+}
+
+/// Default live refresh rate (Hz) — 10 Hz is the 100 ms tick the
+/// adapter has always used, and the practical ceiling for a terminal.
+const DEFAULT_HZ: f32 = 10.0;
+
+/// What the caller asked for via `render=`, before the TTY is known.
+/// Resolved into a [`RenderMode`] at construction by [`resolve_render`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RenderRequest {
+    /// Decide from the terminal: TTY → live, non-TTY → single.
+    Auto,
+    /// One static snapshot to the scrollback when the run ends.
+    Single,
+    /// Animate at the given refresh rate (Hz).
+    Live(f32),
+}
+
+impl RenderRequest {
+    /// Parse `render=`: `auto` | `single`/`snapshot`/`once` | `live` |
+    /// `<hz>` / `<hz>hz`. Rates above 60 Hz are rejected; rates above
+    /// 10 Hz warn about terminal-refresh limits.
+    fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "auto" => Ok(RenderRequest::Auto),
+            "single" | "snapshot" | "once" => Ok(RenderRequest::Single),
+            "live" => Ok(RenderRequest::Live(DEFAULT_HZ)),
+            other => {
+                let num = other.strip_suffix("hz").unwrap_or(other);
+                let hz: f32 = num.trim().parse().map_err(|_| format!(
+                    "unknown render='{other}' (use: auto, single, live, \
+                     or a refresh rate like 5 or 5hz)"))?;
+                if hz <= 0.0 {
+                    return Err(format!("render={other}: refresh rate must be positive"));
+                }
+                if hz > 60.0 {
+                    return Err(format!(
+                        "render={other}: refresh rates above 60hz are disallowed \
+                         (no terminal can redraw that fast)"));
+                }
+                if hz > 10.0 {
+                    eprintln!("warning: render={other}: refresh above ~10hz exceeds \
+                               most terminals' usable redraw rate");
+                }
+                Ok(RenderRequest::Live(hz))
+            }
+        }
+    }
+}
+
+/// Render mode resolved against the terminal: a fixed snapshot, or a
+/// live animation at a given Hz.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum RenderMode { Single, Live(f32) }
+
+/// Resolve the request against whether stdout is a TTY. A non-TTY can't
+/// animate, so any live/rate request degrades to a single snapshot —
+/// with a warning when the caller asked for live explicitly.
+fn resolve_render(req: RenderRequest, is_tty: bool) -> RenderMode {
+    match req {
+        RenderRequest::Single => RenderMode::Single,
+        RenderRequest::Auto =>
+            if is_tty { RenderMode::Live(DEFAULT_HZ) } else { RenderMode::Single },
+        RenderRequest::Live(hz) => {
+            if is_tty {
+                RenderMode::Live(hz)
+            } else {
+                eprintln!("warning: render=live requested but stdout is not a \
+                           terminal — falling back to render=single");
+                RenderMode::Single
+            }
+        }
+    }
 }
 
 impl Default for PlotterConfig {
     fn default() -> Self {
-        Self { mode: "plot".into(), width: 0, height: 0, no_color: false, fade: 0.0, lanes: Vec::new() }
+        Self {
+            mode: "auto".into(), width: 0, height: 0, no_color: false,
+            fade: 0.0, lanes: Vec::new(), render: RenderRequest::Auto,
+        }
     }
+}
+
+// ─── Name-driven mode inference ────────────────────────────────
+
+const POLAR_R_NAMES: &[&str]     = &["r", "radius", "rho"];
+const POLAR_THETA_NAMES: &[&str] = &["theta", "angle", "phi"];
+
+/// Resolve `mode` against the in-scope field names. `auto` inspects
+/// the names (polar pair wins over `x`/`y`); any explicit mode is
+/// returned unchanged.
+fn resolve_mode<'a>(mode: &'a str, ordered: &[String]) -> &'a str {
+    if mode != "auto" { return mode; }
+    let has = |set: &[&str]| ordered.iter()
+        .any(|n| set.iter().any(|w| n.eq_ignore_ascii_case(w)));
+    let has1 = |w: &str| ordered.iter().any(|n| n.eq_ignore_ascii_case(w));
+    if has(POLAR_R_NAMES) && has(POLAR_THETA_NAMES) {
+        "polar"
+    } else if has1("x") && has1("y") {
+        "parametric"
+    } else {
+        "plot"
+    }
+}
+
+/// Pick the field whose name matches any of `wanted` (case-insensitive),
+/// else the `fallback_idx`-th field in declaration order.
+fn pick_field<'a>(
+    numeric: &'a HashMap<String, Vec<f64>>,
+    ordered: &[String],
+    wanted: &[&str],
+    fallback_idx: usize,
+) -> Option<&'a Vec<f64>> {
+    ordered.iter()
+        .find(|n| wanted.iter().any(|w| n.eq_ignore_ascii_case(w)))
+        .or_else(|| ordered.get(fallback_idx))
+        .and_then(|n| numeric.get(n))
 }
 
 // ─── Cell & FrameBuffer ────────────────────────────────────────
@@ -232,13 +354,26 @@ impl PlotterAdapter {
         let term_w = if config.width > 0 { config.width } else { terminal_width().unwrap_or(120) };
         let term_h = if config.height > 0 { config.height } else { terminal_height().unwrap_or(30) };
         let plot_h = term_h.saturating_sub(4);
-        let use_color = !config.no_color && atty_stdout();
+        let is_tty = atty_stdout();
+        let use_color = !config.no_color && is_tty;
         let mode = config.mode.clone();
         let fade = config.fade;
         let lanes = config.lanes.clone();
+        // Resolve `render=` against the terminal: non-TTY can't animate,
+        // so it falls back to a single snapshot (warning if `live` was
+        // asked for explicitly).
+        let render = resolve_render(config.render, is_tty);
+        let live = matches!(render, RenderMode::Live(_));
+        let interval = match render {
+            RenderMode::Live(hz) => Duration::from_secs_f32(1.0 / hz),
+            RenderMode::Single => Duration::from_millis(100),
+        };
 
-        // Enter alternate screen buffer for clean canvas
-        if use_color {
+        // Live mode draws on the alternate screen; single mode never
+        // touches it — it accumulates silently and prints one final
+        // image to the scrollback below.
+        let alt_screen = use_color && live;
+        if alt_screen {
             print!("\x1b[?1049h"); // alt screen
             print!("\x1b[?25l");   // hide cursor
             print!("\x1b[2J");     // clear screen
@@ -250,11 +385,12 @@ impl PlotterAdapter {
         let rr = running.clone();
         let render_thread = std::thread::spawn(move || {
             let mut fb = FrameBuffer::new(term_w, plot_h);
-            let interval = Duration::from_millis(100);
             let mut last_len = 0usize;
 
             while rr.load(Ordering::Relaxed) {
                 std::thread::sleep(interval);
+                // Single mode renders only once, at the end.
+                if !live { continue; }
                 if fade > 0.0 { fb.decay_all(1.0 - fade); }
 
                 let data = rd.lock().unwrap();
@@ -266,70 +402,34 @@ impl PlotterAdapter {
 
                 if fade == 0.0 { fb.clear(); last_len = 0; }
 
-                match mode.as_str() {
-                    "parametric" | "xy" if ordered.len() >= 2 =>
-                        plot_xy(&mut fb, &data.numeric[&ordered[0]], &data.numeric[&ordered[1]], last_len, 0),
-                    "polar" if ordered.len() >= 2 =>
-                        plot_polar(&mut fb, &data.numeric[&ordered[0]], &data.numeric[&ordered[1]], last_len, 0),
-                    _ => {
-                        // Build lane groups: explicit lanes or auto (one per field)
-                        let lane_groups: Vec<Vec<&str>> = if lanes.is_empty() {
-                            ordered.iter().map(|n| vec![n.as_str()]).collect()
-                        } else {
-                            lanes.iter().map(|lane| {
-                                lane.iter()
-                                    .filter(|n| data.numeric.contains_key(*n))
-                                    .map(|n| n.as_str())
-                                    .collect()
-                            }).filter(|g: &Vec<&str>| !g.is_empty()).collect()
-                        };
-                        let bh = (fb.height / lane_groups.len().max(1)).max(3);
-                        for (li, group) in lane_groups.iter().enumerate() {
-                            for (fi, &name) in group.iter().enumerate() {
-                                if let Some(vals) = data.numeric.get(name) {
-                                    plot_line(&mut fb, vals, li * bh, bh, fi, last_len);
-                                }
-                            }
-                        }
-                    }
-                }
+                draw_frame(&mut fb, &ordered, &data.numeric, &mode, &lanes, last_len);
                 if let Some(f) = ordered.first() { last_len = data.numeric[f].len(); }
                 drop(data);
                 fb.flush(use_color, 1);
             }
 
-            // Final frame: full redraw
+            // Final frame: full redraw (both modes).
             fb.clear();
             let data = rd.lock().unwrap();
             let ordered: Vec<String> = data.field_order.iter()
                 .filter(|n| data.numeric.contains_key(*n)).cloned().collect();
+            let title = frame_title(&mode, &ordered);
             if !ordered.is_empty() {
-                match mode.as_str() {
-                    "parametric" | "xy" if ordered.len() >= 2 =>
-                        plot_xy(&mut fb, &data.numeric[&ordered[0]], &data.numeric[&ordered[1]], 0, 0),
-                    "polar" if ordered.len() >= 2 =>
-                        plot_polar(&mut fb, &data.numeric[&ordered[0]], &data.numeric[&ordered[1]], 0, 0),
-                    _ => {
-                        let bh = (fb.height / ordered.len().max(1)).max(3);
-                        for (fi, name) in ordered.iter().enumerate() {
-                            plot_line(&mut fb, &data.numeric[name], fi * bh, bh, fi, 0);
-                        }
-                    }
-                }
+                draw_frame(&mut fb, &ordered, &data.numeric, &mode, &lanes, 0);
             }
             drop(data);
-            fb.flush(use_color, 1);
 
-            // Leave alt screen and print final image to normal buffer
-            if use_color {
+            if alt_screen {
+                fb.flush(use_color, 1);
                 print!("\x1b[?25h");   // show cursor
                 print!("\x1b[?1049l"); // leave alt screen
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
             }
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
 
-            // Print the final frame to normal scrollback so it persists
+            // Print the final frame to normal scrollback so it persists.
             let reset = if use_color { "\x1b[0m" } else { "" };
+            println!("─── {title} ───");
             for y in 0..fb.height {
                 let mut line = String::new();
                 for c in &fb.cells[y] {
@@ -411,6 +511,75 @@ impl OpDispenser for PlotterDispenser {
 }
 
 // ─── Plot helpers ──────────────────────────────────────────────
+
+/// Draw one frame of `ordered` fields into `fb` using the resolved
+/// mode. `from` is the first sample index to draw (incremental in
+/// live mode, `0` for a full redraw). Parametric/polar select their
+/// axes by field NAME (`x`/`y`, `r`/`theta`), falling back to the
+/// first two fields in declaration order.
+fn draw_frame(
+    fb: &mut FrameBuffer,
+    ordered: &[String],
+    numeric: &HashMap<String, Vec<f64>>,
+    mode: &str,
+    lanes: &[Vec<String>],
+    from: usize,
+) {
+    match resolve_mode(mode, ordered) {
+        "parametric" | "xy" if ordered.len() >= 2 => {
+            if let (Some(x), Some(y)) = (
+                pick_field(numeric, ordered, &["x"], 0),
+                pick_field(numeric, ordered, &["y"], 1),
+            ) {
+                plot_xy(fb, x, y, from, 0);
+            }
+        }
+        "polar" if ordered.len() >= 2 => {
+            if let (Some(r), Some(t)) = (
+                pick_field(numeric, ordered, POLAR_R_NAMES, 0),
+                pick_field(numeric, ordered, POLAR_THETA_NAMES, 1),
+            ) {
+                plot_polar(fb, r, t, from, 0);
+            }
+        }
+        _ => {
+            let lane_groups: Vec<Vec<&str>> = if lanes.is_empty() {
+                ordered.iter().map(|n| vec![n.as_str()]).collect()
+            } else {
+                lanes.iter().map(|lane| {
+                    lane.iter()
+                        .filter(|n| numeric.contains_key(*n))
+                        .map(|n| n.as_str())
+                        .collect()
+                }).filter(|g: &Vec<&str>| !g.is_empty()).collect()
+            };
+            let bh = (fb.height / lane_groups.len().max(1)).max(3);
+            for (li, group) in lane_groups.iter().enumerate() {
+                for (fi, &name) in group.iter().enumerate() {
+                    if let Some(vals) = numeric.get(name) {
+                        plot_line(fb, vals, li * bh, bh, fi, from);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One-line header describing the resolved mode + fields, printed
+/// above the final snapshot.
+fn frame_title(mode: &str, ordered: &[String]) -> String {
+    match resolve_mode(mode, ordered) {
+        "parametric" | "xy" if ordered.len() >= 2 => {
+            let pick = |w: &str, i: usize| ordered.iter()
+                .find(|n| n.eq_ignore_ascii_case(w))
+                .map(String::as_str).unwrap_or(ordered[i].as_str()).to_string();
+            format!("parametric: {} × {}", pick("x", 0), pick("y", 1))
+        }
+        "polar" if ordered.len() >= 2 => "polar (r, θ)".to_string(),
+        _ if ordered.is_empty() => "plot (no numeric fields)".to_string(),
+        _ => format!("plot: {}", ordered.join(", ")),
+    }
+}
 
 fn plot_xy(fb: &mut FrameBuffer, xv: &[f64], yv: &[f64], from: usize, ci: usize) {
     let n = xv.len().min(yv.len());
@@ -501,10 +670,10 @@ fn atty_stdout() -> bool { unsafe { libc::isatty(1) != 0 } }
 inventory::submit! {
     nbrs_activity::adapter::AdapterRegistration {
         names: || &["plotter", "plot"],
-        known_params: || &["mode", "fade", "lanes"],
-        display_preference: || nbrs_activity::adapter::DisplayPreference::Off,
+        known_params: || &["mode", "fade", "lanes", "render", "width", "height", "no_color"],
+        display_preference: |_params| nbrs_activity::adapter::DisplayPreference::Off,
         create: |params| Box::pin(async move {
-            let mode = params.get("mode").cloned().unwrap_or_else(|| "plot".into());
+            let mode = params.get("mode").cloned().unwrap_or_else(|| "auto".into());
             let fade = params.get("fade")
                 .and_then(|s| s.parse::<f32>().ok())
                 .unwrap_or(0.0);
@@ -513,11 +682,17 @@ inventory::submit! {
                     .map(|lane| lane.split(',').map(|f| f.trim().to_string()).collect())
                     .collect())
                 .unwrap_or_default();
+            let render = match params.get("render") {
+                Some(s) => RenderRequest::parse(s)?,
+                None => RenderRequest::Auto,
+            };
+            let width = params.get("width").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let height = params.get("height").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let no_color = params.get("no_color")
+                .map(|s| s == "true" || s == "1" || s == "on")
+                .unwrap_or(false);
             Ok(std::sync::Arc::new(PlotterAdapter::with_config(PlotterConfig {
-                mode,
-                fade,
-                lanes,
-                ..Default::default()
+                mode, fade, lanes, render, width, height, no_color,
             })) as std::sync::Arc<dyn nbrs_activity::adapter::DriverAdapter>)
         }),
     }
@@ -536,12 +711,81 @@ inventory::submit! {
         share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
             let mut k = nbrs_activity::resource_pool::ResourceKey::new("plotter");
-            for field in ["mode", "fade", "lanes"] {
+            for field in ["mode", "fade", "lanes", "render", "width", "height", "no_color"] {
                 if let Some(v) = params.get(field) {
                     k = k.with(field, v.clone());
                 }
             }
             Ok(k)
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_parse_basic_forms() {
+        assert_eq!(RenderRequest::parse("auto").unwrap(), RenderRequest::Auto);
+        assert_eq!(RenderRequest::parse("single").unwrap(), RenderRequest::Single);
+        assert_eq!(RenderRequest::parse("snapshot").unwrap(), RenderRequest::Single);
+        assert!(matches!(RenderRequest::parse("live").unwrap(), RenderRequest::Live(_)));
+    }
+
+    #[test]
+    fn render_hz_and_hz_suffix_are_equivalent() {
+        assert_eq!(RenderRequest::parse("5").unwrap(), RenderRequest::Live(5.0));
+        assert_eq!(RenderRequest::parse("5hz").unwrap(), RenderRequest::Live(5.0));
+    }
+
+    #[test]
+    fn render_above_60hz_is_disallowed() {
+        assert!(RenderRequest::parse("70").is_err());
+        assert!(RenderRequest::parse("61hz").is_err());
+    }
+
+    #[test]
+    fn render_above_10hz_allowed_up_to_60() {
+        // Warns to stderr, but accepted.
+        assert_eq!(RenderRequest::parse("30").unwrap(), RenderRequest::Live(30.0));
+        assert_eq!(RenderRequest::parse("60").unwrap(), RenderRequest::Live(60.0));
+    }
+
+    #[test]
+    fn render_invalid_values_rejected() {
+        assert!(RenderRequest::parse("fast").is_err());
+        assert!(RenderRequest::parse("0").is_err());
+        assert!(RenderRequest::parse("-5").is_err());
+    }
+
+    #[test]
+    fn resolve_auto_follows_tty() {
+        assert_eq!(resolve_render(RenderRequest::Auto, true), RenderMode::Live(DEFAULT_HZ));
+        assert_eq!(resolve_render(RenderRequest::Auto, false), RenderMode::Single);
+    }
+
+    #[test]
+    fn resolve_live_without_tty_degrades_to_single() {
+        assert_eq!(resolve_render(RenderRequest::Live(5.0), false), RenderMode::Single);
+        assert_eq!(resolve_render(RenderRequest::Live(5.0), true), RenderMode::Live(5.0));
+    }
+
+    #[test]
+    fn resolve_single_is_single_on_or_off_tty() {
+        assert_eq!(resolve_render(RenderRequest::Single, true), RenderMode::Single);
+        assert_eq!(resolve_render(RenderRequest::Single, false), RenderMode::Single);
+    }
+
+    #[test]
+    fn mode_inferred_from_field_names() {
+        let xy = vec!["x".to_string(), "y".to_string()];
+        let rt = vec!["r".to_string(), "theta".to_string()];
+        let plain = vec!["latency".to_string()];
+        assert_eq!(resolve_mode("auto", &xy), "parametric");
+        assert_eq!(resolve_mode("auto", &rt), "polar");
+        assert_eq!(resolve_mode("auto", &plain), "plot");
+        // Explicit mode passes through unchanged.
+        assert_eq!(resolve_mode("polar", &xy), "polar");
     }
 }

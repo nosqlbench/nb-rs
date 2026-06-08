@@ -26,6 +26,7 @@ pub(crate) mod validate;
 /// validators and the YAML-fusion layer to learn which names an
 /// expression references (no byte-scanning). See [`refs`].
 pub mod refs;
+pub mod stub;
 
 /// Re-exported for external crates that register Polydat nodes via `register_nodes!`.
 pub use factory::ConstArg;

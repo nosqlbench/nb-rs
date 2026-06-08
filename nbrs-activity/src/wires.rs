@@ -422,15 +422,25 @@ pub fn substitute_via_wires(
                  by the dispenser's WireSource"
             ));
         }
-        // Non-bare-identifier bodies (format specs `{:5.2}`,
-        // expressions `{a+b}`, etc.) pass through unchanged.
-        if !is_bare_ident(body) {
+        // Bare identifiers resolve as-is. Dotted identifiers
+        // (`q.cursor.idx`) follow the field-access wire
+        // convention and resolve through their flattened
+        // spelling (`q__cursor__idx`) — same rule the DSL
+        // compiler and kernel lookup apply. Everything else
+        // (format specs `{:5.2}`, expressions `{a+b}`, etc.)
+        // passes through unchanged.
+        let wire_name: std::borrow::Cow<'_, str> = if is_bare_ident(body) {
+            std::borrow::Cow::Borrowed(body)
+        } else if is_dotted_ident(body) {
+            std::borrow::Cow::Owned(body.replace('.', "__"))
+        } else {
             out.push('{');
             out.push_str(body);
             out.push('}');
             i = after;
             continue;
-        }
+        };
+        let body = wire_name.as_ref();
         // Bare identifier — wires.get resolves or errors.
         //
         // SRD-74 Rule 3 (strict render): `Value::None` reaching the
@@ -625,6 +635,15 @@ fn is_bare_ident(s: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// A dotted identifier chain (`q.cursor.idx`): two or more
+/// bare-identifier segments joined by single dots. These follow
+/// the field-access wire convention and resolve through the
+/// `__`-flattened spelling.
+fn is_dotted_ident(s: &str) -> bool {
+    let segments: Vec<&str> = s.split('.').collect();
+    segments.len() >= 2 && segments.iter().all(|seg| is_bare_ident(seg))
 }
 
 #[cfg(test)]

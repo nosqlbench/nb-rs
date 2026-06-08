@@ -365,6 +365,33 @@ closure, P3 JIT); the JIT path reaches that same observable
 behavior through a setjmp/longjmp shim documented in
 [JIT Boundary](../design/jit_boundary.md).
 
+### Cursor Partitions (SRD 71)
+
+Partition-typed nodes (`library/partition.rs`). `Partition` /
+`PartitionList` ride wires as `Value::Ext` reflected values
+(`iteration/cursor_partition.rs`); these nodes are how
+workload-author code reads and derives them. The partition
+value is effectively-const for a scope activation, so each
+eval reduces to constant arithmetic.
+
+| Node | Signature | Description |
+|------|-----------|-------------|
+| `cardinality` | `Partition → u64` | `end_ord - start_ord` — the number of ordinals the partition covers. |
+| `start_of` | `Partition → u64` | Start ordinal (inclusive). |
+| `end_of` | `Partition → u64` | End ordinal (exclusive). |
+| `idx_of` | `Partition → u64` | 0-based generation position in the resolved list (stable under spec-level reordering). |
+| `count_of` | `Partition → u64` | Total partitions in the list this one was resolved as part of; 1 for single-partition specs. Function form of the `partition_count` projection. |
+| `mod_in` | `u64, Partition → u64` | `start + (n mod cardinality)` — wraps an arbitrary integer into the partition's range. Cardinality 0 returns the start. |
+| `at` | `Partition, u64 → u64` | Bounds-checked `start + i`; panics at eval when `i ≥ cardinality`. The consume-each-ordinal-once counterpart to `mod_in`. |
+| `clamp_in` | `u64, Partition → u64` | Saturating projection into the partition (`max(start, min(n, end-1))`); no wrap. |
+| `random_in` | `Partition, u64 → u64` | `start + xxh3(seed) mod cardinality` — deterministic per seed, same entropy source as `hash`. Cardinality 0 returns the start. |
+| `subdivide` | `Partition, u64 → PartitionList` | `n` near-equal sub-partitions (sizes differ by ≤ 1 ordinal; boundary math identical to the `*/N` spec token). Indices restart at 0 with `count = n`; `base_extent` propagates; pcts interpolate the parent's span. Panics when `n` is 0 or exceeds the cardinality. Also a kernel-aware comprehension source: `for: "inner in subdivide(outer, n)"`. |
+| `partitions` | `Str[, Const<u64>] → PartitionList` | Parse a partition spec string and resolve it against `[0, extent)` (extent defaults to 100). The canonical comprehension source for `for: "p in partitions(...)"`. Full spec grammar — forms, tail tokens, `xN`/`~` modifiers, `in` windows, order keywords — in SRD 71. |
+
+The numeric comprehension generator formerly named `subdivide`
+(evenly spaced *values* over an interval) is `linear_starts`;
+see SRD 18c's named-generator table.
+
 ### Vectordata Integration (feature-gated)
 
 Vectors are array-shaped data. The canonical access path keeps

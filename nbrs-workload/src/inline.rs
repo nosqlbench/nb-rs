@@ -47,6 +47,16 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         return Err("op= value is empty".into());
     }
 
+    // Polydat bindings-block form: `op='a := ...; b := ...'`. When the
+    // whole value is a set of `name := expr` assignments that compiles
+    // as valid Polydat, treat it as a bindings block whose binding
+    // names become the op's fields — so any adapter consumes the named
+    // outputs (stdout prints them, plotter plots them). Falls through
+    // to the text-template form when it isn't valid Polydat.
+    if let Some(w) = try_polydat_block_workload(op_template) {
+        return Ok(w);
+    }
+
     // Split on unquoted semicolons into individual op segments.
     let segments = split_ops(op_template);
 
@@ -117,6 +127,7 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
     Ok(Workload {
         description: Some("inline workload".into()),
         scenarios: HashMap::new(),
+        stop_when: Vec::new(),
         ops,
         bindings: crate::model::BindingsDef::default(),
         params: HashMap::new(),
@@ -130,6 +141,149 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         readouts: crate::model::ReadoutsBindings::default(),
         wrappers: None,
     })
+}
+
+// ─── Polydat-block form ─────────────────────────────────────
+
+/// Interpret `op=` as a Polydat program when it is one. The rule is
+/// uniform — there are no special syntactic cases for `name := …`
+/// vs `{…}` vs a bare expression: a candidate Polydat source is built
+/// and handed to the compiler, and if it compiles, that's a Polydat
+/// block. Its compiled OUTPUTS become the op's fields, so every
+/// adapter consumes them (stdout prints them, plotter plots them).
+/// Returns `None` when it doesn't compile, so the caller falls back
+/// to the text-template form (which still resolves `{ref}` /
+/// `{{expr}}` interpolation, i.e. the string-composite form).
+fn try_polydat_block_workload(op_template: &str) -> Option<Workload> {
+    let source = build_polydat_candidate(op_template);
+    // The compiler is the sole arbiter of "is this Polydat?".
+    polydat::dsl::compile::compile_polydat(&source).ok()?;
+    // Fields are the declared wire names (`name := …`) — taken from the
+    // source, since the compiler mangles *output* names with `__anon`
+    // suffixes whereas the wires keep their declared names (what
+    // `{name}` placeholders resolve against).
+    let names = binding_wire_names(&source);
+    if names.is_empty() {
+        return None;
+    }
+    let mut op_fields: HashMap<String, serde_json::Value> = HashMap::new();
+    for n in &names {
+        // `{name}` resolves to wire `name` via the adapter's
+        // `resolve_op_fields_via_wires`.
+        op_fields.insert(n.clone(), serde_json::Value::String(format!("{{{n}}}")));
+    }
+    let mut op = ParsedOp::simple("inline_0", "");
+    op.op = op_fields;
+    op.bindings = BindingsDef::PolydatSource(source);
+    op.tags.insert("name".to_string(), "inline_0".to_string());
+    op.tags.insert("op".to_string(), "inline_0".to_string());
+    op.tags.insert("block".to_string(), "inline".to_string());
+
+    Some(Workload {
+        description: Some("inline polydat workload".into()),
+        scenarios: HashMap::new(),
+        stop_when: Vec::new(),
+        ops: vec![op],
+        bindings: crate::model::BindingsDef::default(),
+        params: HashMap::new(),
+        phases: HashMap::new(),
+        phase_order: Vec::new(),
+        declared_params: Vec::new(),
+        report: crate::report::Report::default(),
+        report_warnings: Vec::new(),
+        scenario_parse_errors: Vec::new(),
+        status_metrics: Vec::new(),
+        readouts: crate::model::ReadoutsBindings::default(),
+        wrappers: None,
+    })
+}
+
+/// Build a candidate Polydat source from an `op=` spec: split on
+/// top-level `;` into statements, declare `cycle`, and give any bare
+/// trailing expression an `out :=` so the program has an output. An
+/// already-complete `name := …` statement is kept verbatim. This is
+/// pure source construction — whether the result is Polydat is decided
+/// by the compiler, not by inspecting the shape here.
+fn build_polydat_candidate(op_template: &str) -> String {
+    let segs: Vec<String> = split_top_level_semicolons(op_template)
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut lines = vec!["input cycle: u64".to_string()];
+    let last = segs.len().saturating_sub(1);
+    for (i, seg) in segs.iter().enumerate() {
+        if has_top_level_assignment(seg) {
+            lines.push(seg.clone());
+        } else if i == last {
+            lines.push(format!("out := {seg}"));
+        } else {
+            lines.push(format!("__expr_{i} := {seg}"));
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
+/// Declared wire names from a built candidate source: the LHS
+/// identifier of each `name := …` line (last whitespace token, so
+/// `const x` → `x`), skipping the `input` line and internal
+/// `__`-prefixed wraps.
+fn binding_wire_names(source: &str) -> Vec<String> {
+    source.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.starts_with("input ") || !line.contains(":=") {
+                return None;
+            }
+            let lhs = line.split(":=").next()?.trim();
+            let name = lhs.split_whitespace().last()?;
+            let is_ident = !name.is_empty()
+                && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                && name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_');
+            if is_ident && !name.starts_with("__") {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// True when `s` contains a `:=` at brace-depth 0 (a real statement
+/// boundary, not one buried inside `{{expr}}` / `{ref}`).
+fn has_top_level_assignment(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => depth = (depth - 1).max(0),
+            b':' if depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == b'=' => {
+                return true;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Split `s` on `;` at brace-depth 0.
+fn split_top_level_semicolons(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    for c in s.chars() {
+        match c {
+            '{' => { depth += 1; cur.push(c); }
+            '}' => { depth = (depth - 1).max(0); cur.push(c); }
+            ';' if depth == 0 => { out.push(std::mem::take(&mut cur)); }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() { out.push(cur); }
+    out
 }
 
 // ─── Internal Types ─────────────────────────────────────────
@@ -386,6 +540,58 @@ mod tests {
             }
             _ => panic!("expected PolydatSource bindings"),
         }
+    }
+
+    #[test]
+    fn bindings_block_op_becomes_polydat_fields() {
+        // A valid Polydat bindings block → one op whose fields are the
+        // bound wire names, each resolved via `{name}`.
+        let w = synthesize_inline_workload(
+            "x := cos(to_f64(cycle)); y := sin(to_f64(cycle))").unwrap();
+        assert_eq!(w.ops.len(), 1);
+        let keys: std::collections::BTreeSet<&str> =
+            w.ops[0].op.keys().map(|s| s.as_str()).collect();
+        assert!(keys.contains("x") && keys.contains("y"), "fields: {keys:?}");
+        assert!(!w.ops[0].op.contains_key("stmt"), "should not be a text op");
+        assert_eq!(w.ops[0].op.get("x").unwrap().as_str().unwrap(), "{x}");
+        assert!(matches!(w.ops[0].bindings, BindingsDef::PolydatSource(_)));
+    }
+
+    #[test]
+    fn bare_polydat_expr_becomes_out_field() {
+        let w = synthesize_inline_workload("cos(to_f64(cycle))").unwrap();
+        assert_eq!(w.ops.len(), 1);
+        assert!(w.ops[0].op.contains_key("out"),
+            "fields: {:?}", w.ops[0].op.keys().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn invalid_polydat_falls_back_to_text_template() {
+        // Has `:=` but doesn't compile → NOT adopted as Polydat; the
+        // text-template form handles it instead (no panic, one op).
+        let w = synthesize_inline_workload("x := not_a_real_fn(@@@)").unwrap();
+        assert_eq!(w.ops.len(), 1);
+        assert!(w.ops[0].op.contains_key("stmt"));
+    }
+
+    #[test]
+    fn detection_is_compile_driven_not_syntactic() {
+        // `{ref}` composite text isn't valid standalone Polydat → text
+        // template (which still interpolates the ref).
+        let w = synthesize_inline_workload("id-{cycle}").unwrap();
+        assert!(w.ops[0].op.contains_key("stmt"));
+    }
+
+    #[test]
+    fn helpers_split_and_name_bindings() {
+        assert!(has_top_level_assignment("x := 1"));
+        assert!(!has_top_level_assignment("hello {{x := 1}}")); // inside braces
+        assert_eq!(split_top_level_semicolons("a := 1; b := 2").len(), 2);
+        let src = build_polydat_candidate("a := 1; sin(cycle)");
+        assert!(src.contains("a := 1"));
+        assert!(src.contains("out := sin(cycle)")); // bare last → out
+        assert_eq!(binding_wire_names("input cycle: u64\nt := 1\n__expr_0 := 2\nx := 3\n"),
+                   vec!["t".to_string(), "x".to_string()]); // skips input + __
     }
 
     #[test]

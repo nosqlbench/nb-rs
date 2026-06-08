@@ -27,8 +27,6 @@
 #   ./examples/lfsr.yaml cycles=100 seed=42
 
 params:
-  bits: "8"
-  seed: "1"
   cycles: "20"
 
 bindings: |

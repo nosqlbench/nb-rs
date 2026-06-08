@@ -84,12 +84,13 @@ params:
   # enum tag burned into the CREATE INDEX OPTIONS. Distinct
   # tags select distinct SAI build-path defaults; OTHER /
   # ADA002 are the two corners we sweep.
-#  sm_values:        "OTHER, ADA002"
-  sm_values:        "OTHER"
+  sm_values:        "OTHER, ADA002"
+#  sm_values:        "OTHER"
 
   # `mnc` → `maximum_node_connections` — the M parameter
   # of the hierarchical graph build (number of neighbors
   # each node retains in the proximity graph).
+#  mnc_values:       "8"
   mnc_values:       "8, 128"
 
   # `bw` → `construction_beam_width` — the
@@ -102,7 +103,7 @@ params:
   # `eh` → `enable_hierarchy` — whether to build the
   # multi-layer HNSW structure (true) or the flat in-memory
   # variant (false).
-  eh_values:        "false, true"
+  eh_values:        [false, true]
 #  eh_values:        false
 
   # `nbo_v` (numeric value) + `nbo_label` (table-name-safe
@@ -119,10 +120,10 @@ params:
   # the alpha pruning factor (RNG-pruning threshold used
   # during graph construction). Same parallel-iter
   # value/label split as neighborhood_overflow.
-  alf_v_values:     1.0
-#  alf_v_values:     [1.0, 2.0]
-  alf_label_values: "1p0"
-#  alf_label_values: ["1p0", "2p0"]
+#  alf_v_values:     1.0
+  alf_v_values:     [1.0, 2.0]
+#  alf_label_values: "1p0"
+  alf_label_values: ["1p0", "2p0"]
 
   # ── query_sweep dimensions (4 axes × {2, 2, 1, 1} = 4 cells) ──
   # Bound at the inner level of `idx_sweep` AND as the only
@@ -140,7 +141,8 @@ params:
   #                  `sai_ann_rerank_k_max_value` guardrail).
   # Drives the `rerank_k` entry of the query's
   # `WITH ann_options = {...}` clause.
-  rerank_k_strategy_values: "rerank_def, rerank_1x, rerank_2x, rerank_lim"
+  rerank_k_strategy_values: [rerank_1x, rerank_2x, rerank_lim]
+#  rerank_k_strategy_values: [rerank_def, rerank_1x, rerank_2x, rerank_lim]
 
   # `pruning_strategy` → `use_pruning` — three detents with
   # the `pruning_<state>` prefix:
@@ -150,6 +152,7 @@ params:
   #                   traversal).
   #   `pruning_on`  — `use_pruning = true`.
   pruning_strategy_values:  "pruning_def, pruning_off, pruning_on"
+#  pruning_strategy_values:  "pruning_def"
 
   # `k` — the top-K count requested by the ANN query
   # (`SELECT … ORDER BY ANN OF ? LIMIT k`). Single-element
@@ -161,6 +164,7 @@ params:
   # Together with `k` controls how many candidates the
   # ANN traversal returns before the top-K cut.
   limit_values:             "25, 50, 75, 100"
+#  limit_values: [25]
 #
 # Value taxonomy (for reference, used in the iter clauses):
 #
@@ -207,15 +211,30 @@ report:
       label: "Recall vs QPS, by query strategy"
       scale: 2
       legend: br
-      y1: (cycles_total_rate, recall_mean){phase=~"pvs_query_sweep"} by (rerank_k_strategy,pruning_strategy,k,limit)
-      point-label1: limit
+      # Group by the FULL phase-scope coordinate: the index-build axes
+      # (sm,mnc,bw,eh,nbo_v,alf_v — the short for: iter-var labels; the
+      # full source_model/… names reach the phase via `set:` and aren't
+      # labels) AND the query axes (rerank/pruning/k/limit). Without the
+      # index axes here, every index-build variant that shares a query
+      # cell averages into ONE point — the whole 6-D index cube collapses
+      # away. For a query-only run (Phase A vs fknn_default) the index
+      # labels are simply absent, so the extra `by` keys are no-ops.
+      y1: (cycles_total_rate, recall_mean){phase=~"pvs_query_sweep"} by (sm,mnc,bw,eh,nbo_v,alf_v,rerank_k_strategy,pruning_strategy,k,limit)
       x-legend: "QPS (log)"
-      x-scale: log
+      x-scale: linear
       y-side: left
       y-labels: ["recall"]
-      y-legends: ["[rerank_k_strategy]/[pruning_strategy] k=[k]"]
       y-ranges: [[,1.0]]
-      series: rerank_k_strategy,pruning_strategy,k
+      # One line per (index-build cell × rerank × pruning × k); points
+      # along each line are the limit sweep — no longer collapsed across
+      # the index cube. With hundreds of such lines, the legend is keyed
+      # to the strategy CHANNELS, not the lines: `color:` maps the rerank
+      # strategy to a hue, `shape:` maps the pruning strategy to a marker
+      # shape. Index-build cells that share a (rerank,pruning) share a
+      # color+shape — distinct lines, recoverable channels, compact key.
+      series: sm,mnc,bw,eh,nbo_v,alf_v,rerank_k_strategy,pruning_strategy,k
+      color: rerank_k_strategy
+      shape: pruning_strategy
 
     table recall_query_sweep:
       group_by: rerank_k_strategy,pruning_strategy
@@ -236,10 +255,15 @@ report:
      are emitted in extrema-first order so early-stopping the
      run still covers the corners.
 
+    # The index-build axes are labelled under their short for: iter-var
+    # names (sm,mnc,bw,eh,nbo_v,alf_v); the full source_model/… names
+    # reach the phase via `set:` as scope consts and are NOT metric
+    # labels — grouping by them silently collapses to one row. Group by
+    # the short names that actually exist on the samples.
     table recall_idx_sweep:
-      group_by: source_model,maximum_node_connections,construction_beam_width
-      query: recall: avg(recall_mean) by (source_model,maximum_node_connections,construction_beam_width,enable_hierarchy,neighborhood_overflow,alpha,rerank_k_strategy,pruning_strategy)
-      query: latency_p99: avg(cycles_servicetime_p99) by (source_model,maximum_node_connections,construction_beam_width,enable_hierarchy,neighborhood_overflow,alpha,rerank_k_strategy,pruning_strategy)
+      group_by: sm,mnc,bw
+      query: recall: avg(recall_mean) by (sm,mnc,bw,eh,nbo_v,alf_v,rerank_k_strategy,pruning_strategy)
+      query: latency_p99: avg(cycles_servicetime_p99) by (sm,mnc,bw,eh,nbo_v,alf_v,rerank_k_strategy,pruning_strategy)
 
 scenarios:
 

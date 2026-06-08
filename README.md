@@ -38,7 +38,7 @@ params:
 
 bindings: |
   input cycle: u64
-  user_id := mod(hash(cycle), {user_count})
+  user_id := mod_wire(hash(cycle), user_count)
   user_name := number_to_words(mod(hash(hash(cycle)), 1000))
   is_write := mod(cycle, 5)
 
@@ -54,7 +54,7 @@ ops:
 
 ```
 $ chmod +x service.yaml
-$ ./service.yaml cycles=100 threads=4 rate=1000
+$ ./service.yaml cycles=100 concurrency=4 rate=1000
 ```
 
 ## Features
@@ -77,8 +77,8 @@ $ ./service.yaml cycles=100 threads=4 rate=1000
 **Adapters** — Protocol drivers for:
 - stdout (debugging, dry-run, format=json/csv/stmt)
 - HTTP (REST APIs, configurable timeouts)
-- CQL (Cassandra/ScyllaDB via nbrs persona)
-- Model (simulated service latency)
+- CQL (Cassandra/ScyllaDB — `cassandra-cpp` or `scylla` driver)
+- testkit (simulated service: latency, errors, capacity limits)
 
 **Observability** — Built-in metrics and dashboards:
 - HDR histograms for latency percentiles
@@ -100,23 +100,57 @@ eval "$(nbrs completions)"
 ## Commands
 
 ```
-nbrs run workload=file.yaml cycles=1M threads=8 rate=10000
+nbrs run workload=file.yaml cycles=1M concurrency=8 rate=10000
 nbrs run op='hello {{hash(cycle)}}' cycles=10
-nbrs bench Polydat 'hash(cycle)' --compare-modes iters=5
-nbrs plot Polydat 'sin(to_f64(cycle) * 0.01)' cycles=1000
-nbrs describe Polydat functions
+nbrs bench wiring 'hash(cycle)' cycles=1M threads=1:8*2
+nbrs describe wiring functions
+nbrs report plot workload=file.yaml   # render the workload's report: items
+nbrs metrics list                     # introspect a session's metrics db
 nbrs web --daemon
 ```
 
+## Data Wiring
+
+The _wiring_ for nbrs is provided by a dedicated subsystem called polydat. 
+This takes the place of the classic *virtual dataset* procedural generation 
+system in nosqlbench, but it is, like nbrs, derived and evolved from the 
+original blueprints around lessons learned in that project.
+
+### Visualizing wiring expressions
+
+`nbrs wiring visualize <expr>` evaluates a wiring expression across a
+range of cycles and plots it in the terminal. The **output wire names**
+choose the plot mode:
+
+```
+# default — each output plotted against cycle (line plot)
+nbrs wiring visualize 'y := sin(to_f64(cycle) * 0.1)' cycles=200
+
+# wires named x / y → parametric (this traces a circle)
+nbrs wiring visualize 't := to_f64(cycle)*0.06; x := cos(t); y := sin(t)' cycles=120
+
+# wires named r / theta → polar (this traces a 3-petal rose)
+nbrs wiring visualize 'theta := to_f64(cycle)*0.06; r := cos(theta*3.0)' cycles=120
+```
+
+`r`/`theta` also accept `radius`/`angle` or `rho`/`phi`. Pass
+`--mode=plot|parametric|polar` to override the name inference.
+
+`wiring visualize` is sugar for `nbrs run adapter=plotter render=single` —
+it builds a one-op plotter workload and runs it through the engine. The
+plotter adapter renders either a **single** static snapshot (the default
+for `visualize`, and for any non-TTY output) or **live**, animated as
+cycles arrive — `nbrs run adapter=plotter op='…' render=live` (or
+`render=5hz` for a specific refresh rate; a TTY defaults to live).
+
 ## Examples
 
-See [`examples/`](examples/) for categorized workload examples:
-- `getting_started/` — First workloads, Polydat bindings, inline ops
-- `polydat_language/` — Operators, bitwise, coordinate decomposition
-- `workloads/` — Phases, conditions, delays, scenarios
-- `signals/` — FFT analysis, LFSR, fractal noise
-- `visual/` — Random maze generator
-- `modules/` — Polydat module system
+See [`examples/`](examples/):
+- [`workloads/`](examples/workloads/) — runnable workload YAMLs: phases,
+  conditional ops (`if:`), delays, scenarios, cursors & partitions,
+  capture flow, comprehensions, dynamic controls, and reports
+- [`modules/`](examples/modules/) — the Polydat module system
+  (`.polydat` files imported by module workloads)
 
 ## Architecture
 

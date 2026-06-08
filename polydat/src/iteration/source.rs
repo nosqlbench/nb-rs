@@ -447,6 +447,14 @@ pub struct ExtendingRangeSourceFactory {
     /// policy via `ExtensionContext::base` so pass-count
     /// predicates work.
     base: u64,
+    /// SRD 71 — hard upper bound on growth. When a cursor is
+    /// narrowed by a partition (`until_elapsed(...) over p`),
+    /// the partition's end ordinal caps the extension: the
+    /// policy keeps making its time / pass / count decisions,
+    /// but the source terminates the moment the partition is
+    /// exhausted, whichever comes first. `None` = unbounded
+    /// (the policy alone decides).
+    max_end: Option<u64>,
     /// Wall-clock baseline. Captured at factory construction
     /// so per-phase factories yield per-phase elapsed numbers
     /// without external clock plumbing.
@@ -472,6 +480,7 @@ impl ExtendingRangeSourceFactory {
             end: Arc::new(AtomicU64::new(end)),
             start,
             base: initial_extent,
+            max_end: None,
             started: std::time::Instant::now(),
             policy,
             schema: SourceSchema {
@@ -485,6 +494,17 @@ impl ExtendingRangeSourceFactory {
             },
         }
     }
+
+    /// Cap growth at `max_end` (absolute ordinal, exclusive) —
+    /// the partition-narrowing bound from SRD 71. The initial
+    /// extent is clamped too, so a base chunk larger than the
+    /// partition never reserves past it.
+    pub fn bounded(mut self, max_end: u64) -> Self {
+        self.max_end = Some(max_end);
+        let clamped = self.end.load(Ordering::Acquire).min(max_end);
+        self.end.store(clamped, Ordering::Release);
+        self
+    }
 }
 
 impl DataSourceFactory for ExtendingRangeSourceFactory {
@@ -495,6 +515,7 @@ impl DataSourceFactory for ExtendingRangeSourceFactory {
             policy: self.policy.clone(),
             start: self.start,
             base: self.base,
+            max_end: self.max_end,
             started: self.started,
             consumed: 0,
             schema: self.schema.clone(),
@@ -529,6 +550,9 @@ struct ExtendingRangeSource {
     policy: Arc<dyn ExtensionPolicy>,
     start: u64,
     base: u64,
+    /// SRD 71 partition cap — see
+    /// [`ExtendingRangeSourceFactory::bounded`].
+    max_end: Option<u64>,
     started: std::time::Instant,
     consumed: u64,
     schema: SourceSchema,
@@ -554,6 +578,15 @@ impl DataSource for ExtendingRangeSource {
                     Err(_) => continue, // raced; retry
                 }
             }
+            // SRD 71: a partition-bound cursor terminates the
+            // moment the partition is exhausted, whether or not
+            // the policy's time / pass / count target was
+            // reached — no policy consultation past the cap.
+            if let Some(max) = self.max_end {
+                if end >= max {
+                    return None;
+                }
+            }
             // Cursor has caught up to end. Consult policy with
             // a snapshot of the current state. Each fiber that
             // races to this point gets its own context read;
@@ -566,13 +599,21 @@ impl DataSource for ExtendingRangeSource {
             };
             match self.policy.next_extension(&ctx) {
                 Some(delta) if delta > 0 => {
-                    // CAS the end forward. If someone else extended
-                    // ahead of us, that's fine — our duplicate
-                    // policy consultation is harmless and the new
-                    // end is at least as far as ours would have
-                    // been.
+                    // CAS the end forward, clamped at the
+                    // partition cap when one is set. If someone
+                    // else extended ahead of us, that's fine —
+                    // our duplicate policy consultation is
+                    // harmless and the new end is at least as
+                    // far as ours would have been.
+                    let mut new_end = end.saturating_add(delta);
+                    if let Some(max) = self.max_end {
+                        new_end = new_end.min(max);
+                    }
+                    if new_end == end {
+                        return None;
+                    }
                     let _ = self.end.compare_exchange(
-                        end, end.saturating_add(delta),
+                        end, new_end,
                         Ordering::AcqRel, Ordering::Acquire,
                     );
                     continue;
@@ -878,6 +919,76 @@ impl ExtensionPolicy for TimeElapsedPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Policy that always extends by `base` — stands in for a
+    /// time/pass policy whose target is far away, so the
+    /// partition cap is the only thing that can stop growth.
+    struct AlwaysExtend;
+    impl ExtensionPolicy for AlwaysExtend {
+        fn next_extension(&self, ctx: &ExtensionContext) -> Option<u64> {
+            Some(ctx.base.max(1))
+        }
+    }
+
+    #[test]
+    fn extending_source_bounded_terminates_at_partition_end() {
+        // SRD 71: `until_*(base, ...) over p` — base-sized chunks
+        // walk within the partition; the cap stops growth even
+        // though the policy would keep extending. Partition
+        // [100, 125) with base 10 → 10 + 10 + 5, then exhausted.
+        let factory = ExtendingRangeSourceFactory::new(
+            "q", 100, 10, Arc::new(AlwaysExtend),
+        ).bounded(125);
+        let mut reader = factory.create_reader();
+        let mut total = 0u64;
+        let mut last_end = 100;
+        while let Some(r) = reader.reserve(7) {
+            assert!(r.end <= 125, "reservation past the partition cap: {r:?}");
+            assert_eq!(r.start, last_end, "contiguous reservations");
+            last_end = r.end;
+            total += r.end - r.start;
+        }
+        assert_eq!(total, 25, "exactly the partition's cardinality");
+        assert_eq!(last_end, 125);
+    }
+
+    #[test]
+    fn extending_source_bounded_clamps_oversized_base() {
+        // A base chunk larger than the partition never reserves
+        // past it.
+        let factory = ExtendingRangeSourceFactory::new(
+            "q", 0, 1000, Arc::new(AlwaysExtend),
+        ).bounded(30);
+        let mut reader = factory.create_reader();
+        let r = reader.reserve(usize::MAX).unwrap();
+        assert_eq!(r, 0..30);
+        assert!(reader.reserve(1).is_none());
+    }
+
+    #[test]
+    fn extending_source_unbounded_keeps_policy_semantics() {
+        // Without a cap the policy alone decides — three
+        // extensions of a terminating policy.
+        struct NTimes(std::sync::atomic::AtomicU64);
+        impl ExtensionPolicy for NTimes {
+            fn next_extension(&self, ctx: &ExtensionContext) -> Option<u64> {
+                if self.0.fetch_add(1, Ordering::Relaxed) < 3 {
+                    Some(ctx.base)
+                } else {
+                    None
+                }
+            }
+        }
+        let factory = ExtendingRangeSourceFactory::new(
+            "q", 0, 10, Arc::new(NTimes(std::sync::atomic::AtomicU64::new(0))),
+        );
+        let mut reader = factory.create_reader();
+        let mut total = 0u64;
+        while let Some(r) = reader.reserve(64) {
+            total += r.end - r.start;
+        }
+        assert_eq!(total, 40, "initial 10 + three 10-ordinal extensions");
+    }
 
     #[test]
     fn range_source_yields_ordinals() {

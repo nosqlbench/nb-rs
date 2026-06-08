@@ -146,6 +146,7 @@ pub fn attach_global_value_providers(tree: CommandTree) -> CommandTree {
         .global_value_provider("driver=", fn_provider(adapter_provider))
         .global_value_provider("profiler=", fn_provider(static_profiler))
         .global_value_provider("tui=", fn_provider(static_tui))
+        .global_value_provider("format=", fn_provider(static_stdout_format))
         .global_value_provider("dryrun=", fn_provider(static_dryrun))
         .global_value_provider("watch=", fn_provider(static_watch))
         .global_value_provider("scope=", fn_provider(static_scope))
@@ -770,6 +771,13 @@ fn static_tui(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(&["on", "off"], partial)
 }
 
+/// Closed-set value provider for `format=` (the stdout adapter's render
+/// format). Sourced from `nbrs_adapter_stdout::FORMAT_NAMES` so the
+/// parser, its error message, and completion stay in lockstep.
+fn static_stdout_format(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(nbrs_adapter_stdout::FORMAT_NAMES, partial)
+}
+
 fn static_dryrun(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(
         &["phase", "dispenser", "op", "cycle", "full",
@@ -1121,11 +1129,9 @@ fn workload_from_context(ctx: &[&str]) -> Option<std::path::PathBuf> {
 fn workload_name_from_db(db_path: &std::path::Path) -> Option<String> {
     if !db_path.exists() { return None; }
     let conn = rusqlite::Connection::open(db_path).ok()?;
-    conn.query_row(
-        "SELECT value FROM session_metadata WHERE key = 'workload' LIMIT 1",
-        [],
-        |row| row.get::<_, String>(0),
-    ).ok()
+    // `workload` is per-execution metadata; latest execution wins
+    // (falls back to legacy session_metadata).
+    nbrs_metrics::reporters::sqlite::latest_execution_metadata_value(&conn, "workload")
 }
 
 /// Combine `workload_name_from_db` with `resolve_workload_path`

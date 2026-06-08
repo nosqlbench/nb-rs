@@ -12,6 +12,22 @@
 //! Native to continuous K-D boxes (the canonical use case per
 //! spec §3.6). Over discrete inputs, the continuous draws are
 //! discretized to integer multi-indices.
+//!
+//! ## References
+//!
+//! - J. H. Halton, "On the efficiency of certain quasi-random
+//!   sequences of points in evaluating multi-dimensional integrals,"
+//!   *Numerische Mathematik* 2 (1960), 84–90.
+//!   doi:[10.1007/BF01386213](https://doi.org/10.1007/BF01386213).
+//!   Defines the K-D sequence as the radical inverses in the first K
+//!   prime bases.
+//! - J. G. van der Corput, "Verteilungsfunktionen I & II," *Proc.
+//!   Akad. Wet. Amsterdam* 38 (1935), 813–821, 1058–1066. The base-`b`
+//!   radical-inverse [`radical_inverse`] is the van der Corput
+//!   sequence; Halton is its multi-base generalization.
+//! - The canonical base-2 van der Corput prefix is
+//!   `1/2, 1/4, 3/4, 1/8, 5/8, 3/8, 7/8, …` (digit-reversal of the
+//!   naturals), cross-checked in `tests::van_der_corput_base2_published_prefix`.
 
 use super::{
     EvaluatedInput, MultiIndex, Strategy, Tuple, index_fn_dim, index_fn_size,
@@ -201,6 +217,33 @@ mod tests {
         assert!((radical_inverse(2, 2) - 0.25).abs() < 1e-12);
         assert!((radical_inverse(3, 2) - 0.75).abs() < 1e-12);
         assert!((radical_inverse(4, 2) - 0.125).abs() < 1e-12);
+    }
+
+    #[test]
+    fn van_der_corput_base2_published_prefix() {
+        // The published base-2 van der Corput sequence (Halton 1960
+        // §2; the digit-reversal of 1,2,3,…): 1/2, 1/4, 3/4, 1/8,
+        // 5/8, 3/8, 7/8, 1/16, …
+        let expected = [
+            1.0 / 2.0, 1.0 / 4.0, 3.0 / 4.0, 1.0 / 8.0,
+            5.0 / 8.0, 3.0 / 8.0, 7.0 / 8.0, 1.0 / 16.0,
+        ];
+        for (k, want) in expected.iter().enumerate() {
+            let got = radical_inverse(k as u64 + 1, 2);
+            assert!((got - want).abs() < 1e-12, "phi_2({}) = {got}, want {want}", k + 1);
+        }
+    }
+
+    #[test]
+    fn van_der_corput_base3_published_prefix() {
+        // Base-3 van der Corput: 1/3, 2/3, 1/9, 4/9, 7/9, 2/9, …
+        let expected = [
+            1.0 / 3.0, 2.0 / 3.0, 1.0 / 9.0, 4.0 / 9.0, 7.0 / 9.0, 2.0 / 9.0,
+        ];
+        for (k, want) in expected.iter().enumerate() {
+            let got = radical_inverse(k as u64 + 1, 3);
+            assert!((got - want).abs() < 1e-12, "phi_3({}) = {got}, want {want}", k + 1);
+        }
     }
 
     #[test]

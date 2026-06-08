@@ -206,9 +206,10 @@ pub const LINE_STYLES: &[&str] = &[
     "solid", "dashed", "dotted", "dashdot", "none",
 ];
 
-/// Marker shapes.
+/// Marker shapes. `auto` cycles a distinct shape per series
+/// (literature-style); the rest are explicit shapes.
 pub const MARKER_SHAPES: &[&str] = &[
-    "none", "circle", "square", "triangle", "diamond", "plus", "cross",
+    "auto", "none", "circle", "square", "triangle", "diamond", "plus", "cross",
 ];
 
 /// Axis scale modes.

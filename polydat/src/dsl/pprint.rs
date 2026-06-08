@@ -79,6 +79,7 @@ pub fn pp_expr(expr: &Expr) -> String {
         Expr::UnaryNeg(e, _) => format!("(-{})", pp_expr(e)),
         Expr::UnaryBitNot(e, _) => format!("(!{})", pp_expr(e)),
         Expr::FieldAccess { source, field, .. } => format!("{source}.{field}"),
+        Expr::Cast(e, ty, _) => format!("({} as {})", pp_expr(e), ty.to_keyword()),
     }
 }
 
@@ -163,6 +164,8 @@ fn pp_binop(op: BinOpKind) -> &'static str {
         BinOpKind::Gt => ">",
         BinOpKind::Le => "<=",
         BinOpKind::Ge => ">=",
+        BinOpKind::And => "&&",
+        BinOpKind::Or => "||",
     }
 }
 

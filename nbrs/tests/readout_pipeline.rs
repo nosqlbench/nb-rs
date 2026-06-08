@@ -60,6 +60,16 @@ impl Drop for TempDir {
 /// `on_phase_end`. `trace` is a diagnostic readout (Push 2)
 /// that surfaces every relevant ReadoutContext field as
 /// labelled text — easy to grep for in the rendered cells.
+///
+/// Uses the `testkit` adapter, NOT `stdout`: per the SRD-41
+/// console-ownership rule, `stdout` is a console-owning adapter
+/// (`DisplayPreference::Off`) — on an interactive TTY it reserves
+/// the console for its own field output and the `tui=terminal`
+/// request is overridden to off, so readouts project to
+/// `session.log` rather than the screen. `testkit` is `Auto`, so
+/// `tui=terminal` is honored and the readout binder's output
+/// renders to the terminal — which is exactly what this test
+/// asserts.
 fn trace_workload() -> (TempDir, PathBuf) {
     let dir = TempDir::new();
     let yaml_path = dir.path().join("trace.yaml");
@@ -73,7 +83,7 @@ scenarios:
 
 phases:
   run:
-    adapter: stdout
+    adapter: testkit
     cycles: 3
     concurrency: 1
     bindings: |
