@@ -49,22 +49,22 @@ fn main() {
     // of names to keep in sync.
     let root = cli_spec::root::root();
 
+    // SRD-85: assemble the bundled-workload catalog first —
+    // workload resolution, `describe workloads`, `copy`, AND
+    // the completion callback (catalog names complete under
+    // `workload=`) all read it. Cheap: a Vec of &'static refs.
+    bundled::install_catalog();
+
     // Shell-completion callback. Reads `_NBRS_COMPLETE=bash`,
     // emits candidates, exits. Must run BEFORE any
     // arg-consuming logic so tab presses never touch adapters,
     // files, or stderr.
     let comp_tree = cli_spec::completion::build_command_tree(&root);
-    let comp_tree = completion::attach_global_value_providers(comp_tree);
     if completion::handle_complete_env(&comp_tree) {
         return;
     }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-
-    // SRD-85: assemble the bundled-workload catalog before any
-    // dispatch — workload resolution, `describe workloads`, and
-    // `copy` all read it.
-    bundled::install_catalog();
 
     // SRD-45 startup hook: honors `--session`, `--session-path`,
     // `--session-name`, …, plus the `NBRS_SESSION*` env vars.

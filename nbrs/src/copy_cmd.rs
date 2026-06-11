@@ -64,6 +64,13 @@ pub fn copy_command(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `to=<path>` is free-form (a new filename); listed so the
+/// option completes.
+static COPY_KV_PARAMS: &[crate::cli_spec::KvParam] = &[crate::cli_spec::KvParam {
+    key: "to=",
+    provider: crate::completion::free_form,
+}];
+
 pub fn spec() -> crate::cli_spec::Command {
     use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
     fn handle(p: ParsedCommand) -> Result<(), String> {
@@ -75,7 +82,15 @@ pub fn spec() -> crate::cli_spec::Command {
         category: Category::Documentation,
         level: Level::FullSurface,
         flags: Vec::new(),
-        positionals: Vec::new(),
+        kv_params: COPY_KV_PARAMS,
+        dynamic_options: None,
+        positionals: vec![crate::cli_spec::Positional {
+            name: "name",
+            help: "Bundled workload to copy (catalog name).",
+            kind: crate::cli_spec::PositionalKind::One,
+            value: crate::cli_spec::ValueProvider::Custom(
+                crate::completion::catalog_name_provider),
+        }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
         raw_args: true,

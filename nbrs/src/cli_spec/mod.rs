@@ -61,6 +61,16 @@ pub struct Command {
     pub category: Category,
     pub level: Level,
     pub flags: Vec<Flag>,
+    /// `key=value` params this command's raw grammar accepts,
+    /// each with its completion provider. Only meaningful for
+    /// `raw_args` commands (the walker doesn't parse them; the
+    /// completion tree advertises them as options AND completes
+    /// their values).
+    pub kv_params: &'static [KvParam],
+    /// Context-sensitive extra option tokens (e.g. per-workload
+    /// params discovered from the `workload=` already on the
+    /// line). Wired to veks-completion's dynamic-options hook.
+    pub dynamic_options: Option<fn(&str, &[&str]) -> Vec<String>>,
     pub positionals: Vec<Positional>,
     pub subcommands: Vec<Command>,
     pub handler: Option<Handler>,
@@ -144,6 +154,17 @@ pub enum Arity {
 /// responsible for value validation. Completion uses it to
 /// suggest candidates.
 #[derive(Clone, Copy)]
+/// A `key=value` parameter a command accepts in its raw argv
+/// (the run-style grammar), with its tab-completion provider.
+/// veks-completion 1.3.1 removed tree-global providers — value
+/// completion is per-node, so each command declares the params
+/// it actually understands and the spec stays canonical.
+pub struct KvParam {
+    /// Token prefix including the `=` (e.g. `"workload="`).
+    pub key: &'static str,
+    pub provider: fn(&str, &[&str]) -> Vec<String>,
+}
+
 pub enum ValueProvider {
     /// No specific suggestions; user types freely.
     None,
@@ -159,6 +180,11 @@ pub struct Positional {
     pub name: &'static str,
     pub help: &'static str,
     pub kind: PositionalKind,
+    /// Completion provider for this positional's value. Only
+    /// the FIRST positional's provider is honored (veks-
+    /// completion models one first-positional provider per
+    /// node). `None`/`Path` behave as for flags.
+    pub value: ValueProvider,
 }
 
 #[derive(Debug, Clone, Copy)]

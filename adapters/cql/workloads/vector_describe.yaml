@@ -85,7 +85,7 @@ phases:
       neighbor_k   := neighbor_count("{dataset}:{profile}")
       dist_fn      := dataset_distance_function("{dataset}:{profile}")
       facets       := dataset_facets("{dataset}:{profile}")
-      mi_count     := metadata_indices_count("{dataset}:{profile}")
+      mi_count     := metadata_results_count("{dataset}:{profile}")
     ops:
       dimensions:
         stmt: "  dimensions:           {dim}"
@@ -135,8 +135,8 @@ phases:
     cycles: "{mi_len}"
     concurrency: 1
     bindings: |
-      mi_len       := metadata_indices_len_at("{dataset}:{profile}", {qi})
-      mi           := metadata_indices_at("{dataset}:{profile}", {qi})
+      mi_len       := metadata_results_len_at("{dataset}:{profile}", {qi})
+      mi           := metadata_results_at("{dataset}:{profile}", {qi})
       base_ordinal := array_at(mi, cycle)
     ops:
       match:

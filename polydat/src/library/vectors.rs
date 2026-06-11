@@ -246,7 +246,7 @@ pub(crate) enum DatasetHandle {
     F32(Arc<F32Dataset>),
     /// Uniform `i32` vector facet (neighbor_indices, filtered_neighbor_indices).
     I32(Arc<I32Dataset>),
-    /// Variable-length `i32` facet (metadata_indices).
+    /// Variable-length `i32` facet (metadata_results).
     Ivvec32(Arc<Ivvec32Dataset>),
     /// Type-erased generic-typed scalar facet (metadata_content,
     /// metadata_predicates, ...).
@@ -284,7 +284,7 @@ impl DatasetHandle {
             "neighbor_indices" | "filtered_neighbor_indices" => {
                 I32Dataset::load(source, profile, facet).map(DatasetHandle::I32)
             }
-            "metadata_indices" => {
+            "metadata_results" => {
                 Ivvec32Dataset::load(source, profile).map(DatasetHandle::Ivvec32)
             }
             // Anything else routes through GenericFacetDataset (typed
@@ -852,7 +852,7 @@ handle_metadata_node!(
 // Metadata facet nodes
 // =================================================================
 
-/// Handle to a loaded variable-length i32 facet (metadata_indices).
+/// Handle to a loaded variable-length i32 facet (metadata_results).
 pub(crate) struct Ivvec32Dataset {
     reader: Arc<dyn VvecReader<i32>>,
     count: usize,
@@ -860,21 +860,21 @@ pub(crate) struct Ivvec32Dataset {
 
 impl Ivvec32Dataset {
     fn load(source: &str, profile: &str) -> Result<Arc<Self>, String> {
-        let key = (source.to_string(), profile.to_string(), "metadata_indices".to_string());
+        let key = (source.to_string(), profile.to_string(), "metadata_results".to_string());
         let any = FACET_CACHE.get_or_init(key, || {
             let group = load_dataset_group(source)?;
             let view = group.profile(profile)
                 .ok_or_else(|| format!("profile '{profile}' not found in '{source}'"))?;
-            crate::library::support::audit::record_opened(source, profile, "metadata_indices", "ivvec32");
-            let reader = run_blocking_io(|| view.metadata_indices())
-                .map_err(|e| format!("failed to access metadata_indices from '{source}': {e}"))?;
+            crate::library::support::audit::record_opened(source, profile, "metadata_results", "ivvec32");
+            let reader = run_blocking_io(|| view.metadata_results())
+                .map_err(|e| format!("failed to access metadata_results from '{source}': {e}"))?;
             let count = reader.count();
             let arc: Arc<Self> = Arc::new(Self { reader, count });
             Ok(arc as Arc<dyn std::any::Any + Send + Sync>)
         })?;
         any.downcast::<Self>()
             .map_err(|_| format!(
-                "facet cache type mismatch for '{source}:{profile}/metadata_indices'"))
+                "facet cache type mismatch for '{source}:{profile}/metadata_results'"))
     }
 
 }
@@ -883,17 +883,17 @@ handle_indexed_node!(
     /// Access metadata indices (variable-length matching base ordinals
     /// per query) at an index. Expects an Ivvec32 handle.
     ///
-    /// Signature: `metadata_indices_at(handle, index: u64) -> VecI32`
-    MetadataIndicesAt, "metadata_indices_at", VecI32, facet = "metadata_indices", eval = ivvec32_vec_at
+    /// Signature: `metadata_results_at(handle, index: u64) -> VecI32`
+    MetadataResultsAt, "metadata_results_at", VecI32, facet = "metadata_results", eval = ivvec32_vec_at
 );
 
 handle_indexed_node!(
-    /// Return the length of one metadata_indices record without
+    /// Return the length of one metadata_results record without
     /// loading the data (reads only the 4-byte header). Expects an
     /// Ivvec32 handle.
     ///
-    /// Signature: `metadata_indices_len_at(handle, index: u64) -> (u64)`
-    MetadataIndicesLenAt, "metadata_indices_len_at", U64, facet = "metadata_indices",
+    /// Signature: `metadata_results_len_at(handle, index: u64) -> (u64)`
+    MetadataResultsLenAt, "metadata_results_len_at", U64, facet = "metadata_results",
     eval = |h: &DatasetHandle, idx: usize| match h {
         DatasetHandle::Ivvec32(d) if d.count > 0 => {
             let len = d.reader.dim_at(idx % d.count).unwrap_or(0);
@@ -906,7 +906,7 @@ handle_indexed_node!(
 handle_metadata_node!(
     /// Return the metadata indices count (number of predicate result
     /// sets). Expects an Ivvec32 handle.
-    MetadataIndicesCount, "metadata_indices_count", U64,
+    MetadataResultsCount, "metadata_results_count", U64,
     eval = |h: &DatasetHandle| match h {
         DatasetHandle::Ivvec32(d) => Value::U64(d.count as u64),
         _ => Value::U64(0),
@@ -1460,10 +1460,10 @@ pub fn signatures() -> &'static [FuncSig] {
         sig_handle_indexed!("filtered_neighbor_distances_at", DefaultResolver::Facet("filtered_neighbor_distances"),
             "filtered ground-truth neighbor distances",
             "Read filtered ground-truth distances for a query as a typed VecF32."),
-        sig_handle_indexed!("metadata_indices_len_at", DefaultResolver::Facet("metadata_indices"),
+        sig_handle_indexed!("metadata_results_len_at", DefaultResolver::Facet("metadata_results"),
             "length of metadata indices for a query",
             "Return the per-record matching-base count for a query without\nloading the full index list (reads only the 4-byte header)."),
-        sig_handle_indexed!("metadata_indices_at", DefaultResolver::Facet("metadata_indices"),
+        sig_handle_indexed!("metadata_results_at", DefaultResolver::Facet("metadata_results"),
             "matching base ordinals for a query predicate",
             "Variable-length list of base vector ordinals matching a query's\npredicate."),
         sig_handle_indexed!("metadata_value_at", DefaultResolver::Facet("metadata_content"),
@@ -1486,7 +1486,7 @@ pub fn signatures() -> &'static [FuncSig] {
         sig_handle_metadata!("neighbor_count", DefaultResolver::Facet("neighbor_indices"),
             "ground-truth neighbors per query (maxk)",
             "Return the per-record neighbor count (k) of a neighbor-indices handle."),
-        sig_handle_metadata!("metadata_indices_count", DefaultResolver::Facet("metadata_indices"),
+        sig_handle_metadata!("metadata_results_count", DefaultResolver::Facet("metadata_results"),
             "number of predicate result sets",
             "Return the record count of a metadata-indices handle."),
         sig_handle_metadata!("metadata_content_count", DefaultResolver::Facet("metadata_content"),
@@ -1557,9 +1557,9 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef
         "vector_count" => Some(Ok(Box::new(VectorCount::new()) as Box<dyn crate::ast::PolydatNode>)),
         "query_count" => Some(Ok(Box::new(QueryCount::new()) as Box<dyn crate::ast::PolydatNode>)),
         "neighbor_count" => Some(Ok(Box::new(NeighborCount::new()) as Box<dyn crate::ast::PolydatNode>)),
-        "metadata_indices_len_at" => Some(Ok(Box::new(MetadataIndicesLenAt::new()) as Box<dyn crate::ast::PolydatNode>)),
-        "metadata_indices_at" => Some(Ok(Box::new(MetadataIndicesAt::new()) as Box<dyn crate::ast::PolydatNode>)),
-        "metadata_indices_count" => Some(Ok(Box::new(MetadataIndicesCount::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "metadata_results_len_at" => Some(Ok(Box::new(MetadataResultsLenAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "metadata_results_at" => Some(Ok(Box::new(MetadataResultsAt::new()) as Box<dyn crate::ast::PolydatNode>)),
+        "metadata_results_count" => Some(Ok(Box::new(MetadataResultsCount::new()) as Box<dyn crate::ast::PolydatNode>)),
         "dataset_facets" => Some(Ok(Box::new(DatasetFacets::new()) as Box<dyn crate::ast::PolydatNode>)),
         "dataset_profile_count" => Some(Ok(Box::new(DatasetProfileCount::new()) as Box<dyn crate::ast::PolydatNode>)),
         "dataset_profile_names" => Some(Ok(Box::new(DatasetProfileNames::new()) as Box<dyn crate::ast::PolydatNode>)),

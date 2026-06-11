@@ -18,6 +18,8 @@ pub fn root() -> Command {
         category: Category::Tools,
         level: Level::Workload,
         flags: Vec::new(),
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         handler: None,
         raw_args: false,

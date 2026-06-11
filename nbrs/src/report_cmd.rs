@@ -2468,10 +2468,49 @@ fn report_subleaf(subname: &'static str, help: &'static str)
         argv.extend(p.raw.iter().cloned());
         report_command(&argv, KindFilter::Any);
     }
+    // Common selection flags for every report subcommand; `show`
+    // additionally completes stored item names on `--name`.
+    let mut flags = vec![
+        crate::cli_spec::Flag {
+            long: "--db", short: None, aliases: &[],
+            arity: crate::cli_spec::Arity::Value,
+            value: crate::cli_spec::ValueProvider::Path,
+            help: "Metrics database path (default: logs/latest/metrics.db).",
+            repeatable: false,
+        },
+        crate::cli_spec::Flag {
+            long: "--session", short: None, aliases: &[],
+            arity: crate::cli_spec::Arity::Value,
+            value: crate::cli_spec::ValueProvider::Custom(
+                crate::completion::session_name_provider),
+            help: "Session name or path.",
+            repeatable: false,
+        },
+        crate::cli_spec::Flag {
+            long: "--workload", short: None, aliases: &[],
+            arity: crate::cli_spec::Arity::Value,
+            value: crate::cli_spec::ValueProvider::Custom(
+                crate::completion::workload_positional_provider),
+            help: "Workload file providing the report: block.",
+            repeatable: false,
+        },
+    ];
+    if subname == "show" {
+        flags.push(crate::cli_spec::Flag {
+            long: "--name", short: None, aliases: &[],
+            arity: crate::cli_spec::Arity::Value,
+            value: crate::cli_spec::ValueProvider::Custom(
+                crate::completion::report_any_name_provider),
+            help: "Stored report item name.",
+            repeatable: false,
+        });
+    }
     Command {
         name: subname, help,
         category: Category::Tools, level: Level::Secondary,
-        flags: Vec::new(),
+        flags,
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(h(subname))),
@@ -2512,6 +2551,8 @@ pub fn spec() -> crate::cli_spec::Command {
         category: Category::Tools,
         level: Level::Secondary,
         flags: Vec::new(),
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         handler: Some(Handler::Sync(handle)),
         raw_args: true,
@@ -2538,6 +2579,7 @@ pub fn spec() -> crate::cli_spec::Command {
             // `nbrs report list`, the bare form is the shortcut.
             report_subleaf("list",    "List figures defined in the report."),
             report_subleaf("all",     "Render every report item."),
+            report_subleaf("show",    "Render one stored item by name."),
             report_subleaf("figure",  "Render by figure number / range."),
             rename_subleaf(),
             scratch_subleaf(),
@@ -2609,6 +2651,8 @@ fn kind_subleaf(
         name: subname, help,
         category: Category::Tools, level: Level::Secondary,
         flags: Vec::new(),
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(handler),
@@ -2654,6 +2698,8 @@ fn rename_subleaf() -> crate::cli_spec::Command {
                 repeatable: false,
             },
         ],
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
@@ -2692,7 +2738,9 @@ fn scratch_subleaf() -> crate::cli_spec::Command {
             name, help,
             category: Category::Tools, level: Level::Secondary,
             flags: Vec::new(),
-            positionals: Vec::new(),
+            kv_params: &[],
+        dynamic_options: None,
+        positionals: Vec::new(),
             subcommands: Vec::new(),
             handler: Some(Handler::Sync(handler)),
             raw_args: true,
@@ -2705,6 +2753,8 @@ fn scratch_subleaf() -> crate::cli_spec::Command {
         category: Category::Tools,
         level: Level::Secondary,
         flags: Vec::new(),
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         handler: None,
         raw_args: false,
@@ -2730,6 +2780,8 @@ pub fn plot_alias_spec() -> crate::cli_spec::Command {
         category: Category::Tools,
         level: Level::Secondary,
         flags: Vec::new(),
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
@@ -2751,6 +2803,8 @@ pub fn table_alias_spec() -> crate::cli_spec::Command {
         category: Category::Tools,
         level: Level::Secondary,
         flags: Vec::new(),
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),

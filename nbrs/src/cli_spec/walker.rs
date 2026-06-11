@@ -231,6 +231,8 @@ mod tests {
             category: Category::Tools,
             level: Level::Secondary,
             flags,
+            kv_params: &[],
+        dynamic_options: None,
             positionals: Vec::new(),
             subcommands: Vec::new(),
             handler: None,
@@ -320,7 +322,8 @@ mod tests {
         let metrics = Command {
             name: "metrics", help: "",
             category: Category::Tools, level: Level::Secondary,
-            flags: Vec::new(), positionals: Vec::new(),
+            flags: Vec::new(), kv_params: &[],
+        dynamic_options: None, positionals: Vec::new(),
             subcommands: vec![list],
             handler: None, raw_args: false,
             completion_override: None,
@@ -328,7 +331,8 @@ mod tests {
         let root = Command {
             name: "nbrs", help: "",
             category: Category::Tools, level: Level::Secondary,
-            flags: Vec::new(), positionals: Vec::new(),
+            flags: Vec::new(), kv_params: &[],
+        dynamic_options: None, positionals: Vec::new(),
             subcommands: vec![metrics],
             handler: None, raw_args: false,
             completion_override: None,
@@ -346,7 +350,8 @@ mod tests {
         let root = Command {
             name: "nbrs", help: "",
             category: Category::Tools, level: Level::Secondary,
-            flags: Vec::new(), positionals: Vec::new(),
+            flags: Vec::new(), kv_params: &[],
+        dynamic_options: None, positionals: Vec::new(),
             subcommands: vec![leaf],
             handler: None, raw_args: false,
             completion_override: None,

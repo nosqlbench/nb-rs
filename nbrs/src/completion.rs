@@ -42,7 +42,7 @@ use veks_completion::{CategoryTag, CommandTree, LevelTag, Node, StrictNode, fn_p
 
 use nbrs_activity::adapter::registered_driver_names;
 use nbrs_activity::runner::{
-    KNOWN_PARAMS, resolve_workload_file_public, scenarios_in_workload_file,
+    resolve_workload_file_public, scenarios_in_workload_file,
 };
 
 // ---------------------------------------------------------------------------
@@ -118,42 +118,254 @@ impl LevelTag for Level {
 /// every command must declare both a category and a tap level
 /// or the build fails to compile (`StrictNode<true, true>`
 /// gating on `strict_command`).
-///
-/// Retained for legacy callers; main.rs uses
-/// `cli_spec::completion::build_command_tree(&root)` instead,
-/// so the spec is the single source of truth.
 pub fn build_tree() -> CommandTree {
     let root = crate::cli_spec::root::root();
-    let tree = crate::cli_spec::completion::build_command_tree(&root);
-    attach_global_value_providers(tree)
+    crate::cli_spec::completion::build_command_tree(&root)
 }
 
-/// Attach the cross-leaf value providers (`workload=`,
-/// `scenario=`, etc.) to a CommandTree. These aren't tied to
-/// a specific Command — they fire whenever the tab cursor sits
-/// on a matching token regardless of which leaf is active.
-///
-/// **Open gap:** the cli_spec model doesn't yet express
-/// "tree-global" value providers. Workaround for now: this
-/// function is called from main.rs after spec→tree
-/// conversion. Future veks-completion enhancement could lift
-/// global providers into the spec itself.
-pub fn attach_global_value_providers(tree: CommandTree) -> CommandTree {
-    tree
-        .global_value_provider("workload=", fn_provider(workload_provider))
-        .global_value_provider("scenario=", fn_provider(scenario_provider))
-        .global_value_provider("adapter=", fn_provider(adapter_provider))
-        .global_value_provider("driver=", fn_provider(adapter_provider))
-        .global_value_provider("profiler=", fn_provider(static_profiler))
-        .global_value_provider("tui=", fn_provider(static_tui))
-        .global_value_provider("format=", fn_provider(static_stdout_format))
-        .global_value_provider("dryrun=", fn_provider(static_dryrun))
-        .global_value_provider("watch=", fn_provider(static_watch))
-        .global_value_provider("scope=", fn_provider(static_scope))
-        .global_value_provider("on_removed=", fn_provider(static_on_removed))
-        .global_value_provider("--socket", fn_provider(socket_path_provider))
-        .global_value_provider("--pid", fn_provider(pid_provider))
+/// Every `key=value` param the run-style grammar (`run`,
+/// `refine`) accepts — the same closed vocabulary as the
+/// runner's `KNOWN_PARAMS` allow-list — with a completion
+/// provider per key. veks-completion 1.3.1 removed tree-global
+/// providers — value completion is per-node — so these are
+/// declared on the commands that accept them via
+/// [`crate::cli_spec::Command::kv_params`]. Keys whose value
+/// space is free-form (cycles, rate, tags, …) carry
+/// [`free_form`] so they still appear as option tokens.
+pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
+    crate::cli_spec::KvParam { key: "workload=", provider: workload_provider },
+    crate::cli_spec::KvParam { key: "scenario=", provider: scenario_provider },
+    crate::cli_spec::KvParam { key: "adapter=", provider: adapter_provider },
+    crate::cli_spec::KvParam { key: "driver=", provider: adapter_provider },
+    crate::cli_spec::KvParam { key: "profiler=", provider: static_profiler },
+    crate::cli_spec::KvParam { key: "tui=", provider: static_tui },
+    crate::cli_spec::KvParam { key: "format=", provider: static_stdout_format },
+    crate::cli_spec::KvParam { key: "dryrun=", provider: static_dryrun },
+    crate::cli_spec::KvParam { key: "watch=", provider: static_watch },
+    crate::cli_spec::KvParam { key: "scope=", provider: static_scope },
+    crate::cli_spec::KvParam { key: "on_removed=", provider: static_on_removed },
+    crate::cli_spec::KvParam { key: "seq=", provider: static_seq },
+    crate::cli_spec::KvParam { key: "kernel_opt=", provider: static_kernel_opt },
+    crate::cli_spec::KvParam { key: "phases=", provider: workload_phase_provider },
+    crate::cli_spec::KvParam { key: "resume=", provider: session_name_provider },
+    crate::cli_spec::KvParam { key: "header=", provider: bool_values },
+    crate::cli_spec::KvParam { key: "color=", provider: bool_values },
+    crate::cli_spec::KvParam { key: "inspector=", provider: bool_values },
+    crate::cli_spec::KvParam { key: "resume_latest=", provider: bool_values },
+    crate::cli_spec::KvParam { key: "force_retry_failed=", provider: bool_values },
+    crate::cli_spec::KvParam { key: "profiler_callgraph=", provider: bool_values },
+    crate::cli_spec::KvParam { key: "schedule=", provider: static_schedule },
+    // Free-form value spaces — listed so the option completes,
+    // value typed freely.
+    crate::cli_spec::KvParam { key: "op=", provider: free_form },
+    crate::cli_spec::KvParam { key: "cycles=", provider: free_form },
+    crate::cli_spec::KvParam { key: "concurrency=", provider: free_form },
+    crate::cli_spec::KvParam { key: "rate=", provider: free_form },
+    crate::cli_spec::KvParam { key: "errors=", provider: free_form },
+    crate::cli_spec::KvParam { key: "error_rate_max=", provider: free_form },
+    crate::cli_spec::KvParam { key: "tags=", provider: free_form },
+    crate::cli_spec::KvParam { key: "filename=", provider: free_form },
+    crate::cli_spec::KvParam { key: "separator=", provider: free_form },
+    crate::cli_spec::KvParam { key: "stanza_concurrency=", provider: free_form },
+    crate::cli_spec::KvParam { key: "sc=", provider: free_form },
+    crate::cli_spec::KvParam { key: "summary=", provider: free_form },
+    crate::cli_spec::KvParam { key: "metrics=", provider: free_form },
+    crate::cli_spec::KvParam { key: "limit=", provider: free_form },
+    crate::cli_spec::KvParam { key: "latency_cadences=", provider: free_form },
+    crate::cli_spec::KvParam { key: "jobname=", provider: free_form },
+    crate::cli_spec::KvParam { key: "instance=", provider: free_form },
+    crate::cli_spec::KvParam { key: "prompush_apikeyfile=", provider: free_form },
+    crate::cli_spec::KvParam { key: "trace=", provider: free_form },
+];
+
+// ── Closed-set / dynamic value providers (audit 2026-06-11) ──
+
+/// Free-form value space: the key completes as an option, the
+/// value is typed freely.
+pub(crate) fn free_form(_partial: &str, _ctx: &[&str]) -> Vec<String> {
+    Vec::new()
 }
+
+pub(crate) fn bool_values(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["true", "false"], partial)
+}
+
+fn static_seq(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["bucket", "interval", "concat"], partial)
+}
+
+fn static_kernel_opt(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["release", "diagnostic"], partial)
+}
+
+fn static_schedule(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["*"], partial)
+}
+
+pub(crate) fn session_reuse_values(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["error", "restart", "resume"], partial)
+}
+
+/// Existing session names: directory names under `./logs`
+/// (the SRD-04 session umbrella), `latest` included — it is a
+/// valid `--session` target.
+pub(crate) fn session_name_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir("logs") else { return Vec::new() };
+    let mut out: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with(partial))
+        .collect();
+    out.sort();
+    out
+}
+
+/// Distinct phase identities from the latest session's
+/// `phase_outcomes` table (SRD-76). Best-effort, same
+/// convention as [`execution_id_provider`].
+pub(crate) fn phase_name_db_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    let db_path = nbrs_activity::session::latest_metrics_db();
+    if !db_path.exists() {
+        return Vec::new();
+    }
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else { return Vec::new() };
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+         WHERE type='table' AND name='phase_outcomes')",
+        [],
+        |r| r.get::<_, i64>(0),
+    ).map(|n| n != 0).unwrap_or(false);
+    if !exists {
+        return Vec::new();
+    }
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT DISTINCT phase_name FROM phase_outcomes ORDER BY phase_name",
+    ) else { return Vec::new() };
+    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    rows.filter_map(|r| r.ok())
+        .filter(|n| n.starts_with(partial))
+        .collect()
+}
+
+/// `phases=` filter completion: phase names declared by the
+/// `workload=` already on the line (falls back to the latest
+/// session db when no workload is in context).
+fn workload_phase_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    for word in ctx {
+        if let Some(name) = word.strip_prefix("workload=") {
+            if let Some(text) = workload_text_for_completion(name) {
+                if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&text) {
+                    if let Some(phases) = doc.get("phases").and_then(|v| v.as_mapping()) {
+                        let mut out: Vec<String> = phases.keys()
+                            .filter_map(|k| k.as_str())
+                            .filter(|n| n.starts_with(partial))
+                            .map(|n| n.to_string())
+                            .collect();
+                        out.sort();
+                        return out;
+                    }
+                }
+            }
+            return Vec::new();
+        }
+    }
+    phase_name_db_provider(partial, ctx)
+}
+
+/// Inspector one-shot command names — the same canonical set
+/// the unix-socket server dispatches on.
+pub(crate) fn inspector_command_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    nbrs_tui::inspector_server::COMMAND_NAMES.iter()
+        .filter(|c| c.starts_with(partial))
+        .map(|c| c.to_string())
+        .collect()
+}
+
+/// Bind-address suggestions for `nbrs web --bind`.
+pub(crate) fn bind_addr_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["127.0.0.1", "0.0.0.0", "localhost", "::1"], partial)
+}
+
+/// Bundled catalog names (both tiers) — `nbrs copy <TAB>`.
+pub(crate) fn catalog_name_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    nbrs_workload::catalog::iter()
+        .map(|w| w.name.to_string())
+        .filter(|n| n.starts_with(partial))
+        .collect()
+}
+
+/// `nbrs describe workloads <TAB>`: catalog names plus the
+/// `examples` tier selector.
+pub(crate) fn describe_workloads_arg_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    let mut out = catalog_name_provider(partial, ctx);
+    if "examples".starts_with(partial) {
+        out.push("examples".to_string());
+    }
+    out.sort();
+    out
+}
+
+/// Directory-only completion (e.g. `nbrs diag query-labels
+/// <dbdir>`). Walks one level from the partial's parent.
+pub(crate) fn dirs_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    let (dir, name_prefix) = match partial.rfind('/') {
+        Some(i) => (&partial[..=i], &partial[i + 1..]),
+        None => ("./", partial),
+    };
+    let Ok(rd) = std::fs::read_dir(if dir.is_empty() { "./" } else { dir }) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with(name_prefix) && !n.starts_with('.'))
+        .map(|n| {
+            let base = if dir == "./" && !partial.starts_with("./") { "" } else { dir };
+            format!("{base}{n}/")
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Metric-family completion for `nbrs metrics list/show/groups
+/// <expr>` positionals.
+pub(crate) fn metric_family_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    metric_provider(partial, ctx)
+}
+
+/// Registered adapter names — `nbrs describe adapter <TAB>`.
+pub(crate) fn adapter_names_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    adapter_provider(partial, ctx)
+}
+
+/// Workload positional (file or catalog name) — `nbrs describe
+/// op <workload> …`.
+pub(crate) fn workload_positional_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    workload_provider(partial, ctx)
+}
+
+/// Benchmark topics — `nbrs bench <TAB>`.
+pub(crate) fn bench_topic_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["wiring"], partial)
+}
+
+/// Yaml/json document completion for `spec=` (OpenAPI source
+/// files). Reuses the workload file walker — same constraints
+/// (depth-capped cwd scan), no catalog names.
+pub(crate) fn spec_file_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    workload_file_candidates(partial)
+}
+
+
 
 /// Handle the `completions` subcommand:
 ///
@@ -375,75 +587,6 @@ fn flag_takes_value(cur: &str) -> bool {
 // Per-command nodes
 // ---------------------------------------------------------------------------
 
-/// Helper: build the leaf-level option list for `run`-shaped
-/// commands. Includes every workload param the runner knows
-/// about (with `=` suffixed to keep the cursor on the same
-/// token) plus a couple of bare flags.
-fn run_options() -> StrictNode<false, false> {
-    let mut opts: Vec<String> = KNOWN_PARAMS.iter()
-        .map(|k| format!("{k}="))
-        .collect();
-    opts.sort();
-    opts.dedup();
-    let opts_refs: Vec<&str> = opts.iter().map(|s| s.as_str()).collect();
-    StrictNode::leaf_with_flags(&opts_refs, &["--strict"])
-        .with_dynamic_options(workload_dynamic_params)
-}
-
-fn run_node() -> StrictNode<true, true> {
-    run_options()
-        .with_category(Category::Workloads.tag())
-        .with_level(Level::Workload.rank())
-}
-
-fn attach_node() -> StrictNode<true, true> {
-    StrictNode::leaf_with_flags(
-        &["--pid", "--socket", "-c", "--command", "tui=on", "tui=off"],
-        &["--no-tui"],
-    )
-        .with_category(Category::Shell.tag())
-        .with_level(Level::Workload.rank())
-}
-
-fn report_node() -> StrictNode<true, true> {
-    // `nbrs report ...` — SRD-64 dispatch tree. Each kind
-    // subcommand gets its own per-kind flag list sourced from
-    // `nbrs_workload::report::vocab`, so completion for
-    // `nbrs report plot --<TAB>` only offers flags applicable
-    // to plots (axis flags, marker flags, etc.) and the same
-    // for table / text / file / details.
-    //
-    // Per-flag value providers cover both closed sets
-    // (palette / line / marker / agg / xscale / yscale) and
-    // db-derived sets (--metric, --over, --by, --where).
-    StrictNode::group(vec![
-        ("plot",     kind_subcommand_node(nbrs_workload::report::Kind::Plot)),
-        ("table",    kind_subcommand_node(nbrs_workload::report::Kind::Table)),
-        ("text",     kind_subcommand_node(nbrs_workload::report::Kind::Text)),
-        ("file",     kind_subcommand_node(nbrs_workload::report::Kind::File)),
-        ("details",  kind_subcommand_node(nbrs_workload::report::Kind::Details)),
-        ("list",     Node::leaf_with_flags(
-            &["--db", "--session", "--workload"], &[])),
-        ("all",      Node::leaf_with_flags(
-            &["--db", "--session", "--workload"], &["--rebuild"])),
-        ("show",     Node::leaf_with_flags(
-            &["--db", "--session", "--workload"], &[])
-            .with_value_provider("--name", fn_provider(report_any_name_provider))),
-        ("figure",   Node::leaf_with_flags(
-            &["--db", "--session", "--workload"], &[])),
-        ("rename",   Node::leaf_with_flags(
-            &["--workload", "--session", "--db"],
-            &["--replace", "--dry-run"])),
-        ("scratch",  Node::group(vec![
-            ("list",    Node::leaf_with_flags(&["--session", "--db"], &[])),
-            ("clean",   Node::leaf_with_flags(&["--session", "--db"], &[])),
-            ("promote", Node::leaf_with_flags(&["--session", "--db", "--workload"], &[])),
-        ])),
-    ])
-        .with_category(Category::Tools.tag())
-        .with_level(Level::Secondary.rank())
-}
-
 /// Build the per-kind subcommand node from the SRD-64 vocab
 /// registry. Every flag applicable to `kind` is exposed; closed-
 /// set value providers attach for directives whose vocab entry
@@ -504,7 +647,9 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
     node = node
         .with_value_provider("--name", fn_provider(report_any_name_provider))
         .with_value_provider("--at", fn_provider(at_anchor_provider))
-        .with_value_provider("--contextual", fn_provider(contextual_mode_provider));
+        .with_value_provider("--contextual", fn_provider(contextual_mode_provider))
+        .with_value_provider("--session", fn_provider(session_name_provider))
+        .with_value_provider("--workload", fn_provider(workload_positional_provider));
 
     node
 }
@@ -698,7 +843,19 @@ fn completions_node() -> StrictNode<true, true> {
 // ---------------------------------------------------------------------------
 
 fn workload_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    workload_file_candidates(partial)
+    let mut out = workload_file_candidates(partial);
+    // SRD-85: bundled workloads run by catalog name from any
+    // directory — offer them alongside local files. Both tiers
+    // complete (examples are hidden from the default *listing*,
+    // not from use).
+    out.extend(
+        nbrs_workload::catalog::iter()
+            .map(|w| w.name.to_string())
+            .filter(|n| n.starts_with(partial)),
+    );
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn scenario_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
@@ -812,7 +969,7 @@ fn static_watch(partial: &str, _ctx: &[&str]) -> Vec<String> {
 
 /// Inspector socket discovery — same logic as the legacy
 /// `nbrs-activity::completions::socket_path_candidates`.
-fn socket_path_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+pub(crate) fn socket_path_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
@@ -832,7 +989,7 @@ fn socket_path_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     out
 }
 
-fn pid_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+pub(crate) fn pid_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
@@ -859,7 +1016,7 @@ fn pid_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
 /// the session db has persisted). Kind-filtered providers stay
 /// separate so `nbrs plot` / `nbrs table` aliases offer only
 /// their own kind.
-fn report_any_name_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+pub(crate) fn report_any_name_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
     let mut all: Vec<String> = Vec::new();
     if let Some(path) = workload_from_context(ctx) {
         all.extend(crate::plot_metrics::list_workload_plot_names(&path));
@@ -1173,7 +1330,7 @@ fn db_path_from_context(ctx: &[&str]) -> std::path::PathBuf {
 /// Dynamic option discovery: when a `workload=…` is on the
 /// line, parse the workload file and surface its declared
 /// `params:` keys as completion targets.
-fn workload_dynamic_params(_partial: &str, ctx: &[&str]) -> Vec<String> {
+pub(crate) fn workload_dynamic_params(_partial: &str, ctx: &[&str]) -> Vec<String> {
     let mut workload_path: Option<String> = None;
     for word in ctx {
         if let Some(p) = word.strip_prefix("workload=") {
@@ -1697,6 +1854,8 @@ pub fn spec() -> crate::cli_spec::Command {
             help: "bash | zsh | fish | elvish | powershell. Omit for activation line.",
             repeatable: false,
         }],
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),

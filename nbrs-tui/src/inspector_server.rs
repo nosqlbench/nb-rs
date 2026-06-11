@@ -226,11 +226,11 @@ pub(crate) fn dispatch(
     }
 }
 
-/// Canonical command names. `pub(crate)` so the in-process
-/// nb-shell prompt (`crate::prompt_state`) can power Tab
-/// completion against the same set the unix-socket inspector
-/// accepts.
-pub(crate) const COMMAND_NAMES: &[&str] = &[
+/// Canonical command names. `pub` so both the in-process
+/// nb-shell prompt (`crate::prompt_state`) and the nbrs CLI's
+/// `attach --command` completion power Tab against the same
+/// set the unix-socket inspector accepts.
+pub const COMMAND_NAMES: &[&str] = &[
     "commands",
     "help",
     "meta",

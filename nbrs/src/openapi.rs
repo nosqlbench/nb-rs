@@ -222,6 +222,23 @@ pub async fn run_command(args: &[String]) {
 /// historical `describe_command(args)` arg-style entry point
 /// into the [`crate::cli_spec::Command`] surface used by the
 /// rest of the CLI (see `cli_spec/root.rs`).
+/// `spec=` names the OpenAPI document on disk.
+static OPENAPI_DESCRIBE_KV: &[crate::cli_spec::KvParam] = &[crate::cli_spec::KvParam {
+    key: "spec=",
+    provider: crate::completion::spec_file_provider,
+}];
+
+static OPENAPI_RUN_KV: &[crate::cli_spec::KvParam] = &[
+    crate::cli_spec::KvParam {
+        key: "spec=",
+        provider: crate::completion::spec_file_provider,
+    },
+    crate::cli_spec::KvParam {
+        key: "adapter=",
+        provider: crate::completion::adapter_names_provider,
+    },
+];
+
 pub fn describe_spec() -> crate::cli_spec::Command {
     use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
     fn handle(p: ParsedCommand) -> Result<(), String> {
@@ -234,6 +251,8 @@ pub fn describe_spec() -> crate::cli_spec::Command {
         category: Category::Documentation,
         level: Level::FullSurface,
         flags: Vec::new(),
+        kv_params: OPENAPI_DESCRIBE_KV,
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
@@ -258,6 +277,8 @@ pub fn run_spec() -> crate::cli_spec::Command {
         category: Category::Documentation,
         level: Level::FullSurface,
         flags: Vec::new(),
+        kv_params: OPENAPI_RUN_KV,
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),

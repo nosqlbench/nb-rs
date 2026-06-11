@@ -51,6 +51,8 @@ pub fn spec() -> Command {
         // `--on-removed=error|keep|drop`) in follow-up pushes;
         // for the MVP, the implicit default scope is `missing`.
         flags: crate::run::standard_run_flags(),
+        kv_params: crate::completion::RUN_KV_PARAMS,
+        dynamic_options: Some(crate::completion::workload_dynamic_params),
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Async(refine_handler)),

@@ -177,8 +177,8 @@ filtered_neighbor_indices_at(handle: Handle, index: u64) -> Str
 filtered_neighbor_distances_at(handle: Handle, index: u64) -> Str
 metadata_value_at(handle: Handle, index: u64) -> Str
 predicate_value_at(handle: Handle, index: u64) -> Str
-metadata_indices_at(handle: Handle, index: u64) -> Str
-metadata_indices_len_at(handle: Handle, index: u64) -> U64
+metadata_results_at(handle: Handle, index: u64) -> Str
+metadata_results_len_at(handle: Handle, index: u64) -> U64
 ```
 
 Per-cycle eval downcasts the handle (`Arc::downcast_ref`, no
@@ -195,7 +195,7 @@ vector_count(handle: Handle) -> U64
 vector_dim(handle: Handle) -> U64
 query_count(handle: Handle) -> U64
 neighbor_count(handle: Handle) -> U64
-metadata_indices_count(handle: Handle) -> U64
+metadata_results_count(handle: Handle) -> U64
 dataset_distance_function(handle: Handle) -> Str
 dataset_facets(handle: Handle) -> Str
 ```
@@ -369,7 +369,7 @@ into the request buffer.
 | `vector_dim(handle)` | `handle → u64` | Vector dimension |
 | `query_count(handle)` | `handle → u64` | Query vector count |
 | `neighbor_count(handle)` | `handle → u64` | Ground-truth k per query |
-| `metadata_indices_count(handle)` | `handle → u64` | Number of predicate result sets |
+| `metadata_results_count(handle)` | `handle → u64` | Number of predicate result sets |
 | `dataset_distance_function(handle)` | `handle → str` | Similarity metric name |
 | `dataset_facets(handle)` | `handle → str` | Comma-separated facet list |
 
@@ -377,8 +377,8 @@ into the request buffer.
 
 | Node | Signature | Description |
 |------|-----------|-------------|
-| `metadata_indices_len_at(handle, index)` | `handle, u64 → u64` | Match count for query (no data load) |
-| `metadata_indices_at(handle, index)` | `handle, u64 → str` | Matching base ordinals for query |
+| `metadata_results_len_at(handle, index)` | `handle, u64 → u64` | Match count for query (no data load) |
+| `metadata_results_at(handle, index)` | `handle, u64 → str` | Matching base ordinals for query |
 | `metadata_value_at(handle, index)` | `handle, u64 → str` | Decoded metadata at index |
 | `predicate_value_at(handle, index)` | `handle, u64 → str` | Decoded predicate at index |
 

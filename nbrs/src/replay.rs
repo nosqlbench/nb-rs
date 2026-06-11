@@ -447,7 +447,8 @@ pub fn spec() -> crate::cli_spec::Command {
             },
             Flag {
                 long: "--session", short: None, aliases: &[],
-                arity: Arity::Value, value: ValueProvider::None,
+                arity: Arity::Value,
+                value: ValueProvider::Custom(crate::completion::session_name_provider),
                 help: "SRD-04 session umbrella (path or name).",
                 repeatable: false,
             },
@@ -465,7 +466,8 @@ pub fn spec() -> crate::cli_spec::Command {
             },
             Flag {
                 long: "--phase", short: None, aliases: &[],
-                arity: Arity::Value, value: ValueProvider::None,
+                arity: Arity::Value,
+                value: ValueProvider::Custom(crate::completion::phase_name_db_provider),
                 help: "Filter to a single phase identity (SRD-76).",
                 repeatable: false,
             },
@@ -494,6 +496,8 @@ pub fn spec() -> crate::cli_spec::Command {
                 repeatable: false,
             },
         ],
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),

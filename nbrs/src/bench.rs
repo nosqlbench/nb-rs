@@ -1175,7 +1175,15 @@ pub fn spec() -> crate::cli_spec::Command {
         category: Category::Benchmark,
         level: Level::FullSurface,
         flags: Vec::new(),
-        positionals: Vec::new(),
+        kv_params: &[],
+        dynamic_options: None,
+        positionals: vec![crate::cli_spec::Positional {
+            name: "topic",
+            help: "Benchmark topic.",
+            kind: crate::cli_spec::PositionalKind::One,
+            value: crate::cli_spec::ValueProvider::Custom(
+                crate::completion::bench_topic_provider),
+        }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
         raw_args: true,

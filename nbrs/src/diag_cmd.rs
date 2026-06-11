@@ -53,6 +53,8 @@ pub fn spec() -> crate::cli_spec::Command {
         category: Category::Tools,
         level: Level::FullSurface,
         flags: Vec::new(),
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: vec![Command {
             name: "query-labels",
@@ -60,7 +62,15 @@ pub fn spec() -> crate::cli_spec::Command {
             category: Category::Tools,
             level: Level::FullSurface,
             flags: Vec::new(),
-            positionals: Vec::new(),
+            kv_params: &[],
+            dynamic_options: None,
+            positionals: vec![crate::cli_spec::Positional {
+                name: "dbdir",
+                help: "Dataset directory containing profiles/.",
+                kind: crate::cli_spec::PositionalKind::One,
+                value: crate::cli_spec::ValueProvider::Custom(
+                    crate::completion::dirs_provider),
+            }],
             subcommands: Vec::new(),
             handler: Some(Handler::Sync(handle_query_labels)),
             raw_args: true,

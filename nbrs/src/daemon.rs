@@ -490,7 +490,8 @@ pub fn spec() -> crate::cli_spec::Command {
         flags: vec![
             Flag {
                 long: "--bind", short: None, aliases: &[],
-                arity: Arity::Value, value: ValueProvider::None,
+                arity: Arity::Value,
+                value: ValueProvider::Custom(crate::completion::bind_addr_provider),
                 help: "Bind address (e.g. 127.0.0.1).",
                 repeatable: false,
             },
@@ -519,6 +520,8 @@ pub fn spec() -> crate::cli_spec::Command {
                 repeatable: false,
             },
         ],
+        kv_params: &[],
+        dynamic_options: None,
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),

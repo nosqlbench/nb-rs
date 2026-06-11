@@ -784,6 +784,8 @@ pub fn spec() -> Command {
         category: Category::Workloads,
         level: Level::Workload,
         flags: standard_run_flags(),
+        kv_params: crate::completion::RUN_KV_PARAMS,
+        dynamic_options: Some(crate::completion::workload_dynamic_params),
         positionals: Vec::new(),
         subcommands: Vec::new(),
         handler: Some(Handler::Async(run_handler)),
@@ -839,7 +841,8 @@ pub fn standard_run_flags() -> Vec<Flag> {
         },
         Flag {
             long: "--session", short: None, aliases: &[],
-            arity: Arity::Value, value: ValueProvider::None,
+            arity: Arity::Value,
+            value: ValueProvider::Custom(crate::completion::session_name_provider),
             help: "SRD-04 session umbrella (path or name).",
             repeatable: false,
         },
@@ -857,7 +860,8 @@ pub fn standard_run_flags() -> Vec<Flag> {
         },
         Flag {
             long: "--session-reuse", short: None, aliases: &[],
-            arity: Arity::Value, value: ValueProvider::None,
+            arity: Arity::Value,
+            value: ValueProvider::Custom(crate::completion::session_reuse_values),
             help: "Reuse policy for the chosen session.",
             repeatable: false,
         },
