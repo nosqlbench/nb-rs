@@ -1,6 +1,27 @@
 # 72: Workload `extends:` (single-parent composition)
 
-*Status: DESIGN — not yet implemented.*
+*Status: SHIPPED — implemented in `nbrs-workload/src/extends.rs`
+(audited 2026-06-10).* `load_and_merge` follows the chain with
+cycle detection (full-chain diagnostic), applies every merge
+rule in the table below on parsed JSON trees, strips `extends:`
+from the result, and re-serialises; `parse_workload_from_path`
+routes through it so validation and templating run once on the
+merged whole (the string-form `parse_workload` rejects
+`extends:` with a no-resolution-context error, as specced under
+"Implementation hook"). Coverage: in-module unit tests pin the
+core rules (per-key child-wins, bindings concat order +
+trailing-newline handling, `status_metrics` union with
+first-occurrence dedup, `extends` stripping, per-name phase
+replace); the file-level 16-case matrix under "Test plan" is
+not fully realised as `nbrs-workload/tests/extends.rs` — the
+chain/cycle/missing-target paths are exercised through the
+loader but not individually pinned. SRD-85 (2026-06-11) added
+catalog-name resolution of `extends:` targets: local-first,
+then catalog (extension-stripped exact name, then
+namespace-relative for bundled origins), with a fatal
+local-vs-catalog ambiguity error; e2e coverage in
+`nbrs/tests/bundled_workloads.rs` pins extends-from-bundled
+and bundled-sibling resolution through the real loader.
 
 A workload YAML file MAY declare a single parent workload at the
 top level via `extends: <relative-path>`. The parser merges the

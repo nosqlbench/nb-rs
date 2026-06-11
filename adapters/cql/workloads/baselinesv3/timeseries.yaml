@@ -1,0 +1,205 @@
+# Copyright 2024-2026 Jonathan Shook
+# SPDX-License-Identifier: Apache-2.0
+#
+# baselinesv3/timeseries — time-series baseline. The op shapes
+# (TWCS time-series schema keyed by (machine, sensor) with DESC
+# time clustering, timestamped inserts via USING TIMESTAMP,
+# recent-window reads) are taken from the nosqlbench heritage
+# workload; everything else is native nbrs:
+#
+#   - Every knob is a declared param flowing into bindings as a
+#     typed const wire — discoverable via `describe workloads`,
+#     CLI-overridable, `set:`-shadowable per scenario subtree.
+#   - The synthetic timeline is explicit: each source emits one
+#     reading per full pass of the source population, and
+#     `timespeed` sets the simulated milliseconds between a
+#     source's consecutive readings. Sensor values are normally
+#     distributed via the deterministic ICD sampler; sensor
+#     names come from an inline weighted set — no external data
+#     files anywhere.
+#   - Partition-aware rampup over the reading domain
+#     (`cursor=` for smoke / resume / sharding), ride-through
+#     retry on transient write timeouts.
+#   - Time-boxed main: runs for `main_ms` of wall-clock,
+#     ingest-heavy 9:1 as in the heritage baseline.
+#   - Validated at startup: sources, stations, timeline speed,
+#     and the read window are predicate-guarded.
+
+description: |
+  CQL time-series baseline (v3): IoT-style readings keyed by
+  (machine_id, sensor_name) with DESC time clustering under
+  TimeWindowCompactionStrategy. Rampup ingests a deterministic
+  synthetic timeline (sliceable via `cursor=`); the time-boxed
+  main phase mixes timestamped ingest with recent-window reads
+  9:1. Sensor values are normally distributed; all data is
+  generated inline — no external files. Every knob is a
+  declared, validated param. Requires a reachable CQL target
+  (`host=`).
+
+params:
+  host: localhost
+  adapter: cql
+  keyspace: baselines
+  table: iot
+  replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
+  read_cl: LOCAL_QUORUM
+  write_cl: LOCAL_QUORUM
+  concurrency: "100"
+  compression: LZ4Compressor
+  # TWCS window size, in minutes.
+  expiry_minutes: "60"
+  # Source population: machines emitting readings, grouped 100
+  # machines per station.
+  sources: "10000"
+  stations: "100"
+  # Simulated milliseconds between one source's consecutive
+  # readings.
+  timespeed: "100"
+  # Total readings ingested by rampup.
+  rampup_readings: "10000000"
+  # Rows returned per recent-window read.
+  read_window: "10"
+  # Main-phase wall-clock budget (ms) and extension chunk size.
+  main_ms: "60000"
+  main_chunk: "100000"
+  # Operator slice of the rampup reading domain (SRD-71 spec).
+  cursor: "0..100%"
+
+scenarios:
+  default:
+    - schema
+    - rampup
+    - main
+
+  schema_only:
+    - schema
+  rampup_only:
+    - rampup
+  main_only:
+    - main
+
+  # Empty the table without dropping schema (the heritage
+  # `truncate` scenario).
+  truncate:
+    - truncate_table
+
+  # Connectivity + ingest + read against 1% of the reading
+  # domain, with a short main budget.
+  smoke:
+    - schema
+    - set: { cursor: "0..1%", main_ms: "5000" }
+      phases:
+        - rampup
+        - main
+
+phases:
+
+  schema:
+    concurrency: 1
+    ops:
+      create_keyspace:
+        raw: |
+          CREATE KEYSPACE IF NOT EXISTS {keyspace}
+          WITH replication = {replication} AND durable_writes = true
+        memo:
+          before: "creating keyspace {keyspace}"
+      create_table:
+        raw: |
+          CREATE TABLE IF NOT EXISTS {keyspace}.{table} (
+            machine_id UUID,
+            sensor_name text,
+            time timestamp,
+            sensor_value double,
+            station_id UUID,
+            data text,
+            PRIMARY KEY ((machine_id, sensor_name), time)
+          ) WITH CLUSTERING ORDER BY (time DESC)
+            AND compression = { 'sstable_compression': '{compression}' }
+            AND compaction = {
+              'class': 'TimeWindowCompactionStrategy',
+              'compaction_window_size': {expiry_minutes},
+              'compaction_window_unit': 'MINUTES'
+            }
+        memo:
+          after: "schema ready: {keyspace}.{table}"
+
+  truncate_table:
+    concurrency: 1
+    ops:
+      truncate_table:
+        raw: "TRUNCATE TABLE {keyspace}.{table}"
+        memo:
+          after: "truncated {keyspace}.{table}"
+
+  # Deterministic synthetic-timeline ingest. Reading ordinal r:
+  #   source   = r % sources       (round-robin across machines)
+  #   tick     = r / sources       (that source's reading index)
+  #   time     = tick * timespeed  (simulated epoch millis)
+  # Writes carry USING TIMESTAMP in microseconds so re-running a
+  # slice upserts identically — rampup is idempotent, which is
+  # what makes `cursor=`-sliced resume safe.
+  rampup:
+    concurrency: "{concurrency}"
+    errors: "count,retry"
+    bindings: |
+      const srcs       := is_positive(sources)
+      const station_ct := is_positive(stations)
+      const tick_ms    := is_positive(timespeed)
+      cursor reading = range(0, is_positive(rampup_readings)) over cursor
+      source_ord   := u64_mod(reading, srcs)
+      machine_id   := hashed_uuid(source_ord)
+      station_id   := hashed_uuid(u64_mod(u64_div(source_ord, 100), station_ct))
+      sensor_name  := weighted_strings(hash(source_ord), "temperature:4,humidity:3,pressure:3,voltage:2,vibration:2,flow_rate:1,rpm:1,luminosity:1")
+      sim_ms       := u64_mul(u64_div(reading, srcs), tick_ms)
+      sensor_value := icd_normal(unit_interval(hash(reading)), 100.0, 5.0)
+      cell_ts      := u64_mul(sim_ms, 1000)
+      data         := hashed_lorem_extract(hash(reading), 800, 1200)
+    ops:
+      insert_rampup:
+        consistency: "{write_cl}"
+        idempotent: "true"
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+          (machine_id, sensor_name, time, sensor_value, station_id, data)
+          VALUES ({machine_id}, '{sensor_name}', {sim_ms}, {sensor_value}, {station_id}, '{data}')
+          USING TIMESTAMP {cell_ts}
+
+  # Time-boxed ingest/read mix, 9:1 ingest-heavy as in the
+  # heritage baseline (vary the mix by copying or extending this
+  # workload and adjusting the op ratios). Writes continue the
+  # synthetic timeline over random sources; reads pull the most
+  # recent `read_window` readings for a random (machine, sensor)
+  # series — the cheap path the DESC clustering is designed for.
+  main:
+    concurrency: "{concurrency}"
+    bindings: |
+      const srcs       := is_positive(sources)
+      const station_ct := is_positive(stations)
+      const tick_ms    := is_positive(timespeed)
+      const window     := in_range(read_window, 1, 10000)
+      cursor op = until_elapsed(main_chunk, main_ms)
+      source_ord   := u64_mod(hash(op), srcs)
+      machine_id   := hashed_uuid(source_ord)
+      station_id   := hashed_uuid(u64_mod(u64_div(source_ord, 100), station_ct))
+      sensor_name  := weighted_strings(hash(source_ord), "temperature:4,humidity:3,pressure:3,voltage:2,vibration:2,flow_rate:1,rpm:1,luminosity:1")
+      sim_ms       := u64_mul(u64_div(op, srcs), tick_ms)
+      sensor_value := icd_normal(unit_interval(hash(op)), 100.0, 5.0)
+      cell_ts      := u64_mul(sim_ms, 1000)
+      data         := hashed_lorem_extract(hash(op), 800, 1200)
+    ops:
+      select_read:
+        ratio: 1
+        consistency: "{read_cl}"
+        prepared: |
+          SELECT * FROM {keyspace}.{table}
+          WHERE machine_id = {machine_id} AND sensor_name = '{sensor_name}'
+          LIMIT {window}
+      insert_main:
+        ratio: 9
+        consistency: "{write_cl}"
+        idempotent: "true"
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+          (machine_id, sensor_name, time, sensor_value, station_id, data)
+          VALUES ({machine_id}, '{sensor_name}', {sim_ms}, {sensor_value}, {station_id}, '{data}')
+          USING TIMESTAMP {cell_ts}

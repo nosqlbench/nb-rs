@@ -1,0 +1,208 @@
+# Copyright 2024-2026 Jonathan Shook
+# SPDX-License-Identifier: Apache-2.0
+#
+# baselinesv3/tabular — tabular baseline. The op shapes
+# (partition+clustering schema, 8 graduated data fields,
+# partition-ordered rampup, field-subset reads with varied
+# LIMIT, full-row writes) are taken from the nosqlbench heritage
+# workload; everything else is native nbrs:
+#
+#   - Every knob is a declared param flowing into bindings as a
+#     typed const wire — discoverable via `describe workloads`,
+#     CLI-overridable, `set:`-shadowable per scenario subtree.
+#   - Validated at startup: partition geometry and the LIMIT
+#     spread are predicate-guarded, so bad CLI values fail with
+#     a named diagnostic before any op runs.
+#   - Payload text comes from the bundled lorem extractor — no
+#     external data files, identical on every machine. Field
+#     sizes follow the heritage Fibonacci-times-ten ladder with
+#     ±10% length variance.
+#   - Partition-aware rampup over the row domain: rows load
+#     partition-by-partition (all rows of a partition before
+#     the next), and `cursor=` slices that domain for smoke /
+#     resume / sharding.
+#   - Time-boxed main: runs for `main_ms` of wall-clock.
+
+description: |
+  CQL tabular baseline (v3): partitioned, clustered rows with
+  eight graduated text fields (Fibonacci-times-ten sizes, ±10%
+  variance). Rampup loads the row domain partition-by-partition
+  (sliceable via `cursor=`); the time-boxed main phase mixes
+  full-row writes with reads across varied field subsets and
+  LIMITs, keeping column-subset reconstruction cost visible in
+  the latency split. Every knob is a declared, validated param.
+  Requires a reachable CQL target (`host=`).
+
+params:
+  host: localhost
+  adapter: cql
+  keyspace: baselines
+  table: tabular
+  replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
+  read_cl: LOCAL_QUORUM
+  write_cl: LOCAL_QUORUM
+  concurrency: "100"
+  # Partition geometry: partcount partitions × partsize rows.
+  partcount: "1000"
+  partsize: "1000"
+  # Upper bound of the uniformly varied read LIMIT, [1, limit_spread].
+  limit_spread: "10"
+  # Main-phase wall-clock budget (ms) and extension chunk size.
+  main_ms: "60000"
+  main_chunk: "100000"
+  # Operator slice of the rampup row domain (SRD-71 spec).
+  cursor: "0..100%"
+
+scenarios:
+  default:
+    - schema
+    - rampup
+    - main
+
+  schema_only:
+    - schema
+  rampup_only:
+    - rampup
+  main_only:
+    - main
+
+  # Connectivity + both access paths against 1% of the row
+  # domain, with a short main budget.
+  smoke:
+    - schema
+    - set: { cursor: "0..1%", main_ms: "5000" }
+      phases:
+        - rampup
+        - main
+
+phases:
+
+  schema:
+    concurrency: 1
+    ops:
+      create_keyspace:
+        raw: |
+          CREATE KEYSPACE IF NOT EXISTS {keyspace}
+          WITH replication = {replication} AND durable_writes = true
+        memo:
+          before: "creating keyspace {keyspace}"
+      create_table:
+        raw: |
+          CREATE TABLE IF NOT EXISTS {keyspace}.{table} (
+            part text,
+            clust text,
+            data0 text, data1 text, data2 text, data3 text,
+            data4 text, data5 text, data6 text, data7 text,
+            PRIMARY KEY (part, clust)
+          )
+        memo:
+          after: "schema ready: {keyspace}.{table}"
+
+  # Partition-ordered load: row ordinal r lands in partition
+  # r / partsize at clustering position r % partsize, so every
+  # partition fills completely before the next begins — the
+  # heritage layout contract. Field lengths follow the
+  # Fibonacci ladder (10, 20, 30, 50, 80, 130, 210, 340) with
+  # ±10% hash variance.
+  rampup:
+    concurrency: "{concurrency}"
+    errors: "count,retry"
+    bindings: |
+      const parts         := is_positive(partcount)
+      const rows_per_part := is_positive(partsize)
+      cursor row = range(0, u64_mul(parts, rows_per_part)) over cursor
+      part_layout  := format_u64(u64_div(row, rows_per_part), 8)
+      clust_layout := format_u64(u64_mod(row, rows_per_part), 8)
+      data0 := hashed_lorem_extract(hash(u64_add(row, 1)), 9,   11)
+      data1 := hashed_lorem_extract(hash(u64_add(row, 2)), 18,  22)
+      data2 := hashed_lorem_extract(hash(u64_add(row, 3)), 27,  33)
+      data3 := hashed_lorem_extract(hash(u64_add(row, 4)), 45,  55)
+      data4 := hashed_lorem_extract(hash(u64_add(row, 5)), 72,  88)
+      data5 := hashed_lorem_extract(hash(u64_add(row, 6)), 117, 143)
+      data6 := hashed_lorem_extract(hash(u64_add(row, 7)), 189, 231)
+      data7 := hashed_lorem_extract(hash(u64_add(row, 8)), 306, 374)
+    ops:
+      rampup_insert:
+        consistency: "{write_cl}"
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+          (part, clust, data0, data1, data2, data3, data4, data5, data6, data7)
+          VALUES ('{part_layout}', '{clust_layout}',
+                  '{data0}', '{data1}', '{data2}', '{data3}',
+                  '{data4}', '{data5}', '{data6}', '{data7}')
+
+  # Time-boxed mix: full-row writes (ratio 8) against the eight
+  # heritage field-subset read shapes (ratio 1 each) with LIMIT
+  # varied uniformly in [1, limit_spread]. Vary the mix by
+  # copying or extending this workload and adjusting the op
+  # ratios.
+  main:
+    concurrency: "{concurrency}"
+    bindings: |
+      const parts         := is_positive(partcount)
+      const rows_per_part := is_positive(partsize)
+      const spread        := in_range(limit_spread, 1, 10000)
+      cursor op = until_elapsed(main_chunk, main_ms)
+      part_write  := format_u64(u64_mod(hash(op), parts), 8)
+      clust_write := format_u64(u64_mod(hash(u64_add(op, 1)), rows_per_part), 8)
+      part_read   := format_u64(u64_mod(hash(u64_add(op, 2)), parts), 8)
+      read_limit  := u64_add(u64_mod(hash(u64_add(op, 3)), spread), 1)
+      data0 := hashed_lorem_extract(hash(u64_add(op, 11)), 9,   11)
+      data1 := hashed_lorem_extract(hash(u64_add(op, 12)), 18,  22)
+      data2 := hashed_lorem_extract(hash(u64_add(op, 13)), 27,  33)
+      data3 := hashed_lorem_extract(hash(u64_add(op, 14)), 45,  55)
+      data4 := hashed_lorem_extract(hash(u64_add(op, 15)), 72,  88)
+      data5 := hashed_lorem_extract(hash(u64_add(op, 16)), 117, 143)
+      data6 := hashed_lorem_extract(hash(u64_add(op, 17)), 189, 231)
+      data7 := hashed_lorem_extract(hash(u64_add(op, 18)), 306, 374)
+    ops:
+      main_select_all:
+        ratio: 1
+        consistency: "{read_cl}"
+        prepared: |
+          SELECT * FROM {keyspace}.{table} WHERE part = '{part_read}' LIMIT {read_limit}
+      main_select_01:
+        ratio: 1
+        consistency: "{read_cl}"
+        prepared: |
+          SELECT data0, data1 FROM {keyspace}.{table} WHERE part = '{part_read}' LIMIT {read_limit}
+      main_select_0246:
+        ratio: 1
+        consistency: "{read_cl}"
+        prepared: |
+          SELECT data0, data2, data4, data6 FROM {keyspace}.{table} WHERE part = '{part_read}' LIMIT {read_limit}
+      main_select_1357:
+        ratio: 1
+        consistency: "{read_cl}"
+        prepared: |
+          SELECT data1, data3, data5, data7 FROM {keyspace}.{table} WHERE part = '{part_read}' LIMIT {read_limit}
+      main_select_0123:
+        ratio: 1
+        consistency: "{read_cl}"
+        prepared: |
+          SELECT data0, data1, data2, data3 FROM {keyspace}.{table} WHERE part = '{part_read}' LIMIT {read_limit}
+      main_select_4567:
+        ratio: 1
+        consistency: "{read_cl}"
+        prepared: |
+          SELECT data4, data5, data6, data7 FROM {keyspace}.{table} WHERE part = '{part_read}' LIMIT {read_limit}
+      main_select_67:
+        ratio: 1
+        consistency: "{read_cl}"
+        prepared: |
+          SELECT data6, data7 FROM {keyspace}.{table} WHERE part = '{part_read}' LIMIT {read_limit}
+      main_select_data:
+        ratio: 1
+        consistency: "{read_cl}"
+        prepared: |
+          SELECT data0, data1, data2, data3, data4, data5, data6, data7
+          FROM {keyspace}.{table} WHERE part = '{part_read}' LIMIT {read_limit}
+      main_write:
+        ratio: 8
+        consistency: "{write_cl}"
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+          (part, clust, data0, data1, data2, data3, data4, data5, data6, data7)
+          VALUES ('{part_write}', '{clust_write}',
+                  '{data0}', '{data1}', '{data2}', '{data3}',
+                  '{data4}', '{data5}', '{data6}', '{data7}')

@@ -1,4 +1,4 @@
-* (5) Add bundled workloads
+* [x] Add bundled workloads — SRD-85 SHIPPED (docs/sysref/85_bundled_workloads.md): embedded catalog, describe workloads, copy, extends-through-catalog
 * (4) start formalizing nbrs runtime
 * [x] generalize execution model
 * [x] define the embedded expr contract

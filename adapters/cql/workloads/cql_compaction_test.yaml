@@ -27,6 +27,11 @@
 #   nbrs workload=cql_compaction_test.yaml
 #   nbrs workload=cql_compaction_test.yaml dataset=example profile=label_01
 
+description: |
+  CQL compaction-task visibility test: drives SAI-indexed writes,
+  forces flush + compaction over Jolokia, and asserts the
+  CompactionManager.Compactions attribute reports active tasks.
+  Requires a reachable Cassandra/CNDB node with Jolokia.
 params:
   adapter: cql
   dataset: example

@@ -1,0 +1,35 @@
+# Copyright 2024-2026 Jonathan Shook
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Concurrency-vs-throughput exploration against a simulated
+  service — no external system required.
+  The testkit adapter models a backend of `servers` parallel
+  workers, each taking `service_latency` per op. The scenario
+  sweeps client concurrency across three steps so the classic
+  capacity curve is observable in the per-phase throughput
+  numbers: linear scaling while concurrency <= servers, then
+  saturation at servers / service_latency.
+  Use it as a template: swap the testkit op for a real adapter's
+  op and the sweep structure carries over unchanged.
+
+params:
+  service_latency: "5ms"
+  servers: "4"
+  ops_per_step: "400"
+
+scenarios:
+  default:
+    - for: "conc in 1, 4, 16"
+      phases: [offered_load]
+
+phases:
+  offered_load:
+    cycles: "{ops_per_step}"
+    concurrency: "{conc}"
+    ops:
+      probe:
+        adapter: testkit
+        stmt: "capacity probe at concurrency {conc}"
+        result-latency: "{service_latency}"
+        result-capacity: "{servers}"

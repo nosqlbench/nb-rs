@@ -499,6 +499,10 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
     // Load workload — from inline op= or YAML file.
     let mut workload_file: Option<String> = None;
+    // SRD-85: true when the workload came from the bundled
+    // catalog — its identity is a catalog name, not a path, and
+    // relative resolution context falls back to the cwd.
+    let mut workload_is_bundled = false;
     let mut workload_source_text: Option<String> = None;
     let mut workload = if let Some(op_str) = params.get("op") {
         if params.contains_key("workload") {
@@ -515,28 +519,49 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             )
             .ok_or("no workload specified. Use workload=file.yaml or op=\"...\"")?;
 
-        // Resolve bare names: try as-is, then with .yaml/.yml, then under workloads/
-        let workload_path = resolve_workload_file(&workload_raw)
-            .ok_or_else(|| format!("workload not found: '{workload_raw}'"))?;
+        // SRD-85 resolution: local files first (as-is, with
+        // extensions, under cwd `workloads/`), then the bundled
+        // catalog by exact name. Both at once is a hard error.
+        match resolve_workload(&workload_raw)? {
+            ResolvedWorkload::Path(workload_path) => {
+                workload_file = Some(workload_path.clone());
 
-        workload_file = Some(workload_path.clone());
-
-        // SRD-72: parse_workload_from_path resolves any
-        // `extends:` chain before delegating to parse_workload.
-        // The merged YAML text is what the parser consumes; the
-        // raw on-disk text is still kept for diagnostic
-        // `<path>:<line>:<col>` reporting (no source-map across
-        // include boundaries today — diagnostics on inherited
-        // fields point at the merged-output position).
-        let yaml_source = std::fs::read_to_string(&workload_path)
-            .map_err(|e| format!("read workload '{workload_path}': {e}"))?;
-        let workload = nbrs_workload::parse::parse_workload_from_path(
-            std::path::Path::new(&workload_path),
-            &params,
-        )
-            .map_err(|e| format!("parse workload: {e}"))?;
-        workload_source_text = Some(yaml_source);
-        workload
+                // SRD-72: parse_workload_from_path resolves any
+                // `extends:` chain before delegating to parse_workload.
+                // The merged YAML text is what the parser consumes; the
+                // raw on-disk text is still kept for diagnostic
+                // `<path>:<line>:<col>` reporting (no source-map across
+                // include boundaries today — diagnostics on inherited
+                // fields point at the merged-output position).
+                let yaml_source = std::fs::read_to_string(&workload_path)
+                    .map_err(|e| format!("read workload '{workload_path}': {e}"))?;
+                let workload = nbrs_workload::parse::parse_workload_from_path(
+                    std::path::Path::new(&workload_path),
+                    &params,
+                )
+                    .map_err(|e| format!("parse workload: {e}"))?;
+                workload_source_text = Some(yaml_source);
+                workload
+            }
+            ResolvedWorkload::Bundled(bundled) => {
+                // Catalog name is the workload identity for the
+                // session (session.log, summaries, phase
+                // outcomes) — bundled runs have no path.
+                workload_file = Some(bundled.name.to_string());
+                workload_is_bundled = true;
+                // SRD-72 + SRD-85: a bundled workload's
+                // `extends:` chain resolves through the catalog
+                // (no directory context).
+                let merged = nbrs_workload::extends::load_and_merge_bundled(bundled)
+                    .map_err(|e| format!(
+                        "bundled workload `{}`: {e}", bundled.name))?;
+                let workload = nbrs_workload::parse::parse_workload(&merged, &params)
+                    .map_err(|e| format!(
+                        "parse bundled workload `{}`: {e}", bundled.name))?;
+                workload_source_text = Some(bundled.source.to_string());
+                workload
+            }
+        }
     };
 
     // Merge CLI params over workload params FIRST so synthesis
@@ -699,9 +724,16 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let wire_names = collect_polydat_binding_names(&workload);
 
         // Declared/known direction: every declared param must be
-        // referenced.
+        // referenced — except adapter-registered params, which
+        // the driver consumes directly from the merged params
+        // (e.g. `host`/`port`/`consistency` for CQL). Declaring
+        // one in `params:` is how a workload surfaces the knob
+        // with a default in `describe workloads` without a
+        // textual `{name}` reference.
         for name in &workload.declared_params {
-            if KNOWN_PARAMS.contains(&name.as_str()) {
+            if KNOWN_PARAMS.contains(&name.as_str())
+                || adapter_params.contains(name.as_str())
+            {
                 continue;
             }
             if !referenced.contains(name) {
@@ -1501,9 +1533,17 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
     // === Polydat Compilation ===
 
-    let workload_dir: Option<&std::path::Path> = workload_file.as_ref()
-        .and_then(|p| std::path::Path::new(p).parent())
-        .or_else(|| Some(std::path::Path::new(".")));
+    let workload_dir: Option<&std::path::Path> = if workload_is_bundled {
+        // A catalog name is not a path — don't derive a bogus
+        // directory from its namespace segments. Bundled
+        // workloads get the cwd as their relative-resolution
+        // context (same as inline workloads).
+        Some(std::path::Path::new("."))
+    } else {
+        workload_file.as_ref()
+            .and_then(|p| std::path::Path::new(p).parent())
+            .or_else(|| Some(std::path::Path::new(".")))
+    };
 
     let mut config_refs: Vec<String> = params.values()
         .filter(|v| v.starts_with('{') && v.ends_with('}'))
@@ -4469,6 +4509,33 @@ fn format_phase_config_suffix(phase: &nbrs_workload::model::WorkloadPhase) -> St
 
 /// Resolve a workload file path from a bare name.
 /// Tries: as-is, with .yaml/.yml extension, then under workloads/.
+/// SRD-85 resolution result: a local file path or a bundled
+/// catalog entry.
+pub enum ResolvedWorkload {
+    Path(String),
+    Bundled(&'static nbrs_workload::catalog::BundledWorkload),
+}
+
+/// Resolve a `workload=` value per SRD-85: local files first
+/// (exact path, extension probing, cwd `workloads/`), then the
+/// bundled catalog by exact name. A name that resolves both
+/// ways is a hard error — never silent shadowing; `./`-prefixed
+/// paths pin the local reading.
+pub fn resolve_workload(name: &str) -> Result<ResolvedWorkload, String> {
+    let local = resolve_workload_file(name);
+    let bundled = nbrs_workload::catalog::lookup(name);
+    match (local, bundled) {
+        (Some(local_path), Some(_)) => Err(format!(
+            "workload '{name}' is ambiguous — it names both the local file              {local_path} and a bundled workload. Prefix the path with `./`              to pin the local file, or rename it."
+        )),
+        (Some(local_path), None) => Ok(ResolvedWorkload::Path(local_path)),
+        (None, Some(b)) => Ok(ResolvedWorkload::Bundled(b)),
+        (None, None) => Err(format!(
+            "workload not found: '{name}'. Not a local file, and no bundled              workload by that name — `nbrs describe workloads` lists what              this binary carries."
+        )),
+    }
+}
+
 fn resolve_workload_file(name: &str) -> Option<String> {
     let p = std::path::Path::new(name);
     if p.exists() { return Some(name.to_string()); }

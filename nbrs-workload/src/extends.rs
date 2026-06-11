@@ -23,55 +23,96 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value as JVal;
 
+/// Where a workload in the `extends:` chain came from. SRD-85
+/// adds the bundled-catalog source: a bundled parent has no
+/// directory context, so its own `extends:` targets resolve
+/// through the catalog only.
+enum Source {
+    /// On-disk file (canonicalised lazily in the loader).
+    File(PathBuf),
+    /// Catalog entry — name + embedded text.
+    Bundled(&'static crate::catalog::BundledWorkload),
+}
+
 /// Load a workload YAML from disk, follow its `extends:` chain
 /// to completion, and return the merged YAML text ready for
 /// `parse::parse_workload`.
 ///
 /// The returned text has every `extends:` directive stripped.
 pub fn load_and_merge(path: &Path) -> Result<String, String> {
-    let mut chain: Vec<PathBuf> = Vec::new();
-    let merged_jval = load_recursive(path, &mut chain)?;
+    let mut chain: Vec<String> = Vec::new();
+    let merged_jval = load_recursive(Source::File(path.to_path_buf()), &mut chain)?;
     serde_yaml::to_string(&merged_jval)
         .map_err(|e| format!("re-serialising merged workload: {e}"))
 }
 
-/// Recursive loader: parses `path`, resolves any `extends:`,
-/// applies merge rules. `chain` is the parent-chain of files
-/// already being loaded, used for cycle detection.
-fn load_recursive(path: &Path, chain: &mut Vec<PathBuf>) -> Result<JVal, String> {
-    let canonical = path.canonicalize()
-        .map_err(|e| format!(
-            "extends: target not found: {} ({e})",
-            path.display()
-        ))?;
+/// SRD-85: load a bundled workload from the catalog, follow its
+/// `extends:` chain (catalog-resolved — a bundled workload has
+/// no directory context), and return the merged YAML text.
+pub fn load_and_merge_bundled(
+    bundled: &'static crate::catalog::BundledWorkload,
+) -> Result<String, String> {
+    let mut chain: Vec<String> = Vec::new();
+    let merged_jval = load_recursive(Source::Bundled(bundled), &mut chain)?;
+    serde_yaml::to_string(&merged_jval)
+        .map_err(|e| format!("re-serialising merged workload: {e}"))
+}
 
-    if let Some(idx) = chain.iter().position(|p| p == &canonical) {
-        return Err(format_cycle(chain, idx, &canonical));
+/// Recursive loader: parses the source, resolves any `extends:`,
+/// applies merge rules. `chain` is the parent-chain of sources
+/// already being loaded (canonical path or `bundled:<name>`
+/// keys), used for cycle detection.
+fn load_recursive(src: Source, chain: &mut Vec<String>) -> Result<JVal, String> {
+    // Resolve the source to (cycle key, display name, text,
+    // directory context for relative extends targets).
+    let (key, display, text, origin_dir): (String, String, String, Option<PathBuf>) = match &src
+    {
+        Source::File(path) => {
+            let canonical = path.canonicalize().map_err(|e| {
+                format!("extends: target not found: {} ({e})", path.display())
+            })?;
+            let text = std::fs::read_to_string(&canonical)
+                .map_err(|e| format!("read {}: {e}", canonical.display()))?;
+            let dir = canonical.parent().map(|p| p.to_path_buf());
+            (
+                canonical.display().to_string(),
+                canonical.display().to_string(),
+                text,
+                dir,
+            )
+        }
+        Source::Bundled(w) => (
+            format!("bundled:{}", w.name),
+            format!("bundled workload `{}`", w.name),
+            w.source.to_string(),
+            None,
+        ),
+    };
+
+    if let Some(idx) = chain.iter().position(|k| k == &key) {
+        return Err(format_cycle(chain, idx, &key));
     }
-
-    chain.push(canonical.clone());
-
-    let text = std::fs::read_to_string(&canonical)
-        .map_err(|e| format!("read {}: {e}", canonical.display()))?;
+    chain.push(key);
 
     let mut jval: JVal = serde_yaml::from_str(&text)
-        .map_err(|e| format!("YAML parse error in {}: {e}", canonical.display()))?;
+        .map_err(|e| format!("YAML parse error in {display}: {e}"))?;
 
-    let extends_target = extract_extends_field(&jval, &canonical)?;
+    let extends_target = extract_extends_field(&jval, &display)?;
 
     let result = if let Some(extends_str) = extends_target {
-        let parent_path = canonical.parent()
-            .ok_or_else(|| format!(
-                "{} has no parent directory to resolve `extends:` against",
-                canonical.display()
-            ))?
-            .join(&extends_str);
-
-        let parent_jval = load_recursive(&parent_path, chain)
-            .map_err(|e| format!(
-                "while loading {}'s parent {}: {e}",
-                canonical.display(), parent_path.display()
-            ))?;
+        let bundled_origin = match &src {
+            Source::Bundled(w) => Some(w.name),
+            Source::File(_) => None,
+        };
+        let parent_src =
+            resolve_extends_target(origin_dir.as_deref(), bundled_origin, &extends_str, &display)?;
+        let parent_display = match &parent_src {
+            Source::File(p) => p.display().to_string(),
+            Source::Bundled(w) => format!("bundled workload `{}`", w.name),
+        };
+        let parent_jval = load_recursive(parent_src, chain).map_err(|e| {
+            format!("while loading {display}'s parent {parent_display}: {e}")
+        })?;
 
         // Strip `extends:` from the child before merging so the
         // merge fn doesn't need to special-case it.
@@ -88,26 +129,80 @@ fn load_recursive(path: &Path, chain: &mut Vec<PathBuf>) -> Result<JVal, String>
     Ok(result)
 }
 
+/// Resolve an `extends:` target per the SRD-85 two-step order:
+/// local first (relative to the including file's directory, when
+/// there is one), then the bundled catalog. A target that
+/// resolves both ways is an error — never silent shadowing; the
+/// `./` prefix pins the local reading (catalog names never start
+/// with `./`).
+///
+/// Catalog candidates, in order:
+/// 1. The target as a catalog name (extension stripped — files
+///    extend siblings by filename, catalog names carry none).
+/// 2. For a bundled origin: the target resolved inside the
+///    origin's namespace (`cql/full_cql_vector_sweep` extending
+///    `full_cql_vector.yaml` finds `cql/full_cql_vector`), so
+///    the sibling-by-filename idiom works identically on disk
+///    and in the catalog.
+fn resolve_extends_target(
+    origin_dir: Option<&Path>,
+    bundled_origin: Option<&str>,
+    target: &str,
+    child_display: &str,
+) -> Result<Source, String> {
+    let local: Option<PathBuf> = origin_dir
+        .map(|d| d.join(target))
+        .filter(|p| p.exists());
+
+    let stem = target
+        .strip_suffix(".yaml")
+        .or_else(|| target.strip_suffix(".yml"))
+        .unwrap_or(target);
+    let stem = stem.strip_prefix("./").unwrap_or(stem);
+    let bundled = crate::catalog::lookup(stem).or_else(|| {
+        let ns = bundled_origin?.rsplit_once('/')?.0;
+        crate::catalog::lookup(&format!("{ns}/{stem}"))
+    });
+
+    match (local, bundled) {
+        (Some(local_path), Some(w)) => Err(format!(
+            "{child_display}: `extends: {target}` is ambiguous — it names both \
+             the local file {} and the bundled workload `{}`. Prefix the \
+             local path with `./` to pin the file, or rename it.",
+            local_path.display(),
+            w.name,
+        )),
+        (Some(local_path), None) => Ok(Source::File(local_path)),
+        (None, Some(w)) => Ok(Source::Bundled(w)),
+        (None, None) => {
+            let local_hint = origin_dir
+                .map(|d| format!("{}", d.join(target).display()))
+                .unwrap_or_else(|| {
+                    "<no directory context — bundled parents resolve targets \
+                     through the catalog>"
+                        .to_string()
+                });
+            Err(format!(
+                "{child_display}: `extends: {target}` not found — no file at \
+                 {local_hint} and no bundled workload named `{stem}`"
+            ))
+        }
+    }
+}
+
 /// Extract `extends:` as a string. Returns `Ok(None)` if absent,
 /// `Err` if present but malformed (non-string, empty, or nested
 /// inside something other than the top-level mapping).
-fn extract_extends_field(jval: &JVal, source: &Path) -> Result<Option<String>, String> {
+fn extract_extends_field(jval: &JVal, source: &str) -> Result<Option<String>, String> {
     let Some(obj) = jval.as_object() else {
-        return Err(format!(
-            "{} top level must be a YAML mapping",
-            source.display()
-        ));
+        return Err(format!("{source} top level must be a YAML mapping"));
     };
     let Some(v) = obj.get("extends") else { return Ok(None); };
     match v {
         JVal::String(s) if !s.is_empty() => Ok(Some(s.clone())),
-        JVal::String(_) => Err(format!(
-            "{}: `extends:` value is empty",
-            source.display()
-        )),
+        JVal::String(_) => Err(format!("{source}: `extends:` value is empty")),
         _ => Err(format!(
-            "{}: `extends:` must be a single scalar string, got {}",
-            source.display(),
+            "{source}: `extends:` must be a single scalar string, got {}",
             describe_kind(v)
         )),
     }
@@ -124,14 +219,14 @@ fn describe_kind(v: &JVal) -> &'static str {
     }
 }
 
-fn format_cycle(chain: &[PathBuf], cycle_start_idx: usize, repeat: &Path) -> String {
+fn format_cycle(chain: &[String], cycle_start_idx: usize, repeat: &str) -> String {
     let mut out = String::from("extends: cycle detected\n");
     for (i, p) in chain.iter().enumerate() {
         let arrow = if i == 0 { "  " } else { "  → " };
-        out.push_str(&format!("{arrow}{}\n", p.display()));
+        out.push_str(&format!("{arrow}{p}\n"));
         let _ = cycle_start_idx; // referenced for clarity below
     }
-    out.push_str(&format!("  → {}  (cycle)\n", repeat.display()));
+    out.push_str(&format!("  → {repeat}  (cycle)\n"));
     out
 }
 

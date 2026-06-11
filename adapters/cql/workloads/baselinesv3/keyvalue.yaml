@@ -1,0 +1,145 @@
+# Copyright 2024-2026 Jonathan Shook
+# SPDX-License-Identifier: Apache-2.0
+#
+# baselinesv3/keyvalue — key-value baseline. The op shapes
+# (schema, sequential rampup insert, random read/write mix) are
+# taken from the nosqlbench heritage workload; everything else
+# is native nbrs:
+#
+#   - Every knob is a declared param: discoverable via
+#     `nbrs describe workloads cql/baselinesv3/keyvalue`,
+#     overridable on the CLI (`keycount=10000000`), and
+#     shadowable per scenario subtree via `set:`. Params flow
+#     into bindings as typed const wires — no macro layer.
+#   - Validated at startup: `is_positive(...)` guards reject
+#     zero/garbage values with a named diagnostic before any
+#     op runs.
+#   - Partition-aware rampup: `cursor=` slices the key range
+#     for smoke runs (`cursor=0..1%`), resume
+#     (`cursor=50%..100%`), or sharding across load generators
+#     (`cursor=0..25%` per box). Phase-scoped form works too:
+#     `rampup.cursor=…`.
+#   - Time-boxed main: the mixed phase runs for `main_ms` of
+#     wall-clock instead of a guessed cycle count, extending in
+#     whole `main_chunk` passes for stable rate windows.
+#   - Ride-through rampup errors: transient write timeouts are
+#     counted and retried instead of halting the load.
+
+description: |
+  CQL key-value baseline (v3): text keys, text values — the
+  simplest schema for measuring raw operation capacity.
+  Sequential rampup writes every key once (sliceable via
+  `cursor=` for smoke, resume, or multi-generator sharding);
+  the time-boxed main phase mixes uniform random reads and
+  writes 1:1. Every knob is a declared, validated param.
+  Requires a reachable CQL target (`host=`).
+
+params:
+  host: localhost
+  adapter: cql
+  keyspace: baselines
+  table: keyvalue
+  replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
+  read_cl: LOCAL_QUORUM
+  write_cl: LOCAL_QUORUM
+  concurrency: "100"
+  # Key/value population sizes. Rampup covers every key once;
+  # main draws uniformly from the same key population.
+  keycount: "1000000"
+  valuecount: "1000000000"
+  # Main-phase wall-clock budget (ms) and extension chunk size.
+  main_ms: "60000"
+  main_chunk: "100000"
+  # Operator slice of the rampup key range (SRD-71 spec):
+  # 0..1% smoke, 50%..100% resume, etc.
+  cursor: "0..100%"
+
+scenarios:
+  default:
+    - schema
+    - rampup
+    - main
+
+  # Schema / load / run as separately invocable steps.
+  schema_only:
+    - schema
+  rampup_only:
+    - rampup
+  main_only:
+    - main
+
+  # Short smoke against 1% of the key population: proves
+  # connectivity, schema, and both access paths without a bulk
+  # load. `set:` shadows the params over the inner phases — no
+  # CLI flags needed.
+  smoke:
+    - schema
+    - set: { cursor: "0..1%", main_ms: "5000" }
+      phases:
+        - rampup
+        - main
+
+phases:
+
+  schema:
+    concurrency: 1
+    ops:
+      create_keyspace:
+        raw: |
+          CREATE KEYSPACE IF NOT EXISTS {keyspace}
+          WITH replication = {replication} AND durable_writes = true
+        memo:
+          before: "creating keyspace {keyspace}"
+      create_table:
+        raw: |
+          CREATE TABLE IF NOT EXISTS {keyspace}.{table} (
+            key text,
+            value text,
+            PRIMARY KEY (key)
+          )
+        memo:
+          after: "schema ready: {keyspace}.{table}"
+
+  # Sequential full-coverage load: every key in [0, keycount)
+  # written exactly once, values hashed so they never collide
+  # with main-phase rewrites. The cursor walks the (possibly
+  # `cursor=`-narrowed) key range exactly once — no wraparound,
+  # no gaps.
+  rampup:
+    concurrency: "{concurrency}"
+    errors: "count,retry"
+    bindings: |
+      const keys := is_positive(keycount)
+      cursor row = range(0, keys) over cursor
+      seq_key   := format_u64(row, 10)
+      seq_value := format_u64(u64_mod(hash(row), is_positive(valuecount)), 10)
+    ops:
+      rampup_insert:
+        consistency: "{write_cl}"
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+          (key, value) VALUES ('{seq_key}', '{seq_value}')
+
+  # Time-boxed random read/write mix over the known population,
+  # 1:1 as in the heritage baseline (vary the mix by copying or
+  # extending this workload and adjusting the op ratios). The op
+  # cursor extends in whole `main_chunk` passes until `main_ms`
+  # of wall-clock has elapsed.
+  main:
+    concurrency: "{concurrency}"
+    bindings: |
+      cursor op = until_elapsed(main_chunk, main_ms)
+      rw_key   := format_u64(u64_mod(hash(op), is_positive(keycount)), 10)
+      rw_value := format_u64(u64_mod(hash(hash(op)), is_positive(valuecount)), 10)
+    ops:
+      main_select:
+        ratio: 5
+        consistency: "{read_cl}"
+        prepared: |
+          SELECT * FROM {keyspace}.{table} WHERE key = '{rw_key}'
+      main_insert:
+        ratio: 5
+        consistency: "{write_cl}"
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+          (key, value) VALUES ('{rw_key}', '{rw_value}')

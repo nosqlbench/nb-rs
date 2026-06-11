@@ -1,0 +1,49 @@
+# Copyright 2024-2026 Jonathan Shook
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Artifact self-check: verify this nbrs binary end-to-end on the
+  current machine in a few seconds.
+  Exercises deterministic binding evaluation, scenario
+  comprehension, cursor partitioning, and multi-phase sequencing
+  using only built-in adapters — no external systems, no files.
+  A clean exit with every phase completed is the pass signal:
+  `nbrs run workload=selfcheck`.
+
+params:
+  # Cycles for the binding-evaluation phase.
+  depth: "500"
+
+scenarios:
+  default:
+    - binding_eval
+    - for: "p in partitions(\"*/4\", 1000)"
+      phases: [partitioned_walk]
+
+phases:
+  binding_eval:
+    # Deterministic hashing + arithmetic through the kernel on
+    # every cycle; the testkit adapter completes ops instantly
+    # and counts them, so a pass is silent and fast.
+    cycles: "{depth}"
+    concurrency: 4
+    bindings: |
+      h := hash(cycle)
+      v := mod(h, 9973)
+    ops:
+      eval:
+        adapter: testkit
+        stmt: "selfcheck binding {v}"
+
+  partitioned_walk:
+    # One run per quarter-partition of a 1000-ordinal domain —
+    # exercises the scenario tree, partition narrowing, and the
+    # cursor walking each window exactly once.
+    concurrency: 2
+    bindings: |
+      cursor q = range(0, 1000) over p
+      n := q
+    ops:
+      walk:
+        adapter: testkit
+        stmt: "selfcheck walk {n}"

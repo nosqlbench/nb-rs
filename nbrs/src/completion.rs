@@ -1186,8 +1186,7 @@ fn workload_dynamic_params(_partial: &str, ctx: &[&str]) -> Vec<String> {
         }
     }
     let Some(name) = workload_path else { return Vec::new(); };
-    let Some(path) = resolve_workload_file_public(&name) else { return Vec::new(); };
-    let Ok(yaml) = std::fs::read_to_string(&path) else { return Vec::new(); };
+    let Some(yaml) = workload_text_for_completion(&name) else { return Vec::new(); };
     let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&yaml) else {
         return Vec::new();
     };
@@ -1293,6 +1292,16 @@ fn collect_yaml_recursive(
     }
 }
 
+/// SRD-85: workload source text for completion — local file
+/// first, bundled catalog second (ambiguity doesn't matter for
+/// suggestions; local wins).
+fn workload_text_for_completion(name: &str) -> Option<String> {
+    if let Some(path) = resolve_workload_file_public(name) {
+        return std::fs::read_to_string(path).ok();
+    }
+    nbrs_workload::catalog::lookup(name).map(|w| w.source.to_string())
+}
+
 fn scenario_candidates(cur: &str, prior: &[String]) -> Vec<String> {
     let workload = prior.iter().find_map(|w| {
         if let Some(v) = w.strip_prefix("workload=") {
@@ -1304,8 +1313,22 @@ fn scenario_candidates(cur: &str, prior: &[String]) -> Vec<String> {
         }
     });
     let Some(name) = workload else { return Vec::new(); };
-    let Some(path) = resolve_workload_file_public(&name) else { return Vec::new(); };
-    let mut scenarios = scenarios_in_workload_file(&path);
+    let mut scenarios = if let Some(path) = resolve_workload_file_public(&name) {
+        scenarios_in_workload_file(&path)
+    } else if let Some(text) = workload_text_for_completion(&name) {
+        serde_yaml::from_str::<serde_yaml::Value>(&text)
+            .ok()
+            .and_then(|doc| {
+                doc.get("scenarios").and_then(|v| v.as_mapping()).map(|m| {
+                    m.keys()
+                        .filter_map(|k| k.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap_or_default()
+    } else {
+        return Vec::new();
+    };
     scenarios.retain(|s| s.starts_with(cur));
     scenarios.sort();
     scenarios

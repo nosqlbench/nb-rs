@@ -92,16 +92,236 @@ pub fn describe_command(args: &[String]) {
             eprintln!("  loads <workload>, finds the op template named <op>,");
             eprintln!("  and prints its resolved wrapper stack.");
         }
+        // SRD-85: the bundled-workload catalog.
+        ("workloads", _) => {
+            describe_workloads(&args[1..]);
+        }
         _ => {
             eprintln!("nbrs describe <topic>");
             eprintln!("  adapter[=<name>]   List adapters / show one adapter's params + drivers");
             eprintln!("  wiring             Wiring (graph-kernel) topics: functions, modules, dag, stdlib");
+            eprintln!("  workloads          List bundled workloads / show one in detail");
             eprintln!("  wrappers           List the registered op-template wrappers");
             eprintln!("  op <wkl> <op>      Show the resolved wrapper stack for one op");
             eprintln!();
             eprintln!("For workload analysis, use: nbrs run workload=file.yaml dryrun=op,wiring");
         }
     }
+}
+
+// =========================================================================
+// SRD-85: `describe workloads` — bundled-catalog discovery
+// =========================================================================
+
+/// Dispatch for `nbrs describe workloads [...]`:
+///
+/// - *(no args)*   — list the curated tier.
+/// - `--all`       — list curated + examples tiers.
+/// - `examples`    — list the examples tier only.
+/// - `--json`      — machine-readable listing (composes with the
+///                   selectors above).
+/// - `<name>`      — one workload in detail (catalog name, or a
+///                   local path — the same renderer introspects
+///                   un-bundled files).
+fn describe_workloads(args: &[String]) {
+    use nbrs_workload::catalog::{self, Tier};
+    let all = args.iter().any(|a| a == "--all");
+    let json = args.iter().any(|a| a == "--json");
+    let positional = args.iter().find(|a| !a.starts_with("--")).map(|s| s.as_str());
+
+    match positional {
+        Some("examples") => {
+            list_workloads(catalog::iter_tier(Tier::Example).collect(), json);
+        }
+        Some(name) => {
+            if let Err(e) = describe_one_workload(name) {
+                eprintln!("error: {e}");
+            }
+        }
+        None => {
+            let entries: Vec<_> = if all {
+                catalog::iter().collect()
+            } else {
+                catalog::iter_tier(Tier::Curated).collect()
+            };
+            list_workloads(entries, json);
+            if !all && !json {
+                let hidden = catalog::iter_tier(Tier::Example).count();
+                if hidden > 0 {
+                    println!();
+                    println!(
+                        "({hidden} example workloads bundled — `nbrs describe \
+                         workloads --all` lists them; all are runnable by name)"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// One-line summary for a bundled workload: the `description:`
+/// field's first line, falling back to the leading comment
+/// block (the established header convention for examples).
+fn workload_summary(source: &str) -> String {
+    if let Ok(jval) = serde_yaml::from_str::<serde_json::Value>(source) {
+        if let Some(desc) = jval.get("description").and_then(|d| d.as_str()) {
+            if let Some(first) = desc.lines().find(|l| !l.trim().is_empty()) {
+                return first.trim().to_string();
+            }
+        }
+    }
+    // Comment-block fallback: first non-empty, non-decorative
+    // comment line (skipping shebangs, license headers, and the
+    // bare-filename line examples conventionally start with).
+    for line in source.lines() {
+        let Some(stripped) = line.strip_prefix('#') else { break };
+        let t = stripped.trim();
+        if t.is_empty()
+            || t.starts_with('!')
+            || t.starts_with("Copyright")
+            || t.starts_with("SPDX")
+            || t.ends_with(".yaml")
+            || t.chars().all(|c| !c.is_alphanumeric())
+        {
+            continue;
+        }
+        // `<file>.yaml — actual summary` headers: keep the part
+        // after the dash.
+        for dash in [" — ", " - "] {
+            if let Some((head, rest)) = t.split_once(dash) {
+                if head.ends_with(".yaml") && !rest.trim().is_empty() {
+                    return rest.trim().to_string();
+                }
+            }
+        }
+        return t.to_string();
+    }
+    String::new()
+}
+
+fn list_workloads(entries: Vec<&'static nbrs_workload::catalog::BundledWorkload>, json: bool) {
+    if entries.is_empty() {
+        if json {
+            println!("[]");
+        } else {
+            println!("No bundled workloads in this binary for the selected tier.");
+        }
+        return;
+    }
+    if json {
+        let items: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|w| {
+                // `described` = carries a structured `description:`
+                // field (the curated-tier lint requirement), as
+                // opposed to the comment-block fallback.
+                let described = serde_yaml::from_str::<serde_json::Value>(w.source)
+                    .ok()
+                    .and_then(|j| j.get("description").and_then(|d| d.as_str().map(|s| !s.trim().is_empty())))
+                    .unwrap_or(false);
+                serde_json::json!({
+                    "name": w.name,
+                    "tier": w.tier.as_str(),
+                    "summary": workload_summary(w.source),
+                    "described": described,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items).unwrap());
+        return;
+    }
+    let width = entries.iter().map(|w| w.name.len()).max().unwrap_or(0);
+    for w in &entries {
+        println!("  {:<width$}  {}", w.name, workload_summary(w.source));
+    }
+}
+
+/// Detail view for one workload — catalog name or local path.
+fn describe_one_workload(name: &str) -> Result<(), String> {
+    use nbrs_workload::catalog;
+    let (identity, merged, tier): (String, String, Option<&str>) =
+        if let Some(b) = catalog::lookup(name) {
+            let merged = nbrs_workload::extends::load_and_merge_bundled(b)?;
+            (b.name.to_string(), merged, Some(b.tier.as_str()))
+        } else if std::path::Path::new(name).exists() {
+            let merged =
+                nbrs_workload::extends::load_and_merge(std::path::Path::new(name))?;
+            (name.to_string(), merged, None)
+        } else {
+            return Err(format!(
+                "`{name}` is neither a bundled workload nor a local file — \
+                 `nbrs describe workloads` lists the catalog"
+            ));
+        };
+
+    let params = std::collections::HashMap::new();
+    let workload = nbrs_workload::parse::parse_workload(&merged, &params)
+        .map_err(|e| format!("parse `{identity}`: {e}"))?;
+
+    println!("workload: {identity}");
+    if let Some(t) = tier {
+        println!("tier:     {t}");
+    }
+    if let Some(desc) = &workload.description {
+        println!();
+        for line in desc.lines() {
+            println!("  {line}");
+        }
+    }
+    if !workload.declared_params.is_empty() {
+        println!();
+        println!("params (defaults):");
+        let mut names = workload.declared_params.clone();
+        names.sort();
+        for p in names {
+            let v = workload.params.get(&p).cloned().unwrap_or_default();
+            println!("  {p} = {v}");
+        }
+    }
+    if !workload.scenarios.is_empty() {
+        println!();
+        println!("scenarios:");
+        let mut names: Vec<_> = workload.scenarios.keys().collect();
+        names.sort();
+        for s in names {
+            let steps = workload.scenarios[s].len();
+            println!("  {s}  ({steps} step{})", if steps == 1 { "" } else { "s" });
+        }
+    }
+    if !workload.phase_order.is_empty() {
+        println!();
+        println!("phases:");
+        for p in &workload.phase_order {
+            println!("  {p}");
+        }
+    }
+    // Adapters referenced: workload param, phase-level, op-level.
+    let mut adapters: Vec<String> = Vec::new();
+    if let Some(a) = workload.params.get("adapter") {
+        adapters.push(a.clone());
+    }
+    for phase in workload.phases.values() {
+        if let Some(a) = &phase.adapter {
+            adapters.push(a.clone());
+        }
+        for op in &phase.ops {
+            if let Some(a) = op.op.get("adapter").and_then(|v| v.as_str()) {
+                adapters.push(a.to_string());
+            }
+        }
+    }
+    adapters.sort();
+    adapters.dedup();
+    if !adapters.is_empty() {
+        println!();
+        println!("adapters: {}", adapters.join(", "));
+    }
+    println!();
+    println!("run:      nbrs run workload={identity} [scenario=<name>] [params...]");
+    if tier.is_some() {
+        println!("copy:     nbrs copy {identity}");
+    }
+    Ok(())
 }
 
 fn describe_adapters_list() {
@@ -1235,6 +1455,7 @@ pub fn spec() -> crate::cli_spec::Command {
         subcommands: vec![
             adapter_spec(),
             wiring_spec(),
+            workloads_spec(),
             wrappers_spec(),
             op_spec(),
         ],
@@ -1255,6 +1476,28 @@ fn adapter_spec() -> crate::cli_spec::Command {
     Command {
         name: "adapter",
         help: "List adapters or show one adapter's params + drivers.",
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: true,
+        completion_override: None,
+    }
+}
+
+fn workloads_spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        let mut argv = vec!["workloads".to_string()];
+        argv.extend(p.raw.iter().cloned());
+        describe_command(&argv);
+        Ok(())
+    }
+    Command {
+        name: "workloads",
+        help: "List bundled workloads (curated tier; --all / examples / --json), or show one in detail.",
         category: Category::Documentation,
         level: Level::FullSurface,
         flags: Vec::new(),

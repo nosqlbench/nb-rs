@@ -38,6 +38,14 @@ ops:
 nbrs run workload=my_workload.yaml cycles=10
 ```
 
+No workload yet? The binary carries a catalog (SRD-85):
+
+```bash
+nbrs describe workloads          # curated workloads bundled in this binary
+nbrs run workload=selfcheck      # artifact self-check, no files needed
+nbrs copy capacity_probe         # materialize one locally for editing
+```
+
 Output:
 ```
 nbrs: 2 ops selected, 10 cycles, 1 threads, driver=stdout

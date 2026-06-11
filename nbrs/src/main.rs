@@ -9,6 +9,9 @@
 //!   nbrs file.yaml scenario_name [param=value ...]
 
 mod bench;
+mod bundled;
+mod copy_cmd;
+mod diag_cmd;
 mod checkpoint_cmd;
 mod cli;
 mod cli_spec;
@@ -57,6 +60,11 @@ fn main() {
     }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // SRD-85: assemble the bundled-workload catalog before any
+    // dispatch — workload resolution, `describe workloads`, and
+    // `copy` all read it.
+    bundled::install_catalog();
 
     // SRD-45 startup hook: honors `--session`, `--session-path`,
     // `--session-name`, …, plus the `NBRS_SESSION*` env vars.

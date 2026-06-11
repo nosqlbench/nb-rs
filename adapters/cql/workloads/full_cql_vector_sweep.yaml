@@ -32,6 +32,11 @@
 # per variant = ~2 min. See `local/brute_force.md` for the cost-model
 # analysis driving the strategy choices.
 
+description: |
+  Parameter-space sweep sibling of full_cql_vector (via
+  `extends:`): adds scenarios that sweep query/index parameters
+  across ranges to map recall-vs-latency behavior. Same target
+  requirements as its parent.
 extends: ./full_cql_vector.yaml
 
 # ── Reified sweep dimensions ─────────────────────────────────

@@ -12,6 +12,12 @@
 #   nbrs full_cql_vector.yaml scenario=unfiltered
 #   nbrs full_cql_vector.yaml scenario=filtered_knn limit=100
 
+description: |
+  CQL vector-search suite, multi-profile: schema, rampup from a
+  vector dataset, index finalization, and ANN query phases with
+  relevancy evaluation. Scenario trees parameterize {table},
+  {dataset}, and {profile}. Requires a vector-capable CQL target
+  and a local vector dataset catalog.
 params:
   host: localhost
   adapter: cql

@@ -22,6 +22,11 @@
 #   nbrs run workload=workloads/vector_describe.yaml dataset=example prefix=label_
 #   nbrs run workload=workloads/vector_describe.yaml dataset=example qi=42
 
+description: |
+  Describe everything knowable about a vector dataset and each of
+  its profiles: walks the vectordata catalog for {dataset} and
+  prints every metadata field the vectordata nodes expose. No CQL
+  target required despite living in the cql suite.
 params:
   adapter: stdout
   dataset: example
