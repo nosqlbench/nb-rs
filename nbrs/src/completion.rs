@@ -478,7 +478,13 @@ pub fn handle_complete_env(tree: &CommandTree) -> bool {
     words_owned.push(eff_cur);
     let words: Vec<&str> = words_owned.iter().map(String::as_str).collect();
 
-    for c in veks_completion::complete(tree, &words) {
+    // Tap-tier rotation (veks 1.3.1): `complete()` is pinned to
+    // tier 1, so successive tabs would never reveal Secondary /
+    // FullSurface commands. Detect the rapid-tap count (same
+    // cadence rule + file shape as veks's own env handler) and
+    // route through the rotating completer.
+    let tap = detect_tap("nbrs", &line, tree.max_level());
+    for c in veks_completion::complete_rotating_with_raw(tree, &words, tap, &line, point) {
         println!("{c}");
     }
     true
@@ -562,6 +568,40 @@ fn split_line_local(line: &str, point: usize) -> (Vec<String>, String) {
     }
     if !words.is_empty() { words.remove(0); }
     (words, cur)
+}
+
+/// File-backed rapid-tap counter, mirroring veks-completion's
+/// internal driver (which is private): previous [`TapState`] is
+/// read from `<tmp>/.nbrs_tap_<shell-pid>`, the pure
+/// [`veks_completion::next_tap_state`] cadence rule advances it,
+/// and the new state is written back. Keyed by the invoking
+/// shell's PID so concurrent shells rotate independently.
+fn detect_tap(app: &str, input_key: &str, max_level: u32) -> u32 {
+    use std::io::Write;
+    let ppid = std::os::unix::process::parent_id();
+    let tap_file = std::env::temp_dir().join(format!(".{app}_tap_{ppid}"));
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let cur_key = input_key.trim_end();
+
+    let prev_owned: Option<(veks_completion::TapState, String)> =
+        std::fs::read_to_string(&tap_file).ok().map(|content| {
+            let mut parts = content.splitn(3, ' ');
+            let time_ms: u128 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            let count: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            let key = parts.next().unwrap_or("").trim_end().to_string();
+            (veks_completion::TapState { time_ms, count }, key)
+        });
+    let prev = prev_owned.as_ref().map(|(st, k)| (*st, k.as_str()));
+
+    let (tap_count, next) =
+        veks_completion::next_tap_state(prev, now_ms, cur_key, max_level);
+    if let Ok(mut f) = std::fs::File::create(&tap_file) {
+        let _ = write!(f, "{} {} {}", next.time_ms, next.count, cur_key);
+    }
+    tap_count
 }
 
 /// Flags whose grammar requires a value (the `--flag value` /
