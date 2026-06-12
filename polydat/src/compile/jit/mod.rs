@@ -23,6 +23,8 @@
 mod kernels;
 #[cfg(feature = "jit")]
 mod codegen;
+#[cfg(feature = "jit")]
+pub mod simd;
 
 #[cfg(feature = "jit")]
 pub use kernels::*;

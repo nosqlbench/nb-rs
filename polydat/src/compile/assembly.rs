@@ -1658,6 +1658,17 @@ pub fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn PolydatNode>
         (PortType::U128, PortType::Json) => Some(Box::new(W::U128ToJson::new())),
         (PortType::I128, PortType::Json) => Some(Box::new(W::I128ToJson::new())),
 
+        // ── Register views (free bitcasts) ──────────────────────
+        // Any reg→reg pair heals with a zero-cost retag — the
+        // materialized "views are free bitcasts" rule
+        // (type_system_alignment.md §8.4 layer 2).
+        (from, to)
+            if crate::library::register::is_reg_port(from)
+                && crate::library::register::is_reg_port(to) =>
+        {
+            Some(Box::new(crate::library::register::RegView::new(to)))
+        }
+
         _ => None,
     }
 }

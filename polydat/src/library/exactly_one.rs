@@ -146,7 +146,9 @@ fn exactly_one_value(body: Value) -> String {
         Value::Json(j) => unwrap_unary_json(j),
 
         // Other carriers pass through (already collapsed).
-        Value::Bytes(_) | Value::Ext(_) | Value::Handle(_) => body.clone(),
+        // Register words render via their view's display form.
+        Value::Bytes(_) | Value::Ext(_) | Value::Handle(_)
+        | Value::Reg128(_, _) => body.clone(),
     };
     // Render to String for the declared Str output port. Non-Str
     // leaves render via the Value display form (Bool → "true"/"false",

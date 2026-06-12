@@ -68,6 +68,14 @@ impl AssertType {
             PortType::F16 => "assert_f16",
             PortType::U128 => "assert_u128",
             PortType::I128 => "assert_i128",
+            PortType::Reg128 => "assert_reg128",
+            PortType::RegI8x16 => "assert_reg_i8x16",
+            PortType::RegI16x8 => "assert_reg_i16x8",
+            PortType::RegI32x4 => "assert_reg_i32x4",
+            PortType::RegI64x2 => "assert_reg_i64x2",
+            PortType::RegF16x8 => "assert_reg_f16x8",
+            PortType::RegF32x4 => "assert_reg_f32x4",
+            PortType::RegF64x2 => "assert_reg_f64x2",
             PortType::Ext => "assert_ext",
             PortType::Handle => "assert_handle",
             PortType::VecF32 => "assert_vec_f32",
@@ -137,6 +145,11 @@ fn value_matches(v: &Value, typ: PortType) -> bool {
         (Value::U64(_), PortType::I8 | PortType::I16) => true,
         (Value::U128(_), PortType::U128) => true,
         (Value::I128(_), PortType::I128) => true,
+        // Register views are free bitcasts of one another.
+        (Value::Reg128(_, _),
+            PortType::Reg128 | PortType::RegI8x16 | PortType::RegI16x8
+            | PortType::RegI32x4 | PortType::RegI64x2
+            | PortType::RegF16x8 | PortType::RegF32x4 | PortType::RegF64x2) => true,
         // Ext is opaque; we accept any concrete reflection.
         (Value::Ext(_), PortType::Ext) => true,
         _ => false,

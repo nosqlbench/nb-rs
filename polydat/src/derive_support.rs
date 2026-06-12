@@ -171,6 +171,47 @@ impl Wire for i128 {
     fn inject(self) -> Value { Value::I128(crate::ast::Bits128::from_i128(self)) }
 }
 
+// ── 128-bit register words (type_system_alignment.md §8.4 L2) ──
+//
+// The raw view extracts/injects the word itself; the lane-typed
+// `[T; N]` views extract through the free-bitcast rule (any
+// register view satisfies any register slot) and inject tagged
+// with their own lane typing. JIT is None until the layer-1
+// two-slot ride lands.
+
+impl Wire for crate::ast::Bits128 {
+    const PORT: PortType = PortType::Reg128;
+    const JIT: Option<JitType> = None;
+    fn extract(v: &Value) -> Self { v.as_reg_bits() }
+    fn inject(self) -> Value {
+        Value::Reg128(self, crate::ast::RegLanes::Raw)
+    }
+}
+
+macro_rules! impl_wire_reg {
+    ($arr:ty, $port:ident, $view:ident, $to:ident, $from:ident) => {
+        impl Wire for $arr {
+            const PORT: PortType = PortType::$port;
+            const JIT: Option<JitType> = None;
+            fn extract(v: &Value) -> Self { v.as_reg_bits().$to() }
+            fn inject(self) -> Value {
+                Value::Reg128(
+                    crate::ast::Bits128::$from(self),
+                    crate::ast::RegLanes::$view,
+                )
+            }
+        }
+    };
+}
+
+impl_wire_reg!([i8; 16], RegI8x16, I8x16, lanes_i8, from_lanes_i8);
+impl_wire_reg!([i16; 8], RegI16x8, I16x8, lanes_i16, from_lanes_i16);
+impl_wire_reg!([i32; 4], RegI32x4, I32x4, lanes_i32, from_lanes_i32);
+impl_wire_reg!([i64; 2], RegI64x2, I64x2, lanes_i64, from_lanes_i64);
+impl_wire_reg!([half::f16; 8], RegF16x8, F16x8, lanes_f16, from_lanes_f16);
+impl_wire_reg!([f32; 4], RegF32x4, F32x4, lanes_f32, from_lanes_f32);
+impl_wire_reg!([f64; 2], RegF64x2, F64x2, lanes_f64, from_lanes_f64);
+
 impl Wire for f64 {
     const PORT: PortType = PortType::F64;
     const JIT: Option<JitType> = Some(JitType::F64);

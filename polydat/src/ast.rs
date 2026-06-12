@@ -215,6 +215,74 @@ impl Bits128 {
     }
 }
 
+/// Lane-codec macro: `[T; N]` views over the 16-byte word,
+/// little-endian lane order (lane 0 = lowest address).
+macro_rules! bits128_lanes {
+    ($to:ident, $from:ident, $t:ty, $n:expr) => {
+        impl Bits128 {
+            #[inline]
+            pub fn $to(self) -> [$t; $n] {
+                let b = self.to_le_bytes();
+                let mut out = [<$t>::default(); $n];
+                let w = core::mem::size_of::<$t>();
+                for (i, lane) in out.iter_mut().enumerate() {
+                    let mut lb = [0u8; core::mem::size_of::<$t>()];
+                    lb.copy_from_slice(&b[i * w..(i + 1) * w]);
+                    *lane = <$t>::from_le_bytes(lb);
+                }
+                out
+            }
+            #[inline]
+            pub fn $from(lanes: [$t; $n]) -> Self {
+                let mut b = [0u8; 16];
+                let w = core::mem::size_of::<$t>();
+                for (i, lane) in lanes.iter().enumerate() {
+                    b[i * w..(i + 1) * w].copy_from_slice(&lane.to_le_bytes());
+                }
+                Self::from_le_bytes(b)
+            }
+        }
+    };
+}
+
+bits128_lanes!(lanes_i8, from_lanes_i8, i8, 16);
+bits128_lanes!(lanes_i16, from_lanes_i16, i16, 8);
+bits128_lanes!(lanes_i32, from_lanes_i32, i32, 4);
+bits128_lanes!(lanes_i64, from_lanes_i64, i64, 2);
+bits128_lanes!(lanes_f32, from_lanes_f32, f32, 4);
+bits128_lanes!(lanes_f64, from_lanes_f64, f64, 2);
+
+impl Bits128 {
+    /// f16 lanes go through the bit-pattern codec (`half::f16`
+    /// has no `to_le_bytes`).
+    #[inline]
+    pub fn lanes_f16(self) -> [half::f16; 8] {
+        self.lanes_i16().map(|b| half::f16::from_bits(b as u16))
+    }
+    #[inline]
+    pub fn from_lanes_f16(lanes: [half::f16; 8]) -> Self {
+        Self::from_lanes_i16(lanes.map(|f| f.to_bits() as i16))
+    }
+}
+
+/// Lane-typing view tag for [`Value::Reg128`] — which
+/// interpretation a 128-bit register word currently carries
+/// (type_system_alignment.md §8.4 layer 2). `Raw` is the
+/// algorithm-defined buffer-state view (heterogeneous lane
+/// roles); the typed views are homogeneous `[T; N]` readings.
+/// All views are free bitcasts of one another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RegLanes {
+    Raw,
+    I8x16,
+    I16x8,
+    I32x4,
+    I64x2,
+    F16x8,
+    F32x4,
+    F64x2,
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     /// Unsigned 64-bit integer. The workhorse type for deterministic
@@ -233,6 +301,14 @@ pub enum Value {
     /// interpretation). Same limb carrier and conventions as
     /// [`Value::U128`].
     I128(Bits128),
+    /// 128-bit SIMD register word (type_system_alignment.md
+    /// §8.4 layer 2). The [`RegLanes`] tag records the current
+    /// view — a homogeneous lane typing (`[f32; 4]`, `[i16; 8]`,
+    /// …) or `Raw` (algorithm-defined buffer state with
+    /// heterogeneous lane roles). Views are free bitcasts; the
+    /// word is a plain value (two u64 slots in compiled buffers,
+    /// no pointers, no lifetime).
+    Reg128(Bits128, RegLanes),
     /// Signed 64-bit integer. The honest runtime carrier for
     /// `PortType::I64` (and sign-extended `I32`) slots — matching
     /// `serde_json::Number`'s `NegInt` leaf so display and JSON
@@ -330,6 +406,7 @@ impl PartialEq for Value {
             (Value::I64(a), Value::I64(b)) => a == b,
             (Value::U128(a), Value::U128(b)) => a == b,
             (Value::I128(a), Value::I128(b)) => a == b,
+            (Value::Reg128(a, av), Value::Reg128(b, bv)) => a == b && av == bv,
             (Value::F64(a), Value::F64(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             // Arc-backed variants: pointer-eq fast path before
@@ -454,6 +531,16 @@ impl Value {
         }
     }
 
+    /// Read a 128-bit register word under any view (views are
+    /// free bitcasts — a consumer declaring a different lane
+    /// typing than the producer is the intended use).
+    pub fn as_reg_bits(&self) -> Bits128 {
+        match self {
+            Value::Reg128(b, _) => *b,
+            _ => panic!("expected Reg128, got {:?}", self.port_type()),
+        }
+    }
+
     pub fn as_f64(&self) -> f64 {
         match self {
             Value::F64(v) => *v,
@@ -509,6 +596,16 @@ impl Value {
             Value::I64(_) => PortType::I64,
             Value::U128(_) => PortType::U128,
             Value::I128(_) => PortType::I128,
+            Value::Reg128(_, v) => match v {
+                RegLanes::Raw => PortType::Reg128,
+                RegLanes::I8x16 => PortType::RegI8x16,
+                RegLanes::I16x8 => PortType::RegI16x8,
+                RegLanes::I32x4 => PortType::RegI32x4,
+                RegLanes::I64x2 => PortType::RegI64x2,
+                RegLanes::F16x8 => PortType::RegF16x8,
+                RegLanes::F32x4 => PortType::RegF32x4,
+                RegLanes::F64x2 => PortType::RegF64x2,
+            },
             Value::F64(_) => PortType::F64,
             Value::Bool(_) => PortType::Bool,
             Value::Str(_) => PortType::Str,
@@ -582,6 +679,18 @@ impl Value {
                 // I64 slot and the sign-extended narrow signed
                 // projections.
                 | (PortType::I64, PortType::I32 | PortType::I8 | PortType::I16)
+                // Register views are free bitcasts: a word under
+                // any view satisfies a slot declaring any other
+                // (the consumer's declared lane typing IS the
+                // bitcast).
+                | (
+                    PortType::Reg128 | PortType::RegI8x16 | PortType::RegI16x8
+                        | PortType::RegI32x4 | PortType::RegI64x2
+                        | PortType::RegF16x8 | PortType::RegF32x4 | PortType::RegF64x2,
+                    PortType::Reg128 | PortType::RegI8x16 | PortType::RegI16x8
+                        | PortType::RegI32x4 | PortType::RegI64x2
+                        | PortType::RegF16x8 | PortType::RegF32x4 | PortType::RegF64x2,
+                )
         )
     }
 
@@ -668,6 +777,19 @@ impl Value {
             Value::I64(v) => v.to_string(),
             Value::U128(b) => b.as_u128().to_string(),
             Value::I128(b) => b.as_i128().to_string(),
+            // Lane-typed register views render like the Vec*
+            // display forms; the raw view renders as 32 hex
+            // digits (the full word as buffer state).
+            Value::Reg128(b, view) => match view {
+                RegLanes::Raw => format!("{:032x}", b.as_u128()),
+                RegLanes::I8x16 => format!("{:?}", b.lanes_i8()),
+                RegLanes::I16x8 => format!("{:?}", b.lanes_i16()),
+                RegLanes::I32x4 => format!("{:?}", b.lanes_i32()),
+                RegLanes::I64x2 => format!("{:?}", b.lanes_i64()),
+                RegLanes::F16x8 => format!("{:?}", b.lanes_f16().map(|f| f.to_f32())),
+                RegLanes::F32x4 => format!("{:?}", b.lanes_f32()),
+                RegLanes::F64x2 => format!("{:?}", b.lanes_f64()),
+            },
             // `{v:?}` (Rust Debug) for f64 always includes at
             // least one fractional digit, so whole-number floats
             // render as `1.0` instead of `1` — distinguishing
@@ -822,6 +944,27 @@ impl Value {
             // string-convention family as Bytes-as-hex.
             Value::U128(b) => serde_json::Value::String(b.as_u128().to_string()),
             Value::I128(b) => serde_json::Value::String(b.as_i128().to_string()),
+            // Lane-typed views project as homogeneous arrays
+            // (same shape as the matching Vec*); the raw view as
+            // a hex string (lane roles are algorithm-defined, so
+            // no numeric reading exists).
+            Value::Reg128(b, view) => match view {
+                RegLanes::Raw => serde_json::Value::String(format!("{:032x}", b.as_u128())),
+                RegLanes::I8x16 => serde_json::Value::Array(
+                    b.lanes_i8().iter().map(|i| serde_json::Value::from(*i as i32)).collect()),
+                RegLanes::I16x8 => serde_json::Value::Array(
+                    b.lanes_i16().iter().map(|i| serde_json::Value::from(*i as i32)).collect()),
+                RegLanes::I32x4 => serde_json::Value::Array(
+                    b.lanes_i32().iter().map(|i| serde_json::Value::from(*i)).collect()),
+                RegLanes::I64x2 => serde_json::Value::Array(
+                    b.lanes_i64().iter().map(|i| serde_json::Value::from(*i)).collect()),
+                RegLanes::F16x8 => serde_json::Value::Array(
+                    b.lanes_f16().iter().map(|f| serde_json::json!(f.to_f32())).collect()),
+                RegLanes::F32x4 => serde_json::Value::Array(
+                    b.lanes_f32().iter().map(|f| serde_json::json!(*f)).collect()),
+                RegLanes::F64x2 => serde_json::Value::Array(
+                    b.lanes_f64().iter().map(|f| serde_json::json!(*f)).collect()),
+            },
             Value::F64(v) => serde_json::json!(*v),
             Value::Bool(v) => serde_json::Value::from(*v),
             Value::Str(v) => serde_json::Value::from(&**v),
@@ -929,6 +1072,24 @@ pub enum PortType {
     /// 128-bit signed integer (cranelift I128, signed
     /// interpretation). Same carrier story as `U128`.
     I128,
+    /// 128-bit SIMD register word, raw view — the full word as
+    /// algorithm-defined buffer state (heterogeneous lane
+    /// roles). Free bitcast to/from every lane-typed view.
+    Reg128,
+    /// Register word viewed as 16 × i8 lanes.
+    RegI8x16,
+    /// Register word viewed as 8 × i16 lanes.
+    RegI16x8,
+    /// Register word viewed as 4 × i32 lanes.
+    RegI32x4,
+    /// Register word viewed as 2 × i64 lanes.
+    RegI64x2,
+    /// Register word viewed as 8 × f16 lanes.
+    RegF16x8,
+    /// Register word viewed as 4 × f32 lanes.
+    RegF32x4,
+    /// Register word viewed as 2 × f64 lanes.
+    RegF64x2,
     /// Boolean (true/false). Widens to U64 (1/0).
     Bool,
     /// Heap-allocated string. Any type auto-converts to Str.
@@ -984,6 +1145,14 @@ impl fmt::Display for PortType {
             PortType::F16 => write!(f, "f16"),
             PortType::U128 => write!(f, "u128"),
             PortType::I128 => write!(f, "i128"),
+            PortType::Reg128 => write!(f, "reg128"),
+            PortType::RegI8x16 => write!(f, "reg_i8x16"),
+            PortType::RegI16x8 => write!(f, "reg_i16x8"),
+            PortType::RegI32x4 => write!(f, "reg_i32x4"),
+            PortType::RegI64x2 => write!(f, "reg_i64x2"),
+            PortType::RegF16x8 => write!(f, "reg_f16x8"),
+            PortType::RegF32x4 => write!(f, "reg_f32x4"),
+            PortType::RegF64x2 => write!(f, "reg_f64x2"),
             PortType::Bool => write!(f, "bool"),
             PortType::Str => write!(f, "String"),
             PortType::Bytes => write!(f, "bytes"),
@@ -1029,6 +1198,14 @@ impl PortType {
             Self::F16    => "f16",
             Self::U128   => "u128",
             Self::I128   => "i128",
+            Self::Reg128 => "reg128",
+            Self::RegI8x16 => "reg_i8x16",
+            Self::RegI16x8 => "reg_i16x8",
+            Self::RegI32x4 => "reg_i32x4",
+            Self::RegI64x2 => "reg_i64x2",
+            Self::RegF16x8 => "reg_f16x8",
+            Self::RegF32x4 => "reg_f32x4",
+            Self::RegF64x2 => "reg_f64x2",
             Self::Bool   => "bool",
             Self::Str    => "str",
             Self::Bytes  => "bytes",
@@ -1072,6 +1249,14 @@ impl PortType {
             "f16"                 => Some(Self::F16),
             "u128"                => Some(Self::U128),
             "i128"                => Some(Self::I128),
+            "reg128"              => Some(Self::Reg128),
+            "reg_i8x16"           => Some(Self::RegI8x16),
+            "reg_i16x8"           => Some(Self::RegI16x8),
+            "reg_i32x4"           => Some(Self::RegI32x4),
+            "reg_i64x2"           => Some(Self::RegI64x2),
+            "reg_f16x8"           => Some(Self::RegF16x8),
+            "reg_f32x4"           => Some(Self::RegF32x4),
+            "reg_f64x2"           => Some(Self::RegF64x2),
             "bool"                => Some(Self::Bool),
             "str" | "Str" | "String" => Some(Self::Str),
             "bytes"               => Some(Self::Bytes),
@@ -1098,7 +1283,10 @@ impl PortType {
             // 128-bit immediates: two slots of limb DATA —
             // register words and 128-bit integers are values,
             // never addresses.
-            Self::U128 | Self::I128 => SlotColor::Imm2,
+            Self::U128 | Self::I128
+            | Self::Reg128 | Self::RegI8x16 | Self::RegI16x8
+            | Self::RegI32x4 | Self::RegI64x2 | Self::RegF16x8
+            | Self::RegF32x4 | Self::RegF64x2 => SlotColor::Imm2,
             // Heap slices: a (ptr, len) reference pair viewing
             // kernel-owned scratch (§8.4 layer 3).
             Self::VecF32 | Self::VecI32 | Self::VecF64

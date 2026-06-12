@@ -184,6 +184,23 @@ pub fn iteration_interior(v: &crate::ast::Value) -> Option<Vec<crate::ast::Value
         Value::Ext(_) => v.as_partition_list().map(|list| {
             list.as_slice().iter().map(|p| Value::from_partition(*p)).collect()
         }),
+        // Lane-typed register views peel like the Vec* family
+        // (a reg_f32x4 is a fixed-width typed vector); the Raw
+        // view is an opaque buffer-state word — an iteration
+        // scalar.
+        Value::Reg128(b, view) => {
+            use crate::ast::RegLanes;
+            match view {
+                RegLanes::Raw => None,
+                RegLanes::I8x16 => Some(b.lanes_i8().iter().map(|x| Value::I64(*x as i64)).collect()),
+                RegLanes::I16x8 => Some(b.lanes_i16().iter().map(|x| Value::I64(*x as i64)).collect()),
+                RegLanes::I32x4 => Some(b.lanes_i32().iter().map(|x| Value::I64(*x as i64)).collect()),
+                RegLanes::I64x2 => Some(b.lanes_i64().iter().map(|x| Value::I64(*x)).collect()),
+                RegLanes::F16x8 => Some(b.lanes_f16().iter().map(|x| Value::F64(x.to_f64())).collect()),
+                RegLanes::F32x4 => Some(b.lanes_f32().iter().map(|x| Value::F64(*x as f64)).collect()),
+                RegLanes::F64x2 => Some(b.lanes_f64().iter().map(|x| Value::F64(*x)).collect()),
+            }
+        }
         // A string's interior is its comprehension tokens.
         Value::Str(s) => Some(strip_string_tokens(s)),
         // Iteration scalars — relaxed wraps, `[v…]` errors.

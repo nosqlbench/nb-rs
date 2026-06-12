@@ -399,6 +399,23 @@ pub(crate) enum JitOp {
     /// vector of u64 constants.
     IsOneOfCheck(Vec<u64>),
 
+    // --- Register-plane ops (§8.4 layer 2: native SIMD) ---
+    // A register value occupies two consecutive u64 slots; the
+    // codegen emits one unaligned 128-bit load/store per value
+    // (buffer is only 8-aligned) and a single vector instruction.
+    /// Element-wise register binop. (lane_ty index, arith index)
+    /// — lanes: 0=i8x16 1=i16x8 2=i32x4 3=i64x2 4=f32x4 5=f64x2;
+    /// arith: 0=add 1=sub 2=mul.
+    RegBinOp(u8, u8),
+    /// View retag / two-slot copy (`__reg_view_*`): one 128-bit
+    /// load + store; the lane typing is static, so no instruction
+    /// beyond the move.
+    RegCopy,
+    /// Broadcast a scalar wire into all lanes. Same lane index
+    /// vocabulary as `RegBinOp`; float lanes read the f64 slot
+    /// and demote as needed, integer lanes reduce from u64.
+    RegSplat(u8),
+
     /// Fallback: call the Phase 2 closure
     Fallback,
 }
@@ -540,6 +557,39 @@ pub(crate) fn classify_node(node: &dyn PolydatNode) -> JitOp {
         "u64_shl" => JitOp::U64Shl,
         "u64_shr" => JitOp::U64Shr,
         "u64_not" => JitOp::U64Not,
+
+        // ── Register plane (§8.4 layer 2) ──────────────────────
+        "reg_add_i8" => JitOp::RegBinOp(0, 0),
+        "reg_sub_i8" => JitOp::RegBinOp(0, 1),
+        // `imul.i8x16` has no cranelift lowering (x86 has no
+        // byte-lane multiply short of AVX-512; cranelift 0.116
+        // rejects it in ISLE) — the closure path handles i8
+        // multiplies.
+        "reg_mul_i8" => JitOp::Fallback,
+        "reg_add_i16" => JitOp::RegBinOp(1, 0),
+        "reg_sub_i16" => JitOp::RegBinOp(1, 1),
+        "reg_mul_i16" => JitOp::RegBinOp(1, 2),
+        "reg_add_i32" => JitOp::RegBinOp(2, 0),
+        "reg_sub_i32" => JitOp::RegBinOp(2, 1),
+        "reg_mul_i32" => JitOp::RegBinOp(2, 2),
+        "reg_add_i64" => JitOp::RegBinOp(3, 0),
+        "reg_sub_i64" => JitOp::RegBinOp(3, 1),
+        "reg_mul_i64" => JitOp::RegBinOp(3, 2),
+        "reg_add_f32" => JitOp::RegBinOp(4, 0),
+        "reg_sub_f32" => JitOp::RegBinOp(4, 1),
+        "reg_mul_f32" => JitOp::RegBinOp(4, 2),
+        "reg_add_f64" => JitOp::RegBinOp(5, 0),
+        "reg_sub_f64" => JitOp::RegBinOp(5, 1),
+        "reg_mul_f64" => JitOp::RegBinOp(5, 2),
+        "__reg_view_raw" | "__reg_view_i8x16" | "__reg_view_i16x8"
+        | "__reg_view_i32x4" | "__reg_view_i64x2" | "__reg_view_f16x8"
+        | "__reg_view_f32x4" | "__reg_view_f64x2" => JitOp::RegCopy,
+        "reg_splat_i8" => JitOp::RegSplat(0),
+        "reg_splat_i16" => JitOp::RegSplat(1),
+        "reg_splat_i32" => JitOp::RegSplat(2),
+        "reg_splat_i64" => JitOp::RegSplat(3),
+        "reg_splat_f32" => JitOp::RegSplat(4),
+        "reg_splat_f64" => JitOp::RegSplat(5),
 
         "f64_add" => JitOp::F64Add,
         "f64_sub" => JitOp::F64Sub,
@@ -1113,6 +1163,57 @@ fn compile_jit_impl(
                     store_slot_f64(&mut builder, buffer_ptr, output_slots[0], fval);
                 }
 
+                // ── Register plane: one vector instruction per op ──
+                JitOp::RegBinOp(lane, arith) => {
+                    let vt = reg_lane_type(*lane);
+                    let a = load_reg128(&mut builder, buffer_ptr, input_slots[0], vt);
+                    let b = load_reg128(&mut builder, buffer_ptr, input_slots[2], vt);
+                    let is_float = matches!(*lane, 4 | 5);
+                    let r = match (arith, is_float) {
+                        (0, false) => builder.ins().iadd(a, b),
+                        (1, false) => builder.ins().isub(a, b),
+                        (2, false) => builder.ins().imul(a, b),
+                        (0, true) => builder.ins().fadd(a, b),
+                        (1, true) => builder.ins().fsub(a, b),
+                        (2, true) => builder.ins().fmul(a, b),
+                        _ => unreachable!("RegBinOp arith index out of range"),
+                    };
+                    store_reg128(&mut builder, buffer_ptr, output_slots[0], r);
+                }
+                JitOp::RegCopy => {
+                    let v = load_reg128(
+                        &mut builder, buffer_ptr, input_slots[0], types::I64X2);
+                    store_reg128(&mut builder, buffer_ptr, output_slots[0], v);
+                }
+                JitOp::RegSplat(lane) => {
+                    let vt = reg_lane_type(*lane);
+                    let scalar = match *lane {
+                        // Integer lanes: u64 slot reduced to lane width.
+                        0 => {
+                            let v = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                            builder.ins().ireduce(types::I8, v)
+                        }
+                        1 => {
+                            let v = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                            builder.ins().ireduce(types::I16, v)
+                        }
+                        2 => {
+                            let v = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                            builder.ins().ireduce(types::I32, v)
+                        }
+                        3 => load_slot(&mut builder, buffer_ptr, input_slots[0]),
+                        // Float lanes: f64 slot, demoted for f32.
+                        4 => {
+                            let f = load_slot_f64(&mut builder, buffer_ptr, input_slots[0]);
+                            builder.ins().fdemote(types::F32, f)
+                        }
+                        5 => load_slot_f64(&mut builder, buffer_ptr, input_slots[0]),
+                        _ => unreachable!("RegSplat lane index out of range"),
+                    };
+                    let v = builder.ins().splat(vt, scalar);
+                    store_reg128(&mut builder, buffer_ptr, output_slots[0], v);
+                }
+
                 // Two-wire u64 integer ops — pure Cranelift, no extern call
                 JitOp::U64Add2 => {
                     let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
@@ -1408,6 +1509,45 @@ fn store_slot(
 ) {
     let offset = (slot * 8) as i32;
     builder.ins().store(ir::MemFlags::trusted(), value, buffer_ptr, offset);
+}
+
+/// Cranelift vector type for a register lane index (the
+/// `RegBinOp`/`RegSplat` vocabulary).
+fn reg_lane_type(lane: u8) -> ir::Type {
+    match lane {
+        0 => types::I8X16,
+        1 => types::I16X8,
+        2 => types::I32X4,
+        3 => types::I64X2,
+        4 => types::F32X4,
+        5 => types::F64X2,
+        _ => unreachable!("register lane index out of range"),
+    }
+}
+
+/// Load a 128-bit register value from its two consecutive slots
+/// (layer-1 flattening guarantees adjacency). The buffer is only
+/// 8-aligned, so the load must NOT carry the aligned flag —
+/// `MemFlags::new()` permits unaligned 128-bit access.
+fn load_reg128(
+    builder: &mut FunctionBuilder,
+    buffer_ptr: ir::Value,
+    first_slot: usize,
+    vt: ir::Type,
+) -> ir::Value {
+    let offset = (first_slot * 8) as i32;
+    builder.ins().load(vt, ir::MemFlags::new(), buffer_ptr, offset)
+}
+
+/// Store a 128-bit register value into its two consecutive slots.
+fn store_reg128(
+    builder: &mut FunctionBuilder,
+    buffer_ptr: ir::Value,
+    first_slot: usize,
+    value: ir::Value,
+) {
+    let offset = (first_slot * 8) as i32;
+    builder.ins().store(ir::MemFlags::new(), value, buffer_ptr, offset);
 }
 
 /// Load an f64 from buffer[slot] (bitcast from i64).

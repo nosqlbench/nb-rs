@@ -760,6 +760,14 @@ enum JitType {
     // `polydat::ast::Bits128`.
     U128,
     I128,
+    RegRaw,
+    RegI8x16,
+    RegI16x8,
+    RegI32x4,
+    RegI64x2,
+    RegF16x8,
+    RegF32x4,
+    RegF64x2,
 }
 
 impl JitType {
@@ -768,7 +776,10 @@ impl JitType {
     /// values (limb pairs).
     fn width(self) -> usize {
         match self {
-            JitType::U128 | JitType::I128 => 2,
+            JitType::U128 | JitType::I128 | JitType::RegRaw
+            | JitType::RegI8x16 | JitType::RegI16x8 | JitType::RegI32x4
+            | JitType::RegI64x2 | JitType::RegF16x8 | JitType::RegF32x4
+            | JitType::RegF64x2 => 2,
             _ => 1,
         }
     }
@@ -798,6 +809,14 @@ impl JitType {
             JitType::F16  => quote!(polydat::half::f16::from_bits(inputs[#i] as u16)),
             JitType::U128 => quote!((#limbs).as_u128()),
             JitType::I128 => quote!((#limbs).as_i128()),
+            JitType::RegRaw   => limbs,
+            JitType::RegI8x16 => quote!((#limbs).lanes_i8()),
+            JitType::RegI16x8 => quote!((#limbs).lanes_i16()),
+            JitType::RegI32x4 => quote!((#limbs).lanes_i32()),
+            JitType::RegI64x2 => quote!((#limbs).lanes_i64()),
+            JitType::RegF16x8 => quote!((#limbs).lanes_f16()),
+            JitType::RegF32x4 => quote!((#limbs).lanes_f32()),
+            JitType::RegF64x2 => quote!((#limbs).lanes_f64()),
         }
     }
 
@@ -826,6 +845,14 @@ impl JitType {
             JitType::F16  => quote!(outputs[#o] = (#result).to_bits() as u64;),
             JitType::U128 => write_limbs(quote!(polydat::ast::Bits128::from_u128(#result))),
             JitType::I128 => write_limbs(quote!(polydat::ast::Bits128::from_i128(#result))),
+            JitType::RegRaw   => write_limbs(quote!(#result)),
+            JitType::RegI8x16 => write_limbs(quote!(polydat::ast::Bits128::from_lanes_i8(#result))),
+            JitType::RegI16x8 => write_limbs(quote!(polydat::ast::Bits128::from_lanes_i16(#result))),
+            JitType::RegI32x4 => write_limbs(quote!(polydat::ast::Bits128::from_lanes_i32(#result))),
+            JitType::RegI64x2 => write_limbs(quote!(polydat::ast::Bits128::from_lanes_i64(#result))),
+            JitType::RegF16x8 => write_limbs(quote!(polydat::ast::Bits128::from_lanes_f16(#result))),
+            JitType::RegF32x4 => write_limbs(quote!(polydat::ast::Bits128::from_lanes_f32(#result))),
+            JitType::RegF64x2 => write_limbs(quote!(polydat::ast::Bits128::from_lanes_f64(#result))),
         }
     }
 
@@ -850,8 +877,11 @@ impl JitType {
                 => quote!((#field_ref).to_bits() as u64),
             // ConstShape has no 128-bit / register forms, so these
             // never appear in const position.
-            JitType::U128 | JitType::I128 => {
-                unreachable!("128-bit types have no const shape")
+            JitType::U128 | JitType::I128 | JitType::RegRaw
+            | JitType::RegI8x16 | JitType::RegI16x8 | JitType::RegI32x4
+            | JitType::RegI64x2 | JitType::RegF16x8 | JitType::RegF32x4
+            | JitType::RegF64x2 => {
+                unreachable!("128-bit/register types have no const shape")
             }
         }
     }
@@ -894,6 +924,15 @@ fn wire_type_to_jit_type(ty: &Type) -> Option<JitType> {
             let flat: String = s.split_whitespace().collect();
             match flat.as_str() {
                 "half::f16" | "f16" => Some(JitType::F16),
+                "Bits128" | "crate::ast::Bits128" | "polydat::ast::Bits128"
+                | "ast::Bits128" => Some(JitType::RegRaw),
+                "[i8;16]" => Some(JitType::RegI8x16),
+                "[i16;8]" => Some(JitType::RegI16x8),
+                "[i32;4]" => Some(JitType::RegI32x4),
+                "[i64;2]" => Some(JitType::RegI64x2),
+                "[half::f16;8]" | "[f16;8]" => Some(JitType::RegF16x8),
+                "[f32;4]" => Some(JitType::RegF32x4),
+                "[f64;2]" => Some(JitType::RegF64x2),
                 _ => None,
             }
         }

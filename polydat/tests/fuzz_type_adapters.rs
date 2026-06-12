@@ -449,6 +449,22 @@ fn random_dags_compile_or_fail_cleanly() {
 /// by `format!("{source_type:?}→{expected_type:?}")` in
 /// `assembly.rs` — mirror its accepted set here.
 fn adapter_label_is_known(label: &str) -> bool {
+    // Register views are free bitcasts: the assembler retags any
+    // reg→reg pair via RegView (type_system_alignment.md §8.4
+    // layer 2), so the whole family is known by shape rather
+    // than by enumeration.
+    let is_reg = |t: &str| {
+        matches!(
+            t,
+            "Reg128" | "RegI8x16" | "RegI16x8" | "RegI32x4" | "RegI64x2"
+                | "RegF16x8" | "RegF32x4" | "RegF64x2"
+        )
+    };
+    if let Some((from, to)) = label.split_once('→') {
+        if is_reg(from) && is_reg(to) {
+            return true;
+        }
+    }
     // PortType's Debug impl yields "U64", "F64", etc. — match those.
     // Mirror the assembler's auto_adapter table (intra-graph only;
     // boundary-only parsers + lossy narrowings are NOT here).
