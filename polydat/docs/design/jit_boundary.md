@@ -355,3 +355,151 @@ FDEs. At that point:
 
 Moving to that model requires upstream Cranelift work (or a
 fork-and-patch). Until that lands this module stays as-is.
+
+---
+
+## SIMD compute kernels (alignment §8.2)
+
+`compile/jit/simd.rs` compiles four f32-lane kernels once per
+process through the same cranelift engine, using real cranelift
+SIMD types (`F32X4`): `dot_f32`, `l2sq_f32`, `add_f32`,
+`scale_f32`. Each processes the slice body in 128-bit chunks
+(unaligned loads — `SliceArc<f32>` data is only 4-aligned) with a
+scalar tail loop, and reducing kernels finish with an
+`extractlane` horizontal sum. Consumers are the `vec_*` nodes in
+`library/vector_math.rs`, which fall back to scalar Rust loops
+when the `jit` feature is off or host-ISA construction fails.
+This is the extern-call integration pattern (like hash/trig):
+vector *values* do not yet cross the `fn(coords, buffer)` ABI —
+the (ptr, len) slot-pair design for that is
+`type_system_alignment.md` §8.3 phases 5–6.
+
+SIMD accumulation reassociates float addition, so reduced results
+may differ from the scalar reference in the final ulps; the
+equivalence tests compare with relative tolerance.
+
+## Scalar buffer conventions
+
+- `u64` rides as-is; `i64` is `as u64` (bit-identical — cranelift
+  integers are sign-agnostic, signedness lives in the ops).
+- `f64` rides via `to_bits()`; cranelift `bitcast` converts for
+  free.
+- `bool` rides as 0/1 in a u64 slot; codegen uses `types::I8`
+  loads and constants for flag values — the only non-{I64, F64}
+  scalar type the kernel codegen emits.
+- Narrow widths (u8/i8/u16/i16/u32/i32/f32/f16) ride zero-/sign-
+  extended or bit-stuffed in the u64 slot per the static
+  `PortType`. The `#[polydat_node]` macro's buffer tokens are
+  width-aware (its internal `JitType` carries one variant per
+  width), so narrow-typed nodes get `compiled_u64` closures whose
+  casts mirror the Wire storage conventions exactly — pinned by
+  the P1↔P2 equivalence tests in `polydat_node_macro.rs`.
+- 128-bit integers do not ride at all (interpreter-only) until a
+  two-slot protocol exists.
+
+---
+
+## Slot-state axioms (S1–S10) — RATIFIED 2026-06-12
+
+The normative contract for compiled-kernel buffer state under the
+§8.4 vector substrate (`type_system_alignment.md`). These are
+axioms in the SYSREF sense: load-bearing, cited by SAFETY
+comments, and enforced by tripwires rather than comments.
+
+**S1 — Slot color is static, total, and three-valued.** Every
+`PortType` maps at kernel-build time to exactly one color:
+`Imm1` (one slot, immediate value), `Imm2` (two slots, immediate
+limbs — register words, u128/i128), `Ref2` (two slots,
+`(ptr, len)` reference — heap slices). Width derives from color.
+No runtime tags; no per-value color. Immediate slots never
+contain an address, so buffer + port table is a complete state
+description for everything except Ref data. *Chokepoint:
+`PortType::slot_color()`; `slot_width()` derives from it.*
+
+**S2 — Pointer containment.** A Ref pair is meaningful only
+inside the engine's gather→op→scatter path. Raw readers (`get`,
+`get_slot`, `eval_for_slot`) PANIC on Ref-colored slots; external
+access goes through borrow-checked scratch accessors
+(`read_vec_f32(&self, slot) -> &[f32]`, lifetime tied to `&self`
+so holding a slice across the next `eval(&mut self)` is a compile
+error) or owned copy-out. A walled-off API in the established
+sense.
+
+**S3 — Single-writer scratch.** Each scratch entry is owned by
+exactly one (step, output port); only the owning op mutates it,
+and every execution republishes the `(ptr, len)` pair within that
+execution. The engine passes each op only its own scratch range —
+ownership by sub-slice, not discipline.
+
+**S4 — Publish-before-read.** Steps execute sequentially in
+topological order within an eval pass. A Ref pair's validity
+interval is [owning op's scatter completes, owning op's next
+invocation begins); every consumer gather occurs inside the
+producer's current interval.
+
+**S5 — Skip coherence.** If a producer executes in a pass, every
+transitive consumer executes later in the same pass. Mechanical
+oracle: the Raw (never-skip) engine and the Push/Pull/PushPull
+(skip) engines must produce identical outputs for arbitrary
+input-change sequences (`tests/slot_state_axioms.rs`).
+
+**S6 — Sequential-by-axiom; parallelism is a redesign gate.**
+Kernel state (buffer + scratch) is single-threaded by
+construction: one state per thread; cross-thread sharing only via
+`Arc<PolydatProgram>`; values cross threads only as owned copies.
+Intra-kernel parallel step execution is FORBIDDEN until S4 is
+replaced with a new ordering proof (epochs/generations).
+
+**S7 — One static dereference.** Ref access compiles to exactly
+one pointer dereference; color/offset resolution completes at
+kernel build. Index tables, arena handles, runtime color
+dispatch, and any second hop are forbidden — in interpreter
+closures and in JIT-generated code alike (a segment loads the
+pointer from its slot and passes it).
+
+**S8 — P1 is the semantic oracle.** Typed eval defines meaning;
+every compiled tier must be bit-identical to it (cross-lane float
+reductions per their declared fixed-shape contracts). No node or
+op shape lands without a P1↔P2(↔P3) equivalence test.
+
+**S9 — Deterministic runtime validation.** (a) In debug/test
+builds, after every eval pass the engine asserts every
+scratch-backed Ref pair equals its owning entry's current
+`(as_ptr(), len())` — forgot-to-republish / wrong-slot /
+dangling failures name the slot deterministically. (b) The
+slice-transport tests run under Miri (no-jit configuration —
+Miri cannot execute JIT'd native code) to adjudicate the formal
+aliasing validity of the `from_raw_parts` pattern. Lane command:
+
+```sh
+MIRIFLAGS=-Zmiri-ignore-leaks cargo +nightly miri test \
+    -p polydat --no-default-features --test slot_state_axioms
+```
+
+ADJUDICATED 2026-06-12: Stacked Borrows accepts the pattern (the
+S5 oracle passes under Miri across all five engines). One caveat,
+recorded rather than hidden: Miri warns on the integer-to-pointer
+casts (inherent to a u64-slot transport — provenance is
+necessarily reconstructed, so the check runs under permissive
+int-ptr semantics rather than strict provenance). The
+`-Zmiri-ignore-leaks` flag masks a known ~200-byte-per-compile
+leak in `registry::lookup` (tracked for a follow-up fix).
+
+**S10 — Unsafe is enumerable, annotated, and tripwired.** Every
+Ref-deref `unsafe` lives in macro-generated `compiled_slot`
+bodies (emitted from `polydat-derive`) or named engine accessor
+sites; each SAFETY comment cites the axioms it relies on (S3,
+S4). A CI tripwire fails when `from_raw_parts` appears outside
+the allowlisted files.
+
+**P3 corollary.** Pure-P3 kernels contain no Ref slots by
+construction (slice-bearing nodes classify `Fallback`, and
+`build_jit_layout` rejects Fallback); the JIT builders enforce
+this defensively. Hybrid kernels carry Ref slots only in closure
+steps.
+
+**Forwarding caveat.** The §8.4 "pass-through forwards its input
+pair verbatim" optimization is NOT yet implemented; when it is,
+forwarded ports must be exempted from S9(a)'s validator mapping
+explicitly — the validator currently assumes every Ref output is
+scratch-backed.
