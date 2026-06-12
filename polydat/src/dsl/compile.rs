@@ -3489,6 +3489,9 @@ mod tests {
     /// MUST be `PortType::Handle`, not the legacy `Ext` catchall.
     /// This is the second specific call site we patched in the
     /// inferrer after the `printf` string-template case.
+    /// (`dataset_prebuffer` is a vectordata node, so the test only
+    /// exists when that feature registers it.)
+    #[cfg(feature = "vectordata")]
     #[test]
     fn auto_extern_slot_for_dataset_prebuffer_is_handle() {
         let src = r#"

@@ -81,6 +81,46 @@ async fn screen(stepper: &mut SteppableTerminal) -> String {
     stepper.screen_as_string().unwrap_or_default()
 }
 
+/// Pre-close gap: the REPL toggle debounce is 250 ms measured at
+/// the harness's processing clock; waiting 2× from the *observed*
+/// open keeps a close from ever being swallowed by scheduling
+/// jitter between observation and processing.
+const TOGGLE_GAP: Duration = Duration::from_millis(500);
+
+/// Poll until `pred` holds AND the frame is stable (two
+/// consecutive identical reads) — the settle-to-predicate
+/// replacement for sleep-then-snapshot. Snapshotting after a
+/// fixed sleep raced the sink's ~50 ms render cadence and the
+/// PTY's partial-frame reads; converging on the *expected* state
+/// keeps full regression power (a real renderer bug fails here by
+/// timeout, with the last screen attached) without the timing
+/// guess.
+async fn settled_screen(
+    stepper: &mut SteppableTerminal,
+    what: &str,
+    pred: impl Fn(&str) -> bool,
+    timeout: Duration,
+) -> String {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut prev: Option<String> = None;
+    loop {
+        let s = screen(stepper).await;
+        if pred(&s) && prev.as_deref() == Some(s.as_str()) {
+            return s;
+        }
+        prev = Some(s);
+        if tokio::time::Instant::now() >= deadline {
+            let dump = prev.unwrap_or_default();
+            panic!(
+                "screen never settled into expected state: {what}
+                 --- last screen ---
+{dump}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+}
+
 /// The blank-vs-content shape of each screen row (trailing
 /// whitespace trimmed). Ignores the margin's advancing session clock
 /// and any padding, so a structural assertion catches injected /
@@ -104,9 +144,12 @@ async fn console_output_is_contained_in_frame() {
 
     // A plain scrollback log line is the stable primary surface.
     cmd(&stepper, "log baseline-anchor-line");
-    wait_for(&mut stepper, "baseline-anchor-line", Duration::from_secs(5)).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let primary = screen(&mut stepper).await;
+    let primary = settled_screen(
+        &mut stepper,
+        "baseline anchor rendered",
+        |s| s.contains("baseline-anchor-line"),
+        Duration::from_secs(5),
+    ).await;
     assert!(!primary.contains(MARKER));
 
     // Open the console; emit output — it renders inside the
@@ -117,12 +160,15 @@ async fn console_output_is_contained_in_frame() {
     wait_for(&mut stepper, MARKER, Duration::from_secs(5)).await;
 
     // Close the console: the primary surface is restored exactly,
-    // and the console output is NOT on it (contained). Space the
-    // close past the 250 ms toggle debounce.
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // and the console output is NOT on it (contained).
+    tokio::time::sleep(TOGGLE_GAP).await;
     cmd(&stepper, "window");
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    let after = screen(&mut stepper).await;
+    let after = settled_screen(
+        &mut stepper,
+        "primary restored without console output",
+        |s| s == primary,
+        Duration::from_secs(5),
+    ).await;
     assert!(!after.contains(MARKER),
         "console output must not leak onto the primary surface\n\
          --- screen ---\n{after}");
@@ -147,42 +193,39 @@ async fn console_toggle_restores_surface_byte_exact() {
     for i in 0..6 {
         cmd(&stepper, &format!("log scrollback-line-{i}"));
     }
-    wait_for(&mut stepper, "scrollback-line-5", Duration::from_secs(5)).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let s0 = screen(&mut stepper).await;
-
-    let dump = |label: &str, s: &str| {
-        eprintln!("===== {label} =====");
-        for (i, l) in s.lines().enumerate() {
-            eprintln!("{:>2}|{}", i + 1, l);
-        }
-    };
+    let s0 = settled_screen(
+        &mut stepper,
+        "scrollback baseline rendered",
+        |s| s.contains("scrollback-line-5"),
+        Duration::from_secs(5),
+    ).await;
 
     // --- window (`) open + close ---
     cmd(&stepper, "window");
     wait_for(&mut stepper, "REPL", Duration::from_secs(5)).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(TOGGLE_GAP).await;
     cmd(&stepper, "window");
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    let after_window = screen(&mut stepper).await;
-    if after_window != s0 {
-        dump("S0", &s0);
-        dump("after window close", &after_window);
-    }
+    let after_window = settled_screen(
+        &mut stepper,
+        "surface restored byte-exact after window close",
+        |s| s == s0,
+        Duration::from_secs(5),
+    ).await;
     assert_eq!(s0, after_window,
         "closing the window console must restore the surface byte-exact");
 
     // --- bar (~) open + close ---
+    tokio::time::sleep(TOGGLE_GAP).await;
     cmd(&stepper, "bar");
     wait_for(&mut stepper, "REPL", Duration::from_secs(5)).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(TOGGLE_GAP).await;
     cmd(&stepper, "bar");
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    let after_bar = screen(&mut stepper).await;
-    if after_bar != s0 {
-        dump("S0", &s0);
-        dump("after bar close", &after_bar);
-    }
+    let after_bar = settled_screen(
+        &mut stepper,
+        "surface restored byte-exact after bar close",
+        |s| s == s0,
+        Duration::from_secs(5),
+    ).await;
     assert_eq!(s0, after_bar,
         "closing the bar console must restore the surface byte-exact");
 
@@ -227,8 +270,12 @@ async fn status_height_change_leaves_no_blank_gap() {
     cmd(&stepper, "status STAT-A| STAT-B"); // shrink 3 -> 2
     // No new logs after the shrink — mimic a long phase that only
     // updates its status.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let s = screen(&mut stepper).await;
+    let s = settled_screen(
+        &mut stepper,
+        "status shrink applied (STAT-C gone)",
+        |s| !s.contains("STAT-C") && s.contains("STAT-B"),
+        Duration::from_secs(5),
+    ).await;
 
     // No fully-blank line may sit between two content lines.
     let lines: Vec<&str> = s.lines().collect();
@@ -273,8 +320,12 @@ async fn log_status_collision_keeps_logs_without_gap() {
     // Collision 2: a log + a status SHRINK, back to back.
     cmd(&stepper, "log EVENT-BETA");
     cmd(&stepper, "status RUN-A| RUN-B");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let s = screen(&mut stepper).await;
+    let s = settled_screen(
+        &mut stepper,
+        "shrink-colliding log rendered (MEMO gone, EVENT-BETA in)",
+        |s| s.contains("EVENT-BETA") && !s.contains("MEMO"),
+        Duration::from_secs(5),
+    ).await;
 
     // Both colliding logs survived (the old renderer dropped them).
     assert!(s.contains("EVENT-ALPHA"), "grow-colliding log was dropped:\n{s}");
@@ -322,9 +373,12 @@ async fn multiline_error_block_emits_fully_with_status_change() {
     // appearing) — back to back, same poll window.
     cmd(&stepper, "log ERRHEAD|ERRSTMT|ERRVALUES||ERRPLUS63");
     cmd(&stepper, "status RUNNING-A| RUNNING-B| MEMO");
-    wait_for(&mut stepper, "MEMO", Duration::from_secs(5)).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let s = screen(&mut stepper).await;
+    let s = settled_screen(
+        &mut stepper,
+        "error block + grown status rendered",
+        |s| s.contains("MEMO") && s.contains("ERRPLUS63"),
+        Duration::from_secs(5),
+    ).await;
 
     // Every line of the block survived — including the TAIL, which the
     // old renderer could overwrite.
@@ -369,9 +423,12 @@ async fn swap_re_renders_surface_byte_identically() {
     cmd(&stepper, "log scroll-line-one");
     cmd(&stepper, "log scroll-line-two");
     cmd(&stepper, "status RUNNING phase| 120/s ok:100% c:1");
-    wait_for(&mut stepper, "RUNNING phase", Duration::from_secs(5)).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let s0 = screen(&mut stepper).await;
+    let s0 = settled_screen(
+        &mut stepper,
+        "status + scrollback baseline rendered",
+        |s| s.contains("RUNNING phase") && s.contains("scroll-line-two"),
+        Duration::from_secs(5),
+    ).await;
     let shape0 = blank_shape(&s0);
 
     assert!(s0.contains("scroll-line-two"), "top log line visible in s0: {s0}");
@@ -384,9 +441,19 @@ async fn swap_re_renders_surface_byte_identically() {
     // top and the shape changed).
     for i in 0..3 {
         cmd(&stepper, "swap");
-        wait_for(&mut stepper, "RUNNING phase", Duration::from_secs(5)).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let after = screen(&mut stepper).await;
+        let after = settled_screen(
+            &mut stepper,
+            &format!(
+                "swap #{i} re-rendered with the baseline blank-line \
+                 structure and the top log line visible"
+            ),
+            |s| {
+                s.contains("RUNNING phase")
+                    && s.contains("scroll-line-two")
+                    && blank_shape(s) == shape0
+            },
+            Duration::from_secs(5),
+        ).await;
         assert_eq!(blank_shape(&after), shape0,
             "swap #{i} must not change the blank-line structure \
              (no injected/accumulated blanks)\n--- s0 ---\n{s0}\n\

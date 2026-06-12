@@ -1943,6 +1943,12 @@ fn every_registered_function_compiles() {
             "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := at(q.cursor, cycle)".into()),
         ("clamp_in",
             "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := clamp_in(cycle, q.cursor)".into()),
+        ("count_of",
+            "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := count_of(q.cursor)".into()),
+        ("random_in",
+            "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := random_in(q.cursor, cycle)".into()),
+        ("subdivide",
+            "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := subdivide(q.cursor, 2)".into()),
         ("partitions",
             "input cycle: u64\nout := partitions(\"linear:4\", 1000)".into()),
     ].into_iter().collect();

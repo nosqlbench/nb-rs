@@ -86,6 +86,7 @@ fn nested_dot_in_function_arg() {
 // vectordata_* cursor sugar
 // =========================================================================
 
+#[cfg(feature = "vectordata")]
 #[test]
 fn vectordata_source_rejects_unknown_facet() {
     // Non-"base" / non-"query" facet should produce a structured
@@ -99,6 +100,7 @@ id := row.ordinal"#;
     );
 }
 
+#[cfg(feature = "vectordata")]
 #[test]
 fn vectordata_source_rejects_non_string_args() {
     let src = r#"cursor row = vectordata_source(42, "label_00", "base")
@@ -110,6 +112,7 @@ id := row.ordinal"#;
     );
 }
 
+#[cfg(feature = "vectordata")]
 #[test]
 fn vectordata_source_requires_three_args() {
     // Third arg (facet) missing — validation should reject with a
@@ -123,6 +126,7 @@ id := row.ordinal"#;
     );
 }
 
+#[cfg(feature = "vectordata")]
 #[test]
 fn vectordata_base_rejects_non_string_args() {
     // Facet-baked shortcut: only dataset + profile required.
@@ -135,6 +139,7 @@ id := row.ordinal"#;
     );
 }
 
+#[cfg(feature = "vectordata")]
 #[test]
 fn vectordata_query_requires_two_args() {
     let src = r#"cursor q = vectordata_query("example")

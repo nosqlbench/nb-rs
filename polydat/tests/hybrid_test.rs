@@ -8,6 +8,11 @@ use polydat::library::arithmetic::*;
 use polydat::library::hash::Hash;
 use polydat::library::identity::Identity;
 
+// `identity` is the polymorphic PolyWire node: no `compiled_u64`
+// (Value isn't a u64-buffer carrier), so it rides hybrid kernels
+// only as a JIT segment. The closure-only (`not(jit)`) hybrid
+// build correctly declines it.
+#[cfg(feature = "jit")]
 #[test]
 fn hybrid_simple_identity() {
     let mut asm = PolydatAssembler::new(vec!["cycle".into()]);

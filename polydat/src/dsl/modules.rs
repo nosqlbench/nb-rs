@@ -82,9 +82,13 @@ impl Compiler {
         node: &Box<dyn crate::ast::PolydatNode>,
         wire_refs: &mut Vec<crate::compile::assembly::WireRef>,
     ) -> Result<(), String> {
-        use crate::dsl::registry::{registry, DefaultResolver};
+        use crate::dsl::registry::registry;
+        #[cfg(feature = "vectordata")]
+        use crate::dsl::registry::DefaultResolver;
+        #[cfg(feature = "vectordata")]
         use crate::library::identity::ConstStr;
         use crate::ast::PortType;
+        #[cfg(feature = "vectordata")]
         use crate::compile::assembly::WireRef;
 
         // Find the FuncSig — only some functions opt into auto-promotion.
@@ -115,6 +119,21 @@ impl Compiler {
                 if src_type == Some(PortType::Str) {
                     // Build the resolver call as anonymous nodes.
                     let resolver_name = self.anon_name();
+                    // The SRD-53 source-string resolvers are dataset
+                    // openers from `library::vectors`, which exists
+                    // only with the `vectordata` feature. Without it,
+                    // auto-promotion must fail loudly — silently
+                    // leaving the Str wire in place would surface as
+                    // a confusing type mismatch downstream.
+                    #[cfg(not(feature = "vectordata"))]
+                    {
+                        let _ = &resolver_name;
+                        return Err(format!(
+                            "input '{}' needs the {resolver:?} source-string                              resolver, but polydat was built without the                              'vectordata' feature",
+                            port.name
+                        ));
+                    }
+                    #[cfg(feature = "vectordata")]
                     match resolver {
                         DefaultResolver::Facet(facet) => {
                             // Anonymous facet const wire.
@@ -142,7 +161,10 @@ impl Compiler {
                             );
                         }
                     }
-                    wire_refs[wire_idx] = WireRef::node(resolver_name);
+                    #[cfg(feature = "vectordata")]
+                    {
+                        wire_refs[wire_idx] = WireRef::node(resolver_name);
+                    }
                 }
             }
             wire_idx += 1;

@@ -122,6 +122,9 @@ fn compute_hybrid_slot_provenance(
     for (step_idx, step) in steps.iter().enumerate() {
         // Only closure steps carry explicit output_slots; JIT steps use the
         // same buffer region but slot assignment is managed by the JIT code.
+        // (Under `not(feature = "jit")` Closure is the only variant, making
+        // this pattern irrefutable — that's fine, not a bug.)
+        #[allow(irrefutable_let_patterns)]
         if let HybridStep::Closure(cs) = step {
             for &slot in &cs.output_slots {
                 if slot < slot_provenance.len() {
@@ -526,7 +529,6 @@ pub fn build_hybrid(
             .map(|source| match source {
                 WireSource::Input(c) => *c,
                 WireSource::NodeOutput(upstream, port) => slot_bases[*upstream] + port,
-                WireSource::Port(_) => todo!("port slots in hybrid kernel"),
             })
             .collect();
 
