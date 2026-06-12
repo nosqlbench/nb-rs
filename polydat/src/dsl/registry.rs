@@ -469,11 +469,20 @@ pub fn suggest_function(name: &str) -> Option<&'static str> {
 }
 
 /// Find a registered function by name.
+///
+/// Iterates the link-time inventory directly and returns the
+/// actual `&'static FuncSig` — the registration slices are
+/// already `'static` (see [`NodeRegistration::signatures`]), so
+/// no allocation is needed. (The former implementation built an
+/// owned `Vec` and `Box::leak`'d a clone to fabricate the
+/// `'static` lifetime, leaking ~200 bytes per call — Miri's
+/// leak-check finding 2026-06-12.)
 pub fn lookup(name: &str) -> Option<&'static FuncSig> {
-    let reg = registry();
-    for sig in &reg {
-        if sig.name == name {
-            return Some(Box::leak(Box::new(sig.clone())));
+    for reg in inventory::iter::<NodeRegistration> {
+        for sig in (reg.signatures)() {
+            if sig.name == name {
+                return Some(sig);
+            }
         }
     }
     None

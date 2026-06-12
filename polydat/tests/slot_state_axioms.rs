@@ -189,3 +189,16 @@ fn s10_from_raw_parts_tripwire() {
     );
 }
 
+
+/// Registry `lookup` returns a real `&'static` into the link-time
+/// inventory — same address across calls — proving it does not
+/// allocate (and leak) per call. Regression guard for the Miri
+/// leak finding (2026-06-12): the former impl `Box::leak`'d a
+/// clone, leaking ~200 bytes every call.
+#[test]
+fn lookup_does_not_allocate_per_call() {
+    use polydat::dsl::registry::lookup;
+    let a = lookup("hash").expect("hash registered") as *const _;
+    let b = lookup("hash").expect("hash registered") as *const _;
+    assert_eq!(a, b, "lookup must return a stable &'static, not a fresh leak");
+}

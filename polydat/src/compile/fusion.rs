@@ -10,6 +10,8 @@
 //!
 //! See SRD 36 (docs/design/36_node_fusion.md) for the full design.
 
+use std::borrow::Cow;
+
 use crate::kernel::WireSource;
 use crate::ast::{Commutativity, ConstValue, PolydatNode};
 
@@ -35,7 +37,7 @@ pub enum FusionPattern {
         /// Sub-patterns for the node's inputs.
         inputs: Vec<FusionPattern>,
         /// Binding name for this node's constants in the match result.
-        bind: &'static str,
+        bind: Cow<'static, str>,
     },
 
     /// Match any wire source (coordinate, upstream node output, etc.).
@@ -43,7 +45,7 @@ pub enum FusionPattern {
     /// to the fused replacement node.
     Any {
         /// Binding name for this wire in the match result.
-        bind: &'static str,
+        bind: Cow<'static, str>,
     },
 
     /// Match a variadic node with N children, applying a sub-pattern
@@ -58,7 +60,7 @@ pub enum FusionPattern {
         child_pattern: Box<FusionPattern>,
         /// Binding prefix: children bound as `{bind}_0`, `{bind}_1`, ...
         /// The node's own constants are bound under `{bind}`.
-        bind: &'static str,
+        bind: Cow<'static, str>,
         /// Minimum number of children to match.
         min_children: usize,
     },
@@ -69,14 +71,14 @@ impl FusionPattern {
     pub fn node(
         op: &'static str,
         inputs: Vec<FusionPattern>,
-        bind: &'static str,
+        bind: impl Into<Cow<'static, str>>,
     ) -> Self {
-        FusionPattern::Node { op, inputs, bind }
+        FusionPattern::Node { op, inputs, bind: bind.into() }
     }
 
     /// Convenience: `any(bind)`.
-    pub fn any(bind: &'static str) -> Self {
-        FusionPattern::Any { bind }
+    pub fn any(bind: impl Into<Cow<'static, str>>) -> Self {
+        FusionPattern::Any { bind: bind.into() }
     }
 
     /// Return the root operation name, if this is a `Node` pattern.
@@ -272,8 +274,11 @@ fn try_match(
                 let child_bind = format!("{bind}_{i}");
                 // For Any patterns, override the bind name with the indexed one.
                 let indexed_pattern = match child_pattern.as_ref() {
+                    // Owned bind — no leak (the former `Box::leak`
+                    // fabricated a `'static` per child match; the
+                    // `Cow` carries ownership instead).
                     FusionPattern::Any { .. } => FusionPattern::Any {
-                        bind: Box::leak(child_bind.clone().into_boxed_str()),
+                        bind: Cow::Owned(child_bind.clone()),
                     },
                     _ => *child_pattern.clone(),
                 };

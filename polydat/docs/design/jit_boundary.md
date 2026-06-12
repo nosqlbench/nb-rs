@@ -476,14 +476,26 @@ MIRIFLAGS=-Zmiri-ignore-leaks cargo +nightly miri test \
     -p polydat --no-default-features --test slot_state_axioms
 ```
 
+Lane command (clean leak-checking, no suppression flags):
+
+```sh
+cargo +nightly miri test -p polydat --no-default-features \
+    --test slot_state_axioms
+```
+
 ADJUDICATED 2026-06-12: Stacked Borrows accepts the pattern (the
-S5 oracle passes under Miri across all five engines). One caveat,
-recorded rather than hidden: Miri warns on the integer-to-pointer
-casts (inherent to a u64-slot transport — provenance is
-necessarily reconstructed, so the check runs under permissive
-int-ptr semantics rather than strict provenance). The
-`-Zmiri-ignore-leaks` flag masks a known ~200-byte-per-compile
-leak in `registry::lookup` (tracked for a follow-up fix).
+S5 oracle passes under Miri across all five engines) AND the leak
+check passes clean. One caveat, recorded rather than hidden: Miri
+warns on the integer-to-pointer casts (inherent to a u64-slot
+transport — provenance is necessarily reconstructed, so the check
+runs under permissive int-ptr semantics rather than strict
+provenance). The earlier `-Zmiri-ignore-leaks` requirement is
+gone: the ~200-byte-per-compile leak it masked was a real bug in
+`registry::lookup` (it `Box::leak`'d a clone to fabricate a
+`'static` instead of returning the already-`'static` inventory
+entry) plus a latent twin in the fusion matcher (`Box::leak` on a
+synthesized bind name, now `Cow::Owned`); both fixed 2026-06-12,
+so the leak check itself is now the regression guard.
 
 **S10 — Unsafe is enumerable, annotated, and tripwired.** Every
 Ref-deref `unsafe` lives in macro-generated `compiled_slot`
