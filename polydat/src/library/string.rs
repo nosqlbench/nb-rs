@@ -453,19 +453,8 @@ fn str_upper(input: String) -> String {
 /// Try to build a string node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        // `combinations` routes through proc-macro-emitted
-        // NodeRegistration per SRD-80 PR B.6.
-        // `number_to_words` / `hashed_uuid` route through
-        // proc-macro-emitted NodeRegistration per SRD-80 PR B.4.
-        // `char_buf` routes via proc-macro-emitted NodeRegistration per SRD-80 PR B.6.
-        // `file_line_at` routes via proc-macro-emitted NodeRegistration per SRD-80b Phase E.
-        // `str_concat` routes via proc-macro NodeRegistration per SRD-80 PR B.9.
-        // `str_lower` / `str_upper` route through the
-        // proc-macro-emitted NodeRegistration per SRD-80 PR B.4.
-        _ => None,
-    }
+pub(crate) fn build_node(_name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
+    None
 }
 
 

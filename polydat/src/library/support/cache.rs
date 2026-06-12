@@ -57,6 +57,11 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// The cache's backing store: each key maps to a shared,
+/// once-initialised cell holding either the cached value or the
+/// init error string.
+type CacheStore<K, V> = Mutex<HashMap<K, Arc<OnceLock<Result<V, String>>>>>;
+
 /// Per-key once-init cache. See module docs for the rationale
 /// and pattern.
 ///
@@ -64,7 +69,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// is the cached value type — typically `Arc<Something>` so
 /// the clone on hit is just a refcount bump.
 pub struct OnceCache<K: Eq + Hash + Clone, V: Clone> {
-    inner: Mutex<HashMap<K, Arc<OnceLock<Result<V, String>>>>>,
+    inner: CacheStore<K, V>,
 }
 
 impl<K: Eq + Hash + Clone, V: Clone> Default for OnceCache<K, V> {

@@ -46,16 +46,13 @@ use super::strategy::{StrategyName, ZipMode};
 /// degenerate-composition warnings non-blockingly. `Strict`
 /// promotes those warnings to errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Mode {
+    #[default]
     Permissive,
     Strict,
 }
 
-impl Default for Mode {
-    fn default() -> Self {
-        Mode::Permissive
-    }
-}
 
 /// Result of a validation pass.
 #[derive(Debug, Clone)]
@@ -95,6 +92,7 @@ pub enum ValidationError {
     ///     that the filter's child is addressable);
     ///   - lattice-geometric strategy whose input is a `Union`
     ///     or a 1-axis `Clause` (per §3.6 strategy table).
+    ///
     /// Phase 3 will replace this with the full IndexFn check.
     V4InputShape {
         strategy: StrategyName,
@@ -620,8 +618,8 @@ fn extract_interpolated_names(predicate: &str) -> Vec<String> {
     let bytes = predicate.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if let Some(close) = predicate[i + 1..].find('}') {
+        if bytes[i] == b'{'
+            && let Some(close) = predicate[i + 1..].find('}') {
                 let name = predicate[i + 1..i + 1 + close].trim();
                 if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                     out.push(name.to_string());
@@ -629,7 +627,6 @@ fn extract_interpolated_names(predicate: &str) -> Vec<String> {
                 i += close + 2;
                 continue;
             }
-        }
         i += 1;
     }
     out
@@ -751,10 +748,7 @@ mod tests {
     fn v8_rejects_continuous_without_sampling() {
         // Continuous clause at the outermost level — no order.
         let bad = continuous_clause("theta");
-        assert!(matches!(
-            validate(&bad, Mode::Permissive),
-            Ok(_)
-        ));
+        assert!(validate(&bad, Mode::Permissive).is_ok());
         // The error fires at the outermost reachable point; for
         // a bare clause we need a wrapping check the consumer
         // does. Wrap it in order(Lex, None) — Lex doesn't sample

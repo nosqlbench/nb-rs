@@ -243,12 +243,11 @@ impl MetricSet {
                     if src_family.r#type == MetricType::Gauge {
                         // Seed gauge_acc from this snapshot's gauge points.
                         for m in &src_family.metrics {
-                            if let Some(point) = m.points.first() {
-                                if let MetricValue::Gauge(g) = &point.value {
+                            if let Some(point) = m.points.first()
+                                && let MetricValue::Gauge(g) = &point.value {
                                     let weight = s.interval.as_secs_f64();
                                     gauge_acc.push((m.labels.clone(), g.value * weight, weight));
                                 }
-                            }
                         }
                     }
                     continue;
@@ -256,8 +255,8 @@ impl MetricSet {
                 let dst = acc.as_mut().unwrap();
                 if dst.r#type == MetricType::Gauge {
                     for m in &src_family.metrics {
-                        if let Some(point) = m.points.first() {
-                            if let MetricValue::Gauge(g) = &point.value {
+                        if let Some(point) = m.points.first()
+                            && let MetricValue::Gauge(g) = &point.value {
                                 let weight = s.interval.as_secs_f64();
                                 if let Some(entry) = gauge_acc.iter_mut().find(|(l, _, _)| l == &m.labels) {
                                     entry.1 += g.value * weight;
@@ -266,7 +265,6 @@ impl MetricSet {
                                     gauge_acc.push((m.labels.clone(), g.value * weight, weight));
                                 }
                             }
-                        }
                     }
                 } else {
                     for m in &src_family.metrics {

@@ -96,6 +96,7 @@ pub struct SourceSchema {
     /// - `Value::Ext(PartitionSpec)` — resolve against the cursor's extent, use partition 0.
     /// - `Value::Ext(PartitionList)` — use partition 0.
     /// - `Value::None`           — no narrowing (cursor uses its full extent).
+    ///
     /// `None` means the cursor was declared without an `over`
     /// clause; the cursor uses its full declared extent.
     pub partition_output: Option<String>,
@@ -582,11 +583,10 @@ impl DataSource for ExtendingRangeSource {
             // moment the partition is exhausted, whether or not
             // the policy's time / pass / count target was
             // reached — no policy consultation past the cap.
-            if let Some(max) = self.max_end {
-                if end >= max {
+            if let Some(max) = self.max_end
+                && end >= max {
                     return None;
                 }
-            }
             // Cursor has caught up to end. Consult policy with
             // a snapshot of the current state. Each fiber that
             // races to this point gets its own context read;

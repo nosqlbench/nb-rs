@@ -199,6 +199,12 @@ impl LiveWindowHistogram {
         total
     }
 
+    /// Whether the window currently holds no samples. Cheaper than
+    /// `len() == 0` only in intent — both walk the live slots.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     // ---- helpers -------------------------------------------------
 
     fn slot_index(&self, now: Instant) -> usize {

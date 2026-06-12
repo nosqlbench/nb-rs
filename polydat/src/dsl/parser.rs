@@ -402,7 +402,7 @@ fn parse_modified_binding(p: &mut Parser) -> Result<Statement, String> {
         p.advance();
     }
 
-    let modifier = BindingModifier::from_iter(collected)
+    let modifier = BindingModifier::try_from_iter(collected)
         .map_err(|e| format!(
             "{e} at line {}, col {}", start_span.line, start_span.col,
         ))?;
@@ -779,10 +779,7 @@ fn scan_interpolation_segments(s: &str) -> Option<Vec<Segment>> {
                 segments.push(Segment::Literal(std::mem::take(&mut literal)));
             }
             let body_start = i + 1;
-            let body_end = match find_placeholder_end(&chars, body_start) {
-                Some(end) => end,
-                None => return None,
-            };
+            let body_end = find_placeholder_end(&chars, body_start)?;
             let body: String = chars[body_start..body_end].iter().collect();
             segments.push(Segment::Placeholder(body));
             i = body_end + 1; // skip the `}`

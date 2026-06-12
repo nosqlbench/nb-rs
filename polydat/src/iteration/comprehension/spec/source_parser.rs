@@ -67,7 +67,7 @@ pub fn parse_source(text: &str) -> Result<Source, SourceParseError> {
         let inner = &trimmed[1..trimmed.len() - 1];
         let values = super::super::source::split_string_comprehension(inner)
             .into_iter()
-            .map(|t| parse_literal_value(t))
+            .map(parse_literal_value)
             .collect();
         return Ok(Source::Literal { values });
     }

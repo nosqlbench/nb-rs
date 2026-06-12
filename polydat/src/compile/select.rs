@@ -102,11 +102,10 @@ fn compute_cone_size(node_idx: usize, wiring: &[Vec<WireSource>]) -> usize {
         visited[idx] = true;
         count += 1;
         for source in &wiring[idx] {
-            if let WireSource::NodeOutput(upstream, _) = source {
-                if !visited[*upstream] {
+            if let WireSource::NodeOutput(upstream, _) = source
+                && !visited[*upstream] {
                     stack.push(*upstream);
                 }
-            }
         }
     }
     count

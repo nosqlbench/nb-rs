@@ -1,6 +1,11 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
+// Round-number float literals (3.14, 2.71, …) are arbitrary test
+// fixtures, not fumbled math constants — silence the deny-by-default
+// `approx_constant` for this test-only crate.
+#![allow(clippy::approx_constant)]
+
 //! Integration tests for Polydat scope composition (sysref 16).
 //!
 //! Tests the Polydat API primitives that enable scope composition:

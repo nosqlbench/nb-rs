@@ -90,13 +90,12 @@ pub fn rows_from_query(query: &MetricsQuery) -> Vec<ActivityRow> {
             let short = fname.strip_suffix("_mean").unwrap_or(fname);
             if seen.contains(short) { continue; }
             for metric in family.metrics() {
-                if let Some(point) = metric.point() {
-                    if let MetricValue::Gauge(g) = point.value() {
+                if let Some(point) = metric.point()
+                    && let MetricValue::Gauge(g) = point.value() {
                         seen.insert(short.to_string());
                         gauges.push((short.to_string(), g.value));
                         break;
                     }
-                }
             }
         }
 
@@ -228,6 +227,8 @@ pub fn print_summary_from_query(query: &MetricsQuery, config: &ReportConfig) {
     println!();
 }
 
+// Only consumed by the sqlite-gated `print_summary_from_query`.
+#[cfg(feature = "sqlite")]
 fn format_row(row: &ActivityRow, has_latency: bool, gauge_names: &[String]) -> Vec<String> {
     let rate_str = if row.rate > 0.0 {
         format!("{:.0}/s", row.rate)
@@ -392,6 +393,8 @@ fn format_activity_labels(labels: &Labels) -> String {
 }
 
 /// Align label components within the Activity column.
+// Only consumed by the sqlite-gated `print_summary_from_query`.
+#[cfg(feature = "sqlite")]
 fn align_activity_column(grid: &mut [Vec<String>]) {
     if grid.is_empty() { return; }
 

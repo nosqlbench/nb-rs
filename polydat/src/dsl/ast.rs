@@ -187,7 +187,7 @@ impl BindingModifier {
     /// parser uses this after collecting tokens. Rejects the
     /// contradictory `const` + `volatile` combo with a clear
     /// error.
-    pub fn from_iter<I: IntoIterator<Item = WireModifier>>(items: I) -> Result<Self, &'static str> {
+    pub fn try_from_iter<I: IntoIterator<Item = WireModifier>>(items: I) -> Result<Self, &'static str> {
         let mut out = Self::NONE;
         for m in items {
             out.insert(m);
@@ -432,13 +432,13 @@ mod modifier_tests {
 
     #[test]
     fn from_iter_collects_combinations() {
-        let m = BindingModifier::from_iter(
+        let m = BindingModifier::try_from_iter(
             [WireModifier::Const, WireModifier::Shared]
         ).expect("const+shared is valid");
         assert!(m.is_const() && m.is_shared());
         assert!(!m.is_volatile());
 
-        let m = BindingModifier::from_iter(
+        let m = BindingModifier::try_from_iter(
             [WireModifier::Shared, WireModifier::Volatile]
         ).expect("shared+volatile is valid");
         assert!(m.is_shared() && m.is_volatile());
@@ -446,7 +446,7 @@ mod modifier_tests {
 
     #[test]
     fn from_iter_rejects_const_plus_volatile() {
-        let err = BindingModifier::from_iter(
+        let err = BindingModifier::try_from_iter(
             [WireModifier::Const, WireModifier::Volatile]
         ).expect_err("const+volatile must be rejected");
         assert!(err.contains("const") && err.contains("volatile"),
@@ -456,7 +456,7 @@ mod modifier_tests {
     #[test]
     fn from_iter_rejects_const_shared_volatile() {
         // Triple combination subsumes the contradiction.
-        let err = BindingModifier::from_iter(
+        let err = BindingModifier::try_from_iter(
             [WireModifier::Const, WireModifier::Shared, WireModifier::Volatile]
         ).expect_err("triple combo includes the contradictory pair");
         assert!(err.contains("const") && err.contains("volatile"));
@@ -464,7 +464,7 @@ mod modifier_tests {
 
     #[test]
     fn iter_yields_modifiers_in_stable_order() {
-        let m = BindingModifier::from_iter(
+        let m = BindingModifier::try_from_iter(
             [WireModifier::Volatile, WireModifier::Shared]
         ).unwrap();
         // Insertion order was Volatile, Shared — but iter yields
@@ -476,7 +476,7 @@ mod modifier_tests {
     #[test]
     fn equality_distinguishes_combinations() {
         let const_only = BindingModifier::CONST;
-        let const_shared = BindingModifier::from_iter(
+        let const_shared = BindingModifier::try_from_iter(
             [WireModifier::Const, WireModifier::Shared]
         ).unwrap();
         assert_ne!(const_only, const_shared,

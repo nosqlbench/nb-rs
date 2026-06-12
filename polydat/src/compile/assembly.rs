@@ -348,6 +348,27 @@ pub struct PolydatAssembler {
     pub(crate) strict_types: bool,
 }
 
+/// `(coord_slots, total_slots, steps, named outputs, ref-slot
+/// mask)` — the Phase-2 compiled layout shared by the closure
+/// kernel builders.
+type P2Layout = (
+    usize,
+    usize,
+    Vec<crate::compile::closures::P2Step>,
+    HashMap<String, usize>,
+    Vec<bool>,
+);
+
+/// `(coord_slots, total_slots, JIT steps, named outputs)` — the
+/// JIT compiled layout shared by the native kernel builders.
+#[cfg(feature = "jit")]
+type JitLayout = (
+    usize,
+    usize,
+    Vec<(crate::compile::jit::JitOp, Vec<usize>, Vec<usize>)>,
+    HashMap<String, usize>,
+);
+
 impl PolydatAssembler {
     /// Create a new assembler with the given coordinate names.
     pub fn new(input_names: Vec<String>) -> Self {
@@ -523,6 +544,7 @@ impl PolydatAssembler {
             &resolved.source,
             &resolved.context,
             log,
+            false,
         ).map_err(AssemblyError::Other)?;
         Ok(kernel)
     }
@@ -553,7 +575,7 @@ impl PolydatAssembler {
         }
 
         let modifiers = resolved.output_modifiers.clone();
-        let kernel = PolydatKernel::new_strict_with_inputs(
+        let kernel = PolydatKernel::new_with_inputs(
             resolved.nodes,
             resolved.wiring,
             resolved.input_defs,
@@ -565,6 +587,7 @@ impl PolydatAssembler {
             &resolved.source,
             &resolved.context,
             None,
+            true,
         ).map_err(AssemblyError::Other)?;
         Ok(kernel)
     }
@@ -572,9 +595,10 @@ impl PolydatAssembler {
     /// Validate, resolve, and attempt Phase 2 compilation.
     ///
     /// Returns `Ok(CompiledKernelPushPull)` if all nodes are u64-only and provide
-    /// `compiled_u64()`. Falls back to `Err(PolydatKernel)` (a working Phase 1
-    /// kernel) if any node cannot be compiled.
-    pub fn try_compile(self) -> Result<CompiledKernelPushPull, PolydatKernel> {
+    /// `compiled_u64()`. Falls back to `Err(Box<PolydatKernel>)` (a working
+    /// Phase 1 kernel; boxed so the happy-path `Result` stays small) if any
+    /// node cannot be compiled.
+    pub fn try_compile(self) -> Result<CompiledKernelPushPull, Box<PolydatKernel>> {
         let resolved = self.resolve().expect("assembly validation failed");
         let coord_names = resolved.input_names();
         let layout = slot_layout(&resolved);
@@ -593,14 +617,14 @@ impl PolydatAssembler {
 
         if !all_compilable {
             // Fall back to Phase 1
-            return Err(PolydatKernel::new(
+            return Err(Box::new(PolydatKernel::new(
                 resolved.nodes,
                 resolved.wiring,
                 coord_names,
                 resolved.output_map,
                 &resolved.source,
                 &resolved.context,
-            ));
+            )));
         }
 
         // Build compiled steps over the per-port-width layout
@@ -611,7 +635,6 @@ impl PolydatAssembler {
                 op,
                 input_slots: layout.input_slots(&resolved, node_idx),
                 output_slots: layout.output_slots(&resolved, node_idx),
-                scratch_range: (0, 0),
                 ref_output_starts: if scratch.is_empty() {
                     Vec::new()
                 } else {
@@ -637,10 +660,10 @@ impl PolydatAssembler {
     }
 
     /// Phase 2 compilation without provenance caching.
-    pub fn try_compile_raw(self) -> Result<CompiledKernelRaw, PolydatKernel> {
+    pub fn try_compile_raw(self) -> Result<CompiledKernelRaw, Box<PolydatKernel>> {
         let resolved = match self.resolve() {
             Ok(r) => r,
-            Err(_) => return Err(PolydatKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
+            Err(_) => return Err(Box::new(PolydatKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)"))),
         };
         let coord_names = resolved.input_names();
         let layout = slot_layout(&resolved);
@@ -655,10 +678,10 @@ impl PolydatAssembler {
             }
         }
         if !all_compilable {
-            return Err(PolydatKernel::new(
+            return Err(Box::new(PolydatKernel::new(
                 resolved.nodes, resolved.wiring, coord_names.clone(), resolved.output_map,
                 &resolved.source, &resolved.context,
-            ));
+            )));
         }
         let mut steps = Vec::with_capacity(resolved.nodes.len());
         for (node_idx, op) in compiled_ops.into_iter().enumerate() {
@@ -667,7 +690,6 @@ impl PolydatAssembler {
                 op,
                 input_slots: layout.input_slots(&resolved, node_idx),
                 output_slots: layout.output_slots(&resolved, node_idx),
-                scratch_range: (0, 0),
                 ref_output_starts: if scratch.is_empty() {
                     Vec::new()
                 } else {
@@ -684,18 +706,18 @@ impl PolydatAssembler {
     }
 
     /// Phase 2 compilation with push-side provenance only (no cone guard).
-    pub fn try_compile_push(self) -> Result<CompiledKernelPush, PolydatKernel> {
+    pub fn try_compile_push(self) -> Result<CompiledKernelPush, Box<PolydatKernel>> {
         let resolved = match self.resolve() {
             Ok(r) => r,
-            Err(_) => return Err(PolydatKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
+            Err(_) => return Err(Box::new(PolydatKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)"))),
         };
         let coord_names = resolved.input_names();
         let (coord_count, total_slots, steps, output_map, ref_slots) =
             match Self::build_p2_layout(&resolved) {
                 Some(r) => r,
-                None => return Err(PolydatKernel::new(
+                None => return Err(Box::new(PolydatKernel::new(
                     resolved.nodes, resolved.wiring, coord_names, resolved.output_map,
-                    &resolved.source, &resolved.context)),
+                    &resolved.source, &resolved.context))),
             };
         let dependents = slot_layout(&resolved).expand_dependents(
             &resolved,
@@ -708,18 +730,18 @@ impl PolydatAssembler {
     }
 
     /// Phase 2 compilation with pull-side cone guard only (no per-node skip).
-    pub fn try_compile_pull(self) -> Result<CompiledKernelPull, PolydatKernel> {
+    pub fn try_compile_pull(self) -> Result<CompiledKernelPull, Box<PolydatKernel>> {
         let resolved = match self.resolve() {
             Ok(r) => r,
-            Err(_) => return Err(PolydatKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
+            Err(_) => return Err(Box::new(PolydatKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)"))),
         };
         let coord_names = resolved.input_names();
         let (coord_count, total_slots, steps, output_map, ref_slots) =
             match Self::build_p2_layout(&resolved) {
                 Some(r) => r,
-                None => return Err(PolydatKernel::new(
+                None => return Err(Box::new(PolydatKernel::new(
                     resolved.nodes, resolved.wiring, coord_names, resolved.output_map,
-                    &resolved.source, &resolved.context)),
+                    &resolved.source, &resolved.context))),
             };
         let dependents = slot_layout(&resolved).expand_dependents(
             &resolved,
@@ -735,7 +757,7 @@ impl PolydatAssembler {
     /// Returns None if any node lacks a compiled_u64 implementation.
     fn build_p2_layout(
         resolved: &ResolvedDag,
-    ) -> Option<(usize, usize, Vec<crate::compile::closures::P2Step>, HashMap<String, usize>, Vec<bool>)> {
+    ) -> Option<P2Layout> {
         let layout = slot_layout(resolved);
 
         let mut compiled_ops = Vec::with_capacity(resolved.nodes.len());
@@ -749,7 +771,6 @@ impl PolydatAssembler {
                 op,
                 input_slots: layout.input_slots(resolved, node_idx),
                 output_slots: layout.output_slots(resolved, node_idx),
-                scratch_range: (0, 0),
                 ref_output_starts: if scratch.is_empty() {
                     Vec::new()
                 } else {
@@ -767,7 +788,7 @@ impl PolydatAssembler {
     /// Shared: resolve nodes to JIT steps + slot layout.
     #[cfg(feature = "jit")]
     fn build_jit_layout(resolved: &ResolvedDag)
-        -> Result<(usize, usize, Vec<(crate::compile::jit::JitOp, Vec<usize>, Vec<usize>)>, HashMap<String, usize>), String>
+        -> Result<JitLayout, String>
     {
         let layout = slot_layout(resolved);
 
@@ -1161,7 +1182,7 @@ impl PolydatAssembler {
                 // we cover constant sources and upstream-assertion
                 // chains for value constraints.
                 let sink_port = &all_nodes[node_idx].node.meta().wire_inputs()[port_idx];
-                if let Some(constraint) = sink_port.constraint.clone() {
+                if let Some(constraint) = sink_port.constraint {
                     let last_source = node_wiring.last().expect("wire just pushed").clone();
                     if strict_values && !value_constraint_proven(
                         &all_nodes,

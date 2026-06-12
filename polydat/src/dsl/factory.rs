@@ -74,6 +74,7 @@ impl ConstArg {
 /// 1. Per-module `build_node` functions (one per node module)
 /// 2. Sampling functions not covered by a node module
 /// 3. Registry variadic fallback
+///
 /// Source-binding attribution, set by the compiler before each
 /// `build_node` call and read by factories that want to record
 /// which DSL binding caused the node to exist. The

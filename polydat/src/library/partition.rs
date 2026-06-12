@@ -16,13 +16,13 @@
 //! - `end_of`      — partition's upper bound (exclusive).
 //! - `idx_of`      — 0-based partition index.
 //! - `mod_in`      — modulo-mapped ordinal that stays inside
-//!                   the partition.
+//!   the partition.
 //! - `at`          — bounds-checked offset into the partition.
 //! - `clamp_in`    — saturating projection into the partition.
 //! - `random_in`   — hash-mapped ordinal inside the partition,
-//!                   deterministic per seed.
+//!   deterministic per seed.
 //! - `subdivide`   — split a partition into n near-equal
-//!                   sub-partitions.
+//!   sub-partitions.
 //! - `partitions`  — parse a string spec into a `PartitionList`.
 //!
 //! All of these are deterministic and JIT-friendly at the call

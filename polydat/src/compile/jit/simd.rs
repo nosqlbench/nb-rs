@@ -202,7 +202,7 @@ fn build_kernel(
         b.append_block_param(vexit, types::I64);
         b.append_block_param(vexit, types::F32X4);
 
-        b.ins().jump(vhead, &[zero_i.into(), vzero.into()]);
+        b.ins().jump(vhead, &[zero_i, vzero]);
 
         b.switch_to_block(vhead);
         let vi = b.block_params(vhead)[0];
@@ -211,7 +211,7 @@ fn build_kernel(
         b.ins().brif(
             done4,
             vexit,
-            &[vi.into(), vacc.into()],
+            &[vi, vacc],
             vbody,
             &[],
         );
@@ -246,7 +246,7 @@ fn build_kernel(
             b.ins().store(mf, v, out_addr, 0);
         }
         let vi_next = b.ins().iadd_imm(vi, 4);
-        b.ins().jump(vhead, &[vi_next.into(), next_acc.into()]);
+        b.ins().jump(vhead, &[vi_next, next_acc]);
         b.seal_block(vhead);
         b.seal_block(vbody);
 
@@ -275,13 +275,13 @@ fn build_kernel(
         let sexit = b.create_block();
         b.append_block_param(sexit, types::F32);
 
-        b.ins().jump(shead, &[ti.into(), red.into()]);
+        b.ins().jump(shead, &[ti, red]);
 
         b.switch_to_block(shead);
         let si = b.block_params(shead)[0];
         let ss = b.block_params(shead)[1];
         let done = b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, si, len);
-        b.ins().brif(done, sexit, &[ss.into()], sbody, &[]);
+        b.ins().brif(done, sexit, &[ss], sbody, &[]);
 
         b.switch_to_block(sbody);
         let s_off = b.ins().ishl_imm(si, 2);
@@ -317,7 +317,7 @@ fn build_kernel(
             }
         };
         let si_next = b.ins().iadd_imm(si, 1);
-        b.ins().jump(shead, &[si_next.into(), s_next.into()]);
+        b.ins().jump(shead, &[si_next, s_next]);
         b.seal_block(shead);
         b.seal_block(sbody);
 

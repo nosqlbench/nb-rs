@@ -337,9 +337,7 @@ fn build_order_from_terse(name: &str, n: Option<usize>) -> Result<TraversalOrder
         "halton" => Ok(TraversalOrder::Halton { count: n }),
         "sobol" => Ok(TraversalOrder::Sobol { count: n }),
         "lhs" => Ok(TraversalOrder::Lhs { count: n, seed: None }),
-        "custom" => Err(format!(
-            "order spec 'custom': use 'custom(<function>)' to name the Polydat function"
-        )),
+        "custom" => Err("order spec 'custom': use 'custom(<function>)' to name the Polydat function".to_string()),
         other => Err(format!(
             "order spec: unknown strategy '{other}' — \
              expected one of lex/reverse_lex/diagonal/antidiagonal/extrema/shells/halton/sobol/lhs/custom"

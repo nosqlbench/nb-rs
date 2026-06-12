@@ -728,8 +728,8 @@ impl PolydatState {
     /// single-cycle case). Wraps each u64 as `Value::U64` and sets
     /// them at indices 0..N with per-input change detection.
     pub fn set_inputs(&mut self, coords: &[u64]) {
-        for i in 0..coords.len().min(self.core.inputs.len()) {
-            self.core.inputs[i] = Value::U64(coords[i]);
+        for (i, &c) in coords.iter().enumerate().take(self.core.inputs.len()) {
+            self.core.inputs[i] = Value::U64(c);
             // Unconditional invalidation: the write itself is the
             // signal — see `set_input` for the rationale.
             if i < self.input_dependents.len() {
@@ -1009,8 +1009,8 @@ pub struct RawState {
 impl RawState {
     /// Set new input values and mark all nodes dirty (no provenance check).
     pub fn set_inputs(&mut self, coords: &[u64]) {
-        for i in 0..coords.len().min(self.core.inputs.len()) {
-            self.core.inputs[i] = Value::U64(coords[i]);
+        for (i, &c) in coords.iter().enumerate().take(self.core.inputs.len()) {
+            self.core.inputs[i] = Value::U64(c);
         }
         for clean in &mut self.core.node_clean {
             *clean = false;
@@ -1053,8 +1053,8 @@ impl ProvScanState {
     /// Set new input values and invalidate affected nodes.
     pub fn set_inputs(&mut self, coords: &[u64]) {
         let mut mask = 0u64;
-        for i in 0..coords.len().min(self.core.inputs.len()) {
-            self.core.inputs[i] = Value::U64(coords[i]);
+        for (i, &c) in coords.iter().enumerate().take(self.core.inputs.len()) {
+            self.core.inputs[i] = Value::U64(c);
             // Unconditional: writing the input IS the
             // invalidation signal regardless of value equality.
             mask |= 1u64 << i;

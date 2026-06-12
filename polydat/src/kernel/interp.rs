@@ -81,15 +81,14 @@ fn classify_interpolate_error(
     msg: String,
 ) -> crate::dsl::compile::EmbeddingError {
     // "interpolation: unresolved placeholder '{name}' in '...'"
-    if let Some(rest) = msg.strip_prefix("interpolation: unresolved placeholder '{") {
-        if let Some(end) = rest.find('}') {
+    if let Some(rest) = msg.strip_prefix("interpolation: unresolved placeholder '{")
+        && let Some(end) = rest.find('}') {
             let name = rest[..end].to_string();
             return crate::dsl::compile::EmbeddingError::UnresolvedPlaceholder {
                 name,
                 source: text.to_string(),
             };
         }
-    }
     // Cyclic placeholder fall-through: classify as Parse since
     // the text didn't stabilise.
     crate::dsl::compile::EmbeddingError::Parse {
@@ -334,15 +333,13 @@ fn unescape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(&next) = chars.peek() {
-                if next == '{' || next == '}' {
+        if c == '\\'
+            && let Some(&next) = chars.peek()
+                && (next == '{' || next == '}') {
                     out.push(next);
                     chars.next();
                     continue;
                 }
-            }
-        }
         out.push(c);
     }
     out

@@ -106,6 +106,14 @@
 //!   (library-internal cache + audit infrastructure)
 //! - [`viz`]: DAG visualization (DOT, Mermaid)
 
+// Unit tests use round-number float literals (`3.14`, `1.57`,
+// `2.71`, …) as arbitrary fixture data. clippy's `approx_constant`
+// is a deny-by-default correctness lint that reads those as
+// fat-fingered `std::f*::consts::*` — true for production code,
+// noise for test data. Scope the allowance to `cfg(test)` so the
+// lint still guards real code.
+#![cfg_attr(test, allow(clippy::approx_constant))]
+
 // SRD-80 PR B.3 — let the `#[polydat_node]` macro's emitted
 // `polydat::...` paths resolve when the macro is invoked from
 // INSIDE the polydat crate itself (library nodes migrating to

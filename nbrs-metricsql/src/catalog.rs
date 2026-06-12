@@ -450,18 +450,16 @@ impl<C: MetricCatalog + ?Sized + 'static> CachedCatalog<C> {
     /// invalidation layers. Caller holds the state lock.
     fn is_fresh<T>(&self, entry: &CacheEntry<T>, gen_now: u64) -> bool {
         if entry.generation != gen_now { return false; }
-        if !self.ttl.is_zero() {
-            if entry.filled_at.elapsed() >= self.ttl { return false; }
-        }
-        if let Some(f) = &self.mtime_fn {
-            if let Some(now_mtime) = f() {
+        if !self.ttl.is_zero()
+            && entry.filled_at.elapsed() >= self.ttl { return false; }
+        if let Some(f) = &self.mtime_fn
+            && let Some(now_mtime) = f() {
                 match entry.backend_mtime {
                     Some(prev) if now_mtime > prev => return false,
                     None => return false,
                     _ => {}
                 }
             }
-        }
         true
     }
 

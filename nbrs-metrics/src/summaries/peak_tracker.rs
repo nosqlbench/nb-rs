@@ -229,7 +229,7 @@ mod tests {
         let p = PeakTracker::max(Duration::from_secs(10));
         let t0 = Instant::now();
         for i in 0..10 {
-            p.record(i as u64, t0 + Duration::from_millis(i * 10));
+            p.record(i, t0 + Duration::from_millis(i * 10));
         }
         assert_eq!(p.len(), 1);
         assert_eq!(p.peek(t0 + Duration::from_millis(200)), Some(9));

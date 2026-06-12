@@ -161,7 +161,7 @@ mod tests {
         // HDR at 3 sig-digit over 1 µs .. 60 s resolves 1 ms
         // to within ~0.1% bucket width. Allow 1 bucket of slack.
         let p50 = snap.p50();
-        assert!(p50 >= 999_000 && p50 <= 1_001_000, "p50 = {p50}");
+        assert!((999_000..=1_001_000).contains(&p50), "p50 = {p50}");
     }
 
     #[test]

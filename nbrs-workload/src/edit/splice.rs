@@ -68,7 +68,7 @@ pub fn indent_block(block: &str, column: usize) -> String {
     let pad = " ".repeat(column);
     let mut out = String::with_capacity(block.len() + column * 4);
     for (i, line) in block.split_inclusive('\n').enumerate() {
-        let trimmed = line.trim_start_matches(|c: char| c == ' ' || c == '\t');
+        let trimmed = line.trim_start_matches([' ', '\t']);
         if trimmed.is_empty() || trimmed == "\n" {
             out.push_str(trimmed);
             continue;

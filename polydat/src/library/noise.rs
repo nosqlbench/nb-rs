@@ -182,7 +182,6 @@ fn simplex_2d_algo(perm: &PermTable, x: f64, y: f64) -> f64 {
 // migrated to `#[polydat_node]` with `PermTable` as a
 // setup-derived field. Macro generates structs `Perlin1d`,
 // `Perlin2d`, `Simplex2d` (snake_case → PascalCase).
-
 impl crate::derive_support::PolydatSetup for PermTable {}
 
 #[crate::polydat_node(category = Noise)]
@@ -315,7 +314,7 @@ mod tests {
         for i in 0..1000u64 {
             node.eval(&[Value::U64(i)], &mut out);
             let v = out[0].as_f64();
-            assert!(v >= -1.0 && v <= 1.0, "out of range: {v} at i={i}");
+            assert!((-1.0..=1.0).contains(&v), "out of range: {v} at i={i}");
         }
     }
 
@@ -373,7 +372,7 @@ mod tests {
             for y in 0..50u64 {
                 node.eval(&[Value::U64(x), Value::U64(y)], &mut out);
                 let v = out[0].as_f64();
-                assert!(v >= -1.5 && v <= 1.5, "out of range: {v} at ({x},{y})");
+                assert!((-1.5..=1.5).contains(&v), "out of range: {v} at ({x},{y})");
             }
         }
     }
@@ -402,7 +401,7 @@ mod tests {
             for y in 0..50u64 {
                 node.eval(&[Value::U64(x), Value::U64(y)], &mut out);
                 let v = out[0].as_f64();
-                assert!(v >= -1.5 && v <= 1.5, "out of range: {v}");
+                assert!((-1.5..=1.5).contains(&v), "out of range: {v}");
             }
         }
     }
@@ -414,7 +413,7 @@ mod tests {
         for i in 0..500u64 {
             node.eval(&[Value::U64(i)], &mut out);
             let v = out[0].as_f64();
-            assert!(v >= -1.5 && v <= 1.5, "out of range: {v}");
+            assert!((-1.5..=1.5).contains(&v), "out of range: {v}");
         }
     }
 
@@ -453,7 +452,7 @@ mod tests {
             for y in 0..30u64 {
                 node.eval(&[Value::U64(x), Value::U64(y)], &mut out);
                 let v = out[0].as_f64();
-                assert!(v >= -1.5 && v <= 1.5, "out of range: {v}");
+                assert!((-1.5..=1.5).contains(&v), "out of range: {v}");
             }
         }
     }

@@ -116,7 +116,7 @@ fn soundness_range_fold() {
     let mut rng = TestRng::new(17);
     for _ in 0..SAMPLES {
         let k = rng.next_in(-50, 200);
-        let original = k >= 10 && k <= 100;
+        let original = (10..=100).contains(&k);
         let from_range = match range {
             RangeConstraint::Bounded {
                 lo: Some(lo),
@@ -180,21 +180,21 @@ fn soundness_per_axis_conjunction_disjoint_axes() {
         let limit = rng.next_in(-200, 200);
         let original = k > 5 && limit < 100;
         let k_ok = match k_range {
-            RangeConstraint::Bounded { lo: Some(lo), lo_inclusive, .. } => match lo {
-                polydat::iteration::comprehension::predicate::info::ConstValue::Int(lv) => {
-                    if *lo_inclusive { k >= *lv } else { k > *lv }
-                }
-                _ => panic!(),
-            },
+            RangeConstraint::Bounded {
+                lo: Some(polydat::iteration::comprehension::predicate::info::ConstValue::Int(lv)),
+                lo_inclusive, ..
+            } => {
+                if *lo_inclusive { k >= *lv } else { k > *lv }
+            }
             _ => panic!(),
         };
         let l_ok = match l_range {
-            RangeConstraint::Bounded { hi: Some(hi), hi_inclusive, .. } => match hi {
-                polydat::iteration::comprehension::predicate::info::ConstValue::Int(hv) => {
-                    if *hi_inclusive { limit <= *hv } else { limit < *hv }
-                }
-                _ => panic!(),
-            },
+            RangeConstraint::Bounded {
+                hi: Some(polydat::iteration::comprehension::predicate::info::ConstValue::Int(hv)),
+                hi_inclusive, ..
+            } => {
+                if *hi_inclusive { limit <= *hv } else { limit < *hv }
+            }
             _ => panic!(),
         };
         assert_eq!(original, k_ok && l_ok, "k = {k}, limit = {limit}");

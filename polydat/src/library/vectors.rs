@@ -57,8 +57,8 @@ static DATASET_CACHE: LazyLock<OnceCache<String, Arc<TestDataGroup>>> =
 /// The concrete type inside is `Arc<UniformDataset<T>>` or `Arc<Ivvec32Dataset>`
 /// or `Arc<GenericFacetDataset>`. The race-free init pattern lives
 /// in [`OnceCache`].
-static FACET_CACHE: LazyLock<OnceCache<(String, String, String), Arc<dyn std::any::Any + Send + Sync>>> =
-    LazyLock::new(OnceCache::new);
+type FacetCache = OnceCache<(String, String, String), Arc<dyn std::any::Any + Send + Sync>>;
+static FACET_CACHE: LazyLock<FacetCache> = LazyLock::new(OnceCache::new);
 
 /// Whole-dataset prebuffer cache keyed by source string. Wraps
 /// [`do_dataset_prebuffer_inner`] so N fibers all calling
@@ -707,7 +707,6 @@ handle_metadata_node!(
 // Source-only nodes (just take a `source` String wire) all
 // share the new shape: declare one Wire slot, read inputs[0]
 // at eval, look up via the global cache, return the property.
-
 macro_rules! source_only_node {
     (
         $(#[$meta:meta])*
@@ -926,8 +925,8 @@ handle_metadata_node!(
         // dataset-wide manifest; specific profile facets come via
         // `profile_facets(group, idx)`.
         let names = group.profile_names();
-        if let Some(first) = names.first() {
-            if let Some(view) = group.profile(first) {
+        if let Some(first) = names.first()
+            && let Some(view) = group.profile(first) {
                 let manifest = view.facet_manifest();
                 let mut names: Vec<&String> = manifest.keys().collect();
                 names.sort();
@@ -935,7 +934,6 @@ handle_metadata_node!(
                     names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ").into()
                 );
             }
-        }
         Value::Str(String::new().into())
     }
 );

@@ -79,7 +79,7 @@ impl AstGen {
         }
         match self.rng.range(0, 10) {
             // 30% clause leaf
-            0 | 1 | 2 => self.gen_clause(),
+            0..=2 => self.gen_clause(),
             // 20% cartesian (2-4 children)
             3 | 4 => self.gen_cartesian(depth),
             // 10% zip (2-3 children, Strict / Truncate / Cycle)

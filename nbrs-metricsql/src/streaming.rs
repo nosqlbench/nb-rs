@@ -604,7 +604,7 @@ impl Reducer for QuantileOverTimeReducer {
     }
 
     fn snapshot(&self, acc: &HdrAcc) -> f64 {
-        if acc.hist.len() == 0 { return f64::NAN; }
+        if acc.hist.is_empty() { return f64::NAN; }
         acc.hist.value_at_quantile(self.quantile) as f64
     }
 }
@@ -1418,7 +1418,7 @@ fn bin_neq_post(l: f64, r: f64) -> bool {
 /// where selector output must preserve `__name__` for
 /// downstream binary / set-op matching.
 fn canonical_labels(labels: &[(String, String)]) -> Vec<(String, String)> {
-    let mut out: Vec<_> = labels.iter().cloned().collect();
+    let mut out: Vec<_> = labels.to_vec();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
@@ -2670,11 +2670,15 @@ mod tests {
         out
     }
 
+    /// One flattened (labels, sample) pair — the unit the
+    /// partitioner shuffles.
+    type LabeledSample = (Vec<(String, String)>, Sample);
+
     /// Flatten `Vec<Series>` into per-sample tuples so the
     /// partitioner can shuffle independent of series
     /// boundaries — that's what makes the property test
     /// load-bearing.
-    fn flatten(series: &[Series]) -> Vec<(Vec<(String, String)>, Sample)> {
+    fn flatten(series: &[Series]) -> Vec<LabeledSample> {
         let mut out = Vec::new();
         for s in series {
             for sm in &s.samples {
@@ -2691,9 +2695,9 @@ mod tests {
     /// rest don't).
     fn random_partition(
         rng: &mut XorShift64,
-        pairs: &[(Vec<(String, String)>, Sample)],
+        pairs: &[LabeledSample],
         k: usize,
-    ) -> Vec<Vec<(Vec<(String, String)>, Sample)>> {
+    ) -> Vec<Vec<LabeledSample>> {
         let mut batches: Vec<Vec<_>> = (0..k).map(|_| Vec::new()).collect();
         for p in pairs {
             let target = rng.range(0, k);
@@ -2768,7 +2772,7 @@ mod tests {
         // Fixed seed so failures reproduce. Iteration count
         // chosen so total wall-time stays under SRD-47's
         // 50ms target.
-        let mut rng = XorShift64::new(0xC0FFEE_BEEF);
+        let mut rng = XorShift64::new(0xC0FFEEBEEF);
         const ITERATIONS_PER_SHAPE: usize = 50;
         let anchor_ms = 1000;
 
@@ -2803,7 +2807,6 @@ mod tests {
                 }
                 let stream = plan.snapshot(anchor_ms);
                 let stream_idx = index_by_labels_and_ts(&stream);
-                let batch_idx = batch_idx;
 
                 if batch_idx.len() != stream_idx.len() {
                     panic!(

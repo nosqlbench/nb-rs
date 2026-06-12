@@ -302,18 +302,13 @@ fn find_existing_item(
         Ok(v) => v,
         Err(e) => return Err(format!("workload yaml parse: {e}")),
     };
-    if let Some(report) = v.get("report") {
-        match crate::report::parse_report(report) {
-            Ok(parsed) => {
-                if parsed.report.find(name).is_some() {
-                    return Ok(Some(ExistingItemLocation {
-                        label: "root".to_string(),
-                    }));
-                }
+    if let Some(report) = v.get("report")
+        && let Ok(parsed) = crate::report::parse_report(report)
+            && parsed.report.find(name).is_some() {
+                return Ok(Some(ExistingItemLocation {
+                    label: "root".to_string(),
+                }));
             }
-            Err(_) => {}
-        }
-    }
     // TODO Phase D: walk scenarios / phases / ops.
     Ok(None)
 }

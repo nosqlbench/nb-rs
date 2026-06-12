@@ -471,7 +471,7 @@ mod tests {
                    volatile te := current_epoch_millis() - phase_start\n";
         let k = crate::dsl::compile_polydat(src)
             .expect("clock-minus-injected-origin must compile");
-        assert!(k.program().output_names().iter().any(|n| *n == "te"),
+        assert!(k.program().output_names().contains(&"te"),
             "expected output 'te' in {:?}", k.program().output_names());
     }
 }

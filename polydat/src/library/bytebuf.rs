@@ -132,10 +132,8 @@ impl CharImage {
         let chars: Vec<char> = parse_charset(charset);
         assert!(!chars.is_empty(), "charset must not be empty");
         let mut image = String::with_capacity(size);
-        let mut idx = 0;
-        for _ in 0..size {
+        for idx in 0..size {
             image.push(chars[idx % chars.len()]);
-            idx += 1;
         }
         Self { image }
     }

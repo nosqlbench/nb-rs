@@ -231,7 +231,6 @@ fn clamp(input: u64, min: Const<u64>, max: Const<u64>) -> u64 {
 // `DynamicOutputs<T>` shape — the output port count is
 // determined at construction time from the `radixes`
 // `Const<Vec<u64>>` arg's length.
-
 fn mixed_radix_jit(node: &MixedRadix) -> CompiledU64Op {
     let radixes = node.radixes.clone();
     Box::new(move |inputs, outputs| {

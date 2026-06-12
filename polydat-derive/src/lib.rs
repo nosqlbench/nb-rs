@@ -235,12 +235,11 @@ struct TypeSubst {
 
 impl syn::visit_mut::VisitMut for TypeSubst {
     fn visit_type_mut(&mut self, ty: &mut Type) {
-        if let Type::Path(p) = ty {
-            if p.qself.is_none() && p.path.is_ident(&self.type_param) {
+        if let Type::Path(p) = ty
+            && p.qself.is_none() && p.path.is_ident(&self.type_param) {
                 *ty = self.concrete.clone();
                 return;
             }
-        }
         syn::visit_mut::visit_type_mut(self, ty);
     }
 }
@@ -596,7 +595,9 @@ enum ArgKind {
     /// Generates a struct field of type `T`, computed once in
     /// `new()` by calling `<fn_path>(<source>)` where `<source>`
     /// is the field-access expression for the named `from` arg.
-    Setup(SetupSpec),
+    /// Boxed: `SetupSpec` is ~424 bytes, dwarfing the other
+    /// variants — indirection keeps `ArgKind` small.
+    Setup(Box<SetupSpec>),
     /// SRD-80 PR B.8 — `Value` argument. Polymorphic wire whose
     /// port type is resolved at construction (`new()` takes a
     /// runtime `PortType`). Body sees a cloned `Value`; eval
@@ -1566,7 +1567,7 @@ fn generate(
                              Const arg, not on the derived setup arg.",
                         ));
                     }
-                    ArgKind::Setup(SetupSpec { inner_ty, setup_fn, source_args })
+                    ArgKind::Setup(Box::new(SetupSpec { inner_ty, setup_fn, source_args }))
                 } else if let Some(inner) = classify_const_vec(&declared_ty) {
                     // SRD-80b Phase C — `Const<Vec<C>>` variadic
                     // workload-list. `poly_default` doesn't apply

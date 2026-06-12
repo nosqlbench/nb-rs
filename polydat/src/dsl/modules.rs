@@ -79,8 +79,8 @@ impl Compiler {
         &mut self,
         asm: &mut crate::compile::assembly::PolydatAssembler,
         func_name: &str,
-        node: &Box<dyn crate::ast::PolydatNode>,
-        wire_refs: &mut Vec<crate::compile::assembly::WireRef>,
+        node: &dyn crate::ast::PolydatNode,
+        wire_refs: &mut [crate::compile::assembly::WireRef],
     ) -> Result<(), String> {
         use crate::dsl::registry::registry;
         #[cfg(feature = "vectordata")]

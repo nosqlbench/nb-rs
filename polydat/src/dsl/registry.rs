@@ -19,6 +19,16 @@
 pub use crate::ast::CompileLevel;
 use crate::compile::assembly::WireRef;
 
+/// Builder for a node module: `(name, wires, resolved wire port
+/// types, const args) -> Some(Ok(node)) / Some(Err(msg))`, or
+/// `None` when the name isn't handled by this module.
+pub type NodeBuildFn = fn(
+    &str,
+    &[WireRef],
+    &[crate::ast::PortType],
+    &[crate::dsl::factory::ConstArg],
+) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>>;
+
 /// A node module's registration: signatures + builder.
 ///
 /// Each node module submits one of these at link time via `inventory::submit!`.
@@ -41,7 +51,7 @@ pub struct NodeRegistration {
     /// ignore the slice. When the assembler can't resolve a
     /// wire's type (forward reference, dangling), the slot
     /// defaults to [`crate::ast::PortType::U64`].
-    pub build: fn(&str, &[WireRef], &[crate::ast::PortType], &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>>,
+    pub build: NodeBuildFn,
     /// Optional assembly-time validator for this module's constants.
     ///
     /// The factory calls this **before** `build` whenever the name
@@ -492,8 +502,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let mut matrix = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for i in 0..=a.len() { matrix[i][0] = i; }
-    for j in 0..=b.len() { matrix[0][j] = j; }
+    for (i, row) in matrix.iter_mut().enumerate() { row[0] = i; }
+    for (j, cell) in matrix[0].iter_mut().enumerate() { *cell = j; }
     for i in 1..=a.len() {
         for j in 1..=b.len() {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
@@ -618,7 +628,7 @@ mod tests {
         // format ConstStr and the arity is variadic — both still
         // hold.
         let sig = lookup("printf").unwrap();
-        assert!(sig.params.len() >= 1, "printf must have at least the format param");
+        assert!(!sig.params.is_empty(), "printf must have at least the format param");
         assert!(matches!(sig.params[0].slot_type, SlotType::ConstStr));
         assert!(matches!(sig.arity, Arity::VariadicWires { .. }));
     }

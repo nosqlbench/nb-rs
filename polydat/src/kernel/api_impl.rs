@@ -265,7 +265,7 @@ mod tests {
         // typed-write API should accept this transparently.
         k.set_wire("x", Value::U64(42)).expect("u64→f64 boundary adapter");
         match k.get_wire("x") {
-            Some(Value::F64(v)) if v == 42.0 => {}
+            Some(Value::F64(42.0)) => {}
             other => panic!("expected adapted F64(42.0), got {other:?}"),
         }
     }

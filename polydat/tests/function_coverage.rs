@@ -220,7 +220,7 @@ fn hash_interval_bounded() {
     let mut k = polydat("h := hash(cycle)\nu := unit_interval(h)\nout := lerp(u, -10.0, 10.0)");
     for cycle in 0..1000 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= -10.0 && v < 10.0, "cycle={cycle} gave {v}");
+        assert!((-10.0..10.0).contains(&v), "cycle={cycle} gave {v}");
     }
 }
 
@@ -233,7 +233,7 @@ fn unit_interval_range() {
     let mut k = polydat("out := unit_interval(hash(cycle))");
     for cycle in 0..10_000 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= 0.0 && v < 1.0, "cycle={cycle} gave {v}");
+        assert!((0.0..1.0).contains(&v), "cycle={cycle} gave {v}");
     }
 }
 
@@ -242,7 +242,7 @@ fn lerp_boundaries() {
     let mut k = polydat("u := unit_interval(hash(cycle))\nout := lerp(u, 10.0, 50.0)");
     for cycle in 0..1000 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= 10.0 && v < 50.0, "cycle={cycle} gave {v}");
+        assert!((10.0..50.0).contains(&v), "cycle={cycle} gave {v}");
     }
 }
 
@@ -251,7 +251,7 @@ fn scale_range_bounded() {
     let mut k = polydat("out := scale_range(hash(cycle), 0.0, 100.0)");
     for cycle in 0..1000 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= 0.0 && v < 100.0, "cycle={cycle} gave {v}");
+        assert!((0.0..100.0).contains(&v), "cycle={cycle} gave {v}");
     }
 }
 
@@ -765,7 +765,7 @@ fn perlin_1d_bounded() {
     let mut k = polydat("out := perlin_1d(cycle, 42, 0.01)");
     for cycle in 0..1000 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= -1.0 && v <= 1.0, "cycle={cycle} gave {v}");
+        assert!((-1.0..=1.0).contains(&v), "cycle={cycle} gave {v}");
     }
 }
 
@@ -785,7 +785,7 @@ fn perlin_2d_deterministic() {
     k.set_inputs(&[10, 20]);
     let b = k.pull("out").as_f64();
     assert_eq!(a, b, "perlin_2d must be deterministic");
-    assert!(a >= -1.0 && a <= 1.0, "perlin_2d out of range: {a}");
+    assert!((-1.0..=1.0).contains(&a), "perlin_2d out of range: {a}");
 }
 
 #[test]
@@ -796,7 +796,7 @@ fn simplex_2d_deterministic() {
     k.set_inputs(&[10, 20]);
     let b = k.pull("out").as_f64();
     assert_eq!(a, b, "simplex_2d must be deterministic");
-    assert!(a >= -1.0 && a <= 1.0, "simplex_2d out of range: {a}");
+    assert!((-1.0..=1.0).contains(&a), "simplex_2d out of range: {a}");
 }
 
 // ===========================================================================
@@ -1008,7 +1008,7 @@ fn dist_uniform_samples() {
     let mut k = polydat("u := unit_interval(hash(cycle))\nout := dist_uniform(u, 10.0, 20.0)");
     for cycle in 0..1000 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= 10.0 && v <= 20.0, "cycle={cycle}: {v} out of [10, 20]");
+        assert!((10.0..=20.0).contains(&v), "cycle={cycle}: {v} out of [10, 20]");
     }
 }
 
@@ -1026,7 +1026,7 @@ fn dist_zipf_samples() {
     let mut k = polydat("u := unit_interval(hash(cycle))\nout := dist_zipf(u, 100, 1.07)");
     for cycle in 0..100 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= 1.0 && v <= 100.0, "zipf out of range: {v}");
+        assert!((1.0..=100.0).contains(&v), "zipf out of range: {v}");
     }
 }
 
@@ -1056,7 +1056,7 @@ fn dist_empirical_bounded() {
     let mut k = polydat("f := unit_interval(hash(cycle))\nout := dist_empirical(f, \"10.0 20.0 30.0 40.0 50.0\")");
     for cycle in 0..1000 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= 10.0 && v <= 50.0,
+        assert!((10.0..=50.0).contains(&v),
             "empirical should be in [10, 50], got {v} at cycle={cycle}");
     }
 }
@@ -1091,7 +1091,7 @@ fn clamp_f64_works() {
     let mut k = polydat("f := unit_interval(hash(cycle))\nout := clamp_f64(f, 0.25, 0.75)");
     for cycle in 0..1000 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= 0.25 && v <= 0.75, "cycle={cycle} gave {v}");
+        assert!((0.25..=0.75).contains(&v), "cycle={cycle} gave {v}");
     }
 }
 
@@ -1104,7 +1104,7 @@ fn sin_known_values() {
     let mut k = polydat("f := unit_interval(hash(cycle))\nout := sin(f)");
     for cycle in 0..100 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= -1.0 && v <= 1.0, "sin out of range: {v} at cycle={cycle}");
+        assert!((-1.0..=1.0).contains(&v), "sin out of range: {v} at cycle={cycle}");
     }
     // sin(0) = 0
     let mut k2 = polydat2("f := unit_interval(x)\nout := sin(f)");
@@ -1118,7 +1118,7 @@ fn cos_known_values() {
     let mut k = polydat("f := unit_interval(hash(cycle))\nout := cos(f)");
     for cycle in 0..100 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= -1.0 && v <= 1.0, "cos out of range: {v} at cycle={cycle}");
+        assert!((-1.0..=1.0).contains(&v), "cos out of range: {v} at cycle={cycle}");
     }
     // cos(0) = 1
     let mut k2 = polydat2("f := unit_interval(x)\nout := cos(f)");
@@ -1143,7 +1143,7 @@ fn asin_known_values() {
     for cycle in 0..100 {
         let v = eval_f64(&mut k, cycle);
         // asin input [0,1) -> output [0, pi/2)
-        assert!(v >= 0.0 && v <= std::f64::consts::FRAC_PI_2 + 0.001,
+        assert!((0.0..=std::f64::consts::FRAC_PI_2 + 0.001).contains(&v),
             "asin out of expected range: {v} at cycle={cycle}");
     }
 }
@@ -1154,7 +1154,7 @@ fn acos_known_values() {
     for cycle in 0..100 {
         let v = eval_f64(&mut k, cycle);
         // acos input [0,1) -> output (0, pi/2]
-        assert!(v >= 0.0 && v <= std::f64::consts::FRAC_PI_2 + 0.001,
+        assert!((0.0..=std::f64::consts::FRAC_PI_2 + 0.001).contains(&v),
             "acos out of expected range: {v} at cycle={cycle}");
     }
 }
@@ -1165,7 +1165,7 @@ fn atan_known_values() {
     for cycle in 0..100 {
         let v = eval_f64(&mut k, cycle);
         // atan input [0,1) -> output [0, pi/4)
-        assert!(v >= 0.0 && v < std::f64::consts::FRAC_PI_4 + 0.001,
+        assert!((0.0..std::f64::consts::FRAC_PI_4 + 0.001).contains(&v),
             "atan out of expected range: {v} at cycle={cycle}");
     }
 }
@@ -1175,7 +1175,7 @@ fn sqrt_known_values() {
     let mut k = polydat("f := unit_interval(hash(cycle))\nout := sqrt(f)");
     for cycle in 0..100 {
         let v = eval_f64(&mut k, cycle);
-        assert!(v >= 0.0 && v <= 1.0, "sqrt of [0,1) should be in [0,1]: {v} at cycle={cycle}");
+        assert!((0.0..=1.0).contains(&v), "sqrt of [0,1) should be in [0,1]: {v} at cycle={cycle}");
     }
 }
 
@@ -1207,7 +1207,7 @@ fn exp_known_values() {
     for cycle in 0..100 {
         let v = eval_f64(&mut k, cycle);
         // exp([0,1)) -> [1, e)
-        assert!(v >= 1.0 && v < std::f64::consts::E + 0.001,
+        assert!((1.0..std::f64::consts::E + 0.001).contains(&v),
             "exp out of expected range: {v} at cycle={cycle}");
     }
 }
@@ -1219,7 +1219,7 @@ fn atan2_compiles_and_runs() {
     for cycle in 0..100 {
         let v = eval_f64(&mut k, cycle);
         assert!(v.is_finite(), "atan2 should produce finite result: {v} at cycle={cycle}");
-        assert!(v >= -std::f64::consts::PI && v <= std::f64::consts::PI,
+        assert!((-std::f64::consts::PI..=std::f64::consts::PI).contains(&v),
             "atan2 should be in [-pi, pi]: {v} at cycle={cycle}");
     }
 }
@@ -1693,7 +1693,7 @@ fn fp_unit_interval_bounds() {
     let mut k = polydat("out := unit_interval(cycle)");
     for &c in &[0u64, 1, 100, u64::MAX / 2, u64::MAX - 1, u64::MAX] {
         let v = eval_f64(&mut k, c);
-        assert!(v >= 0.0 && v <= 1.0, "unit_interval({c}) = {v}, expected [0, 1]");
+        assert!((0.0..=1.0).contains(&v), "unit_interval({c}) = {v}, expected [0, 1]");
     }
 }
 
@@ -1809,7 +1809,7 @@ fn sine_unit_module() {
     for c in 0..20u64 {
         k.set_inputs(&[c]);
         let v = k.pull("out").as_f64();
-        assert!(v >= -0.01 && v <= 1.01, "sine_unit({c}) = {v}, expected [0,1]");
+        assert!((-0.01..=1.01).contains(&v), "sine_unit({c}) = {v}, expected [0,1]");
     }
 }
 

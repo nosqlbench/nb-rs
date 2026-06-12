@@ -47,7 +47,7 @@ fn generate_chain(n: usize) -> String {
 /// predecessors. Multiple output paths create reuse.
 fn generate_layered(n: usize) -> String {
     let width = ((n as f64).sqrt()).ceil().max(3.0) as usize;
-    let layers = (n + width - 1) / width;
+    let layers = n.div_ceil(width);
     let mut s = String::new();
     let mut count = 0usize;
 
@@ -80,7 +80,7 @@ fn generate_layered(n: usize) -> String {
             // This creates ~2-3 fan-in because each prev node is used
             // by ~2-3 successor nodes (overlapping windows)
             let src = prev_base + ((j * 3 + layer) % prev_count);
-            if idx % 3 == 0 {
+            if idx.is_multiple_of(3) {
                 writeln!(s, "n{idx} := hash(n{src})").unwrap();
             } else {
                 let k = 100 + (idx % 997);
@@ -103,7 +103,7 @@ fn generate_layered(n: usize) -> String {
 /// "groups" that share predecessors from the prior layer.
 fn generate_dense(n: usize) -> String {
     let width = ((n as f64).sqrt() * 1.2).ceil().max(4.0) as usize;
-    let layers = (n + width - 1) / width;
+    let layers = n.div_ceil(width);
     let mut s = String::new();
     let mut count = 0usize;
 
@@ -155,11 +155,14 @@ fn generate_dense(n: usize) -> String {
     s
 }
 
+/// One graph-generation case: `(node_count, shape_name, generator)`.
+type GraphConfig = (usize, &'static str, fn(usize) -> String);
+
 pub fn generate_all() {
     let dir = output_dir();
     std::fs::create_dir_all(&dir).unwrap();
 
-    let configs: Vec<(usize, &str, fn(usize) -> String)> = vec![
+    let configs: Vec<GraphConfig> = vec![
         (10, "chain", generate_chain as fn(usize) -> String),
         (100, "chain", generate_chain),
         (1000, "chain", generate_chain),

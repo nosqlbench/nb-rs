@@ -1514,7 +1514,7 @@ fn expand_with_expr(was: &[WithArgExpr], e: Expr) -> Result<Expr, ParseError> {
             // declared before it; re-expanding here would
             // double-substitute under nested templates.
             let mut combined: Vec<WithArgExpr> = was.to_vec();
-            combined.extend(w.bindings.into_iter());
+            combined.extend(w.bindings);
             expand_with_expr(&combined, *w.body)
         }
         Expr::Binary(mut b) => {
@@ -1553,11 +1553,10 @@ fn expand_with_expr(was: &[WithArgExpr], e: Expr) -> Result<Expr, ParseError> {
                 if !wa.args.is_empty()
                     && new_args.len() == 1
                     && matches!(&new_args[0], Expr::Paren(_))
-                    && wa.args.len() != 1 {
-                    if let Expr::Paren(p) = new_args.pop().unwrap() {
+                    && wa.args.len() != 1
+                    && let Expr::Paren(p) = new_args.pop().unwrap() {
                         new_args = p.exprs;
                     }
-                }
                 // Pass `was[..idx]` so the binding can't see
                 // itself or any later binding — prevents
                 // cycles like `with (x = x+1) ...`.
@@ -1637,7 +1636,7 @@ fn expand_modifier_args(was: &[WithArgExpr], args: &[String]) -> Vec<String> {
     // Dedup, preserving first occurrence.
     let mut seen: Vec<String> = Vec::with_capacity(out.len());
     for s in out {
-        if !seen.iter().any(|t| *t == s) {
+        if !seen.contains(&s) {
             seen.push(s);
         }
     }
@@ -2201,12 +2200,11 @@ fn unescape_ident(s: &str) -> String {
                     None => { ok = false; break; }
                 }
             }
-            if ok {
-                if let Some(c) = char::from_u32(v) {
+            if ok
+                && let Some(c) = char::from_u32(v) {
                     out.push(c);
                     continue;
                 }
-            }
             out.push('\\');
             out.push(next);
             continue;

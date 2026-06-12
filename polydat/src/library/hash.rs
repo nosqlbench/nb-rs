@@ -142,7 +142,7 @@ mod tests {
         for i in 0..1000 {
             node.eval(&[Value::U64(i)], &mut out);
             let v = out[0].as_f64();
-            assert!(v >= 10.0 && v < 20.0, "got {v}");
+            assert!((10.0..20.0).contains(&v), "got {v}");
         }
     }
 }

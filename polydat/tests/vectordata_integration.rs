@@ -94,7 +94,7 @@ fn neighbor_indices_at_produces_vec_i32() {
     let val = k.pull("neighbors").clone();
     match val {
         Value::VecI32(arc) => {
-            assert!(arc.len() > 0, "should have multiple neighbors");
+            assert!(!arc.is_empty(), "should have multiple neighbors");
         }
         other => panic!("expected VecI32, got {:?}", other),
     }

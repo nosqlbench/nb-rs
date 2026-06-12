@@ -578,8 +578,8 @@ fn apply_single_fusion(
     root_idx: usize,
     result: &MatchResult,
     rule: &FusionRule,
-    nodes: &mut Vec<Option<Box<dyn PolydatNode>>>,
-    wiring: &mut Vec<Vec<WireSource>>,
+    nodes: &mut [Option<Box<dyn PolydatNode>>],
+    wiring: &mut [Vec<WireSource>],
     name_to_idx: &mut std::collections::HashMap<String, usize>,
 ) {
     // Build the fused node.

@@ -787,8 +787,8 @@ fn extract_source_refs(source: &Source, out: &mut Vec<String>) {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if let Some(close) = s[i + 1..].find('}') {
+        if bytes[i] == b'{'
+            && let Some(close) = s[i + 1..].find('}') {
                 let name = s[i + 1..i + 1 + close].trim();
                 if !name.is_empty()
                     && name.chars().all(|c| c.is_alphanumeric() || c == '_')
@@ -799,7 +799,6 @@ fn extract_source_refs(source: &Source, out: &mut Vec<String>) {
                 i += close + 2;
                 continue;
             }
-        }
         i += 1;
     }
 }

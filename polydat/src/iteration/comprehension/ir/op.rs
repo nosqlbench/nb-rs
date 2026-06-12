@@ -121,11 +121,10 @@ impl Op {
     /// `true` if this opcode is a materialization barrier per
     /// spec §6.2 + §6.3. Used by the bounds checker.
     pub fn is_barrier(&self) -> bool {
-        match self {
-            Op::OrderMaterialize { .. } => true,
-            Op::Zip { mode: ZipMode::Cycle, .. } => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            Op::OrderMaterialize { .. } | Op::Zip { mode: ZipMode::Cycle, .. }
+        )
     }
 }
 

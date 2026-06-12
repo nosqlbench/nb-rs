@@ -31,9 +31,6 @@ pub(crate) struct P2Step {
     pub(crate) op: StepOp,
     pub(crate) input_slots: Vec<usize>,
     pub(crate) output_slots: Vec<usize>,
-    /// `[start, end)` into the kernel's scratch arena (empty for
-    /// pure-scalar steps).
-    pub(crate) scratch_range: (usize, usize),
     /// Scratch element declarations (consumed by build_core).
     pub(crate) scratch: Vec<ScratchElem>,
     /// First slot of each Ref2-colored output port, in port
@@ -74,7 +71,9 @@ impl KernelCore {
     /// scratch-backed Ref pair in the buffer must equal its
     /// owning entry's current `(as_ptr(), len())`. Run after
     /// every eval in debug/test builds; a violation names the
-    /// slot instead of dangling.
+    /// slot instead of dangling. Gated to `debug_assertions` to
+    /// match its call sites, which compile out in release.
+    #[cfg(debug_assertions)]
     fn validate_refs(&self) {
         for &(slot, idx) in &self.ref_scratch {
             let (p, l) = self.scratch[idx].ptr_len();
@@ -190,8 +189,8 @@ fn compute_slot_provenance(
         }
     }
     let mut slot_provenance = vec![0u64; total_slots];
-    for i in 0..coord_count.min(64) {
-        slot_provenance[i] = 1u64 << i;
+    for (i, slot) in slot_provenance.iter_mut().enumerate().take(coord_count.min(64)) {
+        *slot = 1u64 << i;
     }
     for (step_idx, step) in steps.iter().enumerate() {
         for &slot in &step.output_slots {
@@ -331,9 +330,9 @@ impl CompiledKernelPush {
 
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
-        for i in 0..coords.len().min(self.core.coord_count) {
-            if self.core.buffer[i] != coords[i] {
-                self.core.buffer[i] = coords[i];
+        for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
+            if self.core.buffer[i] != c {
+                self.core.buffer[i] = c;
                 if i < self.input_dependents.len() {
                     for &step_idx in &self.input_dependents[i] {
                         self.node_clean[step_idx] = false;
@@ -418,9 +417,9 @@ impl CompiledKernelPull {
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
         self.changed_mask = 0;
-        for i in 0..coords.len().min(self.core.coord_count) {
-            if self.core.buffer[i] != coords[i] {
-                self.core.buffer[i] = coords[i];
+        for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
+            if self.core.buffer[i] != c {
+                self.core.buffer[i] = c;
                 self.changed_mask |= 1u64 << i;
             }
         }
@@ -439,11 +438,10 @@ impl CompiledKernelPull {
     pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
         self.core.guard_ref_slot(slot);
         self.set_inputs(coords);
-        if slot < self.slot_provenance.len() {
-            if self.slot_provenance[slot] & self.changed_mask == 0 {
+        if slot < self.slot_provenance.len()
+            && self.slot_provenance[slot] & self.changed_mask == 0 {
                 return self.core.buffer[slot];
             }
-        }
         eval_all_steps(&mut self.core);
         self.core.buffer[slot]
     }
@@ -489,9 +487,9 @@ impl CompiledKernelPushPull {
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
         self.changed_mask = 0;
-        for i in 0..coords.len().min(self.core.coord_count) {
-            if self.core.buffer[i] != coords[i] {
-                self.core.buffer[i] = coords[i];
+        for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
+            if self.core.buffer[i] != c {
+                self.core.buffer[i] = c;
                 self.changed_mask |= 1u64 << i;
                 if i < self.input_dependents.len() {
                     for &step_idx in &self.input_dependents[i] {
@@ -536,11 +534,10 @@ impl CompiledKernelPushPull {
     pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
         self.core.guard_ref_slot(slot);
         self.set_inputs(coords);
-        if slot < self.slot_provenance.len() {
-            if self.slot_provenance[slot] & self.changed_mask == 0 {
+        if slot < self.slot_provenance.len()
+            && self.slot_provenance[slot] & self.changed_mask == 0 {
                 return self.core.buffer[slot];
             }
-        }
         for (step_idx, step) in self.core.steps.iter().enumerate() {
             if self.node_clean[step_idx] { continue; }
             for (i, &s) in step.input_slots.iter().enumerate() {

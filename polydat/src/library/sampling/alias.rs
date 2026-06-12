@@ -120,6 +120,11 @@ impl<T: Clone> AliasTable<T> {
     pub fn len(&self) -> usize {
         self.slots.len()
     }
+
+    /// Whether the table has no outcomes.
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
 }
 
 // -----------------------------------------------------------------
@@ -206,6 +211,11 @@ impl AliasTableU64 {
         self.biases.len()
     }
 
+    /// Whether the table has no outcomes.
+    pub fn is_empty(&self) -> bool {
+        self.biases.is_empty()
+    }
+
     /// Access the bias array (for compiled kernel closure capture).
     pub fn biases(&self) -> &[f64] {
         &self.biases
@@ -239,7 +249,7 @@ impl PolydatSetup for AliasTableU64 {}
 
 /// Build the alias table from raw weights. Single-call setup
 /// invoked by the macro at construction time.
-fn build_alias_table(weights: &Vec<f64>) -> AliasTableU64 {
+fn build_alias_table(weights: &[f64]) -> AliasTableU64 {
     AliasTableU64::from_weights(weights)
 }
 

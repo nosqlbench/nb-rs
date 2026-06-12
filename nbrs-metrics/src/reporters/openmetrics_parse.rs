@@ -107,7 +107,7 @@ pub fn parse_prometheus_text(text: &str) -> MetricSet {
                 let val_nanos = (*val_seconds * 1_000_000_000.0) as u64;
                 let bucket_fraction = q - prev_q;
                 let bucket_count = (bucket_fraction * total as f64).round() as u64;
-                for _ in 0..bucket_count.max(1).min(10_000) {
+                for _ in 0..bucket_count.clamp(1, 10_000) {
                     if let Err(e) = histogram.record(val_nanos.max(1)) {
                         crate::diag::warn(&format!("warning: histogram record failed: {e}"));
                     }

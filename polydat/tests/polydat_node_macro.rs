@@ -1,6 +1,11 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
+// Round-number float literals (3.14, 2.71, …) are arbitrary test
+// fixtures, not fumbled math constants — silence the deny-by-default
+// `approx_constant` for this test-only crate.
+#![allow(clippy::approx_constant)]
+
 //! SRD-80 PR B.1 — proc-macro `#[polydat_node]` validation
 //! tests. Defines a few pilot nodes inline using the macro and
 //! verifies their generated struct + NodeMeta + eval round-
@@ -632,7 +637,7 @@ fn macro_pilot_sum_and_product(a: u64, b: u64) -> (u64, u64) {
     output_names(quotient, has_remainder),
 )]
 fn macro_pilot_div_with_flag(a: u64, b: u64) -> (u64, bool) {
-    (a / b, a % b != 0)
+    (a / b, !a.is_multiple_of(b))
 }
 
 #[test]

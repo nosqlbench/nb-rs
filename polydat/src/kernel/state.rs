@@ -214,51 +214,26 @@ impl PolydatKernel {
             })
             .collect();
         let order: Vec<String> = output_map.keys().cloned().collect();
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, order,
+        Self::new_with_inputs(nodes, wiring, input_defs, coord_count, output_map, order,
                        std::collections::HashSet::new(),
                        HashMap::new(),
                        source, context, None, false).unwrap()
     }
 
-    /// Create with explicit input definitions.
+    /// Create with explicit input definitions. `strict` selects
+    /// strict-mode const folding (config-wire violations become
+    /// errors).
     ///
     /// Returns `Err` for init-binding contract violations (SRD 11
     /// §"Init Binding Contract" Plan A); these are always fatal
     /// regardless of strict mode.
+    // Twelve parameters describe one thing — a compiled program
+    // definition. A params struct is the right end state, but it
+    // belongs to the construction-protocol reshape (SRD-13e
+    // scope-as-module territory), not lint cleanup — this fn is
+    // the SRD-67 walled-off construction chokepoint.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_inputs(
-        nodes: Vec<Box<dyn PolydatNode>>,
-        wiring: Vec<Vec<WireSource>>,
-        input_defs: Vec<InputDef>,
-        coord_count: usize,
-        output_map: HashMap<String, (usize, usize)>,
-        output_order: Vec<String>,
-        const_outputs: std::collections::HashSet<String>,
-        output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
-        source: &str,
-        context: &str,
-        log: Option<&mut crate::dsl::events::CompileEventLog>,
-    ) -> Result<Self, String> {
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, const_outputs, output_modifiers, source, context, log, false)
-    }
-
-    /// Construct with strict mode.
-    pub(crate) fn new_strict_with_inputs(
-        nodes: Vec<Box<dyn PolydatNode>>,
-        wiring: Vec<Vec<WireSource>>,
-        input_defs: Vec<InputDef>,
-        coord_count: usize,
-        output_map: HashMap<String, (usize, usize)>,
-        output_order: Vec<String>,
-        const_outputs: std::collections::HashSet<String>,
-        output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
-        source: &str,
-        context: &str,
-        log: Option<&mut crate::dsl::events::CompileEventLog>,
-    ) -> Result<Self, String> {
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, const_outputs, output_modifiers, source, context, log, true)
-    }
-
-    fn new_impl(
         nodes: Vec<Box<dyn PolydatNode>>,
         wiring: Vec<Vec<WireSource>>,
         input_defs: Vec<InputDef>,
@@ -301,11 +276,10 @@ impl PolydatKernel {
         let dummy = vec![0u64; program.coord_count()];
         state.set_inputs(&dummy);
         for name in program.output_names() {
-            if let Some(&(node_idx, _)) = program.output_map.get(name) {
-                if program.wiring[node_idx].is_empty() {
+            if let Some(&(node_idx, _)) = program.output_map.get(name)
+                && program.wiring[node_idx].is_empty() {
                     state.pull(&program, name);
                 }
-            }
         }
         seed_shared_cells(&mut state, &program);
         state.core.seed_output_cells(&program);
@@ -378,7 +352,7 @@ impl PolydatKernel {
         let mut state = program.create_state();
         // Populate buffers for folded constants so get_constant()
         // works on the new kernel — mirrors the seeding done in
-        // `new_impl` after fold.
+        // `new_with_inputs` after fold.
         let dummy = vec![0u64; program.coord_count()];
         state.set_inputs(&dummy);
         for name in program.output_names() {
@@ -922,12 +896,11 @@ impl PolydatKernel {
                 .program
                 .input_port_type(name)
                 .expect("input index resolved but no declared port type");
-            if outer_has_slot {
-                if let Some(value) = outer.lookup(name) {
-                    let adapted = adapt_boundary_value(name, inner_slot_type, value);
-                    self.state.set_input(inner_idx, adapted);
-                }
-            } else if outer_is_const {
+            if outer_has_slot || outer_is_const {
+                // Both conditions force the chain-walking value-copy
+                // path (see the const rationale above; an outer input
+                // slot likewise reads through outer.lookup so the
+                // grandparent fall-through applies).
                 if let Some(value) = outer.lookup(name) {
                     let adapted = adapt_boundary_value(name, inner_slot_type, value);
                     self.state.set_input(inner_idx, adapted);

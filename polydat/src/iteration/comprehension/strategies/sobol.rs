@@ -219,9 +219,10 @@ pub(crate) fn sobol_multi_indices(idx: &IndexFn, truncation: Option<u64>) -> Vec
     while (out.len() as u64) < n && attempts < max_attempts {
         let pt: Vec<f64> = dirs.iter().map(|d| sobol_coord(i, d)).collect();
         let mi = point_to_multi_index(&pt, &axis_sizes, idx);
-        if is_continuous {
-            out.push(mi);
-        } else if seen_discrete.insert(mi.clone()) {
+        // Continuous points are never deduped; discrete points
+        // dedup through the set (short-circuit skips the insert
+        // for continuous, so the set stays empty there).
+        if is_continuous || seen_discrete.insert(mi.clone()) {
             out.push(mi);
         }
         i += 1;

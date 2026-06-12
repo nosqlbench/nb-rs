@@ -70,15 +70,14 @@ pub fn evaluate_spec(
     kernel: &PolydatKernel,
 ) -> Result<Vec<Value>, crate::dsl::compile::EmbeddingError> {
     evaluate_spec_internal(spec_text, kernel).map_err(|msg| {
-        if let Some(rest) = msg.strip_prefix("interpolation: unresolved placeholder '{") {
-            if let Some(end) = rest.find('}') {
+        if let Some(rest) = msg.strip_prefix("interpolation: unresolved placeholder '{")
+            && let Some(end) = rest.find('}') {
                 let name = rest[..end].to_string();
                 return crate::dsl::compile::EmbeddingError::UnresolvedPlaceholder {
                     name,
                     source: spec_text.to_string(),
                 };
             }
-        }
         crate::dsl::compile::EmbeddingError::Parse {
             source: spec_text.to_string(),
             message: msg,
@@ -240,6 +239,7 @@ fn evaluate_spec_internal(
 ///   - a spread element `S…` / `S...` contributes `S`'s
 ///     iteration interior (peel one level); a non-iterable `S`
 ///     under spread is a hard error.
+///
 /// Elements are parsed by the core expression grammar: a bare
 /// identifier is a wire/param reference (resolved against the
 /// kernel), a quoted token is a string, numbers/bools are
@@ -1614,7 +1614,7 @@ where
                     // Reject empty columns under Cycle — there's
                     // no value to repeat. Fall through to the
                     // empty-clause callback below by using len=0.
-                    if lens.iter().any(|&l| l == 0) { 0 }
+                    if lens.contains(&0) { 0 }
                     else { *lens.iter().max().unwrap() }
                 }
             };
@@ -1641,9 +1641,9 @@ where
     Ok(())
 }
 
-/// Expand `{name}` placeholders in `text`, resolving each leaf
-/// placeholder against `kernel`'s in-scope name space.
-///
+// Expand `{name}` placeholders in `text`, resolving each leaf
+// placeholder against `kernel`'s in-scope name space.
+//
 // `interpolate_via_kernel`, `interpolate_with_lookup`, and the
 // internal `one_pass` / `first_unresolved` / `unescape` helpers
 // moved to `polydat::kernel::interp` in PR 9c-3 (Surface #5).

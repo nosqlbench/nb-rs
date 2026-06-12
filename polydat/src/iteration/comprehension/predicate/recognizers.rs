@@ -36,8 +36,8 @@ pub fn extract_coord_refs(predicate: &str) -> Vec<String> {
     let bytes = predicate.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if let Some(close) = predicate[i + 1..].find('}') {
+        if bytes[i] == b'{'
+            && let Some(close) = predicate[i + 1..].find('}') {
                 let name = predicate[i + 1..i + 1 + close].trim();
                 if !name.is_empty()
                     && name.chars().all(|c| c.is_alphanumeric() || c == '_')
@@ -48,7 +48,6 @@ pub fn extract_coord_refs(predicate: &str) -> Vec<String> {
                 i += close + 2;
                 continue;
             }
-        }
         i += 1;
     }
     out
@@ -320,8 +319,8 @@ fn recognize_cross_axis_comparison(
     coord_refs: &[String],
 ) -> Option<PredicateInfo> {
     for (op_str, _) in COMPARISON_OPS {
-        if let Some((lhs, rhs)) = split_top_level_op(predicate.trim(), op_str) {
-            if let (Some(a), Some(b)) = (strip_curly(lhs.trim()), strip_curly(rhs.trim()))
+        if let Some((lhs, rhs)) = split_top_level_op(predicate.trim(), op_str)
+            && let (Some(a), Some(b)) = (strip_curly(lhs.trim()), strip_curly(rhs.trim()))
                 && coords.contains(&a)
                 && coords.contains(&b)
                 && a != b
@@ -334,7 +333,6 @@ fn recognize_cross_axis_comparison(
                     coords_referenced: coord_refs.to_vec(),
                 });
             }
-        }
     }
     None
 }

@@ -343,7 +343,7 @@ fn needs_right_parens(b: &BinaryOpExpr) -> bool {
     match &*b.right {
         Expr::Metric(me) => {
             metric_name_str(me)
-                .map(|n| is_reserved_binary_op_ident(n))
+                .map(is_reserved_binary_op_ident)
                 .unwrap_or(false)
         }
         Expr::Func(f) => {

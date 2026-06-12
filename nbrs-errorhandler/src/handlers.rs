@@ -87,6 +87,12 @@ pub struct CounterHandler {
     counts: Mutex<HashMap<String, AtomicU64>>,
 }
 
+impl Default for CounterHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CounterHandler {
     pub fn new() -> Self {
         Self { counts: Mutex::new(HashMap::new()) }

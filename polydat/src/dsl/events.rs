@@ -184,7 +184,7 @@ impl CompileEventLog {
             CompileEvent::TypeWidening { from, to, context } =>
                 format!("widening {from} → {to} in {context}"),
             CompileEvent::Warning { message } =>
-                format!("{message}"),
+                message.to_string(),
             CompileEvent::Summary { nodes, outputs, constants_folded } =>
                 format!("{nodes} nodes, {outputs} outputs, {constants_folded} constant(s) folded"),
             CompileEvent::PragmaAcknowledged { name, line } =>

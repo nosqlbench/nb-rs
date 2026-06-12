@@ -83,7 +83,7 @@ mod tests {
         let mut out1 = [Value::None];
         let mut out2 = [Value::None];
         let input = Value::Bytes(b"hello world".to_vec().into());
-        node.eval(&[input.clone()], &mut out1);
+        node.eval(std::slice::from_ref(&input), &mut out1);
         node.eval(&[input], &mut out2);
         assert_eq!(out1[0].as_bytes(), out2[0].as_bytes());
     }

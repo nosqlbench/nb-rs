@@ -428,13 +428,11 @@ impl Component {
         if let Some(value) = self.props.get(name) {
             return Some(value.clone());
         }
-        if let Some(ref parent_weak) = self.parent {
-            if let Some(parent_arc) = parent_weak.upgrade() {
-                if let Ok(parent) = parent_arc.read() {
+        if let Some(ref parent_weak) = self.parent
+            && let Some(parent_arc) = parent_weak.upgrade()
+                && let Ok(parent) = parent_arc.read() {
                     return parent.get_prop(name);
                 }
-            }
-        }
         None
     }
 
@@ -478,13 +476,11 @@ impl Component {
         if let Some(c) = self.controls.get::<T>(name) {
             return Some(c);
         }
-        if let Some(ref parent_weak) = self.parent {
-            if let Some(parent_arc) = parent_weak.upgrade() {
-                if let Ok(parent) = parent_arc.read() {
+        if let Some(ref parent_weak) = self.parent
+            && let Some(parent_arc) = parent_weak.upgrade()
+                && let Ok(parent) = parent_arc.read() {
                     return parent.find_control_up_subtree::<T>(name);
                 }
-            }
-        }
         None
     }
 
@@ -495,20 +491,16 @@ impl Component {
     where
         T: Clone + Send + Sync + 'static,
     {
-        if let Some(erased) = self.controls.get_erased(name) {
-            if erased.branch_scope() == crate::controls::BranchScope::Subtree {
-                if let Some(c) = self.controls.get::<T>(name) {
+        if let Some(erased) = self.controls.get_erased(name)
+            && erased.branch_scope() == crate::controls::BranchScope::Subtree
+                && let Some(c) = self.controls.get::<T>(name) {
                     return Some(c);
                 }
-            }
-        }
-        if let Some(ref parent_weak) = self.parent {
-            if let Some(parent_arc) = parent_weak.upgrade() {
-                if let Ok(parent) = parent_arc.read() {
+        if let Some(ref parent_weak) = self.parent
+            && let Some(parent_arc) = parent_weak.upgrade()
+                && let Ok(parent) = parent_arc.read() {
                     return parent.find_control_up_subtree::<T>(name);
                 }
-            }
-        }
         None
     }
 
@@ -522,31 +514,26 @@ impl Component {
         if let Some(erased) = self.controls.get_erased(name) {
             return Some(erased);
         }
-        if let Some(ref parent_weak) = self.parent {
-            if let Some(parent_arc) = parent_weak.upgrade() {
-                if let Ok(parent) = parent_arc.read() {
+        if let Some(ref parent_weak) = self.parent
+            && let Some(parent_arc) = parent_weak.upgrade()
+                && let Ok(parent) = parent_arc.read() {
                     return parent.find_control_erased_up_subtree(name);
                 }
-            }
-        }
         None
     }
 
     fn find_control_erased_up_subtree(&self, name: &str)
         -> Option<std::sync::Arc<dyn crate::controls::ErasedControl>>
     {
-        if let Some(erased) = self.controls.get_erased(name) {
-            if erased.branch_scope() == crate::controls::BranchScope::Subtree {
+        if let Some(erased) = self.controls.get_erased(name)
+            && erased.branch_scope() == crate::controls::BranchScope::Subtree {
                 return Some(erased);
             }
-        }
-        if let Some(ref parent_weak) = self.parent {
-            if let Some(parent_arc) = parent_weak.upgrade() {
-                if let Ok(parent) = parent_arc.read() {
+        if let Some(ref parent_weak) = self.parent
+            && let Some(parent_arc) = parent_weak.upgrade()
+                && let Ok(parent) = parent_arc.read() {
                     return parent.find_control_erased_up_subtree(name);
                 }
-            }
-        }
         None
     }
 
@@ -1361,17 +1348,15 @@ mod tests {
         let mut found_value: Option<f64> = None;
         for (labels, set) in &captured {
             if labels.get("name") != Some("rampup") { continue; }
-            if let Some(fam) = set.family("control_concurrency") {
-                if let Some(m) = fam.metrics().next() {
-                    if let Some(p) = m.point() {
-                        if let crate::snapshot::MetricValue::Gauge(g) = p.value() {
+            if let Some(fam) = set.family("control_concurrency")
+                && let Some(m) = fam.metrics().next() {
+                    if let Some(p) = m.point()
+                        && let crate::snapshot::MetricValue::Gauge(g) = p.value() {
                             found_value = Some(g.value);
                         }
-                    }
                     assert_eq!(m.labels().get("name"), Some("rampup"));
                     assert_eq!(m.labels().get("control"), Some("concurrency"));
                 }
-            }
         }
         assert_eq!(found_value, Some(64.0));
 

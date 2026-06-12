@@ -79,13 +79,12 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         }
         // Single-brace expressions detected by bind point parser
         for bp in crate::bindpoints::extract_bind_points(&seg.template) {
-            if let crate::bindpoints::BindPoint::InlineDefinition(expr) = bp {
-                if !expr_index.contains_key(&expr) {
+            if let crate::bindpoints::BindPoint::InlineDefinition(expr) = bp
+                && !expr_index.contains_key(&expr) {
                     let idx = inline_exprs.len();
                     expr_index.insert(expr.clone(), idx);
                     inline_exprs.push(expr);
                 }
-            }
         }
     }
 

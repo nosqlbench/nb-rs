@@ -97,11 +97,11 @@ fn naive_extrema_prefix(input: &[Tuple], truncation: Option<u64>) -> Vec<Tuple> 
     let mut out = Vec::with_capacity(n as usize);
     out.push(input[0].clone());
     out.push(input[input.len() - 1].clone());
-    for i in 1..input.len() - 1 {
+    for item in input.iter().take(input.len() - 1).skip(1) {
         if (out.len() as u64) >= n {
             break;
         }
-        out.push(input[i].clone());
+        out.push(item.clone());
     }
     out
 }

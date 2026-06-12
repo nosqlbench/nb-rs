@@ -226,7 +226,7 @@ mod tests {
     fn shuffle_bijective_small() {
         // Shuffle over [0, 31) should produce a permutation
         let node = shuf0(31);
-        let mut seen = vec![false; 31];
+        let mut seen = [false; 31];
         for i in 0..31u64 {
             let out = apply(&node, i);
             assert!(out < 31, "out of range: {out}");
@@ -240,7 +240,7 @@ mod tests {
     fn shuffle_bijective_non_power_of_two() {
         // Shuffle over [0, 50) — not a power of 2, requires rejection sampling
         let node = shuf0(50);
-        let mut seen = vec![false; 50];
+        let mut seen = [false; 50];
         for i in 0..50u64 {
             let out = apply(&node, i);
             assert!(out < 50, "out of range: {out}");
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn shuffle_with_min_offset() {
         let node = shuf(100, 20);
-        let mut seen = vec![false; 20];
+        let mut seen = [false; 20];
         for i in 0..20u64 {
             let out = apply(&node, i);
             assert!((100..120).contains(&out), "out of range: {out}");
@@ -337,8 +337,8 @@ mod tests {
         let n0 = Shuffle::new(fb0, size, 0);
         let n1 = Shuffle::new(fb1, size, 0);
         // Both should be bijective permutations
-        let mut seen0 = vec![false; 100];
-        let mut seen1 = vec![false; 100];
+        let mut seen0 = [false; 100];
+        let mut seen1 = [false; 100];
         let mut differ = false;
         for i in 0..100u64 {
             let a = apply(&n0, i);

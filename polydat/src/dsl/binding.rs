@@ -363,10 +363,9 @@ impl Compiler {
                     .map(|s| matches!(s.arity, super::registry::Arity::VariadicWires { .. }))
                     .unwrap_or(false);
 
-                // Cursor into the param list.  We advance it for each call arg.
-                let mut param_cursor = 0usize;
-
-                for arg in &call.args {
+                // `param_cursor` indexes the param list in lockstep
+                // with the call args.
+                for (param_cursor, arg) in call.args.iter().enumerate() {
                     let (expr, _name) = match arg {
                         Arg::Positional(e) => (e, None),
                         Arg::Named(n, e) => (e, Some(n.as_str())),
@@ -377,7 +376,6 @@ impl Compiler {
                     // variadic-wires functions, positions past the
                     // explicit params list are still wires.
                     let expected_slot = param_slot_types.get(param_cursor).copied();
-                    param_cursor += 1;
 
                     // Helper: is this arg position expected to be a wire input?
                     let wants_wire = expected_slot
@@ -426,7 +424,7 @@ impl Compiler {
                         Expr::Call(inner) => {
                             // Inline nesting: desugar to an anonymous node
                             let anon = self.anon_name();
-                            self.compile_binding(asm, &[anon.clone()], &Expr::Call(inner.clone()))?;
+                            self.compile_binding(asm, std::slice::from_ref(&anon), &Expr::Call(inner.clone()))?;
                             wire_refs.push(WireRef::node(anon));
                         }
                         Expr::ArrayLit(elems, _) => {
@@ -465,7 +463,7 @@ impl Compiler {
                                 _ => {
                                     // General case: wire input via anonymous node
                                     let anon = self.anon_name();
-                                    self.compile_binding(asm, &[anon.clone()], expr)?;
+                                    self.compile_binding(asm, std::slice::from_ref(&anon), expr)?;
                                     wire_refs.push(WireRef::node(anon));
                                 }
                             }
@@ -473,7 +471,7 @@ impl Compiler {
                         Expr::BinOp(..) | Expr::UnaryBitNot(..) | Expr::Cast(..) => {
                             // Inline arithmetic / cast: desugar to an anonymous node
                             let anon = self.anon_name();
-                            self.compile_binding(asm, &[anon.clone()], expr)?;
+                            self.compile_binding(asm, std::slice::from_ref(&anon), expr)?;
                             wire_refs.push(WireRef::node(anon));
                         }
                         Expr::FieldAccess { source, field, .. } => {
@@ -515,7 +513,7 @@ impl Compiler {
                 // consumer's resolver hint (which the type-adapter
                 // pass can't see at the wire-type-only granularity).
                 self.auto_promote_handle_inputs(
-                    asm, &call.func, &node, &mut wire_refs,
+                    asm, &call.func, &*node, &mut wire_refs,
                 )?;
 
                 if targets.len() == 1 {
@@ -889,7 +887,7 @@ impl Compiler {
                 asm.add_node(&zero_name, Box::new(ConstF64::new(0.0)), vec![]);
 
                 let inner_name = self.anon_name();
-                self.compile_binding(asm, &[inner_name.clone()], inner)?;
+                self.compile_binding(asm, std::slice::from_ref(&inner_name), inner)?;
 
                 let wire_refs = vec![WireRef::node(&zero_name), WireRef::node(&inner_name)];
                 let wire_types: Vec<PortType> = wire_refs.iter()
@@ -903,7 +901,7 @@ impl Compiler {
             Expr::UnaryBitNot(inner, _) => {
                 // Desugar `!x` to `u64_not(x)`.
                 let inner_name = self.anon_name();
-                self.compile_binding(asm, &[inner_name.clone()], inner)?;
+                self.compile_binding(asm, std::slice::from_ref(&inner_name), inner)?;
 
                 let wire_refs = vec![WireRef::node(&inner_name)];
                 let wire_types: Vec<PortType> = wire_refs.iter()
@@ -1008,7 +1006,7 @@ impl Compiler {
                 }
             }
             Expr::FieldAccess { source, field, .. } => {
-                Ok(WireRef::node(&format!("{source}__{field}")))
+                Ok(WireRef::node(format!("{source}__{field}")))
             }
             Expr::IntLit(v, _) => {
                 let anon = self.anon_name();
@@ -1022,7 +1020,7 @@ impl Compiler {
             }
             _ => {
                 let anon = self.anon_name();
-                self.compile_binding(asm, &[anon.clone()], expr)?;
+                self.compile_binding(asm, std::slice::from_ref(&anon), expr)?;
                 Ok(WireRef::node(anon))
             }
         }

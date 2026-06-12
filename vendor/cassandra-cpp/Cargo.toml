@@ -18,6 +18,16 @@ edition = "2018"
 # and forks belong in vendor/, not on the public index.
 publish = false
 
+# This is a vendored fork tracked against the upstream DataStax
+# C++ driver wrapper (see CHANGES.local.md). Its body is kept close
+# to upstream so future re-syncs stay cheap, so upstream's clippy
+# debt is not ours to relitigate site-by-site. Silence clippy for
+# the whole package (lib + examples + tests) in one place rather
+# than churning ~240 lint fixes into a fork we rebase; our own
+# crates stay lint-gated.
+[lints.clippy]
+all = "allow"
+
 [dependencies]
 slog = { version = "2", optional = true }
 log = { version = "0.4.17", optional = true }

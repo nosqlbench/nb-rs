@@ -81,7 +81,7 @@ fn cell_in_scope(intent_word: Arc<AtomicU64>, bit: u8, initial: Value) -> Shared
 fn build_n_input_kernel(n_inputs: usize) -> PolydatKernel {
     let input_names: Vec<String> = (0..n_inputs).map(|i| format!("in{i}")).collect();
     let mut asm = PolydatAssembler::new(input_names.clone());
-    let refs: Vec<WireRef> = input_names.iter().map(|n| WireRef::input(n)).collect();
+    let refs: Vec<WireRef> = input_names.iter().map(WireRef::input).collect();
     asm.add_node("sum", Box::new(Sum::new(n_inputs)), refs);
     asm.add_output("out", WireRef::node("sum"));
     asm.compile().unwrap()
@@ -259,7 +259,7 @@ fn bench_pull_dirty_one_cell(c: &mut Criterion) {
 /// Cells split across `n_scopes` distinct intent-word
 /// Arcs — one cell per scope. The cone walker produces
 /// `n_scopes` groups; each group is one bulk-mask check
-/// + (when clean) zero drill-down. Measures group-count
+/// plus (when clean) zero drill-down. Measures group-count
 /// scaling.
 fn bench_pull_clean_multi_scope(c: &mut Criterion) {
     let mut group = c.benchmark_group("cell/pull_clean_multi_scope");

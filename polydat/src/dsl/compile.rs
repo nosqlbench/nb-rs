@@ -573,8 +573,8 @@ fn classify_compile_error(source: &str, msg: String) -> EmbeddingError {
         };
     }
     // "unknown function: 'foo'" patterns
-    if let Some(stripped) = msg.strip_prefix("unknown function: '") {
-        if let Some(end) = stripped.find('\'') {
+    if let Some(stripped) = msg.strip_prefix("unknown function: '")
+        && let Some(end) = stripped.find('\'') {
             let name = stripped[..end].to_string();
             return EmbeddingError::UnknownNode {
                 name,
@@ -582,7 +582,6 @@ fn classify_compile_error(source: &str, msg: String) -> EmbeddingError {
                 suggestion: None,
             };
         }
-    }
     // "type mismatch" patterns from the assembler
     if msg.contains("type mismatch") {
         return EmbeddingError::TypeMismatch {
@@ -1334,10 +1333,10 @@ impl Compiler {
                 let base_literal = positional_int_lit(&call.args[0]);
                 let base_name = format!("__cursor_extent_{source_name}_end");
                 let start_name = format!("__cursor_extent_{source_name}_start");
-                let _ = self.compile_binding(asm, &[start_name.clone()],
+                let _ = self.compile_binding(asm, std::slice::from_ref(&start_name),
                     &crate::dsl::ast::Expr::IntLit(0, decl.span));
                 if let crate::dsl::ast::Arg::Positional(expr) = &call.args[0] {
-                    self.compile_binding(asm, &[base_name.clone()], expr)
+                    self.compile_binding(asm, std::slice::from_ref(&base_name), expr)
                         .map_err(|e| format!(
                             "cursor '{source_name}': failed to compile {family} base: {e}"))?;
                 }
@@ -1346,7 +1345,7 @@ impl Compiler {
                 let mut compile_aux = |idx: usize, suffix: &str| -> Result<String, String> {
                     let out_name = format!("__cursor_{suffix}_{source_name}");
                     if let crate::dsl::ast::Arg::Positional(expr) = &call.args[idx] {
-                        self.compile_binding(asm, &[out_name.clone()], expr)
+                        self.compile_binding(asm, std::slice::from_ref(&out_name), expr)
                             .map_err(|e| format!(
                                 "cursor '{source_name}': failed to compile \
                                  {family} arg {idx}: {e}"))?;
@@ -1442,13 +1441,13 @@ impl Compiler {
                         // dropping them would leave extent=None and produce
                         // a phase that runs zero cycles with no explanation.
                         if let crate::dsl::ast::Arg::Positional(expr) = &call.args[0] {
-                            self.compile_binding(asm, &[start_name.clone()], expr)
+                            self.compile_binding(asm, std::slice::from_ref(&start_name), expr)
                                 .map_err(|e| format!(
                                     "cursor '{source_name}': failed to compile range start: {e}"
                                 ))?;
                         }
                         if let crate::dsl::ast::Arg::Positional(expr) = &call.args[1] {
-                            self.compile_binding(asm, &[end_name.clone()], expr)
+                            self.compile_binding(asm, std::slice::from_ref(&end_name), expr)
                                 .map_err(|e| format!(
                                     "cursor '{source_name}': failed to compile range end: {e}"
                                 ))?;
@@ -1493,7 +1492,7 @@ impl Compiler {
         // exposed as kernel outputs the runtime can read.
         if let Some(sugar) = sugar {
             for aux in sugar.aux_bindings {
-                self.compile_binding(asm, &[aux.name.clone()], &aux.value)
+                self.compile_binding(asm, std::slice::from_ref(&aux.name), &aux.value)
                     .map_err(|e| format!(
                         "cursor '{source_name}': failed to compile aux binding '{}': {e}",
                         aux.name,
@@ -1546,7 +1545,7 @@ impl Compiler {
         //    can consume it as a `Partition`-typed wire.
         let partition_output = if let Some(over_expr) = decl.over.as_ref() {
             let raw_name = format!("__cursor_{source_name}_over_raw");
-            self.compile_binding(asm, &[raw_name.clone()], over_expr)
+            self.compile_binding(asm, std::slice::from_ref(&raw_name), over_expr)
                 .map_err(|e| format!(
                     "cursor '{source_name}': failed to compile `over` expression: {e}"))?;
             // Allocate the resolved-Partition input slot. Default
@@ -1819,7 +1818,7 @@ impl Compiler {
                         for target in &b.targets {
                             asm.mark_const_output(target);
                             if rhs_has_refs
-                                && !asm.input_names().iter().any(|n| *n == target.as_str())
+                                && !asm.input_names().contains(&target.as_str())
                             {
                                 // Infer the slot's `PortType` from the
                                 // RHS surface shape so the auto-extern
@@ -2204,7 +2203,7 @@ impl Compiler {
                         for target in &b.targets {
                             asm.mark_const_output(target);
                             if rhs_has_refs
-                                && !asm.input_names().iter().any(|n| *n == target.as_str())
+                                && !asm.input_names().contains(&target.as_str())
                             {
                                 // Infer the slot's `PortType` from the
                                 // RHS surface shape so the auto-extern

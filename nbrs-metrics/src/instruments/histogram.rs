@@ -73,7 +73,7 @@ impl Histogram {
 pub fn resolve_hdr_sigdigs(component: &crate::component::Component) -> u8 {
     component.get_prop(HDR_SIGDIGS_PROP)
         .and_then(|s| s.parse::<u8>().ok())
-        .filter(|&n| n >= 1 && n <= 5)
+        .filter(|&n| (1..=5).contains(&n))
         .unwrap_or(DEFAULT_HDR_SIGDIGS)
 }
 

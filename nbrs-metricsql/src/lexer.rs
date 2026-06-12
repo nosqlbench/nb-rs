@@ -260,7 +260,7 @@ fn decode_escape_sequence(s: &str, i: usize) -> (Option<char>, usize) {
         let h2 = from_hex(bytes[i + 2]);
         if let (Some(h1), Some(h2)) = (h1, h2) {
             let v = (h1 << 4) | h2;
-            return (char::from_u32(v as u32), 3);
+            return (char::from_u32(v), 3);
         }
         return (None, 0);
     }
@@ -272,7 +272,7 @@ fn decode_escape_sequence(s: &str, i: usize) -> (Option<char>, usize) {
         let h4 = from_hex(bytes[i + 4]);
         if let (Some(h1), Some(h2), Some(h3), Some(h4)) = (h1, h2, h3, h4) {
             let v = (h1 << 12) | (h2 << 8) | (h3 << 4) | h4;
-            return (char::from_u32(v as u32), 5);
+            return (char::from_u32(v), 5);
         }
         return (None, 0);
     }

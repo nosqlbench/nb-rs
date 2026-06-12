@@ -148,9 +148,10 @@ pub(crate) fn halton_multi_indices(idx: &IndexFn, truncation: Option<u64>) -> Ve
         let pt = halton_point(i, dim);
         let mi = halton_point_to_multi_index(&pt, &axis_sizes, idx);
 
-        if is_continuous {
-            out.push(mi);
-        } else if seen_discrete.insert(mi.clone()) {
+        // Continuous points are never deduped; discrete points
+        // dedup through the set (short-circuit skips the insert
+        // for continuous, so the set stays empty there).
+        if is_continuous || seen_discrete.insert(mi.clone()) {
             out.push(mi);
         }
         i += 1;

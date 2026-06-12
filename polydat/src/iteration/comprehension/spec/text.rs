@@ -14,7 +14,7 @@
 //! input fine — but choosing the matching parser surfaces
 //! sharper error messages for JSON authors.
 
-use super::spec::{ComprehensionSpec, SpecConvertError};
+use super::serde_form::{ComprehensionSpec, SpecConvertError};
 use crate::iteration::comprehension::ast::Comprehension as AlgebraAst;
 
 /// Parse a YAML or JSON text block describing a comprehension

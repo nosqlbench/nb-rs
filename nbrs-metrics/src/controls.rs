@@ -362,11 +362,10 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
         //    so operators see the pin message rather than a
         //    validation error that happens to also reject the
         //    value.
-        if let Some(ref scope) = self.inner.final_at_scope {
-            if origin != ControlOrigin::Launch {
+        if let Some(ref scope) = self.inner.final_at_scope
+            && origin != ControlOrigin::Launch {
                 return Err(SetError::FinalViolation { scope: scope.clone() });
             }
-        }
 
         // 1. Validation runs before any applier is called.
         if let Some(validator) = self.inner.validator.get() {
@@ -463,11 +462,10 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
     pub fn branch_scope(&self) -> BranchScope { self.inner.branch_scope }
 
     fn publish_gauge(&self, value: &T) {
-        if let Some(ref g) = self.inner.gauge {
-            if let Some(f) = (g.to_f64)(value) {
+        if let Some(ref g) = self.inner.gauge
+            && let Some(f) = (g.to_f64)(value) {
                 g.gauge.set(f);
             }
-        }
     }
 }
 
@@ -864,7 +862,7 @@ impl ControlRegistry {
             let info_family = format!("control_info_{}", ctl.name());
             let info_labels = base_labels
                 .with("control", ctl.name())
-                .with("value", &ctl.value_string());
+                .with("value", ctl.value_string());
             set.insert_gauge(&info_family, info_labels, 1.0, captured_at);
         }
         set

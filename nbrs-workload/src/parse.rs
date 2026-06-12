@@ -579,10 +579,10 @@ fn has_recognised_scenario_key(obj: &serde_json::Map<String, JVal>) -> bool {
 fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
     match val {
         JVal::String(s) => vec![ScenarioNode::Phase(s.clone())],
-        JVal::Array(arr) => arr.iter().flat_map(|item| parse_scenario_nodes(item)).collect(),
+        JVal::Array(arr) => arr.iter().flat_map(parse_scenario_nodes).collect(),
         JVal::Object(obj) => {
             let children = obj.get("phases")
-                .map(|v| parse_scenario_nodes(v))
+                .map(parse_scenario_nodes)
                 .unwrap_or_default();
             let counter = obj.get("counter")
                 .and_then(|v| v.as_str())
@@ -900,9 +900,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                             || trimmed.parse::<f64>().is_ok()
                             || trimmed == "true"
                             || trimmed == "false"
-                        {
-                            trimmed.to_string()
-                        } else if is_polydat_quoted_string(trimmed)
+                            || is_polydat_quoted_string(trimmed)
                             || is_polydat_array_literal(trimmed)
                             || is_bare_identifier(trimmed)
                         {
@@ -1389,7 +1387,7 @@ fn parse_phases(
         // <value>` directly, so a nondeterministic value such as
         // `phase_elapsed(phase_start)` is volatility-acknowledged
         // for strict mode in one place.
-        let metrics = parse_phase_metrics_field(phase_obj.get("metrics"), &phase_name)
+        let metrics = parse_phase_metrics_field(phase_obj.get("metrics"), phase_name)
             .map_err(|e| format!("phase '{phase_name}' metrics: {e}"))?;
 
         phases.insert(phase_name.clone(), WorkloadPhase {
@@ -2549,11 +2547,11 @@ fn extract_string_map(val: Option<&JVal>) -> HashMap<String, String> {
     map
 }
 
-/// Shared classifier helpers — `set:` block parser and the
-/// scope-level `add_param_binding` route every value through
-/// the same shape detection so the bare-identifier / array-
-/// literal / quoted-string surface is consistent across both
-/// param entry points.
+// Shared classifier helpers — `set:` block parser and the
+// scope-level `add_param_binding` route every value through
+// the same shape detection so the bare-identifier / array-
+// literal / quoted-string surface is consistent across both
+// param entry points.
 
 fn is_bare_identifier(s: &str) -> bool {
     let mut chars = s.chars();

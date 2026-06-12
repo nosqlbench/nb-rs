@@ -729,17 +729,22 @@ pub(crate) fn compile_jit_push_pull(
 
 // ── Core Cranelift IR generation ───────────────────────────
 
+/// `(raw_fn, prov_fn, module)` — the trio produced by the core
+/// JIT compile: the scalar entry point, the provenance-tracking
+/// entry point, and the owning module that keeps both alive.
+type JitCompiled = (
+    unsafe fn(*const u64, *mut u64),
+    unsafe fn(*const u64, *mut u64, *mut u8),
+    JITModule,
+);
+
 /// Core JIT compilation. Returns (raw_fn, prov_fn, module).
 /// If provenance=false, prov_fn is a dummy transmute of raw_fn.
 /// If provenance=true, raw_fn is a dummy transmute of prov_fn.
 fn compile_jit_impl(
     steps: &[(JitOp, Vec<usize>, Vec<usize>)],
     provenance: bool,
-) -> Result<(
-    unsafe fn(*const u64, *mut u64),
-    unsafe fn(*const u64, *mut u64, *mut u8),
-    JITModule,
-), String> {
+) -> Result<JitCompiled, String> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     // Emit DWARF/SEH unwind tables so a panic raised from an

@@ -100,7 +100,6 @@ impl std::error::Error for ConvertError {}
 // is the forward direction (`legacy_to_algebra`) used by
 // `ComprehensionSpec::into_algebra` to convert parser output
 // to algebra shape.
-
 pub fn legacy_to_algebra(legacy: &LegacyAst) -> Result<AlgebraAst, ConvertError> {
     let body = match &legacy.mode {
         LegacyMode::Cartesian(clauses) => convert_cartesian(clauses)?,

@@ -504,16 +504,12 @@ fn prune_nan_samples(input: Vec<Series>) -> Vec<Series> {
 /// `ignoring` reshape it), then filter per-sample by
 /// timestamp.
 ///
-/// - `vec1 and vec2`    — keep `vec1`'s sample when `vec2`
-///                        has a sample at the same
-///                        (key, timestamp).
-/// - `vec1 or vec2`     — every `vec1` sample, plus every
-///                        `vec2` sample whose
-///                        (key, timestamp) is absent from
-///                        `vec1`.
-/// - `vec1 unless vec2` — `vec1`'s samples whose
-///                        (key, timestamp) does NOT appear
-///                        in `vec2`.
+/// - `vec1 and vec2` — keep `vec1`'s sample when `vec2` has a
+///   sample at the same (key, timestamp).
+/// - `vec1 or vec2` — every `vec1` sample, plus every `vec2`
+///   sample whose (key, timestamp) is absent from `vec1`.
+/// - `vec1 unless vec2` — `vec1`'s samples whose (key, timestamp)
+///   does NOT appear in `vec2`.
 ///
 /// Result series preserve `vec1`'s full labels (`and` /
 /// `unless` / left half of `or`) or `vec2`'s (right half of
@@ -878,10 +874,10 @@ fn evaluate_func(ctx: &EvalContext<'_>, f: &FuncExpr) -> Result<Vec<Series>, Eva
 }
 
 /// Aggregates that take a leading scalar parameter:
-///   - `topk(k, vec)`     — keep top-K series per (group, ts).
-///   - `bottomk(k, vec)`  — keep bottom-K.
-///   - `quantile(phi, vec)` — reduce to phi-quantile per
-///                            (group, ts), like avg/sum.
+/// - `topk(k, vec)` — keep top-K series per (group, ts).
+/// - `bottomk(k, vec)` — keep bottom-K.
+/// - `quantile(phi, vec)` — reduce to phi-quantile per (group, ts),
+///   like avg/sum.
 ///
 /// Differ from [`AggregateOp`] in two ways: the leading scalar
 /// arg, and the labels-preserving behaviour of topk/bottomk
@@ -1083,7 +1079,7 @@ fn quantile_via_hdr(samples: &[Sample], phi: f64) -> f64 {
         let v = (s.value.floor().min(1_000_000_000_000.0) as u64).max(1);
         let _ = hist.record(v);
     }
-    if hist.len() == 0 { return f64::NAN; }
+    if hist.is_empty() { return f64::NAN; }
     hist.value_at_quantile(phi) as f64
 }
 
@@ -1376,6 +1372,10 @@ fn evaluate_aggregate(
     Ok(out)
 }
 
+/// One aggregation bucket: its (modifier-filtered) group labels
+/// paired with the member series that fall into it.
+type SeriesGroup = (Vec<(String, String)>, Vec<Series>);
+
 /// Bucket the input series by their (modifier-filtered)
 /// label sets. Returns `(group_labels, members)` pairs in
 /// first-encountered order; with no modifier, all series
@@ -1384,8 +1384,8 @@ fn evaluate_aggregate(
 fn group_series(
     input: &[Series],
     modifier: Option<&AggrModifier>,
-) -> Vec<(Vec<(String, String)>, Vec<Series>)> {
-    let mut out: Vec<(Vec<(String, String)>, Vec<Series>)> = Vec::new();
+) -> Vec<SeriesGroup> {
+    let mut out: Vec<SeriesGroup> = Vec::new();
     for s in input {
         let key = group_key(&s.labels, modifier);
         match out.iter_mut().find(|(k, _)| label_sets_equal(k, &key)) {
@@ -1398,11 +1398,10 @@ fn group_series(
 
 /// Project a series's label set down to the labels the
 /// aggregate's modifier preserves. Mirrors upstream:
-///   - `by(l1, l2)`     → keep only l1, l2.
-///   - `without(l1, l2)`→ keep everything except l1, l2 and
-///                        `__name__` (always dropped).
-///   - no modifier      → empty key (all series share one
-///                        bucket).
+/// - `by(l1, l2)` → keep only l1, l2.
+/// - `without(l1, l2)` → keep everything except l1, l2 and
+///   `__name__` (always dropped).
+/// - no modifier → empty key (all series share one bucket).
 fn group_key(
     labels: &[(String, String)],
     modifier: Option<&AggrModifier>,
@@ -1479,13 +1478,12 @@ fn reduce_group(
 /// the inner expression observes.
 ///
 /// For an instant query at time `T`:
-///   - `m[5m]`             → fetch series with samples in
-///                           `[T-5m, T]`.
-///   - `m offset 1h`       → instant value at `T-1h` (range
-///                           `[T-1h, T-1h]`).
-///   - `m[5m] offset 1h`   → window `[T-1h-5m, T-1h]`.
-///   - `m @ 1500000000`    → anchor at the literal seconds
-///                           timestamp instead of `T`.
+/// - `m[5m]` → fetch series with samples in `[T-5m, T]`.
+/// - `m offset 1h` → instant value at `T-1h` (range
+///   `[T-1h, T-1h]`).
+/// - `m[5m] offset 1h` → window `[T-1h-5m, T-1h]`.
+/// - `m @ 1500000000` → anchor at the literal seconds timestamp
+///   instead of `T`.
 ///
 /// `step` (sub-query step) and non-literal `@` expressions
 /// (`start()`, `end()`) are deferred — they only matter once

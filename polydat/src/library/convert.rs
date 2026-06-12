@@ -570,9 +570,9 @@ mod tests {
         let node = StrToBool::new();
         let mut out = [Value::None];
         node.eval(&[Value::Str("  true  ".into())], &mut out);
-        assert_eq!(out[0].as_bool(), true);
+        assert!(out[0].as_bool());
         node.eval(&[Value::Str("\tfalse\n".into())], &mut out);
-        assert_eq!(out[0].as_bool(), false);
+        assert!(!out[0].as_bool());
     }
 
     #[test]

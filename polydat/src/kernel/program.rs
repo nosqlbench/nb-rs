@@ -233,7 +233,10 @@ impl PolydatProgram {
     }
 
     /// Create a program with explicit input definitions and output ordering.
-    #[allow(dead_code)]
+    // Eight parameters describe one compiled program definition; a
+    // params struct belongs to the construction-protocol reshape
+    // (SRD-13e), not lint cleanup — see `PolydatKernel::new_with_inputs`.
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub(crate) fn with_inputs(
         nodes: Vec<Box<dyn PolydatNode>>,
         wiring: Vec<Vec<WireSource>>,
@@ -510,9 +513,9 @@ impl PolydatProgram {
     pub(crate) fn compute_dependents(provenance: &[u64], num_inputs: usize) -> Vec<Vec<usize>> {
         let mut deps = vec![Vec::new(); num_inputs];
         for (node_idx, &prov) in provenance.iter().enumerate() {
-            for input_idx in 0..num_inputs {
+            for (input_idx, dep) in deps.iter_mut().enumerate() {
                 if prov & (1u64 << input_idx) != 0 {
-                    deps[input_idx].push(node_idx);
+                    dep.push(node_idx);
                 }
             }
         }
@@ -632,13 +635,12 @@ impl PolydatProgram {
             for i in 0..node_count {
                 if volatile_mask[i] { continue; }
                 for source in &self.wiring[i] {
-                    if let WireSource::NodeOutput(upstream, _) = source {
-                        if volatile_mask[*upstream] {
+                    if let WireSource::NodeOutput(upstream, _) = source
+                        && volatile_mask[*upstream] {
                             volatile_mask[i] = true;
                             changed = true;
                             break;
                         }
-                    }
                 }
             }
         }
@@ -716,13 +718,12 @@ impl PolydatProgram {
             for i in 0..node_count {
                 if volatile_mask[i] { continue; }
                 for source in &self.wiring[i] {
-                    if let WireSource::NodeOutput(upstream, _) = source {
-                        if volatile_mask[*upstream] {
+                    if let WireSource::NodeOutput(upstream, _) = source
+                        && volatile_mask[*upstream] {
                             volatile_mask[i] = true;
                             changed = true;
                             break;
                         }
-                    }
                 }
             }
         }
@@ -933,6 +934,7 @@ impl PolydatProgram {
     ///   representation, so 0.0 vs -0.0 hash differently and
     ///   NaNs are distinguishable from each other only by
     ///   their bit pattern (rare but consistent).
+    ///
     /// Aggregate identity over this program **plus** an outer
     /// chain of ancestor programs (innermost first; the
     /// workload-root program is last). The result is a
@@ -1007,7 +1009,7 @@ impl PolydatProgram {
             h.update(b":port:");
             h.update(pi.to_le_bytes().as_ref());
             h.update(b":");
-            h.update(&nh);
+            h.update(nh);
             h.update(b"\n");
             // Output modifier flags (`final`, `shared`,
             // `volatile`) — affect semantic identity. A
@@ -1206,6 +1208,13 @@ impl PolydatProgram {
         self.fold_init_constants_impl(log, strict)
     }
 
+    // The `0..n` node-index loops below each fan one index out
+    // across several parallel structures (`self.nodes`, `self.wiring`,
+    // `is_init`, `state.core.buffers`) and feed it to
+    // `eval_node_public(self, i)` — iterating any single array
+    // misrepresents the logic and conflicts with the `&mut self`
+    // borrows, so the index form stays.
+    #[allow(clippy::needless_range_loop)]
     fn fold_init_constants_impl(
         &mut self,
         mut log: Option<&mut crate::dsl::events::CompileEventLog>,
@@ -1580,7 +1589,7 @@ fn canonical_wire_source(
         super::WireSource::NodeOutput(ni, pi) => {
             h.update(b"node:");
             let nh = program.node_canonical_hash(*ni, memo);
-            h.update(&nh);
+            h.update(nh);
             h.update(b":port:");
             h.update(pi.to_le_bytes().as_ref());
         }

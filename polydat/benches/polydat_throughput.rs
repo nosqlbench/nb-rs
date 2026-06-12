@@ -42,7 +42,7 @@ fn asm_identity_chain(depth: usize) -> PolydatAssembler {
 fn asm_wide_sum(width: usize) -> PolydatAssembler {
     let coord_names: Vec<String> = (0..width).map(|i| format!("c{i}")).collect();
     let mut asm = PolydatAssembler::new(coord_names.clone());
-    let inputs: Vec<WireRef> = coord_names.iter().map(|n| WireRef::input(n)).collect();
+    let inputs: Vec<WireRef> = coord_names.iter().map(WireRef::input).collect();
     asm.add_node("sum", Box::new(Sum::new(width)), inputs);
     asm.add_output("out", WireRef::node("sum"));
     asm

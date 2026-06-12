@@ -59,7 +59,7 @@ pub(crate) fn validate_ast(file: &PolydatFile, report: &mut DiagnosticReport) {
             Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
             Statement::Binding(b) => &b.value,
         };
-        validate_expr(expr, &defined, &input_names, &mut referenced, report);
+        validate_expr(expr, &mut referenced, report);
     }
 
     // Coordinate inference or validation
@@ -118,7 +118,7 @@ pub(crate) fn validate_ast(file: &PolydatFile, report: &mut DiagnosticReport) {
         match stmt {
             Statement::InputDecl(_) => {}
             Statement::Binding(b) => {
-                check_forward_refs(&b.value, &seen_defs, b.span, report);
+                check_forward_refs(&b.value, &seen_defs, report);
                 for t in &b.targets {
                     seen_defs.insert(t.clone());
                 }
@@ -139,8 +139,6 @@ pub(crate) fn validate_ast(file: &PolydatFile, report: &mut DiagnosticReport) {
 /// collect all wire references into `referenced`.
 pub(crate) fn validate_expr(
     expr: &Expr,
-    defined: &HashSet<String>,
-    coords: &HashSet<String>,
     referenced: &mut HashSet<String>,
     report: &mut DiagnosticReport,
 ) {
@@ -166,19 +164,19 @@ pub(crate) fn validate_expr(
                     Arg::Positional(e) => e,
                     Arg::Named(_, e) => e,
                 };
-                validate_expr(inner, defined, coords, referenced, report);
+                validate_expr(inner, referenced, report);
             }
         }
         Expr::BinOp(lhs, _, rhs) => {
-            validate_expr(lhs, defined, coords, referenced, report);
-            validate_expr(rhs, defined, coords, referenced, report);
+            validate_expr(lhs, referenced, report);
+            validate_expr(rhs, referenced, report);
         }
         Expr::UnaryNeg(inner, _) | Expr::UnaryBitNot(inner, _) => {
-            validate_expr(inner, defined, coords, referenced, report);
+            validate_expr(inner, referenced, report);
         }
         Expr::ArrayLit(elems, _) => {
             for e in elems {
-                validate_expr(e, defined, coords, referenced, report);
+                validate_expr(e, referenced, report);
             }
         }
         Expr::StringLit(s, _) => {
@@ -300,7 +298,6 @@ pub(crate) fn collect_references(expr: &Expr, referenced: &mut HashSet<String>) 
 pub(crate) fn check_forward_refs(
     expr: &Expr,
     seen: &HashSet<String>,
-    stmt_span: crate::dsl::lexer::Span,
     report: &mut DiagnosticReport,
 ) {
     match expr {
@@ -319,19 +316,19 @@ pub(crate) fn check_forward_refs(
                     Arg::Positional(e) => e,
                     Arg::Named(_, e) => e,
                 };
-                check_forward_refs(inner, seen, stmt_span, report);
+                check_forward_refs(inner, seen, report);
             }
         }
         Expr::BinOp(lhs, _, rhs) => {
-            check_forward_refs(lhs, seen, stmt_span, report);
-            check_forward_refs(rhs, seen, stmt_span, report);
+            check_forward_refs(lhs, seen, report);
+            check_forward_refs(rhs, seen, report);
         }
         Expr::UnaryNeg(inner, _) | Expr::UnaryBitNot(inner, _) => {
-            check_forward_refs(inner, seen, stmt_span, report);
+            check_forward_refs(inner, seen, report);
         }
         Expr::ArrayLit(elems, _) => {
             for e in elems {
-                check_forward_refs(e, seen, stmt_span, report);
+                check_forward_refs(e, seen, report);
             }
         }
         _ => {}
@@ -358,8 +355,8 @@ pub(crate) fn simple_edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let mut m = vec![vec![0; b.len() + 1]; a.len() + 1];
-    for i in 0..=a.len() { m[i][0] = i; }
-    for j in 0..=b.len() { m[0][j] = j; }
+    for (i, row) in m.iter_mut().enumerate() { row[0] = i; }
+    for (j, cell) in m[0].iter_mut().enumerate() { *cell = j; }
     for i in 1..=a.len() {
         for j in 1..=b.len() {
             let c = if a[i-1] == b[j-1] { 0 } else { 1 };

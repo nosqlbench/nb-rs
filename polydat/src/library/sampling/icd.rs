@@ -709,7 +709,7 @@ mod tests {
         let lut = dist_zipf_lut(100, 1.0, 1000);
         for i in 1..1000 {
             let v = lut.sample(i as f64 / 1000.0);
-            assert!(v >= 1.0 && v <= 100.0, "zipf out of [1,100]: {v}");
+            assert!((1.0..=100.0).contains(&v), "zipf out of [1,100]: {v}");
         }
     }
 
@@ -742,7 +742,7 @@ mod tests {
         let lut = dist_binomial_lut(20, 0.5, 1000);
         for i in 0..=1000 {
             let v = lut.sample(i as f64 / 1000.0);
-            assert!(v >= 0.0 && v <= 20.0, "binomial out of [0,20]: {v}");
+            assert!((0.0..=20.0).contains(&v), "binomial out of [0,20]: {v}");
         }
     }
 

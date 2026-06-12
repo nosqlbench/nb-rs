@@ -103,8 +103,8 @@ fn type_adapters_compiles() {
         kernel.set_inputs(&[cycle]);
         let s = kernel.pull("s").as_f64();
         let c = kernel.pull("c").as_f64();
-        assert!(s >= -1.0 && s <= 1.0, "sin out of range: {s}");
-        assert!(c >= -1.0 && c <= 1.0, "cos out of range: {c}");
+        assert!((-1.0..=1.0).contains(&s), "sin out of range: {s}");
+        assert!((-1.0..=1.0).contains(&c), "cos out of range: {c}");
     }
 
     eprintln!("{}", log.format());
@@ -199,7 +199,7 @@ fn weighted_selection_compiles() {
         assert!(["red", "blue", "green"].contains(&color.as_str()),
             "unexpected color: {color}");
         let tier = kernel.pull("tier").as_u64();
-        assert!(tier >= 1 && tier <= 3, "unexpected tier: {tier}");
+        assert!((1..=3).contains(&tier), "unexpected tier: {tier}");
     }
     // Fair coin should be roughly 50%
     assert!(heads > 400 && heads < 600, "fair coin: {heads}/1000 heads");
@@ -247,12 +247,12 @@ fn math_trig_compiles() {
         let scaled = kernel.pull("scaled").as_f64();
         let clamped = kernel.pull("clamped").as_f64();
 
-        assert!(sine >= -1.0 && sine <= 1.0, "sin: {sine}");
-        assert!(cosine >= -1.0 && cosine <= 1.0, "cos: {cosine}");
-        assert!(root >= 0.0 && root <= 1.0, "sqrt: {root}");
-        assert!(exp >= 1.0 && exp < std::f64::consts::E + 0.01, "exp: {exp}");
-        assert!(scaled >= -100.0 && scaled <= 100.0, "scaled: {scaled}");
-        assert!(clamped >= -50.0 && clamped <= 50.0, "clamped: {clamped}");
+        assert!((-1.0..=1.0).contains(&sine), "sin: {sine}");
+        assert!((-1.0..=1.0).contains(&cosine), "cos: {cosine}");
+        assert!((0.0..=1.0).contains(&root), "sqrt: {root}");
+        assert!((1.0..std::f64::consts::E + 0.01).contains(&exp), "exp: {exp}");
+        assert!((-100.0..=100.0).contains(&scaled), "scaled: {scaled}");
+        assert!((-50.0..=50.0).contains(&clamped), "clamped: {clamped}");
     }
 
     eprintln!("{}", log.format());
@@ -292,7 +292,7 @@ fn noise_pcg_compiles() {
     for cycle in 0..100 {
         kernel.set_inputs(&[cycle]);
         let noise = kernel.pull("noise").as_f64();
-        assert!(noise >= -1.0 && noise <= 1.0, "perlin_1d: {noise}");
+        assert!((-1.0..=1.0).contains(&noise), "perlin_1d: {noise}");
 
         let _shuffled = kernel.pull("shuffled").as_u64();
         let _walked = kernel.pull("walked").as_u64();
@@ -339,7 +339,7 @@ fn empirical_dist_compiles() {
     for cycle in 0..1000 {
         kernel.set_inputs(&[cycle]);
         let v = kernel.pull("latency").as_f64();
-        assert!(v >= 0.5 && v <= 100.0,
+        assert!((0.5..=100.0).contains(&v),
             "empirical should be in [0.5, 100.0]: {v} at cycle={cycle}");
     }
 

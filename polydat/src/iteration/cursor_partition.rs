@@ -582,14 +582,13 @@ fn parse_delta_list(cleaned: &str, input: &str) -> Result<Chunking, String> {
 fn parse_delta_entry(raw: &str) -> Result<Vec<Bound>, String> {
     // Gap prefix: `~<sized>`.
     if let Some(rest) = raw.strip_prefix('~') {
-        if let Some((_, rep)) = rest.split_once('x') {
-            if !rep.is_empty() && rep.chars().all(|c| c.is_ascii_digit()) {
+        if let Some((_, rep)) = rest.split_once('x')
+            && !rep.is_empty() && rep.chars().all(|c| c.is_ascii_digit()) {
                 return Err(format!(
                     "`~{rest}`: repetition does not apply to gaps — size the gap \
                      directly (adjacent gaps are one gap)"
                 ));
             }
-        }
         let inner = parse_bound(rest)?;
         if !inner.is_sized() {
             return Err(format!(
@@ -601,8 +600,8 @@ fn parse_delta_entry(raw: &str) -> Result<Vec<Bound>, String> {
         return Ok(vec![Bound::Gap(Box::new(inner))]);
     }
     // Finite repetition: `<sized>xN`.
-    if let Some((lhs, rhs)) = raw.split_once('x') {
-        if !lhs.is_empty() && !rhs.is_empty() && rhs.chars().all(|c| c.is_ascii_digit()) {
+    if let Some((lhs, rhs)) = raw.split_once('x')
+        && !lhs.is_empty() && !rhs.is_empty() && rhs.chars().all(|c| c.is_ascii_digit()) {
             let n: u64 = rhs
                 .parse()
                 .map_err(|_| format!("invalid repetition count in `{raw}`"))?;
@@ -620,7 +619,6 @@ fn parse_delta_entry(raw: &str) -> Result<Vec<Bound>, String> {
             }
             return Ok(vec![b; n as usize]);
         }
-    }
     Ok(vec![parse_bound(raw)?])
 }
 

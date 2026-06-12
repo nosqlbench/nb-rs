@@ -41,7 +41,7 @@ fn input_seq(n: usize) -> Vec<u64> {
     let mut last = 7u64;
     for i in 0..n {
         let h = xxhash_rust::xxh3::xxh3_64(&(i as u64).to_le_bytes());
-        if h % 3 == 0 {
+        if h.is_multiple_of(3) {
             seq.push(last); // repeat → skip machinery engages
         } else {
             last = h;

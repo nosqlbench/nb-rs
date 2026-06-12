@@ -143,14 +143,8 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a datetime node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        // `epoch_scale` / `epoch_offset` route via proc-macro
-        // NodeRegistration per SRD-80 PR B.13.
-        // `to_timestamp` routes via proc-macro NodeRegistration per SRD-80 PR B.6.
-        // `date_components` routes via proc-macro NodeRegistration per SRD-80 PR B.10.
-        _ => None,
-    }
+pub(crate) fn build_node(_name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
+    None
 }
 
 

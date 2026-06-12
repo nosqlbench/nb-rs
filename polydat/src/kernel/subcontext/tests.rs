@@ -50,7 +50,7 @@ fn finalize_compiles_simple_polydat_source_block() {
         "input cycle: u64\nx := 5\n".to_string(),
     ));
     let module = b.finalize().expect("finalize should succeed");
-    assert!(module.program().output_names().iter().any(|n| *n == "x"));
+    assert!(module.program().output_names().contains(&"x"));
     assert_eq!(module.context().label, "simple-polydat-source");
 }
 
@@ -100,7 +100,7 @@ fn finalize_compiles_a_caller_native_expr_stub() {
     // binding the engine can pull, not just inert text.
     let module = b.finalize().expect("the grammar-safe stub compiles");
     assert!(
-        module.program().output_names().iter().any(|n| *n == "__pred"),
+        module.program().output_names().contains(&"__pred"),
         "the stub's binding must surface as a kernel output",
     );
 }
@@ -286,7 +286,7 @@ fn body_fragment_statements_compile_to_program() {
     b.body(BodyFragment::Statements(file.statements));
 
     let module = b.finalize().expect("finalize");
-    assert!(module.program().output_names().iter().any(|n| *n == "q"));
+    assert!(module.program().output_names().contains(&"q"));
 }
 
 // ---------------------------------------------------------------------------
@@ -328,9 +328,7 @@ fn parent_shared_export_collision_rewrites_to_cell_write() {
     // The synthetic output is in the program.
     assert!(module
         .program()
-        .output_names()
-        .iter()
-        .any(|n| *n == "__write_X"));
+        .output_names().contains(&"__write_X"));
     // The export name surfaced as an input slot (so spawn's
     // materialize_wiring_from_outer can attach the parent's cell).
     assert!(module.program().find_input("X").is_some());
@@ -1187,7 +1185,7 @@ fn add_result_bindings_injects_only_referenced_magic_externs() {
         "count slot should be absent (not referenced)");
     assert!(module.program().find_input("ok").is_none(),
         "ok slot should be absent (not referenced)");
-    assert!(module.program().output_names().iter().any(|n| *n == "started_with_x"),
+    assert!(module.program().output_names().contains(&"started_with_x"),
         "result LHS should surface as an output");
 }
 

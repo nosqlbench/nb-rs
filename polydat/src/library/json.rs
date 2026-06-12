@@ -73,13 +73,12 @@ fn json_with(
 fn json_object(parts: &[Value]) -> std::sync::Arc<serde_json::Value> {
     let mut merged = serde_json::Map::new();
     for v in parts {
-        if let Value::Json(arc) = v {
-            if let serde_json::Value::Object(map) = arc.as_ref() {
+        if let Value::Json(arc) = v
+            && let serde_json::Value::Object(map) = arc.as_ref() {
                 for (k, val) in map {
                     merged.insert(k.clone(), val.clone());
                 }
             }
-        }
     }
     std::sync::Arc::new(serde_json::Value::Object(merged))
 }
@@ -201,7 +200,7 @@ fn json_field(
     key: crate::derive_support::Const<&str>,
 ) -> std::sync::Arc<serde_json::Value> {
     std::sync::Arc::new(
-        input.get(&*key).cloned().unwrap_or(serde_json::Value::Null)
+        input.get(*key).cloned().unwrap_or(serde_json::Value::Null)
     )
 }
 
@@ -742,7 +741,7 @@ mod tests {
         let original = Value::Json(std::sync::Arc::new(json!({"key": [1, 2, 3]})));
         let mut mid = [Value::None];
         let mut out = [Value::None];
-        to_str.eval(&[original.clone()], &mut mid);
+        to_str.eval(std::slice::from_ref(&original), &mut mid);
         from_str.eval(&[mid[0].clone()], &mut out);
         assert_eq!(out[0].as_json(), original.as_json());
     }

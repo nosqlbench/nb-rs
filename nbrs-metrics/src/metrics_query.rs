@@ -317,8 +317,8 @@ impl MetricsQuery {
                 // Plus the largest-cadence latest closed snapshot
                 // — represents data that already promoted out of
                 // smaller layers.
-                if layer.interval == self.reporter.layers().last().map(|l| l.interval).unwrap_or_default() {
-                    if let Some(latest) = self.reporter.latest(&component, layer.interval) {
+                if layer.interval == self.reporter.layers().last().map(|l| l.interval).unwrap_or_default()
+                    && let Some(latest) = self.reporter.latest(&component, layer.interval) {
                         for family in latest.families() {
                             if !selection.matches_family(family.name()) { continue; }
                             for metric in family.metrics() {
@@ -327,7 +327,6 @@ impl MetricsQuery {
                             }
                         }
                     }
-                }
             }
         }
 
@@ -347,7 +346,7 @@ impl MetricsQuery {
     /// Run a query mode and assert exactly one matching `Metric` per
     /// the SRD's "specific metric" semantics. Returns `Err` if 0 or
     /// >1 matches.
-    pub fn select_one<'a, F>(&self, mode: F) -> Result<MetricSet, SelectError>
+    pub fn select_one<F>(&self, mode: F) -> Result<MetricSet, SelectError>
     where
         F: FnOnce(&Self) -> MetricSet,
     {

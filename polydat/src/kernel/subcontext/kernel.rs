@@ -259,7 +259,7 @@ impl<M> ScopeKernel<M> {
             if let Some(prior) = children.get(&name) {
                 return Err(ContractViolation::DuplicateChild {
                     name: name.clone(),
-                    prior_site: prior.site.clone(),
+                    prior_site: Box::new(prior.site.clone()),
                     this_site: artifact.context.clone(),
                 });
             }

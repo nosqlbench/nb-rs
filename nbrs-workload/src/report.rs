@@ -157,7 +157,9 @@ pub struct ReportItem {
 /// numbering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Kind {
+    #[default]
     Plot,
     Table,
     Text,
@@ -165,9 +167,6 @@ pub enum Kind {
     Details,
 }
 
-impl Default for Kind {
-    fn default() -> Self { Kind::Plot }
-}
 
 impl Kind {
     pub fn as_str(&self) -> &'static str {
@@ -1048,10 +1047,10 @@ fn style_directive_applies_to_kind(line: &str, kind: Kind) -> bool {
         .map(|s| s.split_once('=').map(|(k, _)| k.to_string())
             .unwrap_or_else(|| s.clone()))
         .unwrap_or_default();
-    match (kind, head.as_str()) {
-        (Kind::Table, "line" | "width" | "marker" | "size") => false,
-        _ => true,
-    }
+    !matches!(
+        (kind, head.as_str()),
+        (Kind::Table, "line" | "width" | "marker" | "size")
+    )
 }
 
 fn parse_series_override(s: &str) -> Result<SeriesOverride, String> {
@@ -1633,16 +1632,20 @@ g: |
             body: "over limit\nby profile".to_string(),
             ..Default::default()
         };
-        let mut s1 = Style::default();
-        s1.line = Some("dashed".to_string());
-        s1.marker = Some("triangle".to_string());
+        let s1 = Style {
+            line: Some("dashed".to_string()),
+            marker: Some("triangle".to_string()),
+            ..Default::default()
+        };
         item.style.series.push(SeriesOverride {
             key: "profile".to_string(),
             value: "hnsw".to_string(),
             style: s1,
         });
-        let mut s2 = Style::default();
-        s2.line = Some("solid".to_string());
+        let s2 = Style {
+            line: Some("solid".to_string()),
+            ..Default::default()
+        };
         item.style.series.push(SeriesOverride {
             key: "profile".to_string(),
             value: "ivf".to_string(),

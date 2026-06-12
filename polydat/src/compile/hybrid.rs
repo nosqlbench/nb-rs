@@ -80,7 +80,10 @@ struct HybridCore {
 
 impl HybridCore {
     /// Axiom S9(a) — deterministic Ref validation (see
-    /// `jit_boundary.md` §"Slot-state axioms").
+    /// `jit_boundary.md` §"Slot-state axioms"). Gated to
+    /// `debug_assertions` to match its call sites, which compile
+    /// out in release.
+    #[cfg(debug_assertions)]
     fn validate_refs(&self) {
         for &(slot, idx) in &self.ref_scratch {
             let (p, l) = self.scratch[idx].ptr_len();
@@ -183,8 +186,8 @@ fn compute_hybrid_slot_provenance(
         }
     }
     let mut slot_provenance = vec![0u64; total_slots];
-    for i in 0..coord_count.min(64) {
-        slot_provenance[i] = 1u64 << i;
+    for (i, slot) in slot_provenance.iter_mut().enumerate().take(coord_count.min(64)) {
+        *slot = 1u64 << i;
     }
     for (step_idx, step) in steps.iter().enumerate() {
         // Only closure steps carry explicit output_slots; JIT steps use the
@@ -287,9 +290,9 @@ impl HybridKernelPull {
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
         self.changed_mask = 0;
-        for i in 0..coords.len().min(self.core.coord_count) {
-            if self.core.buffer[i] != coords[i] {
-                self.core.buffer[i] = coords[i];
+        for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
+            if self.core.buffer[i] != c {
+                self.core.buffer[i] = c;
                 self.changed_mask |= 1u64 << i;
             }
         }
@@ -308,11 +311,10 @@ impl HybridKernelPull {
     pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
         self.core.guard_ref_slot(slot);
         self.set_inputs(coords);
-        if slot < self.slot_provenance.len() {
-            if self.slot_provenance[slot] & self.changed_mask == 0 {
+        if slot < self.slot_provenance.len()
+            && self.slot_provenance[slot] & self.changed_mask == 0 {
                 return self.core.buffer[slot];
             }
-        }
         eval_all_hybrid_steps(&mut self.core);
         self.core.buffer[slot]
     }
@@ -376,9 +378,9 @@ impl HybridKernelPushPull {
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
         self.changed_mask = 0;
-        for i in 0..coords.len().min(self.core.coord_count) {
-            if self.core.buffer[i] != coords[i] {
-                self.core.buffer[i] = coords[i];
+        for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
+            if self.core.buffer[i] != c {
+                self.core.buffer[i] = c;
                 self.changed_mask |= 1u64 << i;
                 if i < self.input_dependents.len() {
                     for &step_idx in &self.input_dependents[i] {
@@ -436,11 +438,10 @@ impl HybridKernelPushPull {
     pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
         self.core.guard_ref_slot(slot);
         self.set_inputs(coords);
-        if slot < self.slot_provenance.len() {
-            if self.slot_provenance[slot] & self.changed_mask == 0 {
+        if slot < self.slot_provenance.len()
+            && self.slot_provenance[slot] & self.changed_mask == 0 {
                 return self.core.buffer[slot];
             }
-        }
         for (step_idx, step) in self.core.steps.iter().enumerate() {
             if self.step_clean[step_idx] { continue; }
             match step {
@@ -673,8 +674,7 @@ pub fn build_hybrid(
 
             // For now, compile each JIT-able node as its own JIT segment.
             // Batching multiple nodes into one segment is a future optimization.
-            for j in batch_start..i {
-                let (ref jit_op, ref input_slots, ref output_slots) = classifications[j];
+            for (jit_op, input_slots, output_slots) in &classifications[batch_start..i] {
                 let single_batch = vec![(jit_op.clone(), input_slots.clone(), output_slots.clone())];
                 let jit_kernel = jit::compile_jit_raw(coord_count, total_slots, single_batch, HashMap::new(), Vec::new())?;
 

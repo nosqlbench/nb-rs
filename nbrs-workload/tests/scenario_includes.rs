@@ -27,7 +27,7 @@ fn nodes(yaml: &str, scenario: &str) -> Vec<ScenarioNode> {
         .clone()
 }
 
-fn included<'a>(node: &'a ScenarioNode) -> (&'a str, &'a [ScenarioNode]) {
+fn included(node: &ScenarioNode) -> (&str, &[ScenarioNode]) {
     match node {
         ScenarioNode::IncludedScenario { name, children } => (name.as_str(), children),
         other => panic!("expected IncludedScenario, got {other:?}"),

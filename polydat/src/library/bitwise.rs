@@ -58,7 +58,7 @@ fn u64_not(input: u64) -> u64 { !input }
 fn checked_add(a: u64, b: u64) -> u64 { a.checked_add(b).unwrap_or(0) }
 
 #[crate::polydat_node(category = Arithmetic)]
-fn checked_sub(a: u64, b: u64) -> u64 { a.checked_sub(b).unwrap_or(0) }
+fn checked_sub(a: u64, b: u64) -> u64 { a.saturating_sub(b) }
 
 #[crate::polydat_node(category = Arithmetic)]
 fn checked_mul(a: u64, b: u64) -> u64 { a.checked_mul(b).unwrap_or(0) }

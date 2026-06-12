@@ -46,8 +46,8 @@ pub(super) fn compute_jit_slot_provenance(
         }
     }
     let mut slot_prov = vec![0u64; buffer_len];
-    for i in 0..coord_count.min(64) {
-        slot_prov[i] = 1u64 << i;
+    for (i, slot) in slot_prov.iter_mut().enumerate().take(coord_count.min(64)) {
+        *slot = 1u64 << i;
     }
     for (i, outs) in step_output_slots.iter().enumerate() {
         for &slot in outs {
@@ -139,9 +139,9 @@ pub struct JitKernelPush {
 impl JitKernelPush {
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
-        for i in 0..coords.len().min(self.core.coord_count) {
-            if self.core.buffer[i] != coords[i] {
-                self.core.buffer[i] = coords[i];
+        for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
+            if self.core.buffer[i] != c {
+                self.core.buffer[i] = c;
                 if i < self.input_dependents.len() {
                     for &step_idx in &self.input_dependents[i] {
                         self.node_clean[step_idx] = 0;
@@ -189,9 +189,9 @@ impl JitKernelPull {
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
         self.changed_mask = 0;
-        for i in 0..coords.len().min(self.core.coord_count) {
-            if self.core.buffer[i] != coords[i] {
-                self.core.buffer[i] = coords[i];
+        for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
+            if self.core.buffer[i] != c {
+                self.core.buffer[i] = c;
                 self.changed_mask |= 1u64 << i;
             }
         }
@@ -246,9 +246,9 @@ impl JitKernelPushPull {
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
         self.changed_mask = 0;
-        for i in 0..coords.len().min(self.core.coord_count) {
-            if self.core.buffer[i] != coords[i] {
-                self.core.buffer[i] = coords[i];
+        for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
+            if self.core.buffer[i] != c {
+                self.core.buffer[i] = c;
                 self.changed_mask |= 1u64 << i;
                 if i < self.input_dependents.len() {
                     for &step_idx in &self.input_dependents[i] {

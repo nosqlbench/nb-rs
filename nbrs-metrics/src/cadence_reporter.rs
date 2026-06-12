@@ -756,11 +756,10 @@ impl Drop for CadenceReporter {
         // which is fine: nothing else will send.
 
         // Join the owner thread.
-        if let Ok(mut guard) = self.owner_thread.lock() {
-            if let Some(handle) = guard.take() {
+        if let Ok(mut guard) = self.owner_thread.lock()
+            && let Some(handle) = guard.take() {
                 let _ = handle.join();
             }
-        }
 
         // Drain subscriptions — dropping each sender closes the
         // channel so the dispatch thread exits cleanly and flushes
@@ -916,21 +915,19 @@ fn close_path_cascade(
     let mut to_propagate: Option<(usize, Arc<MetricSet>)> = None;
     for idx in 0..layers.len() {
         let key = (path.to_string(), idx);
-        if let Some((carry_idx, carry)) = to_propagate.take() {
-            if carry_idx == idx {
+        if let Some((carry_idx, carry)) = to_propagate.take()
+            && carry_idx == idx {
                 let entry = windows.entry(key.clone())
                     .or_insert_with(|| CadenceWindow::new(layers[idx].interval));
                 let _ = entry.ingest((*carry).clone());
             }
-        }
-        if let Some(window) = windows.get_mut(&key) {
-            if let Some(snap) = window.force_close() {
+        if let Some(window) = windows.get_mut(&key)
+            && let Some(snap) = window.force_close() {
                 closed.push((layers[idx].interval, snap.clone()));
                 if idx + 1 < layers.len() {
                     to_propagate = Some((idx + 1, snap));
                 }
             }
-        }
     }
     closed
 }

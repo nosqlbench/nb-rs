@@ -119,7 +119,10 @@ pub enum ContractViolation {
     /// sites.
     DuplicateChild {
         name: ChildName,
-        prior_site: SourceContext,
+        /// Boxed: this is the only variant carrying two
+        /// `SourceContext`s — boxing one keeps the whole enum (and
+        /// every `Result<_, ContractViolation>`) small.
+        prior_site: Box<SourceContext>,
         this_site: SourceContext,
     },
     /// Polydat compile-time error — the body failed to compile (most

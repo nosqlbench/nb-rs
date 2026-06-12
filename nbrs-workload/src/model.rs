@@ -1464,14 +1464,13 @@ pub struct ParsedOp {
 /// fiber inline like everything else. `MaxFibers(N)` opts in
 /// to daemon-fiber dispatch with a per-op-name cap of N.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum DaemonSpec {
+    #[default]
     Disabled,
     MaxFibers(u32),
 }
 
-impl Default for DaemonSpec {
-    fn default() -> Self { Self::Disabled }
-}
 
 impl DaemonSpec {
     pub fn is_disabled(&self) -> bool {

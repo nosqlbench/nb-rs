@@ -91,6 +91,11 @@ impl LutF64 {
         self.lut.len()
     }
 
+    /// Whether the LUT has no precomputed points.
+    pub fn is_empty(&self) -> bool {
+        self.lut.is_empty()
+    }
+
     /// Raw pointer to the LUT data (for JIT constant baking).
     pub fn as_ptr(&self) -> *const f64 {
         self.lut.as_ptr()
@@ -242,7 +247,7 @@ mod tests {
     fn lut_sanitizes_infinities() {
         let table = LutF64::from_fn(
             |p| {
-                if p < 0.01 || p > 0.99 {
+                if !(0.01..=0.99).contains(&p) {
                     f64::INFINITY
                 } else {
                     p

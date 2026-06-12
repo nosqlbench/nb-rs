@@ -480,7 +480,7 @@ impl Comprehension {
         let mut out: Vec<&str> = Vec::new();
         for clause in self.flat_clauses() {
             for v in &clause.vars {
-                if !out.iter().any(|n| *n == v.as_str()) {
+                if !out.contains(&v.as_str()) {
                     out.push(v);
                 }
             }
@@ -565,7 +565,7 @@ impl Comprehension {
                 let mut seen: Vec<&str> = Vec::new();
                 for clause in clauses {
                     for v in &clause.vars {
-                        if seen.iter().any(|n| *n == v.as_str()) {
+                        if seen.contains(&v.as_str()) {
                             errors.push(format!(
                                 "Cartesian comprehension repeats variable name '{v}' \
                                  — name collision across clauses (use Union mode for \

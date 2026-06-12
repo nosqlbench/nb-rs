@@ -176,22 +176,11 @@ pub fn signatures() -> &'static [FuncSig] { SIGS }
 // migration (SRD-80 PR B.7).
 
 pub(crate) fn build_node(
-    name: &str,
+    _name: &str,
     _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
 ) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        // u64_* and f64_* comparisons route via proc-macro-
-        // emitted NodeRegistration per SRD-80 PR B.7.
-        // `select_u64` / `select_f64` route via proc-macro
-        // NodeRegistration per SRD-80 PR B.13.
-        // `select_str` routes via proc-macro-emitted NodeRegistration per SRD-80 PR B.6.
-        // `str_eq` / `str_ne` route through the runtime's
-        // `build_from_factory` inventory fallback per SRD-80
-        // PR B.3 — see the `#[polydat_node]`-annotated
-        // functions earlier in this file.
-        _ => None,
-    }
+    None
 }
 
 crate::register_nodes!(signatures, build_node);

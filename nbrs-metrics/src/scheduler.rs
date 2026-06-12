@@ -180,11 +180,10 @@ impl SchedulerBuilder {
                     layer.interval, base,
                 );
                 let mut node = ScheduleNode::new(layer.interval);
-                if !layer.hidden {
-                    if let Some(reps) = by_interval.remove(&layer.interval) {
+                if !layer.hidden
+                    && let Some(reps) = by_interval.remove(&layer.interval) {
                         node.reporters = reps;
                     }
-                }
                 if let Some(child) = chain.take() {
                     node.children.push(child);
                 }
@@ -534,7 +533,7 @@ mod tests {
         stop.stop();
 
         let c = count.load(Ordering::Relaxed);
-        assert!(c >= 2 && c <= 5, "expected ~3 reports, got {c}");
+        assert!((2..=5).contains(&c), "expected ~3 reports, got {c}");
     }
 
     #[test]
@@ -592,7 +591,7 @@ mod tests {
         let fast = fast_count.load(Ordering::Relaxed);
         let slow = slow_count.load(Ordering::Relaxed);
         assert!(fast >= 6, "fast should get many reports, got {fast}");
-        assert!(slow >= 1 && slow <= 3, "slow should get ~2, got {slow}");
+        assert!((1..=3).contains(&slow), "slow should get ~2, got {slow}");
     }
 
     /// With a CadenceTree installed, a slow reporter at the largest
@@ -639,7 +638,7 @@ mod tests {
         // ~9 base ticks → smallest fires every tick (≥6) and
         // largest fires every 4 (≥1, ≤3).
         assert!(small >= 6, "smallest cadence reports = {small}");
-        assert!(large >= 1 && large <= 3, "largest cadence reports = {large}");
+        assert!((1..=3).contains(&large), "largest cadence reports = {large}");
     }
 
     /// Hidden intermediate layers (auto-inserted by the planner)
@@ -694,7 +693,7 @@ mod tests {
         let reporter = Arc::new(CadenceReporter::new(tree));
         let handle = SchedulerBuilder::new()
             .with_cadence_reporter(reporter.clone())
-            .build(Box::new(|| Vec::new()));
+            .build(Box::new(Vec::new));
 
         // Flush without starting — simulates lifecycle retirement
         let labels = Labels::of("phase", "done");

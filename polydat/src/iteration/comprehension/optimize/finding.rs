@@ -118,12 +118,12 @@ impl ComplexityDelta {
     /// the other is at most Equal. Per spec §10.10.2 this is
     /// the condition for a non-empty finding to be valid.
     pub fn is_strict_improvement(&self) -> bool {
-        match (self.compute_order, self.memory_order) {
-            (Ordering::Less, Ordering::Less) => true,
-            (Ordering::Less, Ordering::Equal) => true,
-            (Ordering::Equal, Ordering::Less) => true,
-            _ => false,
-        }
+        matches!(
+            (self.compute_order, self.memory_order),
+            (Ordering::Less, Ordering::Less)
+                | (Ordering::Less, Ordering::Equal)
+                | (Ordering::Equal, Ordering::Less)
+        )
     }
 }
 

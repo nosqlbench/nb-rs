@@ -59,13 +59,13 @@
 //! [`legacy_convert::legacy_to_algebra`].
 
 pub mod legacy_convert;
+pub mod serde_form;
 pub mod source_parser;
-pub mod spec;
 pub mod text;
 
 pub use legacy_convert::{legacy_to_algebra, ConvertError};
+pub use serde_form::{ComprehensionSpec, ForSpec, SpecConvertError};
 pub use source_parser::{parse_source, SourceParseError};
-pub use spec::{ComprehensionSpec, ForSpec, SpecConvertError};
 pub use text::{parse_text, TextParseError};
 
 // Leaf grammar utilities — re-exported here so external

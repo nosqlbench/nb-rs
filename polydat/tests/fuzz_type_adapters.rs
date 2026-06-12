@@ -326,10 +326,7 @@ fn generate_module(rng: &mut Rng, sigs: &[FuncSig], n_bindings: usize) -> String
 
         // Fill the declared params (skip optional ones at random).
         let chosen: Vec<&_> = sig.params.iter()
-            .filter_map(|p| {
-                let keep = p.required || rng.range(2) == 0;
-                if keep { Some(p) } else { None }
-            })
+            .filter(|p| p.required || rng.range(2) == 0)
             .collect();
         for param in chosen {
             args.push(materialize(rng, param, &defined));
@@ -418,11 +415,10 @@ fn random_dags_compile_or_fail_cleanly() {
                 // entry — probably a new adapter added to the
                 // compiler without an entry in this test's mirror.
                 for e in log.events() {
-                    if let CompileEvent::TypeAdapterInserted { adapter, .. } = e {
-                        if !adapter_label_is_known(adapter) {
+                    if let CompileEvent::TypeAdapterInserted { adapter, .. } = e
+                        && !adapter_label_is_known(adapter) {
                             rogue_adapters.push((i, source.clone(), adapter.clone()));
                         }
-                    }
                 }
             }
         }
@@ -460,11 +456,10 @@ fn adapter_label_is_known(label: &str) -> bool {
                 | "RegF16x8" | "RegF32x4" | "RegF64x2"
         )
     };
-    if let Some((from, to)) = label.split_once('→') {
-        if is_reg(from) && is_reg(to) {
+    if let Some((from, to)) = label.split_once('→')
+        && is_reg(from) && is_reg(to) {
             return true;
         }
-    }
     // PortType's Debug impl yields "U64", "F64", etc. — match those.
     // Mirror the assembler's auto_adapter table (intra-graph only;
     // boundary-only parsers + lossy narrowings are NOT here).
@@ -490,7 +485,7 @@ fn adapter_label_is_known(label: &str) -> bool {
         // Vec ↔ Vec
         "VecI32→VecF32",
     ];
-    known.iter().any(|&k| k == label)
+    known.contains(&label)
 }
 
 // ─── Basic sanity for the harness itself ──────────────────────────

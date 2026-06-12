@@ -284,7 +284,7 @@ mod tests {
         for _ in 0..1000 {
             node.eval(&[], &mut out);
             let v = out[0].as_f64();
-            assert!(v >= 1.0 && v < 5.0, "out of range: {v}");
+            assert!((1.0..5.0).contains(&v), "out of range: {v}");
         }
     }
 
@@ -315,7 +315,7 @@ mod tests {
             let h = xxh3_64(&i.to_le_bytes());
             node.eval(&[Value::U64(h)], &mut out);
             let len = out[0].as_str().len();
-            assert!(len >= 19 && len <= 55, "len={len}"); // char boundary wiggle
+            assert!((19..=55).contains(&len), "len={len}"); // char boundary wiggle
         }
     }
 

@@ -80,7 +80,9 @@ impl<T: Send + Sync + 'static> SliceArc<T> {
 
     /// Build from a `&[T]` borrowed from `owner`'s data.
     ///
-    /// SAFETY: `slice` must point into memory owned by `owner` and
+    /// # Safety
+    ///
+    /// `slice` must point into memory owned by `owner` and
     /// remain valid for at least as long as `owner` (i.e., until
     /// the last clone of this Arc is dropped). The caller asserts
     /// this — typical use is mmap-backed readers where the slice
