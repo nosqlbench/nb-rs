@@ -23,35 +23,49 @@ the catalog where it can heal a mismatch.
 | Variant | Width | Storage at runtime | Notes |
 | --- | --- | --- | --- |
 | `U64`     | 64-bit unsigned | `Value::U64(u64)` | Workhorse: hash outputs, counters, primary keys |
-| `U32`     | 32-bit unsigned | `Value::U64` (low 32 bits) | Widens to `U64` automatically |
-| `I64`     | 64-bit signed   | `Value::U64` (as `i64 as u64`) | Sign-stuffed |
-| `I32`     | 32-bit signed   | `Value::U64` (as `i32 as i64 as u64`) | Sign-extended on widening |
+| `I64`     | 64-bit signed   | `Value::I64(i64)` | **Honest signed carrier** (alignment §5) — display/JSON render negatives correctly |
+| `U32`/`U16`/`U8` | narrow unsigned | `Value::U64` (zero-extended) | Widen to `U64` automatically |
+| `I32`/`I16`/`I8` | narrow signed | `Value::I64` (sign-extended) | Widen to `I64` automatically |
 | `F64`     | 64-bit float    | `Value::F64(f64)` | IEEE 754 double |
 | `F32`     | 32-bit float    | `Value::U64` (as `f32::to_bits() as u64`) | Bit-stuffed; widens to `F64` |
+| `F16`     | 16-bit float    | `Value::U64` (as `f16::to_bits() as u64`) | binary16; widens exactly to F32/F64 |
+| `U128`/`I128` | 128-bit int | `Value::U128`/`I128(Bits128)` | Two u64 limbs (keeps `Value` at align 8); interpreter-only |
 | `Bool`    | logical          | `Value::Bool(bool)` | Distinct runtime variant |
 | `Str`     | UTF-8 string     | `Value::Str(Arc<str>)` | Cheap-clone via Arc |
 | `Bytes`   | raw bytes        | `Value::Bytes(Arc<[u8]>)` | Cheap-clone via Arc |
 | `Json`    | serde_json Value | `Value::Json(Arc<serde_json::Value>)` | Cheap-clone via Arc |
 | `Ext`     | adapter-contributed | `Value::Ext(Box<dyn ReflectedValue>)` | UUIDs, timestamps, IPs |
 | `Handle`  | type-erased Arc  | `Value::Handle(Arc<dyn Any + Send + Sync>)` | Datasets, prepared stmts |
-| `VecF32`  | f32 slice        | `Value::VecF32(SliceArc<f32>)` | Vector inputs; native CQL binding |
-| `VecI32`  | i32 slice        | `Value::VecI32(SliceArc<i32>)` | Neighbor indices |
+| `VecF32`/`VecF64`/`VecF16` | float lanes | `Value::Vec*(SliceArc<T>)` | Typed slices; native CQL vector binding |
+| `VecI8`/`VecI16`/`VecI32`/`VecI64` | int lanes | `Value::Vec*(SliceArc<T>)` | Complete cranelift lane family (alignment §8.2) |
+
+The scalar-width set is the full cranelift scalar vocabulary
+(every integer width in both signednesses, f16/f32/f64) minus
+F128, which stable Rust cannot carry; the vector element set is
+every cranelift lane type with a JSON Number projection. See
+`type_system_alignment.md` for the derivation and §8 for the
+full-scope model.
 
 **Three classes of types** group the variants:
 
-- **Numeric bit-stuffed** (`U64`, `U32`, `I64`, `I32`,
-  `F64`, `F32`) — runtime storage is `Value::U64` or
+- **Numeric bit-stuffed** (`U64`, `U32`, `U16`, `U8`,
+  `I64`, `I32`, `I16`, `I8`, `F64`, `F32`, `F16`) —
+  runtime storage is `Value::U64`, `Value::I64`
+  (signed widths — the honest carrier), or
   `Value::F64`; the `PortType` declares how the bits
-  should be interpreted. JIT compilation uses the
-  static `PortType` to pick the right interpretation
-  on read/write. Bit-stuffing is what makes JIT P3
-  cheap: all numeric narrow types fit in one
-  `compiled_u64` slot.
-- **Heap-cheap-clone** (`Str`, `Bytes`, `Json`,
-  `VecF32`, `VecI32`) — runtime storage is an Arc-
-  backed handle. Clone cost is one atomic increment;
-  no allocation, no deep-copy. Multiple consumer
-  fibers share the underlying allocation by Arc.
+  should be interpreted. Bit-stuffing is what makes
+  JIT P3 cheap: every narrow width fits in one
+  `compiled_u64` slot (unsigned zero-extend, signed
+  sign-extend, floats by `to_bits`).
+- **Two-limb 128-bit** (`U128`, `I128`) — carried as
+  `Bits128([u64; 2])` so `Value` keeps alignment 8;
+  interpreter-only until a two-slot JIT ABI exists.
+- **Heap-cheap-clone** (`Str`, `Bytes`, `Json`, and
+  the `Vec*` lane family) — runtime storage is an
+  Arc-backed handle. Clone cost is one atomic
+  increment; no allocation, no deep-copy. Multiple
+  consumer fibers share the underlying allocation by
+  Arc.
 - **Type-erased** (`Ext`, `Handle`) — runtime carries
   an opaque handle the producer minted and the
   consumer downcasts. Adapters that produce these
@@ -68,19 +82,28 @@ slots:
 
 ```rust
 pub enum Value {
-    U64(u64),                          // also stores U32/I32/I64 bits
-    F64(f64),                          // also stores F32 bits via to_bits()
+    U64(u64),                          // also stores U32/U16/U8 (zero-extended)
+    I64(i64),                          // honest signed carrier; also I32/I16/I8 (sign-extended)
+    U128(Bits128), I128(Bits128),      // two u64 limbs (align-8 envelope)
+    F64(f64),                          // also stores F32/F16 bits via to_bits()
     Bool(bool),
     Str(Arc<str>),
     Bytes(Arc<[u8]>),
     Json(Arc<serde_json::Value>),
     Ext(Box<dyn ReflectedValue>),
     Handle(Arc<dyn Any + Send + Sync>),
-    VecF32(SliceArc<f32>),
-    VecI32(SliceArc<i32>),
+    VecF32(SliceArc<f32>), VecF64(SliceArc<f64>), VecF16(SliceArc<half::f16>),
+    VecI8(SliceArc<i8>), VecI16(SliceArc<i16>),
+    VecI32(SliceArc<i32>), VecI64(SliceArc<i64>),
     None,                              // sentinel for absent / uninit
 }
 ```
+
+Note the floats: an `F32`-typed *node output* carries its bit
+pattern in `Value::U64` (the macro's `IntoValue for f32`), while
+a host-written `F32` slot value may arrive as `Value::F64`;
+`satisfies_slot` accepts both. `F16` follows the same dual
+convention.
 
 `Value::None` is the *absent* sentinel. It appears in
 freshly-allocated buffer slots before first
@@ -91,9 +114,10 @@ emits `None` on every output unless it explicitly
 opts in via `GkNode::accepts_none_inputs()`.
 
 `Value::port_type()` reports the *runtime variant's*
-PortType, which collapses U32/I32/I64 → U64 and F32
-→ F64 (or returns `PortType::U64` for `None` as a
-placeholder). The static slot's declared `PortType`
+PortType, which collapses the narrow widths into their
+carriers — U32/U16/U8 → U64, I32/I16/I8 → I64, F32/F16
+→ their stuffed carrier — (or returns `PortType::U64`
+for `None` as a placeholder). The static slot's declared `PortType`
 is the canonical type contract; `Value::port_type()`
 is only used at boundary check sites
 (`adapt_boundary_value`) to detect mismatches.
@@ -131,11 +155,25 @@ chain inserts that adapter node. When it returns
 compile time) with `from` and `to` in the
 diagnostic.
 
-The full matrix (12 sources × 12 targets, identity
-diagonal excluded). Cells are marked **A** (in
+The matrix below shows the original 12 core types
+(identity diagonal excluded). Cells are marked **A** (in
 `auto_adapter`, intra-graph), **B** (in `boundary_adapter`
 only), or **·** (not in any catalog — fails with
 `TypeMismatch`).
+
+The narrow widths (`u8`/`i8`/`u16`/`i16`/`f16`) and the
+128-bit integers extend the matrix by the same family
+rules — each mirrors its wider sibling's row/column
+(u8/u16 ↔ u32, i8/i16 ↔ i32, f16 ↔ f32; u128/i128 widen
+from the 64-bit carriers, project to JSON as decimal
+strings, and serde to exactly-16 LE bytes). Their
+adapters live in `library/polyfill_narrow.rs` and
+`library/polyfill_128.rs`; the catalog functions in
+`compile/assembly.rs` are the cell-level source of
+truth. The extended `Vec*` lane types (`vec_f64`,
+`vec_i64`, `vec_f16`, `vec_i16`, `vec_i8`) currently
+have no adapter rows — like their wider siblings, they
+move between types via explicit nodes only.
 
 ```
             ┌──────────────────────────── to ────────────────────────────┐
@@ -313,8 +351,10 @@ useful diagnostic" matches user expectation.
 `Value::satisfies_slot(slot_type)` is the bit-
 stuffing equivalence helper the residual check
 uses post-adapter: `Value::U64` storage is accepted
-for `PortType::U64`, `U32`, `I64`, and `I32` slots;
-`Value::F64` for `F64` and `F32`. This lets
+for the unsigned widths, `F16`, and (legacy, during
+the honest-I64 migration) the signed widths;
+`Value::I64` for `I64`/`I32`/`I16`/`I8` slots;
+`Value::F64` for `F64`/`F32`/`F16`. This lets
 narrowing adapters that output the bit-stuffed
 runtime form (e.g. `__u64_to_u32` produces
 `Value::U64` with low 32 bits) pass validation for
