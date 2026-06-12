@@ -24,17 +24,24 @@ pub(super) struct JitCore {
 }
 
 /// Compute slot provenance from input_dependents.
+///
+/// `input_dependents` is indexed by coordinate SLOT (callers
+/// expand per-input lists across multi-slot inputs per §8.4
+/// layer 1); `step_output_slots` carries every step's flattened
+/// output slot list so multi-slot outputs share their step's
+/// provenance word.
 pub(super) fn compute_jit_slot_provenance(
     coord_count: usize,
     buffer_len: usize,
-    step_count: usize,
+    step_output_slots: &[Vec<usize>],
     input_dependents: &[Vec<usize>],
 ) -> Vec<u64> {
+    let step_count = step_output_slots.len();
     let mut step_prov = vec![0u64; step_count];
-    for (input_idx, deps) in input_dependents.iter().enumerate() {
+    for (input_slot, deps) in input_dependents.iter().enumerate() {
         for &step_idx in deps {
             if step_idx < step_count {
-                step_prov[step_idx] |= 1u64 << input_idx;
+                step_prov[step_idx] |= 1u64 << input_slot.min(63);
             }
         }
     }
@@ -42,10 +49,11 @@ pub(super) fn compute_jit_slot_provenance(
     for i in 0..coord_count.min(64) {
         slot_prov[i] = 1u64 << i;
     }
-    for i in 0..step_count {
-        let slot = coord_count + i;
-        if slot < slot_prov.len() {
-            slot_prov[slot] = step_prov[i];
+    for (i, outs) in step_output_slots.iter().enumerate() {
+        for &slot in outs {
+            if slot < slot_prov.len() {
+                slot_prov[slot] = step_prov[i];
+            }
         }
     }
     slot_prov

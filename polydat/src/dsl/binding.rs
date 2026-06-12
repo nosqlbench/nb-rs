@@ -168,8 +168,20 @@ fn infer_expr_type(
             asm.output_type(name).unwrap_or(PortType::U64)
         }
         Expr::Call(call) => {
-            // Heuristic based on function name prefix/membership.
+            // The registry is the source of truth: macro-registered
+            // functions carry their return port statically
+            // (FuncSig::output_port). The name heuristic below is
+            // only the fallback for hand registrations without one
+            // — it rotted silently as f64-returning functions were
+            // added (vec_dot et al. inferred as U64, lowering
+            // `vec_dot(..) * x` to u64_mul and failing resolve).
             let f = call.func.as_str();
+            if let Some(port) = crate::dsl::registry::lookup(f)
+                .and_then(|sig| sig.output_port)
+            {
+                return port;
+            }
+            // Heuristic based on function name prefix/membership.
             if f.starts_with("f64_") || f.starts_with("to_f64")
                 || ["sin", "cos", "tan", "asin", "acos", "atan", "atan2",
                     "sqrt", "abs_f64", "ln", "exp", "pow", "lerp",

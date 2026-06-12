@@ -306,6 +306,9 @@ mod tests {
                     commutativity: crate::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
+            // Hand registration: no static return-port declaration;
+            // type inference falls back to the name heuristic.
+            output_port: None,
                 }]
             }
             fn build(&self, _name: &str, _wc: usize, _consts: &[FactoryArg])
@@ -344,6 +347,9 @@ mod tests {
                     commutativity: crate::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
+            // Hand registration: no static return-port declaration;
+            // type inference falls back to the name heuristic.
+            output_port: None,
                 }]
             }
             fn build(&self, name: &str, _wc: usize, _consts: &[FactoryArg])
@@ -388,6 +394,9 @@ mod tests {
                     commutativity: crate::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
+            // Hand registration: no static return-port declaration;
+            // type inference falls back to the name heuristic.
+            output_port: None,
                 }]
             }
             fn build(&self, _: &str, _: usize, _: &[FactoryArg])

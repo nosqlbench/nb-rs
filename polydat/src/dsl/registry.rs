@@ -352,6 +352,15 @@ pub struct FuncSig {
     /// nodes; `SameAsInput(idx)` for type-polymorphic pass-throughs
     /// (e.g. `log_info` whose output type tracks its sole input).
     pub output_type: OutputType,
+    /// Concrete port type of the single output, when statically
+    /// known (`#[polydat_node]` emits it from the return type's
+    /// `Wire::PORT`). `None` for tuple/dynamic/polymorphic outputs
+    /// and for hand registrations that don't declare one. The DSL
+    /// type inference (`binding::infer_expr_type`) reads this
+    /// FIRST — the name-prefix heuristic is only the fallback —
+    /// so call-expression operand typing flows from the symbol
+    /// registry, not from a hand-maintained list.
+    pub output_port: Option<crate::ast::PortType>,
 }
 
 /// Auto-resolver kind attached to handle-taking functions. Tells the
@@ -413,6 +422,7 @@ impl Clone for FuncSig {
             commutativity: self.commutativity.clone(),
             default_resolver: self.default_resolver,
             output_type: self.output_type,
+            output_port: self.output_port,
         }
     }
 }

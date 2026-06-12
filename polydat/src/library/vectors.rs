@@ -1413,6 +1413,9 @@ macro_rules! sig_handle_indexed {
             commutativity: crate::ast::Commutativity::Positional,
             default_resolver: Some($resolver),
             output_type: crate::dsl::registry::OutputType::Fixed,
+            // Hand registration: no static return-port declaration;
+            // type inference falls back to the name heuristic.
+            output_port: None,
         }
     };
 }
@@ -1430,6 +1433,9 @@ macro_rules! sig_handle_metadata {
             commutativity: crate::ast::Commutativity::Positional,
             default_resolver: Some($resolver),
             output_type: crate::dsl::registry::OutputType::Fixed,
+            // Hand registration: no static return-port declaration;
+            // type inference falls back to the name heuristic.
+            output_port: None,
         }
     };
 }
@@ -1526,6 +1532,9 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
+            // Hand registration: no static return-port declaration;
+            // type inference falls back to the name heuristic.
+            output_port: None,
         },
     ]
 }

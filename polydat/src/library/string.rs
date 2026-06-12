@@ -244,6 +244,9 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
+            // Hand registration: no static return-port declaration;
+            // type inference falls back to the name heuristic.
+            output_port: None,
         },
         // `str_concat` migrated to `#[polydat_node]` per SRD-80 PR B.9.
         // `str_lower` and `str_upper` migrated to

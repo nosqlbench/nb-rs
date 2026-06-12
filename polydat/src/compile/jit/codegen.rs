@@ -640,11 +640,11 @@ pub(crate) fn compile_jit_pull(
     nodes: Vec<Box<dyn PolydatNode>>,
     input_dependents: &[Vec<usize>],
 ) -> Result<JitKernelPull, String> {
-    let step_count = steps.len();
     let buffer_len = total_slots;
     // Pull uses the RAW jit function (no per-node clean checks)
     let (raw_fn, _, module) = compile_jit_impl(&steps, false)?;
-    let slot_provenance = compute_jit_slot_provenance(coord_count, buffer_len, step_count, input_dependents);
+    let step_outs: Vec<Vec<usize>> = steps.iter().map(|(_, _, o)| o.clone()).collect();
+    let slot_provenance = compute_jit_slot_provenance(coord_count, buffer_len, &step_outs, input_dependents);
     Ok(JitKernelPull {
         core: JitCore { buffer: vec![0u64; total_slots], coord_count, output_map, _module: module, _nodes: nodes },
         code_fn: raw_fn,
@@ -665,7 +665,8 @@ pub(crate) fn compile_jit_push_pull(
     let step_count = steps.len();
     let buffer_len = total_slots;
     let (_, prov_fn, module) = compile_jit_impl(&steps, true)?;
-    let slot_provenance = compute_jit_slot_provenance(coord_count, buffer_len, step_count, &input_dependents);
+    let step_outs: Vec<Vec<usize>> = steps.iter().map(|(_, _, o)| o.clone()).collect();
+    let slot_provenance = compute_jit_slot_provenance(coord_count, buffer_len, &step_outs, &input_dependents);
     Ok(JitKernelPushPull {
         core: JitCore { buffer: vec![0u64; total_slots], coord_count, output_map, _module: module, _nodes: nodes },
         code_fn_prov: prov_fn,

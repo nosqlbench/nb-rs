@@ -754,22 +754,35 @@ enum JitType {
     I32,
     F32,
     F16,
+    // Two-slot values (alignment §8.4 layer 1): 128-bit integers
+    // and register words ride two consecutive u64 slots in
+    // little-endian limb order, reconstructed through
+    // `polydat::ast::Bits128`.
+    U128,
+    I128,
 }
 
 impl JitType {
-    /// Buffer slots this carrier occupies (alignment §8.4
-    /// layer 1): 1 — everything rides a single u64.
+    /// Buffer slots this carrier occupies (alignment §8.4 layer
+    /// 1): 1 for everything riding a single u64; 2 for 128-bit
+    /// values (limb pairs).
     fn width(self) -> usize {
-        1
+        match self {
+            JitType::U128 | JitType::I128 => 2,
+            _ => 1,
+        }
     }
 
     /// Tokens reading a typed value from the Phase-2 u64 buffer
     /// at slot offset `idx` (the prefix sum of the widths of all
     /// preceding wire args). f64/bool are bit-reinterpreted from
     /// the u64 carrier (the buffer-level convention shared with
-    /// every existing hand-written `compiled_u64`).
+    /// every existing hand-written `compiled_u64`); two-slot
+    /// values reassemble through `Bits128`.
     fn read_from_u64_buffer(self, idx: usize) -> TokenStream2 {
         let i = syn::Index::from(idx);
+        let i1 = syn::Index::from(idx + 1);
+        let limbs = quote!(polydat::ast::Bits128([inputs[#i], inputs[#i1]]));
         match self {
             JitType::U64  => quote!(inputs[#i]),
             JitType::I64  => quote!(inputs[#i] as i64),
@@ -783,6 +796,8 @@ impl JitType {
             JitType::I32  => quote!((inputs[#i] as i64) as i32),
             JitType::F32  => quote!(f32::from_bits(inputs[#i] as u32)),
             JitType::F16  => quote!(polydat::half::f16::from_bits(inputs[#i] as u16)),
+            JitType::U128 => quote!((#limbs).as_u128()),
+            JitType::I128 => quote!((#limbs).as_i128()),
         }
     }
 
@@ -790,6 +805,14 @@ impl JitType {
     /// buffer at slot offset `base`. Inverse of the read.
     fn write_to_u64_buffer_at(self, base: usize, result: TokenStream2) -> TokenStream2 {
         let o = syn::Index::from(base);
+        let o1 = syn::Index::from(base + 1);
+        let write_limbs = |from: TokenStream2| {
+            quote! {{
+                let __limbs = #from;
+                outputs[#o] = __limbs.0[0];
+                outputs[#o1] = __limbs.0[1];
+            }}
+        };
         match self {
             JitType::U64  => quote!(outputs[#o] = #result;),
             JitType::I64  => quote!(outputs[#o] = (#result) as u64;),
@@ -801,6 +824,8 @@ impl JitType {
                 => quote!(outputs[#o] = ((#result) as i64) as u64;),
             JitType::F32  => quote!(outputs[#o] = (#result).to_bits() as u64;),
             JitType::F16  => quote!(outputs[#o] = (#result).to_bits() as u64;),
+            JitType::U128 => write_limbs(quote!(polydat::ast::Bits128::from_u128(#result))),
+            JitType::I128 => write_limbs(quote!(polydat::ast::Bits128::from_i128(#result))),
         }
     }
 
@@ -823,6 +848,11 @@ impl JitType {
                 => quote!(((#field_ref) as i64) as u64),
             JitType::F32 | JitType::F16
                 => quote!((#field_ref).to_bits() as u64),
+            // ConstShape has no 128-bit / register forms, so these
+            // never appear in const position.
+            JitType::U128 | JitType::I128 => {
+                unreachable!("128-bit types have no const shape")
+            }
         }
     }
 }
@@ -854,6 +884,8 @@ fn wire_type_to_jit_type(ty: &Type) -> Option<JitType> {
         "i16"  => Some(JitType::I16),
         "i32"  => Some(JitType::I32),
         "f32"  => Some(JitType::F32),
+        "u128" => Some(JitType::U128),
+        "i128" => Some(JitType::I128),
         // type_to_string joins every token with a space
         // (`half : : f16`, `[ f32 ; 4 ]`), so the path/array
         // forms compare whitespace-stripped. The two-slot types
@@ -1954,6 +1986,20 @@ fn generate(
         (None, None) => vec!["output".to_string()],
     };
 
+    // FuncSig::output_port — the statically-known return port for
+    // single fixed-output nodes; None for tuple / polymorphic /
+    // dynamic shapes (the DSL type inference then falls back to
+    // its heuristic).
+    let output_port_field: TokenStream2 = if tuple_ret_elems.is_some()
+        || ret_is_polywire
+        || dynamic_outputs_inner.is_some()
+    {
+        quote!(None)
+    } else {
+        let pt = &output_port_types[0];
+        quote!(Some(#pt))
+    };
+
     let output_count = if dynamic_outputs_inner.is_some() { 0 } else { output_port_types.len() };
     // SRD-80b: `0` in the FuncSig signals "dynamic, determined at
     // compile time" (existing FuncSig convention from the doc).
@@ -2564,6 +2610,71 @@ fn generate(
     let jit_eligible = arg_jit_types.is_some()
         && (ret_jit_type.is_some() || tuple_ret_jit_types.is_some());
 
+    // §8.4 layer 3 — slot eligibility: at least one typed-slice
+    // arg or `Vec<elem>` return, every other wire arg jit-able,
+    // consts capturable, single return, no setup/polywire/
+    // variadic shapes. Slot-compiled nodes read slice inputs as
+    // `(ptr, len)` slot pairs and write vector outputs into
+    // kernel-owned scratch.
+    let slice_arg_elem = |ty: &Type| -> Option<&'static str> {
+        match is_borrow_wire_shape(ty) {
+            Some(BorrowWire::Vec(variant, _)) => match variant {
+                "VecF32" => Some("F32"),
+                "VecF64" => Some("F64"),
+                "VecF16" => Some("F16"),
+                "VecI8" => Some("I8"),
+                "VecI16" => Some("I16"),
+                "VecI32" => Some("I32"),
+                "VecI64" => Some("I64"),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let vec_ret_elem: Option<&'static str> = {
+        let flat: String = type_to_string(&ret_ty).split_whitespace().collect();
+        match flat.as_str() {
+            "Vec<f32>" => Some("F32"),
+            "Vec<f64>" => Some("F64"),
+            "Vec<half::f16>" | "Vec<f16>" => Some("F16"),
+            "Vec<i8>" => Some("I8"),
+            "Vec<i16>" => Some("I16"),
+            "Vec<i32>" => Some("I32"),
+            "Vec<i64>" => Some("I64"),
+            _ => None,
+        }
+    };
+    enum SlotArgRead {
+        Jit(JitType),
+        Slice(&'static str),
+        Const,
+    }
+    let slot_arg_reads: Option<Vec<SlotArgRead>> = if has_setup
+        || tuple_ret_elems.is_some()
+        || is_fallible
+    {
+        None
+    } else {
+        args.iter()
+            .map(|a| match &a.kind {
+                ArgKind::Wire => wire_type_to_jit_type(&a.declared_ty)
+                    .map(SlotArgRead::Jit)
+                    .or_else(|| slice_arg_elem(&a.declared_ty).map(SlotArgRead::Slice)),
+                ArgKind::Const(_) => Some(SlotArgRead::Const),
+                _ => None,
+            })
+            .collect()
+    };
+    let has_slice_shape = slot_arg_reads
+        .as_ref()
+        .map(|v| v.iter().any(|r| matches!(r, SlotArgRead::Slice(_))))
+        .unwrap_or(false)
+        || vec_ret_elem.is_some();
+    let slot_eligible = !jit_eligible
+        && has_slice_shape
+        && slot_arg_reads.is_some()
+        && (ret_jit_type.is_some() || vec_ret_elem.is_some());
+
     let emit_compiled_u64 = attrs.compiled_u64_override.is_some()
         || (jit_eligible && !attrs.no_jit);
     let emit_jit_constants = attrs.jit_constants_override.is_some()
@@ -2579,7 +2690,8 @@ fn generate(
     // (Setup-bearing nodes need this — their body references
     // setup-derived locals via `let n = &self.n` bindings).
 
-    let use_shared_body = jit_eligible && (emit_compiled_u64 || !attrs.no_jit);
+    let use_shared_body = (jit_eligible && (emit_compiled_u64 || !attrs.no_jit))
+        || (slot_eligible && !attrs.no_jit);
 
     // Body-fn parameter list — every arg in its DECLARED form
     // (wire as bare type, const as `Const<T>`, setup as `&T`).
@@ -2855,6 +2967,103 @@ fn generate(
                     let result: #ret_ty = Self::__polydat_body( #( #arg_names ),* );
                     #write
                 }))
+            }
+        }
+    } else {
+        quote!()
+    };
+
+    // compiled_slot() emission (§8.4 layer 3). Slice inputs read
+    // (ptr, len) slot pairs; a Vec return moves into scratch[0]
+    // and publishes its (ptr, len). Scalar args/returns reuse the
+    // width-aware JitType buffer tokens.
+    let compiled_slot_impl: TokenStream2 = if slot_eligible && !attrs.no_jit {
+        let reads_spec = slot_arg_reads.as_ref().unwrap();
+        let elem_ty_tokens = |elem: &str| -> TokenStream2 {
+            match elem {
+                "F32" => quote!(f32),
+                "F64" => quote!(f64),
+                "F16" => quote!(polydat::half::f16),
+                "I8" => quote!(i8),
+                "I16" => quote!(i16),
+                "I32" => quote!(i32),
+                "I64" => quote!(i64),
+                _ => unreachable!(),
+            }
+        };
+        let captures: Vec<TokenStream2> = args.iter()
+            .filter_map(|a| match &a.kind {
+                ArgKind::Const(_) => {
+                    let n = &a.name;
+                    Some(quote!(let #n = self.#n.clone();))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut off = 0usize;
+        let arg_reads: Vec<TokenStream2> = args.iter().zip(reads_spec.iter())
+            .map(|(a, spec)| {
+                let n = &a.name;
+                match spec {
+                    SlotArgRead::Jit(jt) => {
+                        let read = jt.read_from_u64_buffer(off);
+                        off += jt.width();
+                        quote!(let #n = #read;)
+                    }
+                    SlotArgRead::Slice(elem) => {
+                        let et = elem_ty_tokens(elem);
+                        let i = syn::Index::from(off);
+                        let i1 = syn::Index::from(off + 1);
+                        off += 2;
+                        // SAFETY: the (ptr, len) pair was published
+                        // by an upstream slot-op into kernel-owned
+                        // scratch (or by the host for the eval call's
+                        // duration); the layer-3 ownership rule keeps
+                        // it alive until this step's producer reruns.
+                        quote! {
+                            let #n: &[#et] = unsafe {
+                                ::core::slice::from_raw_parts(
+                                    inputs[#i] as usize as *const #et,
+                                    inputs[#i1] as usize,
+                                )
+                            };
+                        }
+                    }
+                    SlotArgRead::Const => {
+                        quote!(let #n = polydat::derive_support::Const(#n.clone());)
+                    }
+                }
+            })
+            .collect();
+        let arg_names: Vec<&syn::Ident> = args.iter().map(|a| &a.name).collect();
+        let (scratch_decl, write) = if let Some(elem) = vec_ret_elem {
+            let se = syn::Ident::new(elem, proc_macro2::Span::call_site());
+            (
+                quote!(vec![polydat::ast::ScratchElem::#se]),
+                quote! {
+                    let polydat::ast::ScratchBuf::#se(__buf) = &mut scratch[0] else {
+                        unreachable!("scratch element type mismatch");
+                    };
+                    *__buf = result;
+                    outputs[0] = __buf.as_ptr() as usize as u64;
+                    outputs[1] = __buf.len() as u64;
+                },
+            )
+        } else {
+            let ret_jit = ret_jit_type.unwrap();
+            (quote!(vec![]), ret_jit.write_to_u64_buffer(quote!(result)))
+        };
+        quote! {
+            fn compiled_slot(&self) -> Option<polydat::ast::CompiledSlotKit> {
+                #( #captures )*
+                Some(polydat::ast::CompiledSlotKit {
+                    scratch: #scratch_decl,
+                    op: Box::new(move |inputs: &[u64], outputs: &mut [u64], scratch: &mut [polydat::ast::ScratchBuf]| {
+                        #( #arg_reads )*
+                        let result: #ret_ty = Self::__polydat_body( #( #arg_names ),* );
+                        #write
+                    }),
+                })
             }
         }
     } else {
@@ -3196,6 +3405,7 @@ fn generate(
             }
 
             #compiled_u64_impl
+            #compiled_slot_impl
             #jit_constants_impl
             #purity_impl
             #accepts_none_impl
@@ -3221,6 +3431,7 @@ fn generate(
                     commutativity: #commutativity_field,
                     default_resolver: #default_resolver_field,
                     output_type: #output_type_tokens,
+                    output_port: #output_port_field,
                 },
             ];
 

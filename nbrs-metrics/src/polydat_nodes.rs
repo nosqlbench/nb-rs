@@ -202,6 +202,10 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
+            // Both metric readers emit PortType::F64 (see the
+            // NodeMeta above) — declared here so DSL infix typing
+            // flows from the registry (FuncSig::output_port).
+            output_port: Some(polydat::ast::PortType::F64),
         },
         FuncSig {
             name: "metric_window", category: C::Context, outputs: 1,
@@ -220,6 +224,10 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
+            // Both metric readers emit PortType::F64 (see the
+            // NodeMeta above) — declared here so DSL infix typing
+            // flows from the registry (FuncSig::output_port).
+            output_port: Some(polydat::ast::PortType::F64),
         },
     ]
 }

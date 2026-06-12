@@ -44,10 +44,19 @@ struct JitSegment {
     _module: Box<dyn std::any::Any + Send>,
 }
 
+/// A closure step's op: pure-scalar u64 closure, or a slot op
+/// with kernel-owned scratch for typed-slice ports (§8.4 L3).
+enum ClosureOp {
+    U64(CompiledU64Op),
+    Slot(crate::ast::CompiledSlotOp),
+}
+
 struct ClosureStep {
-    op: CompiledU64Op,
+    op: ClosureOp,
     input_slots: Vec<usize>,
     output_slots: Vec<usize>,
+    /// `[start, end)` into the kernel's scratch arena.
+    scratch_range: (usize, usize),
 }
 
 /// Common fields shared by all hybrid kernel variants.
@@ -58,8 +67,57 @@ struct HybridCore {
     output_map: HashMap<String, usize>,
     gather_buf: Vec<u64>,
     scatter_buf: Vec<u64>,
+    /// Kernel-owned vector storage; vector-producing ports'
+    /// (ptr, len) slots view entries here (§8.4 layer 3).
+    scratch: Vec<crate::ast::ScratchBuf>,
+    /// Axiom S2: per-slot Ref2 mask — raw readers panic on these.
+    ref_slots: Vec<bool>,
+    /// Axiom S9(a): (first slot of a Ref pair → scratch index).
+    ref_scratch: Vec<(usize, usize)>,
     /// Keep source nodes alive so JIT-baked pointers remain valid.
     _nodes: Vec<Box<dyn PolydatNode>>,
+}
+
+impl HybridCore {
+    /// Axiom S9(a) — deterministic Ref validation (see
+    /// `jit_boundary.md` §"Slot-state axioms").
+    fn validate_refs(&self) {
+        for &(slot, idx) in &self.ref_scratch {
+            let (p, l) = self.scratch[idx].ptr_len();
+            assert!(
+                self.buffer[slot] == p && self.buffer[slot + 1] == l,
+                "S9 ref-validator: slot pair ({slot}, {}) = ({:#x}, {}) \
+                 does not match scratch[{idx}] = ({p:#x}, {l})",
+                slot + 1,
+                self.buffer[slot],
+                self.buffer[slot + 1],
+            );
+        }
+    }
+
+    /// Axiom S2 guard for raw u64 readers.
+    #[inline]
+    fn guard_ref_slot(&self, slot: usize) {
+        if self.ref_slots.get(slot).copied().unwrap_or(false) {
+            panic!(
+                "S2 pointer containment: slot {slot} is Ref2-colored; raw \
+                 u64 readers would leak an interior address. Use the typed \
+                 borrow-checked accessor (read_vec_*) or copy out."
+            );
+        }
+    }
+
+    /// Axiom S2 typed accessor core (borrow ties to &self).
+    fn ref_entry(&self, slot: usize) -> &crate::ast::ScratchBuf {
+        match self.ref_scratch.iter().find(|(s, _)| *s == slot) {
+            Some(&(_, idx)) => &self.scratch[idx],
+            None if self.ref_slots.get(slot).copied().unwrap_or(false) => panic!(
+                "slot {slot} is a Ref pair owned by the CALLER (a kernel \
+                 input) — read it on the caller side"
+            ),
+            None => panic!("slot {slot} is not a Ref2-colored slot"),
+        }
+    }
 }
 
 /// Run all hybrid steps unconditionally (no clean checks).
@@ -84,16 +142,25 @@ fn eval_all_hybrid_steps(core: &mut HybridCore) {
                 for (i, &slot) in cs.input_slots.iter().enumerate() {
                     core.gather_buf[i] = core.buffer[slot];
                 }
-                (cs.op)(
-                    &core.gather_buf[..cs.input_slots.len()],
-                    &mut core.scatter_buf[..cs.output_slots.len()],
-                );
+                match &cs.op {
+                    ClosureOp::U64(op) => op(
+                        &core.gather_buf[..cs.input_slots.len()],
+                        &mut core.scatter_buf[..cs.output_slots.len()],
+                    ),
+                    ClosureOp::Slot(op) => op(
+                        &core.gather_buf[..cs.input_slots.len()],
+                        &mut core.scatter_buf[..cs.output_slots.len()],
+                        &mut core.scratch[cs.scratch_range.0..cs.scratch_range.1],
+                    ),
+                }
                 for (i, &slot) in cs.output_slots.iter().enumerate() {
                     core.buffer[slot] = core.scatter_buf[i];
                 }
             }
         }
     }
+    #[cfg(debug_assertions)]
+    core.validate_refs();
 }
 
 /// Compute per-slot provenance bitmasks for the hybrid kernel.
@@ -160,21 +227,29 @@ impl HybridKernelRaw {
     /// Eval all steps and return the value at `slot`.
     #[inline]
     pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+        self.core.guard_ref_slot(slot);
         self.eval(coords);
         self.core.buffer[slot]
     }
 
-    /// Read a named output after `eval()`.
+    /// Read a named output after `eval()`. Panics on Ref2 slots
+    /// (axiom S2) — use `read_vec_*`.
     #[inline]
     pub fn get(&self, name: &str) -> u64 {
-        self.core.buffer[self.core.output_map[name]]
-    }
-
-    /// Read by slot index.
-    #[inline]
-    pub fn get_slot(&self, slot: usize) -> u64 {
+        let slot = self.core.output_map[name];
+        self.core.guard_ref_slot(slot);
         self.core.buffer[slot]
     }
+
+    /// Read by slot index. Panics on Ref2 slots (axiom S2) —
+    /// use `read_vec_*`.
+    #[inline]
+    pub fn get_slot(&self, slot: usize) -> u64 {
+        self.core.guard_ref_slot(slot);
+        self.core.buffer[slot]
+    }
+
+    crate::compile::ref_readers!();
 
     /// Number of coordinate inputs.
     pub fn coord_count(&self) -> usize { self.core.coord_count }
@@ -231,6 +306,7 @@ impl HybridKernelPull {
     /// Otherwise run ALL steps (no per-step skip).
     #[inline]
     pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+        self.core.guard_ref_slot(slot);
         self.set_inputs(coords);
         if slot < self.slot_provenance.len() {
             if self.slot_provenance[slot] & self.changed_mask == 0 {
@@ -241,17 +317,24 @@ impl HybridKernelPull {
         self.core.buffer[slot]
     }
 
-    /// Read a named output after `eval()`.
+    /// Read a named output after `eval()`. Panics on Ref2 slots
+    /// (axiom S2) — use `read_vec_*`.
     #[inline]
     pub fn get(&self, name: &str) -> u64 {
-        self.core.buffer[self.core.output_map[name]]
-    }
-
-    /// Read by slot index.
-    #[inline]
-    pub fn get_slot(&self, slot: usize) -> u64 {
+        let slot = self.core.output_map[name];
+        self.core.guard_ref_slot(slot);
         self.core.buffer[slot]
     }
+
+    /// Read by slot index. Panics on Ref2 slots (axiom S2) —
+    /// use `read_vec_*`.
+    #[inline]
+    pub fn get_slot(&self, slot: usize) -> u64 {
+        self.core.guard_ref_slot(slot);
+        self.core.buffer[slot]
+    }
+
+    crate::compile::ref_readers!();
 
     /// Number of coordinate inputs.
     pub fn coord_count(&self) -> usize { self.core.coord_count }
@@ -326,10 +409,17 @@ impl HybridKernelPushPull {
                     for (i, &slot) in cs.input_slots.iter().enumerate() {
                         self.core.gather_buf[i] = self.core.buffer[slot];
                     }
-                    (cs.op)(
-                        &self.core.gather_buf[..cs.input_slots.len()],
-                        &mut self.core.scatter_buf[..cs.output_slots.len()],
-                    );
+                    match &cs.op {
+                        ClosureOp::U64(op) => op(
+                            &self.core.gather_buf[..cs.input_slots.len()],
+                            &mut self.core.scatter_buf[..cs.output_slots.len()],
+                        ),
+                        ClosureOp::Slot(op) => op(
+                            &self.core.gather_buf[..cs.input_slots.len()],
+                            &mut self.core.scatter_buf[..cs.output_slots.len()],
+                            &mut self.core.scratch[cs.scratch_range.0..cs.scratch_range.1],
+                        ),
+                    }
                     for (i, &slot) in cs.output_slots.iter().enumerate() {
                         self.core.buffer[slot] = self.core.scatter_buf[i];
                     }
@@ -337,11 +427,14 @@ impl HybridKernelPushPull {
             }
             self.step_clean[step_idx] = true;
         }
+        #[cfg(debug_assertions)]
+        self.core.validate_refs();
     }
 
     /// Cone guard + push-side skip: the full optimization.
     #[inline]
     pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+        self.core.guard_ref_slot(slot);
         self.set_inputs(coords);
         if slot < self.slot_provenance.len() {
             if self.slot_provenance[slot] & self.changed_mask == 0 {
@@ -364,10 +457,17 @@ impl HybridKernelPushPull {
                     for (i, &slot) in cs.input_slots.iter().enumerate() {
                         self.core.gather_buf[i] = self.core.buffer[slot];
                     }
-                    (cs.op)(
-                        &self.core.gather_buf[..cs.input_slots.len()],
-                        &mut self.core.scatter_buf[..cs.output_slots.len()],
-                    );
+                    match &cs.op {
+                        ClosureOp::U64(op) => op(
+                            &self.core.gather_buf[..cs.input_slots.len()],
+                            &mut self.core.scatter_buf[..cs.output_slots.len()],
+                        ),
+                        ClosureOp::Slot(op) => op(
+                            &self.core.gather_buf[..cs.input_slots.len()],
+                            &mut self.core.scatter_buf[..cs.output_slots.len()],
+                            &mut self.core.scratch[cs.scratch_range.0..cs.scratch_range.1],
+                        ),
+                    }
                     for (i, &slot) in cs.output_slots.iter().enumerate() {
                         self.core.buffer[slot] = self.core.scatter_buf[i];
                     }
@@ -375,20 +475,29 @@ impl HybridKernelPushPull {
             }
             self.step_clean[step_idx] = true;
         }
+        #[cfg(debug_assertions)]
+        self.core.validate_refs();
         self.core.buffer[slot]
     }
 
-    /// Read a named output after `eval()`.
+    /// Read a named output after `eval()`. Panics on Ref2 slots
+    /// (axiom S2) — use `read_vec_*`.
     #[inline]
     pub fn get(&self, name: &str) -> u64 {
-        self.core.buffer[self.core.output_map[name]]
-    }
-
-    /// Read by slot index.
-    #[inline]
-    pub fn get_slot(&self, slot: usize) -> u64 {
+        let slot = self.core.output_map[name];
+        self.core.guard_ref_slot(slot);
         self.core.buffer[slot]
     }
+
+    /// Read by slot index. Panics on Ref2 slots (axiom S2) —
+    /// use `read_vec_*`.
+    #[inline]
+    pub fn get_slot(&self, slot: usize) -> u64 {
+        self.core.guard_ref_slot(slot);
+        self.core.buffer[slot]
+    }
+
+    crate::compile::ref_readers!();
 
     /// Number of coordinate inputs.
     pub fn coord_count(&self) -> usize { self.core.coord_count }
@@ -411,6 +520,65 @@ impl HybridKernelPushPull {
 /// optimization trade-offs are needed.
 pub type HybridKernel = HybridKernelPushPull;
 
+/// Flattened slot list for one node's wire inputs under per-port
+/// widths (type_system_alignment.md §8.4 layer 1): every source
+/// contributes `slot_width` consecutive slots.
+fn flatten_input_slots(
+    wiring: &[Vec<WireSource>],
+    nodes: &[Box<dyn PolydatNode>],
+    node_idx: usize,
+    port_offsets: &[Vec<usize>],
+    input_starts: &[usize],
+    input_widths: &[usize],
+) -> Vec<usize> {
+    let mut slots = Vec::new();
+    for source in &wiring[node_idx] {
+        let (start, w) = match source {
+            WireSource::Input(c) => (
+                input_starts.get(*c).copied().unwrap_or(*c),
+                input_widths.get(*c).copied().unwrap_or(1),
+            ),
+            WireSource::NodeOutput(u, p) => (
+                port_offsets[*u][*p],
+                nodes[*u].meta().outs[*p].typ.slot_width(),
+            ),
+        };
+        slots.extend(start..start + w);
+    }
+    slots
+}
+
+/// First slot of each Ref2-colored output port of one node, in
+/// port order (axiom S3 pairing with CompiledSlotKit scratch).
+fn flatten_ref_output_starts(
+    nodes: &[Box<dyn PolydatNode>],
+    node_idx: usize,
+    port_offsets: &[Vec<usize>],
+) -> Vec<usize> {
+    nodes[node_idx]
+        .meta()
+        .outs
+        .iter()
+        .enumerate()
+        .filter(|(_, out)| out.typ.slot_color() == crate::ast::SlotColor::Ref2)
+        .map(|(p, _)| port_offsets[node_idx][p])
+        .collect()
+}
+
+/// Flattened slot list for one node's outputs.
+fn flatten_output_slots(
+    nodes: &[Box<dyn PolydatNode>],
+    node_idx: usize,
+    port_offsets: &[Vec<usize>],
+) -> Vec<usize> {
+    let mut slots = Vec::new();
+    for (p, out) in nodes[node_idx].meta().outs.iter().enumerate() {
+        let start = port_offsets[node_idx][p];
+        slots.extend(start..start + out.typ.slot_width());
+    }
+    slots
+}
+
 /// Build a hybrid kernel from resolved DAG data.
 ///
 /// Each node is classified: if it can be JIT-compiled, it goes into
@@ -419,15 +587,21 @@ pub type HybridKernel = HybridKernelPushPull;
 ///
 /// Returns a `HybridKernelPushPull` (the production default).
 #[cfg(feature = "jit")]
+#[allow(clippy::too_many_arguments)]
 pub fn build_hybrid(
     nodes: &[Box<dyn PolydatNode>],
     wiring: &[Vec<WireSource>],
     coord_count: usize,
     total_slots: usize,
-    slot_bases: &[usize],
+    port_offsets: &[Vec<usize>],
+    input_starts: &[usize],
+    input_widths: &[usize],
     output_map: HashMap<String, usize>,
+    ref_slots: Vec<bool>,
 ) -> Result<HybridKernelPushPull, String> {
     let mut steps: Vec<HybridStep> = Vec::new();
+    let mut scratch: Vec<crate::ast::ScratchBuf> = Vec::new();
+    let mut ref_scratch: Vec<(usize, usize)> = Vec::new();
     let mut max_inputs = 0usize;
     let mut max_outputs = 0usize;
 
@@ -437,18 +611,10 @@ pub fn build_hybrid(
         .map(|(node_idx, node)| {
             let jit_op = jit::classify_node(node.as_ref());
 
-            let input_slots: Vec<usize> = wiring[node_idx]
-                .iter()
-                .map(|source| match source {
-                    WireSource::Input(c) => *c,
-                    WireSource::NodeOutput(upstream, port) => slot_bases[*upstream] + port,
-                })
-                .collect();
-
-            let output_count = node.meta().outs.len();
-            let output_slots: Vec<usize> = (0..output_count)
-                .map(|p| slot_bases[node_idx] + p)
-                .collect();
+            let input_slots = flatten_input_slots(
+                wiring, nodes, node_idx, port_offsets, input_starts, input_widths,
+            );
+            let output_slots = flatten_output_slots(nodes, node_idx, port_offsets);
 
             max_inputs = max_inputs.max(input_slots.len());
             max_outputs = max_outputs.max(output_slots.len());
@@ -461,18 +627,37 @@ pub fn build_hybrid(
     let mut i = 0;
     while i < classifications.len() {
         if matches!(classifications[i].0, JitOp::Fallback) {
-            // This node needs a closure
+            // This node needs a closure — scalar u64 op preferred,
+            // slot op for slice-bearing nodes (§8.4 layer 3).
             let node = &nodes[i];
             let (_, ref input_slots, ref output_slots) = classifications[i];
-            if let Some(op) = node.compiled_u64() {
-                steps.push(HybridStep::Closure(ClosureStep {
-                    op,
-                    input_slots: input_slots.clone(),
-                    output_slots: output_slots.clone(),
-                }));
+            let scratch_start = scratch.len();
+            let op = if let Some(op) = node.compiled_u64() {
+                ClosureOp::U64(op)
+            } else if let Some(kit) = node.compiled_slot() {
+                scratch.extend(kit.scratch.iter().map(|e| crate::ast::ScratchBuf::new(*e)));
+                // Axiom S9(a): map this step's Ref output pairs to
+                // its scratch entries (port order — S3 contract).
+                let starts = flatten_ref_output_starts(nodes, i, port_offsets);
+                assert_eq!(starts.len(), kit.scratch.len(),
+                    "slot-op scratch/Ref-output mismatch on '{}'",
+                    node.meta().name);
+                for (k, &slot) in starts.iter().enumerate() {
+                    ref_scratch.push((slot, scratch_start + k));
+                }
+                ClosureOp::Slot(kit.op)
             } else {
-                return Err(format!("node '{}' has no compiled_u64 and can't be JIT-compiled", node.meta().name));
-            }
+                return Err(format!(
+                    "node '{}' has no compiled form and can't be JIT-compiled",
+                    node.meta().name
+                ));
+            };
+            steps.push(HybridStep::Closure(ClosureStep {
+                op,
+                input_slots: input_slots.clone(),
+                output_slots: output_slots.clone(),
+                scratch_range: (scratch_start, scratch.len()),
+            }));
             i += 1;
         } else {
             // Batch consecutive JIT-able nodes
@@ -504,56 +689,71 @@ pub fn build_hybrid(
     }
 
     build_pushpull_from_steps(
-        steps, wiring, nodes, coord_count, total_slots,
-        output_map, max_inputs, max_outputs,
+        steps, scratch, ref_scratch, ref_slots, wiring, nodes, coord_count,
+        total_slots, output_map, max_inputs, max_outputs, input_starts,
+        input_widths,
     )
 }
 
 /// Build a hybrid kernel without JIT (all closures).
 #[cfg(not(feature = "jit"))]
+#[allow(clippy::too_many_arguments)]
 pub fn build_hybrid(
     nodes: &[Box<dyn PolydatNode>],
     wiring: &[Vec<WireSource>],
     coord_count: usize,
     total_slots: usize,
-    slot_bases: &[usize],
+    port_offsets: &[Vec<usize>],
+    input_starts: &[usize],
+    input_widths: &[usize],
     output_map: HashMap<String, usize>,
+    ref_slots: Vec<bool>,
 ) -> Result<HybridKernelPushPull, String> {
     let mut steps: Vec<HybridStep> = Vec::new();
+    let mut scratch: Vec<crate::ast::ScratchBuf> = Vec::new();
+    let mut ref_scratch: Vec<(usize, usize)> = Vec::new();
     let mut max_inputs = 0usize;
     let mut max_outputs = 0usize;
 
     for (node_idx, node) in nodes.iter().enumerate() {
-        let input_slots: Vec<usize> = wiring[node_idx]
-            .iter()
-            .map(|source| match source {
-                WireSource::Input(c) => *c,
-                WireSource::NodeOutput(upstream, port) => slot_bases[*upstream] + port,
-            })
-            .collect();
-
-        let output_count = node.meta().outs.len();
-        let output_slots: Vec<usize> = (0..output_count)
-            .map(|p| slot_bases[node_idx] + p)
-            .collect();
+        let input_slots = flatten_input_slots(
+            wiring, nodes, node_idx, port_offsets, input_starts, input_widths,
+        );
+        let output_slots = flatten_output_slots(nodes, node_idx, port_offsets);
 
         max_inputs = max_inputs.max(input_slots.len());
         max_outputs = max_outputs.max(output_slots.len());
 
-        if let Some(op) = node.compiled_u64() {
-            steps.push(HybridStep::Closure(ClosureStep {
-                op,
-                input_slots,
-                output_slots,
-            }));
+        let scratch_start = scratch.len();
+        let op = if let Some(op) = node.compiled_u64() {
+            ClosureOp::U64(op)
+        } else if let Some(kit) = node.compiled_slot() {
+            scratch.extend(kit.scratch.iter().map(|e| crate::ast::ScratchBuf::new(*e)));
+            // Axiom S9(a): map this step's Ref output pairs to
+            // its scratch entries (port order — S3 contract).
+            let starts = flatten_ref_output_starts(nodes, node_idx, port_offsets);
+            assert_eq!(starts.len(), kit.scratch.len(),
+                "slot-op scratch/Ref-output mismatch on '{}'",
+                node.meta().name);
+            for (k, &slot) in starts.iter().enumerate() {
+                ref_scratch.push((slot, scratch_start + k));
+            }
+            ClosureOp::Slot(kit.op)
         } else {
-            return Err(format!("node '{}' has no compiled_u64", node.meta().name));
-        }
+            return Err(format!("node '{}' has no compiled form", node.meta().name));
+        };
+        steps.push(HybridStep::Closure(ClosureStep {
+            op,
+            input_slots,
+            output_slots,
+            scratch_range: (scratch_start, scratch.len()),
+        }));
     }
 
     build_pushpull_from_steps(
-        steps, wiring, nodes, coord_count, total_slots,
-        output_map, max_inputs, max_outputs,
+        steps, scratch, ref_scratch, ref_slots, wiring, nodes, coord_count,
+        total_slots, output_map, max_inputs, max_outputs, input_starts,
+        input_widths,
     )
 }
 
@@ -562,8 +762,12 @@ pub fn build_hybrid(
 /// Computes provenance bitmasks from the DAG wiring and builds the
 /// step_dependents list for push-side invalidation and the slot_provenance
 /// table for pull-side cone guard.
+#[allow(clippy::too_many_arguments)]
 fn build_pushpull_from_steps(
     steps: Vec<HybridStep>,
+    scratch: Vec<crate::ast::ScratchBuf>,
+    ref_scratch: Vec<(usize, usize)>,
+    ref_slots: Vec<bool>,
     wiring: &[Vec<WireSource>],
     nodes: &[Box<dyn PolydatNode>],
     coord_count: usize,
@@ -571,13 +775,26 @@ fn build_pushpull_from_steps(
     output_map: HashMap<String, usize>,
     max_inputs: usize,
     max_outputs: usize,
+    _input_starts: &[usize],
+    input_widths: &[usize],
 ) -> Result<HybridKernelPushPull, String> {
     let step_count = steps.len();
 
     // Compute per-node provenance and invert into per-input step dependents.
     // Since each step currently maps to one node, step index == node index.
+    // Dependents come back per-INPUT; expand to per-SLOT so the kernels'
+    // slot-indexed dirty tracking / changed-mask bits stay coherent under
+    // multi-slot inputs (§8.4 layer 1). Identity for all-scalar inputs.
     let node_provenance = crate::kernel::PolydatProgram::compute_provenance(nodes, wiring);
-    let step_dependents = crate::kernel::PolydatProgram::compute_dependents(&node_provenance, coord_count);
+    let input_dependents = crate::kernel::PolydatProgram::compute_dependents(
+        &node_provenance, input_widths.len());
+    let step_dependents: Vec<Vec<usize>> = input_widths
+        .iter()
+        .enumerate()
+        .flat_map(|(i, w)| {
+            std::iter::repeat_n(input_dependents.get(i).cloned().unwrap_or_default(), *w)
+        })
+        .collect();
 
     let slot_provenance = compute_hybrid_slot_provenance(
         coord_count, total_slots, &step_dependents, &steps,
@@ -591,6 +808,9 @@ fn build_pushpull_from_steps(
             output_map,
             gather_buf: vec![0u64; max_inputs.max(1)],
             scatter_buf: vec![0u64; max_outputs.max(1)],
+            scratch,
+            ref_slots,
+            ref_scratch,
             _nodes: Vec::new(),
         },
         step_clean: vec![false; step_count],

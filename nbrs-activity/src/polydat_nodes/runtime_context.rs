@@ -547,6 +547,7 @@ pub fn signatures() -> &'static [FuncSig] {
     &[
         FuncSig {
             name: "control", category: C::Context, outputs: 1,
+            output_port: Some(polydat::ast::PortType::F64),
             description: "read a dynamic control's current value as f64",
             help: "Projects a [dynamic control](SRD 23) into the Polydat graph. Walks\nup the component tree from the session root, honors branch\nscope, and returns the control's reified gauge projection\n(f64). Missing controls and un-projected values return 0.0.\nParameters:\n  name — control name to resolve",
             identity: None, variadic_ctor: None,
@@ -560,6 +561,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "control_u64", category: C::Context, outputs: 1,
+            output_port: Some(polydat::ast::PortType::U64),
             description: "read a dynamic control's current value as u64",
             help: "Sugar for casting control(name) from f64 to u64. Negative\ngauge values saturate at 0; missing controls return 0.\nPrefer over `f64_to_u64(control(name))` for clarity.\nParameters:\n  name — control name to resolve",
             identity: None, variadic_ctor: None,
@@ -573,6 +575,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "control_bool", category: C::Context, outputs: 1,
+            output_port: Some(polydat::ast::PortType::Bool),
             description: "read a dynamic control's current value as bool",
             help: "Reads the control's reified-gauge projection and returns\ntrue iff the value is non-zero. Missing controls / unreified\ncontrols return false.\nParameters:\n  name — control name to resolve",
             identity: None, variadic_ctor: None,
@@ -586,6 +589,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "control_str", category: C::Context, outputs: 1,
+            output_port: Some(polydat::ast::PortType::Str),
             description: "read a dynamic control's current value as String",
             help: "Reads the erased-control value_string() rendering. Useful\nfor enum-valued or string-valued controls (error policy,\nlog level). Missing controls return \"\".\nParameters:\n  name — control name to resolve",
             identity: None, variadic_ctor: None,
@@ -599,6 +603,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "control_set", category: C::Context, outputs: 1,
+            output_port: Some(polydat::ast::PortType::U64),
             description: "write a dynamic control value from Polydat (non-blocking)",
             help: "Submits an f64 write against a named dynamic control. The\nwrite dispatches on a background tokio task; the fiber does\nnot block. The target control must declare a from_f64\nconverter (see ControlBuilder::from_f64) or the write is\nrejected with a ValidationFailed message in the log.\nReturns 1 if dispatched, 0 if no session root is installed.\nParameters:\n  name  — control name to resolve (walk-up from session root)\n  value — f64 wire; the control's converter maps this to its\n          native type (e.g. f64 → u32 for concurrency)",
             identity: None, variadic_ctor: None,
@@ -613,6 +618,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "rate", category: C::Context, outputs: 1,
+            output_port: Some(polydat::ast::PortType::F64),
             description: "current rate-limiter target (f64 ops/sec)",
             help: "Sugar for control(\"rate\"). Returns 0.0 if no rate control\nis declared.",
             identity: None, variadic_ctor: None,
@@ -624,6 +630,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "concurrency", category: C::Context, outputs: 1,
+            output_port: Some(polydat::ast::PortType::F64),
             description: "current fiber count (f64)",
             help: "Sugar for control(\"concurrency\"). Returns 0.0 if no\nconcurrency control is declared.",
             identity: None, variadic_ctor: None,
@@ -635,6 +642,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "phase", category: C::Context, outputs: 1,
+            output_port: Some(polydat::ast::PortType::Str),
             description: "current phase name (String)",
             help: "Returns the name of the phase the current fiber is running\nunder. Thread-local — outside a phase this reads as empty.",
             identity: None, variadic_ctor: None,
@@ -646,6 +654,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "cycle", category: C::Context, outputs: 1,
+            output_port: Some(polydat::ast::PortType::U64),
             description: "current cycle ordinal (u64)",
             help: "Returns the cycle ordinal of the current fiber. Sugar for\nreaching the cycle value without naming it as an explicit\ninput declaration.",
             identity: None, variadic_ctor: None,

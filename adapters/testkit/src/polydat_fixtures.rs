@@ -355,6 +355,7 @@ pub fn signatures() -> &'static [FuncSig] {
     &[
         FuncSig {
             name: "throw_at", category: C::Diagnostic, outputs: 1,
+            output_port: Some(polydat::ast::PortType::U64),
             description: "TEST FIXTURE: identity-on-value, panics when value == threshold",
             help: "Pass-through identity on `value` for every cycle except when value equals threshold; in that case panics with a synthetic error tagged `errorname` so the workload's errors cascade can route the failure.\nThis is a test-only fixture function — no real workload should depend on its behavior.\nParameters:\n  value     — wire input (u64); the observed value\n  threshold — wire input (u64); the trip value\n  errorname — const string; error label for cascade matching\nExample: trip := throw_at(cycle, threshold, \"staircase\")",
             identity: None, variadic_ctor: None,
@@ -370,6 +371,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "side_effect_sequence_next_cycling", category: C::Diagnostic, outputs: 1,
+            output_port: Some(polydat::ast::PortType::U64),
             description: "TEST FIXTURE: per-session sequence stepper with auto-loop",
             help: "Advances a hidden state file once per session and returns the picked value. After the last value is consumed the state file is deleted; the next session starts fresh from index 0.\nThe path is composed via the standard Polydat string-template form, so {tmp_dir()}/{session_id()} idioms work without any new syntax.\nParameters:\n  statefile_path — const string; path to the state file\n  csv_values     — const string; comma-separated u64 sequence\nExample: t := side_effect_sequence_next_cycling(\"{tmp_dir()}/{session_id()}_seq\", \"10,51,101\")",
             identity: None, variadic_ctor: None,
@@ -384,6 +386,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "side_effect_sequence_next_noncycling", category: C::Diagnostic, outputs: 1,
+            output_port: Some(polydat::ast::PortType::U64),
             description: "TEST FIXTURE: per-session sequence stepper, hard-error on exhaustion",
             help: "Same per-session advance behavior as the _cycling variant, but after the last value is consumed the next session-init fails with a clear error. Forces operator intervention via side_effect_sequence_reset(...).\nParameters: same as _cycling.\nExample: t := side_effect_sequence_next_noncycling(\"/tmp/seq.txt\", \"10,51,101\")",
             identity: None, variadic_ctor: None,
@@ -398,6 +401,7 @@ pub fn signatures() -> &'static [FuncSig] {
         },
         FuncSig {
             name: "side_effect_sequence_reset", category: C::Diagnostic, outputs: 1,
+            output_port: Some(polydat::ast::PortType::U64),
             description: "TEST FIXTURE: delete a sequence state file (re-arm)",
             help: "Deletes the named state file at session-init so the next side_effect_sequence_next_* call starts fresh from index 0. No-op if the file doesn't exist.\nReturns 0 (sentinel); consumers shouldn't read the value.\nParameters:\n  statefile_path — const string; path to the state file\nExample: _ := side_effect_sequence_reset(\"/tmp/seq.txt\")",
             identity: None, variadic_ctor: None,

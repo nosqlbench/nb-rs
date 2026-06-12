@@ -76,6 +76,7 @@ pub fn cql_signatures() -> &'static [FuncSig] {
     SIGS.get_or_init(|| {
         vec![FuncSig {
             name: "cql_timeuuid",
+            output_port: Some(polydat::ast::PortType::Str),
             category: FuncCategory::RealData,
             outputs: 1,
             description: "deterministic CQL timeuuid from seed",

@@ -1089,6 +1089,36 @@ impl PortType {
         }
     }
 
+    /// Slot color in compiled (P2/P3/hybrid) kernel buffers —
+    /// axiom S1 (`jit_boundary.md` §"Slot-state axioms"). The
+    /// single chokepoint: width and every layout/codegen/guard
+    /// decision derive from this, never restate it.
+    pub fn slot_color(&self) -> SlotColor {
+        match self {
+            // 128-bit immediates: two slots of limb DATA —
+            // register words and 128-bit integers are values,
+            // never addresses.
+            Self::U128 | Self::I128 => SlotColor::Imm2,
+            // Heap slices: a (ptr, len) reference pair viewing
+            // kernel-owned scratch (§8.4 layer 3).
+            Self::VecF32 | Self::VecI32 | Self::VecF64
+            | Self::VecI64 | Self::VecF16 | Self::VecI16
+            | Self::VecI8 => SlotColor::Ref2,
+            // Everything else (incl. all narrow widths riding
+            // their 64-bit carriers): one slot of immediate data.
+            _ => SlotColor::Imm1,
+        }
+    }
+
+    /// Buffer slots this type occupies — derived from
+    /// [`Self::slot_color`] per axiom S1.
+    pub fn slot_width(&self) -> usize {
+        match self.slot_color() {
+            SlotColor::Imm1 => 1,
+            SlotColor::Imm2 | SlotColor::Ref2 => 2,
+        }
+    }
+
     /// Workload-author-facing parser for the `{name:<keyword>}`
     /// lvalue-spec surface. Strict subset of [`Self::from_keyword`]
     /// — `handle`, `ext`, and `none` are rejected because they're
@@ -1471,6 +1501,97 @@ impl NodeMeta {
 /// buffer — no `Value` enum, no virtual dispatch.
 pub type CompiledU64Op = Box<dyn Fn(&[u64], &mut [u64]) + Send + Sync>;
 
+/// Element type of one kernel-owned scratch buffer
+/// (type_system_alignment.md §8.4 layer 3). One entry per
+/// vector-producing output port of a slot-compiled node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScratchElem {
+    F32,
+    F64,
+    F16,
+    I8,
+    I16,
+    I32,
+    I64,
+}
+
+/// Slot color of a `PortType` in compiled kernel buffers —
+/// axiom S1: static, total, three-valued. `Imm*` slots carry
+/// immediate data only (never addresses); `Ref2` pairs carry a
+/// `(ptr, len)` reference into kernel-owned scratch and are
+/// engine-internal per axiom S2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotColor {
+    /// One slot of immediate data.
+    Imm1,
+    /// Two slots of immediate limb data (128-bit values).
+    Imm2,
+    /// Two slots holding a (ptr, len) reference pair.
+    Ref2,
+}
+
+/// One kernel-owned scratch buffer. A vector-producing port's
+/// `(ptr, len)` buffer slots view its scratch — the kernel owns
+/// the allocation, so the pointer is valid exactly as long as the
+/// producing step doesn't rerun (and a rerun rewrites the slots
+/// before any consumer reads them). No Arc traffic, no per-cycle
+/// allocation after warmup.
+#[derive(Debug)]
+pub enum ScratchBuf {
+    F32(Vec<f32>),
+    F64(Vec<f64>),
+    F16(Vec<half::f16>),
+    I8(Vec<i8>),
+    I16(Vec<i16>),
+    I32(Vec<i32>),
+    I64(Vec<i64>),
+}
+
+impl ScratchBuf {
+    /// The `(ptr, len)` pair this entry currently publishes —
+    /// the ground truth axiom S9(a)'s validator compares buffer
+    /// slots against.
+    pub fn ptr_len(&self) -> (u64, u64) {
+        match self {
+            ScratchBuf::F32(v) => (v.as_ptr() as usize as u64, v.len() as u64),
+            ScratchBuf::F64(v) => (v.as_ptr() as usize as u64, v.len() as u64),
+            ScratchBuf::F16(v) => (v.as_ptr() as usize as u64, v.len() as u64),
+            ScratchBuf::I8(v) => (v.as_ptr() as usize as u64, v.len() as u64),
+            ScratchBuf::I16(v) => (v.as_ptr() as usize as u64, v.len() as u64),
+            ScratchBuf::I32(v) => (v.as_ptr() as usize as u64, v.len() as u64),
+            ScratchBuf::I64(v) => (v.as_ptr() as usize as u64, v.len() as u64),
+        }
+    }
+
+    pub fn new(elem: ScratchElem) -> Self {
+        match elem {
+            ScratchElem::F32 => ScratchBuf::F32(Vec::new()),
+            ScratchElem::F64 => ScratchBuf::F64(Vec::new()),
+            ScratchElem::F16 => ScratchBuf::F16(Vec::new()),
+            ScratchElem::I8 => ScratchBuf::I8(Vec::new()),
+            ScratchElem::I16 => ScratchBuf::I16(Vec::new()),
+            ScratchElem::I32 => ScratchBuf::I32(Vec::new()),
+            ScratchElem::I64 => ScratchBuf::I64(Vec::new()),
+        }
+    }
+}
+
+/// Compiled closure for a node with typed-slice ports (§8.4
+/// layer 3). Same calling shape as [`CompiledU64Op`] plus the
+/// step's scratch buffers: slice inputs arrive as `(ptr, len)`
+/// slot pairs in `inputs`; vector outputs are written into
+/// scratch and their `(ptr, len)` into `outputs`.
+pub type CompiledSlotOp =
+    Box<dyn Fn(&[u64], &mut [u64], &mut [ScratchBuf]) + Send + Sync>;
+
+/// A slot-compiled node's closure plus its scratch declaration
+/// (one [`ScratchElem`] per vector-producing output, in port
+/// order). Returned by [`PolydatNode::compiled_slot`].
+pub struct CompiledSlotKit {
+    pub op: CompiledSlotOp,
+    pub scratch: Vec<ScratchElem>,
+}
+
 /// Per-node purity classification per
 /// [`runtime_model.md`'s D2 axiom][spec] and
 /// [`composition_substrate.md`'s T1+T2 axioms][substrate].
@@ -1607,6 +1728,16 @@ pub trait PolydatNode: Send + Sync {
     /// Return `None` if the node has non-u64 ports or cannot be
     /// compiled. The assembly phase will fall back to Phase 1.
     fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        None
+    }
+
+    /// Return a slot-compiled closure for nodes with typed-slice
+    /// ports (§8.4 layer 3): slice inputs read `(ptr, len)` slot
+    /// pairs; vector outputs write into kernel-owned scratch.
+    /// Checked by the compiled-kernel builders AFTER
+    /// [`Self::compiled_u64`] — pure-scalar nodes never need it.
+    /// Default `None`: the node stays on typed eval.
+    fn compiled_slot(&self) -> Option<CompiledSlotKit> {
         None
     }
 

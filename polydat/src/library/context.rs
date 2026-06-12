@@ -260,6 +260,9 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
+            // Hand registration: no static return-port declaration;
+            // type inference falls back to the name heuristic.
+            output_port: None,
         },
     ]
 }
