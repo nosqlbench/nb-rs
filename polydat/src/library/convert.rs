@@ -452,12 +452,18 @@ mod tests {
     fn i32_to_i64_sign_extends() {
         let node = I32ToI64::new();
         let mut out = [Value::None];
-        // Positive value
+        // Positive value (legacy bit-stuffed input form — the
+        // lenient Wire<i32> extract must keep accepting it during
+        // the honest-I64 migration).
         node.eval(&[Value::U64(42)], &mut out);
-        assert_eq!(out[0].as_u64(), 42);
-        // Negative i32 (-1 as u32 = 0xFFFFFFFF)
+        assert_eq!(out[0], Value::I64(42));
+        // Negative i32, legacy stuffed (-1 as u32 = 0xFFFFFFFF):
+        // sign-extension must survive the lenient extract.
         node.eval(&[Value::U64(0xFFFF_FFFF)], &mut out);
-        assert_eq!(out[0].as_u64(), (-1i64) as u64);
+        assert_eq!(out[0], Value::I64(-1));
+        // Honest signed carrier input round-trips unchanged.
+        node.eval(&[Value::I64(-1)], &mut out);
+        assert_eq!(out[0], Value::I64(-1));
     }
 
     #[test]

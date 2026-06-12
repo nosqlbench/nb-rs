@@ -106,16 +106,69 @@ impl Wire for u32 {
 
 impl Wire for i32 {
     const PORT: PortType = PortType::I32;
-    const JIT: Option<JitType> = Some(JitType::U64);
-    fn extract(v: &Value) -> Self { v.as_u64() as i32 }
-    fn inject(self) -> Value { Value::U64(self as u64) }
+    const JIT: Option<JitType> = Some(JitType::I64);
+    // Lenient extract: honest `Value::I64` (sign-extended I32
+    // storage convention) plus the legacy bit-stuffed `Value::U64`
+    // form during the alignment migration — same precedent as
+    // `Wire<bool>` accepting `U64(n != 0)`.
+    fn extract(v: &Value) -> Self { v.as_i64() as i32 }
+    fn inject(self) -> Value { Value::I64(self as i64) }
 }
 
 impl Wire for i64 {
     const PORT: PortType = PortType::I64;
+    const JIT: Option<JitType> = Some(JitType::I64);
+    // Lenient extract: see `Wire<i32>` note above.
+    fn extract(v: &Value) -> Self { v.as_i64() }
+    fn inject(self) -> Value { Value::I64(self) }
+}
+
+impl Wire for u8 {
+    const PORT: PortType = PortType::U8;
     const JIT: Option<JitType> = Some(JitType::U64);
-    fn extract(v: &Value) -> Self { v.as_u64() as i64 }
+    fn extract(v: &Value) -> Self { v.as_u64() as u8 }
     fn inject(self) -> Value { Value::U64(self as u64) }
+}
+
+impl Wire for u16 {
+    const PORT: PortType = PortType::U16;
+    const JIT: Option<JitType> = Some(JitType::U64);
+    fn extract(v: &Value) -> Self { v.as_u64() as u16 }
+    fn inject(self) -> Value { Value::U64(self as u64) }
+}
+
+impl Wire for i8 {
+    const PORT: PortType = PortType::I8;
+    const JIT: Option<JitType> = Some(JitType::I64);
+    // Lenient extract through as_i64 (honest I64 or legacy
+    // stuffed U64), narrowed by truncation — sign survives
+    // because the storage convention is sign-extension.
+    fn extract(v: &Value) -> Self { v.as_i64() as i8 }
+    fn inject(self) -> Value { Value::I64(self as i64) }
+}
+
+impl Wire for i16 {
+    const PORT: PortType = PortType::I16;
+    const JIT: Option<JitType> = Some(JitType::I64);
+    fn extract(v: &Value) -> Self { v.as_i64() as i16 }
+    fn inject(self) -> Value { Value::I64(self as i64) }
+}
+
+impl Wire for u128 {
+    const PORT: PortType = PortType::U128;
+    // Interpreter-only: a 128-bit value cannot ride the one-u64
+    // JIT slot; the two-slot ABI is a Phase-5 concern
+    // (type_system_alignment.md §8.1).
+    const JIT: Option<JitType> = None;
+    fn extract(v: &Value) -> Self { v.as_u128() }
+    fn inject(self) -> Value { Value::U128(crate::ast::Bits128::from_u128(self)) }
+}
+
+impl Wire for i128 {
+    const PORT: PortType = PortType::I128;
+    const JIT: Option<JitType> = None;
+    fn extract(v: &Value) -> Self { v.as_i128() }
+    fn inject(self) -> Value { Value::I128(crate::ast::Bits128::from_i128(self)) }
 }
 
 impl Wire for f64 {
@@ -129,6 +182,15 @@ impl Wire for f32 {
     const PORT: PortType = PortType::F32;
     const JIT: Option<JitType> = Some(JitType::U64);
     fn extract(v: &Value) -> Self { f32::from_bits(v.as_u64() as u32) }
+    fn inject(self) -> Value { Value::U64(self.to_bits() as u64) }
+}
+
+impl Wire for half::f16 {
+    const PORT: PortType = PortType::F16;
+    const JIT: Option<JitType> = Some(JitType::U64);
+    // Same bit-stuffing convention as f32: the binary16 pattern
+    // rides the low 16 bits of the u64 carrier.
+    fn extract(v: &Value) -> Self { half::f16::from_bits(v.as_u64() as u16) }
     fn inject(self) -> Value { Value::U64(self.to_bits() as u64) }
 }
 
@@ -307,6 +369,7 @@ impl_wire_vec!(f64, VecF64, VecF64);
 impl_wire_vec!(i64, VecI64, VecI64);
 impl_wire_vec!(half::f16, VecF16, VecF16);
 impl_wire_vec!(i16, VecI16, VecI16);
+impl_wire_vec!(i8, VecI8, VecI8);
 
 // ── Phase C combinators ────────────────────────────────────────
 

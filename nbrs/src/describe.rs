@@ -652,6 +652,13 @@ fn port_type_label(t: polydat::ast::PortType) -> &'static str {
         PortType::I32 => "i32",
         PortType::I64 => "i64",
         PortType::F32 => "f32",
+        PortType::U8 => "u8",
+        PortType::I8 => "i8",
+        PortType::U16 => "u16",
+        PortType::I16 => "i16",
+        PortType::F16 => "f16",
+        PortType::U128 => "u128",
+        PortType::I128 => "i128",
         PortType::Bool => "bool",
         PortType::Str => "str",
         PortType::Bytes => "bytes",
@@ -664,6 +671,7 @@ fn port_type_label(t: polydat::ast::PortType) -> &'static str {
         PortType::VecI64 => "vec<i64>",
         PortType::VecF16 => "vec<f16>",
         PortType::VecI16 => "vec<i16>",
+        PortType::VecI8 => "vec<i8>",
     }
 }
 

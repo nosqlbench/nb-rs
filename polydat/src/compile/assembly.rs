@@ -1366,6 +1366,8 @@ pub fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn PolydatNode>
         F32ToF64, F32ToString,
     };
     use crate::library::polyfill as P;
+    use crate::library::polyfill_narrow as N;
+    use crate::library::polyfill_128 as W;
     match (from, to) {
         // ── Numeric widening (lossless) ─────────────────────────
         (PortType::U64, PortType::F64) => Some(Box::new(U64ToF64::new())),
@@ -1424,6 +1426,67 @@ pub fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn PolydatNode>
         // ── Vec ↔ Vec (VecI32 → VecF32 is lossless) ─────────────
         (PortType::VecI32, PortType::VecF32) => Some(Box::new(P::VecI32ToVecF32::new())),
 
+        // ── Narrow cranelift widths (u8/i8/u16/i16/f16) ─────────
+        // Lossless widenings + Display renders + Bool maps + LE
+        // byte / JSON wraps, mirroring the u32/i32/f32 rows.
+        // (type_system_alignment.md §8.1)
+        (PortType::U8, PortType::U64)  => Some(Box::new(N::U8ToU64::new())),
+        (PortType::U8, PortType::U32)  => Some(Box::new(N::U8ToU32::new())),
+        (PortType::U8, PortType::U16)  => Some(Box::new(N::U8ToU16::new())),
+        (PortType::U8, PortType::F64)  => Some(Box::new(N::U8ToF64::new())),
+        (PortType::U16, PortType::U64) => Some(Box::new(N::U16ToU64::new())),
+        (PortType::U16, PortType::U32) => Some(Box::new(N::U16ToU32::new())),
+        (PortType::U16, PortType::F64) => Some(Box::new(N::U16ToF64::new())),
+        (PortType::I8, PortType::I64)  => Some(Box::new(N::I8ToI64::new())),
+        (PortType::I8, PortType::I32)  => Some(Box::new(N::I8ToI32::new())),
+        (PortType::I8, PortType::I16)  => Some(Box::new(N::I8ToI16::new())),
+        (PortType::I8, PortType::F64)  => Some(Box::new(N::I8ToF64::new())),
+        (PortType::I16, PortType::I64) => Some(Box::new(N::I16ToI64::new())),
+        (PortType::I16, PortType::I32) => Some(Box::new(N::I16ToI32::new())),
+        (PortType::I16, PortType::F64) => Some(Box::new(N::I16ToF64::new())),
+        (PortType::F16, PortType::F32) => Some(Box::new(N::F16ToF32::new())),
+        (PortType::F16, PortType::F64) => Some(Box::new(N::F16ToF64::new())),
+        (PortType::U8, PortType::Str)  => Some(Box::new(N::U8ToString::new())),
+        (PortType::U16, PortType::Str) => Some(Box::new(N::U16ToString::new())),
+        (PortType::I8, PortType::Str)  => Some(Box::new(N::I8ToString::new())),
+        (PortType::I16, PortType::Str) => Some(Box::new(N::I16ToString::new())),
+        (PortType::F16, PortType::Str) => Some(Box::new(N::F16ToString::new())),
+        (PortType::Bool, PortType::U8)  => Some(Box::new(N::BoolToU8::new())),
+        (PortType::Bool, PortType::U16) => Some(Box::new(N::BoolToU16::new())),
+        (PortType::Bool, PortType::I8)  => Some(Box::new(N::BoolToI8::new())),
+        (PortType::Bool, PortType::I16) => Some(Box::new(N::BoolToI16::new())),
+        (PortType::Bool, PortType::F16) => Some(Box::new(N::BoolToF16::new())),
+        (PortType::U8, PortType::Bool)  => Some(Box::new(N::U8ToBool::new())),
+        (PortType::U16, PortType::Bool) => Some(Box::new(N::U16ToBool::new())),
+        (PortType::I8, PortType::Bool)  => Some(Box::new(N::I8ToBool::new())),
+        (PortType::I16, PortType::Bool) => Some(Box::new(N::I16ToBool::new())),
+        (PortType::F16, PortType::Bool) => Some(Box::new(N::F16ToBool::new())),
+        (PortType::U8, PortType::Bytes)  => Some(Box::new(N::U8ToBytes::new())),
+        (PortType::U16, PortType::Bytes) => Some(Box::new(N::U16ToBytes::new())),
+        (PortType::I8, PortType::Bytes)  => Some(Box::new(N::I8ToBytes::new())),
+        (PortType::I16, PortType::Bytes) => Some(Box::new(N::I16ToBytes::new())),
+        (PortType::F16, PortType::Bytes) => Some(Box::new(N::F16ToBytes::new())),
+        (PortType::U8, PortType::Json)  => Some(Box::new(N::U8ToJson::new())),
+        (PortType::U16, PortType::Json) => Some(Box::new(N::U16ToJson::new())),
+        (PortType::I8, PortType::Json)  => Some(Box::new(N::I8ToJson::new())),
+        (PortType::I16, PortType::Json) => Some(Box::new(N::I16ToJson::new())),
+
+        // ── 128-bit integers (cranelift I128) ───────────────────
+        // Widenings from the 64-bit carriers, Display renders,
+        // LE byte / decimal-string JSON wraps. → f64 mirrors
+        // u64→f64's class-A treatment (defined for every input).
+        (PortType::U64, PortType::U128) => Some(Box::new(W::U64ToU128::new())),
+        (PortType::U64, PortType::I128) => Some(Box::new(W::U64ToI128::new())),
+        (PortType::I64, PortType::I128) => Some(Box::new(W::I64ToI128::new())),
+        (PortType::U128, PortType::F64) => Some(Box::new(W::U128ToF64::new())),
+        (PortType::I128, PortType::F64) => Some(Box::new(W::I128ToF64::new())),
+        (PortType::U128, PortType::Str) => Some(Box::new(W::U128ToString::new())),
+        (PortType::I128, PortType::Str) => Some(Box::new(W::I128ToString::new())),
+        (PortType::U128, PortType::Bytes) => Some(Box::new(W::U128ToBytes::new())),
+        (PortType::I128, PortType::Bytes) => Some(Box::new(W::I128ToBytes::new())),
+        (PortType::U128, PortType::Json) => Some(Box::new(W::U128ToJson::new())),
+        (PortType::I128, PortType::Json) => Some(Box::new(W::I128ToJson::new())),
+
         _ => None,
     }
 }
@@ -1463,6 +1526,8 @@ pub fn boundary_adapter(from: PortType, to: PortType) -> Option<Box<dyn PolydatN
     }
     use crate::library::convert::{StrToBool, StrToU64, StrToF64};
     use crate::library::polyfill as P;
+    use crate::library::polyfill_narrow as N;
+    use crate::library::polyfill_128 as W;
     match (from, to) {
         // ── Numeric narrowings + non-widening casts ─────────────
         (PortType::U64, PortType::U32) => Some(Box::new(P::U64ToU32::new())),
@@ -1534,6 +1599,62 @@ pub fn boundary_adapter(from: PortType, to: PortType) -> Option<Box<dyn PolydatN
 
         // ── Vec ↔ Vec (lossy round) ─────────────────────────────
         (PortType::VecF32, PortType::VecI32) => Some(Box::new(P::VecF32ToVecI32::new())),
+
+        // ── Narrow cranelift widths (u8/i8/u16/i16/f16) ─────────
+        // Range-checked narrowings + parsers + shape-checked
+        // extractors, mirroring the u32/i32/f32 rows.
+        (PortType::U64, PortType::U8)  => Some(Box::new(N::U64ToU8::new())),
+        (PortType::U32, PortType::U8)  => Some(Box::new(N::U32ToU8::new())),
+        (PortType::U16, PortType::U8)  => Some(Box::new(N::U16ToU8::new())),
+        (PortType::I64, PortType::U8)  => Some(Box::new(N::I64ToU8::new())),
+        (PortType::F64, PortType::U8)  => Some(Box::new(N::F64ToU8::new())),
+        (PortType::U64, PortType::U16) => Some(Box::new(N::U64ToU16::new())),
+        (PortType::U32, PortType::U16) => Some(Box::new(N::U32ToU16::new())),
+        (PortType::I64, PortType::U16) => Some(Box::new(N::I64ToU16::new())),
+        (PortType::F64, PortType::U16) => Some(Box::new(N::F64ToU16::new())),
+        (PortType::I64, PortType::I8)  => Some(Box::new(N::I64ToI8::new())),
+        (PortType::I32, PortType::I8)  => Some(Box::new(N::I32ToI8::new())),
+        (PortType::U64, PortType::I8)  => Some(Box::new(N::U64ToI8::new())),
+        (PortType::F64, PortType::I8)  => Some(Box::new(N::F64ToI8::new())),
+        (PortType::I64, PortType::I16) => Some(Box::new(N::I64ToI16::new())),
+        (PortType::I32, PortType::I16) => Some(Box::new(N::I32ToI16::new())),
+        (PortType::U64, PortType::I16) => Some(Box::new(N::U64ToI16::new())),
+        (PortType::F64, PortType::I16) => Some(Box::new(N::F64ToI16::new())),
+        (PortType::F64, PortType::F16) => Some(Box::new(N::F64ToF16::new())),
+        (PortType::F32, PortType::F16) => Some(Box::new(N::F32ToF16::new())),
+        (PortType::U64, PortType::F16) => Some(Box::new(N::U64ToF16::new())),
+        (PortType::Str, PortType::U8)  => Some(Box::new(N::StrToU8::new())),
+        (PortType::Str, PortType::U16) => Some(Box::new(N::StrToU16::new())),
+        (PortType::Str, PortType::I8)  => Some(Box::new(N::StrToI8::new())),
+        (PortType::Str, PortType::I16) => Some(Box::new(N::StrToI16::new())),
+        (PortType::Str, PortType::F16) => Some(Box::new(N::StrToF16::new())),
+        (PortType::Bytes, PortType::U8)  => Some(Box::new(N::BytesToU8::new())),
+        (PortType::Bytes, PortType::U16) => Some(Box::new(N::BytesToU16::new())),
+        (PortType::Bytes, PortType::I8)  => Some(Box::new(N::BytesToI8::new())),
+        (PortType::Bytes, PortType::I16) => Some(Box::new(N::BytesToI16::new())),
+        (PortType::Bytes, PortType::F16) => Some(Box::new(N::BytesToF16::new())),
+        (PortType::Json, PortType::U8)  => Some(Box::new(N::JsonToU8::new())),
+        (PortType::Json, PortType::U16) => Some(Box::new(N::JsonToU16::new())),
+        (PortType::Json, PortType::I8)  => Some(Box::new(N::JsonToI8::new())),
+        (PortType::Json, PortType::I16) => Some(Box::new(N::JsonToI16::new())),
+        (PortType::Json, PortType::F16) => Some(Box::new(N::JsonToF16::new())),
+        // f16 → Json panics on non-finite (same as f32 → Json).
+        (PortType::F16, PortType::Json) => Some(Box::new(N::F16ToJson::new())),
+
+        // ── 128-bit integers (range-checked / parse / shape) ────
+        (PortType::U128, PortType::U64) => Some(Box::new(W::U128ToU64::new())),
+        (PortType::I128, PortType::I64) => Some(Box::new(W::I128ToI64::new())),
+        (PortType::I64, PortType::U128) => Some(Box::new(W::I64ToU128::new())),
+        (PortType::U128, PortType::I128) => Some(Box::new(W::U128ToI128::new())),
+        (PortType::I128, PortType::U128) => Some(Box::new(W::I128ToU128::new())),
+        (PortType::F64, PortType::U128) => Some(Box::new(W::F64ToU128::new())),
+        (PortType::F64, PortType::I128) => Some(Box::new(W::F64ToI128::new())),
+        (PortType::Str, PortType::U128) => Some(Box::new(W::StrToU128::new())),
+        (PortType::Str, PortType::I128) => Some(Box::new(W::StrToI128::new())),
+        (PortType::Bytes, PortType::U128) => Some(Box::new(W::BytesToU128::new())),
+        (PortType::Bytes, PortType::I128) => Some(Box::new(W::BytesToI128::new())),
+        (PortType::Json, PortType::U128) => Some(Box::new(W::JsonToU128::new())),
+        (PortType::Json, PortType::I128) => Some(Box::new(W::JsonToI128::new())),
 
         _ => None,
     }

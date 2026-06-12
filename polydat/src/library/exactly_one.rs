@@ -60,7 +60,8 @@ fn exactly_one_value(body: Value) -> String {
         // Already-scalar values pass through unchanged. They came
         // from a body projection that already collapsed the row ×
         // column structure.
-        Value::Str(_) | Value::Bool(_) | Value::U64(_) | Value::F64(_) => body.clone(),
+        Value::Str(_) | Value::Bool(_) | Value::U64(_) | Value::I64(_)
+        | Value::U128(_) | Value::I128(_) | Value::F64(_) => body.clone(),
 
         // Typed vector carriers: the structural shape is "1 row × 1
         // column" iff the slice has exactly one element.
@@ -82,7 +83,7 @@ fn exactly_one_value(body: Value) -> String {
                     arc.len()
                 );
             }
-            Value::U64(arc[0] as u64)
+            Value::I64(arc[0] as i64)
         }
         Value::VecF64(arc) => {
             if arc.len() != 1 {
@@ -102,7 +103,7 @@ fn exactly_one_value(body: Value) -> String {
                     arc.len()
                 );
             }
-            Value::U64(arc[0] as u64)
+            Value::I64(arc[0])
         }
         Value::VecF16(arc) => {
             if arc.len() != 1 {
@@ -122,7 +123,17 @@ fn exactly_one_value(body: Value) -> String {
                     arc.len()
                 );
             }
-            Value::U64(arc[0] as u64)
+            Value::I64(arc[0] as i64)
+        }
+        Value::VecI8(arc) => {
+            if arc.len() != 1 {
+                panic!(
+                    "exactly_one_value: expected unary structure \
+                     (1 row × 1 column), found vec_i8 of length {}",
+                    arc.len()
+                );
+            }
+            Value::I64(arc[0] as i64)
         }
 
         Value::None => panic!(
@@ -193,13 +204,19 @@ fn unwrap_unary_json(j: &serde_json::Value) -> Value {
     match leaf {
         J::String(s) => Value::Str(s.as_str().into()),
         J::Bool(b) => Value::Bool(*b),
+        // Total, lossless number extraction mirroring
+        // serde_json::Number's three leaves (PosInt / NegInt /
+        // Float) — a negative integer lands in the honest signed
+        // carrier instead of degrading to F64.
         J::Number(n) => {
             if let Some(u) = n.as_u64() {
                 Value::U64(u)
+            } else if let Some(i) = n.as_i64() {
+                Value::I64(i)
             } else if let Some(f) = n.as_f64() {
                 Value::F64(f)
             } else {
-                panic!("exactly_one_value: numeric leaf is not representable as u64 or f64: {n}")
+                panic!("exactly_one_value: numeric leaf is not representable as u64, i64, or f64: {n}")
             }
         }
         J::Null => panic!(

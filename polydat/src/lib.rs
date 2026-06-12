@@ -141,3 +141,9 @@ pub use polydat_derive::polydat_node;
 // site without users having to add `inventory` to their own
 // dependencies.
 pub use inventory;
+
+/// Re-exported for `#[polydat_node]`-generated Phase-2 buffer
+/// casts on `half::f16`-typed wires (the generated code spells
+/// `polydat::half::f16`, which `extern crate self as polydat`
+/// resolves inside this crate too).
+pub use half;

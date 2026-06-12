@@ -738,32 +738,75 @@ impl ConstShape {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JitType {
     U64,
+    I64,
     F64,
     Bool,
+    // Narrow widths (alignment §8.1): each rides the u64 slot per
+    // its Wire storage convention — unsigned zero-extended, signed
+    // sign-extended (through the i64 carrier), floats bit-stuffed.
+    // The variant carries enough width information for the buffer
+    // read/write tokens to emit the exact narrowing/widening casts.
+    U8,
+    U16,
+    U32,
+    I8,
+    I16,
+    I32,
+    F32,
+    F16,
 }
 
 impl JitType {
+    /// Buffer slots this carrier occupies (alignment §8.4
+    /// layer 1): 1 — everything rides a single u64.
+    fn width(self) -> usize {
+        1
+    }
+
     /// Tokens reading a typed value from the Phase-2 u64 buffer
-    /// at position `idx`. f64/bool are bit-reinterpreted from
+    /// at slot offset `idx` (the prefix sum of the widths of all
+    /// preceding wire args). f64/bool are bit-reinterpreted from
     /// the u64 carrier (the buffer-level convention shared with
     /// every existing hand-written `compiled_u64`).
     fn read_from_u64_buffer(self, idx: usize) -> TokenStream2 {
         let i = syn::Index::from(idx);
         match self {
             JitType::U64  => quote!(inputs[#i]),
+            JitType::I64  => quote!(inputs[#i] as i64),
             JitType::F64  => quote!(f64::from_bits(inputs[#i])),
             JitType::Bool => quote!(inputs[#i] != 0),
+            JitType::U8   => quote!(inputs[#i] as u8),
+            JitType::U16  => quote!(inputs[#i] as u16),
+            JitType::U32  => quote!(inputs[#i] as u32),
+            JitType::I8   => quote!((inputs[#i] as i64) as i8),
+            JitType::I16  => quote!((inputs[#i] as i64) as i16),
+            JitType::I32  => quote!((inputs[#i] as i64) as i32),
+            JitType::F32  => quote!(f32::from_bits(inputs[#i] as u32)),
+            JitType::F16  => quote!(polydat::half::f16::from_bits(inputs[#i] as u16)),
         }
     }
 
-    /// Tokens writing a typed value back into the Phase-2 u64
-    /// output buffer at `outputs[0]`. Inverse of the read.
-    fn write_to_u64_buffer(self, result: TokenStream2) -> TokenStream2 {
+    /// Tokens writing a typed value into the Phase-2 u64 output
+    /// buffer at slot offset `base`. Inverse of the read.
+    fn write_to_u64_buffer_at(self, base: usize, result: TokenStream2) -> TokenStream2 {
+        let o = syn::Index::from(base);
         match self {
-            JitType::U64  => quote!(outputs[0] = #result;),
-            JitType::F64  => quote!(outputs[0] = (#result).to_bits();),
-            JitType::Bool => quote!(outputs[0] = if #result { 1 } else { 0 };),
+            JitType::U64  => quote!(outputs[#o] = #result;),
+            JitType::I64  => quote!(outputs[#o] = (#result) as u64;),
+            JitType::F64  => quote!(outputs[#o] = (#result).to_bits();),
+            JitType::Bool => quote!(outputs[#o] = if #result { 1 } else { 0 };),
+            JitType::U8 | JitType::U16 | JitType::U32
+                => quote!(outputs[#o] = (#result) as u64;),
+            JitType::I8 | JitType::I16 | JitType::I32
+                => quote!(outputs[#o] = ((#result) as i64) as u64;),
+            JitType::F32  => quote!(outputs[#o] = (#result).to_bits() as u64;),
+            JitType::F16  => quote!(outputs[#o] = (#result).to_bits() as u64;),
         }
+    }
+
+    /// Single-return write at offset 0.
+    fn write_to_u64_buffer(self, result: TokenStream2) -> TokenStream2 {
+        self.write_to_u64_buffer_at(0, result)
     }
 
     /// Tokens encoding the captured Copy value of a const field
@@ -771,8 +814,15 @@ impl JitType {
     fn const_field_as_u64(self, field_ref: TokenStream2) -> TokenStream2 {
         match self {
             JitType::U64  => quote!(#field_ref),
+            JitType::I64  => quote!((#field_ref) as u64),
             JitType::F64  => quote!((#field_ref).to_bits()),
             JitType::Bool => quote!(if #field_ref { 1 } else { 0 }),
+            JitType::U8 | JitType::U16 | JitType::U32
+                => quote!((#field_ref) as u64),
+            JitType::I8 | JitType::I16 | JitType::I32
+                => quote!(((#field_ref) as i64) as u64),
+            JitType::F32 | JitType::F16
+                => quote!((#field_ref).to_bits() as u64),
         }
     }
 }
@@ -794,9 +844,27 @@ fn wire_type_to_jit_type(ty: &Type) -> Option<JitType> {
     let s = type_to_string(ty);
     match s.as_str() {
         "u64"  => Some(JitType::U64),
+        "i64"  => Some(JitType::I64),
         "f64"  => Some(JitType::F64),
         "bool" => Some(JitType::Bool),
-        _      => None,
+        "u8"   => Some(JitType::U8),
+        "u16"  => Some(JitType::U16),
+        "u32"  => Some(JitType::U32),
+        "i8"   => Some(JitType::I8),
+        "i16"  => Some(JitType::I16),
+        "i32"  => Some(JitType::I32),
+        "f32"  => Some(JitType::F32),
+        // type_to_string joins every token with a space
+        // (`half : : f16`, `[ f32 ; 4 ]`), so the path/array
+        // forms compare whitespace-stripped. The two-slot types
+        // ride limb pairs per alignment §8.4 layer 1.
+        _ => {
+            let flat: String = s.split_whitespace().collect();
+            match flat.as_str() {
+                "half::f16" | "f16" => Some(JitType::F16),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -1157,6 +1225,7 @@ fn is_borrow_wire_shape(ty: &Type) -> Option<BorrowWire> {
                     "i64" => ("VecI64", quote!(polydat::ast::PortType::VecI64)),
                     "f16" => ("VecF16", quote!(polydat::ast::PortType::VecF16)),
                     "i16" => ("VecI16", quote!(polydat::ast::PortType::VecI16)),
+                    "i8" => ("VecI8", quote!(polydat::ast::PortType::VecI8)),
                     _ => return None,
                 };
                 return Some(BorrowWire::Vec(variant, port_expr));
@@ -2728,7 +2797,7 @@ fn generate(
                 match &a.kind {
                     ArgKind::Wire => {
                         let read = jt.read_from_u64_buffer(wire_buf_idx);
-                        wire_buf_idx += 1;
+                        wire_buf_idx += jt.width();
                         quote!(let #n = #read;)
                     }
                     ArgKind::Const(_) => {
@@ -2758,18 +2827,15 @@ fn generate(
             let locals: Vec<Ident> = (0..tuple_jits.len())
                 .map(|i| format_ident!("__jit_r_{}", i))
                 .collect();
+            // Per-element write at the element's slot OFFSET (the
+            // prefix sum of preceding element widths — §8.4 L1).
+            let mut out_off = 0usize;
             let writes: Vec<TokenStream2> = tuple_jits.iter().enumerate()
                 .map(|(i, jt)| {
                     let local = &locals[i];
-                    // `write_to_u64_buffer` always emits `outputs[0] = ...`.
-                    // For multi-output we need `outputs[i] = ...`, so we
-                    // emit the per-JitType conversion directly here.
-                    let idx = syn::Index::from(i);
-                    match jt {
-                        JitType::U64 => quote!(outputs[#idx] = #local;),
-                        JitType::F64 => quote!(outputs[#idx] = #local.to_bits();),
-                        JitType::Bool => quote!(outputs[#idx] = if #local { 1 } else { 0 };),
-                    }
+                    let w = jt.write_to_u64_buffer_at(out_off, quote!(#local));
+                    out_off += jt.width();
+                    w
                 })
                 .collect();
             quote! {

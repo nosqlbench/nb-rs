@@ -877,28 +877,20 @@ mod tests {
     #[test]
     fn numeric_narrowings_happy_path() {
         check(&U64ToU32::new(), Value::U64(42), Value::U64(42));
-        check(&U64ToI64::new(), Value::U64(100), Value::U64(100));
-        check(&U64ToI32::new(), Value::U64(100), Value::U64(100));
+        check(&U64ToI64::new(), Value::U64(100), Value::I64(100));
+        check(&U64ToI32::new(), Value::U64(100), Value::I64(100));
         check(&U64ToF32::new(), Value::U64(7), f32_value(7.0));
-        check(&U32ToI32::new(), Value::U64(50), Value::U64(50));
+        check(&U32ToI32::new(), Value::U64(50), Value::I64(50));
         check(&U32ToF32::new(), Value::U64(3), f32_value(3.0));
-        check(&I64ToU64::new(), Value::U64(42_i64 as u64), Value::U64(42));
-        check(&I64ToU32::new(), Value::U64(42_i64 as u64), Value::U64(42));
-        check(
-            &I64ToI32::new(),
-            Value::U64(-100_i64 as u64),
-            Value::U64(-100_i32 as i64 as u64),
-        );
-        check(&I32ToU64::new(), Value::U64(7), Value::U64(7));
-        check(&I32ToU32::new(), Value::U64(7), Value::U64(7));
+        check(&I64ToU64::new(), Value::I64(42), Value::U64(42));
+        check(&I64ToU32::new(), Value::I64(42), Value::U64(42));
+        check(&I64ToI32::new(), Value::I64(-100), Value::I64(-100));
+        check(&I32ToU64::new(), Value::I64(7), Value::U64(7));
+        check(&I32ToU32::new(), Value::I64(7), Value::U64(7));
         check(&F64ToF32::new(), Value::F64(1.5), f32_value(1.5));
         check(&F64ToU32::new(), Value::F64(42.7), Value::U64(42));
-        check(&F64ToI64::new(), Value::F64(-5.9), Value::U64(-5_i64 as u64));
-        check(
-            &F64ToI32::new(),
-            Value::F64(-5.9),
-            Value::U64(-5_i32 as i64 as u64),
-        );
+        check(&F64ToI64::new(), Value::F64(-5.9), Value::I64(-5));
+        check(&F64ToI32::new(), Value::F64(-5.9), Value::I64(-5));
     }
 
     #[test]
@@ -915,12 +907,12 @@ mod tests {
         );
         check_panics(
             &I64ToU64::new(),
-            Value::U64(-1_i64 as u64),
+            Value::I64(-1),
             "negative",
         );
         check_panics(
             &I64ToI32::new(),
-            Value::U64(i64::MAX as u64),
+            Value::I64(i64::MAX),
             "out of i32 range",
         );
         check_panics(
@@ -947,18 +939,14 @@ mod tests {
     #[test]
     fn bool_to_numerics_round_trip() {
         check(&BoolToU32::new(), Value::Bool(true), Value::U64(1));
-        check(&BoolToI64::new(), Value::Bool(false), Value::U64(0));
-        check(&BoolToI32::new(), Value::Bool(true), Value::U64(1));
+        check(&BoolToI64::new(), Value::Bool(false), Value::I64(0));
+        check(&BoolToI32::new(), Value::Bool(true), Value::I64(1));
         check(&BoolToF64::new(), Value::Bool(true), Value::F64(1.0));
         check(&BoolToF32::new(), Value::Bool(false), f32_value(0.0));
         check(&U32ToBool::new(), Value::U64(7), Value::Bool(true));
         check(&U32ToBool::new(), Value::U64(0), Value::Bool(false));
-        check(
-            &I64ToBool::new(),
-            Value::U64(-1_i64 as u64),
-            Value::Bool(true),
-        );
-        check(&I32ToBool::new(), Value::U64(0), Value::Bool(false));
+        check(&I64ToBool::new(), Value::I64(-1), Value::Bool(true));
+        check(&I32ToBool::new(), Value::I64(0), Value::Bool(false));
         check(&F64ToBool::new(), Value::F64(0.1), Value::Bool(true));
         check(&F64ToBool::new(), Value::F64(0.0), Value::Bool(false));
         check(&F64ToBool::new(), Value::F64(f64::NAN), Value::Bool(false));
@@ -979,12 +967,12 @@ mod tests {
         check(
             &StrToI64::new(),
             Value::Str("-100".into()),
-            Value::U64(-100_i64 as u64),
+            Value::I64(-100),
         );
         check(
             &StrToI32::new(),
             Value::Str("-7".into()),
-            Value::U64(-7_i32 as i64 as u64),
+            Value::I64(-7),
         );
         check(
             &StrToF32::new(),

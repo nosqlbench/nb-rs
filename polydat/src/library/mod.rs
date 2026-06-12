@@ -23,6 +23,8 @@ pub mod bitwise;
 pub mod identity;
 pub mod convert;
 pub mod polyfill;
+pub mod polyfill_narrow;
+pub mod polyfill_128;
 pub mod fixed;
 pub mod string;
 pub mod datetime;

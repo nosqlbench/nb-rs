@@ -167,9 +167,13 @@ pub fn iteration_interior(v: &crate::ast::Value) -> Option<Vec<crate::ast::Value
         Value::VecF32(s) => Some(s.as_slice().iter().map(|x| Value::F64(*x as f64)).collect()),
         Value::VecF64(s) => Some(s.as_slice().iter().map(|x| Value::F64(*x)).collect()),
         Value::VecF16(s) => Some(s.as_slice().iter().map(|x| Value::F64(x.to_f64())).collect()),
-        Value::VecI32(s) => Some(s.as_slice().iter().map(|x| Value::U64(*x as u64)).collect()),
-        Value::VecI64(s) => Some(s.as_slice().iter().map(|x| Value::U64(*x as u64)).collect()),
-        Value::VecI16(s) => Some(s.as_slice().iter().map(|x| Value::U64(*x as u64)).collect()),
+        // Signed lanes peel to the honest signed carrier — a
+        // VecI64 holding -5 iterates as I64(-5), not the unsigned
+        // bit-reinterpretation (type_system_alignment.md §5).
+        Value::VecI32(s) => Some(s.as_slice().iter().map(|x| Value::I64(*x as i64)).collect()),
+        Value::VecI64(s) => Some(s.as_slice().iter().map(|x| Value::I64(*x)).collect()),
+        Value::VecI16(s) => Some(s.as_slice().iter().map(|x| Value::I64(*x as i64)).collect()),
+        Value::VecI8(s) => Some(s.as_slice().iter().map(|x| Value::I64(*x as i64)).collect()),
         // A JSON array peels to its elements (each carried as a
         // Json value); a non-array JSON is an iteration scalar.
         Value::Json(j) => j.as_array().map(|arr| {
@@ -183,7 +187,8 @@ pub fn iteration_interior(v: &crate::ast::Value) -> Option<Vec<crate::ast::Value
         // A string's interior is its comprehension tokens.
         Value::Str(s) => Some(strip_string_tokens(s)),
         // Iteration scalars — relaxed wraps, `[v…]` errors.
-        Value::U64(_) | Value::F64(_) | Value::Bool(_)
+        Value::U64(_) | Value::I64(_) | Value::U128(_) | Value::I128(_)
+        | Value::F64(_) | Value::Bool(_)
         | Value::Bytes(_) | Value::Handle(_) | Value::None => None,
     }
 }
@@ -273,7 +278,17 @@ mod tests {
     fn iteration_interior_vector_peels_to_elements() {
         let v = Value::VecI32(crate::ast::SliceArc::from_vec(vec![10, 20, 30]));
         assert_eq!(iteration_interior(&v),
-            Some(vec![Value::U64(10), Value::U64(20), Value::U64(30)]));
+            Some(vec![Value::I64(10), Value::I64(20), Value::I64(30)]));
+    }
+
+    #[test]
+    fn iteration_interior_signed_vector_peels_signed() {
+        // The honest-I64 alignment fix: negative lane elements
+        // iterate as their signed values, not the unsigned
+        // bit-reinterpretation (type_system_alignment.md §5).
+        let v = Value::VecI64(crate::ast::SliceArc::from_vec(vec![-5_i64, 7]));
+        assert_eq!(iteration_interior(&v),
+            Some(vec![Value::I64(-5), Value::I64(7)]));
     }
 
     #[test]

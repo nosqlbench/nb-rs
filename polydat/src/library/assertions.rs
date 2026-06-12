@@ -61,6 +61,13 @@ impl AssertType {
             PortType::I32 => "assert_i32",
             PortType::I64 => "assert_i64",
             PortType::F32 => "assert_f32",
+            PortType::U8 => "assert_u8",
+            PortType::I8 => "assert_i8",
+            PortType::U16 => "assert_u16",
+            PortType::I16 => "assert_i16",
+            PortType::F16 => "assert_f16",
+            PortType::U128 => "assert_u128",
+            PortType::I128 => "assert_i128",
             PortType::Ext => "assert_ext",
             PortType::Handle => "assert_handle",
             PortType::VecF32 => "assert_vec_f32",
@@ -69,6 +76,7 @@ impl AssertType {
             PortType::VecI64 => "assert_vec_i64",
             PortType::VecF16 => "assert_vec_f16",
             PortType::VecI16 => "assert_vec_i16",
+            PortType::VecI8 => "assert_vec_i8",
         };
         Self {
             meta: NodeMeta {
@@ -117,6 +125,18 @@ fn value_matches(v: &Value, typ: PortType) -> bool {
         (Value::U64(_), PortType::I32) => true,
         (Value::U64(_), PortType::I64) => true,
         (Value::F64(_), PortType::F32) => true,
+        (Value::U64(_), PortType::U8 | PortType::U16) => true,
+        // F16 rides its bit pattern in U64 (same stuffing as F32
+        // node outputs); host-written F64 also satisfies F16.
+        (Value::U64(_), PortType::F16) => true,
+        (Value::F64(_), PortType::F16) => true,
+        // Honest signed carrier serves all signed widths; legacy
+        // stuffed-U64 forms for the narrow signed projections
+        // remain accepted during the alignment migration.
+        (Value::I64(_), PortType::I64 | PortType::I32 | PortType::I8 | PortType::I16) => true,
+        (Value::U64(_), PortType::I8 | PortType::I16) => true,
+        (Value::U128(_), PortType::U128) => true,
+        (Value::I128(_), PortType::I128) => true,
         // Ext is opaque; we accept any concrete reflection.
         (Value::Ext(_), PortType::Ext) => true,
         _ => false,

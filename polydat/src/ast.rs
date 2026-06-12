@@ -177,12 +177,71 @@ impl<T: fmt::Debug + 'static> fmt::Debug for SliceArc<T> {
 /// knowing the concrete type. Any consumer can display, serialize,
 /// or inspect an Ext value via [`ReflectedValue`]. The producing
 /// adapter can downcast via `as_any()`.
+/// Two-limb carrier for 128-bit integers inside [`Value`].
+///
+/// Limbs are little-endian (`[lo, hi]`). Using `[u64; 2]` instead
+/// of a raw `u128`/`i128` field keeps `Value`'s alignment at 8 and
+/// its size inside the 40-byte buffer-slot envelope; reassembly is
+/// two register moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Bits128(pub [u64; 2]);
+
+impl Bits128 {
+    #[inline]
+    pub fn from_u128(v: u128) -> Self {
+        Self([v as u64, (v >> 64) as u64])
+    }
+    #[inline]
+    pub fn from_i128(v: i128) -> Self {
+        Self::from_u128(v as u128)
+    }
+    #[inline]
+    pub fn as_u128(self) -> u128 {
+        (self.0[0] as u128) | ((self.0[1] as u128) << 64)
+    }
+    #[inline]
+    pub fn as_i128(self) -> i128 {
+        self.as_u128() as i128
+    }
+
+    #[inline]
+    pub fn to_le_bytes(self) -> [u8; 16] {
+        self.as_u128().to_le_bytes()
+    }
+
+    #[inline]
+    pub fn from_le_bytes(b: [u8; 16]) -> Self {
+        Self::from_u128(u128::from_le_bytes(b))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     /// Unsigned 64-bit integer. The workhorse type for deterministic
     /// data generation: hash outputs, modular arithmetic, bit
     /// manipulation, cycle counters, primary keys.
     U64(u64),
+    /// Unsigned 128-bit integer (cranelift I128, unsigned
+    /// interpretation). Carried as two u64 limbs ([`Bits128`],
+    /// little-endian limb order) so `Value` keeps alignment 8 —
+    /// see the `value_size_probe` test. Interpreter-only until
+    /// the two-slot JIT ABI lands (type_system_alignment.md
+    /// §8.1). JSON projection is a decimal string (JSON Number
+    /// cannot carry 128-bit magnitude).
+    U128(Bits128),
+    /// Signed 128-bit integer (cranelift I128, signed
+    /// interpretation). Same limb carrier and conventions as
+    /// [`Value::U128`].
+    I128(Bits128),
+    /// Signed 64-bit integer. The honest runtime carrier for
+    /// `PortType::I64` (and sign-extended `I32`) slots — matching
+    /// `serde_json::Number`'s `NegInt` leaf so display and JSON
+    /// projection render negatives as negatives instead of their
+    /// unsigned bit-reinterpretation. At the JIT boundary the bits
+    /// ride the same u64 slot (`i64 as u64` is a free bitcast), so
+    /// signedness costs nothing in compiled kernels. See
+    /// `polydat/docs/design/type_system_alignment.md` §5.
+    I64(i64),
     /// IEEE 754 double-precision float. Used for distributions,
     /// noise functions, trigonometry, interpolation, and any
     /// computation that needs fractional precision.
@@ -252,6 +311,12 @@ pub enum Value {
     /// Typed `i16` vector carrier (`Arc<[i16]>`). 16-bit signed
     /// integer vectors for CQL `vector<smallint, N>`.
     VecI16(SliceArc<i16>),
+    /// Typed `i8` vector carrier (`Arc<[i8]>`). 8-bit signed
+    /// integer vectors (CQL `vector<tinyint, N>`); completes the
+    /// cranelift lane family {i8, i16, i32, i64, f16, f32, f64}
+    /// (type_system_alignment.md §8.2). Unsigned byte buffers are
+    /// spelled `Bytes`.
+    VecI8(SliceArc<i8>),
     /// Sentinel for uninitialized buffer slots. Never appears in
     /// wiring — only in freshly allocated state buffers before
     /// first evaluation.
@@ -262,6 +327,9 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::U64(a), Value::U64(b)) => a == b,
+            (Value::I64(a), Value::I64(b)) => a == b,
+            (Value::U128(a), Value::U128(b)) => a == b,
+            (Value::I128(a), Value::I128(b)) => a == b,
             (Value::F64(a), Value::F64(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             // Arc-backed variants: pointer-eq fast path before
@@ -285,6 +353,7 @@ impl PartialEq for Value {
             (Value::VecI64(a), Value::VecI64(b)) => a == b,
             (Value::VecF16(a), Value::VecF16(b)) => a == b,
             (Value::VecI16(a), Value::VecI16(b)) => a == b,
+            (Value::VecI8(a), Value::VecI8(b)) => a == b,
             _ => false,
         }
     }
@@ -350,6 +419,41 @@ impl Value {
         }
     }
 
+    /// Read a signed 64-bit integer. Accepts the honest `Value::I64`
+    /// carrier and — during the bit-stuffed-to-honest migration —
+    /// a legacy `Value::U64` whose bits are reinterpreted (the
+    /// pre-alignment storage convention for `PortType::I64` slots).
+    pub fn as_i64(&self) -> i64 {
+        match self {
+            Value::I64(v) => *v,
+            Value::U64(v) => *v as i64,
+            _ => panic!("expected I64, got {:?}", self.port_type()),
+        }
+    }
+
+    /// Read an unsigned 128-bit integer. Accepts the honest
+    /// `Value::U128` carrier plus zero-extended `U64` (widening
+    /// is implicit at read sites the way `as_i64` accepts the
+    /// legacy stuffed form).
+    pub fn as_u128(&self) -> u128 {
+        match self {
+            Value::U128(b) => b.as_u128(),
+            Value::U64(v) => *v as u128,
+            _ => panic!("expected U128, got {:?}", self.port_type()),
+        }
+    }
+
+    /// Read a signed 128-bit integer. Accepts `Value::I128` plus
+    /// sign-extended `I64` and zero-extended `U64`.
+    pub fn as_i128(&self) -> i128 {
+        match self {
+            Value::I128(b) => b.as_i128(),
+            Value::I64(v) => *v as i128,
+            Value::U64(v) => *v as i128,
+            _ => panic!("expected I128, got {:?}", self.port_type()),
+        }
+    }
+
     pub fn as_f64(&self) -> f64 {
         match self {
             Value::F64(v) => *v,
@@ -402,6 +506,9 @@ impl Value {
     pub fn port_type(&self) -> PortType {
         match self {
             Value::U64(_) => PortType::U64,
+            Value::I64(_) => PortType::I64,
+            Value::U128(_) => PortType::U128,
+            Value::I128(_) => PortType::I128,
             Value::F64(_) => PortType::F64,
             Value::Bool(_) => PortType::Bool,
             Value::Str(_) => PortType::Str,
@@ -415,6 +522,7 @@ impl Value {
             Value::VecI64(_) => PortType::VecI64,
             Value::VecF16(_) => PortType::VecF16,
             Value::VecI16(_) => PortType::VecI16,
+            Value::VecI8(_) => PortType::VecI8,
             Value::None => PortType::U64, // placeholder
         }
     }
@@ -462,8 +570,18 @@ impl Value {
         }
         matches!(
             (value_type, slot_type),
-            (PortType::U64, PortType::U32 | PortType::I64 | PortType::I32)
-                | (PortType::F64, PortType::F32)
+            // Legacy bit-stuffed forms (pre-alignment producers may
+            // still emit U64 storage for signed slots during the
+            // honest-I64 migration). U8/U16 zero-extend into U64
+            // storage; F16 rides its bit pattern in U64 like F32.
+            (PortType::U64, PortType::U32 | PortType::I64 | PortType::I32
+                | PortType::U8 | PortType::U16 | PortType::I8 | PortType::I16
+                | PortType::F16)
+                | (PortType::F64, PortType::F32 | PortType::F16)
+                // Honest signed carrier: I64 storage serves the
+                // I64 slot and the sign-extended narrow signed
+                // projections.
+                | (PortType::I64, PortType::I32 | PortType::I8 | PortType::I16)
         )
     }
 
@@ -507,6 +625,14 @@ impl Value {
         }
     }
 
+    /// Borrow a `VecI8` value as `&[i8]`. Panics on type mismatch.
+    pub fn as_vec_i8(&self) -> &[i8] {
+        match self {
+            Value::VecI8(arc) => arc,
+            _ => panic!("expected VecI8, got {:?}", self.port_type()),
+        }
+    }
+
     /// Downcast a Handle value to a borrowed reference of its concrete
     /// type. Panics if the variant isn't `Handle` or the type doesn't
     /// match. Used by reader nodes that consume a typed-handle wire
@@ -539,6 +665,9 @@ impl Value {
     pub fn to_display_string(&self) -> String {
         match self {
             Value::U64(v) => v.to_string(),
+            Value::I64(v) => v.to_string(),
+            Value::U128(b) => b.as_u128().to_string(),
+            Value::I128(b) => b.as_i128().to_string(),
             // `{v:?}` (Rust Debug) for f64 always includes at
             // least one fractional digit, so whole-number floats
             // render as `1.0` instead of `1` — distinguishing
@@ -644,6 +773,19 @@ impl Value {
                 s.push(']');
                 s
             }
+            Value::VecI8(arc) => {
+                let mut s = String::with_capacity(arc.len() * 4 + 2);
+                s.push('[');
+                let mut first = true;
+                for v in arc.iter() {
+                    if !first { s.push(','); }
+                    first = false;
+                    use std::fmt::Write;
+                    let _ = write!(&mut s, "{v}");
+                }
+                s.push(']');
+                s
+            }
             Value::None => String::new(),
         }
     }
@@ -673,6 +815,13 @@ impl Value {
     pub fn to_json_value(&self) -> serde_json::Value {
         match self {
             Value::U64(v) => serde_json::Value::from(*v),
+            Value::I64(v) => serde_json::Value::from(*v),
+            // JSON Number is bounded by u64/i64/f64 leaves
+            // (serde_json without arbitrary_precision); 128-bit
+            // magnitudes project as decimal strings, the same
+            // string-convention family as Bytes-as-hex.
+            Value::U128(b) => serde_json::Value::String(b.as_u128().to_string()),
+            Value::I128(b) => serde_json::Value::String(b.as_i128().to_string()),
             Value::F64(v) => serde_json::json!(*v),
             Value::Bool(v) => serde_json::Value::from(*v),
             Value::Str(v) => serde_json::Value::from(&**v),
@@ -696,6 +845,9 @@ impl Value {
                 arc.iter().map(|f| serde_json::json!(f.to_f32())).collect()
             ),
             Value::VecI16(arc) => serde_json::Value::Array(
+                arc.iter().map(|i| serde_json::Value::from(*i as i32)).collect()
+            ),
+            Value::VecI8(arc) => serde_json::Value::Array(
                 arc.iter().map(|i| serde_json::Value::from(*i as i32)).collect()
             ),
             Value::None => serde_json::Value::Null,
@@ -749,6 +901,34 @@ pub enum PortType {
     I64,
     /// 32-bit IEEE 754 float. Widens to F64 automatically.
     F32,
+    /// 8-bit unsigned integer (cranelift I8 lane, unsigned
+    /// interpretation). Zero-extended in `Value::U64`; widens to
+    /// U64 automatically.
+    U8,
+    /// 8-bit signed integer (cranelift I8 lane, signed
+    /// interpretation). Sign-extended in `Value::I64`; widens to
+    /// I64 automatically.
+    I8,
+    /// 16-bit unsigned integer (cranelift I16 lane, unsigned
+    /// interpretation). Zero-extended in `Value::U64`; widens to
+    /// U64 automatically.
+    U16,
+    /// 16-bit signed integer (cranelift I16 lane, signed
+    /// interpretation). Sign-extended in `Value::I64`; widens to
+    /// I64 automatically.
+    I16,
+    /// 16-bit IEEE 754-2008 binary16 float (cranelift F16).
+    /// Carried as its bit pattern in `Value::U64` (low 16 bits),
+    /// the same stuffing convention as `F32`; widens to F32/F64
+    /// automatically (every f16 is exactly representable in both).
+    F16,
+    /// 128-bit unsigned integer (cranelift I128, unsigned
+    /// interpretation). Real `Value::U128` two-limb carrier — a
+    /// 128-bit value cannot ride a 64-bit slot. Interpreter-only.
+    U128,
+    /// 128-bit signed integer (cranelift I128, signed
+    /// interpretation). Same carrier story as `U128`.
+    I128,
     /// Boolean (true/false). Widens to U64 (1/0).
     Bool,
     /// Heap-allocated string. Any type auto-converts to Str.
@@ -783,6 +963,9 @@ pub enum PortType {
     /// Typed `i16` vector slice (`Arc<[i16]>`). Bound natively
     /// for CQL `vector<smallint, N>`.
     VecI16,
+    /// Typed `i8` vector slice (`Arc<[i8]>`). Completes the
+    /// cranelift lane family; CQL `vector<tinyint, N>`.
+    VecI8,
 }
 
 impl fmt::Display for PortType {
@@ -794,6 +977,13 @@ impl fmt::Display for PortType {
             PortType::I32 => write!(f, "i32"),
             PortType::I64 => write!(f, "i64"),
             PortType::F32 => write!(f, "f32"),
+            PortType::U8 => write!(f, "u8"),
+            PortType::I8 => write!(f, "i8"),
+            PortType::U16 => write!(f, "u16"),
+            PortType::I16 => write!(f, "i16"),
+            PortType::F16 => write!(f, "f16"),
+            PortType::U128 => write!(f, "u128"),
+            PortType::I128 => write!(f, "i128"),
             PortType::Bool => write!(f, "bool"),
             PortType::Str => write!(f, "String"),
             PortType::Bytes => write!(f, "bytes"),
@@ -806,6 +996,7 @@ impl fmt::Display for PortType {
             PortType::VecI64 => write!(f, "vec_i64"),
             PortType::VecF16 => write!(f, "vec_f16"),
             PortType::VecI16 => write!(f, "vec_i16"),
+            PortType::VecI8 => write!(f, "vec_i8"),
         }
     }
 }
@@ -831,6 +1022,13 @@ impl PortType {
             Self::I32    => "i32",
             Self::I64    => "i64",
             Self::F32    => "f32",
+            Self::U8     => "u8",
+            Self::I8     => "i8",
+            Self::U16    => "u16",
+            Self::I16    => "i16",
+            Self::F16    => "f16",
+            Self::U128   => "u128",
+            Self::I128   => "i128",
             Self::Bool   => "bool",
             Self::Str    => "str",
             Self::Bytes  => "bytes",
@@ -843,6 +1041,7 @@ impl PortType {
             Self::VecI64 => "vec_i64",
             Self::VecF16 => "vec_f16",
             Self::VecI16 => "vec_i16",
+            Self::VecI8  => "vec_i8",
         }
     }
 
@@ -866,6 +1065,13 @@ impl PortType {
             "i32"                 => Some(Self::I32),
             "i64"                 => Some(Self::I64),
             "f32"                 => Some(Self::F32),
+            "u8"                  => Some(Self::U8),
+            "i8"                  => Some(Self::I8),
+            "u16"                 => Some(Self::U16),
+            "i16"                 => Some(Self::I16),
+            "f16"                 => Some(Self::F16),
+            "u128"                => Some(Self::U128),
+            "i128"                => Some(Self::I128),
             "bool"                => Some(Self::Bool),
             "str" | "Str" | "String" => Some(Self::Str),
             "bytes"               => Some(Self::Bytes),
@@ -878,6 +1084,7 @@ impl PortType {
             "vec_i64"             => Some(Self::VecI64),
             "vec_f16"             => Some(Self::VecF16),
             "vec_i16"             => Some(Self::VecI16),
+            "vec_i8"              => Some(Self::VecI8),
             _ => None,
         }
     }
@@ -1071,16 +1278,21 @@ impl SlotType {
 
 /// JIT-compatible primitive carriers.
 ///
-/// The three Rust types that can ride in the Phase-2 `u64` buffer
-/// without lossy conversion: `u64` as-is, `f64` via bit-reinterpret,
-/// `bool` as 0/1. Every other wire/const shape is JIT-ineligible
-/// and falls through to the Phase-1 typed-eval path.
+/// The Rust types that can ride in the Phase-2 `u64` buffer
+/// without lossy conversion: `u64` as-is, `i64` via bit-reinterpret
+/// (`i64 as u64` round-trips exactly), `f64` via bit-reinterpret,
+/// `bool` as 0/1. This is the CL ∩ JSON scalar core from
+/// `polydat/docs/design/type_system_alignment.md` §4 — exactly the
+/// types both cranelift and the JSON AST can express. Every other
+/// wire/const shape is JIT-ineligible and falls through to the
+/// Phase-1 typed-eval path.
 ///
 /// Referenced by `polydat::derive_support::Wire::JIT` to tag each
 /// Wire-typed Rust value with its JIT carrier (or `None`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JitType {
     U64,
+    I64,
     F64,
     Bool,
 }
@@ -1560,5 +1772,30 @@ mod purity_tests {
             Purity::SideChannel { sink } => assert_eq!(sink, SideChannelSink::LogBuffer),
             other => panic!("log_passthrough should declare LogBuffer SideChannel, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod value_size_probe {
+    /// The `Value` enum rides per-slot in every node buffer; its
+    /// size is a load-bearing budget: 40 bytes (the `SliceArc`
+    /// borrow shape) at alignment 8. The 128-bit integer variants
+    /// deliberately ride as two u64 limbs ([`super::Bits128`])
+    /// instead of raw `u128`/`i128` payloads — a native 128-bit
+    /// field would force the enum to alignment 16 and grow every
+    /// buffer slot to 48 bytes for a rarely-carried type
+    /// (type_system_alignment.md §8.1). This test pins the
+    /// envelope so an accidental payload regression is caught at
+    /// the door.
+    #[test]
+    fn value_fits_size_envelope() {
+        assert!(
+            std::mem::size_of::<super::Value>() <= 40,
+            "Value grew past the 40-byte envelope: {}",
+            std::mem::size_of::<super::Value>()
+        );
+        assert_eq!(std::mem::align_of::<super::Value>(), 8,
+            "Value alignment must stay 8 — a 16-aligned payload \
+             (raw u128/i128?) snuck in");
     }
 }

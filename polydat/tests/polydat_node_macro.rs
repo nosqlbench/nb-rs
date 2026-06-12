@@ -436,9 +436,14 @@ fn macro_u32_round_trip() {
 fn macro_i32_negation() {
     let node = MacroPilotI32Passthrough::default();
     let mut out = [Value::None];
+    // Legacy bit-stuffed input still extracts via the lenient
+    // Wire<i32>; the output is the honest signed carrier
+    // (type_system_alignment.md §5).
     node.eval(&[Value::U64(5_u32 as u64)], &mut out);
-    // -5 as i32 → 0xFFFFFFFB → as u64 = 0xFFFFFFFFFFFFFFFB
-    assert_eq!(out[0].as_u64() as i64, -5);
+    assert_eq!(out[0], Value::I64(-5));
+    // Honest input form produces the same result.
+    node.eval(&[Value::I64(5)], &mut out);
+    assert_eq!(out[0], Value::I64(-5));
 }
 
 #[test]
@@ -1154,4 +1159,67 @@ fn macro_const_bool_false_takes_disable_branch() {
         }
     }
     panic!("macro_pilot_scale_or_zero not found");
+}
+
+// ── Narrow-width Phase-2 eligibility (alignment §8.3 follow-up) ──
+//
+// The macro's buffer tokens are width-aware: narrow scalar wires
+// (u8/i8/u16/i16/u32/i32/f32/f16) ride the u64 slots per their
+// Wire storage conventions and the generated `compiled_u64`
+// closure must be observationally identical to typed eval.
+
+#[polydat::polydat_node(category = Diagnostic)]
+fn macro_pilot_i16_negation(input: i16) -> i16 {
+    -input
+}
+
+#[polydat::polydat_node(category = Diagnostic)]
+fn macro_pilot_u8_double(input: u8) -> u8 {
+    input.wrapping_mul(2)
+}
+
+#[polydat::polydat_node(category = Diagnostic)]
+fn macro_pilot_f16_add_one(input: half::f16) -> half::f16 {
+    half::f16::from_f32(input.to_f32() + 1.0)
+}
+
+#[test]
+fn macro_narrow_widths_are_phase2_eligible_and_equivalent() {
+    // i16: sign-extension must survive the buffer round trip.
+    let node = MacroPilotI16Negation::default();
+    let compiled = node.compiled_u64().expect("i16 wire is Phase-2 eligible");
+    let mut out = [0u64; 1];
+    compiled(&[5u64], &mut out);
+    assert_eq!(out[0] as i64, -5, "i16 negation via compiled_u64");
+    // The buffer form matches the honest Wire storage (I64 carrier):
+    let mut tv = [Value::None];
+    node.eval(&[Value::I64(5)], &mut tv);
+    assert_eq!(tv[0], Value::I64(-5));
+    assert_eq!(out[0], (-5i64) as u64, "buffer bits == sign-extended i64");
+
+    // u8: zero-extended.
+    let node = MacroPilotU8Double::default();
+    let compiled = node.compiled_u64().expect("u8 wire is Phase-2 eligible");
+    let mut out = [0u64; 1];
+    compiled(&[100u64], &mut out);
+    assert_eq!(out[0], 200);
+    // Narrowing happens before the body: 0x1F0 reads as u8 0xF0.
+    compiled(&[0x1F0u64], &mut out);
+    assert_eq!(out[0], (0xF0u8.wrapping_mul(2)) as u64);
+
+    // f16: bit-stuffed like f32.
+    let node = MacroPilotF16AddOne::default();
+    let compiled = node.compiled_u64().expect("f16 wire is Phase-2 eligible");
+    let mut out = [0u64; 1];
+    let in_bits = half::f16::from_f32(1.5).to_bits() as u64;
+    compiled(&[in_bits], &mut out);
+    assert_eq!(
+        half::f16::from_bits(out[0] as u16),
+        half::f16::from_f32(2.5),
+        "f16 add-one via compiled_u64"
+    );
+
+    // 128-bit stays typed-eval only (no single-slot ride).
+    // (No macro pilot node — u128 wires are interpreter-only by
+    // the wire_type_to_jit_type table.)
 }
