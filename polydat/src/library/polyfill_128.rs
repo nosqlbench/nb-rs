@@ -41,6 +41,50 @@ fn __u128_to_f64(n: u128) -> f64 { n as f64 }
 #[crate::polydat_node(category = Conversions)]
 fn __i128_to_f64(n: i128) -> f64 { n as f64 }
 
+// Totality fills (type_system.md §3.3 / adapter_catalog_invariants):
+// every integer ≤64 bits widens losslessly into the 128-bit
+// carriers (unsigned → either signedness; signed → i128 only), and
+// `bool` widens to both. The nonzero test `→ bool` is also total.
+// All class A — completes the widening + bool families.
+#[crate::polydat_node(category = Conversions)]
+fn __u8_to_u128(n: u8) -> u128 { n as u128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u8_to_i128(n: u8) -> i128 { n as i128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u16_to_u128(n: u16) -> u128 { n as u128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u16_to_i128(n: u16) -> i128 { n as i128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u32_to_u128(n: u32) -> u128 { n as u128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u32_to_i128(n: u32) -> i128 { n as i128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __i8_to_i128(n: i8) -> i128 { n as i128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __i16_to_i128(n: i16) -> i128 { n as i128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __i32_to_i128(n: i32) -> i128 { n as i128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __bool_to_u128(b: bool) -> u128 { b as u128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __bool_to_i128(b: bool) -> i128 { b as i128 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u128_to_bool(n: u128) -> bool { n != 0 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __i128_to_bool(n: i128) -> bool { n != 0 }
+
 // =================================================================
 // 2. Narrowings + cross-signedness (class B — range-checked)
 // =================================================================

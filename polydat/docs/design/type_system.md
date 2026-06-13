@@ -30,6 +30,7 @@ the catalog where it can heal a mismatch.
 | `F32`     | 32-bit float    | `Value::U64` (as `f32::to_bits() as u64`) | Bit-stuffed; widens to `F64` |
 | `F16`     | 16-bit float    | `Value::U64` (as `f16::to_bits() as u64`) | binary16; widens exactly to F32/F64 |
 | `U128`/`I128` | 128-bit int | `Value::U128`/`I128(Bits128)` | Two u64 limbs (keeps `Value` at align 8); interpreter-only |
+| `Reg128`, `RegI8x16`, `RegI16x8`, `RegI32x4`, `RegI64x2`, `RegF16x8`, `RegF32x4`, `RegF64x2` | 128-bit SIMD word | `Value::Reg128(Bits128, RegLanes)` | One register word under 8 lane-views; reg→reg is a free bitcast retag (alignment §8.4) |
 | `Bool`    | logical          | `Value::Bool(bool)` | Distinct runtime variant |
 | `Str`     | UTF-8 string     | `Value::Str(Arc<str>)` | Cheap-clone via Arc |
 | `Bytes`   | raw bytes        | `Value::Bytes(Arc<[u8]>)` | Cheap-clone via Arc |
@@ -46,31 +47,196 @@ every cranelift lane type with a JSON Number projection. See
 `type_system_alignment.md` for the derivation and §8 for the
 full-scope model.
 
-**Three classes of types** group the variants:
+**Four storage classes** group the variants by how the runtime
+carries them:
 
-- **Numeric bit-stuffed** (`U64`, `U32`, `U16`, `U8`,
-  `I64`, `I32`, `I16`, `I8`, `F64`, `F32`, `F16`) —
-  runtime storage is `Value::U64`, `Value::I64`
-  (signed widths — the honest carrier), or
-  `Value::F64`; the `PortType` declares how the bits
-  should be interpreted. Bit-stuffing is what makes
-  JIT P3 cheap: every narrow width fits in one
-  `compiled_u64` slot (unsigned zero-extend, signed
-  sign-extend, floats by `to_bits`).
-- **Two-limb 128-bit** (`U128`, `I128`) — carried as
-  `Bits128([u64; 2])` so `Value` keeps alignment 8;
-  interpreter-only until a two-slot JIT ABI exists.
-- **Heap-cheap-clone** (`Str`, `Bytes`, `Json`, and
-  the `Vec*` lane family) — runtime storage is an
-  Arc-backed handle. Clone cost is one atomic
-  increment; no allocation, no deep-copy. Multiple
-  consumer fibers share the underlying allocation by
-  Arc.
-- **Type-erased** (`Ext`, `Handle`) — runtime carries
-  an opaque handle the producer minted and the
-  consumer downcasts. Adapters that produce these
-  attach a `ReflectedValue` impl (Ext) or rely on
-  consumer downcast (Handle).
+- **Single-word scalars** (`U8`–`U64`, `I8`–`I64`,
+  `F16`/`F32`/`F64`, `Bool`) — one machine word per value, in three
+  carriers (`Value::U64`, `Value::I64`, `Value::F64`) plus
+  `Value::Bool`; the wide types ride their carrier natively, the
+  narrow widths are *bit-stuffed* into it (the `PortType` says how
+  to read the bits). JIT-eligible at P3.
+- **Two-limb 128-bit** (`U128`, `I128`) — `Bits128([u64; 2])`;
+  interpreter-only until the two-slot JIT ABI lands.
+- **128-bit SIMD register plane** (`Reg128` + 7 lane-views) — a
+  16-byte word with a `RegLanes` view tag; reg→reg retags are free
+  bitcasts and the arithmetic ops JIT to native SIMD.
+- **Arc-backed handles** (`Str`, `Bytes`, `Json`, the `Vec*` lane
+  family, `Handle`, and the boxed `Ext`) — clone is one atomic
+  refcount bump; consumer fibers share one allocation.
+
+Each family is detailed below. The static slot's declared
+`PortType` is always the canonical contract; the runtime [`Value`]
+variant (§2) is its storage realisation.
+
+### 1.1 Integer widths — `U8`/`U16`/`U32`/`U64`, `I8`/`I16`/`I32`/`I64`
+
+The integer vocabulary is every cranelift scalar width in both
+signednesses. At runtime **all unsigned widths share `Value::U64`**
+(zero-extended into the low bits) and **all signed widths share
+`Value::I64`** (sign-extended) — the *honest signed carrier*
+(alignment §5): a negative `I32` is stored as a negative `i64`, so
+its display and JSON projection render `-1`, not `4294967295`. The
+`PortType` is the sole record of the declared width; the carrier
+only knows "u-bits" or "s-bits".
+
+- **Storage cost** — one `u64` slot regardless of width. There is
+  no `Value::U8`; an `U8` wire is a `Value::U64` whose producer
+  promises the high 56 bits are zero.
+- **JIT (P3)** — the single-slot stuffing is what makes narrow
+  widths free to compile: widen is `uextend`/`sextend`, narrow is a
+  mask, all on the one `compiled_u64` register. No boxing.
+- **Conversions** — widening (`u8 → u64`, `u32 → i64`, …) is class A
+  and auto-inserted; narrowing is class B (range-checked, boundary
+  only). See §3.
+- **Use** — `U64` is the workhorse (hashes, counters, keys); the
+  narrow widths exist so a node can declare the *real* column width
+  (CQL `tinyint`/`smallint`/`int`) and bind it natively without a
+  widening detour.
+
+### 1.2 128-bit integers — `U128` / `I128`
+
+The cranelift `I128` lane under both signedness readings. Unlike
+the ≤64-bit widths, a 128-bit value cannot ride a single `u64`
+slot, so it has its **own `Value` variants** (`U128`, `I128`),
+each carrying a [`Bits128`] — two little-endian `u64` limbs
+(`[lo, hi]`). Storing two limbs instead of a raw Rust `u128` keeps
+`Value`'s alignment at 8 and its footprint inside the 40-byte
+buffer-slot envelope (the `value_size_probe` test guards this).
+
+- **Interpreter-only** — the JIT path needs a two-slot ABI that
+  does not exist yet, so 128-bit ops run in the interpreter. The
+  carrier reassembles to a native `u128`/`i128` in two register
+  moves for the arithmetic, then re-splits.
+- **JSON** — projects as a **decimal string**, not a JSON Number
+  (which tops out at the `u64`/`i64`/`f64` leaves); the extractor
+  also accepts an in-range Number for convenience.
+- **`Bytes`** — exactly 16 little-endian bytes.
+- **Conversions** — every ≤64-bit integer and `Bool` widens into
+  `U128`/`I128` (class A); `→ f64` is class A; every narrowing back
+  out (`→ {u8…i64, f16, f32}`) is a range-checked class-B boundary
+  adapter.
+
+### 1.3 Floats — `F16` / `F32` / `F64`
+
+IEEE 754 binary16 / binary32 / binary64. `F64` is the primary
+float and the canonical widening target. `F32` and `F16` are
+**bit-stuffed**: a node that outputs `F32` stores
+`f32::to_bits() as u64` in `Value::U64` (and `F16` stores its
+16-bit pattern the same way), so they cost one slot and JIT like
+integers. A *host-written* float slot may instead arrive as a
+materialised `Value::F64`; [`Value::satisfies_slot`] accepts both
+forms (§4).
+
+- **`F128` is absent** — stable Rust has no `f128` carrier, so the
+  scalar float set stops at `F64` (alignment §8.1).
+- **Conversions** — `f16 → f32 → f64` widens exactly (every `f16`
+  is exact in `f32`/`f64`). `int → f64` is always class A (total,
+  rounds above 2⁵³); `int → f32`/`f16` is class A only when the
+  integer fits the target's exact-int window (`u8`/`i8` → `f16`,
+  `u8`/`u16`/`i8`/`i16` → `f32`), else class B. Float → int is
+  always explicit/boundary (rounding + NaN/Inf are user choices).
+
+### 1.4 Boolean — `Bool`
+
+A distinct `Value::Bool(bool)` variant (not bit-stuffed) used by
+conditional ops, selection nodes, and flag computation. `Bool`
+widens to **every** numeric width as `1`/`0` (class A) and every
+numeric reduces to `Bool` by a nonzero test (class A) — both
+directions are total, so the matrix row/column for `Bool` is
+almost entirely `A`.
+
+### 1.5 SIMD register plane — `Reg128` + lane views
+
+A `Reg128` is a **128-bit SIMD register word** carried as
+`Value::Reg128(Bits128, RegLanes)`: the 16 bytes plus a
+[`RegLanes`] tag recording the *current* interpretation. The seven
+typed `PortType`s name a homogeneous lane reading of the same
+word:
+
+| PortType | Lanes | PortType | Lanes |
+| --- | --- | --- | --- |
+| `RegI8x16` | `[i8; 16]` | `RegI64x2` | `[i64; 2]` |
+| `RegI16x8` | `[i16; 8]` | `RegF16x8` | `[f16; 8]` |
+| `RegI32x4` | `[i32; 4]` | `RegF32x4` | `[f32; 4]` |
+| `Reg128` (`Raw`) | algorithm-defined bytes | `RegF64x2` | `[f64; 2]` |
+
+- **Views are free bitcasts** — every reg→reg wire is healed by
+  the assembler with a [`RegView`] retag node that changes the
+  `RegLanes` tag and touches **no bits** (alignment §8.4 layer 2).
+  A word can be `[i64; 2]` for one op, raw bytes for a shuffle, and
+  `[f32; 4]` for a dot product, at zero cost. This is the one
+  family where every intra-plane conversion is class A and every
+  cross-plane conversion (reg ↔ scalar/container/vec) is absent —
+  a closed clique (§3).
+- **Native SIMD JIT** — the element-wise ops (`add`/`sub`/`mul`
+  across each lane family) and `reg_dot_f32` compile to native
+  vector instructions. Integer lane arithmetic **wraps** (modular);
+  range-checking belongs to the scalar adapter system, not the
+  register ops.
+- **Determinism** — `reg_dot_f32` uses a *fixed* reduction tree
+  `((l0+l1)+(l2+l3))` so float dot products are bit-reproducible
+  across machines (determinism rule D2).
+- **Use** — SWAR/state-word algorithms, fixed-width SIMD kernels,
+  and `reg_shuffle_bytes` (arbitrary byte permutation from a
+  16-entry const mask). Nodes live in `library/register.rs`.
+
+### 1.6 Strings, bytes, JSON — `Str` / `Bytes` / `Json`
+
+The Arc-backed scalar containers. Each clones in one atomic
+increment with no allocation:
+
+- **`Str`** — `Arc<str>`, UTF-8. The universal sink: every numeric,
+  `Bool`, and `Json` renders to `Str` via Display (class A).
+  Per-cycle template interpolation pointer-shares rather than
+  re-allocating.
+- **`Bytes`** — `Arc<[u8]>`. Little-endian serialisation target for
+  every numeric, `Bool`, and the `Vec*` lanes. `Bytes ↔ Str` is
+  lowercase hex; `Bytes ↔ Json` is a hex `Json::String`. Unsigned
+  byte buffers are `Bytes`, not a `Vec` lane (§3.1).
+- **`Json`** — `Arc<serde_json::Value>`. Structured capture and
+  result-body projection share the tree by Arc; consumers that need
+  an owned tree deep-clone at the use site. Non-finite floats make
+  `f64`/`f32`/`VecF32 → Json` class B (`serde_json` rejects them).
+
+### 1.7 Typed vector lanes — `VecF32`/`VecF64`/`VecF16`, `VecI8`/`VecI16`/`VecI32`/`VecI64`
+
+Typed slices (`Value::Vec*(SliceArc<T>)`) that flow vector data
+from accessors to native-binding adapters with **no per-cycle
+string-format or byte-serialise step**. The element set is every
+cranelift lane type that has a JSON Number projection — completing
+the lane family alongside the register plane (alignment §8.2).
+
+- **[`SliceArc<T>`]** — a typed slice handle with two storage
+  modes: *owned* (`Arc<[T]>`, one allocation) or *zero-copy* (a raw
+  `(ptr, len)` borrow into a long-lived owner such as an mmap'd
+  dataset, kept alive by the owner's Arc). Clone is one atomic
+  increment either way (SRD 53 §"Native Vector Binding").
+- **Native binding** — `VecF32`/`VecF64`/`VecF16` bind CQL
+  `vector<float|double|half_float, N>`; `VecI8`/`VecI16`/`VecI32`/
+  `VecI64` bind `vector<tinyint|smallint|int|bigint, N>`. The
+  adapter handles dataset→column precision at bind time.
+- **Catalog coverage** — all seven lanes inter-convert
+  element-wise (widening lanes class A, narrowing / `float→int`
+  class B, panic-on-bad-element like the scalar adapters) and each
+  serialises to / parses from `Bytes` / `Json` / `Str` (§3). Only
+  `Vec → scalar` is intentionally absent (no canonical reduction —
+  use `vec_len` / `vec_first` / `vec_sum` / `vec_mean`).
+
+### 1.8 Type-erased — `Ext` / `Handle`
+
+Opaque handles the producer mints and the consumer downcasts;
+never in the adapter catalog (§3).
+
+- **`Ext`** — `Box<dyn ReflectedValue>`. Protocol-native values
+  (UUIDs, timestamps, inet addresses) that flow through Polydat
+  without boxing to strings. Consumers reach typed access via
+  `ReflectedValue::try_as_str` / `as_json` / … at the consume site.
+- **`Handle`** — `Arc<dyn Any + Send + Sync>`. A resolved resource
+  (dataset, prepared statement); the producer node (`dataset_open`,
+  …) populates it and the consumer downcasts with
+  `Value::as_handle::<T>()`. One `Arc::clone` per cycle, zero
+  allocation (SRD 53 §"Dataset Handles").
 
 ---
 
@@ -85,6 +251,7 @@ pub enum Value {
     U64(u64),                          // also stores U32/U16/U8 (zero-extended)
     I64(i64),                          // honest signed carrier; also I32/I16/I8 (sign-extended)
     U128(Bits128), I128(Bits128),      // two u64 limbs (align-8 envelope)
+    Reg128(Bits128, RegLanes),         // 128-bit SIMD word + its current lane-view tag
     F64(f64),                          // also stores F32/F16 bits via to_bits()
     Bool(bool),
     Str(Arc<str>),
@@ -122,6 +289,34 @@ is the canonical type contract; `Value::port_type()`
 is only used at boundary check sites
 (`adapt_boundary_value`) to detect mismatches.
 
+### 2.1 Carriers
+
+Three helper types back the multi-`PortType` variants:
+
+- **`Bits128([u64; 2])`** — little-endian limbs (`[lo, hi]`)
+  behind `U128`, `I128`, and `Reg128`. The `[u64; 2]` (vs a raw
+  `u128`) keeps `Value` at alignment 8 and inside the 40-byte slot
+  envelope; reassembly to a native `u128`/`i128` is two register
+  moves. Provides per-lane views (`lanes_i8` → `[i8; 16]`, …,
+  `lanes_f16`/`f32`/`f64`) that the register plane reads.
+- **`RegLanes`** — the view tag inside `Reg128`: `Raw` (algorithm-
+  defined heterogeneous bytes) or one of the seven homogeneous
+  readings (`I8x16` … `F64x2`). Changing the tag is a free bitcast
+  (§1.5); the bytes never move.
+- **`SliceArc<T>`** — the typed-slice handle behind every `Vec*`
+  lane. Holds `(owner: Arc<dyn Any>, ptr, len)` so it supports both
+  an owned `Arc<[T]>` and a zero-copy borrow into an mmap'd owner;
+  clone is one atomic increment (§1.7).
+
+### 2.2 The `None` sentinel
+
+`Value::None` is the *absent* marker (it appears in
+freshly-allocated buffer slots before first evaluation and as the
+"no value yet" state of optional ports) — already covered above;
+per SRD-74 it propagates through evaluation unless a node opts in
+via `accepts_none_inputs()`. It is not a `PortType`: no wire
+declares `None`, and `port_type()` reports `U64` as a placeholder.
+
 ---
 
 ## 3. Adapter catalogs
@@ -155,69 +350,104 @@ chain inserts that adapter node. When it returns
 compile time) with `from` and `to` in the
 diagnostic.
 
-The matrix below shows the original 12 core types
-(identity diagonal excluded). Cells are marked **A** (in
-`auto_adapter`, intra-graph), **B** (in `boundary_adapter`
-only), or **·** (not in any catalog — fails with
-`TypeMismatch`).
+The matrix below is **generated from the two catalog
+functions** in `compile/assembly.rs` (the cell-level source of
+truth) and covers every conversion type that has at least one
+catalog entry. Cells: **A** (in `auto_adapter` — intra-graph +
+boundary, never panics), **B** (in `boundary_adapter` only —
+lossy/parseable/shape-checking, can panic on bad input), **·**
+(no adapter — fails with `TypeMismatch`), **─** (identity).
 
-The narrow widths (`u8`/`i8`/`u16`/`i16`/`f16`) and the
-128-bit integers extend the matrix by the same family
-rules — each mirrors its wider sibling's row/column
-(u8/u16 ↔ u32, i8/i16 ↔ i32, f16 ↔ f32; u128/i128 widen
-from the 64-bit carriers, project to JSON as decimal
-strings, and serde to exactly-16 LE bytes). Their
-adapters live in `library/polyfill_narrow.rs` and
-`library/polyfill_128.rs`; the catalog functions in
-`compile/assembly.rs` are the cell-level source of
-truth. The extended `Vec*` lane types (`vec_f64`,
-`vec_i64`, `vec_f16`, `vec_i16`, `vec_i8`) currently
-have no adapter rows — like their wider siblings, they
-move between types via explicit nodes only.
+The narrow widths (`u8`/`i8`/`u16`/`i16`/`f16`) live in
+`library/polyfill_narrow.rs`, the 128-bit integers in
+`library/polyfill_128.rs`, and the macro-generated
+matrix-completion adapters (every remaining narrowing + the full
+vector-lane family) in `library/polyfill_complete.rs`. The matrix
+is **complete** — every meaningful pair has an adapter, with only
+the deliberate scalar↔vector exclusion left as `·` (§3.3). The
+`adapter_catalog_invariants` property test enforces both the
+widening invariant and total coverage.
 
 ```
-            ┌──────────────────────────── to ────────────────────────────┐
-   from →   U64  U32  I64  I32  F64  F32  Bool  Str  Bytes  Json  VecF32 VecI32
-   ─────   ───  ───  ───  ───  ───  ───  ────  ───  ─────  ────  ─────  ─────
-   U64      ─    B    B    B    A    B    A    A    A      A     ·      ·
-   U32      A    ─    B    B    A    B    A    A    A      A     ·      ·
-   I64      B    B    ─    B    A    B    A    A    A      A     ·      ·
-   I32      B    B    A    ─    A    B    A    A    A      A     ·      ·
-   F64      B    B    B    B    ─    B    A    A    A      B     ·      ·
-   F32      B    B    B    B    A    ─    A    A    A      B     ·      ·
-   Bool     A    A    A    A    A    A    ─    A    A      A     ·      ·
-   Str      B    B    B    B    B    B    B    ─    B      B     B      B
-   Bytes    B    B    B    B    B    B    B    B    ─      B     B      B
-   Json     B    B    B    B    B    B    B    A    B      ─     B      B
-   VecF32   ·    ·    ·    ·    ·    ·    ·    B    A      B     ─      B
-   VecI32   ·    ·    ·    ·    ·    ·    ·    A    A      A     A      ─
+from╲to  u8  i8 u16 i16 f16 u32 i32 f32 u64 i64 f64 u12 i12  bl str  by  js  vF  vI  vD  vL  vH  vS  v8
+u8        ─   B   A   A   A   A   A   A   A   A   A   A   A   A   A   A   A   ·   ·   ·   ·   ·   ·   ·
+i8        B   ─   B   A   A   B   A   A   B   A   A   B   A   A   A   A   A   ·   ·   ·   ·   ·   ·   ·
+u16       B   B   ─   B   B   A   A   A   A   A   A   A   A   A   A   A   A   ·   ·   ·   ·   ·   ·   ·
+i16       B   B   B   ─   B   B   A   A   B   A   A   B   A   A   A   A   A   ·   ·   ·   ·   ·   ·   ·
+f16       B   B   B   B   ─   B   B   A   B   B   A   B   B   A   A   A   B   ·   ·   ·   ·   ·   ·   ·
+u32       B   B   B   B   B   ─   B   B   A   A   A   A   A   A   A   A   A   ·   ·   ·   ·   ·   ·   ·
+i32       B   B   B   B   B   B   ─   B   B   A   A   B   A   A   A   A   A   ·   ·   ·   ·   ·   ·   ·
+f32       B   B   B   B   B   B   B   ─   B   B   A   B   B   A   A   A   B   ·   ·   ·   ·   ·   ·   ·
+u64       B   B   B   B   B   B   B   B   ─   B   A   A   A   A   A   A   A   ·   ·   ·   ·   ·   ·   ·
+i64       B   B   B   B   B   B   B   B   B   ─   A   B   A   A   A   A   A   ·   ·   ·   ·   ·   ·   ·
+f64       B   B   B   B   B   B   B   B   B   B   ─   B   B   A   A   A   B   ·   ·   ·   ·   ·   ·   ·
+u12       B   B   B   B   B   B   B   B   B   B   A   ─   B   A   A   A   A   ·   ·   ·   ·   ·   ·   ·
+i12       B   B   B   B   B   B   B   B   B   B   A   B   ─   A   A   A   A   ·   ·   ·   ·   ·   ·   ·
+bl        A   A   A   A   A   A   A   A   A   A   A   A   A   ─   A   A   A   ·   ·   ·   ·   ·   ·   ·
+str       B   B   B   B   B   B   B   B   B   B   B   B   B   B   ─   B   B   B   B   B   B   B   B   B
+by        B   B   B   B   B   B   B   B   B   B   B   B   B   B   B   ─   B   B   B   B   B   B   B   B
+js        B   B   B   B   B   B   B   B   B   B   B   B   B   B   A   B   ─   B   B   B   B   B   B   B
+vF        ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   B   A   B   ─   B   A   B   B   B   B
+vI        ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   A   A   A   A   ─   A   A   B   B   B
+vD        ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   B   A   B   B   B   ─   B   B   B   B
+vL        ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   A   A   A   B   B   A   ─   B   B   B
+vH        ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   B   A   B   A   B   A   B   ─   B   B
+vS        ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   A   A   A   A   A   A   A   B   ─   B
+v8        ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   A   A   A   A   A   A   A   A   A   ─
 
-   A = always-defined (auto_adapter, intra-graph + boundary)
-   B = can panic on input (boundary_adapter only — keeps intra-graph strict)
-   · = not in catalog; Vec → scalar fails with hint pointing at vec_len/vec_first/…
-   ─ = identity (no adapter needed)
+  A = always-defined (auto_adapter: intra-graph + boundary)
+  B = can panic on input (boundary_adapter only — keeps intra-graph strict)
+  · = no adapter (only scalar↔vector, intentionally — see §3.3)
+  ─ = identity (no adapter needed)
+  abbrev: u12=U128 i12=I128 bl=Bool by=Bytes js=Json
+          vF=VecF32 vI=VecI32 vD=VecF64 vL=VecI64 vH=VecF16 vS=VecI16 v8=VecI8
 ```
+
+The grid is **complete**: every meaningful pair has an adapter.
+The only `·` cells are **scalar ↔ vector**, which is intentionally
+undefined — a scalar has no canonical vector length and a vector
+no canonical scalar reduction (use `vec_len` / `vec_first` /
+`vec_sum` / `vec_mean` for the deliberate reductions). Two type
+groups carry no row or column at all (omitted from the grid):
+
+- **Register views** (`Reg128`, `RegI8x16` … `RegF64x2`) — any
+  reg→reg pair is class A via a zero-cost `RegView` retag; reg ↔
+  scalar/container/vec is never in the catalog (a closed clique).
+- **`Ext` / `Handle`** — never adapted; typed access happens at
+  the consume site (`ReflectedValue` / `as_handle::<T>()`).
 
 **Class A — always-defined** (lossless or fully-
-defined for every valid runtime input):
+defined for every valid runtime input). The
+`adapter_catalog_invariants` test encodes this set as a predicate
+and proves `auto_adapter` covers all of it:
 
-- **Numeric widening** — `U32→U64`, `I32→I64`,
-  `F32→F64`, `U64→F64`, `U32→F64`, `I32→F64`,
-  `I64→F64`.
-- **X → Str** — every numeric type plus `Bool` and
-  `Json` render as a string via Display.
-- **Bool ↔ numeric** — 1/0 mapping in both
-  directions; nonzero test on numerics; never
-  panics.
+- **Numeric widening** — the rule, now complete with no holes:
+  unsigned → any **strictly-wider** integer of either signedness
+  (`u8 → i16`, `u32 → i64`, `u16 → u128`, …); signed → any wider
+  signed (`i8 → i64`, `i32 → i128`); float → wider float
+  (`f16 → f32 → f64`); and `int → f64` always (the canonical float,
+  total even when it rounds above 2⁵³). `int → f32`/`f16` joins
+  class A exactly when the integer fits the target's exact-int
+  window (`u8`/`i8 → f16`; `u8`/`u16`/`i8`/`i16 → f32`); otherwise
+  it is a class-B rounding cast.
+- **X → Str** — every scalar numeric (narrow widths and
+  `U128`/`I128` included) plus `Bool` and `Json` render as a
+  string via Display.
+- **Bool ↔ numeric** — 1/0 mapping out, nonzero test in, both
+  total and never panicking. Now covers **every** numeric width
+  in both directions, including `U128`/`I128`.
 - **X → Bytes** — little-endian serialize for every
-  numeric, Bool, and Vec source; always succeeds.
+  scalar numeric (narrow + 128-bit included), Bool,
+  and the `VecF32`/`VecI32` sources; always succeeds.
 - **X → Json** — wraps as the corresponding
-  `Json::Number` / `Json::Bool` / `Json::Array`.
-  Integer and Bool sources never panic; VecI32 is
-  in this class because `i32` is always
-  representable. `F64→Json`, `F32→Json`, and
-  `VecF32→Json` are class B because non-finite
-  floats are not representable in standard JSON.
+  `Json::Number` / `Json::Bool` / `Json::Array` (or
+  a decimal string for `U128`/`I128`, which JSON
+  numbers can't hold). Integer and Bool sources
+  never panic; `VecI32` is in this class because
+  `i32` is always representable. `F64→Json`,
+  `F32→Json`, `F16→Json`, and `VecF32→Json` are
+  class B because non-finite floats are not
+  representable in standard JSON.
 - **VecI32 → VecF32** — lossless cast of every
   element.
 
@@ -228,21 +458,31 @@ or shape-checking):
   `U64→{U32, I64, I32, F32}`, `I64→{U64, U32, I32,
   F32}`, `F64→{U64, U32, I64, I32, F32}`, etc.
   Range-checked; panic on out-of-range. Float→int
-  also panics on NaN/Inf.
-- **Str → X parsers** — `Str→{Bool, U64, U32, I64,
-  I32, F64, F32, Bytes, Json, VecF32, VecI32}`.
-  Trim + parse; panic on unparseable. Workload-
-  param flow (YAML interpolation, comma-split iter-
-  values) lives here.
+  also panics on NaN/Inf. Narrow targets are
+  reachable from the wide carriers
+  (`{U64,U32,U16,I64,F64}→U8`,
+  `{U64,U32,I64,F64}→U16`, the `I*→I8/I16` set,
+  `{F64,F32,U64}→F16`); 128-bit narrows only as
+  `U128→U64`, `I128→I64`, and the `U128↔I128` /
+  `I64→U128` / `F64→{U128,I128}` casts.
+- **Str → X parsers** — every scalar numeric
+  (`Str→{Bool, U8…I128, F16…F64}`) plus
+  `Str→{Bytes, Json, VecF32, VecI32}`. Trim +
+  parse; panic on unparseable. Workload-param flow
+  (YAML interpolation, comma-split iter-values)
+  lives here.
 - **Bytes → X parsers** — length-checked, little-
-  endian decode. Numeric targets require exactly
+  endian decode into every scalar numeric (narrow +
+  128-bit), `Bool`, `Str`, `Json`, `VecF32`,
+  `VecI32`. Numeric targets require exactly
   `sizeof(N)` bytes; Vec targets require a multiple
   of `sizeof(element)`; panic on wrong length.
-- **Json → X extractors** — shape-checked.
-  `Json::Number` expected for numerics,
-  `Json::Bool` for Bool, `Json::Array` for Vec,
-  `Json::String` (hex) for Bytes. Panic on
-  mismatch.
+- **Json → X extractors** — shape-checked into every
+  scalar numeric (narrow + 128-bit), `Bool`,
+  `Bytes`, `VecF32`, `VecI32`. `Json::Number`
+  expected for numerics, `Json::Bool` for Bool,
+  `Json::Array` for Vec, `Json::String` (hex) for
+  Bytes. Panic on mismatch.
 - **`F64→Json`, `F32→Json`, `VecF32→Json`,
   `VecF32→Str`** — class B because
   `serde_json::Number::from_f64` rejects non-finite
@@ -251,13 +491,14 @@ or shape-checking):
 - **`VecF32→VecI32`** — round each element; panic
   on non-finite or out-of-range.
 
-**Class · — not in either catalog** (intentional
-exclusion):
+**Class · — not in either catalog.** The matrix is complete
+(§3.3), so every `·` is an **intentional** exclusion:
 
-- **Vec → scalar** — `VecF32→{numeric, Bool}` and
-  `VecI32→{numeric, Bool}` are excluded because no
-  single collection-to-scalar convention is natural
-  (first? last? length? sum? mean?). When the
+- **Scalar ↔ vector** — `VecX→{numeric, Bool}` and
+  `{numeric, Bool}→VecX` are both excluded because no
+  single collection-to-scalar convention (or scalar-to-
+  collection length) is natural (first? last? length?
+  sum? mean?). When the
   boundary rejects this pair, `WriteError::TypeMismatch`
   appends a hint pointing at the explicit helpers:
   `vec_len(v)` for the element count,
@@ -321,6 +562,38 @@ its shape. This matches the substrate's general
 posture of "fail loud with useful context, don't
 panic when the upstream might be human-typed."
 
+### 3.3 Completeness
+
+The matrix is **complete**: every meaningful `(from, to)` pair has
+an adapter, and the `adapter_catalog_invariants` test enforces
+this (`every_meaningful_pair_has_an_adapter`) alongside the
+widening invariant and re-derives the grid above so it can never
+silently drift. Three properties hold:
+
+- **Widening totality** — every lossless widening, canonical
+  `int → f64`, and the full `Bool ↔ numeric` / `int → bool`
+  families are class A.
+- **Scalar block total** — the 14×14 scalar block is fully A/B:
+  every narrowing, cross-sign cast, `float → int`, and
+  `int → narrow-float` is a class-B boundary adapter (range-checked,
+  panics on overflow / non-finite).
+- **Vector lanes total** — all seven lanes inter-convert
+  element-wise (widening lanes class A, narrowing/`float→int`
+  class B), and each serialises to / parses from `Bytes` / `Json` /
+  `Str`.
+
+The bulk of these (~130 trivial transforms) are macro-generated in
+`library/polyfill_complete.rs`; the hand-written cores stay in
+`convert.rs` / `polyfill*.rs`.
+
+The **only** `·` cells are **scalar ↔ vector**, and that is a
+deliberate exclusion, not a gap: a scalar carries no canonical
+vector length, and a vector no canonical scalar reduction. The
+explicit reductions are named nodes — `vec_len(v)`,
+`vec_first(v)` / `vec_last(v)`, `vec_sum(v)` / `vec_mean(v)` — and
+`TypeMismatch` on a rejected `vec → scalar` pair points the author
+at them.
+
 ---
 
 ## 4. Why the `auto_adapter` / `boundary_adapter` split
@@ -354,9 +627,12 @@ uses post-adapter: `Value::U64` storage is accepted
 for the unsigned widths, `F16`, and (legacy, during
 the honest-I64 migration) the signed widths;
 `Value::I64` for `I64`/`I32`/`I16`/`I8` slots;
-`Value::F64` for `F64`/`F32`/`F16`. This lets
-narrowing adapters that output the bit-stuffed
-runtime form (e.g. `__u64_to_u32` produces
+`Value::F64` for `F64`/`F32`/`F16`; and any
+register-view word for any reg-view slot (the
+free-bitcast rule — a `Reg128` under one `RegLanes`
+view satisfies a slot declaring any other, §1.5).
+This lets narrowing adapters that output the bit-
+stuffed runtime form (e.g. `__u64_to_u32` produces
 `Value::U64` with low 32 bits) pass validation for
 the narrower slot type without a separate Value
 variant per port type. The pre-adapter strict
@@ -504,10 +780,23 @@ call.
 
 - [composition_substrate.md] §T1, §T2, §T3 — the
   typed-slot axioms this catalog enforces.
-- [`polydat/src/library/convert.rs`] — adapter node
-  implementations.
+- [`polydat/src/library/convert.rs`] — core adapter
+  node implementations.
+- [`polydat/src/library/polyfill_narrow.rs`] —
+  narrow-width (`u8`/`i8`/`u16`/`i16`/`f16`) adapter
+  nodes.
+- [`polydat/src/library/polyfill_128.rs`] — 128-bit
+  (`u128`/`i128`) adapter nodes.
+- [`polydat/src/library/polyfill_complete.rs`] —
+  macro-generated matrix-completion adapters (scalar
+  narrowings + the full vector-lane family).
 - [`polydat/src/compile/assembly.rs::auto_adapter`]
   — catalog dispatch.
+- [`polydat/src/library/register.rs`] — SIMD register-plane
+  nodes (`RegView` retag, splats, lane arithmetic, `reg_dot_f32`).
+- [`polydat/tests/adapter_catalog_invariants.rs`] — the property
+  test that enforces the widening invariant and re-derives the §3
+  matrix from the catalog (drift guard).
 - [`polydat/src/kernel/state.rs::adapt_boundary_value`]
   — boundary-time application.
 - [`polydat/src/kernel/api_impl.rs::set_wire_idx`]
@@ -522,7 +811,12 @@ call.
 
 [composition_substrate.md]: composition_substrate.md
 [`polydat/src/library/convert.rs`]: ../../src/library/convert.rs
+[`polydat/src/library/polyfill_narrow.rs`]: ../../src/library/polyfill_narrow.rs
+[`polydat/src/library/polyfill_128.rs`]: ../../src/library/polyfill_128.rs
+[`polydat/src/library/polyfill_complete.rs`]: ../../src/library/polyfill_complete.rs
 [`polydat/src/compile/assembly.rs::auto_adapter`]: ../../src/compile/assembly.rs
+[`polydat/src/library/register.rs`]: ../../src/library/register.rs
+[`polydat/tests/adapter_catalog_invariants.rs`]: ../../tests/adapter_catalog_invariants.rs
 [`polydat/src/kernel/state.rs::adapt_boundary_value`]: ../../src/kernel/state.rs
 [`polydat/src/kernel/api_impl.rs::set_wire_idx`]: ../../src/kernel/api_impl.rs
 [`polydat/src/dsl/parser.rs::parse_interpolated_string`]: ../../src/dsl/parser.rs

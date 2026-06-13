@@ -3462,6 +3462,7 @@ dependencies = [
  "inventory",
  "layout-rs",
  "md-5",
+ "paste",
  "petgraph",
  "polydat-derive",
  "rayon",

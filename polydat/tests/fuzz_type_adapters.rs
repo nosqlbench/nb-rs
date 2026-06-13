@@ -484,6 +484,25 @@ fn adapter_label_is_known(label: &str) -> bool {
         "Bool→Json", "VecI32→Json",
         // Vec ↔ Vec
         "VecI32→VecF32",
+        // Phase-1 totality fills (widening + bool families; all
+        // class A). Keep in lockstep with the same arms in
+        // `auto_adapter` — `adapter_catalog_invariants` enforces it.
+        "U8→I16", "U8→I32", "U8→I64", "U8→F32",
+        "U16→I32", "U16→I64", "U16→F32",
+        "I8→F32", "I16→F32", "U8→F16", "I8→F16", "U32→I64",
+        "U8→U128", "U8→I128", "U16→U128", "U16→I128",
+        "U32→U128", "U32→I128", "I8→I128", "I16→I128", "I32→I128",
+        "Bool→U128", "Bool→I128", "U128→Bool", "I128→Bool",
+        // Vector lane completion — class A (widening / serialise /
+        // int-lane Json/Str). Boundary-only (class B) vec casts are
+        // not listed (this mirror is auto_adapter only).
+        "VecI8→VecI16", "VecI8→VecI32", "VecI8→VecI64", "VecI8→VecF16",
+        "VecI8→VecF32", "VecI8→VecF64", "VecI16→VecI32", "VecI16→VecI64",
+        "VecI16→VecF32", "VecI16→VecF64", "VecI32→VecI64", "VecI32→VecF64",
+        "VecI64→VecF64", "VecF16→VecF32", "VecF16→VecF64", "VecF32→VecF64",
+        "VecF64→Bytes", "VecI64→Bytes", "VecF16→Bytes", "VecI16→Bytes",
+        "VecI8→Bytes", "VecI64→Json", "VecI16→Json", "VecI8→Json",
+        "VecI32→Str", "VecI64→Str", "VecI16→Str", "VecI8→Str",
     ];
     known.contains(&label)
 }

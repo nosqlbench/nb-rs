@@ -49,6 +49,11 @@ fn __u64_to_bool(input: u64) -> bool { input != 0 }
 #[crate::polydat_node(category = Conversions)]
 fn __u32_to_u64(input: u32) -> u64 { input as u64 }
 
+// Totality fill: every u32 fits in i64 (lossless), so the widening
+// is class A — see type_system.md §3.3 / adapter_catalog_invariants.
+#[crate::polydat_node(category = Conversions)]
+fn __u32_to_i64(input: u32) -> i64 { input as i64 }
+
 #[crate::polydat_node(category = Conversions)]
 fn __i32_to_i64(input: i32) -> i64 { input as i64 }
 

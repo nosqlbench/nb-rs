@@ -34,6 +34,11 @@ exclude = [
 # already a polydat dep further down — used by the existing
 # kernel-tracking infrastructure too.
 polydat-derive = { path = "../polydat-derive", version = "0.1.0" }
+# Token-pasting for the macro-generated matrix-completion adapter
+# family (`library/polyfill_complete.rs`) — builds `#[polydat_node]`
+# fn names like `__u64_to_u8` from type-pair lists so the ~130
+# trivial conversion nodes aren't hand-written.
+paste = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 sha2 = "0.10"
 md-5 = "0.10"

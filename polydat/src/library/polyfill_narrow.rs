@@ -76,6 +76,46 @@ fn __f16_to_f32(f: half::f16) -> f32 { f.to_f32() }
 #[crate::polydat_node(category = Conversions)]
 fn __f16_to_f64(f: half::f16) -> f64 { f.to_f64() }
 
+// Totality fills (type_system.md §3.3 / adapter_catalog_invariants):
+// unsigned → strictly-larger signed is lossless, and a narrow int
+// whose magnitude fits in f32's 24-bit mantissa converts exactly —
+// both are class A so the "widening is always automatic" invariant
+// holds without holes.
+#[crate::polydat_node(category = Conversions)]
+fn __u8_to_i16(n: u8) -> i16 { n as i16 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u8_to_i32(n: u8) -> i32 { n as i32 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u8_to_i64(n: u8) -> i64 { n as i64 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u8_to_f32(n: u8) -> f32 { n as f32 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u16_to_i32(n: u16) -> i32 { n as i32 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u16_to_i64(n: u16) -> i64 { n as i64 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __u16_to_f32(n: u16) -> f32 { n as f32 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __i8_to_f32(n: i8) -> f32 { n as f32 }
+
+#[crate::polydat_node(category = Conversions)]
+fn __i16_to_f32(n: i16) -> f32 { n as f32 }
+
+// u8 (0..255) and i8 (-128..127) both fall inside f16's exact
+// integer window (±2048), so these widen exactly — class A.
+#[crate::polydat_node(category = Conversions)]
+fn __u8_to_f16(n: u8) -> half::f16 { half::f16::from_f32(n as f32) }
+
+#[crate::polydat_node(category = Conversions)]
+fn __i8_to_f16(n: i8) -> half::f16 { half::f16::from_f32(n as f32) }
+
 // =================================================================
 // 2. Narrowings + non-widening casts (class B — range-checked)
 // =================================================================
