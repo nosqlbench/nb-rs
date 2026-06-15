@@ -1,9 +1,17 @@
 # Polydat / SRD Audit and Reduction Plan
 
+> **STATUS: EXECUTED (historical record).** This plan has been carried out — the
+> polydat-internal SRDs are now redirect stubs or reduced nbrs-side integration docs,
+> and the substrate design lives in `polydat/docs/` (clean, axiom-delegating; no
+> `imported/` backlog remains). The live front door is
+> [SRD 09 Polydat Contract](SRD/09_polydat_contract.md). This file is retained as the
+> record of *how* the consolidation was done and will be moved under `SRD/history/`
+> in the archive pass (Part 4).
+
 **Purpose.** Now that polydat owns the definitive design for
 the variates + Polydat substrate (via five design docs in
 `polydat/docs/design/`), the nbrs-level SRDs in
-`docs/sysref/` contain substantial duplication. This doc
+`docs/SRD/` contain substantial duplication. This doc
 audits each affected SRD against the polydat treatment and
 proposes a reduction plan: what to delete, what to reduce,
 what to keep, and where to add cross-references.
@@ -197,27 +205,27 @@ Each candidate SRD falls into one of three tiers:
 
 | SRD | Lines | Tier | Move target | nbrs-side residue |
 |---|---|---|---|---|
-| SRD-10 Polydat Language and Compilation | 897 | 3 (split) | `imported/polydat_language.md` (DSL syntax, type system, node contract, wiring model, compilation pipeline) | `docs/sysref/10_polydat_language.md` keeps: "GK as unified access surface", "Reification: runtime state → Polydat wire", "Output Selection", "GK as Unified State Holder", "Op-Level Bindings", "Cursor Declarations" |
-| SRD-11 Polydat Evaluation Model | 498 | 3 (split) | `imported/polydat_evaluation_model.md` (Program/State Split, Provenance Invalidation, Two Lifecycles, Const Binding, Input Spaces, Compilation Levels) | `docs/sysref/11_polydat_evaluation.md` keeps: FiberBuilder, Cursor-Driven Evaluation |
+| SRD-10 Polydat Language and Compilation | 897 | 3 (split) | `imported/polydat_language.md` (DSL syntax, type system, node contract, wiring model, compilation pipeline) | `docs/SRD/10_polydat_language.md` keeps: "GK as unified access surface", "Reification: runtime state → Polydat wire", "Output Selection", "GK as Unified State Holder", "Op-Level Bindings", "Cursor Declarations" |
+| SRD-11 Polydat Evaluation Model | 498 | 3 (split) | `imported/polydat_evaluation_model.md` (Program/State Split, Provenance Invalidation, Two Lifecycles, Const Binding, Input Spaces, Compilation Levels) | `docs/SRD/11_polydat_evaluation.md` keeps: FiberBuilder, Cursor-Driven Evaluation |
 | SRD-12 Polydat Standard Library | 359 | 2 | `imported/polydat_stdlib.md` (whole catalog) | stub pointer |
-| SRD-13 Polydat Modules | 109 | 3 (split) | `imported/polydat_modules.md` (module system semantics) | `docs/sysref/13_polydat_modules.md` keeps: Compiler Diagnostic Event Stream |
+| SRD-13 Polydat Modules | 109 | 3 (split) | `imported/polydat_modules.md` (module system semantics) | `docs/SRD/13_polydat_modules.md` keeps: Compiler Diagnostic Event Stream |
 | SRD-13b Polydat Combination Modes | 208 | KEEP nbrs | — | nbrs-side terminology doc; add cross-refs to polydat |
 | SRD-13c Polydat Scope Model | 891 | 2 | `imported/scope_model.md` (whole) | stub with What-This-Does-NOT-Change + Open Design Issue + Design Rationale |
 | SRD-13d Op-template Polydat Scope Layer | 779 | KEEP nbrs | — | nbrs-activity-specific; add cross-refs |
 | SRD-13e Scope-as-Module Refinement | 678 | KEEP nbrs | — | nbrs-side typed ScopeModule on top of polydat substrate; add cross-refs |
-| SRD-13f Cross-Scope Wire Materialization | 944 | 3 (split) | `imported/wire_materialization.md` (architectural model, materialization gradient, cell classification) | `docs/sysref/13f_*.md` keeps: synthesizer rule, plan-to-true-up, open questions |
-| SRD-14 Polydat Config Expressions | 170 | 3 (split) | `imported/config_expressions.md` (Expression Syntax, Const Expression Evaluation, embedding mechanics) | `docs/sysref/14_*.md` keeps: Resolution Order, Param Substitution Interaction (host-side param resolution) |
+| SRD-13f Cross-Scope Wire Materialization | 944 | 3 (split) | `imported/wire_materialization.md` (architectural model, materialization gradient, cell classification) | `docs/SRD/13f_*.md` keeps: synthesizer rule, plan-to-true-up, open questions |
+| SRD-14 Polydat Config Expressions | 170 | 3 (split) | `imported/config_expressions.md` (Expression Syntax, Const Expression Evaluation, embedding mechanics) | `docs/SRD/14_*.md` keeps: Resolution Order, Param Substitution Interaction (host-side param resolution) |
 | SRD-15 Strict Mode | 697 | KEEP nbrs | — | nbrs-side strict-mode policy; add cross-ref to expression_engine.md §5.1.3 |
 | SRD-16 Polydat Engines | 225 | 2 | `imported/polydat_engines.md` (Compilation Levels, Provenance Optimization, Engine Selection, Type System) | stub pointer |
 | SRD-16b Polydat JIT Wiring | 351 | 1 | `imported/jit_wiring.md` (whole) | stub pointer |
-| SRD-66 Runtime Feature Detection | 1217 | 3 (split) | `imported/runtime_features.md` (polydat stdlib nodes: pick / exactly_one_value / log_*; kernel-driven polydat-call slot contract) | `docs/sysref/66_*.md` keeps: vari-structured `result:` field shape, OpResult body projection, workload migration story |
+| SRD-66 Runtime Feature Detection | 1217 | 3 (split) | `imported/runtime_features.md` (polydat stdlib nodes: pick / exactly_one_value / log_*; kernel-driven polydat-call slot contract) | `docs/SRD/66_*.md` keeps: vari-structured `result:` field shape, OpResult body projection, workload migration story |
 | SRD-67 Parent-gated Subcontext Construction | 1030 | 2 | `imported/subcontext_construction.md` (whole walled-off protocol) | stub with nbrs-side composition-with-13e cross-ref |
 | SRD-74 None Propagation | 302 | 2 | `imported/none_propagation.md` (three orthogonal rules) | stub with workload-author behavior + test contract pointers |
 
 ### Out of scope for the move
 
 These SRDs are polydat-adjacent but their content is
-host-side; they stay in `docs/sysref/`:
+host-side; they stay in `docs/SRD/`:
 
 - SRD-13b (Combination Modes terminology), SRD-13d
   (op-template scope layer), SRD-13e (typed ScopeModule
@@ -243,7 +251,7 @@ the move:
 3. Leave the nbrs-side SRD with the nbrs-internal
    sections + a header pointing at the moved companion.
 4. Add a manifest note at the top of the imported doc:
-   "Imported from `docs/sysref/<N>_<name>.md` — pending
+   "Imported from `docs/SRD/<N>_<name>.md` — pending
    reconciliation against polydat axiom docs."
 
 ### Pending-reconciliation manifest
@@ -252,7 +260,7 @@ Each imported doc carries a top-of-file YAML-ish manifest:
 
 ```markdown
 ---
-imported_from: docs/sysref/10_polydat_language.md
+imported_from: docs/SRD/10_polydat_language.md
 imported_on: 2026-05-30
 reconciliation_status: pending
 overlaps_with:
@@ -297,7 +305,7 @@ drains the imported docs over time.
 - **Atomic visibility into polydat's design surface.**
   After Pushes I-1/I-2/I-3, every polydat-owned design
   doc lives under `polydat/docs/`. No external dependence
-  on `docs/sysref/` for substrate concerns.
+  on `docs/SRD/` for substrate concerns.
 - **Reconciliation noise stays inside polydat.** The
   axiom-vs-mechanism collapse decisions happen against a
   fixed input set (the imported docs) instead of being
@@ -807,7 +815,7 @@ definition; this is nbrs-side framing."
 1. **G1b/G1c migration decision** — do we migrate SRD-16b
    (JIT wiring) and SRD-67 (parent-gated construction)
    content to polydat-side design docs, or leave them in
-   `docs/sysref/` with explicit polydat-internal markers?
+   `docs/SRD/` with explicit polydat-internal markers?
 2. **Cross-reference style** — the convention above uses
    `[doc.md §X](../path)` form. Some SRDs use a different
    convention (`[name](url)` without §). Pick one and

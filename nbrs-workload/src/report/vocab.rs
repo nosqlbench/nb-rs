@@ -5,7 +5,7 @@
 //! vocabulary — directives, their CLI flag mapping, and the
 //! valid value space for each.
 //!
-//! See [SRD-64 §4.3](../../../../docs/sysref/64_report_cli.md)
+//! See [SRD-64 §4.3](../../../../docs/SRD/64_report_cli.md)
 //! for the design intent. This module is consumed by:
 //!
 //! - the YAML parser in [`super`] (validates input

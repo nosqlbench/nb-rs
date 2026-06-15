@@ -1,10 +1,10 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Readout engine — see `docs/sysref/63_status_readouts.md`.
+//! Readout engine — see `docs/SRD/63_status_readouts.md`.
 //!
 //! Push 1 of the implementation plan
-//! (`docs/design/readouts_implementation_plan.md`):
+//! (`docs/SRD/history/readouts_implementation_plan.md`):
 //!
 //! - The [`Readout`] trait + [`Lod`] / [`ContentMode`] enums.
 //! - The minimum [`ReadoutContext`] surface needed by the

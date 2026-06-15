@@ -661,8 +661,6 @@ question on how to formalise this within the substrate.
 | [SRD-10](language_spec.md) | Syntactic substrate. Defines `PolydatNode`, `Value`, `PortType`. The axioms reference types SRD-10 defines. |
 | [SRD-11](evaluation_model.md) | Two-lifecycle classification — Pillar 3 (L2). Const-binding contract — boundary handler §8.3. |
 | [SRD-13c](scope_model.md) | Auto-extern (S1), `bind_outer_scope` (S2), manifest extraction. The synthesis-mechanism layer. |
-| [SRD-13d](../../../docs/sysref/13d_op_template_scope.md) | Op-template scope tier in the layering (L1). Adds a layer to the taxonomy; the axioms apply transitively. |
-| [SRD-13e](../../../docs/sysref/13e_scope_as_module.md) | Typed `ScopeModule` refinement. Strengthens T1 — modules carry typed import/export contracts that propagate the type contract across the chain. |
 | [SRD-13f](wire_materialization.md) | Cross-scope read/write semantics. Read-invariant (Pillar 3, L1); write-through routing (S5, §8.2). |
 | [Cross-Fiber Cell Invalidation](cross_fiber_invalidation.md) | Validity-tracking mechanism for S5 — per-cell revision, per-scope intent vectors, per-fiber `last_seen`. Implements §12.1's cross-fiber visibility guarantee. |
 | [SRD-16](engines.md) | Engine variants. T3 applies across every engine (P1 interpreted, P2 closures, P3 JIT). |

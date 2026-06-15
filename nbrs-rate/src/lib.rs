@@ -3,6 +3,8 @@
 
 //! # nbrs-rate
 //!
+//! Contract & axioms: [SRD 06](../../docs/SRD/06_rate_limiter.md).
+//!
 //! Async-ready token-bucket rate limiter built on
 //! [`tokio::sync::Semaphore`]. Designed for the nb-rs op-dispatch
 //! loop but usable anywhere you need a rate cap that surfaces
@@ -62,7 +64,7 @@
 //! assert!((spec.burst_ratio - 1.5).abs() < 1e-9);
 //! ```
 //!
-//! See `docs/design/19_rate_limiter.md` for the design brief and
+//! See `docs/SRD/notes/19_rate_limiter.md` for the design brief and
 //! the coordinated-omission rationale.
 
 mod spec;

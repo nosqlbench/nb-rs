@@ -99,6 +99,7 @@ impl WorkloadShell {
     /// A shell with no stop conditions (the common case until a
     /// workload declares `stop_when:`). Its `record_phase` still folds
     /// outcomes into the aggregate but never trips.
+    #[allow(dead_code)] // WIP: SRD-83 stop-condition shell — the no-stop-conditions constructor
     pub fn inert() -> Self {
         Self::new(StopConditionSet::empty())
     }
@@ -159,6 +160,7 @@ impl WorkloadShell {
     }
 
     /// The reason the shell stopped, if it has.
+    #[allow(dead_code)] // WIP: SRD-83 stop-condition shell — reason readout
     pub fn stop_reason(&self) -> Option<String> {
         self.stop_reason.lock().ok().and_then(|g| g.clone())
     }

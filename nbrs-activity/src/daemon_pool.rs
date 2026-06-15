@@ -75,6 +75,7 @@ impl DaemonExit {
     /// Whether this outcome should fail the enclosing phase.
     /// Clean completions and clean cancellations don't; errors,
     /// timeouts, and panics do.
+    #[allow(dead_code)] // WIP: SRD-82/83 daemon-exit → phase-failure wiring
     pub fn is_phase_error(&self) -> bool {
         matches!(self,
             DaemonExit::Errored(_)
@@ -161,6 +162,7 @@ impl DaemonPool {
     /// number can change between the read and any subsequent
     /// decision). [`Self::try_spawn`] is the only atomic
     /// "check-and-increment" entrypoint.
+    #[allow(dead_code)] // WIP: SRD-82/83 daemon diagnostics / status surface
     pub fn live_count(&self, op_name: &str) -> u32 {
         let g = self.live_counts.lock().unwrap_or_else(|e| e.into_inner());
         g.get(op_name).copied().unwrap_or(0)
@@ -259,6 +261,7 @@ impl DaemonPool {
     /// naturally before the cycle-pool drain finished — in which
     /// case [`Self::shutdown`] still needs to await their outcome
     /// values, but no stop signal is needed.
+    #[allow(dead_code)] // WIP: SRD-82/83 phase-completion gating on daemon liveness
     pub fn any_running(&self) -> bool {
         let g = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         g.iter().any(|s| !s.handle.is_finished())

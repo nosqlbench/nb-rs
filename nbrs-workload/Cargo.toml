@@ -20,7 +20,7 @@ regex = "1"
 # parsing here so the comprehension shape has a single source
 # of truth across the workspace. (Crosses the historical
 # "nbrs-workload is standalone" boundary from SRD-01 — see
-# `docs/internals/50_comprehensions_first_class.md`.)
+# `docs/SRD/history/50_comprehensions_first_class.md`.)
 polydat = { path = "../polydat", version = "0.1.0" }
 
 # SRD-64 §6.4–§6.5: AST-preserving workload edit primitive.

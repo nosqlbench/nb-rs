@@ -114,7 +114,6 @@ pub struct ExecCtx {
     /// `dryrun=phase` and the real execution paths both leave
     /// this `false`. Only the pre-map pass sets it.
     pub pre_map_only: bool,
-    pub openmetrics_url: Option<String>,
     pub seq_type: SequencerType,
     pub concurrency: usize,
     pub rate: Option<f64>,

@@ -43,10 +43,9 @@ contract.
   — kernel/state split, two-lifecycle classification, const-
   binding contract. Owns the foundational evaluation
   semantics that R-axioms operationalise.
-- [SRD-02: Concurrency Model](../../../docs/sysref/02_concurrency_model.md)
-  — async fibers, per-fiber kernel state. D-axioms hold
-  per-fiber; SRD-02 owns the cross-fiber concurrency
-  contract.
+- The host's concurrency model owns the cross-fiber contract:
+  D-axioms hold per-fiber (each fiber has its own kernel state);
+  the host coordinates across fibers.
 - [The Polydat Grammar](grammar.md) — G-axioms. The
   grammar-level commitments that underwrite this doc's
   R/D axioms. G4 (port-typed expressions) underwrites D1
@@ -492,7 +491,6 @@ guarantees real?" reads §3–§5 (R-axioms and state layering).
 | [Composition Substrate](composition_substrate.md) | The static contract (S/T/L axioms). D1's typed-return guarantee follows from T1+T2 at the slot tier. |
 | [Graph Compiler](graph_compiler.md) | Construction passes (H/CF/NF axioms). The R-axioms operate over compiled output; H1's lifecycle classification determines what runs at scope-init vs per-cycle. |
 | [Expression Engine](expression_engine.md) | Embedded-evaluation surface. E3 references D1/D2/D3 as the realisation of bounded determinism. |
-| [SRD-02](../../../docs/sysref/02_concurrency_model.md) | Concurrency model. L1 (each layer owns its state) is realised as per-fiber `PolydatState`; SRD-02 owns the cross-fiber contract. D1 holds per-fiber. |
 | [SRD-11](evaluation_model.md) | Foundational evaluation semantics. R1 / R2 are SRD-11's two-lifecycle classification at runtime. The const-binding contract is the scope-init expression of R1. |
 | [SRD-13f](wire_materialization.md) | Cross-scope read/write. R3's "forward-only with S5 carve-out" cites SRD-13f's SharedCell write-through as the named exception. |
 | [SRD-67](subcontext_construction.md) | Walled-off construction. SRD-67's API prevents alternative construction paths that could violate R3. |

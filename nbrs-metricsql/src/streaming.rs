@@ -9,7 +9,7 @@
 //! the algebraic invariants documented in the SRD are
 //! load-bearing.
 //!
-//! [srd47]: ../../../docs/sysref/47_metricsql_streaming.md
+//! [srd47]: ../../../docs/SRD/47_metricsql_streaming.md
 //!
 //! # The three algebraic classes
 //!

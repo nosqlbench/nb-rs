@@ -1,6 +1,8 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
+//! Contract & axioms: [SRD 08](../../docs/SRD/08_metricsql.md).
+//!
 //! MetricsQL parser + evaluator. Rust port of
 //! [VictoriaMetrics/metricsql](https://github.com/VictoriaMetrics/metricsql)
 //! plus the relevant chunks of `vmselect/promql` for query
@@ -44,6 +46,12 @@
 //!   the upstream `_test.go` files via
 //!   `scripts/extract_fixtures.go`.
 
+// nbrs-metricsql is a standalone, extractable library (a VictoriaMetrics
+// MetricsQL port). Its public API is its OWN library contract — the parser,
+// AST, evaluator, streaming reducers, OpenMetrics types, and the
+// `MetricCatalog` trait (SRD-49) — not merely "what the nb-rs workspace
+// imports". So these modules stay `pub`; the SRD-05 D5 narrowing applies to
+// workspace-internal crates, not to standalone libraries.
 pub mod lexer;
 pub mod ast;
 pub mod parser;

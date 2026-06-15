@@ -15,8 +15,7 @@
 //!   absolute ordinals, computed by [`resolve`] from a
 //!   `PartitionSpec` against a known base extent.
 //!
-//! See [`docs/sysref/71_cursor_partitions.md`] for the design
-//! memo this implements. The parser and resolution math live
+//! The parser and resolution math live
 //! here; the DSL `over` clause and cursor source factory
 //! integration live in their own modules. The Polydat `Value`
 //! integration rides on the existing [`Value::Ext`] /

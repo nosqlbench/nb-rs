@@ -3,7 +3,7 @@
 
 //! Testkit-only Polydat function nodes for resumable-workload testing.
 //!
-//! See `docs/design/resumable_test_fixture.md` for the full
+//! See `docs/SRD/history/resumable_test_fixture.md` for the full
 //! design and usage scenarios. The nodes here are intentionally
 //! obtrusively named (`side_effect_*`, `throw_at`) so workload
 //! authors don't reach for them by accident — they exist to

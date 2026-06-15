@@ -155,3 +155,12 @@ pub use inventory;
 /// `polydat::half::f16`, which `extern crate self as polydat`
 /// resolves inside this crate too).
 pub use half;
+
+/// Host-log sink bridge — the sanctioned public path for installing
+/// a leveled log sink into the kernel (`set_log_fn`) and for emitting
+/// through it (`warn` / `info` / …). The activity runner installs its
+/// `observer::log` here so polydat's cycle-time data-source audit lines
+/// land in `session.log`. This is the one public entry point for the
+/// audit channel; the implementation lives under `library::support`,
+/// which is library-internal and must not be reached directly.
+pub use library::support::audit;

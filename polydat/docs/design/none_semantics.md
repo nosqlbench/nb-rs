@@ -303,13 +303,8 @@ P3 error names the field if any don't.
 - [Scope Model](scope_model.md) — scope chain, visibility
   rules, two-tier lookup. The existing machinery this SRD
   leverages.
-- [SRD 13d](../../../docs/sysref/13d_op_template_scope.md) — op-template Polydat scope;
-  the rendering site Rule 3 targets.
 - [Wire Materialization](wire_materialization.md) —
   cross-scope wire materialization invariants. Conditional-
   shadow `const` extends the read invariant: a None const
   output is structurally identical to "no const declared" for
   consumers.
-- [SRD 73](../../../docs/sysref/73_op_field_modifiers.md) — the immediate consumer
-  of `set:` as a configuration-shadow mechanism; provided the
-  motivating bug for this SRD.

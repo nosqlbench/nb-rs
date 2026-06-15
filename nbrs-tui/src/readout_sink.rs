@@ -65,12 +65,6 @@ impl TuiReadoutSink {
         parse_ansi_to_lines(&raw)
     }
 
-    /// Borrow the rendered output without consuming.
-    /// Mostly useful for diagnostics; production sites use
-    /// [`take`](Self::take).
-    pub fn lines(&self) -> Vec<Line<'static>> {
-        parse_ansi_to_lines(self.inner.as_str())
-    }
 }
 
 impl Default for TuiReadoutSink {

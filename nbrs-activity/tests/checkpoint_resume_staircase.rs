@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Resume-after-failure staircase integration test (SRD-44; design
-//! memo `docs/design/resumable_test_fixture.md`).
+//! memo `docs/SRD/history/resumable_test_fixture.md`).
 //!
 //! Drives the test fixture workload through a four-invocation
 //! staircase, verifying at each step that:

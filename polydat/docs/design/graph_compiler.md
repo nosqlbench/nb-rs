@@ -681,7 +681,6 @@ axioms (H, CF, NF) guarantee each pass preserves the contract.
 | [SRD-11](evaluation_model.md) | Two-lifecycle classification. Hoisting (§3) is SRD-11's classification rule applied compositionally over the wire chain. |
 | [SRD-13c](scope_model.md) | Auto-extern + `bind_outer_scope`. The synthesis-surface discovery (S1) and the synthesis act (S2) — Context Fusion's foundations. |
 | [SRD-13f](wire_materialization.md) | Gradient classification for outer bindings. CF3 honours SRD-13f's classification; CF cannot rewrite. |
-| [SRD-15](../../../docs/sysref/15_strict_mode.md) | Strict mode promotion. H1's totality is enforced at construction; SRD-15 promotes the warnings to errors. |
 | [SRD-16](engines.md) | Engine selection (P1/P2/P3/hybrid). The pipeline's engine-selection pass (§6) is owned by SRD-16; this doc references it. |
 | [SRD-16b](jit_boundary.md) | JIT boundary. Node Fusion (§5.3 polyfills) interacts with JIT eligibility; SRD-16b owns the boundary semantics. |
 | [SRD-67](subcontext_construction.md) | Walled-off construction API. CF1 + CF4 are gated by SRD-67's typed-builder chokepoint. |

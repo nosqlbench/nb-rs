@@ -22,7 +22,7 @@
 //!   handle don't break — adapters opt in via
 //!   `ExecCtx::with_wires` once they own a kernel reference.
 //!
-//! See `docs/sysref/68_dispenser_owned_polydat_context.md`.
+//! See `docs/SRD/68_dispenser_owned_polydat_context.md`.
 
 use std::sync::OnceLock;
 

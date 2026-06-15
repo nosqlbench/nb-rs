@@ -1297,8 +1297,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // out if they're noisy. Replaces the standalone
     // `<session>/audit.log` file — same content, one fewer
     // place to look.
-    polydat::library::support::audit::set_log_fn(|level, msg| {
-        use polydat::library::support::audit::LogLevel as AuditLevel;
+    polydat::audit::set_log_fn(|level, msg| {
+        use polydat::audit::LogLevel as AuditLevel;
         let mapped = match level {
             AuditLevel::Trace | AuditLevel::Debug => crate::observer::LogLevel::Debug,
             AuditLevel::Info  => crate::observer::LogLevel::Info,
@@ -2596,7 +2596,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             // Completed. Flipped back to false at line ~2675
             // before the real execution pass.
             pre_map_only: true,
-            openmetrics_url: openmetrics_url.clone(),
             seq_type,
             concurrency,
             rate,

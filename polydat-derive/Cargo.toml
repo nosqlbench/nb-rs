@@ -4,7 +4,7 @@
 # `polydat-derive` — proc-macro crate that derives polydat node
 # metadata (struct, NodeMeta, impl PolydatNode, FuncSig
 # registration) from a single typed Rust function signature.
-# See docs/sysref/80_node_function_macro_collapse.md for the
+# See docs/SRD/80_node_function_macro_collapse.md for the
 # design and migration plan.
 
 [package]

@@ -6,7 +6,7 @@
 //! This module is the **additive** typed entry point for constructing
 //! a Polydat child kernel as a function of a parent kernel. It implements
 //! the protocol from
-//! [`docs/sysref/67_polydat_subcontext_construction.md`](../../../../docs/sysref/67_polydat_subcontext_construction.md):
+//! [subcontext_construction.md](../../../docs/design/subcontext_construction.md):
 //!
 //! 1. Parent yields a builder via [`ScopeKernel::subcontext_builder`].
 //! 2. Builder accumulates module matter (imports, exports, body

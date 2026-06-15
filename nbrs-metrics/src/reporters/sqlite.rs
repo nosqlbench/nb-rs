@@ -1244,7 +1244,7 @@ mod inner {
         /// `sample_value` row schema; populate the columns
         /// the type needs and leave the rest `None`.
         ///
-        /// Per [SRD-49](../../../docs/sysref/49_metricsql_supported_scope.md):
+        /// Per [SRD-49](../../../docs/SRD/49_metricsql_supported_scope.md):
         /// the storage convention per type is
         ///
         /// | Type            | Populated columns       |

@@ -8,7 +8,7 @@
 //! Runs during assembly after wiring resolution, before dead code
 //! elimination and topological sort.
 //!
-//! See SRD 36 (docs/design/36_node_fusion.md) for the full design.
+//! See [graph_compiler.md](../../docs/design/graph_compiler.md) §Node Fusion for the full design.
 
 use std::borrow::Cow;
 

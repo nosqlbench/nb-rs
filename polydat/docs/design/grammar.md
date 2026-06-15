@@ -629,8 +629,6 @@ the substrate doesn't have to repeat.
 | [SRD-10](language_spec.md) | DSL syntax. This doc's productions (§2) formalise the syntax SRD-10 describes prosaically. |
 | [SRD-11](evaluation_model.md) | Two-lifecycle classification. G2+G5 are the grammar-level commitments SRD-11's lifecycle taxonomy rests on. |
 | [SRD-13c](scope_model.md) | Scope-composition mechanism. G1+G3 are the grammar-level commitments SRD-13c's auto-extern + `bind_outer_scope` rest on. |
-| [SRD-13d](../../../docs/sysref/13d_op_template_scope.md) | Op-template scope tier. G3's syntactic transparency applies transitively across all scope tiers SRD-13d names. |
-| [SRD-13e](../../../docs/sysref/13e_scope_as_module.md) | Typed `ScopeModule` refinement. G4's port-typed expression rule extends to module input/output contracts. |
 | [SRD-13f](wire_materialization.md) | Cross-scope read/write. G1's auto-extern discovery is what SRD-13f's gradient classification operates over. |
 
 ---

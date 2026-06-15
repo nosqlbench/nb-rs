@@ -46,9 +46,9 @@
 //!
 //! ## See also
 //!
-//! - [SRD-47](../../../docs/sysref/47_metricsql_streaming.md):
+//! - [SRD-47](../../../docs/SRD/47_metricsql_streaming.md):
 //!   streaming-evaluator coverage scope.
-//! - [SRD-48](../../../docs/sysref/48_metricsql_continuous_query.md):
+//! - [SRD-48](../../../docs/SRD/48_metricsql_continuous_query.md):
 //!   continuous-query runtime; the catalog feeds query
 //!   construction in continuous-query setups.
 

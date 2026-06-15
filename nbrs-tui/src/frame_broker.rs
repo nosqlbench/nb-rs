@@ -88,8 +88,8 @@ impl FrameBroker {
     }
 
     /// Number of currently registered subscribers. Diagnostic /
-    /// test surface only — do not branch on this from runtime
-    /// code.
+    /// test surface only — do not branch on this from runtime code.
+    #[allow(dead_code)] // used by unit tests
     pub fn subscriber_count(&self) -> usize {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
     }

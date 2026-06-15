@@ -14,9 +14,8 @@ This doc extends axiom-level statements:
 - [grammar.md G2 (const lifecycle declared at syntax) + G5 (two-lifecycle classification)](grammar.md)
 - [engines.md (compilation levels; engine selection)](engines.md)
 
-The nbrs-side FiberBuilder and Cursor-Driven Evaluation
-(activity-pump details, DataSource API) remain in
-[SRD-11](../../../docs/sysref/11_polydat_evaluation.md).
+The host-side FiberBuilder and cursor-driven evaluation
+(activity-pump details, DataSource API) are documented host-side.
 
 The Polydat evaluation model separates the immutable program
 (shared) from mutable per-fiber state (private). This
@@ -120,7 +119,7 @@ is itself effectively-const.
 | Literal in source | Yes | Resolved at parse / compile. |
 | Compile-const fold result | Yes | Already a leaf const node. |
 | Workload param (`const` binding) | Yes | Bound once at workload-kernel init, never reassigned. |
-| `for_each` / `for_combinations` iteration extern | Yes — *for the duration of one activation* | Rebound by `bind_outer_scope` on each iteration; held constant for every cycle within that iteration. See [SRD 18b §"Iteration variables as scope outputs"](../../../docs/sysref/18b_scenario_tree_and_scheduler.md). |
+| `for_each` / `for_combinations` iteration extern | Yes — *for the duration of one activation* | Rebound by `bind_outer_scope` on each iteration; held constant for every cycle within that iteration (iteration variables are scope outputs the host rebinds per iteration). |
 | `do_while` / `do_until` counter | **No** | Dynamic — ticks within the scope's own evaluation; not stable for the activation. |
 | Graph input (e.g. `cycle`) | **No** | Dynamic — changes every cycle. |
 | External-write port | **No** | Dynamic — mutated by external writes between pulls. |

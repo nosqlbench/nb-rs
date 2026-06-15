@@ -8,7 +8,7 @@
 # renderer can show the operator which group of phases came
 # from which included scenario.
 #
-# See docs/sysref/18_control_flow.md §"Syntax → scenario:
+# See docs/SRD/18_control_flow.md §"Syntax → scenario:
 # <name> (logical inclusion)" for the design rationale and
 # resolver semantics (forward refs, cycle detection, diamond
 # inclusion).

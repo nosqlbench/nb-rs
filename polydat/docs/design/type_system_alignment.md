@@ -631,8 +631,8 @@ must read S4/S6 first; temporal batching lives entirely in Imm2
   bit-riding conventions, setjmp predicate plumbing.
 - [none_semantics.md](none_semantics.md) (SRD-74) — None/Null
   propagation; why None is interpreter-only.
-- `docs/sysref/80b_macro_universal_authoring.md` — `Wire` trait as
-  the sole authoring bridge; Commitment 2 ("type identity is Rust +
+- The macro-authoring brief (`polydat-derive`) — `Wire` trait as
+  the sole authoring bridge; its Commitment 2 ("type identity is Rust +
   serde_json::Value semantics") is the prior statement of this
   brief's R1.
 - `cranelift-codegen-meta-0.116.1/src/shared/types.rs` — standard

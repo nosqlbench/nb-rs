@@ -4,7 +4,7 @@
 //! `polydat-derive` — proc-macro implementation of
 //! [`#[polydat_node]`](polydat_node).
 //!
-//! See [`docs/sysref/80_node_function_macro_collapse.md`](https://github.com/jshook/nb-rs/blob/main/docs/sysref/80_node_function_macro_collapse.md)
+//! See [`docs/SRD/80_node_function_macro_collapse.md`](https://github.com/jshook/nb-rs/blob/main/docs/SRD/80_node_function_macro_collapse.md)
 //! for the design, the 8 open design questions this proc-macro
 //! is closing one-at-a-time, and the migration plan against
 //! existing polydat library nodes.

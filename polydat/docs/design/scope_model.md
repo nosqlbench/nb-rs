@@ -3,11 +3,9 @@
 How Polydat kernels compose across lifecycle boundaries (phases,
 `for_each` iterations, scope groups) with visibility,
 mutability, and isolation rules. This doc is the in-depth
-specification of the **scope-composition** mode (#2 of the
-four modes in
-[SRD 13b Polydat Combination Modes](../../../docs/sysref/13b_polydat_combination_modes.md));
-read that first if you're unsure which composition mode
-applies to your situation.
+specification of the **scope-composition** mode — how Polydat
+kernels combine across lifecycle boundaries. (A host that offers
+several combination modes documents how to choose among them.)
 
 This doc extends axiom-level statements:
 - [composition_substrate.md L1 (lifecycle isolation) + L2 (effectively-const) + S5 (cross-tier write-through)](composition_substrate.md)

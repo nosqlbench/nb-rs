@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use nbrs_activity::lifecycle::EventType;
 use nbrs_activity::readouts as ro;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Modifier};
 use ratatui::text::{Line, Span};
 
 use crate::readout_sink::TuiReadoutSink;
@@ -218,31 +218,6 @@ fn apply_focus_tint(line: Line<'static>) -> Line<'static> {
         Span::styled(s.content.into_owned(), style)
     }).collect();
     Line::from(new_spans)
-}
-
-/// Convenience: same idea as [`render_phase_readouts`] but
-/// for the per-frame status header at the top of the active-
-/// phase detail block. Always fires `EventType::Update` and
-/// always returns at least one line (an empty placeholder if
-/// the binder produces no output, to keep panel layout
-/// stable across phases that haven't started rendering yet).
-pub fn render_active_status_line(
-    binder: &mut ro::TuiReadoutBinder,
-    phase: &PhaseEntry,
-    live: &ActivePhase,
-    refresh_tick: u64,
-) -> Vec<Line<'static>> {
-    let (lines, _event) = render_phase_readouts(
-        binder, phase, Some(live), refresh_tick,
-    );
-    if lines.is_empty() {
-        vec![Line::from(Span::styled(
-            "(awaiting first refresh tick)",
-            Style::default().fg(Color::DarkGray),
-        ))]
-    } else {
-        lines
-    }
 }
 
 // Suppress unused-import warning; Instant is used inside

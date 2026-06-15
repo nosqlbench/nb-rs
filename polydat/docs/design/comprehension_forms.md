@@ -17,30 +17,10 @@ material. Apparent contradictions between a non-polydat SRD and
 this document resolve in favor of this document. §15 below
 names each touching SRD's role under this declaration.
 
-## Companion documents
-
-- [SRD-18c](../../../docs/sysref/18c_comprehension_syntax.md) —
-  parser-layer surface grammar (clause sources, ranges,
-  generators, SI suffixes). Owns parsing; does not own
-  semantics.
-- [SRD-18f](../../../docs/sysref/18f_comprehension_source_forms.md)
-  — parser-/resolver-layer surface for the **source position** of
-  a clause (the expression right of `in`): list-comprehension
-  sugar `[…]`, string comprehension `"…"`/`'…'`, the relaxed bare
-  form, the `…` spread operator, bare-word→reference. Owns that
-  surface; §3.1.1–§3.1.4 above own the resolution semantics it
-  maps to (the bound sequence, the `iteration_interior` predicate,
-  peel-one-level).
-- [SRD-18d](../../../docs/sysref/18d_comprehension_traversal_order.md)
-  — per-strategy algorithmic detail (Halton recurrence, Sobol
-  direction numbers, Lhs construction). Owns mathematical
-  implementation detail; §3.6 below owns compositional behavior
-  and per-strategy input requirements.
-- [SRD-78](../../../docs/sysref/78_polystreamer.md) —
-  PolyStreamer runtime that hosts the §9.5 consumption surfaces
-  (`CoordinateStream`, `ScopedKernelStream<K>`, `scope_once`).
-  Owns runtime implementation; this document owns the contracts
-  it implements.
+This document is authoritative for comprehension grammar, semantics, and the
+operator language; the surface grammar, source-position forms, per-strategy
+algorithmic detail, and the streaming runtime that *consume* these contracts are
+documented by the host that wires polydat in.
 
 The forcing question: **given filtering, ordering, unioning,
 parallel-zipping, cartesian-multiplying, and bounded/unbounded
@@ -63,8 +43,7 @@ Across a single comprehension's dispense, every tuple carries the
 Comprehensions are *first-class*: the same constructors apply
 whether the comprehension appears in a user-authored expression,
 is bound to a wire and reused, is held as a runtime
-[`PolyStreamer`](../../../docs/sysref/78_polystreamer.md), or is
-the subject of a static optimization pass.
+`PolyStreamer`, or is the subject of a static optimization pass.
 
 ### 1.1 Universe of values
 
@@ -200,11 +179,8 @@ flattens more than another.
 
 The parser-/resolver-layer **surface** for the source position —
 which syntactic forms exist and how an author selects peel vs.
-no-peel — is owned by
-[SRD-18f](../../../docs/sysref/18f_comprehension_source_forms.md);
-this section owns the resolution **semantics** that surface maps
-to. (SRD-18f is the source-position companion to SRD-18c, which
-owns the rest of the comprehension parse surface.)
+no-peel — is a host surface concern; this section owns the
+resolution **semantics** that surface maps to.
 
 #### 3.1.2 The `iteration_interior` predicate
 
@@ -1130,9 +1106,7 @@ filter/order nodes per F1/O1 chaining rules.
 The `source` on the right of `in` is itself a small surface — list
 sugar `[…]`, string comprehension `"…"`/`'…'`, the relaxed bare
 form, spreads — resolved to the clause's bound sequence by the
-rules in §3.1.1–§3.1.4 (semantics) and
-[SRD-18f](../../../docs/sysref/18f_comprehension_source_forms.md)
-(surface).
+rules in §3.1.1–§3.1.4 (semantics); the host owns the surface forms.
 
 ### 8.2 Recursive composition
 

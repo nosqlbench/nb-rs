@@ -15,16 +15,11 @@ This doc extends axiom-level statements:
 - [scope_model.md (visibility rules — the "Default: Immutable Propagation" clause this doc updates)](scope_model.md)
 - [subcontext_construction.md (parent-walking lookup; SharedCell write-through)](subcontext_construction.md)
 
-The nbrs-side wire-reference classification synthesizer rule,
-current implementation status, plan-to-true-up, and open
-questions remain in
-[SRD-13f](wire_materialization.md).
-Related host-side docs:
-[SRD-13d op-template scope layer](../../../docs/sysref/13d_op_template_scope.md),
-[SRD-13e scope-as-module](../../../docs/sysref/13e_scope_as_module.md),
+The host-side wire-reference classification synthesizer rule,
+implementation status, plan-to-true-up, and open questions are
+documented by the host. Related polydat docs:
 [engines.md (per-scope canonical kernel cache)](engines.md),
-[module_system.md](module_system.md),
-[SRD-68 dispenser-owned Polydat context](../../../docs/sysref/68_dispenser_owned_polydat_context.md).
+[module_system.md](module_system.md).
 
 ---
 

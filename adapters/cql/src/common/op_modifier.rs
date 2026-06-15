@@ -9,7 +9,7 @@
 //! value into an engine-specific
 //! [`OpFieldModifier`](nbrs_activity::op_modifier::OpFieldModifier).
 //!
-//! See [`SRD 73`](../../../../docs/sysref/73_op_field_modifiers.md)
+//! See [`SRD 73`](../../../../docs/SRD/73_op_field_modifiers.md)
 //! §"CQL universal field superset" for naming rationale.
 
 use nbrs_activity::op_modifier::{ModifierChain, OpFieldModifier};

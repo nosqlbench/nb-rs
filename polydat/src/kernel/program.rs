@@ -12,7 +12,7 @@ use super::engines::{PolydatState, RawState, ProvScanState, EngineCore};
 use crate::dsl::ast::{PolydatFile, Statement};
 
 /// Evaluation lifecycle classification used by the init-binding
-/// contract (see [SRD 11 §"Three Evaluation Lifecycles"](../../../../docs/sysref/11_polydat_evaluation.md)).
+/// contract (see [evaluation_model.md](../../docs/design/evaluation_model.md)).
 ///
 /// The variants are *ordered* — `Dynamic > ScopeInit > CompileConst`
 /// — so propagation along wires is a `max()` operation: a node's

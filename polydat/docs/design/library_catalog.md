@@ -177,9 +177,8 @@ replacement for wrapping arithmetic when correctness matters.
 | `log_error` | `T → T` | As `log_debug`, at Error level. |
 
 Each log node takes one wire input, emits a log line at the
-named level via the runtime's diag pipeline (per
-[SRD-41](../../../docs/sysref/41_logging.md)), and returns the
-input unchanged. The pass-through return value lets workloads
+named level via the host log sink (installed through
+`polydat::audit`), and returns the input unchanged. The pass-through return value lets workloads
 insert logging into a binding chain without restructuring;
 the side-channel purity declaration suppresses output elision
 when the return value is unused. The logged line carries the
@@ -189,9 +188,8 @@ diagnostic enrichment the eval-panic path uses.
 
 ### Branched dispatch and structured-body assertions
 
-These nodes back the runtime-feature-detection pattern
-documented as workload surface in
-[SRD-66](../../../docs/sysref/66_runtime_feature_detection.md).
+These nodes back the runtime-feature-detection pattern, which a
+host exposes as a workload surface.
 
 | Node | Signature | Description |
 |------|-----------|-------------|
@@ -296,47 +294,17 @@ JSON-AST representation that map-shape result wires already
 need (per SRD-66 Surface 1 "Map shape composite wire").
 `exactly_one_value` is type-agnostic at the substrate layer.
 
-### Runtime context nodes
+### Host-registered nodes
 
-The reification principle (SRD 10 §"GK as the unified access
-surface") makes Polydat the default way for a workload to read any
-runtime value. The nodes in this category are how reified
-runtime state is named in the DSL. Each one projects a single,
-well-defined runtime surface into a Polydat wire — no side channels,
-no templating hooks, no ad-hoc reader APIs.
-
-| Node | Signature | Description |
-|------|-----------|-------------|
-| `control` | `String → f64` | Current committed value of a [dynamic control](../../../docs/sysref/23_dynamic_controls.md) addressed by name, projected through its reified gauge. Resolves by walking up the component tree from the session root, honoring branch scope. Missing controls, non-reified controls, or non-numeric projections return `0.0`. |
-| `control_u64` | `String → u64` | As `control`, cast to `u64` (negative values clamp to `0`). Sugar over `f64_to_u64(control(name))`. |
-| `control_bool` | `String → bool` | As `control`, projected to `true` iff the gauge value is non-zero. Missing controls return `false`. |
-| `control_str` | `String → String` | As `control`, rendered via the control's erased `value_string()`. Useful for enum-valued or string-valued controls. |
-| `control_set` | `String, f64 → u64` | Non-blocking write into a named control. Spawns an async task that calls the erased `set_f64` path; the control's `from_f64` converter maps to its native type. Return value is `1` if dispatched, `0` if no session root is installed. The committed `Versioned<T>::origin` carries the enclosing DSL binding name as attribution. |
-| `metric` | `String → f64` | Latest reading of a named metric series, scoped to the nearest ancestor component that publishes the series. Pairs with `metric_window(name, duration)` for aggregated views (SRD 42). |
-| `phase` | `→ String` | Name of the currently-executing phase. Reads pin against the enclosing executor — never resolves to "some other phase's name". Backed by a `tokio::task_local!` scope so tokio work-stealing can't leak phase identity across fibers. |
-| `cycle` | `→ u64` | Current cycle ordinal for the running fiber. Sugar for reaching the cycle value without declaring it as an explicit input. |
-| `concurrency` | `→ f64` | Alias for `control("concurrency")` — reads the activity's live fiber count through the reified gauge. |
-| `rate` | `→ f64` | Alias for `control("rate")` — reads the live rate-limiter target in ops/sec. |
-
-Writes to runtime state go through the control-write nodes
-(`control_set(name, value)` — SRD 23). Read-side context
-nodes are side-effect-free and fold / JIT like any other
-deterministic projection, subject to the same caveat as
-live metric reads: their output changes between cycles by
-definition, so constant-folding them is illegal. The engine
-registers them as `volatile` so the folder leaves them in
-place.
-
-When a new piece of mutable runtime state is added (a new
-wrapper knob, a per-adapter tuning dial, an internal counter),
-the authoring checklist is:
-
-1. Attach it to the component whose behavior it governs.
-2. Decide whether it's a read-only projection (context node)
-   or a writable value (control). Both are fine; neither is a
-   template / env-var / global.
-3. Register the node or control so DSL authors see it by name
-   in `--explain` and `dryrun=controls`.
+The node registry is **open**. A host application registers additional nodes via
+`inventory` to project its *own* runtime state — live controls, metric series, the
+executing phase, the current cycle, and similar — into the DSL as named,
+side-effect-free projections. polydat itself provides only the deterministic library
+documented here; nodes that read host runtime state live in (and are documented by)
+the host, since they depend on host services polydat does not. The engine marks such
+nodes `volatile` so the constant-folder leaves them in place (their value changes per
+pull by definition). A read-side projection is a context node; a writable value is a
+control — neither is a template / env-var / global.
 
 ### Parameter resolution and validation
 
@@ -456,11 +424,9 @@ different source kind (CSV, streaming, etc.).
 Library nodes are authored via the `#[polydat_node]`
 attribute macro and self-register through the `inventory`
 crate at link time. The macro is the SOLE authoring path for
-workload-callable library nodes (SRD-80b §"the macro is the
-sole authoring path"). The canonical-form table in
-[`docs/sysref/80b_macro_universal_authoring.md`](../../../docs/sysref/80b_macro_universal_authoring.md)
-§"Authoring patterns" lists every recognised function-signature
-shape; new nodes use what's there.
+workload-callable library nodes. The canonical-form
+authoring-patterns table (see `polydat-derive`) lists every
+recognised function-signature shape; new nodes use what's there.
 
 ```rust
 // Scalar — body returns the output value; macro reads

@@ -9,7 +9,6 @@ use ratatui::style::Color;
 pub mod colors {
     use super::Color;
 
-    pub const BG: Color = Color::Rgb(26, 26, 46);
     pub const BORDER: Color = Color::Rgb(58, 58, 92);
     pub const TEXT: Color = Color::Rgb(224, 224, 224);
     pub const EMPHASIS: Color = Color::Rgb(255, 255, 255);
@@ -35,11 +34,7 @@ pub mod colors {
     pub const PHASE_DONE_WARN: Color = Color::Rgb(255, 140, 0);
     pub const PHASE_DONE_BAD: Color = Color::Rgb(214, 70, 40);
 
-    pub const PROGRESS_LOW: Color = Color::Rgb(45, 90, 39);
     pub const PROGRESS_HIGH: Color = Color::Rgb(122, 193, 66);
-
-    pub const OK_BADGE: Color = Color::Rgb(76, 175, 80);
-    pub const ERROR_BADGE: Color = Color::Rgb(244, 67, 54);
 
     pub const LAT_P50: Color = Color::Rgb(77, 201, 246);
     pub const LAT_P90: Color = Color::Rgb(247, 201, 72);
@@ -118,19 +113,6 @@ pub fn sparkline_str(values: &[f64], width: usize) -> String {
     s
 }
 
-/// Format nanoseconds into a human-readable duration string.
-/// Short human label for a cadence Duration: `10s`, `1m`, `5m`, `1h`.
-pub fn format_cadence(d: std::time::Duration) -> String {
-    let total = d.as_secs();
-    if total >= 3600 && total % 3600 == 0 {
-        format!("{}h", total / 3600)
-    } else if total >= 60 && total % 60 == 0 {
-        format!("{}m", total / 60)
-    } else {
-        format!("{}s", total)
-    }
-}
-
 pub fn format_nanos(nanos: u64) -> String {
     if nanos == 0 {
         return "—".to_string();
@@ -191,18 +173,6 @@ pub fn bar_str(fraction: f64, width: usize) -> String {
     let mut s = String::with_capacity(width);
     for _ in 0..fill { s.push('━'); }
     for _ in fill..width { s.push('╌'); }
-    s
-}
-
-/// Build a horizontal bar string of given width using full-cell
-/// block glyphs — denser/heavier than [`bar_str`]. Used for the
-/// cursor-progress bar in the phase detail block where visual
-/// weight matters more than alignment with nearby latency bars.
-pub fn bar_str_thick(fraction: f64, width: usize) -> String {
-    let fill = (fraction.clamp(0.0, 1.0) * width as f64).round() as usize;
-    let mut s = String::with_capacity(width);
-    for _ in 0..fill { s.push('█'); }
-    for _ in fill..width { s.push('░'); }
     s
 }
 

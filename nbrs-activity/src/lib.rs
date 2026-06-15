@@ -50,39 +50,40 @@
 //!
 //! ## See also
 //!
-//! - SRD 01 (`docs/sysref/01_system_overview.md`) — overall
+//! - SRD 29 (`docs/SRD/29_execution_engine.md`) — the engine
+//!   front door: this crate's public contract surface, the
+//!   load-bearing axioms, and the SRD ↔ module map.
+//! - SRD 01 (`docs/SRD/01_system_overview.md`) — overall
 //!   architecture.
 //! - SRD 18b — scenario-tree, scope-tree, scheduler.
-//! - SRD 22 (`docs/sysref/22_op_sequencing.md`) — op sequencing
+//! - SRD 22 (`docs/SRD/22_op_sequencing.md`) — op sequencing
 //!   and stanza model.
-//! - SRD 30 (`docs/sysref/30_adapter_interface.md`) — adapter
+//! - SRD 30 (`docs/SRD/30_adapter_interface.md`) — adapter
 //!   trait surface.
 
-pub mod cycle;
 // Polydat node registrations that need nbrs-activity's runtime
 // services (component tree + controls + fiber context). Moved out
 // of polydat itself so polydat can publish standalone — see
 // `polydat_nodes/mod.rs` for the rationale.
 pub mod polydat_nodes;
 pub mod wires;
-pub mod binder;
 pub mod adapter;
 pub mod op_modifier;
 pub mod opseq;
 pub mod activity;
-pub mod adapters;
+pub(crate) mod adapters;
 pub mod synthesis;
 pub mod scope_synth;
 pub mod bindings;
-pub mod params;
+pub(crate) mod params;
 pub mod scope;
 pub mod scope_tree;
-pub mod scope_flattening;
+pub(crate) mod scope_flattening;
 pub mod scene_tree;
-pub mod phase_filter;
+pub(crate) mod phase_filter;
 /// SRD-71 P3 phase-scoped CLI parameter overrides
 /// (`<phase-pattern>.<param>=<value>`).
-pub mod phase_params;
+pub(crate) mod phase_params;
 /// SRD-76 phase outcome disposition (structured
 /// per-phase status + error list).
 pub mod phase_outcome;
@@ -99,34 +100,33 @@ pub mod phase_end_triggers;
 /// before dispatching each phase's per-cycle work.
 pub mod refine_plan;
 pub mod checkpoint;
-pub mod scheduler;
-pub mod profiler;
+pub(crate) mod scheduler;
+pub(crate) mod profiler;
 pub mod session_signals;
 pub mod observer;
-pub mod trace_router;
+pub(crate) mod trace_router;
 pub mod session;
 pub mod runner;
-pub mod executor;
-pub mod error_policy;
-pub mod stop_conditions;
-pub mod workload_shell;
+pub(crate) mod executor;
+pub(crate) mod error_policy;
+pub(crate) mod stop_conditions;
+pub(crate) mod workload_shell;
 pub mod resource_pool;
-pub mod describe;
+pub(crate) mod describe;
 pub mod wrappers;
 pub mod wrapper_registry;
-pub mod wrapper_registrations;
+pub(crate) mod wrapper_registrations;
 pub mod wrapper_resolver;
-pub mod relevancy;
+pub(crate) mod relevancy;
 pub mod fixture;
 pub mod validation;
-pub mod linearize;
-pub mod fiber_pool;
-pub mod daemon_pool;
+pub(crate) mod fiber_pool;
+pub(crate) mod daemon_pool;
 pub mod log_sink;
 /// Lifecycle event vocabulary: the kind-tag [`lifecycle::EventType`]
 /// and its [`lifecycle::SubjectKind`], shared by the readout
 /// binder and the checkpoint log.
 pub mod lifecycle;
 pub mod readouts;
-pub mod readout_context;
+pub(crate) mod readout_context;
 pub mod report_anchor;

@@ -13,9 +13,9 @@ The nbrs-side compiler-diagnostic event stream stays in
 [SRD-13](module_system.md).
 
 > Composition mechanics — how modules combine with the host
-> program and with other Polydat kernels — live in
-> [SRD 13b: Polydat Combination Modes](../../../docs/sysref/13b_polydat_combination_modes.md).
-> This file covers only the module-as-source-file system.
+> program and with other Polydat kernels — are the scope-composition
+> family ([scope_model.md](scope_model.md)). This file covers only
+> the module-as-source-file system.
 
 ---
 
@@ -72,7 +72,6 @@ Modules can opt into strict compilation:
 - All function arguments must be named (no positional)
 - Unresolved references are errors, not warnings
 
-Strict mode is for library modules intended for reuse. Workload
-bindings default to relaxed mode for convenience. See
-[SRD 15](../../../docs/sysref/15_strict_mode.md) for the full
-strict-mode contract.
+Strict mode is for library modules intended for reuse; a host
+may default its own bindings to relaxed mode for convenience.
+The host owns the full strict-mode contract.

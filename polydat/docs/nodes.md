@@ -83,7 +83,7 @@ hash isn't enough — e.g., generating an N-element permutation
 `chance`, `fair_coin`, `unfair_coin`, `one_of`, `one_of_weighted`,
 `n_of`, `select`, `blend`, `default_or`, `a`, `b`, `c`. The
 single-letter `a`/`b`/`c` are positional outputs of multi-output nodes
-(see [SRD-66 `pick`](../../docs/sysref/66_runtime_feature_detection.md)).
+(e.g. `pick`).
 
 ### `weighted` — convenience weighted-output selection
 `weighted_pick`, `weighted_u64`, `weighted_strings`,

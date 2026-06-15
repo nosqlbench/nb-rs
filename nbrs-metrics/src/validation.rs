@@ -33,7 +33,7 @@
 //!   serialized form of an exemplar's LabelSet MUST NOT
 //!   exceed 128 UTF-8 characters.
 //!
-//! [SRD-40a §8]: ../../../docs/sysref/40a_metrics_model.md#8-gap-audit-current-state-2026-05-05
+//! [SRD-40a §8]: ../../../docs/SRD/40a_metrics_model.md#8-gap-audit-current-state-2026-05-05
 
 use std::fmt;
 

@@ -3,6 +3,8 @@
 
 //! # nbrs-workload
 //!
+//! Contract & axioms: [SRD 25](../../docs/SRD/25_workload_contract.md).
+//!
 //! Workload specification parsing and processing for nb-rs. Owns
 //! the YAML schema definition (op templates, bindings, phases,
 //! scenarios, tags, parameter inheritance) plus the inline
@@ -64,10 +66,10 @@
 //!
 //! ## See also
 //!
-//! - SRD 20 (`docs/sysref/20_workload_model.md`) — workload model
-//! - SRD 21 (`docs/sysref/21_parameters.md`) — parameter resolution
+//! - SRD 20 (`docs/SRD/20_workload_model.md`) — workload model
+//! - SRD 21 (`docs/SRD/21_parameters.md`) — parameter resolution
 //!   precedence
-//! - SRD 18 (`docs/sysref/18_control_flow.md`) — scenario-tree
+//! - SRD 18 (`docs/SRD/18_control_flow.md`) — scenario-tree
 //!   constructs (`for_each`, `do_while`, `do_until`,
 //!   `for_combinations`)
 

@@ -17,10 +17,10 @@ substrate docs:
 - [runtime_model.md R2 hybrid push/pull invalidation](runtime_model.md)
 - [expression_engine.md §3.1 const expression evaluation + §5 embedding contract](expression_engine.md)
 
-The nbrs-side framing (why Polydat exists as the unified access
-surface for nbrs workloads, Output Selection, Polydat as Unified
-State Holder, Op-Level Bindings, Cursor Declarations) remains
-in [SRD-10](../../../docs/sysref/10_polydat_language.md).
+The host-side framing (why a host uses Polydat as its unified
+access surface, output selection, Polydat as unified state
+holder, op-level bindings, cursor declarations) is documented
+host-side.
 
 ---
 
@@ -287,9 +287,8 @@ the compiler can splice in when it can't *prove* a wire already
 satisfies a downstream node's contract. Both are invisible to the
 module author — adapters handle type coercion, assertions handle
 value validity — and both are skipped whenever the static type
-system already proves the wire is safe. See
-[SRD 15 "Input Validity Model"](../../../docs/sysref/15_strict_mode.md#input-validity-model-unsafe-by-default--opt-in-guards)
-for the full two-layer design (unsafe-by-default fast path,
+system already proves the wire is safe. The host's input-validity
+model defines the full two-layer design (unsafe-by-default fast path,
 opt-in strict wire guards, const constraint metadata, type and
 value assertion families).
 
@@ -382,8 +381,7 @@ surface. The const-evaluation API and embedding mechanics
 are formalised in
 [expression_engine.md §3.1](../design/expression_engine.md);
 the host-side resolution order and param-substitution
-interaction live in
-[SRD-14 Config Expressions](../../../docs/sysref/14_polydat_config_expressions.md).
+interaction are a host concern.
 
 ---
 
@@ -447,10 +445,9 @@ Constant Folding ▶ Evaluate compile-const nodes (no
 GkProgram ──────▶ Immutable compiled DAG (shared via Arc)
 ```
 
-The Output Selection step's host-facing details (which
-op fields, params, and extra bindings count as consumers)
-remain in
-[docs/sysref/10_polydat_language.md §Output Selection](../../../docs/sysref/10_polydat_language.md#output-selection).
+The Output Selection step's host-facing details — which op
+fields, params, and extra bindings count as output consumers —
+are a host concern, documented by the application that embeds polydat.
 
 ---
 
@@ -494,9 +491,8 @@ flow on wires between scope-stable resolvers (compile-const or
 scope-init) and per-cycle readers without re-doing the
 resolution work. See
 [GK Evaluation Model](evaluation_model.md) §"Three
-Evaluation Lifecycles" for the lifecycle taxonomy and
-[SRD 53 §"Dataset Handles"](../../../docs/sysref/53_vectordata.md#dataset-handles-dynamic-access)
-for the canonical use case.
+Evaluation Lifecycles" for the lifecycle taxonomy; the host's
+dataset-handle surface is the canonical use case.
 
 `VecF32` / `VecI32` are typed-vector carriers
 (`PortType::VecF32`, `PortType::VecI32`) — `Arc<[f32]>` and
@@ -507,8 +503,8 @@ without intermediate boxing). Cloning is one `Arc::clone`,
 zero allocations. The `to_display_string()` fallback renders
 them as JSON-array text (`"[0.1,0.2,...]"`), so workloads can
 mix typed-vector and string-substitution paths without a
-separate node family. See
-[SRD 53 §"Native Vector Binding"](../../../docs/sysref/53_vectordata.md).
+separate node family. (Adapter-side native-vector binding is a
+host concern.)
 
 ---
 
@@ -617,5 +613,5 @@ coverage in
 
 The language-level surface that intersects scopes — op-level
 bindings (which are syntactic sugar, not new scopes) and
-cursor declarations — remains in
-[docs/sysref/10_polydat_language.md](../../../docs/sysref/10_polydat_language.md).
+cursor declarations — is documented host-side, by the
+application that embeds polydat.

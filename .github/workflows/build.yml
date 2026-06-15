@@ -63,6 +63,33 @@ env:
   # the upgrade as its own change.
 
 jobs:
+  # ─── Architecture gate: the crate/module dependency rules
+  # (docs/SRD/05_dependency_rules.md, Pillar 5 of the Subsystem
+  # Treatment Standard). Fast, default-features only (no cassandra
+  # sysroot), runs on every push/PR so layering drift fails CI.
+  arch-gate:
+    name: architecture rules gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config mold clang libssl-dev ca-certificates
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: arch-gate
+
+      - name: Run dependency-rule gate (SRD-05)
+        run: cargo test -p nbrs --test architecture_rules
+
   build-artifact:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}

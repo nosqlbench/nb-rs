@@ -1788,7 +1788,7 @@ fn render_companion_table(
     //   non-faceted: `<plot>_table.md`
     //   faceted:     `<plot>__<key>_<value>[__<key2>_<value2>...].md`
     // (matches the user-facing rule in
-    //  docs/sysref/46_reports.md / per workload guidance.)
+    //  docs/SRD/46_reports.md / per workload guidance.)
     let (basename, name_arg) = if facet.is_empty() {
         let stem = format!("{}_table", item.name);
         (stem.clone(), stem)

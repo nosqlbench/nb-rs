@@ -4,7 +4,7 @@
 //! Display-side actor that owns [`RunState`] and publishes
 //! immutable snapshots.
 //!
-//! See `docs/sysref/02_concurrency_model.md` §"Display and
+//! See `docs/SRD/02_concurrency_model.md` §"Display and
 //! Diagnostic Decoupling" for the architectural rationale. In
 //! short:
 //!

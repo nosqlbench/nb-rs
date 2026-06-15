@@ -3,7 +3,7 @@
 
 //! Unified `report:` block — plots and tables under one schema.
 //!
-//! See SRD-46 (`docs/sysref/46_reports.md`) for the authoritative
+//! See SRD-46 (`docs/SRD/46_reports.md`) for the authoritative
 //! design. This module owns:
 //!
 //! - The data model: [`Report`] / [`ReportGroup`] / [`ReportItem`]

@@ -53,9 +53,8 @@ unifying capability the surfaces collectively provide.
   — the `{...}` config expression surface. Owns one of the
   evaluation surfaces; this doc places it in the broader
   embedding catalog.
-- [SRD-21: Parameters and Bind Points](../../../docs/sysref/21_parameters.md)
-  — bind-point resolution. Owns the parameter substitution
-  surface that pairs with embedded evaluation.
+- The host's parameter / bind-point resolution owns the parameter
+  substitution surface that pairs with embedded evaluation.
 
 The forcing question: **polydat was designed to compile
 workloads — full programs over typed coordinate streams. So
@@ -1396,7 +1395,6 @@ evaluation guarantee.
 | [SRD-10](language_spec.md) | Grammar surface. The expression engine's full expressivity is SRD-10's grammar — nothing is held back. |
 | [SRD-11](evaluation_model.md) | Const-binding contract. `eval_const_expr` (E5, §3.1) is the const-binding contract operating on a single output binding. |
 | [SRD-14](expression_engine.md) | `{...}` config expression surface. One specific embedding pattern; this doc places it in the broader catalog. |
-| [SRD-21](../../../docs/sysref/21_parameters.md) | Bind-point resolution. Pairs with `interpolate_via_kernel` for parameter substitution patterns. |
 | [SRD-67](subcontext_construction.md) | `from_program` cache-and-rebind primitive. Hosts caching compiled expressions for repeated evaluation use this. |
 
 ---

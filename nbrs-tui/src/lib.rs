@@ -3,6 +3,8 @@
 
 //! # nbrs-tui
 //!
+//! Contract & axioms: [SRD 59](../../docs/SRD/59_tui_contract.md).
+//!
 //! Terminal UI for nb-rs, built on [ratatui]. Provides a live
 //! dashboard showing the scenario tree, per-phase progress and
 //! detail blocks, throughput sparklines, latency percentile
@@ -41,7 +43,7 @@
 //!
 //! ## See also
 //!
-//! - SRD 62 (`docs/sysref/62_tui_layout.md`) — layout, LOD
+//! - SRD 62 (`docs/SRD/62_tui_layout.md`) — layout, LOD
 //!   cycle, phase status glyphs, spinner cadence, "scenario
 //!   done?" semantics.
 //! - SRD 18b — scene tree (the canonical structure
@@ -51,21 +53,21 @@
 
 pub mod app;
 pub mod state;
-pub mod widgets;
+pub(crate) mod widgets;
 pub mod reporter;
 pub mod observer;
 pub mod run_state_actor;
 pub mod inspector_server;
 pub mod inspector_repl;
 pub mod display_sink;
-pub mod frame_broker;
+pub(crate) mod frame_broker;
 pub mod key_watcher;
 pub mod log_only_observer;
 pub mod log_only_sink;
 pub mod formatted_line_sink;
 pub mod repl_state;
-pub mod prompt_state;
-pub mod readout_panel;
-pub mod readout_sink;
+pub(crate) mod prompt_state;
+pub(crate) mod readout_panel;
+pub(crate) mod readout_sink;
 pub mod sink_supervisor;
-pub mod tui_sink;
+pub(crate) mod tui_sink;

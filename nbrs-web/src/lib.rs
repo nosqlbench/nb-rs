@@ -3,6 +3,8 @@
 
 //! # nbrs-web
 //!
+//! Contract & axioms: [SRD 54](../../docs/SRD/54_web_ui.md).
+//!
 //! Axum + htmx web dashboard for nb-rs. Provides a browser-based
 //! UI for monitoring running workloads, browsing Polydat functions
 //! and stdlib modules, interacting with dynamic controls, and

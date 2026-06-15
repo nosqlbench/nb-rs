@@ -12,7 +12,7 @@
 //! this module now scopes to fiber construction and bind-point
 //! validation.
 //!
-//! See `docs/sysref/68_dispenser_owned_polydat_context.md` for the
+//! See `docs/SRD/68_dispenser_owned_polydat_context.md` for the
 //! resolution model.
 
 use std::sync::{Arc, OnceLock};
@@ -52,7 +52,7 @@ pub struct OpBuilder {
     scope_values: Vec<(String, Value)>,
     /// Pre-evaluated init binding values to seed into every new
     /// FiberBuilder's state — `(node_idx, port_idx, value)`. Captured
-    /// from the activation kernel after [SRD 11](../../docs/sysref/11_polydat_evaluation.md)
+    /// from the activation kernel after [SRD 11](../../docs/SRD/11_polydat_evaluation.md)
     /// §"Init Binding Contract" Plan B has run. With this seeding,
     /// the binding's eval function fires exactly once per scope
     /// activation (on the activation kernel), not once per fiber.

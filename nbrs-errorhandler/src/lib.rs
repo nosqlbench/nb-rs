@@ -3,6 +3,8 @@
 
 //! # nbrs-errorhandler
 //!
+//! Contract & axioms: [SRD 07](../../docs/SRD/07_error_routing.md).
+//!
 //! Modular composable error handler. Errors are classified by
 //! type name (regex) and routed through a chain of handlers that
 //! can log, count, meter, retry, or stop execution.

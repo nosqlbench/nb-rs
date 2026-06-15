@@ -1,6 +1,6 @@
 #!/usr/bin/env nbrs
 # Resumable-workload test fixture (SRD-44; design memo
-# `docs/design/resumable_test_fixture.md`).
+# `docs/SRD/history/resumable_test_fixture.md`).
 #
 # Three phases declared `checkpoint: idempotent` with progressively
 # larger cycle counts. The shared `threshold` binding advances a

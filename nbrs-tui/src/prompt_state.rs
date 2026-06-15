@@ -117,6 +117,7 @@ pub trait Completer: Send + 'static {
 /// No-op completer. Default when [`PromptState`] is built
 /// without an explicit completer — Tab becomes a no-op key.
 #[derive(Default)]
+#[allow(dead_code)] // WIP: SRD-77 refine REPL — default no-op completer
 pub struct NoCompletion;
 
 impl Completer for NoCompletion {
@@ -219,9 +220,11 @@ impl PromptState {
     /// Current prompt-window height in rows (1..=10).
     pub fn window_rows(&self) -> u16 { self.window_rows }
 
+    #[allow(dead_code)] // WIP: SRD-77 refine REPL accessor
     pub fn help_visible(&self) -> bool { self.help_visible }
 
     /// The buffer's current contents (for tests / debug).
+    #[allow(dead_code)] // WIP: SRD-77 refine REPL accessor
     pub fn buffer(&self) -> &str { self.buffer.as_str() }
 
     /// Step the prompt window taller by one row, capped at

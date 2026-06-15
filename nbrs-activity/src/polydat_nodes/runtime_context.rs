@@ -195,7 +195,7 @@ impl PolydatNode for ControlSet {
                 match guard.find_control_erased_up(&name) {
                     Some(e) => e,
                     None => {
-                        polydat::library::support::audit::warn(&format!(
+                        polydat::audit::warn(&format!(
                             "control_set({name}, {value}): no control found via walk-up"));
                         return;
                     }
@@ -203,7 +203,7 @@ impl PolydatNode for ControlSet {
             };
             let origin = nbrs_metrics::controls::ControlOrigin::Polydat { binding };
             if let Err(e) = erased.set_f64(value, origin).await {
-                polydat::library::support::audit::warn(&format!("control_set({name}, {value}) failed: {e}"));
+                polydat::audit::warn(&format!("control_set({name}, {value}) failed: {e}"));
             }
         });
 

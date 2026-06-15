@@ -102,8 +102,8 @@ impl ScheduleSpec {
     }
 
     /// True when every level is sequential (`Bounded(1)`) — the
-    /// spec is behaviorally equivalent to the default. Used by
-    /// the scheduler to suppress "non-trivial spec" warnings.
+    /// spec is behaviorally equivalent to the default.
+    #[allow(dead_code)] // used by unit tests; kept as spec-introspection API
     pub fn is_serial(&self) -> bool {
         self.levels.iter().all(|l| matches!(l, ConcurrencyLimit::Bounded(1)))
     }

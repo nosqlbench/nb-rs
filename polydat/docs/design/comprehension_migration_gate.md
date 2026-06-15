@@ -45,7 +45,7 @@ $ grep -l 'for_each\|for_combinations\|for_each_union\|for:' examples/workloads/
 16
 ```
 
-`nbrs/tests/workload_examples.rs` walks the full workload set
+The host's workload-example test suite walks the full workload set
 including these 16; any behavioral regression on a
 comprehension workload surfaces as a test failure there.
 

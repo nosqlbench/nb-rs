@@ -3,6 +3,8 @@
 
 //! # nbrs-metrics
 //!
+//! Contract & axioms: [SRD 39](../../docs/SRD/39_metrics_contract.md).
+//!
 //! Metrics collection and reporting for nb-rs. The design centers
 //! on a **component tree** — a hierarchical, label-keyed structure
 //! where every node owns its own instruments, controls, and child

@@ -4,7 +4,7 @@
 //! The [`Readout`] trait + the orthogonal [`Lod`] and
 //! [`ContentMode`] axes the engine renders against.
 //!
-//! See `docs/sysref/63_status_readouts.md` §1 for the design
+//! See `docs/SRD/63_status_readouts.md` §1 for the design
 //! contract.
 
 use super::buf::ReadoutBuf;

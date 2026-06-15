@@ -200,11 +200,11 @@ input-validity model. The *value-validity* half is handled by
 opt-in assertion nodes under strict wire mode — the assembler
 skips every assertion whose redundancy it can prove statically
 (matched types after adapter insertion, constant sources
-validated at assembly time, fusion-derived value bounds). See
-[SRD 15 §"Input Validity Model" and §"Strict Wire Mode"](../../../docs/sysref/15_strict_mode.md#input-validity-model-unsafe-by-default--opt-in-guards)
-for the assertion family, the const constraint metadata on
-`ParamSpec`, and the `AssertionInserted` / `AssertionSkipped`
-diagnostic events the assembler emits alongside
+validated at assembly time, fusion-derived value bounds). The
+host's input-validity / strict-wire-mode model defines the
+assertion family; the const constraint metadata on `ParamSpec`
+and the `AssertionInserted` / `AssertionSkipped` diagnostic events
+the assembler emits alongside
 `TypeAdapterInserted`.
 
 ---

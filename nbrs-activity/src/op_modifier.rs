@@ -12,7 +12,7 @@
 //! the resulting `ModifierChain<T>` on the dispenser. Critical path
 //! is one call: `chain.apply(&mut target)`.
 //!
-//! See [`SRD 73`](../../../docs/sysref/73_op_field_modifiers.md)
+//! See [`SRD 73`](../../../docs/SRD/73_op_field_modifiers.md)
 //! for the design rationale and CQL-specific surface.
 //!
 //! # Two-phase contract

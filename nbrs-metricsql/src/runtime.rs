@@ -11,7 +11,7 @@
 //! send commands over [`crossbeam_channel`] to the owner;
 //! readers see snapshots without contending.
 //!
-//! [srd48]: ../../../docs/sysref/48_metricsql_continuous_query.md
+//! [srd48]: ../../../docs/SRD/48_metricsql_continuous_query.md
 //!
 //! # Lifecycle
 //!

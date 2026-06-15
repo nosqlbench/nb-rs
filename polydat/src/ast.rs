@@ -926,8 +926,8 @@ impl Value {
     /// `'source_model': ''` to a CQL cluster when the intended
     /// shadow didn't bind). Render paths use this primitive and
     /// surface a clear error when an unresolved bind-point reaches
-    /// them. See [SRD 74](../../../docs/sysref/74_none_propagation.md)
-    /// §"Rule 3 — Op-template render refuses silent None".
+    /// them. See [none_semantics.md](../docs/design/none_semantics.md)
+    /// (the render-refuses-silent-None rule).
     pub fn to_display_strict(&self) -> Option<String> {
         match self {
             Value::None => None,
@@ -1899,8 +1899,8 @@ pub trait PolydatNode: Send + Sync {
     /// Override-true nodes are responsible for handling
     /// `Value::None` in their own `eval` implementation.
     ///
-    /// See [SRD 74](../../../docs/sysref/74_none_propagation.md)
-    /// §"Rule 1 — String-interpolation propagates None" — the
+    /// See [none_semantics.md](../docs/design/none_semantics.md)
+    /// (string-interpolation propagates None) — the
     /// rule is general (lifted to the kernel level) rather than
     /// per-node; this flag is the opt-out for legitimate None-
     /// aware operators.

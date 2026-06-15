@@ -456,7 +456,7 @@ impl PolydatAssembler {
     /// Added after coordinate inputs. Nodes wire to it via
     /// `WireRef::input(name)` — same as coordinate inputs.
     /// `kind` controls the lifecycle classification used by the
-    /// init-binding contract (see [SRD 11](../../../docs/sysref/11_polydat_evaluation.md)
+    /// init-binding contract (see [evaluation_model.md](../../docs/design/evaluation_model.md)
     /// §"Effectively-Const Nodes"): `IterationExtern` for slots
     /// populated by `materialize_wiring_from_outer`, `ExternalWrite` for slots
     /// written by capture extraction.

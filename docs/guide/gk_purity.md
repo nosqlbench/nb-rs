@@ -246,6 +246,6 @@ phase):
   interact with the analyzer.
 - SRD-44 §"Authors opt out of folding via `volatile`" — the
   resume-identity contract `volatile` is the escape hatch for.
-- `docs/design/resumable_test_fixture.md` — the design memo
+- `docs/SRD/history/resumable_test_fixture.md` — the design memo
   that motivated the keyword, with the staircase fixture as
   worked example.

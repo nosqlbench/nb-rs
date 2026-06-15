@@ -32,11 +32,11 @@
 //!
 //! ## Where this used to live
 //!
-//! Pre-Phase-C this code lived in `nbrs-activity::scope` and
-//! `nbrs-activity::interpolate`. The lift was driven by
-//! `docs/internals/50_comprehensions_first_class.md`: Polydat is the
-//! canonical owner of what a comprehension *means*, including
-//! how its spec strings resolve. Activity now consumes this
+//! Pre-Phase-C this code lived in the host. The lift was driven by
+//! the principle that Polydat is the canonical owner of what a
+//! comprehension *means*, including how its spec strings resolve
+//! (see [comprehension_forms.md](../../../docs/design/comprehension_forms.md)).
+//! The host now consumes this
 //! API rather than implementing it.
 
 use std::collections::HashMap;

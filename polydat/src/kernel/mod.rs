@@ -85,7 +85,7 @@ pub enum WireSource {
 
 /// Classification of a named input by its evaluation lifecycle.
 ///
-/// See [SRD 11 §"Three Evaluation Lifecycles"](../../../docs/sysref/11_polydat_evaluation.md).
+/// See [evaluation_model.md](../../docs/design/evaluation_model.md) for the lifecycle classification.
 /// The init-binding contract uses this to decide whether a wire
 /// to an `Input(idx)` is effectively-const at scope-init time:
 /// `IterationExtern` slots count as effectively-const (rebound
