@@ -747,7 +747,7 @@ have the continuous variants. Reference: polydat spec §3.1
 - [SRD-22 — Op Sequencing](22_op_sequencing.md): the bucket /
   concat / interval algorithms that the sequencer-style
   expansions reuse.
-- `docs/SRD/history/50_comprehensions_first_class.md`: the
+- `polydat/docs/design/comprehension_forms.md`: the
   migration plan that built the polydat `Comprehension` model.
 - `examples/workloads/for_each_forms.yaml`: every shipped form
   with side-by-side YAML + Polydat text + iteration shape.

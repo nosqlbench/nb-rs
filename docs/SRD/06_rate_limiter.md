@@ -6,11 +6,10 @@ private. Pillars 1+2 of the [Subsystem Treatment Standard](00b_subsystem_standar
 
 ## Contract
 
-- **Public surface:** `RateSpec`, `RateLimiter`, `RateLimiterApplier` (re-exported at the
-  crate root; the `spec` / `limiter` / `applier` modules are private). This is the whole
-  surface — nothing else is reachable.
-- **Inbound contract:** `nbrs_metrics::controls` (`ControlApplier`) for live retargeting.
-- **Allowed edges:** `nbrs-metrics`. See [SRD 05 §Contract Registry](05_dependency_rules.md).
+**Surface, inbound contract, and allowed edges:** authoritative in
+[SRD 05 §Contract Registry](05_dependency_rules.md). In brief — exports `RateSpec` /
+`RateLimiter` / `RateLimiterApplier` (modules private — a tight surface, nothing else
+reachable); consumes `nbrs_metrics::controls` (`ControlApplier`) for live retargeting.
 
 ## Axioms
 

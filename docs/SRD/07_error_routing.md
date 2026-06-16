@@ -6,12 +6,10 @@ the [Subsystem Treatment Standard](00b_subsystem_standard.md).
 
 ## Contract
 
-- **Public surface:** `ErrorDetail`, `ErrorHandler` (trait), `ErrorRouter` (re-exported
-  at the crate root) + the `handlers` module (`StopHandler` / `WarnHandler` /
-  `RetryHandler` / `CounterHandler` / …). The `detail` / `handler` / `router` modules are
-  private.
-- **Inbound contract:** none — zero internal dependencies.
-- **Allowed edges:** none. See [SRD 05 §Contract Registry](05_dependency_rules.md).
+**Surface and edges:** authoritative in [SRD 05 §Contract Registry](05_dependency_rules.md).
+In brief — exports `ErrorDetail` / `ErrorHandler` (trait) / `ErrorRouter` (re-exported) + the
+`handlers` module (`StopHandler` / `WarnHandler` / `RetryHandler` / `CounterHandler` / …);
+zero internal dependencies (standalone).
 
 ## Axioms
 

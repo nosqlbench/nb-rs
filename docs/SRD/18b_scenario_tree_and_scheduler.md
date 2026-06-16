@@ -115,7 +115,7 @@ optimizer rewrites the AST before compilation per polydat spec
 §10; nb-rs sees the optimized IR, not the user-authored AST.
 
 The migration plan is in
-`docs/SRD/history/50_comprehensions_first_class.md` — Phases A
+`polydat/docs/design/comprehension_forms.md` — Phases A
 through E shipped; Phase F (this update) closes the loop.
 
 The scenario tree is what the user wrote. The scope tree is how

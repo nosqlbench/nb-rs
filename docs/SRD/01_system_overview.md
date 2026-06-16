@@ -36,19 +36,13 @@ service targets using composable data generation kernels.
 
 ### Dependency Rules
 
-1. Dependencies flow downward only — no reverse dependencies
-2. `polydat` is fully standalone (no workload, adapter, or
-   activity dependency). It can be extracted and used in other
-   projects for deterministic data generation.
-3. `nbrs-workload` is standalone (parses YAML to `ParsedOp`)
-4. `nbrs-activity` depends on all three foundation crates
-   (nbrs-workload, polydat, nbrs-metrics) and defines the
-   adapter trait contract
-5. Adapter crates implement `DriverAdapter` / `OpDispenser`
-   from nbrs-activity
-6. The `nbrs` binary is the composition root — it depends on
-   every adapter (some optionally via Cargo features) and
-   wires them to the activity engine
+The crate/module dependency rules — the 8-layer DAG, the per-crate Contract
+Registry, polydat-standalone, no-upward-imports, no-cross-adapter edges — are
+specified and **CI-enforced** in [SRD 05 — Dependency Rules](05_dependency_rules.md)
+(D1–D7, gate: `nbrs/tests/architecture_rules.rs`). In one line: dependencies flow
+strictly downward, `polydat` depends only on `polydat-derive`, `nbrs-activity` is the
+integration hub above the foundation crates, adapters implement the
+`nbrs_activity::adapter` contract, and `nbrs` is the composition root.
 
 ### Workspace Structure
 

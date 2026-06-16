@@ -170,8 +170,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         }
     }
 
-    // SRD-44 §"Resume protocol" + design memo
-    // `workload_checkpointing.md`: a phase declared
+    // SRD-44 §"Resume protocol": a phase declared
     // `checkpoint: idempotent` that lives inside a do_while /
     // do_until loop is rejected at workload load time. The
     // do-loop iterates the same phase many times under one

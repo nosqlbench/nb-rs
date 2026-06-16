@@ -66,8 +66,8 @@ nbrs-workload (YAML→PolyStreamer-binding desugaring).
   unit-of-work that maps a coordinate tuple to a
   `ScopedKernelInstance<PolydatKernel>`; it shares the
   parent-gating discipline with `SubcontextBuilder`.
-- [Comprehensions First-Class memo](history/50_comprehensions_first_class.md)
-  — completed migration that moved the AST + parser + evaluator
+- [polydat comprehension spec](../../polydat/docs/design/comprehension_forms.md)
+  — the completed migration moved the AST + parser + evaluator
   + synthesizer into polydat. PolyStreamer is the next phase: a
   runtime value with grammar-level identity, lifting the type
   itself into GK.
@@ -1004,9 +1004,8 @@ narrows.
   iteration-driving peer of `SubcontextBuilder`.
 - SRD-77 — Working sessions / refine; cross-execution streamer
   resume is an open question deferred to that design.
-- `docs/SRD/history/50_comprehensions_first_class.md` — the
+- `polydat/docs/design/comprehension_forms.md` — the
   completed migration that PolyStreamer builds on top of.
-- `docs/SRD/history/comprehensions_open_items.md` — items 1a
-  (`OrderingStrategy` trait) and 1b (`SpecExpander` trait) may
-  retire when PolyStreamer's grammar surface forces a third
-  consumer to materialize.
+- The deferred `OrderingStrategy` / `SpecExpander` trait
+  extractions may retire when PolyStreamer's grammar surface
+  forces a third consumer to materialize.

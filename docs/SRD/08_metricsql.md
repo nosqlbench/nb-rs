@@ -6,18 +6,16 @@ MetricsQL — lexer, parser, evaluator, and the streaming/continuous-query runti
 
 ## Contract
 
-- **Public surface:** `parser::parse` + `ast::Expr` (the query AST), `eval::{DataSource, …}`
-  (the evaluator + its pluggable storage trait), `streaming::{StreamingPlan, …}`,
-  `adapters` (built-in `DataSource` impls), `runtime` (the `ContinuousQueryRuntime`,
-  feature-gated). The crate re-exports `parse` / `Expr` / `DataSource` / `StreamingPlan` at
-  its root.
-- **Public library API:** `lexer`, `parser`, `prettifier`, `ast`, `query_rewrite`, `eval`,
-  `streaming`, `adapters`, `catalog` (`MetricCatalog` + OpenMetrics types), `grammar`,
-  `runtime`. As a **standalone, extractable library**, its public API is its own contract —
-  broader than what the nb-rs workspace consumes — so the SRD-05 D5 narrowing does **not**
-  apply (D5 is for workspace-internal crates).
-- **Inbound contract:** a caller-provided `DataSource` implementation.
-- **Allowed edges:** none. See [SRD 05 §Contract Registry](05_dependency_rules.md).
+**Surface and edges:** authoritative in [SRD 05 §Contract Registry](05_dependency_rules.md).
+In brief — `parser::parse` + `ast::Expr`, `eval::{DataSource, …}` (evaluator + its pluggable
+storage trait), `streaming::{StreamingPlan, …}`, `adapters` (built-in `DataSource` impls),
+`runtime` (feature-gated); the inbound contract is a caller-provided `DataSource`.
+
+As a **standalone, extractable library**, its *whole* module set (`lexer`, `parser`,
+`prettifier`, `ast`, `query_rewrite`, `eval`, `streaming`, `adapters`, `catalog` —
+`MetricCatalog` + OpenMetrics types — `grammar`, `runtime`) is public: its public API is its
+own contract, broader than what the nb-rs workspace consumes, so the SRD-05 **D5 narrowing
+does not apply** (D5 is for workspace-internal crates).
 
 ## Axioms
 

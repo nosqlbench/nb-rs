@@ -7,13 +7,12 @@ a deliberate public surface. Pillars 1+2 of the
 
 ## Contract
 
-- **Public surface:** `component` (the hierarchical tree), `instruments` (counters /
-  gauges / histograms / timers), `labels`, `selector`, `controls`, `snapshot`, `cadence`,
-  `cadence_reporter`, `scheduler`, `summaries`, `metrics_query` (the read-side handle),
-  `reporters` (SQLite / VictoriaMetrics sinks), `diag`, `polydat_nodes`.
-- **Internal** (declared `pub`, unconsumed): `validation`.
-- **Inbound contract:** `polydat` (`ast`, `kernel`) for metric-reading nodes.
-- **Allowed edges:** `polydat`. See [SRD 05 §Contract Registry](05_dependency_rules.md).
+**Surface, inbound contract, and allowed edges:** authoritative in
+[SRD 05 §Contract Registry](05_dependency_rules.md). In brief — the `component` tree +
+`instruments` + the lock-free `cadence_reporter` + the read-side `metrics_query` +
+`reporters` (SQLite / VictoriaMetrics), plus `labels`/`selector`/`controls`/`snapshot`/
+`cadence`/`scheduler`/`summaries`/`diag`/`polydat_nodes`; consumes `polydat` (`ast`,
+`kernel`) for metric-reading nodes; `validation` is internal.
 
 ## Axioms
 

@@ -7,14 +7,11 @@ and contains **no execution logic**. Pillars 1+2 of the
 
 ## Contract
 
-- **Public surface:** `model` (`Workload`, `WorkloadPhase`, `ParsedOp`), `parse`,
-  `bindpoints`, `tags`, `inline` (one-op CLI shorthand), `catalog` (bundled workloads),
-  `edit` (AST-preserving edits), `extends`, `report`, `metric_format`, `polydat_matter`
-  (the workload ↔ polydat bridge).
-- **Internal** (declared `pub`, unconsumed): `template` (`{param}` substitution),
-  `spectest` (test helpers).
-- **Inbound contract:** `polydat` (`ast`, `dsl`).
-- **Allowed edges:** `polydat`. See [SRD 05 §Contract Registry](05_dependency_rules.md).
+**Surface, inbound contract, and allowed edges:** authoritative in
+[SRD 05 §Contract Registry](05_dependency_rules.md). In brief — exports `model`
+(`Workload` / `WorkloadPhase` / `ParsedOp`), `parse`, `bindpoints`, `tags`, `inline`,
+`catalog`, `edit`, `extends`, `report`, `polydat_matter` (the workload↔polydat bridge);
+consumes `polydat` (`ast`, `dsl`); `template` / `spectest` are internal.
 
 ## Axioms
 

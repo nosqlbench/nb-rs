@@ -508,7 +508,7 @@ when this op / phase errors", and a checkpoint resume is just
 a fresh execution of the failed phase with a fresh retry
 budget, **the same policy applies to resume**. No new keys
 needed for the checkpointing feature; see
-`docs/SRD/history/workload_checkpointing.md` §"Phase-failed resume
+`44_workload_checkpointing.md` §"Phase-failed resume
 reuses `error_policy`, no new syntax".
 
 ### Open questions
@@ -630,7 +630,7 @@ wrapper. They share data, not state.
 The phase-execution wrapper is also where checkpoint resume
 attaches: a `ResumeSkipPhaseExecutor` decorates `RunPhaseExecutor`
 and short-circuits when the resume plan says this phase is
-already complete (see `docs/SRD/history/workload_checkpointing.md`).
+already complete (see `44_workload_checkpointing.md`).
 The wrapper stack at resume time looks like:
 
 ```

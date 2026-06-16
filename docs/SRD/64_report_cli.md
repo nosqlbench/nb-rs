@@ -20,9 +20,6 @@ Cross-refs: SRD-46 (report data model — load-bearing parent),
 SRD-45 (sessions), SRD-60 (CLI surface), SRD-44 (checkpoints
 for reproducibility), SRD-47/48 (metricsql for plot/table data).
 
-Implementation plan + tracker:
-[docs/SRD/history/report_cli_implementation_plan.md](history/report_cli_implementation_plan.md).
-
 ---
 
 ## 1. Goals

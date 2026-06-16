@@ -3,8 +3,7 @@
 
 //! Readout engine — see `docs/SRD/63_status_readouts.md`.
 //!
-//! Push 1 of the implementation plan
-//! (`docs/SRD/history/readouts_implementation_plan.md`):
+//! The engine provides:
 //!
 //! - The [`Readout`] trait + [`Lod`] / [`ContentMode`] enums.
 //! - The minimum [`ReadoutContext`] surface needed by the

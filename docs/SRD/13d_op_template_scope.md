@@ -775,5 +775,5 @@ kernel's program.
 binding name. Non-bare expressions (`value: mul(load, 2)`)
 error at wrap-time. The `GkProgram::compile_expr` follow-up
 that lifts that restriction, plus the cross-scope per-cycle
-value contract and value-correctness tests, are tracked in
-`docs/SRD/history/srd13d_phase9_followups.md`.
+value contract and value-correctness tests, are absorbed into
+[SRD 13e](13e_scope_as_module.md).

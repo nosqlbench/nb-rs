@@ -18,8 +18,6 @@ the Plan-to-true-up history, and open questions.
 **Status:** normative — original pushes A–F + SRD-13c clause
 update shipped; §"Wire-reference classification (synthesizer
 rule)" added 2026-05-11 as the canonical synthesizer contract.
-Implementation plan for true-up to the synthesizer rule lives
-in `docs/SRD/history/srd13f_wire_classification_plan.md`.
 **Owner:** polydat (kernel construction, cell mechanism,
   matter interpretation), nbrs-activity (scope synthesizers,
   dispenser wires layer)

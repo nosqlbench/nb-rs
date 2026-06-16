@@ -16,8 +16,10 @@ mechanism docs (SRD 30–35, 68, 71–76, 82–83) are the Pillar-3 tier beneath
 
 ### Public surface (what nb-rs consumes)
 
-`nbrs-activity` declares 51 public modules today, but the surface other crates actually
-depend on is the set below (grouped by role). New cross-crate use should stay within it.
+The authoritative surface + edges are in [SRD 05 §Contract Registry](05_dependency_rules.md);
+grouped here by consumption role for navigation. `nbrs-activity` declares 51 public modules
+today, but the surface other crates actually depend on is the set below. New cross-crate use
+should stay within it.
 
 | Role | Surface |
 |---|---|
