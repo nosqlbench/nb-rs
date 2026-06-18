@@ -47,7 +47,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arc_swap::ArcSwap;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 
-use crate::eval::{DataSource, DataSourceError, Matcher, Series};
+use crate::eval::{MetricAccess, DataSourceError, Matcher, Series, Vector};
 use crate::streaming::{compile_streaming, CompileError, StreamingPlan};
 
 /// Opaque per-plan identifier. Returned by
@@ -81,7 +81,7 @@ pub trait SampleFeed: Send + Sync {
         matchers: &[Matcher],
         since_ms: i64,
         until_ms: i64,
-    ) -> Result<Vec<Series>, DataSourceError>;
+    ) -> Result<Vector, DataSourceError>;
 
     /// Latest sample timestamp the feed knows about.
     /// Returning `None` means "no data yet" — the runtime
@@ -94,24 +94,24 @@ pub trait SampleFeed: Send + Sync {
 /// the runtime's tick cadence. Watermark advancement
 /// happens in the runtime, not here — the feed is
 /// stateless w.r.t. consumers.
-pub struct PullFeed<D: DataSource + ?Sized> {
+pub struct PullFeed<D: MetricAccess + ?Sized> {
     pub source: Box<D>,
 }
 
-impl<D: DataSource + ?Sized + Send + Sync> SampleFeed for PullFeed<D> {
+impl<D: MetricAccess + ?Sized + Send + Sync> SampleFeed for PullFeed<D> {
     fn fetch_since(
         &self,
         matchers: &[Matcher],
         since_ms: i64,
         until_ms: i64,
-    ) -> Result<Vec<Series>, DataSourceError> {
+    ) -> Result<Vector, DataSourceError> {
         // `since_ms` is exclusive; `DataSource::fetch` is
         // inclusive on both ends. Add 1 to convert.
         let start = since_ms.saturating_add(1);
         if start > until_ms {
-            return Ok(Vec::new());
+            return Ok(Vector::default());
         }
-        self.source.fetch(matchers, start, until_ms)
+        self.source.select_range(matchers, start, until_ms)
     }
 
     fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> {
@@ -441,7 +441,7 @@ fn handle_register(
         // since_ms is exclusive — pass `start - 1` so the
         // boundary is inclusive on the way in.
         let series = feed.fetch_since(matchers, backfill_start - 1, now)?;
-        for s in series {
+        for s in series.into_series() {
             plan.ingest_series(&s.labels, &s.samples);
         }
     }
@@ -488,7 +488,7 @@ fn handle_tick(
             if now <= watermark { continue; }
             let series = feed.fetch_since(matchers, watermark, now)
                 .map_err(|e| TickError::Feed(e.message))?;
-            for s in series {
+            for s in series.into_series() {
                 entry.plan.ingest_series(&s.labels, &s.samples);
             }
             if let Some(w) = entry.leaf_watermarks.get_mut(i) {
@@ -525,7 +525,7 @@ mod tests {
 
     impl SampleFeed for MemFeed {
         fn fetch_since(&self, matchers: &[Matcher], since_ms: i64, until_ms: i64)
-            -> Result<Vec<Series>, DataSourceError>
+            -> Result<Vector, DataSourceError>
         {
             // `since_ms` is exclusive per-trait contract; in
             // PullFeed we'd already converted, but tests
@@ -581,7 +581,7 @@ mod tests {
         struct Shim(Arc<MemFeed>);
         impl SampleFeed for Shim {
             fn fetch_since(&self, m: &[Matcher], a: i64, b: i64)
-                -> Result<Vec<Series>, DataSourceError> { self.0.fetch_since(m, a, b) }
+                -> Result<Vector, DataSourceError> { self.0.fetch_since(m, a, b) }
             fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> { self.0.latest_ts() }
         }
         let runtime = ContinuousQueryRuntime::with_feed(Box::new(Shim(Arc::clone(&feed))));
@@ -603,7 +603,7 @@ mod tests {
         struct Shim(Arc<MemFeed>);
         impl SampleFeed for Shim {
             fn fetch_since(&self, m: &[Matcher], a: i64, b: i64)
-                -> Result<Vec<Series>, DataSourceError> { self.0.fetch_since(m, a, b) }
+                -> Result<Vector, DataSourceError> { self.0.fetch_since(m, a, b) }
             fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> { self.0.latest_ts() }
         }
         let runtime = ContinuousQueryRuntime::with_feed(Box::new(Shim(Arc::clone(&feed))));
@@ -635,7 +635,7 @@ mod tests {
         struct Empty;
         impl SampleFeed for Empty {
             fn fetch_since(&self, _: &[Matcher], _: i64, _: i64)
-                -> Result<Vec<Series>, DataSourceError> { Ok(Vec::new()) }
+                -> Result<Vector, DataSourceError> { Ok(Vector::default()) }
             fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> { Ok(Some(0)) }
         }
         let runtime = ContinuousQueryRuntime::with_feed(Box::new(Empty));
@@ -654,7 +654,7 @@ mod tests {
         struct Shim(Arc<MemFeed>);
         impl SampleFeed for Shim {
             fn fetch_since(&self, m: &[Matcher], a: i64, b: i64)
-                -> Result<Vec<Series>, DataSourceError> { self.0.fetch_since(m, a, b) }
+                -> Result<Vector, DataSourceError> { self.0.fetch_since(m, a, b) }
             fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> { self.0.latest_ts() }
         }
         let runtime = ContinuousQueryRuntime::with_feed(Box::new(Shim(Arc::clone(&feed))));
@@ -696,9 +696,9 @@ mod tests {
 
         // Batch reference.
         struct Mem { series: Vec<Series> }
-        impl DataSource for Mem {
-            fn fetch(&self, m: &[Matcher], _: i64, _: i64)
-                -> Result<Vec<Series>, DataSourceError>
+        impl MetricAccess for Mem {
+            fn select_range(&self, m: &[Matcher], _: i64, _: i64)
+                -> Result<Vector, DataSourceError>
             {
                 Ok(self.series.iter()
                     .filter(|s| m.iter().all(|mm| match_label(s, mm)))
@@ -716,7 +716,7 @@ mod tests {
         struct Shim(Arc<MemFeed>);
         impl SampleFeed for Shim {
             fn fetch_since(&self, m: &[Matcher], a: i64, b: i64)
-                -> Result<Vec<Series>, DataSourceError> { self.0.fetch_since(m, a, b) }
+                -> Result<Vector, DataSourceError> { self.0.fetch_since(m, a, b) }
             fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> { self.0.latest_ts() }
         }
         let runtime = ContinuousQueryRuntime::with_feed(Box::new(Shim(feed)));

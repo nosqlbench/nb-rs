@@ -14,27 +14,30 @@
 //! [`MetricsQuery`] (SRD-42 §"MetricsQuery").
 //!
 //! - `metric(label_pattern, stat)` — reads
-//!   [`MetricsQuery::session_lifetime`] (canonical session totals;
-//!   subsumes the old cumulative view).
-//! - `metric_window(label_pattern, stat)` — reads the smallest
-//!   declared cadence's most-recently-closed window via
-//!   [`MetricsQuery::cadence_window`].
+//!   [`MetricsQuery::session_lifetime`]: session running **totals**
+//!   (`cycles`/`errors`) and the session-average `rate` (total ÷ session age).
+//! - `metric_window(label_pattern, stat)` — at the smallest cadence: the
+//!   latest window's per-window **increase** via
+//!   [`MetricsQuery::increase_over`] (`cycles`/`errors`, and `rate` =
+//!   increase ÷ interval), and its latency **distribution** via
+//!   [`MetricsQuery::distribution_over`] (`p50`/`p99`/`mean`).
 //!
 //! Both are non-deterministic context nodes. In strict mode they
 //! require explicit acknowledgment. The query reference is captured
 //! at node construction from a global static set by the runner.
 //!
-//! ## Stat accessors
+//! ## Stat accessors (PromQL-aligned word stems)
 //!
-//! - `"cycles"` — cycles_total counter value
-//! - `"rate"` — cycles/second
+//! - `"cycles"` — cycles_total: session **total** (`metric`) / per-window
+//!   **increase** (`metric_window`)
+//! - `"errors"` — errors_total: session total / per-window increase
+//! - `"rate"` — cycles/second (session-average / per-window)
 //! - `"p50"`, `"p99"`, `"mean"` — latency quantiles from cycles_servicetime (nanos)
-//! - `"errors"` — errors_total counter value
 
 use std::sync::{Arc, LazyLock, Mutex};
 
 use polydat::dsl::registry::{FuncSig, FuncCategory as C, ParamSpec, Arity};
-use polydat::ast::{PolydatNode, NodeMeta, Port, PortType, SlotType, Value};
+use polydat::ast::{PolydatNode, NodeMeta, Port, PortType, Purity, SlotType, Value};
 use crate::metrics_query::{MetricsQuery, Selection};
 use crate::snapshot::{MetricSet, MetricValue};
 
@@ -95,6 +98,15 @@ impl MetricCumulative {
 
 impl PolydatNode for MetricCumulative {
     fn meta(&self) -> &NodeMeta { &self.meta }
+    /// Intrinsically volatile: reads the live session-lifetime view the
+    /// cadence pipeline frames. Per polydat R1.v this marks the node
+    /// `Dynamic` — never const-folded, re-evaluated on every pull — so a
+    /// metrics reader can never cache a stale (e.g. compile-time-empty) value.
+    fn purity(&self) -> Purity {
+        Purity::Nondeterministic {
+            reason: "reads live session-lifetime metrics; value changes over the run",
+        }
+    }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let sel = selection_from_pattern(&self.label_pattern);
         let value = self.query.as_ref()
@@ -102,6 +114,18 @@ impl PolydatNode for MetricCumulative {
             .and_then(|snap| extract_stat(&snap, &self.stat))
             .unwrap_or(0.0);
         outputs[0] = Value::F64(value);
+    }
+
+    /// `None`, intentionally: this reader has **no bounded lookback** —
+    /// it reads [`MetricsQuery::session_lifetime`], a running total
+    /// across ALL coordinates. The SRD-86 settle viability gate sizes
+    /// warmup to a window so it clears the prior coordinate, but a
+    /// session-cumulative value never clears the prior coordinate, so no
+    /// gate can scope it. The settle instead *warns* when an optimizer
+    /// objective reads this node, steering authors to `metric_window` or
+    /// `metricsql_scalar(rate(...[W]))` for a per-coordinate objective.
+    fn temporal_window_ms(&self) -> Option<i64> {
+        None
     }
 }
 
@@ -132,13 +156,29 @@ impl MetricWindow {
 
 impl PolydatNode for MetricWindow {
     fn meta(&self) -> &NodeMeta { &self.meta }
+    /// Intrinsically volatile: reads the latest closed cadence window the
+    /// pipeline frames. Per polydat R1.v this marks the node `Dynamic` —
+    /// never const-folded, re-evaluated on every pull.
+    fn purity(&self) -> Purity {
+        Purity::Nondeterministic {
+            reason: "reads the latest framed cadence window; value changes over the run",
+        }
+    }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         let sel = selection_from_pattern(&self.label_pattern);
         let value = self.query.as_ref()
             .and_then(|q| {
                 let smallest = q.reporter().declared_cadences().smallest();
                 if smallest.is_zero() { return None; }
-                let snap = q.cadence_window(smallest, &sel);
+                // Per-window derivations off the finest ring: counter stats read
+                // the span INCREASE (`cycles`/`errors`, and `rate` = increase ÷
+                // interval); the latency quantiles read the merged window
+                // DISTRIBUTION. Contrast `metric(...)`, which reads
+                // `session_lifetime` running totals.
+                let snap = match self.stat.as_str() {
+                    "p50" | "p99" | "mean" => q.distribution_over(smallest, &sel),
+                    _ => q.increase_over(smallest, &sel),
+                };
                 extract_stat(&snap, &self.stat)
             })
             .unwrap_or(0.0);
@@ -152,7 +192,7 @@ fn extract_stat(snapshot: &MetricSet, stat: &str) -> Option<f64> {
         let f = snapshot.family(name)?;
         let m = f.metrics().next()?;
         match m.point()?.value() {
-            MetricValue::Counter(c) => Some(c.total),
+            MetricValue::Counter(c) => Some(c.cumulative),
             _ => None,
         }
     }

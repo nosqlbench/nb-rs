@@ -59,13 +59,16 @@ pub mod prettifier;
 pub mod query_rewrite;
 pub mod eval;
 pub mod streaming;
-pub mod adapters;
-pub mod catalog;
 pub mod grammar;
 #[cfg(feature = "runtime")]
 pub mod runtime;
+// SRD-86 — the `metricsql_*` polydat node family + the Vector→Value
+// projector. Behind `polydat-nodes` so the engine stays polydat-free
+// for parse/evaluate-only consumers.
+#[cfg(feature = "polydat-nodes")]
+pub mod polydat_nodes;
 
 pub use ast::Expr;
-pub use eval::{DataSource, DataSourceError, EvalContext, EvalError, evaluate, evaluate_range};
+pub use eval::{MetricAccess, DataSourceError, EvalContext, EvalError, evaluate, evaluate_range};
 pub use streaming::{StreamingPlan, CompileError, compile_streaming};
 pub use parser::{parse, parse_for_prettify, ParseError};

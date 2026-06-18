@@ -1068,7 +1068,7 @@ impl Pipeline {
                 // `__name__` because their output represents
                 // a new series identity; selectors don't.)
                 let key = canonical_labels(labels);
-                per_series.entry(key).or_default().push(sample.clone());
+                per_series.entry(key).or_default().push(*sample);
             }
             Pipeline::Aggregate { reducer, grouping, groups } => {
                 let key = group_key(labels, grouping);
@@ -2682,7 +2682,7 @@ mod tests {
         let mut out = Vec::new();
         for s in series {
             for sm in &s.samples {
-                out.push((s.labels.clone(), sm.clone()));
+                out.push((s.labels.clone(), *sm));
             }
         }
         out
@@ -2713,9 +2713,9 @@ mod tests {
     /// from the test input.
     fn batch_result(query: &str, input: &[Series], anchor_ms: i64) -> Vec<Series> {
         struct Mem { series: Vec<Series> }
-        impl crate::eval::DataSource for Mem {
-            fn fetch(&self, matchers: &[Matcher], _start: i64, _end: i64)
-                -> Result<Vec<Series>, crate::eval::DataSourceError>
+        impl crate::eval::MetricAccess for Mem {
+            fn select_range(&self, matchers: &[Matcher], _start: i64, _end: i64)
+                -> Result<crate::eval::Vector, crate::eval::DataSourceError>
             {
                 Ok(self.series.iter()
                     .filter(|s| matchers.iter().all(|m| {

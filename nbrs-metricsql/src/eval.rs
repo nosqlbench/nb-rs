@@ -42,125 +42,23 @@ use crate::ast::{
     LabelFilterOp, MetricExpr, NumberExpr, RollupExpr,
 };
 
-/// One observation: time + value, with the labels that
-/// identify the producing series. Aligns with VM's
-/// `Timeseries` shape but keeps the type name domain-neutral.
-#[derive(Debug, Clone)]
-pub struct Sample {
-    pub timestamp_ms: i64,
-    pub value: f64,
-}
+/// Query-result and selector shapes are the **metrics access
+/// library's** native types (SRD-86 §"The metric-reader surface").
+/// `nbrs-metrics` is the foundational data-access library; the
+/// MetricsQL engine evaluates *over* its `Vector` shape and owns no
+/// result or selector types of its own. Re-exported here so the
+/// engine's many `Series`/`Sample`/`Matcher` references read the
+/// shared types unchanged.
+pub use nbrs_metrics::queryapi::{
+    MatchOp as MatcherOp, Matcher, QueryError as DataSourceError, Sample, Series, Vector,
+};
 
-/// One time series — its identifying label set plus the
-/// observed samples within the query range.
-#[derive(Debug, Clone)]
-pub struct Series {
-    pub labels: Vec<(String, String)>,
-    pub samples: Vec<Sample>,
-}
-
-/// Pluggable data backend. Implementations adapt their
-/// underlying storage (sqlite, in-memory, remote) to the
-/// engine's selector contract.
-///
-/// # Contract
-///
-/// `fetch(matchers, start_ms, end_ms)` returns every series
-/// whose label set satisfies **every** [`Matcher`], with
-/// samples lying in the closed interval `[start_ms, end_ms]`.
-/// Implementations MUST honour these invariants:
-///
-/// - **`__name__` in labels.** Each returned [`Series`]
-///   carries an `__name__` label whose value is the metric
-///   name. Selectors with a metric-name matcher rely on it,
-///   and aggregate-modifier semantics (`without` drops it,
-///   `by` may keep it) reach for it explicitly.
-/// - **Samples sorted ascending.** [`Series::samples`] is
-///   sorted by `timestamp_ms`. The rollup reducers and
-///   sample-alignment paths assume monotonic order; an
-///   unsorted series would produce wrong `first_over_time` /
-///   `last_over_time` / `rate` results without explicit
-///   detection cost.
-/// - **Window inclusive.** Samples MUST satisfy
-///   `start_ms <= ts <= end_ms`. Out-of-window samples will
-///   fold into windowed reducers (`sum_over_time`, …) and
-///   produce incorrect totals.
-/// - **No empty-series promise.** A series with zero matching
-///   samples in the window MAY be omitted from the result, or
-///   returned with an empty [`Series::samples`] list — the
-///   evaluator handles both. Reducers operating on an empty
-///   sample list yield `NaN` per upstream semantics.
-///
-/// # Errors
-///
-/// Backends that can fail (I/O, parse, transient remote)
-/// surface failure via [`DataSourceError`]. Distinct from
-/// [`EvalError`] so caller code can distinguish "the storage
-/// layer broke" from "the query is unsupported".
-///
-/// # Non-goals (deferred)
-///
-/// The trait is intentionally one method wide. Future shape
-/// pressure that may pull more methods in (revisit when a
-/// real backend lights it up):
-///
-/// - **Prefetch hint** for stepped range queries (today the
-///   evaluator re-fetches overlapping windows on every step;
-///   sqlite-backed nb-rs metrics.db absorbs this fine, remote
-///   stores will not).
-/// - **Streaming sample iterators** for queries that scan
-///   wide windows where in-memory materialisation hurts.
-/// - **Pushdown of `or`-group disjunctions** so the backend
-///   answers a multi-group selector in one round trip.
-pub trait DataSource {
-    /// Fetch all series whose labels satisfy every matcher,
-    /// containing samples in `[start_ms, end_ms]`. See trait
-    /// docs for contract invariants.
-    fn fetch(
-        &self,
-        matchers: &[Matcher],
-        start_ms: i64,
-        end_ms: i64,
-    ) -> Result<Vec<Series>, DataSourceError>;
-}
-
-/// Surface errors from a [`DataSource`] backend. The payload
-/// is a free-form string message — backends own their error
-/// taxonomy; the evaluator treats them all as opaque from a
-/// flow-control perspective.
-#[derive(Debug, Clone)]
-pub struct DataSourceError {
-    pub message: String,
-}
-
-impl DataSourceError {
-    pub fn new(msg: impl Into<String>) -> Self {
-        Self { message: msg.into() }
-    }
-}
-
-impl std::fmt::Display for DataSourceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "data source: {}", self.message)
-    }
-}
-
-impl std::error::Error for DataSourceError {}
-
-/// One label-matcher in a selector. Mirrors
-/// [`crate::ast::LabelFilter`] but flattened for evaluator
-/// consumers (no template-ref / quoted-form metadata).
-#[derive(Debug, Clone)]
-pub struct Matcher {
-    pub label: String,
-    pub op: MatcherOp,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MatcherOp {
-    Eq, Ne, EqRegex, NeRegex,
-}
+/// The engine's data backend is the metrics access *service*
+/// ([`MetricAccess`]) — `nbrs-metrics` owns the contract. The engine
+/// locates a service at runtime (live or sqlite) and reads `Vector`s
+/// through `select_range` / `select_instant`. Re-exported here for the
+/// engine's `&dyn MetricAccess` references and the crate's public API.
+pub use nbrs_metrics::queryapi::MetricAccess;
 
 /// Evaluation context: the data source plus the time range
 /// the query operates over. Step size matters for range
@@ -179,7 +77,7 @@ pub enum MatcherOp {
 /// so lookback never applies — the rollup's own window IS
 /// the lookback.
 pub struct EvalContext<'a> {
-    pub data: &'a dyn DataSource,
+    pub data: &'a dyn MetricAccess,
     pub start_ms: i64,
     pub end_ms: i64,
     pub step_ms: i64,
@@ -371,7 +269,7 @@ fn evaluate_metric_expr(
     let mut seen: Vec<Vec<(String, String)>> = Vec::new();
     for group in &me.label_filterss {
         let matchers = filters_to_matchers(group)?;
-        let fetched = ctx.data.fetch(&matchers, fetch_start, fetch_end)?;
+        let fetched = ctx.data.select_range(&matchers, fetch_start, fetch_end)?.into_series();
         for s in fetched {
             if seen.iter().any(|prev| label_sets_equal(prev, &s.labels)) {
                 continue;
@@ -1179,6 +1077,48 @@ fn window_of_arg(arg: &Expr, step_ms: i64) -> Result<Option<i64>, EvalError> {
     Ok(None)
 }
 
+/// The widest range-selector window (ms) anywhere in `expr` — the max
+/// over every `m[window]` rollup, recursively (function args, binary
+/// operands, parenthesised groups, nested subqueries). `None` for a
+/// pure instant query with no range selector. Step-relative durations
+/// (`[5]`) resolve against `step_ms`; unit-qualified ones (`[5s]`)
+/// ignore it. Unparseable windows are skipped (best-effort).
+///
+/// The SRD-86 optimizer's settle viability gate reads this (via the
+/// metricsql reader node's [`MetricAccess`]-free
+/// `temporal_window_ms`) to size warmup so a `rate(...[W])` /
+/// `*_over_time(...[W])` window clears the prior coordinate before the
+/// objective is trusted.
+pub fn max_rollup_window_ms(expr: &Expr, step_ms: i64) -> Option<i64> {
+    fn walk(e: &Expr, step_ms: i64, acc: &mut Option<i64>) {
+        match e {
+            Expr::Rollup(re) => {
+                if let Some(w) = &re.window
+                    && let Ok(ms) = parse_duration_ms(&w.value, step_ms)
+                {
+                    *acc = Some(acc.map_or(ms, |a| a.max(ms)));
+                }
+                walk(&re.expr, step_ms, acc);
+                if let Some(at) = &re.at {
+                    walk(at, step_ms, acc);
+                }
+            }
+            Expr::Func(f) => f.args.iter().for_each(|a| walk(a, step_ms, acc)),
+            Expr::Binary(b) => {
+                walk(&b.left, step_ms, acc);
+                walk(&b.right, step_ms, acc);
+            }
+            Expr::Paren(p) => p.exprs.iter().for_each(|a| walk(a, step_ms, acc)),
+            Expr::With(w) => walk(&w.body, step_ms, acc),
+            // Number / String / Duration / Metric carry no nested rollup.
+            _ => {}
+        }
+    }
+    let mut acc = None;
+    walk(expr, step_ms, &mut acc);
+    acc
+}
+
 /// Apply the rollup reducer to one series's windowed samples.
 /// NaN samples are dropped before reducing, per upstream;
 /// empty inputs produce NaN.
@@ -1682,9 +1622,9 @@ mod tests {
         series: Vec<Series>,
     }
 
-    impl DataSource for MemoryDataSource {
-        fn fetch(&self, matchers: &[Matcher], _start: i64, _end: i64)
-            -> Result<Vec<Series>, DataSourceError>
+    impl MetricAccess for MemoryDataSource {
+        fn select_range(&self, matchers: &[Matcher], _start: i64, _end: i64)
+            -> Result<Vector, DataSourceError>
         {
             Ok(self.series.iter()
                 .filter(|s| matchers.iter().all(|m| matches_series(m, s)))
@@ -1896,14 +1836,15 @@ mod tests {
     /// evaluator passed the right window.
     struct RecordingDataSource {
         series: Vec<Series>,
-        last_range: std::cell::Cell<(i64, i64)>,
+        // Mutex (not Cell): MetricAccess is a Send+Sync service.
+        last_range: std::sync::Mutex<(i64, i64)>,
     }
 
-    impl DataSource for RecordingDataSource {
-        fn fetch(&self, matchers: &[Matcher], start: i64, end: i64)
-            -> Result<Vec<Series>, DataSourceError>
+    impl MetricAccess for RecordingDataSource {
+        fn select_range(&self, matchers: &[Matcher], start: i64, end: i64)
+            -> Result<Vector, DataSourceError>
         {
-            self.last_range.set((start, end));
+            *self.last_range.lock().unwrap() = (start, end);
             Ok(self.series.iter()
                 .filter(|s| matchers.iter().all(|m| matches_series(m, s)))
                 .cloned()
@@ -1915,12 +1856,12 @@ mod tests {
     fn rollup_window_shifts_start() {
         let ds = RecordingDataSource {
             series: vec![series(&[("__name__", "cpu")], &[(0, 1.0)])],
-            last_range: std::cell::Cell::new((-1, -1)),
+            last_range: std::sync::Mutex::new((-1, -1)),
         };
         let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 , lookback_ms: None, query_start_ms: None, query_end_ms: None};
         let ast = parse("cpu[5m]").expect("parse");
         evaluate(&ctx, &ast).expect("eval");
-        let (start, end) = ds.last_range.get();
+        let (start, end) = *ds.last_range.lock().unwrap();
         // 5m = 300_000 ms.
         assert_eq!(end, 1_000_000);
         assert_eq!(start, 1_000_000 - 300_000);
@@ -1930,12 +1871,12 @@ mod tests {
     fn offset_shifts_anchor_back() {
         let ds = RecordingDataSource {
             series: vec![series(&[("__name__", "cpu")], &[(0, 1.0)])],
-            last_range: std::cell::Cell::new((-1, -1)),
+            last_range: std::sync::Mutex::new((-1, -1)),
         };
         let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 , lookback_ms: None, query_start_ms: None, query_end_ms: None};
         let ast = parse("cpu offset 1h").expect("parse");
         evaluate(&ctx, &ast).expect("eval");
-        let (start, end) = ds.last_range.get();
+        let (start, end) = *ds.last_range.lock().unwrap();
         // 1h = 3_600_000 ms; no window so start == end.
         assert_eq!(end, 1_000_000 - 3_600_000);
         assert_eq!(start, 1_000_000 - 3_600_000);
@@ -1945,12 +1886,12 @@ mod tests {
     fn window_and_offset_compose() {
         let ds = RecordingDataSource {
             series: vec![series(&[("__name__", "cpu")], &[(0, 1.0)])],
-            last_range: std::cell::Cell::new((-1, -1)),
+            last_range: std::sync::Mutex::new((-1, -1)),
         };
         let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 , lookback_ms: None, query_start_ms: None, query_end_ms: None};
         let ast = parse("cpu[5m] offset 1h").expect("parse");
         evaluate(&ctx, &ast).expect("eval");
-        let (start, end) = ds.last_range.get();
+        let (start, end) = *ds.last_range.lock().unwrap();
         assert_eq!(end, 1_000_000 - 3_600_000);
         assert_eq!(start, 1_000_000 - 3_600_000 - 300_000);
     }
@@ -1959,12 +1900,12 @@ mod tests {
     fn negative_offset_shifts_anchor_forward() {
         let ds = RecordingDataSource {
             series: vec![series(&[("__name__", "cpu")], &[(0, 1.0)])],
-            last_range: std::cell::Cell::new((-1, -1)),
+            last_range: std::sync::Mutex::new((-1, -1)),
         };
         let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 , lookback_ms: None, query_start_ms: None, query_end_ms: None};
         let ast = parse("cpu offset -1h").expect("parse");
         evaluate(&ctx, &ast).expect("eval");
-        let (_, end) = ds.last_range.get();
+        let (_, end) = *ds.last_range.lock().unwrap();
         assert_eq!(end, 1_000_000 + 3_600_000);
     }
 
@@ -1972,13 +1913,13 @@ mod tests {
     fn at_modifier_overrides_anchor() {
         let ds = RecordingDataSource {
             series: vec![series(&[("__name__", "cpu")], &[(0, 1.0)])],
-            last_range: std::cell::Cell::new((-1, -1)),
+            last_range: std::sync::Mutex::new((-1, -1)),
         };
         // anchor at 12345 seconds → 12_345_000 ms.
         let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 , lookback_ms: None, query_start_ms: None, query_end_ms: None};
         let ast = parse("cpu @ 12345").expect("parse");
         evaluate(&ctx, &ast).expect("eval");
-        let (_, end) = ds.last_range.get();
+        let (_, end) = *ds.last_range.lock().unwrap();
         assert_eq!(end, 12_345_000);
     }
 
@@ -2321,9 +2262,9 @@ mod tests {
         message: &'static str,
     }
 
-    impl DataSource for FailingDataSource {
-        fn fetch(&self, _: &[Matcher], _: i64, _: i64)
-            -> Result<Vec<Series>, DataSourceError>
+    impl MetricAccess for FailingDataSource {
+        fn select_range(&self, _: &[Matcher], _: i64, _: i64)
+            -> Result<Vector, DataSourceError>
         {
             Err(DataSourceError::new(self.message))
         }
@@ -2737,9 +2678,9 @@ mod tests {
         series: Vec<Series>,
     }
 
-    impl DataSource for WindowedDataSource {
-        fn fetch(&self, matchers: &[Matcher], start: i64, end: i64)
-            -> Result<Vec<Series>, DataSourceError>
+    impl MetricAccess for WindowedDataSource {
+        fn select_range(&self, matchers: &[Matcher], start: i64, end: i64)
+            -> Result<Vector, DataSourceError>
         {
             Ok(self.series.iter()
                 .filter(|s| matchers.iter().all(|m| matches_series(m, s)))
@@ -3047,5 +2988,20 @@ mod tests {
         let ctx = ctx_for(&ds);
         let got = evaluate(&ctx, &parse("topk(0, cpu)").expect("parse")).expect("eval");
         assert!(got.is_empty());
+    }
+
+    #[test]
+    fn max_rollup_window_ms_finds_widest_window() {
+        // The SRD-86 settle gate sizes warmup to the widest rollup window
+        // anywhere in the objective expression.
+        let w = |q: &str| max_rollup_window_ms(&parse(q).expect("parse"), 1_000);
+        assert_eq!(w("rate(errors_total[3s])"), Some(3_000));
+        assert_eq!(w("sum(rate(errors_total[3s]))"), Some(3_000), "through an aggregate");
+        assert_eq!(
+            w("rate(a[3s]) + max_over_time(b[10s])"),
+            Some(10_000),
+            "max across binary operands"
+        );
+        assert_eq!(w("up"), None, "a pure instant query has no rollup window");
     }
 }

@@ -3,7 +3,7 @@
 
 //! Catalog: enumerable backend introspection for metrics.
 //!
-//! [`DataSource`](crate::eval::DataSource) is for **fetching
+//! [`MetricAccess`](super::MetricAccess) is for **fetching
 //! values** given a selector. This module is for **enumerating
 //! what's available**: which metric families exist, what
 //! labels they carry, what values those labels take. The split
@@ -52,7 +52,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::eval::{DataSourceError, Matcher};
+use super::{Matcher, MatchOp as MatcherOp, QueryError as DataSourceError};
 
 /// One metric family's OpenMetrics metadata. Identifies the
 /// family by name and surfaces its type / unit / help.
@@ -242,7 +242,7 @@ pub struct ExemplarPoint {
 /// per-key lock.
 ///
 /// Errors surface via [`DataSourceError`] — same channel
-/// [`crate::eval::DataSource`] uses, so callers that already
+/// [`super::MetricAccess`] uses, so callers that already
 /// handle one can handle the other uniformly.
 pub trait MetricCatalog: Send + Sync {
     /// Every metric family known to the backend, with its
@@ -629,10 +629,10 @@ fn encode_matchers(matchers: &[Matcher]) -> String {
     let mut out = String::new();
     for m in sorted {
         let op = match m.op {
-            crate::eval::MatcherOp::Eq      => "=",
-            crate::eval::MatcherOp::Ne      => "!=",
-            crate::eval::MatcherOp::EqRegex => "=~",
-            crate::eval::MatcherOp::NeRegex => "!~",
+            MatcherOp::Eq      => "=",
+            MatcherOp::Ne      => "!=",
+            MatcherOp::EqRegex => "=~",
+            MatcherOp::NeRegex => "!~",
         };
         out.push_str(&m.label);
         out.push_str(op);
@@ -645,7 +645,7 @@ fn encode_matchers(matchers: &[Matcher]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::MatcherOp;
+    use MatcherOp;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Simple in-memory catalog used to drive the cache tests.

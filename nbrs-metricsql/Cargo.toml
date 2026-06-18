@@ -11,40 +11,41 @@ readme.workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# SRD-86 §"The metric-reader surface": nbrs-metrics is the foundational
+# data-access library. The engine evaluates over its `queryapi` service
+# (the `Vector` result shape, `MetricAccess`, selector matching) and
+# owns no result types of its own. metricsql sits ABOVE metrics now —
+# it is no longer a standalone leaf, by design.
+nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.0" }
 # HDR histogram for the holistic-class streaming reducers
 # (`quantile_over_time` and friends). Mergeable sketch with
 # bounded relative error — see SRD-47 §"Holistic-function
 # policy" for the design choice.
 hdrhistogram = "7"
-# Sqlite-backed `DataSource` adapter (SRD-47, follow-up).
-# Optional so non-sqlite consumers don't pull rusqlite in.
-rusqlite = { version = "0.31", features = ["bundled", "functions"], optional = true }
-# Compiled-pattern engine for the `regex` matcher operator
-# (`label=~"pat"` / `label!~"pat"`). Used by the sqlite
-# adapter to back a connection-scoped REGEXP user function;
-# the planner pushes regex matchers into SQL via
-# `WHERE v.value REGEXP ?`. Optional alongside the sqlite
-# adapter — the runtime feature pulls it transitively.
-regex = { version = "1", optional = true }
 # Continuous-query runtime (SRD-48). Actor + ArcSwap pattern
 # mirrors the SRD-40 cadence_reporter shape exactly.
 crossbeam-channel = { version = "0.5", optional = true }
 arc-swap = { version = "1", optional = true }
+# SRD-86 — the `metricsql_*` polydat node family (parse + evaluate +
+# project a query result to a polydat `Value`). Optional so the engine
+# stays polydat-free for consumers that only want parse/evaluate.
+polydat = { path = "../polydat", version = "0.1.0", optional = true }
+inventory = { version = "0.3.24", optional = true }
 
 [features]
 default = []
-# Enables `nbrs_metricsql::adapters::sqlite::SqliteDataSource`
-# — a `DataSource` impl over the nb-rs metrics.db schema
-# (defined by nbrs-metrics). The schema contract is
-# documented at the adapter module's rustdoc.
-sqlite = ["dep:rusqlite", "dep:regex"]
 # Enables `nbrs_metricsql::runtime::ContinuousQueryRuntime` —
 # the orchestration layer over `StreamingPlan`. See SRD-48.
 runtime = ["dep:crossbeam-channel", "dep:arc-swap"]
+# Enables the `metricsql_*` polydat node family + the Vector→Value
+# projector (SRD-86 §"The metric-reader surface").
+polydat-nodes = ["dep:polydat", "dep:inventory"]
 
 [dev-dependencies]
 # Test fixtures harvested from upstream VM tests live in
 # tests/fixtures/*.json — loaded by integration tests.
-# rusqlite under the test scope so adapter tests can build
-# fresh schemas + insert sample data inline.
+# rusqlite builds fresh schemas for the sqlite-backend integration
+# test (tests/sqlite.rs); nbrs-metrics with its `sqlite` feature
+# provides the backend itself (the engine sits over it).
 rusqlite = { version = "0.31", features = ["bundled"] }
+nbrs-metrics = { path = "../nbrs-metrics", features = ["sqlite"] }
