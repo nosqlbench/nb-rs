@@ -2704,6 +2704,7 @@ dependencies = [
  "nbrs-errorhandler",
  "nbrs-metrics",
  "nbrs-metricsql",
+ "nbrs-optimizers",
  "nbrs-rate",
  "nbrs-tui",
  "nbrs-web",
@@ -2868,10 +2869,20 @@ dependencies = [
  "arc-swap",
  "crossbeam-channel",
  "hdrhistogram",
- "regex",
+ "inventory",
+ "nbrs-metrics",
+ "polydat",
  "rusqlite",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nbrs-optimizers"
+version = "0.1.2"
+dependencies = [
+ "inventory",
+ "nbrs-activity",
 ]
 
 [[package]]
