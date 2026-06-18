@@ -412,8 +412,8 @@ pub fn log(level: LogLevel, message: &str) {
 /// sink can keep them out of its scrollback (they show in its
 /// managed phase-history region instead).
 pub fn log_categorized(level: LogLevel, category: LogCategory, message: &str) {
-    if level >= retain_level() {
-        if let Some(sink) = crate::log_sink::global() {
+    if level >= retain_level()
+        && let Some(sink) = crate::log_sink::global() {
             let tag = match level {
                 LogLevel::Trace => "TRC",
                 LogLevel::Debug => "DBG",
@@ -436,7 +436,6 @@ pub fn log_categorized(level: LogLevel, category: LogCategory, message: &str) {
                 crate::readouts::snapshot::strip_ansi(message)).into_bytes();
             let _ = sink.try_send(line);
         }
-    }
     if let Some(obs) = GLOBAL_OBSERVER.get() {
         obs.log_categorized(level, category, message);
     } else {

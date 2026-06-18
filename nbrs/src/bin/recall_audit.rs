@@ -42,6 +42,10 @@ use vectordata::{
     open_facet_typed,
 };
 
+/// Per-query accumulator: `(oracle_recall, pvs_recall,
+/// ground-truth keys, oracle keys, pvs keys)` keyed by query id.
+type PerQuery = BTreeMap<u64, (f64, f64, Vec<i64>, Vec<i64>, Vec<i64>)>;
+
 fn main() -> ExitCode {
     let cfg = match parse_args() {
         Ok(c) => c,
@@ -90,7 +94,7 @@ fn main() -> ExitCode {
     };
 
     let k = cfg.k;
-    let mut per_q: BTreeMap<u64, (f64, f64, Vec<i64>, Vec<i64>, Vec<i64>)> = BTreeMap::new();
+    let mut per_q: PerQuery = BTreeMap::new();
     let mut oracle_acc = (0u64, 0.0f64);
     let mut pvs_acc = (0u64, 0.0f64);
 
@@ -128,7 +132,7 @@ fn main() -> ExitCode {
     let mut oracle_wins = 0u64;
     let mut pvs_wins = 0u64;
     let mut ties = 0u64;
-    for (_, (o, p, _, _, _)) in &per_q {
+    for (o, p, _, _, _) in per_q.values() {
         if o > p { oracle_wins += 1; }
         else if p > o { pvs_wins += 1; }
         else { ties += 1; }
@@ -299,32 +303,27 @@ fn parse_audit_log(path: &PathBuf) -> Result<BTreeMap<String, BTreeMap<u64, Cycl
                 in_body = false;
                 if let Some(arr_start) = rest.find('[') {
                     let arr = parse_int_array(&rest[arr_start..]).unwrap_or_default();
-                    if let (Some(ph), Some(q)) = (&cur_phase, cur_q) {
-                        if let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q)) {
+                    if let (Some(ph), Some(q)) = (&cur_phase, cur_q)
+                        && let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q)) {
                             cyc.gt_oracle = arr;
                         }
-                    }
                 }
             } else if let Some(first_key) = parse_body_header(payload) {
                 in_body = true;
-                if let (Some(ph), Some(q)) = (&cur_phase, cur_q) {
-                    if let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q)) {
+                if let (Some(ph), Some(q)) = (&cur_phase, cur_q)
+                    && let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q)) {
                         cyc.body.clear();
                         if let Some(k) = first_key { cyc.body.push(k); }
                     }
-                }
             } else {
                 in_body = false;
             }
-        } else if in_body {
-            if let Ok(k) = line.trim().parse::<i64>() {
-                if let (Some(ph), Some(q)) = (&cur_phase, cur_q) {
-                    if let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q)) {
+        } else if in_body
+            && let Ok(k) = line.trim().parse::<i64>()
+                && let (Some(ph), Some(q)) = (&cur_phase, cur_q)
+                    && let Some(cyc) = phases.get_mut(ph).and_then(|m| m.get_mut(&q)) {
                         cyc.body.push(k);
                     }
-                }
-            }
-        }
     }
     Ok(phases)
 }

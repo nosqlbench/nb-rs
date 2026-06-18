@@ -144,7 +144,7 @@ fn render_metricsql_table(
     cfg: &SummaryConfig,
     format: &str,
 ) -> Result<String, String> {
-    use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
+    use nbrs_metrics::queryapi::sqlite::SqliteDataSource;
     use nbrs_metricsql::eval::{EvalContext, evaluate};
     use std::collections::BTreeMap;
 
@@ -155,7 +155,7 @@ fn render_metricsql_table(
         .find_map(|l| l.trim().strip_prefix("executions:"))
         .map(|v| crate::plot_metrics::parse_execution_selection(v.trim()))
         .transpose()?
-        .unwrap_or(nbrs_metricsql::adapters::sqlite::ExecutionSelection::LatestPerInstance);
+        .unwrap_or(nbrs_metrics::queryapi::sqlite::ExecutionSelection::LatestPerInstance);
     let ds = SqliteDataSource::open(db_path)
         .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?
         .with_execution_selection(selection);
@@ -431,7 +431,7 @@ pub fn summary_command(args: &[String]) {
     // first, producing a temp file whose merged rows feed
     // SqliteReporter as if from one logical session.
     let primary_db = opts.db.clone().unwrap_or_else(
-        || nbrs_activity::session::latest_metrics_db());
+        nbrs_activity::session::latest_metrics_db);
     let effective_dbs: Vec<PathBuf> = if opts.dbs.is_empty() {
         vec![primary_db.clone()]
     } else {
@@ -670,15 +670,13 @@ pub fn summary_command(args: &[String]) {
         } else {
             default_output_path(&basename, &format, &output_anchor)
         };
-        if let Some(parent) = output_path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
+        if let Some(parent) = output_path.parent()
+            && !parent.as_os_str().is_empty() && !parent.exists()
+                && let Err(e) = std::fs::create_dir_all(parent) {
                     eprintln!("nbrs summary: failed to create output dir '{}': {e}",
                         parent.display());
                     std::process::exit(1);
                 }
-            }
-        }
         if let Err(e) = std::fs::write(&output_path, &rendered) {
             eprintln!("nbrs summary: failed to write '{}': {e}",
                 output_path.display());

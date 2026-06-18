@@ -111,6 +111,11 @@ pub(crate) mod executor;
 pub(crate) mod error_policy;
 pub(crate) mod stop_conditions;
 pub(crate) mod workload_shell;
+/// SRD-86 — the optimizer service boundary: the `Optimizer`/`Objective`
+/// contract + registry the phase-execution driver uses, defined here in the
+/// core with no dependency on any algorithm crate. Public so algorithm crates
+/// (e.g. `nbrs-optimizers`) can register against it and the CLI can discover.
+pub mod optimize;
 pub mod resource_pool;
 pub(crate) mod describe;
 pub mod wrappers;

@@ -334,7 +334,7 @@ fn apply_event(
         }
         CheckpointData::PhaseDeclared { at, identity, skip_eligible } => {
             let key = super::writer::identity_key(&identity);
-            if !index.contains_key(&key) {
+            if let std::collections::hash_map::Entry::Vacant(e) = index.entry(key) {
                 doc.phases.push(PhaseEntry {
                     identity,
                     skip_eligible,
@@ -344,7 +344,7 @@ fn apply_event(
                     cursor_state: None,
                     error: None,
                 });
-                index.insert(key, doc.phases.len() - 1);
+                e.insert(doc.phases.len() - 1);
             }
             doc.checkpoint_at = at;
         }

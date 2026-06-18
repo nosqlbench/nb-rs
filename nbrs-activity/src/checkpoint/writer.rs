@@ -479,15 +479,14 @@ impl CheckpointWriter {
 /// in a fallible bootstrap path; the panic surfaces as a
 /// session-startup error rather than a silent skip.
 fn open_append(path: &std::path::Path) -> File {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent) {
             panic!(
                 "checkpoint: create parent dir {} for {}: {e}",
                 parent.display(),
                 path.display(),
             );
         }
-    }
     OpenOptions::new()
         .create(true)
         .append(true)

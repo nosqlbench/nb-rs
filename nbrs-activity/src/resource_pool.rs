@@ -725,12 +725,18 @@ impl Default for ResourcePool {
     fn default() -> Self { Self::new() }
 }
 
+/// Boxed, `Send` one-shot closure that builds a shared resource,
+/// returning a [`ResourceFuture`] yielding the resource (or an
+/// error message).
+type ResourceFactoryFn<'a> =
+    Box<dyn FnOnce() -> ResourceFuture<'a, Result<Arc<dyn SharedResource>, String>> + Send + 'a>;
+
 /// Closure-shaped factory for building a resource the first
 /// time its key is attached. Boxed so the pool can hold it
 /// across `.await` points and so callers don't have to type
 /// the future signature inline.
 pub struct ResourceFactory<'a> {
-    inner: Box<dyn FnOnce() -> ResourceFuture<'a, Result<Arc<dyn SharedResource>, String>> + Send + 'a>,
+    inner: ResourceFactoryFn<'a>,
 }
 
 impl<'a> ResourceFactory<'a> {

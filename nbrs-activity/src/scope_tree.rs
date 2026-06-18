@@ -164,13 +164,8 @@ fn label_for_comprehension(comp: &Comprehension) -> String {
     // Peel outer Order/Filter — these are non-structural for
     // the label.
     let mut body = comp;
-    loop {
-        match body {
-            Comprehension::Order { child, .. } | Comprehension::Filter { child, .. } => {
-                body = child.as_ref();
-            }
-            _ => break,
-        }
+    while let Comprehension::Order { child, .. } | Comprehension::Filter { child, .. } = body {
+        body = child.as_ref();
     }
     fn var_of(node: &Comprehension) -> String {
         match node {
@@ -1613,6 +1608,7 @@ mod tests {
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             poll: None,
             bindings: BindingsDef::default(),
+            optimize: None,
                     });
         tree.extend_with_op_templates(&phases);
         let scenario_idx = tree.nodes[0].children[0];
@@ -1643,6 +1639,7 @@ mod tests {
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             poll: None,
             bindings: BindingsDef::default(),
+            optimize: None,
                     });
         tree.extend_with_op_templates(&phases);
         let n_after_first = tree.nodes.len();
@@ -1665,6 +1662,7 @@ mod tests {
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             poll: None,
             bindings: BindingsDef::default(),
+            optimize: None,
                     });
         tree.extend_with_op_templates(&phases);
         tree.mark_scope_flattening(|_kind, _idx| true);

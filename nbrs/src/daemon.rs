@@ -257,7 +257,7 @@ pub fn daemonize() -> Result<(), String> {
 
     // Redirect stdin/stdout/stderr to /dev/null.
     unsafe {
-        let devnull = libc::open(b"/dev/null\0".as_ptr() as *const _, libc::O_RDWR);
+        let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
         if devnull >= 0 {
             libc::dup2(devnull, libc::STDIN_FILENO);
             libc::dup2(devnull, libc::STDOUT_FILENO);
@@ -318,7 +318,7 @@ pub fn check_port_available(addr: &SocketAddr) -> Result<(), String> {
                     } else {
                         msg.push_str("\n  → another program is using this port");
                     }
-                    msg.push_str(&"\n  → try a different port with port=<N>".to_string());
+                    msg.push_str("\n  → try a different port with port=<N>");
                 } else {
                     for p in &procs {
                         msg.push_str(&format!("\n  → found nbrs web process: pid {} — {}", p.pid, p.cmdline));

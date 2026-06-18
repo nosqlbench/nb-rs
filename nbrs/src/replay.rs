@@ -130,7 +130,7 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
         }
         i += 1;
     }
-    let db_path = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
+    let db_path = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
     if !db_path.exists() {
         return Err(format!(
             "session db not found at '{}' — pass --session=<dir> or --db=<path>",

@@ -25,7 +25,7 @@
 //! explanation overlay).
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use shadow_terminal::shadow_terminal::Config;
@@ -96,7 +96,7 @@ phases:
     (dir, yaml_path)
 }
 
-fn build_config(workload: &PathBuf, session: &PathBuf) -> Config {
+fn build_config(workload: &Path, session: &Path) -> Config {
     let mut command: Vec<OsString> = Vec::new();
     command.push(nbrs_binary().into());
     command.push("run".into());

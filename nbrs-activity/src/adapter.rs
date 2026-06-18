@@ -29,6 +29,18 @@ pub use polydat::kernel::PolydatKernel;
 pub use polydat::binder::{Binder, BinderSlot};
 pub use polydat::ast::PortType;
 
+/// Boxed, `Send` future returned by [`DriverAdapter::map_op`] — yields a
+/// boxed [`OpDispenser`] (or an error message). The lifetime ties the
+/// future to the borrowed `&self` / template references.
+pub type MapOpFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>;
+
+/// Boxed, `Send` future produced by an adapter/driver `create` factory —
+/// yields a connected [`DriverAdapter`] (or an error message).
+pub type CreateAdapterFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<std::sync::Arc<dyn DriverAdapter>, String>> + Send>,
+>;
+
 /// Trait for adapter-specific result bodies.
 ///
 /// The adapter defines its own concrete result type and implements
@@ -112,6 +124,7 @@ impl ResultBody for JsonBody {
 /// represented by `ExecutionError`, not by a flag on the result.
 /// Protocol-specific status codes (HTTP, CQL) live inside the
 /// adapter's `ResultBody` implementation, not on the generic result.
+#[derive(Default)]
 pub struct OpResult {
     /// Adapter-specific response body. The adapter owns the native
     /// type; consumers call `.to_json()` for a universal view.
@@ -123,11 +136,6 @@ pub struct OpResult {
     pub skipped: bool,
 }
 
-impl Default for OpResult {
-    fn default() -> Self {
-        Self { body: None, skipped: false }
-    }
-}
 
 impl OpResult {
     /// Create a skipped result (no execution).
@@ -272,7 +280,7 @@ pub trait DriverAdapter: Send + Sync + 'static {
         &'a self,
         template: &'a nbrs_workload::model::ParsedOp,
         parent: std::sync::Arc<PolydatKernel>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>>;
+    ) -> MapOpFuture<'a>;
 
     /// Default metric names to display on the status line for this adapter.
     ///
@@ -712,25 +720,25 @@ mod tests {
     fn resolved_fields_lazy_strings() {
         let fields = ResolvedFields::new(
             vec!["a".into(), "b".into()],
-            vec![polydat::ast::Value::U64(42), polydat::ast::Value::F64(3.14)],
+            vec![polydat::ast::Value::U64(42), polydat::ast::Value::F64(3.5)],
         );
         // Strings not computed yet
         assert!(fields.strings.get().is_none());
         // First access triggers rendering
         assert_eq!(fields.get_str("a"), Some("42"));
         assert!(fields.strings.get().is_some());
-        assert_eq!(fields.get_str("b"), Some("3.14"));
+        assert_eq!(fields.get_str("b"), Some("3.5"));
     }
 
     #[test]
     fn resolved_fields_get_value() {
         let fields = ResolvedFields::new(
             vec!["x".into()],
-            vec![polydat::ast::Value::F64(3.14)],
+            vec![polydat::ast::Value::F64(3.5)],
         );
         match fields.get_value("x") {
-            Some(polydat::ast::Value::F64(v)) => assert!((v - 3.14).abs() < 1e-10),
-            other => panic!("expected F64(3.14), got {other:?}"),
+            Some(polydat::ast::Value::F64(v)) => assert!((v - 3.5).abs() < 1e-10),
+            other => panic!("expected F64(3.5), got {other:?}"),
         }
         // get_value doesn't trigger string rendering
         assert!(fields.strings.get().is_none());
@@ -779,20 +787,14 @@ pub struct AdapterRegistration {
     pub display_preference: fn(&std::collections::HashMap<String, String>) -> DisplayPreference,
     /// Async factory: given params, create the adapter.
     /// Returns a boxed future so async connect is supported (e.g., CQL).
-    pub create: fn(std::collections::HashMap<String, String>)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<std::sync::Arc<dyn DriverAdapter>, String>> + Send>>,
+    pub create: fn(std::collections::HashMap<String, String>) -> CreateAdapterFuture,
 }
 
 inventory::collect!(AdapterRegistration);
 
 /// Look up an adapter by driver name from all link-time registrations.
 pub fn find_adapter_registration(driver: &str) -> Option<&'static AdapterRegistration> {
-    for reg in inventory::iter::<AdapterRegistration> {
-        if (reg.names)().contains(&driver) {
-            return Some(reg);
-        }
-    }
-    None
+    inventory::iter::<AdapterRegistration>.into_iter().find(|&reg| (reg.names)().contains(&driver)).map(|v| v as _)
 }
 
 /// List all registered driver names.
@@ -884,8 +886,7 @@ pub struct DriverImpl {
     /// [`AdapterRegistration::create`] — given workload params,
     /// connect and return a boxed `DriverAdapter` whose
     /// [`DriverAdapter::name`] is the *adapter* name.
-    pub create: fn(std::collections::HashMap<String, String>)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<std::sync::Arc<dyn DriverAdapter>, String>> + Send>>,
+    pub create: fn(std::collections::HashMap<String, String>) -> CreateAdapterFuture,
     /// Driver-specific param names — unioned into the
     /// adapter's known-params surface for CLI validation.
     pub known_params: fn() -> &'static [&'static str],
@@ -1020,7 +1021,7 @@ pub fn resolve_driver_name(
     let default_order = default_drivers(adapter);
     let order: Vec<&str> = match &user_order {
         Some(v) => v.clone(),
-        None => default_order.iter().copied().collect(),
+        None => default_order.to_vec(),
     };
     for driver in &order {
         if let Some(entry) = find_driver(adapter, driver) {

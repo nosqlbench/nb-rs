@@ -18,8 +18,8 @@
 //!   subcommand dispatch ([`scratch_subcommand`]).
 //!
 //! Renderer integration is the caller's job. The text /
-//! file paths are deterministic given the item name + kind
-//! + session dir; the caller writes the rendered bytes to
+//! file paths are deterministic given the item name + kind +
+//! session dir; the caller writes the rendered bytes to
 //! the path returned by [`scratch_paths`].
 
 use std::fs;

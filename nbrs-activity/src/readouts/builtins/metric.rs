@@ -55,7 +55,7 @@ impl Readout for Metric {
                     Some(pat) => filter_chips(&chips, pat),
                     None => chips,
                 };
-                let bytes = filtered.as_bytes().len();
+                let bytes = filtered.len();
                 let _ = out.write_str(&filtered);
                 bytes
             }

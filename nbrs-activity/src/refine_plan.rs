@@ -168,7 +168,9 @@ pub fn warn_multi_execution_default(session_dir: &std::path::Path) {
         Ok(s) => s,
         Err(_) => return,
     };
-    let rows: Vec<(i64, String, Option<String>, Option<String>, i64)> = match stmt.query_map([], |r| {
+    // One execution row: (exec_id, verb, scope, disposition, started_at_nanos).
+    type ExecRow = (i64, String, Option<String>, Option<String>, i64);
+    let rows: Vec<ExecRow> = match stmt.query_map([], |r| {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, String>(1)?,

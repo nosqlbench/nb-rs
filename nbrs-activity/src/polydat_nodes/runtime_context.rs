@@ -714,6 +714,10 @@ polydat::register_nodes!(signatures, build_node);
 
 #[cfg(test)]
 mod tests {
+    // The async tests hold the `serial_test()` guard (a pure `Mutex<()>`)
+    // across `.await` to serialize global session-root installs; the
+    // awaited code never locks it, so there's no deadlock.
+    #![allow(clippy::await_holding_lock)]
     use super::*;
     use nbrs_metrics::controls::{BranchScope, ControlBuilder};
     use nbrs_metrics::labels::Labels;
@@ -935,7 +939,7 @@ mod tests {
         let node = ControlBool::new("enabled");
         let mut out = [Value::None];
         node.eval(&[], &mut out);
-        assert_eq!(out[0].as_bool(), true);
+        assert!(out[0].as_bool());
     }
 
     #[test]
@@ -945,7 +949,7 @@ mod tests {
         let node = ControlBool::new("enabled");
         let mut out = [Value::None];
         node.eval(&[], &mut out);
-        assert_eq!(out[0].as_bool(), false);
+        assert!(!out[0].as_bool());
     }
 
     #[test]
@@ -955,7 +959,7 @@ mod tests {
         let node = ControlBool::new("absent");
         let mut out = [Value::None];
         node.eval(&[], &mut out);
-        assert_eq!(out[0].as_bool(), false);
+        assert!(!out[0].as_bool());
     }
 
     #[test]
@@ -991,7 +995,7 @@ mod tests {
         let c: nbrs_metrics::controls::Control<f64> = nbrs_metrics::controls::
             ControlBuilder::new("rate", 100.0)
                 .reify_as_gauge(|v| Some(*v))
-                .from_f64(|v| Ok(v))
+                .from_f64(Ok)
                 .branch_scope(nbrs_metrics::controls::BranchScope::Subtree)
                 .build();
         root.read().unwrap().controls().declare(c.clone());

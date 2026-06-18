@@ -169,6 +169,10 @@ impl PollingDispenser {
     /// gauge (in seconds) for the summary report.
     /// `max_error_retries`: cap on consecutive retryable inner errors
     /// (default 0 = strict).
+    // reason: cohesive wrapper constructor — each argument is a distinct poll
+    // policy knob (interval, timeout, retry cap, metric name, row bounds);
+    // bundling them into a struct would only relocate the same fields.
+    #[allow(clippy::too_many_arguments)]
     pub fn wrap(
         inner: Arc<dyn OpDispenser>,
         poll_interval_ms: u64,
@@ -233,8 +237,8 @@ impl OpDispenser for PollingDispenser {
                         retryable_errors_consumed += 1;
                         let indent = crate::scene_tree::running_phase_indent();
                         let color = crate::observer::use_color();
-                        let yellow = color.then(|| "\x1b[33m").unwrap_or("");
-                        let reset = color.then(|| "\x1b[0m").unwrap_or("");
+                        let yellow = if color { "\x1b[33m" } else { "" };
+                        let reset = if color { "\x1b[0m" } else { "" };
                         crate::diag!(
                             crate::observer::LogLevel::Warn,
                             "{indent}{yellow}poll retry {retryable_errors_consumed}/{}{reset} after retryable error: {}",
@@ -302,9 +306,9 @@ impl OpDispenser for PollingDispenser {
                     self.metrics.condition_met.store(1, std::sync::atomic::Ordering::Relaxed);
                     let indent = crate::scene_tree::running_phase_indent();
                     let color = crate::observer::use_color();
-                    let dim = color.then(|| "\x1b[2m").unwrap_or("");
-                    let green = color.then(|| "\x1b[32m").unwrap_or("");
-                    let reset = color.then(|| "\x1b[0m").unwrap_or("");
+                    let dim = if color { "\x1b[2m" } else { "" };
+                    let green = if color { "\x1b[32m" } else { "" };
+                    let reset = if color { "\x1b[0m" } else { "" };
                     crate::observer::log(
                         crate::observer::LogLevel::Info,
                         &format!("{indent}{green}poll complete{reset}: {polls} polls {dim}in {elapsed_secs:.1}s{reset}"),

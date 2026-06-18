@@ -77,13 +77,13 @@ pub const FORMAT_VALUES: &[&str] = &[
 /// Concatenation helper: the full advertised flag list for a
 /// given subcommand (kind-specific flags + session flags).
 pub fn list_all_flags() -> Vec<&'static str> {
-    let mut v: Vec<&'static str> = LIST_FLAGS.iter().copied().collect();
+    let mut v: Vec<&'static str> = LIST_FLAGS.to_vec();
     v.extend(SESSION_FLAGS.iter().copied());
     v
 }
 
 pub fn match_all_flags() -> Vec<&'static str> {
-    let mut v: Vec<&'static str> = MATCH_FLAGS.iter().copied().collect();
+    let mut v: Vec<&'static str> = MATCH_FLAGS.to_vec();
     v.extend(SESSION_FLAGS.iter().copied());
     v
 }
@@ -564,15 +564,14 @@ where I: Iterator<Item = &'a String> {
 /// banner when more than one exists); `Specific(n)` and `All`
 /// are explicit opt-ins via the CLI flags above.
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 enum MetricsExecFlag {
+    #[default]
     Latest,
     Specific(u64),
     All,
 }
 
-impl Default for MetricsExecFlag {
-    fn default() -> Self { MetricsExecFlag::Latest }
-}
 
 impl MetricsExecFlag {
     /// Resolve this operator-facing flag to a concrete
@@ -642,7 +641,7 @@ fn match_specs(args: &[String]) {
         Ok(f) => f,
         Err(e) => { eprintln!("nbrs metrics match: filter: {e}"); std::process::exit(2); }
     };
-    let db = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
+    let db = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
     if !db.exists() {
         eprintln!("nbrs metrics match: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -841,7 +840,7 @@ fn groups_command(args: &[String]) {
         Err(e) => { eprintln!("nbrs metrics groups: filter: {e}"); std::process::exit(2); }
     };
 
-    let db = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
+    let db = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
     if !db.exists() {
         eprintln!("nbrs metrics groups: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -933,8 +932,8 @@ fn groups_command(args: &[String]) {
                 if let Some(m) = mean {
                     bucket.sum += m * cnt as f64;
                 }
-                if let Some(v) = mn { if v < bucket.min { bucket.min = v; } }
-                if let Some(v) = mx { if v > bucket.max { bucket.max = v; } }
+                if let Some(v) = mn && v < bucket.min { bucket.min = v; }
+                if let Some(v) = mx && v > bucket.max { bucket.max = v; }
             }
         }
     }
@@ -1278,7 +1277,7 @@ fn list(args: &[String], show_values_in: bool) {
         std::process::exit(2);
     }
 
-    let db = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
+    let db = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
     if !db.exists() {
         eprintln!("nbrs metrics: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -1329,9 +1328,8 @@ fn list(args: &[String], show_values_in: bool) {
     let mut flat: Vec<InstanceRow> = Vec::new();
     for (id, spec) in &rows {
         let (family, labels) = split_spec(spec);
-        if let Some(f) = filter.as_ref() {
-            if !f.matches(&family, &labels) { continue; }
-        }
+        if let Some(f) = filter.as_ref()
+            && !f.matches(&family, &labels) { continue; }
         let mut sorted = labels.clone();
         sorted.sort();
         tree.entry(family.clone()).or_default().insert(sorted, *id);
@@ -1425,11 +1423,10 @@ fn emit<F>(tofile: &Option<PathBuf>, _format: Format, f: F)
 where F: FnOnce(&mut dyn std::io::Write) -> std::io::Result<()> {
     let result = match tofile {
         Some(path) => {
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-            }
             match std::fs::File::create(path) {
                 Ok(file) => {
                     let mut bw = std::io::BufWriter::new(file);
@@ -1454,6 +1451,9 @@ where F: FnOnce(&mut dyn std::io::Write) -> std::io::Result<()> {
     }
 }
 
+// The family → label-set → count tree is the natural shape of the
+// grouped metric data here; aliasing it would not aid readability.
+#[allow(clippy::type_complexity)]
 fn render_plain(
     w: &mut dyn std::io::Write,
     db: &Path,
@@ -1544,8 +1544,8 @@ fn render_yaml(db: &Path, flat: &[InstanceRow], show_values: bool) -> String {
     serde_yaml::to_string(&v).unwrap_or_default()
 }
 
-/// Build a tree-shaped json document keyed `family → constants
-/// + nested label tree`. Lets the user roll up by family with
+/// Build a tree-shaped json document keyed `family → constants +
+/// nested label tree`. Lets the user roll up by family with
 /// `jq '.families."recall@10.mean"'` (or the yaml equivalent)
 /// and walk the dim tree structurally instead of by-row.
 fn render_tree_json(db: &Path, flat: &[InstanceRow], show_values: bool) -> String {
@@ -1591,6 +1591,8 @@ fn build_tree_value(db: &Path, flat: &[InstanceRow], show_values: bool) -> serde
 /// even if the producer declared labels in different orders
 /// across instances.
 fn build_family_tree(rows: &[&InstanceRow], show_values: bool) -> serde_json::Value {
+    // (sorted label set, value summary) pairs feeding the dim tree.
+    #[allow(clippy::type_complexity)]
     let normalized: Vec<(Vec<(String, String)>, Option<ValueSummary>)> = rows.iter()
         .map(|r| {
             let mut s = r.labels.clone();
@@ -1608,6 +1610,9 @@ fn build_family_tree(rows: &[&InstanceRow], show_values: bool) -> serde_json::Va
 /// instead of alternating key-level / value-level layers.
 /// Leaves (no labels left) emit `{count, mean, …}` in `show`
 /// mode, `null` in `list` mode.
+// `rows` is the (label set, value summary) list peeled one
+// dimension per recursion; the nested tuple is the intrinsic shape.
+#[allow(clippy::type_complexity)]
 fn nest_label_tree(
     rows: &[(Vec<(String, String)>, Option<ValueSummary>)],
     show_values: bool,
@@ -1631,6 +1636,7 @@ fn nest_label_tree(
     // BTreeMap is just for grouping; we re-sort the key tuples
     // naturally before emitting so `limit=2` precedes
     // `limit=10`.
+    #[allow(clippy::type_complexity)]
     let mut by_kv: BTreeMap<(String, String), Vec<(Vec<(String, String)>, Option<ValueSummary>)>>
         = BTreeMap::new();
     for (labels, values) in rows {
@@ -1839,6 +1845,9 @@ fn cmp_label_pairs_natural(
 /// varying dims). A "constant dim" is a `(key, value)` pair
 /// shared by every input set; those are factored out so the
 /// tree depth reflects only the dimensions that actually vary.
+// Returns (constant label set shared by all, per-input varying
+// label sets) — both are plain label-set lists.
+#[allow(clippy::type_complexity)]
 fn factor_constant_dims(
     label_sets: &[Vec<(String, String)>],
 ) -> (Vec<(String, String)>, Vec<Vec<(String, String)>>) {
@@ -2068,6 +2077,9 @@ fn load_value_summary(conn: &rusqlite::Connection, instance_id: i64) -> ValueSum
     // observation. Subqueries grab the timespan covered by all
     // rows for this instance so callers can render
     // `timespan[5m23s]` alongside the stats.
+    // One row of optional stats columns plus the two timespan
+    // bounds, mirroring the SELECT below positionally.
+    #[allow(clippy::type_complexity)]
     let row: Result<(
         Option<f64>, Option<f64>, Option<f64>, Option<f64>,
         Option<f64>, Option<i64>, Option<f64>,

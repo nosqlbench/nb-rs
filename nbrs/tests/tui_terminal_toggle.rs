@@ -17,7 +17,7 @@
 //! self-contained.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use shadow_terminal::shadow_terminal::Config;
@@ -102,7 +102,7 @@ impl Drop for TempDir {
 /// `--session-path` so the run never writes session directories
 /// under the project root (see the project's test-isolation
 /// memory).
-fn build_config(workload: &PathBuf, extra: &[&str]) -> Config {
+fn build_config(workload: &Path, extra: &[&str]) -> Config {
     let sessions = workload.parent()
         .expect("workload path has a parent tempdir")
         .join("sessions");

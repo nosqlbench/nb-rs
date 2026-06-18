@@ -47,7 +47,7 @@ pub struct ActivityConfig {
     /// `when:` of each `stop_when:` entry). Compiled into scope-bound
     /// `ScopedExpr`s alongside the default error-rate condition and
     /// evaluated per tick.
-    pub stop_when: Vec<String>,
+    pub stop_when: Vec<crate::stop_conditions::StopConditionDecl>,
     pub max_retries: u32,
     /// Maximum number of ops within a stanza that execute concurrently.
     pub stanza_concurrency: usize,
@@ -174,6 +174,12 @@ impl Default for ActivityConfig {
 /// and adapter-specific metrics flow through the
 /// [`nbrs_metrics::component::DynamicCapture`] hook implemented
 /// for [`ActivityMetricsDynamic`].
+///
+/// Late-bound, optional shared dispenser list. Wrapped in a `Mutex`
+/// because it is set once after dispenser creation (post-init) and
+/// read by the dynamic-capture hook thereafter.
+type SharedDispensers = std::sync::Mutex<Option<Arc<Vec<Arc<dyn crate::adapter::OpDispenser>>>>>;
+
 pub struct ActivityMetrics {
     pub service_time: Arc<Timer>,
     pub wait_time: Arc<Timer>,
@@ -216,7 +222,7 @@ pub struct ActivityMetrics {
     error_type_counts: std::sync::Mutex<std::collections::HashMap<String, Arc<Counter>>>,
     labels: Labels,
     /// Dispensers for adapter-specific metrics capture. Set after dispenser creation.
-    dispensers: std::sync::Mutex<Option<Arc<Vec<Arc<dyn crate::adapter::OpDispenser>>>>>,
+    dispensers: SharedDispensers,
     /// Shared handles to the per-template validation metrics. Populated
     /// after executor setup so the progress thread can read live
     /// relevancy aggregates (recall-over-last-N, all-time mean) without
@@ -364,7 +370,7 @@ impl ActivityMetrics {
         let counter = map.entry(error_name.to_string())
             .or_insert_with(|| {
                 Arc::new(Counter::new(
-                    self.labels.with("name", &format!("errors.{error_name}")),
+                    self.labels.with("name", format!("errors.{error_name}")),
                 ))
             });
         counter.inc();
@@ -442,13 +448,12 @@ impl ActivityMetrics {
     /// `relevancy:`). Non-destructive — safe to call every frame.
     pub fn collect_relevancy_live(&self) -> Vec<crate::validation::RelevancyLive> {
         let mut out = Vec::new();
-        if let Ok(guard) = self.validation_metrics.lock() {
-            if let Some(ref vms) = *guard {
+        if let Ok(guard) = self.validation_metrics.lock()
+            && let Some(ref vms) = *guard {
                 for vm in vms.iter() {
                     out.extend(vm.live_snapshot());
                 }
             }
-        }
         out
     }
 
@@ -486,7 +491,7 @@ impl ActivityMetrics {
         }
         let snap = self.service_time.peek_snapshot();
         let h = &snap.histogram;
-        if h.len() > 0 {
+        if !h.is_empty() {
             let fmt = nbrs_metrics::reporters::summary::format_duration;
             candidates.push(("latency_p50".to_string(),  fmt(h.value_at_quantile(0.50) as f64)));
             candidates.push(("latency_p99".to_string(),  fmt(h.value_at_quantile(0.99) as f64)));
@@ -512,15 +517,14 @@ impl ActivityMetrics {
     /// Collect status counters from all registered dispensers.
     pub fn collect_status_counters(&self) -> Vec<(String, u64)> {
         let mut counters = Vec::new();
-        if let Ok(guard) = self.dispensers.lock() {
-            if let Some(ref disps) = *guard {
+        if let Ok(guard) = self.dispensers.lock()
+            && let Some(ref disps) = *guard {
                 for disp in disps.iter() {
                     for (name, total) in disp.status_counters() {
                         counters.push((name.to_string(), total));
                     }
                 }
             }
-        }
         counters
     }
 
@@ -759,9 +763,11 @@ pub struct PhasePollContext {
 
 /// SRD-75 `on_timeout` policy — see [`PhasePollContext::on_timeout`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PhasePollTimeoutPolicy {
     /// Phase fails; scenario walker's error-routing policy
     /// decides downstream behaviour.
+    #[default]
     Error,
     /// Phase fails AND `session_signals::request_stop()`
     /// is called — the scenario walker observes the
@@ -770,9 +776,6 @@ pub enum PhasePollTimeoutPolicy {
     Abort,
 }
 
-impl Default for PhasePollTimeoutPolicy {
-    fn default() -> Self { Self::Error }
-}
 
 /// Invoke [`DriverAdapter::declare_controls`] for each unique adapter
 /// instance against the given parent component, deduping by
@@ -925,7 +928,7 @@ impl Activity {
             ControlBuilder::new("concurrency", initial)
                 .reify_as_gauge(|v| Some(*v as f64))
                 .from_f64(|v| {
-                    if v < 1.0 || v > 100_000.0 {
+                    if !(1.0..=100_000.0).contains(&v) {
                         Err(format!("concurrency out of range: {v}"))
                     } else {
                         Ok(v as u32)
@@ -1806,7 +1809,7 @@ impl Activity {
         // [`Self::attach_component`] — this step only wires the
         // applier so a runtime write actually reconfigures the
         // running limiter.
-        if let (Some(ref ac), Some(ref rl)) = (
+        if let (Some(ac), Some(rl)) = (
             activity.component.as_ref(), rate_limiter.as_ref(),
         ) {
             let existing: Option<nbrs_metrics::controls::Control<nbrs_rate::RateSpec>> =
@@ -1867,7 +1870,6 @@ impl Activity {
             let flag = progress_flag.clone();
             let suppress_flag = activity.config.suppress_status_line.clone();
             let progress_metrics = activity.metrics.clone();
-            let start_time = start_time;
             let activity_name_progress = activity_name.clone();
             let cursor_name_progress = cursor_name.clone();
             let activity_concurrency = activity.config.concurrency;
@@ -2170,29 +2172,45 @@ impl Activity {
                     elapsed_ms: phase_start.elapsed().as_millis() as u64,
                     ..Default::default()
                 };
-                if let Some(reason) = stop_conditions.evaluate(&state) {
+                if let Some((outcome, reason)) = stop_conditions.evaluate(&state) {
                     policy_tripped = true;
-                    let msg = format!("stop condition tripped ({reason}) — failing phase");
-                    crate::diag!(crate::observer::LogLevel::Error,
-                        "activity '{}': {msg}", activity.config.name);
-                    if let Ok(mut slot) = activity.stop_reason.lock()
-                        && slot.is_none()
-                    {
-                        *slot = Some(format!("[{reason}] {msg}"));
-                    }
-                    if let Ok(mut errs) = activity.phase_errors.lock() {
-                        errs.push(crate::phase_outcome::PhaseErrorDetail {
-                            class: reason,
-                            message: msg,
-                            op_name: None,
-                            cycle: None,
-                            op_template: None,
-                            op_resolved: None,
-                            at_nanos: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_nanos() as u64).unwrap_or(0),
-                            retryable: false,
-                        });
+                    // SRD-83 Part 5 — honour the condition's effect. A
+                    // `fail` effect records a phase error (the phase ends
+                    // Failed); a `stop` effect is a clean halt (no error,
+                    // the phase ends Completed). Either way the stop_flag
+                    // drains the fibers at their next cycle boundary.
+                    if outcome.is_failure() {
+                        let msg = format!("stop condition tripped ({reason}) — failing phase");
+                        crate::diag!(crate::observer::LogLevel::Error,
+                            "activity '{}': {msg}", activity.config.name);
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(format!("[{reason}] {msg}"));
+                        }
+                        if let Ok(mut errs) = activity.phase_errors.lock() {
+                            errs.push(crate::phase_outcome::PhaseErrorDetail {
+                                class: reason,
+                                message: msg,
+                                op_name: None,
+                                cycle: None,
+                                op_template: None,
+                                op_resolved: None,
+                                at_nanos: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_nanos() as u64).unwrap_or(0),
+                                retryable: false,
+                            });
+                        }
+                    } else {
+                        let msg = format!("stop condition tripped ({reason}) — stopping phase");
+                        crate::diag!(crate::observer::LogLevel::Warn,
+                            "activity '{}': {msg}", activity.config.name);
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(format!("[{reason}] {msg}"));
+                        }
                     }
                     activity.stop_flag.store(true, Ordering::Relaxed);
                 }
@@ -2605,9 +2623,9 @@ impl Activity {
                         // the phase row in tui=terminal output.
                         let depth_indent = crate::scene_tree::running_phase_indent();
                         let color = crate::observer::use_color();
-                        let dim = color.then(|| "\x1b[2m").unwrap_or("");
-                        let bold = color.then(|| "\x1b[1m").unwrap_or("");
-                        let reset = color.then(|| "\x1b[0m").unwrap_or("");
+                        let dim = if color { "\x1b[2m" } else { "" };
+                        let bold = if color { "\x1b[1m" } else { "" };
+                        let reset = if color { "\x1b[0m" } else { "" };
                         crate::diag!(crate::observer::LogLevel::Info,
                             "{depth_indent}{bold}{name}{reset}: mean={:.2}% {dim}p50={:.2}% p99={:.2}% min={:.2}% max={:.2}% (n={n}){reset}",
                             mean * 100.0, p50 * 100.0, p99 * 100.0, min * 100.0, max * 100.0,
@@ -2630,7 +2648,7 @@ impl Activity {
                         // surrounding scope, not from any
                         // workload-specific knowledge.
                         if crate::observer::trace_enabled() {
-                            let mut trace_labels = activity_labels.with("n", &n.to_string());
+                            let mut trace_labels = activity_labels.with("n", n.to_string());
                             if let Some(k) = &k_label {
                                 trace_labels = trace_labels.with("k", k);
                             }
@@ -2647,7 +2665,7 @@ impl Activity {
                             );
                         }
                         for (stat, val) in [("mean", mean), ("p50", p50), ("p99", p99), ("min", min), ("max", max)] {
-                            let mut gauge_labels = activity_labels.with("n", &n.to_string());
+                            let mut gauge_labels = activity_labels.with("n", n.to_string());
                             if let Some(k) = &k_label {
                                 gauge_labels = gauge_labels.with("k", k);
                             }
@@ -2748,9 +2766,9 @@ impl Activity {
 /// any other op execution — the operator-visible op-count
 /// surface stays consistent regardless of fiber kind. Service
 /// + response timing is recorded the same way the cycle-pool
-/// records it (one Instant pair around the execute), but no
-/// rate-limiter acquire — daemons aren't subject to the
-/// activity's ops-per-second ceiling.
+///   records it (one Instant pair around the execute), but no
+///   rate-limiter acquire — daemons aren't subject to the
+///   activity's ops-per-second ceiling.
 async fn daemon_dispatch(
     activity: Arc<Activity>,
     dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
@@ -2829,6 +2847,10 @@ async fn poll_daemon_stop(
     }
 }
 
+// reason: cohesive per-fiber executor driver; each argument is a distinct
+// runtime channel/handle the loop needs — splitting into a struct would only
+// relocate the same fields with no clarity gain.
+#[allow(clippy::too_many_arguments)]
 async fn executor_task(
     activity: Arc<Activity>,
     dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
@@ -3769,7 +3791,7 @@ mod tests {
                 panic!("family {family:?} missing from snapshot"));
             let m = f.metrics().next().expect("at least one metric");
             match m.point().unwrap().value() {
-                MetricValue::Counter(c) => c.total,
+                MetricValue::Counter(c) => c.cumulative,
                 v => panic!("not a counter: {v:?}"),
             }
         }

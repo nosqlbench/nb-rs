@@ -83,8 +83,8 @@ fn run_with_session(
 }
 
 /// Workload that errors on every cycle so `errors=stop` drops
-/// the phase as Failed at cycle 0. testkit's `result-error-rate`
-/// + `result-error-name` give a deterministic class string for
+/// the phase as Failed at cycle 0. testkit's `result-error-rate` +
+/// `result-error-name` give a deterministic class string for
 /// the assertion (`ModelError`).
 ///
 /// Uses the explicit `phases:` + `scenarios:` form (not the

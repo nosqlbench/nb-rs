@@ -568,12 +568,12 @@ mod tests {
         decl.insert("my_factor".into(), make_spec("my_factor", MetricKind::Gauge, None));
 
         let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
-            inner, &decl, &[("my_factor", 3.14)],
+            inner, &decl, &[("my_factor", 3.5)],
         ).unwrap();
         let gauge = typed.slot_gauge("my_factor").unwrap();
         run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
 
-        assert!((gauge.get() - 3.14).abs() < 1e-9);
+        assert!((gauge.get() - 3.5).abs() < 1e-9);
     }
 
     #[test]

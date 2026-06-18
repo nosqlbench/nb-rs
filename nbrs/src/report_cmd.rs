@@ -40,7 +40,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         session_dir.as_ref().map(|d| d.join("metrics.db"));
     let output_root: PathBuf = session_dir
         .clone()
-        .unwrap_or_else(|| nbrs_activity::session::latest_session_dir());
+        .unwrap_or_else(nbrs_activity::session::latest_session_dir);
 
     // Promote `nbrs report plot ...` / `nbrs report table ...` to
     // the kind-filtered form, peeling the kind keyword off so the
@@ -95,8 +95,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
                 flushes on its own cadence — see SRD-40b), pass \
                 `workload=<file>` to resolve items from the \
                 YAML source instead. Example: \
-                `nbrs report all workload={}`",
-                "adapters/<adapter>/workloads/<workload>.yaml");
+                `nbrs report all workload=adapters/<adapter>/workloads/<workload>.yaml`");
         } else {
             eprintln!("nbrs report: hint — the workload yaml \
                 has no `report:` items declared. Add a \
@@ -434,11 +433,10 @@ fn dispatch_new_item(
     // here the builder hasn't seen it. Backfill the dispatch's
     // `workload` field from the captured path so `--add`'s
     // workload-resolution can use it.
-    if result.dispatch.workload.is_none() {
-        if let Some(p) = workload_path {
+    if result.dispatch.workload.is_none()
+        && let Some(p) = workload_path {
             result.dispatch.workload = Some(p.to_string_lossy().into_owned());
         }
-    }
 
     if result.dispatch.add {
         run_add(&result, session_dir);
@@ -601,11 +599,10 @@ fn run_rename(
     // `extract_workload` peels `--workload <path>` off before
     // dispatch reaches us; backfill so the workload-resolution
     // sees the user-supplied path.
-    if parsed.workload.is_none() {
-        if let Some(p) = extracted_workload {
+    if parsed.workload.is_none()
+        && let Some(p) = extracted_workload {
             parsed.workload = Some(p.to_string_lossy().into_owned());
         }
-    }
 
     let workload_path = match resolve_workload_for_add(
         parsed.workload.as_deref(),
@@ -786,12 +783,12 @@ pub enum KindFilter {
 impl KindFilter {
     fn matches(&self, k: nbrs_workload::report::Kind) -> bool {
         use nbrs_workload::report::Kind;
-        match (self, k) {
-            (KindFilter::Any, _) => true,
-            (KindFilter::Plot, Kind::Plot) => true,
-            (KindFilter::Table, Kind::Table) => true,
-            _ => false,
-        }
+        matches!(
+            (self, k),
+            (KindFilter::Any, _)
+                | (KindFilter::Plot, Kind::Plot)
+                | (KindFilter::Table, Kind::Table)
+        )
     }
 }
 
@@ -1039,7 +1036,7 @@ pub(crate) fn resolve_items(
         // report parser ingests.
         let db_path = session_db
             .map(PathBuf::from)
-            .unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
+            .unwrap_or_else(nbrs_activity::session::latest_metrics_db);
         if !db_path.exists() { return Ok(Vec::new()); }
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
@@ -1338,6 +1335,9 @@ fn classify_render_error(e: String, strict: bool, failures: &mut Vec<String>) {
     }
 }
 
+// Selector + render context threaded explicitly; the sibling
+// `render_by_*` helpers share this shape.
+#[allow(clippy::too_many_arguments)]
 fn render_by_index(
     items: &[ResolvedItem],
     filter: KindFilter,
@@ -1361,6 +1361,9 @@ fn render_by_index(
     render_by_indices(items, filter, &indices, passthrough, workload_arg, output_root, session_db, strict)
 }
 
+// Selector + render context threaded explicitly; the sibling
+// `render_by_*` helpers share this shape.
+#[allow(clippy::too_many_arguments)]
 fn render_by_indices(
     items: &[ResolvedItem],
     filter: KindFilter,
@@ -1445,6 +1448,9 @@ fn parse_figure_selector(s: &str) -> Option<Vec<usize>> {
     Some(out)
 }
 
+// Selector + render context threaded explicitly; the sibling
+// `render_by_*` helpers share this shape.
+#[allow(clippy::too_many_arguments)]
 fn render_by_glob(
     items: &[ResolvedItem],
     filter: KindFilter,
@@ -1614,8 +1620,8 @@ fn render_one(
             // logged but doesn't replace the plot's
             // success/failure return.
             if plot_result.is_ok() {
-                if item.with_table {
-                    if let Err(e) = render_companion_table(
+                if item.with_table
+                    && let Err(e) = render_companion_table(
                         n, item, output_root, session_db, &[],
                     ) {
                         eprintln!(
@@ -1623,7 +1629,6 @@ fn render_one(
                             item.name,
                         );
                     }
-                }
                 if !item.with_tables.is_empty() {
                     match discover_faceted_tuples(item, session_db) {
                         Ok(tuples) if tuples.is_empty() => {
@@ -1925,7 +1930,7 @@ fn discover_faceted_tuples(
         .ok_or_else(|| "plot has no y queries — nothing to facet over".to_string())?;
     let expr = &first.1;
 
-    use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
+    use nbrs_metrics::queryapi::sqlite::SqliteDataSource;
     use nbrs_metricsql::eval::{EvalContext, evaluate};
     let ds = SqliteDataSource::open(&db_path)
         .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
@@ -1976,6 +1981,7 @@ fn discover_faceted_tuples(
 ///   2. Positional `y-legends: [t1, t2, t3]` (axis index).
 ///   3. Bare axis tag (`y1` / `y2` / …) when no legend
 ///      template is declared.
+///
 /// `[placeholder]` tokens (e.g. `[optimize_for]`) are
 /// stripped — the table already breaks down by those labels
 /// in their own columns, so leaving the placeholder text
@@ -2198,238 +2204,6 @@ fn glob_matches(glob: &str, name: &str) -> bool {
     rec(glob.as_bytes(), name.as_bytes())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `refresh_session_index` writes `index.md` listing every
-    /// non-skipped file in the directory, organised by category,
-    /// with image entries embedded as previews.
-    #[test]
-    fn refresh_session_index_writes_categorised_links() {
-        let tmp = tempfile::tempdir().expect("tmp dir");
-        let dir = tmp.path();
-        std::fs::write(dir.join("report_a.md"), "# A").unwrap();
-        std::fs::write(dir.join("results.csv"), "k,v\n1,2\n").unwrap();
-        std::fs::write(dir.join("plot.png"), &[0u8; 8]).unwrap();
-        std::fs::write(dir.join("session.log"), "log").unwrap();
-        std::fs::write(dir.join("metrics.db"), &[0u8; 8]).unwrap();
-        std::fs::write(dir.join("README"), "no ext").unwrap();
-        // Skipped: index.md, dotfile, lockfile
-        std::fs::write(dir.join("index.md"), "stale").unwrap();
-        std::fs::write(dir.join(".hidden"), "x").unwrap();
-        std::fs::write(dir.join("metrics.db.lock"), "x").unwrap();
-
-        refresh_session_index(dir).expect("refresh");
-        let body = std::fs::read_to_string(dir.join("index.md"))
-            .expect("read index");
-        assert!(body.contains("## Reports"),     "reports section missing");
-        assert!(body.contains("[`report_a.md`](report_a.md)"));
-        assert!(body.contains("## Figures"),     "figures section missing");
-        assert!(body.contains("[`plot.png`](plot.png)"));
-        assert!(body.contains("![plot.png](plot.png)"),
-            "image preview missing");
-        assert!(body.contains("## Tables / data"));
-        assert!(body.contains("[`results.csv`](results.csv)"));
-        assert!(body.contains("## Logs"));
-        assert!(body.contains("[`session.log`](session.log)"));
-        assert!(body.contains("## Database"));
-        assert!(body.contains("[`metrics.db`](metrics.db)"));
-        assert!(body.contains("## Other"));
-        assert!(body.contains("[`README`](README)"));
-        assert!(!body.contains("`.hidden`"));
-        assert!(!body.contains(".lock`]"));
-        let index_links = body.matches("[`index.md`]").count();
-        assert_eq!(index_links, 0, "index.md should not list itself");
-    }
-
-    /// Empty directory still produces a valid index.
-    #[test]
-    fn refresh_session_index_empty_directory_writes_placeholder() {
-        let tmp = tempfile::tempdir().expect("tmp dir");
-        refresh_session_index(tmp.path()).expect("refresh");
-        let body = std::fs::read_to_string(tmp.path().join("index.md"))
-            .expect("read index");
-        assert!(body.contains("no artifacts"),
-            "empty-directory placeholder missing: {body}");
-    }
-
-    /// Re-running on a populated directory overwrites cleanly —
-    /// stale entries from a prior run don't linger.
-    #[test]
-    fn refresh_session_index_overwrites_stale_entries() {
-        let tmp = tempfile::tempdir().expect("tmp dir");
-        let dir = tmp.path();
-        std::fs::write(dir.join("first.md"), "1").unwrap();
-        refresh_session_index(dir).expect("first refresh");
-        let body1 = std::fs::read_to_string(dir.join("index.md")).unwrap();
-        assert!(body1.contains("first.md"));
-
-        std::fs::remove_file(dir.join("first.md")).unwrap();
-        std::fs::write(dir.join("second.md"), "2").unwrap();
-        refresh_session_index(dir).expect("second refresh");
-        let body2 = std::fs::read_to_string(dir.join("index.md")).unwrap();
-        assert!(body2.contains("second.md"), "new entry missing");
-        assert!(!body2.contains("first.md"), "stale entry persisted");
-    }
-
-    #[test]
-    fn clean_wipe_removes_png_and_md_leaves_other_files() {
-        // Mirrors the operator's intent for `--clean all`:
-        // every `.png` and `.md` in the session dir is gone
-        // post-wipe; non-artifact files (metrics.db, log,
-        // checkpoint, etc.) survive. Subdirectories are
-        // left alone — wipe is non-recursive.
-        let dir = std::env::temp_dir()
-            .join(format!("nbrs_clean_wipe_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // Artifact files (should be removed).
-        std::fs::write(dir.join("recall_10_mean_plot.png"), b"PNG").unwrap();
-        std::fs::write(dir.join("throughput_1__optimize_for_recall.md"), b"# tbl").unwrap();
-        std::fs::write(dir.join("summary.md"), b"# top").unwrap();
-        // Non-artifact files (should survive).
-        std::fs::write(dir.join("metrics.db"), b"sqlite").unwrap();
-        std::fs::write(dir.join("session.log"), b"log").unwrap();
-        std::fs::write(dir.join("checkpoint.jsonl"), b"{}").unwrap();
-        // Subdirectory (should survive untouched).
-        std::fs::create_dir_all(dir.join("metrics")).unwrap();
-        std::fs::write(dir.join("metrics/nested.md"), b"# nested").unwrap();
-
-        clean_wipe_artifacts(&dir);
-
-        assert!(!dir.join("recall_10_mean_plot.png").exists(),
-            "png should be removed");
-        assert!(!dir.join("throughput_1__optimize_for_recall.md").exists(),
-            "companion-table md should be removed");
-        assert!(!dir.join("summary.md").exists(),
-            "summary.md should be removed");
-        assert!(dir.join("metrics.db").exists(),
-            "metrics.db must survive");
-        assert!(dir.join("session.log").exists(),
-            "session.log must survive");
-        assert!(dir.join("checkpoint.jsonl").exists(),
-            "checkpoint.jsonl must survive");
-        assert!(dir.join("metrics/nested.md").exists(),
-            "nested md inside subdir must survive (non-recursive wipe)");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn is_clean_mode_recognises_flag_and_env() {
-        assert!(is_clean_mode(&["--clean".to_string()]));
-        assert!(is_clean_mode(&[
-            "all".to_string(), "--clean".to_string(), "workload=x.yaml".to_string(),
-        ]));
-        assert!(!is_clean_mode(&[
-            "all".to_string(), "workload=x.yaml".to_string(),
-        ]));
-    }
-
-    #[test]
-    fn glob_star_matches() {
-        assert!(glob_matches("recall*", "recall_at_k10"));
-        assert!(glob_matches("*at_k10", "recall_at_k10"));
-        assert!(glob_matches("*", "anything"));
-        assert!(glob_matches("*at*", "recall_at_k10"));
-        assert!(!glob_matches("plot*", "recall"));
-    }
-
-    #[test]
-    fn glob_question_mark() {
-        assert!(glob_matches("plot?", "plot1"));
-        assert!(!glob_matches("plot?", "plot12"));
-    }
-
-    #[test]
-    fn glob_exact() {
-        assert!(glob_matches("recall", "recall"));
-        assert!(!glob_matches("recall", "recall_at_k10"));
-    }
-
-    // ── Figure-selector parser ──────────────────────────────
-
-    #[test]
-    fn figure_selector_single_index() {
-        assert_eq!(parse_figure_selector("5"), Some(vec![5]));
-        assert_eq!(parse_figure_selector(" 5 "), Some(vec![5]));
-    }
-
-    #[test]
-    fn figure_selector_hyphen_range() {
-        assert_eq!(parse_figure_selector("2-4"), Some(vec![2, 3, 4]));
-        assert_eq!(parse_figure_selector("1-1"), Some(vec![1]));
-    }
-
-    #[test]
-    fn figure_selector_rust_range_inclusive() {
-        // Both `..` and `..=` resolve to inclusive in this
-        // CLI surface — humans typing `2..4` usually mean
-        // "through 4," not "stop short of 4."
-        assert_eq!(parse_figure_selector("2..4"), Some(vec![2, 3, 4]));
-        assert_eq!(parse_figure_selector("2..=4"), Some(vec![2, 3, 4]));
-    }
-
-    #[test]
-    fn figure_selector_comma_list() {
-        assert_eq!(parse_figure_selector("2,3,4"), Some(vec![2, 3, 4]));
-        assert_eq!(parse_figure_selector("1, 3 ,5"), Some(vec![1, 3, 5]));
-    }
-
-    #[test]
-    fn figure_selector_mixed_list_with_ranges() {
-        assert_eq!(
-            parse_figure_selector("1,3-5,7"),
-            Some(vec![1, 3, 4, 5, 7]),
-        );
-        assert_eq!(
-            parse_figure_selector("1,3..5,7"),
-            Some(vec![1, 3, 4, 5, 7]),
-        );
-    }
-
-    #[test]
-    fn figure_selector_preserves_user_order() {
-        // No automatic sort/dedup — `5,3,1` renders 5 then 3
-        // then 1.
-        assert_eq!(parse_figure_selector("5,3,1"), Some(vec![5, 3, 1]));
-    }
-
-    #[test]
-    fn figure_selector_rejects_non_numeric() {
-        assert_eq!(parse_figure_selector("recall"), None);
-        assert_eq!(parse_figure_selector("recall_at_k10"), None);
-        assert_eq!(parse_figure_selector("2,abc"), None);
-    }
-
-    #[test]
-    fn figure_selector_rejects_zero_and_negative() {
-        // 0 is invalid (1-based indexing); `-5` looks like a
-        // negative literal which is a missing-LHS hyphen
-        // range and rejected.
-        assert_eq!(parse_figure_selector("0"), None);
-        assert_eq!(parse_figure_selector("-5"), None);
-        assert_eq!(parse_figure_selector("0-5"), None);
-    }
-
-    #[test]
-    fn figure_selector_rejects_reversed_ranges() {
-        // `5-2` is rejected rather than treated as reversed
-        // iteration — disambiguate via comma list (`5,4,3,2`).
-        assert_eq!(parse_figure_selector("5-2"), None);
-        assert_eq!(parse_figure_selector("4..2"), None);
-    }
-
-    #[test]
-    fn figure_selector_rejects_empty() {
-        assert_eq!(parse_figure_selector(""), None);
-        assert_eq!(parse_figure_selector("  "), None);
-        assert_eq!(parse_figure_selector(",,"), None);
-    }
-}
-
 // ── cli_spec entry ─────────────────────────────────────────
 
 /// Build a child Command for one report subcommand. Every
@@ -2460,7 +2234,7 @@ fn report_subleaf(subname: &'static str, help: &'static str)
             "figure"   => |p| { dispatch(p, "figure");  Ok(()) },
             "rename"   => |p| { dispatch(p, "rename");  Ok(()) },
             "scratch"  => |p| { dispatch(p, "scratch"); Ok(()) },
-            _ => |_| Err(format!("report: unknown subcommand")),
+            _ => |_| Err("report: unknown subcommand".to_string()),
         }
     }
     fn dispatch(p: ParsedCommand, subname: &str) {
@@ -2810,5 +2584,237 @@ pub fn table_alias_spec() -> crate::cli_spec::Command {
         handler: Some(Handler::Sync(handle)),
         raw_args: true,
         completion_override: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `refresh_session_index` writes `index.md` listing every
+    /// non-skipped file in the directory, organised by category,
+    /// with image entries embedded as previews.
+    #[test]
+    fn refresh_session_index_writes_categorised_links() {
+        let tmp = tempfile::tempdir().expect("tmp dir");
+        let dir = tmp.path();
+        std::fs::write(dir.join("report_a.md"), "# A").unwrap();
+        std::fs::write(dir.join("results.csv"), "k,v\n1,2\n").unwrap();
+        std::fs::write(dir.join("plot.png"), [0u8; 8]).unwrap();
+        std::fs::write(dir.join("session.log"), "log").unwrap();
+        std::fs::write(dir.join("metrics.db"), [0u8; 8]).unwrap();
+        std::fs::write(dir.join("README"), "no ext").unwrap();
+        // Skipped: index.md, dotfile, lockfile
+        std::fs::write(dir.join("index.md"), "stale").unwrap();
+        std::fs::write(dir.join(".hidden"), "x").unwrap();
+        std::fs::write(dir.join("metrics.db.lock"), "x").unwrap();
+
+        refresh_session_index(dir).expect("refresh");
+        let body = std::fs::read_to_string(dir.join("index.md"))
+            .expect("read index");
+        assert!(body.contains("## Reports"),     "reports section missing");
+        assert!(body.contains("[`report_a.md`](report_a.md)"));
+        assert!(body.contains("## Figures"),     "figures section missing");
+        assert!(body.contains("[`plot.png`](plot.png)"));
+        assert!(body.contains("![plot.png](plot.png)"),
+            "image preview missing");
+        assert!(body.contains("## Tables / data"));
+        assert!(body.contains("[`results.csv`](results.csv)"));
+        assert!(body.contains("## Logs"));
+        assert!(body.contains("[`session.log`](session.log)"));
+        assert!(body.contains("## Database"));
+        assert!(body.contains("[`metrics.db`](metrics.db)"));
+        assert!(body.contains("## Other"));
+        assert!(body.contains("[`README`](README)"));
+        assert!(!body.contains("`.hidden`"));
+        assert!(!body.contains(".lock`]"));
+        let index_links = body.matches("[`index.md`]").count();
+        assert_eq!(index_links, 0, "index.md should not list itself");
+    }
+
+    /// Empty directory still produces a valid index.
+    #[test]
+    fn refresh_session_index_empty_directory_writes_placeholder() {
+        let tmp = tempfile::tempdir().expect("tmp dir");
+        refresh_session_index(tmp.path()).expect("refresh");
+        let body = std::fs::read_to_string(tmp.path().join("index.md"))
+            .expect("read index");
+        assert!(body.contains("no artifacts"),
+            "empty-directory placeholder missing: {body}");
+    }
+
+    /// Re-running on a populated directory overwrites cleanly —
+    /// stale entries from a prior run don't linger.
+    #[test]
+    fn refresh_session_index_overwrites_stale_entries() {
+        let tmp = tempfile::tempdir().expect("tmp dir");
+        let dir = tmp.path();
+        std::fs::write(dir.join("first.md"), "1").unwrap();
+        refresh_session_index(dir).expect("first refresh");
+        let body1 = std::fs::read_to_string(dir.join("index.md")).unwrap();
+        assert!(body1.contains("first.md"));
+
+        std::fs::remove_file(dir.join("first.md")).unwrap();
+        std::fs::write(dir.join("second.md"), "2").unwrap();
+        refresh_session_index(dir).expect("second refresh");
+        let body2 = std::fs::read_to_string(dir.join("index.md")).unwrap();
+        assert!(body2.contains("second.md"), "new entry missing");
+        assert!(!body2.contains("first.md"), "stale entry persisted");
+    }
+
+    #[test]
+    fn clean_wipe_removes_png_and_md_leaves_other_files() {
+        // Mirrors the operator's intent for `--clean all`:
+        // every `.png` and `.md` in the session dir is gone
+        // post-wipe; non-artifact files (metrics.db, log,
+        // checkpoint, etc.) survive. Subdirectories are
+        // left alone — wipe is non-recursive.
+        let dir = std::env::temp_dir()
+            .join(format!("nbrs_clean_wipe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Artifact files (should be removed).
+        std::fs::write(dir.join("recall_10_mean_plot.png"), b"PNG").unwrap();
+        std::fs::write(dir.join("throughput_1__optimize_for_recall.md"), b"# tbl").unwrap();
+        std::fs::write(dir.join("summary.md"), b"# top").unwrap();
+        // Non-artifact files (should survive).
+        std::fs::write(dir.join("metrics.db"), b"sqlite").unwrap();
+        std::fs::write(dir.join("session.log"), b"log").unwrap();
+        std::fs::write(dir.join("checkpoint.jsonl"), b"{}").unwrap();
+        // Subdirectory (should survive untouched).
+        std::fs::create_dir_all(dir.join("metrics")).unwrap();
+        std::fs::write(dir.join("metrics/nested.md"), b"# nested").unwrap();
+
+        clean_wipe_artifacts(&dir);
+
+        assert!(!dir.join("recall_10_mean_plot.png").exists(),
+            "png should be removed");
+        assert!(!dir.join("throughput_1__optimize_for_recall.md").exists(),
+            "companion-table md should be removed");
+        assert!(!dir.join("summary.md").exists(),
+            "summary.md should be removed");
+        assert!(dir.join("metrics.db").exists(),
+            "metrics.db must survive");
+        assert!(dir.join("session.log").exists(),
+            "session.log must survive");
+        assert!(dir.join("checkpoint.jsonl").exists(),
+            "checkpoint.jsonl must survive");
+        assert!(dir.join("metrics/nested.md").exists(),
+            "nested md inside subdir must survive (non-recursive wipe)");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_clean_mode_recognises_flag_and_env() {
+        assert!(is_clean_mode(&["--clean".to_string()]));
+        assert!(is_clean_mode(&[
+            "all".to_string(), "--clean".to_string(), "workload=x.yaml".to_string(),
+        ]));
+        assert!(!is_clean_mode(&[
+            "all".to_string(), "workload=x.yaml".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn glob_star_matches() {
+        assert!(glob_matches("recall*", "recall_at_k10"));
+        assert!(glob_matches("*at_k10", "recall_at_k10"));
+        assert!(glob_matches("*", "anything"));
+        assert!(glob_matches("*at*", "recall_at_k10"));
+        assert!(!glob_matches("plot*", "recall"));
+    }
+
+    #[test]
+    fn glob_question_mark() {
+        assert!(glob_matches("plot?", "plot1"));
+        assert!(!glob_matches("plot?", "plot12"));
+    }
+
+    #[test]
+    fn glob_exact() {
+        assert!(glob_matches("recall", "recall"));
+        assert!(!glob_matches("recall", "recall_at_k10"));
+    }
+
+    // ── Figure-selector parser ──────────────────────────────
+
+    #[test]
+    fn figure_selector_single_index() {
+        assert_eq!(parse_figure_selector("5"), Some(vec![5]));
+        assert_eq!(parse_figure_selector(" 5 "), Some(vec![5]));
+    }
+
+    #[test]
+    fn figure_selector_hyphen_range() {
+        assert_eq!(parse_figure_selector("2-4"), Some(vec![2, 3, 4]));
+        assert_eq!(parse_figure_selector("1-1"), Some(vec![1]));
+    }
+
+    #[test]
+    fn figure_selector_rust_range_inclusive() {
+        // Both `..` and `..=` resolve to inclusive in this
+        // CLI surface — humans typing `2..4` usually mean
+        // "through 4," not "stop short of 4."
+        assert_eq!(parse_figure_selector("2..4"), Some(vec![2, 3, 4]));
+        assert_eq!(parse_figure_selector("2..=4"), Some(vec![2, 3, 4]));
+    }
+
+    #[test]
+    fn figure_selector_comma_list() {
+        assert_eq!(parse_figure_selector("2,3,4"), Some(vec![2, 3, 4]));
+        assert_eq!(parse_figure_selector("1, 3 ,5"), Some(vec![1, 3, 5]));
+    }
+
+    #[test]
+    fn figure_selector_mixed_list_with_ranges() {
+        assert_eq!(
+            parse_figure_selector("1,3-5,7"),
+            Some(vec![1, 3, 4, 5, 7]),
+        );
+        assert_eq!(
+            parse_figure_selector("1,3..5,7"),
+            Some(vec![1, 3, 4, 5, 7]),
+        );
+    }
+
+    #[test]
+    fn figure_selector_preserves_user_order() {
+        // No automatic sort/dedup — `5,3,1` renders 5 then 3
+        // then 1.
+        assert_eq!(parse_figure_selector("5,3,1"), Some(vec![5, 3, 1]));
+    }
+
+    #[test]
+    fn figure_selector_rejects_non_numeric() {
+        assert_eq!(parse_figure_selector("recall"), None);
+        assert_eq!(parse_figure_selector("recall_at_k10"), None);
+        assert_eq!(parse_figure_selector("2,abc"), None);
+    }
+
+    #[test]
+    fn figure_selector_rejects_zero_and_negative() {
+        // 0 is invalid (1-based indexing); `-5` looks like a
+        // negative literal which is a missing-LHS hyphen
+        // range and rejected.
+        assert_eq!(parse_figure_selector("0"), None);
+        assert_eq!(parse_figure_selector("-5"), None);
+        assert_eq!(parse_figure_selector("0-5"), None);
+    }
+
+    #[test]
+    fn figure_selector_rejects_reversed_ranges() {
+        // `5-2` is rejected rather than treated as reversed
+        // iteration — disambiguate via comma list (`5,4,3,2`).
+        assert_eq!(parse_figure_selector("5-2"), None);
+        assert_eq!(parse_figure_selector("4..2"), None);
+    }
+
+    #[test]
+    fn figure_selector_rejects_empty() {
+        assert_eq!(parse_figure_selector(""), None);
+        assert_eq!(parse_figure_selector("  "), None);
+        assert_eq!(parse_figure_selector(",,"), None);
     }
 }

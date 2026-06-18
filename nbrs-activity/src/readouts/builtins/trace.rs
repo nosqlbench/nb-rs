@@ -171,8 +171,7 @@ fn render_explanation(
     ctx: &dyn ReadoutContext,
     out: &mut dyn ReadoutBuf,
 ) -> usize {
-    let s = format!(
-        "event=on_<event-slot> lod=<density> mode=<value|explanation>\n  \
+    let s = "event=on_<event-slot> lod=<density> mode=<value|explanation>\n  \
 refresh_tick: monotonic counter advanced once per refresh fire\n  \
 phase_name: bare phase identifier (no coord suffix)\n  \
 activity_name: full activity name with leaf coord\n  \
@@ -188,8 +187,7 @@ status_metric_chips: workload-emphasised metric tail\n  \
 adapter_counters_text: per-dispenser counter chips\n  \
 batch_info_text: rows-per-batch summary\n  \
 depth_indent_len: scope-tree indent width\n  \
-use_color: surface accepts ANSI styling"
-    );
+use_color: surface accepts ANSI styling".to_string();
     let _ = out.write_str(&s);
     let _ = ctx; // schema doesn't depend on context
     s.len()

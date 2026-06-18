@@ -288,7 +288,7 @@ mod tests {
 
         assert!(matches!(opts.try_get_str("absent"),     Ok(None)));
         assert!(matches!(opts.try_get_str("present"),    Ok(Some("hi"))));
-        assert!(matches!(opts.try_get_str("wrong_type"), Err(_)));
+        assert!(opts.try_get_str("wrong_type").is_err());
     }
 
     #[test]

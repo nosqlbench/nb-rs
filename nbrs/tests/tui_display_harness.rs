@@ -41,8 +41,7 @@ fn harness_binary() -> PathBuf {
 }
 
 fn harness_config() -> Config {
-    let mut command: Vec<OsString> = Vec::new();
-    command.push(harness_binary().into());
+    let command: Vec<OsString> = vec![harness_binary().into()];
     Config {
         width: 120,
         height: 30,

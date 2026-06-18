@@ -104,7 +104,7 @@ impl ProfileGuard {
             crate::observer::log(crate::observer::LogLevel::Warn,
                 "profiler=flamegraph requested but the 'flamegraph' feature is not enabled. \
                  Rebuild with: cargo build --features flamegraph");
-            return None;
+            None
         }
 
         #[cfg(feature = "flamegraph")]
@@ -221,7 +221,7 @@ impl ProfileGuard {
 
         // Take the stderr pipe and spawn a pump thread.
         let stderr_pipe = child.stderr.take();
-        let stderr_pump = stderr_pipe.map(|stderr| {
+        let stderr_pump = stderr_pipe.and_then(|stderr| {
             std::thread::Builder::new()
                 .name("profiler-perf-stderr".into())
                 .spawn(move || {
@@ -237,7 +237,7 @@ impl ProfileGuard {
                     }
                 })
                 .ok()
-        }).flatten();
+        });
 
         // Verify perf actually came up. spawn() returns Ok the
         // moment fork+exec succeeds, but perf can immediately
@@ -618,6 +618,13 @@ fn classify_perf_line(line: &str) -> crate::observer::LogLevel {
     }
 }
 
+fn timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,11 +660,4 @@ mod tests {
         let md = summarize_folded(folded, 5);
         assert!(md.contains("frame\\|with\\|pipes"));
     }
-}
-
-fn timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }

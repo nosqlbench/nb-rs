@@ -37,9 +37,9 @@
 //! - **Compact** — `{depth}✓ [name] {pct}% ({elapsed:.2}s)`
 //!   — trained-operator scan form: status glyph + identity
 //!   + completion percentage + wallclock. Drops the seq
-//!   prefix, rate, ok-pct, error / retry / concurrency
-//!   counts, scope coords, and chip tail. Every retained
-//!   field also appears in Labeled (monotonicity).
+//!     prefix, rate, ok-pct, error / retry / concurrency
+//!     counts, scope coords, and chip tail. Every retained
+//!     field also appears in Labeled (monotonicity).
 //! - **Expanded** — multi-line labelled block. Same data
 //!   as Labeled but split across lines with a label per
 //!   field, and the chip stream broken into one chip per
@@ -395,11 +395,10 @@ pub(crate) fn format_coords_block(
     // phase-end event, and its single call per phase is
     // where the "what's changed since the last
     // *completed* phase" lens gets fixed.
-    if summarize_changed_only {
-        if let Ok(mut g) = LAST_RENDERED_COORDS.lock() {
+    if summarize_changed_only
+        && let Ok(mut g) = LAST_RENDERED_COORDS.lock() {
             *g = labels.to_string();
         }
-    }
     if display_strata.is_empty() {
         // Nothing changed — completion line elides the
         // coords block entirely. The leading space is
@@ -742,15 +741,14 @@ fn render_chips_block(chips: &str, indent: &str, dim: &str, reset: &str) -> Stri
         return String::new();
     }
     let mut out = String::with_capacity(64 + entries.len() * 24);
-    let _ = write!(&mut out, "{indent}  metrics:\n");
+    let _ = writeln!(&mut out, "{indent}  metrics:");
     for chip in &entries {
         // Each chip is `name:value`; align the name in a
         // 16-char field so values columnise.
         let (name, value) = chip.split_once(':')
-            .map(|(n, v)| (n, v))
             .unwrap_or((chip, ""));
-        let _ = write!(&mut out,
-            "{indent}    {name:<16} {dim}{value}{reset}\n");
+        let _ = writeln!(&mut out,
+            "{indent}    {name:<16} {dim}{value}{reset}");
     }
     out
 }
@@ -825,12 +823,11 @@ fn render_labeled_explanation(
     let _ = write!(
         &mut tmp,
         "{depth_indent}{green}done{reset} {seq}{bold}{blue}[phase-name]{reset}{coords} \
-progress% throughput ok:{ok}% \
+progress% throughput ok:ok% \
 errors retries concurrency \
 {dim}(elapsed){reset}",
         seq = seq_part,
         coords = coords_part,
-        ok = "ok",
     );
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -1005,7 +1002,7 @@ fn render_labeled_value(
 /// surrounding context (depth indent, coord folding, seq
 /// prefix) stays consistent; line 1 carries the status glyph
 /// + name + coords + first-error class summary, line 2 the
-/// first-error message + elapsed.
+///   first-error message + elapsed.
 ///
 /// Expanded LOD picks up every error in the list; this
 /// Labeled form intentionally surfaces only the FIRST error

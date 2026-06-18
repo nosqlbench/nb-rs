@@ -45,6 +45,11 @@ pub type SyncHandler = fn(ParsedCommand) -> Result<(), String>;
 pub type AsyncHandler =
     fn(ParsedCommand) -> Pin<Box<dyn Future<Output = Result<(), String>>>>;
 
+/// Provider of context-sensitive option tokens for a command,
+/// taking the current word and the prior tokens on the line and
+/// returning the candidate completions.
+pub type DynamicOptions = fn(&str, &[&str]) -> Vec<String>;
+
 /// Tag identifying whether a [`Command`]'s handler is sync or
 /// async. The variant doubles as the handler value itself.
 #[derive(Clone, Copy)]
@@ -70,7 +75,7 @@ pub struct Command {
     /// Context-sensitive extra option tokens (e.g. per-workload
     /// params discovered from the `workload=` already on the
     /// line). Wired to veks-completion's dynamic-options hook.
-    pub dynamic_options: Option<fn(&str, &[&str]) -> Vec<String>>,
+    pub dynamic_options: Option<DynamicOptions>,
     pub positionals: Vec<Positional>,
     pub subcommands: Vec<Command>,
     pub handler: Option<Handler>,

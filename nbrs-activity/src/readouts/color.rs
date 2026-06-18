@@ -94,13 +94,12 @@ impl StyleName {
 /// Active palette. Default is `Wong` (colorblind-safe);
 /// matches the palette name SRD-46 reports default to.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum Palette {
+    #[default]
     Wong,
 }
 
-impl Default for Palette {
-    fn default() -> Self { Palette::Wong }
-}
 
 impl ColorSpec {
     /// Parse a token like `RED`, `BRIGHT_GREEN`,
@@ -112,11 +111,10 @@ impl ColorSpec {
             return parse_hex(hex).map(|(r, g, b)| ColorSpec::Rgb(r, g, b));
         }
         // Try `BRIGHT_<NAME>` first.
-        if let Some(name) = token.strip_prefix("BRIGHT_") {
-            if direct_color_lookup(name).is_some() {
+        if let Some(name) = token.strip_prefix("BRIGHT_")
+            && direct_color_lookup(name).is_some() {
                 return Some(ColorSpec::Bright(direct_color_canon(name)?));
             }
-        }
         if direct_color_lookup(token).is_some() {
             return Some(ColorSpec::Direct(direct_color_canon(token)?));
         }

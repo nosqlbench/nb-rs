@@ -684,21 +684,18 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
         validate_session_path_or_exit(&v, "`--session-path` flag (or NBRS_SESSION_PATH env)");
         spec.session_path = Some(v);
     }
-    if let Some(v) = resolve_flag(args, "--session-reuse") {
-        if let Ok(r) = SessionReuse::parse(&v) {
+    if let Some(v) = resolve_flag(args, "--session-reuse")
+        && let Ok(r) = SessionReuse::parse(&v) {
             spec.reuse = r;
         }
-    }
-    if let Some(v) = resolve_flag(args, "--session-keep") {
-        if let Ok(n) = v.trim().parse::<usize>() {
+    if let Some(v) = resolve_flag(args, "--session-keep")
+        && let Ok(n) = v.trim().parse::<usize>() {
             spec.session_keep = n;
         }
-    }
-    if let Some(v) = resolve_flag(args, "--session-shelflife") {
-        if let Ok(d) = parse_duration(&v) {
+    if let Some(v) = resolve_flag(args, "--session-shelflife")
+        && let Ok(d) = parse_duration(&v) {
             spec.session_shelflife = d;
         }
-    }
 
     // Legacy env: SESSION_DIRECTORY is the pre-SRD-04 name for
     // NBRS_SESSION_PATH. Honor it for back-compat with one
@@ -1244,7 +1241,7 @@ impl Session {
             let latest = logs.join("latest");
             let _ = std::fs::remove_file(&latest);
             let _ = std::os::unix::fs::symlink(
-                &latest_symlink_target(&output_dir, &logs, &id),
+                latest_symlink_target(&output_dir, &logs, &id),
                 &latest,
             );
             for stale in [
@@ -1280,7 +1277,7 @@ impl Session {
         let execution = Execution::first("run");
         let component = Component::root(
             Labels::of("session", &id)
-                .with("exec_id", &execution.exec_id.to_string())
+                .with("exec_id", execution.exec_id.to_string())
                 .with("workload", workload_stem),
             std::collections::HashMap::new(),
         );
@@ -1371,7 +1368,7 @@ impl Session {
         let execution = Execution::first("resume");
         let component = Component::root(
             Labels::of("session", &id)
-                .with("exec_id", &execution.exec_id.to_string())
+                .with("exec_id", execution.exec_id.to_string())
                 .with("workload", workload_stem),
             std::collections::HashMap::new(),
         );
@@ -1429,7 +1426,7 @@ impl Session {
         let execution = Execution::with_exec_id("refine", next_exec_id);
         let component = Component::root(
             Labels::of("session", &id)
-                .with("exec_id", &execution.exec_id.to_string())
+                .with("exec_id", execution.exec_id.to_string())
                 .with("workload", workload_stem),
             std::collections::HashMap::new(),
         );

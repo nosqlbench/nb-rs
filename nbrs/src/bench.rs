@@ -49,7 +49,7 @@ struct BenchStats {
     _cv: f64,
 }
 
-fn compute_stats(samples: &mut Vec<f64>) -> BenchStats {
+fn compute_stats(samples: &mut [f64]) -> BenchStats {
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = samples.len();
     let min = samples[0];
@@ -126,11 +126,10 @@ fn parse_bench_annotations(source: &str) -> BenchScenario {
                 }
             }
             "pull_weights" => {
-                if let Some((name, weight)) = content.split_once(':') {
-                    if let Ok(w) = weight.trim().parse::<u32>() {
+                if let Some((name, weight)) = content.split_once(':')
+                    && let Ok(w) = weight.trim().parse::<u32>() {
                         pull_weights.push((name.trim().to_string(), w));
                     }
-                }
             }
             _ => {}
         }
@@ -383,10 +382,10 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
         } else if arg == "--threads" || arg == "-t" {
             i += 1;
             if i < args.len() { ba.thread_counts = parse_range(&args[i]); }
-        } else if arg.starts_with("--cycles=") {
-            ba.cycles = arg["--cycles=".len()..].parse().unwrap_or(100_000);
-        } else if arg.starts_with("--threads=") {
-            ba.thread_counts = parse_range(&arg["--threads=".len()..]);
+        } else if let Some(rest) = arg.strip_prefix("--cycles=") {
+            ba.cycles = rest.parse().unwrap_or(100_000);
+        } else if let Some(rest) = arg.strip_prefix("--threads=") {
+            ba.thread_counts = parse_range(rest);
         } else if arg == "--explain" {
             ba.explain = true;
         } else if let Some(val) = arg.strip_prefix("--engine=") {
@@ -559,15 +558,14 @@ fn explain_source(source: &str) {
             }
             Err(_) => {
                 // P3 not available, try P2
-                if let Ok(asm2) = compile_polydat_to_assembler(source) {
-                    if let Ok((engine, analysis)) = asm2.auto_compile_p2() {
+                if let Ok(asm2) = compile_polydat_to_assembler(source)
+                    && let Ok((engine, analysis)) = asm2.auto_compile_p2() {
                         println!("{bold}Engine Selection (P2):{reset}");
                         println!("  {dim}max cone ratio: {:.2}, avg cone ratio: {:.2}{reset}",
                             analysis.max_cone_ratio, analysis.avg_cone_ratio);
                         println!("  → {green}{:?}{reset}", engine.prov_mode());
                         println!();
                     }
-                }
             }
         }
     }
@@ -663,8 +661,8 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
     let mut bench_p3_ns = 0.0f64;
 
     // Compact graph summary
-    if let Ok(asm) = compile_polydat_to_assembler(&source) {
-        if let Ok(kernel) = asm.compile() {
+    if let Ok(asm) = compile_polydat_to_assembler(&source)
+        && let Ok(kernel) = asm.compile() {
             let program = kernel.program();
             bench_node_count = program.node_count();
             let n_inputs = program.input_names().len();
@@ -682,7 +680,6 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
             println!("{bold}{label}{reset}");
             println!("  {dim}{n_nodes} nodes, {n_wires} wires, {avg_deg:.1} avg degree, {n_inputs} inputs, {n_outputs} outputs{reset}");
         }
-    }
 
     // Calibrate driver overhead
     let driver_ns_per_cycle = if scenario.driver_source.is_some() {

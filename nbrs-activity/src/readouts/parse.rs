@@ -87,9 +87,8 @@ pub fn bake(body: &str) -> Result<(BakedBody, Vec<String>), String> {
                     primary_arg = Some(arg);
                 }
 
-                while let Some(opt) = lex.peek_option() {
+                while lex.peek_option().is_some() {
                     let (key, value) = lex.consume_option_pair()?;
-                    let _ = opt;  // peek already returned Some
                     apply_option(&key, value, &mut lod, &mut layout, &mut color, &mut options, &mut primary_arg)?;
                 }
 
@@ -380,7 +379,7 @@ impl<'a> Lexer<'a> {
         self.skip_ws();
         let rest = self.rest();
         let mut chars = rest.chars();
-        let Some(c) = chars.next() else { return None; };
+        let c = chars.next()?;
         if !is_ident_start(c) { return None; }
         // Walk an identifier and check for `=` or `:` after it.
         let mut idx = c.len_utf8();

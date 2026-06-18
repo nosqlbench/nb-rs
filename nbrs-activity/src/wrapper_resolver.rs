@@ -246,7 +246,7 @@ pub struct WrapperResolver {
 impl WrapperResolver {
     /// Construct a resolver with the built-in default order.
     pub fn with_default_order(registry: &WrapperRegistry) -> Result<Self, ResolveError> {
-        let names: Vec<&str> = DEFAULT_ORDER.iter().copied().collect();
+        let names: Vec<&str> = DEFAULT_ORDER.to_vec();
         Self::from_names(&names, registry)
     }
 
@@ -300,8 +300,8 @@ impl WrapperResolver {
                     ResolveError::DanglingRequiresInner { from: w, missing: needed },
                 )?;
                 let _ = needed_reg;
-                if !activations.contains_key(&needed) {
-                    activations.insert(needed, WrapperActivation::TransitiveFrom {
+                if let std::collections::hash_map::Entry::Vacant(e) = activations.entry(needed) {
+                    e.insert(WrapperActivation::TransitiveFrom {
                         wrapper: needed,
                         requested_by: w,
                     });
@@ -403,8 +403,8 @@ impl WrapperResolver {
                 let _ = registry.get(needed).ok_or(
                     ResolveError::DanglingRequiresInner { from: w, missing: needed },
                 )?;
-                if !activations.contains_key(&needed) {
-                    activations.insert(needed, WrapperActivation::TransitiveFrom {
+                if let std::collections::hash_map::Entry::Vacant(e) = activations.entry(needed) {
+                    e.insert(WrapperActivation::TransitiveFrom {
                         wrapper: needed,
                         requested_by: w,
                     });
@@ -587,11 +587,10 @@ fn detect_cycle(
 
     let nodes: Vec<WrapperName> = activations.keys().copied().collect();
     for n in nodes {
-        if color.get(&n).copied() == Some(Color::White) {
-            if let Some(c) = dfs(n, &mut color, &mut stack, registry, activations) {
+        if color.get(&n).copied() == Some(Color::White)
+            && let Some(c) = dfs(n, &mut color, &mut stack, registry, activations) {
                 return Some(c);
             }
-        }
     }
     None
 }

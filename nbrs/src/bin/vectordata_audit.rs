@@ -1,5 +1,10 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
+//
+// The multi-level numbered/lettered outline in the module doc below is a
+// deliberate nested list; clippy's markdown heuristic mis-measures its
+// continuation indent, so the lint is silenced at the module level.
+#![allow(clippy::doc_overindented_list_items)]
 
 //! `vectordata-audit` — structural + data-level validator for a
 //! per-label predicate-filtered ANN dataset (sift1m-style).
@@ -15,12 +20,12 @@
 //!    vector) are both u8 streams covering the same value range.
 //! 2. For each label profile (e.g. `label_00`..`label_11`):
 //!    a. `label_N.base_vectors` row-count == count of byte N in
-//!       `metadata_content`.
+//!      `metadata_content`.
 //!    b. `label_N.query_vectors` row-count ==
-//!       `label_N.neighbor_indices` row-count == count of byte
-//!       N in `predicates`.
+//!      `label_N.neighbor_indices` row-count == count of byte
+//!      N in `predicates`.
 //!    c. Every index in `label_N.neighbor_indices` is in
-//!       `0..label_N_base_count`.
+//!      `0..label_N_base_count`.
 //! 3. `default.filtered_neighbor_indices` row-count ==
 //!    `predicates` length, and every index is in `0..base_count`.
 //! 4. For each label N: translating
@@ -59,6 +64,10 @@ use vectordata::{
     open_facet_typed,
     typed_access::TypedReader,
 };
+
+/// The shared `(base_vectors, query_vectors)` readers, opened once
+/// through whichever profile exposes the base facets.
+type BaseReaders = (Arc<dyn VectorReader<f32>>, Arc<dyn VectorReader<f32>>);
 
 fn main() -> ExitCode {
     let spec = match parse_args() {
@@ -129,7 +138,7 @@ fn main() -> ExitCode {
     // Data-level byte equivalence. Opens base.base_vectors and
     // base.query_vectors lazily through whichever profile exposes
     // them (catalog projects shared base facets onto every view).
-    let base_readers: Option<(Arc<dyn VectorReader<f32>>, Arc<dyn VectorReader<f32>>)> = {
+    let base_readers: Option<BaseReaders> = {
         let mut found = None;
         let candidates = std::iter::once("default".to_string())
             .chain(profiles.iter().cloned());

@@ -156,7 +156,7 @@ fn main() {
 /// the handler. `path` is the matched-command segments after
 /// the binary name — e.g. `["metrics", "list"]` for
 /// `nbrs metrics list …`.
-fn lookup_handler<'a>(root: &'a cli_spec::Command, path: &[String]) -> Option<cli_spec::Handler> {
+fn lookup_handler(root: &cli_spec::Command, path: &[String]) -> Option<cli_spec::Handler> {
     let mut current = root;
     for seg in path {
         current = current.subcommands.iter().find(|s| s.name == seg.as_str())?;
@@ -184,7 +184,7 @@ fn build_bare_workload_args(path: &str, tail: &[String]) -> Vec<String> {
     let mut scenario_set = false;
     let mut iter = tail.iter().peekable();
     while let Some(extra) = iter.next() {
-        if VALUE_FLAGS.iter().any(|f| *f == extra.as_str()) {
+        if VALUE_FLAGS.contains(&extra.as_str()) {
             run_args.push(extra.clone());
             if let Some(val) = iter.next() {
                 run_args.push(val.clone());

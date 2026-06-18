@@ -292,6 +292,14 @@ pub struct FiberBuilder {
     /// before any cycles run; read at cycle dispatch to populate
     /// `ExecCtx::wires` for the firing dispenser.
     per_op_kernels: Vec<Option<PolydatKernel>>,
+    /// Per-op-kernel side-effecting output names (parallels
+    /// [`Self::per_op_kernels`]). The subset of each op-template
+    /// kernel's outputs whose cone contains a `Purity::SideChannel`
+    /// node — the only outputs the per-cycle "fire side effects" pass
+    /// pulls. Computed once at [`Self::attach_dispenser_kernels`] so
+    /// volatile metric-reader outputs (the objective bindings) are NOT
+    /// re-evaluated every cycle just to fire a non-existent effect.
+    per_op_side_effecting: Vec<Vec<String>>,
     /// Pre-resolved input indices for each entry in
     /// [`Self::scope_values`] against [`Self::main_kernel`].
     /// `None` slots are scope values the main program doesn't
@@ -401,6 +409,7 @@ impl FiberBuilder {
             main_kernel,
             scope_values: Vec::new(),
             per_op_kernels: Vec::new(),
+            per_op_side_effecting: Vec::new(),
             scope_value_main_idx: Vec::new(),
             scope_value_per_op_idx: Vec::new(),
         }
@@ -478,11 +487,14 @@ impl FiberBuilder {
             Vec::with_capacity(dispenser_programs.len());
         let mut per_op_idx: Vec<Option<Vec<Option<usize>>>> =
             Vec::with_capacity(dispenser_programs.len());
+        let mut per_op_side_effecting: Vec<Vec<String>> =
+            Vec::with_capacity(dispenser_programs.len());
         for maybe_program in dispenser_programs {
             match maybe_program {
                 None => {
                     per_op_kernels.push(None);
                     per_op_idx.push(None);
+                    per_op_side_effecting.push(Vec::new());
                 }
                 Some(program) => {
                     let mut op_kernel = self.main_kernel.build_subscope(
@@ -516,12 +528,15 @@ impl FiberBuilder {
                             std::panic::AssertUnwindSafe(|| { op_kernel.pull(init_name); })
                         );
                     }
+                    let side_effecting = op_kernel.program().outputs_with_side_effects();
                     per_op_kernels.push(Some(op_kernel));
                     per_op_idx.push(Some(idx_vec));
+                    per_op_side_effecting.push(side_effecting);
                 }
             }
         }
         self.per_op_kernels = per_op_kernels;
+        self.per_op_side_effecting = per_op_side_effecting;
         self.scope_value_per_op_idx = per_op_idx;
     }
 
@@ -593,12 +608,10 @@ impl FiberBuilder {
         // ones it auto-externs from the parent's coord names —
         // typically just `cycle`). Skip slots without a kernel
         // (adapter exposed no canonical_kernel).
-        for slot in self.per_op_kernels.iter_mut() {
-            if let Some(kernel) = slot {
-                let n = coords.len().min(kernel.program().coord_count());
-                if n > 0 {
-                    kernel.state().set_inputs(&coords[..n]);
-                }
+        for kernel in self.per_op_kernels.iter_mut().flatten() {
+            let n = coords.len().min(kernel.program().coord_count());
+            if n > 0 {
+                kernel.state().set_inputs(&coords[..n]);
             }
         }
     }
@@ -645,15 +658,13 @@ impl FiberBuilder {
         // `eval_node` walker re-checks both before serving a
         // memoized result. No host-side refresh call needed.
         // SRD-68 per-fiber kernels: same per-cycle propagation.
-        for slot in self.per_op_kernels.iter_mut() {
-            if let Some(kernel) = slot {
-                if kernel.program().coord_count() > 0 {
-                    kernel.state().set_inputs(&[item.ordinal]);
-                }
-                for (name, value) in &item.fields {
-                    if let Some(idx) = kernel.program().find_input(name) {
-                        kernel.state().set_input(idx, value.clone());
-                    }
+        for kernel in self.per_op_kernels.iter_mut().flatten() {
+            if kernel.program().coord_count() > 0 {
+                kernel.state().set_inputs(&[item.ordinal]);
+            }
+            for (name, value) in &item.fields {
+                if let Some(idx) = kernel.program().find_input(name) {
+                    kernel.state().set_input(idx, value.clone());
                 }
             }
         }
@@ -728,10 +739,8 @@ impl FiberBuilder {
     /// Provides "clean slate" semantics.
     pub fn invalidate_all(&mut self) {
         self.main_kernel.state().invalidate_all();
-        for slot in self.per_op_kernels.iter_mut() {
-            if let Some(kernel) = slot {
-                kernel.state().invalidate_all();
-            }
+        for kernel in self.per_op_kernels.iter_mut().flatten() {
+            kernel.state().invalidate_all();
         }
     }
 
@@ -838,26 +847,34 @@ impl FiberBuilder {
         kernel.commit_write_throughs();
     }
 
-    /// Per-cycle: pull every output of the op-template kernel at
-    /// `template_idx` so side-effecting nodes (`log_info` and
-    /// friends) actually evaluate. Without this, captured wires
+    /// Per-cycle: pull the op-template kernel's **side-effecting**
+    /// outputs at `template_idx` so side-effecting nodes (`log_info`
+    /// and friends) actually evaluate. Without this, captured wires
     /// whose only consumer is a write-through are pulled by
-    /// `commit_write_throughs`, but captured wires that aren't
-    /// shared with a parent never get pulled — their compute
-    /// chain (including any side-effecting nodes inside it)
-    /// stays dormant, and the diagnostic the workload asked
-    /// for never fires.
+    /// `commit_write_throughs`, but captured wires that aren't shared
+    /// with a parent never get pulled — their compute chain (including
+    /// any side-effecting nodes inside it) stays dormant, and the
+    /// diagnostic the workload asked for never fires.
     ///
-    /// Bounded by the kernel's output count, which for result-
-    /// binding kernels is typically a small handful (the captured
-    /// LHS names plus magic externs). No-op when the kernel has
-    /// no per-template program.
+    /// Only outputs whose cone contains a `Purity::SideChannel` node are
+    /// pulled (the set is precomputed at attach time,
+    /// [`PolydatProgram::outputs_with_side_effects`]). A side-effect-free
+    /// output is **not** pulled here: re-evaluating it would do nothing,
+    /// and for a volatile metric reader (a `metricsql_*` / `metric`
+    /// objective binding) it would issue a live metrics query *every
+    /// cycle*. Such values are evaluated only when actually consumed.
+    /// No-op when the kernel has no side-effecting outputs.
     pub fn pull_all_op_template_outputs_for_idx(&mut self, template_idx: usize) {
+        let Some(names) = self.per_op_side_effecting.get(template_idx) else {
+            return;
+        };
+        if names.is_empty() {
+            return;
+        }
+        let names = names.clone();
         let Some(kernel) = self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) else {
             return;
         };
-        let names: Vec<String> = kernel.output_names()
-            .iter().map(|s| s.to_string()).collect();
         for name in &names {
             let _ = kernel.pull(name);
         }

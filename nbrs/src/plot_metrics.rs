@@ -698,7 +698,7 @@ struct PlotMetricsOpts {
     /// How metric instances are selected across the executions in
     /// the session store. Set via the `executions:` directive
     /// (`latest-per-instance` (default) / `all` / `latest` / `<n>`).
-    execution_selection: nbrs_metricsql::adapters::sqlite::ExecutionSelection,
+    execution_selection: nbrs_metrics::queryapi::sqlite::ExecutionSelection,
     /// Per-point label annotation source. `None` ⇒ no
     /// per-point text. Configured via the long-form
     /// `point-label1:` directive, or the third positional
@@ -885,7 +885,7 @@ struct PlotMetricsOpts {
     ///   * `inline` (default): label at every point.
     ///   * `extremes`: only the min and max per series.
     ///   * `callouts`: like inline but boxed/offset for
-    ///      contrast against the plot line.
+    ///     contrast against the plot line.
     ///   * `none` / `off`: suppress entirely.
     datapoints_mode: DatapointsMode,
     /// Per-secondary-axis state. Indexed by `axis_num - 2` so
@@ -895,8 +895,8 @@ struct PlotMetricsOpts {
     /// primary axis is configured. Each entry holds the full
     /// per-axis directive surface (query / label / bounds /
     /// scale / ticks) — same shape across all axes so the
-    /// renderer can iterate uniformly. The primary axis (axis
-    /// 1) lives in the existing `query` / `ylabel` / `y_min` /
+    /// renderer can iterate uniformly. The primary axis (axis 1)
+    /// lives in the existing `query` / `ylabel` / `y_min` /
     /// `y_max` / `yscale` / `y_ticks` flat fields above; those
     /// are kept distinct because the legacy DSL surface
     /// (positional spec, `metric`, filters) writes through
@@ -1326,6 +1326,7 @@ fn strip_quotes(s: &str) -> &str {
 ///
 /// - `[name]` matched against `labels.get("name")`. Hit:
 ///   the label value replaces the bracketed text.
+///
 /// One rendered point on a plot.
 ///
 /// Carries the (x, y) coordinate plus enough provenance for
@@ -1505,13 +1506,13 @@ fn parse_reduce_op(s: &str) -> Result<ReduceOp, String> {
 }
 
 /// Parse an `executions:` report directive into an
-/// [`nbrs_metricsql::adapters::sqlite::ExecutionSelection`].
+/// [`nbrs_metrics::queryapi::sqlite::ExecutionSelection`].
 /// Accepts `latest-per-instance` (default), `all`, `latest`, or a
 /// bare execution id `<n>`.
 pub(crate) fn parse_execution_selection(
     s: &str,
-) -> Result<nbrs_metricsql::adapters::sqlite::ExecutionSelection, String> {
-    use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+) -> Result<nbrs_metrics::queryapi::sqlite::ExecutionSelection, String> {
+    use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
     match s.trim() {
         "latest-per-instance" | "per-instance" | "" => Ok(ExecutionSelection::LatestPerInstance),
         "all" => Ok(ExecutionSelection::All),
@@ -2195,7 +2196,7 @@ impl Default for PlotMetricsOpts {
             x_query: None,
             reduce: None,
             execution_selection:
-                nbrs_metricsql::adapters::sqlite::ExecutionSelection::LatestPerInstance,
+                nbrs_metrics::queryapi::sqlite::ExecutionSelection::LatestPerInstance,
             point_label1: None,
             series_labels: Vec::new(),
             filters: Vec::new(),
@@ -2254,7 +2255,7 @@ impl PlotMetricsOpts {
         -> Result<&mut AxisOpts, String>
     {
         const MAX_AXES: usize = 4;
-        if axis_num < 2 || axis_num > MAX_AXES {
+        if !(2..=MAX_AXES).contains(&axis_num) {
             return Err(format!(
                 "axis index {axis_num} out of range — SRD-65 supports \
                  y, y1, y2, y3, y4 (cap at 4 axes total)"
@@ -2676,9 +2677,8 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
             continue;
         }
         let axis_series_labels: Vec<String> =
-            if opts.series_labels.iter().any(|s| s == "*") {
-                auto_detect_series_labels(&rows2, x_label)
-            } else if opts.series_labels.is_empty() {
+            // "*" (wildcard) or no labels both mean auto-detect.
+            if opts.series_labels.is_empty() || opts.series_labels.iter().any(|s| s == "*") {
                 auto_detect_series_labels(&rows2, x_label)
             } else {
                 opts.series_labels.clone()
@@ -2882,7 +2882,7 @@ fn peel_stored_mode(args: &[String]) -> Option<StoredArgs> {
 
 fn run_stored(stored: StoredArgs) {
     let db_path = stored.db.clone().unwrap_or_else(
-        || nbrs_activity::session::latest_metrics_db());
+        nbrs_activity::session::latest_metrics_db);
     if !db_path.exists() {
         eprintln!("nbrs plot: metrics db not found at '{}'.",
             db_path.display());
@@ -2986,7 +2986,7 @@ fn run_stored(stored: StoredArgs) {
 /// instead of `process::exit`-ing.
 fn run_stored_result(stored: StoredArgs) -> Result<(), String> {
     let db_path = stored.db.clone().unwrap_or_else(
-        || nbrs_activity::session::latest_metrics_db());
+        nbrs_activity::session::latest_metrics_db);
     if !db_path.exists() {
         return Err(format!("metrics db not found at '{}'", db_path.display()));
     }
@@ -3636,9 +3636,9 @@ struct DbRow {
 fn series_via_metricsql(
     db_path: &Path,
     expr: &str,
-    selection: nbrs_metricsql::adapters::sqlite::ExecutionSelection,
+    selection: nbrs_metrics::queryapi::sqlite::ExecutionSelection,
 ) -> Result<Vec<nbrs_metricsql::eval::Series>, String> {
-    use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
+    use nbrs_metrics::queryapi::sqlite::SqliteDataSource;
     use nbrs_metricsql::eval::{EvalContext, evaluate};
 
     // SRD-77 — the DataSource applies the execution selection (default
@@ -3668,9 +3668,9 @@ fn series_via_metricsql(
 fn rows_via_metricsql(
     db_path: &Path,
     expr: &str,
-    selection: nbrs_metricsql::adapters::sqlite::ExecutionSelection,
+    selection: nbrs_metrics::queryapi::sqlite::ExecutionSelection,
 ) -> Result<Vec<DbRow>, String> {
-    use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
+    use nbrs_metrics::queryapi::sqlite::SqliteDataSource;
     use nbrs_metricsql::eval::{EvalContext, evaluate};
 
     // SRD-77 — the DataSource applies the execution selection
@@ -3900,7 +3900,7 @@ fn pair_xy_coordinates(
     y_query: &str,
     series_labels: &[String],
     reduce: ReduceOp,
-    selection: nbrs_metricsql::adapters::sqlite::ExecutionSelection,
+    selection: nbrs_metrics::queryapi::sqlite::ExecutionSelection,
 ) -> Result<BTreeMap<String, Vec<PlotPoint>>, String> {
     use std::collections::HashMap;
     type LabelKey = Vec<(String, String)>;
@@ -3963,6 +3963,7 @@ fn pair_xy_coordinates(
     // Capture per-tuple pairings for the diagnostic table
     // we emit after the loop. Keyed by the full label tuple
     // (sorted) so the output reads in a stable order.
+    #[allow(clippy::type_complexity)]
     let mut diag_rows: Vec<(String, Vec<(f64, f64, usize)>)> = Vec::new();
     for s in &y_series {
         let key = key_for(&s.labels);
@@ -4278,6 +4279,9 @@ struct RenderedAxis<'a> {
     side: &'a str,
 }
 
+// The plot configuration is intrinsically wide; threading it as
+// explicit args keeps the renderer free of a catch-all opts struct.
+#[allow(clippy::too_many_arguments)]
 fn render_plot(
     series: &BTreeMap<String, Vec<PlotPoint>>,
     secondary: &[ResolvedSecondaryAxis],
@@ -4289,12 +4293,11 @@ fn render_plot(
     y_ticks: &[f64],
     series_labels: &[String],
 ) -> Result<(), String> {
-    if let Some(parent) = out_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
+    if let Some(parent) = out_path.parent()
+        && !parent.as_os_str().is_empty() && !parent.exists() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create output dir '{}': {e}", parent.display()))?;
         }
-    }
 
     // Compute axis ranges across all series — primary first,
     // then every secondary axis. X is shared across all axes
@@ -4437,11 +4440,10 @@ fn render_plot(
         //      identifier (legacy fallback).
         //   4. Axis name (`y2`, `y3`, …) as last resort.
         let label = axis.cfg.label.clone().unwrap_or_else(|| {
-            if let Some(template) = axis.cfg.legend_format.as_deref() {
-                if !template.contains('[') {
+            if let Some(template) = axis.cfg.legend_format.as_deref()
+                && !template.contains('[') {
                     return template.to_string();
                 }
-            }
             axis.cfg.query.as_deref()
                 .map(|q| q.chars().take_while(|c| c.is_alphanumeric() || *c == '_')
                     .collect::<String>())
@@ -4915,7 +4917,7 @@ fn resolve_tick_spec(
             // per-instance-latest selection.
             let rows = rows_via_metricsql(
                 query_db, expr,
-                nbrs_metricsql::adapters::sqlite::ExecutionSelection::LatestPerInstance,
+                nbrs_metrics::queryapi::sqlite::ExecutionSelection::LatestPerInstance,
             )
                 .map_err(|e| format!(
                     "tick metricsql `{expr}` against '{}': {e}",
@@ -5052,6 +5054,7 @@ fn scale_snap(lo: f64, hi: f64, scale: &str, pinned_lo: bool, pinned_hi: bool)
         2f64.powi(v.log2().ceil() as i32)
     }
 
+    #[allow(clippy::type_complexity)]
     let (lo_fn, hi_fn): (fn(f64) -> f64, fn(f64) -> f64) = match scale {
         // `log` falls back to decade snap until proper log axis lands.
         "dec" | "log" => (snap_dec_lo, snap_dec_hi),
@@ -5188,6 +5191,9 @@ fn marker_poly(shape: &str, c: (i32, i32), s: i32) -> Vec<(i32, i32)> {
     }
 }
 
+// Full chart-drawing surface (axes, ranges, labels, ticks, styles);
+// the wide parameter list mirrors plotters' own builder inputs.
+#[allow(clippy::too_many_arguments)]
 fn draw_chart<DB>(
     root: &DrawingArea<DB, plotters::coord::Shift>,
     series: &BTreeMap<String, Vec<PlotPoint>>,
@@ -6016,8 +6022,8 @@ where
         || series.keys().any(|k| !k.is_empty())
         || y2_count > 0;
     let force_show = matches!(legend_spec, LegendSpec::Position(_)) && legend_explicit;
-    if (auto_show || force_show) && matches!(legend_spec, LegendSpec::Position(_)) {
-        if let LegendSpec::Position(position) = legend_spec {
+    if (auto_show || force_show) && matches!(legend_spec, LegendSpec::Position(_))
+        && let LegendSpec::Position(position) = legend_spec {
             chart.configure_series_labels()
                 .background_style(WHITE.mix(0.85))
                 .border_style(BLACK)
@@ -6026,7 +6032,6 @@ where
                 .draw()
                 .map_err(|e| format!("draw legend: {e}"))?;
         }
-    }
 
     Ok(())
 }
@@ -6111,12 +6116,11 @@ fn write_csv(
     metric: &str,
     agg_name: &str,
 ) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty() && !parent.exists() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create output dir '{}': {e}", parent.display()))?;
         }
-    }
     let mut out = String::new();
     if series_labels.is_empty() {
         out.push_str(&format!("{x_label},n_rows,{agg_name}({metric})\n"));
@@ -6262,7 +6266,7 @@ mod tests {
         // The plot query must show BOTH points — coalescing per
         // metric instance across executions (per-instance-latest, the
         // default), not collapsing to the newest execution's data.
-        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use rusqlite::params;
 
         let dir = std::env::temp_dir().join("nbrs_report_coalesce_test");
@@ -6283,7 +6287,7 @@ mod tests {
             .unwrap();
         let fam: i64 = conn.query_row(
             "SELECT id FROM metric_family WHERE name='recall_mean'", [], |r| r.get(0)).unwrap();
-        let mut insert = |exec: i64, limit: &str, ts: i64, mean: f64| {
+        let insert = |exec: i64, limit: &str, ts: i64, mean: f64| {
             // Canonical spec + instance_label rows the same way the
             // writer does: every label (incl. exec_id/session) is an
             // instance_label row; __name__ excluded from the spec body.
@@ -6337,7 +6341,7 @@ mod tests {
         // `pair_xy_coordinates` with `avg(...) by (...)`. Refined
         // session: exec 1 ran limit=25 at t1; exec 2 (+1h) added
         // limit=50. The plot must produce a point for BOTH.
-        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use rusqlite::params;
 
         let dir = std::env::temp_dir().join("nbrs_paired_coalesce_test");
@@ -6355,7 +6359,7 @@ mod tests {
             conn.query_row("SELECT id FROM metric_family WHERE name=?1", params![name], |r| r.get(0)).unwrap()
         };
         // insert(family, value_col, exec, limit, ts, value/count)
-        let mut insert = |fam: &str, exec: i64, limit: &str, ts: i64, count: Option<i64>, mean: Option<f64>| {
+        let insert = |fam: &str, exec: i64, limit: &str, ts: i64, count: Option<i64>, mean: Option<f64>| {
             let mut labels = vec![
                 ("exec_id".to_string(), exec.to_string()),
                 ("limit".to_string(), limit.to_string()),
@@ -6403,7 +6407,7 @@ mod tests {
         // [spec, --db, --output] and calls parse_args → render_one.
         // The resulting opts MUST default to per-instance-latest so a
         // refined session's report coalesces across executions.
-        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         let opts = parse_args(&[
             "mean recall_mean over limit".to_string(),
             "--db".to_string(),
@@ -6429,7 +6433,7 @@ mod tests {
         use nbrs_metrics::labels::Labels;
         use nbrs_metrics::scheduler::Reporter;
         use nbrs_metrics::snapshot::MetricSet;
-        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use std::time::{Duration, Instant};
 
         let dir = std::env::temp_dir().join("nbrs_latest_empty_exec_test");
@@ -6497,7 +6501,7 @@ mod tests {
         use nbrs_metrics::labels::Labels;
         use nbrs_metrics::scheduler::Reporter;
         use nbrs_metrics::snapshot::MetricSet;
-        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use rusqlite::params;
         use std::time::{Duration, Instant};
 
@@ -6579,8 +6583,8 @@ mod tests {
         use nbrs_metrics::labels::Labels;
         use nbrs_metrics::scheduler::Reporter;
         use nbrs_metrics::snapshot::MetricSet;
-        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
-        use rusqlite::params;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
+        
         use std::time::{Duration, Instant};
 
         let dir = std::env::temp_dir().join("nbrs_multicombo_test");
@@ -6658,7 +6662,7 @@ mod tests {
         use nbrs_metrics::reporters::sqlite::SqliteReporter;
         use nbrs_metrics::scheduler::Reporter;
         use nbrs_metrics::snapshot::MetricSet;
-        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         use std::time::{Duration, Instant};
 
         let dir = std::env::temp_dir().join("nbrs_several_series_test");
@@ -6759,7 +6763,7 @@ mod tests {
     #[test]
     #[ignore]
     fn report_queries_against_latest_session_db() {
-        use nbrs_metricsql::adapters::sqlite::ExecutionSelection;
+        use nbrs_metrics::queryapi::sqlite::ExecutionSelection;
         // Run via `cargo test`, `latest_metrics_db()` points at the
         // TMPDIR sandbox — not your real `sessions/latest`. So prefer
         // an explicit `NBRS_TEST_DB=...`, then the cwd-relative

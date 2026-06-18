@@ -1,5 +1,11 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
+//
+// These async tests serialize on a process-global lock held across
+// `.await` so global session state doesn't race; the awaited code never
+// locks it, so there's no deadlock — `await_holding_lock` is a false
+// positive for this deliberate pattern.
+#![allow(clippy::await_holding_lock)]
 
 //! End-to-end integration of the runtime-context + param-helper
 //! node families (SRD 12). Exercises the full pipeline:
@@ -58,7 +64,7 @@ fn build_session_with_concurrency(initial: u32) -> Arc<std::sync::RwLock<Compone
             .reify_as_gauge(|v| Some(*v as f64))
             .branch_scope(BranchScope::Subtree)
             .from_f64(|v| {
-                if v < 0.0 || v > 10_000.0 {
+                if !(0.0..=10_000.0).contains(&v) {
                     Err(format!("concurrency out of range: {v}"))
                 } else {
                     Ok(v as u32)

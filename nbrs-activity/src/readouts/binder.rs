@@ -82,9 +82,11 @@ impl std::fmt::Debug for RenderStep {
 /// `layout=` option. See SRD-63 §5.3.1. The binder maps
 /// this to a [`LayoutHint`] for the sink at render time.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum LayoutMode {
     /// Default — pick per LOD: compact ⇒ inline,
     /// labeled / expanded ⇒ block.
+    #[default]
     Auto,
     /// Force inline regardless of LOD.
     Inline,
@@ -92,9 +94,6 @@ pub enum LayoutMode {
     Block,
 }
 
-impl Default for LayoutMode {
-    fn default() -> Self { LayoutMode::Auto }
-}
 
 /// What the binder writes to the sink for a single render
 /// step. The sink decides how to honour the hint:
@@ -1049,8 +1048,10 @@ mod tests {
         // phase_status accepts only Phase. Binding it at
         // `on_session_end` (Session-kind subject) should
         // error at workload-load — not silently render zeros.
-        let mut bindings = nbrs_workload::model::ReadoutsBindings::default();
-        bindings.on_session_end = vec!["phase_status".to_string()];
+        let bindings = nbrs_workload::model::ReadoutsBindings {
+            on_session_end: vec!["phase_status".to_string()],
+            ..Default::default()
+        };
         let res = build_event_binder(
             &bindings, EventType::SessionEnd, BakedBody::new(),
         );
@@ -1065,8 +1066,10 @@ mod tests {
 
     #[test]
     fn validate_accepts_session_summary_at_session_slot() {
-        let mut bindings = nbrs_workload::model::ReadoutsBindings::default();
-        bindings.on_session_end = vec!["session_summary".to_string()];
+        let bindings = nbrs_workload::model::ReadoutsBindings {
+            on_session_end: vec!["session_summary".to_string()],
+            ..Default::default()
+        };
         assert!(build_event_binder(
             &bindings, EventType::SessionEnd, BakedBody::new(),
         ).is_ok(), "session_summary at on_session_end should be valid");
@@ -1076,7 +1079,10 @@ mod tests {
     fn validate_accepts_trace_at_every_slot() {
         // trace declares it accepts all subject kinds —
         // useful as a wildcard diagnostic.
-        let cases: &[(EventType, fn(&mut nbrs_workload::model::ReadoutsBindings))] = &[
+        // One case: an event kind paired with a setter that binds `trace`
+        // at the matching slot.
+        type SlotCase = (EventType, fn(&mut nbrs_workload::model::ReadoutsBindings));
+        let cases: &[SlotCase] = &[
             (EventType::SessionEnd, |b| b.on_session_end = vec!["trace".into()]),
             (EventType::PhaseEnd,   |b| b.on_phase_end   = vec!["trace".into()]),
             (EventType::EachEnd,    |b| b.on_each_end    = vec!["trace".into()]),

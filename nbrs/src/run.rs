@@ -30,6 +30,19 @@ extern crate nbrs_adapter_plotter;
 // `DriverImpl`s selected at runtime via `cqldriver=`.
 extern crate nbrs_adapter_cql;
 
+// SRD-86 — link the optimizer plugin crate so its `runtime`-feature inventory
+// bridge (one `OptimizerRegistration` per optimizer) is included in the
+// binary and discovered by the core contract's registry / `nbrs describe
+// optimizers`. Same force-link mechanism as the adapters above.
+extern crate nbrs_optimizers;
+
+// SRD-86 §"The metric-reader surface" — force-link nbrs-metricsql so its
+// `polydat-nodes`-feature inventory registration (`metricsql`,
+// `metricsql_scalar`, `metricsql_vector`, `metricsql_window`) is included.
+// The binary uses the engine (the `metrics query` CLI) but not these node
+// symbols directly, so pull them in explicitly like the plugins above.
+extern crate nbrs_metricsql;
+
 use std::sync::Arc;
 
 use nbrs_metrics::cadence::Cadences;
@@ -110,7 +123,7 @@ pub async fn run_command(args: &[String]) {
     // shows since its output IS the requested result.
     let silent_console = adapter_pref == nbrs_activity::adapter::DisplayPreference::Off
         && is_tty
-        && params.get("dryrun").is_none();
+        && !params.contains_key("dryrun");
 
     // Three-mode lattice. Default is `terminal` for interactive
     // sessions: line-mode rendering driven by the snapshot stream
@@ -519,7 +532,7 @@ fn print_post_run_reports(
     // when no override is set preserves the historical
     // bare-CLI behavior.
     let session_dir = nbrs_activity::session::read_session_dir(args)
-        .unwrap_or_else(|| nbrs_activity::session::latest_session_dir());
+        .unwrap_or_else(nbrs_activity::session::latest_session_dir);
 
     // SRD-46 auto-render: when the workload completed without
     // being aborted by the error handler, render every plot
@@ -550,11 +563,10 @@ fn print_post_run_reports(
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
             if ext == "md" {
-                if let Ok(rendered) = std::fs::read_to_string(path) {
-                    if !rendered.is_empty() {
+                if let Ok(rendered) = std::fs::read_to_string(path)
+                    && !rendered.is_empty() {
                         print!("{rendered}");
                     }
-                }
             } else {
                 nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Info,
                     "summary ({ext}): {}", path.display());

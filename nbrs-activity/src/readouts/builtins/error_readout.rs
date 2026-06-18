@@ -24,8 +24,8 @@
 //! - **Compact** — single-line summary chip: `(errors:N)`,
 //!   or empty when no errors.
 //! - **Labeled** — header line + first error line:
-//!     `errors: [class] message`
-//!     `  (+M more)` when more than one.
+//!   `errors: [class] message`
+//!   `  (+M more)` when more than one.
 //! - **Expanded** — full per-error block with class, message,
 //!   cycle, op-template, op-resolved. Mirrors the existing
 //!   Expanded LOD of `phase_outcome` but stands alone so it

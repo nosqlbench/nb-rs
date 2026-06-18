@@ -53,19 +53,23 @@ use rusqlite::{params, Connection};
 ///    collide on UNIQUE(spec) and merge.
 /// 3. For each remaining input, ATTACH and:
 ///    a. INSERT OR IGNORE every metric_instance with stripped
-///       spec — duplicates are silently skipped (their data
-///       lands in the existing row via remapped sample_values).
+///      spec — duplicates are silently skipped (their data
+///      lands in the existing row via remapped sample_values).
 ///    b. Build a remap map from src's metric_instance_id to
-///       merged metric_instance_id (matched by stripped spec).
+///      merged metric_instance_id (matched by stripped spec).
 ///    c. INSERT every sample_value row using the remap.
 ///    d. Same dedup-and-insert for label_key, label_value,
-///       label_set, label_set_entry. Schema dedup paths use
-///       INSERT OR IGNORE; the merge's queries don't depend
-///       on label_set IDs being stable, only on
-///       metric_instance.spec.
+///      label_set, label_set_entry. Schema dedup paths use
+///      INSERT OR IGNORE; the merge's queries don't depend
+///      on label_set IDs being stable, only on
+///      metric_instance.spec.
 ///    e. Carry forward session_metadata: stored summary and
-///       plot specs are preserved (last-input wins on key
-///       collision).
+///      plot specs are preserved (last-input wins on key
+///      collision).
+// The numbered/lettered ASCII outline in the doc above is a deliberate
+// multi-level list; clippy's markdown heuristic mis-measures the nested
+// continuation indent, so the lint is silenced here.
+#[allow(clippy::doc_overindented_list_items)]
 pub fn merge_dbs(inputs: &[PathBuf]) -> Result<PathBuf, String> {
     if inputs.is_empty() {
         return Err("merge_dbs: at least one input db is required".to_string());

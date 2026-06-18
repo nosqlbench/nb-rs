@@ -43,6 +43,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
+use crate::phase_outcome::Outcome;
 use crate::stop_conditions::{RuntimeState, StopConditionSet};
 
 /// The workload shell's live aggregate plus its compiled stop
@@ -74,6 +75,11 @@ pub struct WorkloadShell {
     /// The reason recorded when `walk_stop` latched (the tripping
     /// condition's error class), for diagnostics.
     stop_reason: Mutex<Option<String>>,
+    /// The two-axis Outcome the tripping condition assigned (SRD-83
+    /// Part 5). `Interrupted+Succeeded` for a graceful `stop`,
+    /// `Interrupted+Failed` for a `fail`. Read to decide whether the
+    /// halt is a clean stop or a session failure.
+    stop_outcome: Mutex<Option<Outcome>>,
     /// Wall clock the shell started — supplies the `elapsed_ms` wire
     /// at the workload level.
     start: Instant,
@@ -92,6 +98,7 @@ impl WorkloadShell {
             stop_set: Mutex::new(stop_set),
             walk_stop: AtomicBool::new(false),
             stop_reason: Mutex::new(None),
+            stop_outcome: Mutex::new(None),
             start: Instant::now(),
         }
     }
@@ -109,7 +116,7 @@ impl WorkloadShell {
     /// runtime state. Returns the tripping condition's reason iff *this*
     /// call latched the stop (so the caller logs it exactly once);
     /// `None` otherwise (no trip, or the stop was already latched).
-    pub fn record_phase(&self, failed: bool, ops: u64, errors: u64) -> Option<String> {
+    pub fn record_phase(&self, failed: bool, ops: u64, errors: u64) -> Option<(Outcome, String)> {
         self.children_total.fetch_add(1, Ordering::Relaxed);
         if failed {
             self.children_failed.fetch_add(1, Ordering::Relaxed);
@@ -137,19 +144,22 @@ impl WorkloadShell {
     /// latching `walk_stop` on the first trip. Serialised by the
     /// `stop_set` mutex: at most one finisher evaluates at a time, so
     /// the latch + reason are set exactly once.
-    fn evaluate(&self) -> Option<String> {
+    fn evaluate(&self) -> Option<(Outcome, String)> {
         let mut set = self.stop_set.lock().ok()?;
         // Already stopped, or nothing to evaluate.
         if set.is_empty() || self.walk_stop.load(Ordering::Relaxed) {
             return None;
         }
         let state = self.snapshot();
-        let reason = set.evaluate(&state)?;
+        let (outcome, reason) = set.evaluate(&state)?;
         self.walk_stop.store(true, Ordering::Relaxed);
         if let Ok(mut slot) = self.stop_reason.lock() {
             *slot = Some(reason.clone());
         }
-        Some(reason)
+        if let Ok(mut slot) = self.stop_outcome.lock() {
+            *slot = Some(outcome);
+        }
+        Some((outcome, reason))
     }
 
     /// Whether a stop condition has latched. Consulted by the walker
@@ -163,6 +173,14 @@ impl WorkloadShell {
     #[allow(dead_code)] // WIP: SRD-83 stop-condition shell — reason readout
     pub fn stop_reason(&self) -> Option<String> {
         self.stop_reason.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// The two-axis [`Outcome`] the tripping stop condition assigned, if
+    /// the shell has stopped. `Interrupted+Failed` means the halt is a
+    /// session failure; `Interrupted+Succeeded` a graceful stop.
+    #[allow(dead_code)] // WIP: SRD-83 — consumed by the executor stop path / future shell outcome
+    pub fn stop_outcome(&self) -> Option<Outcome> {
+        self.stop_outcome.lock().ok().and_then(|g| *g)
     }
 }
 
@@ -179,17 +197,21 @@ mod tests {
         let root = polydat::dsl::compile_polydat("input cycle: u64\nx := 5")
             .expect("root kernel");
         let set = StopConditionSet::build_for_phase(
-            &root, None, &["children_failed > 0".to_string()])
+            &root, None,
+            &[crate::stop_conditions::StopConditionDecl {
+                when: "children_failed > 0".to_string(),
+                effect: Outcome::failed(),
+            }])
             .expect("build set");
         let shell = WorkloadShell::new(set);
 
         // A successful child does not trip.
         assert_eq!(shell.record_phase(false, 100, 0), None);
         assert!(!shell.should_stop());
-        // The first failed child latches the stop, returning the reason.
+        // The first failed child latches the stop, returning the outcome + reason.
         assert_eq!(
             shell.record_phase(true, 50, 50),
-            Some("stop_condition: children_failed > 0".to_string()));
+            Some((Outcome::failed(), "stop_condition: children_failed > 0".to_string())));
         assert!(shell.should_stop());
         assert_eq!(shell.stop_reason().as_deref(),
             Some("stop_condition: children_failed > 0"));
@@ -206,16 +228,20 @@ mod tests {
         let root = polydat::dsl::compile_polydat("input cycle: u64")
             .expect("root kernel");
         let set = StopConditionSet::build_for_phase(
-            &root, None, &["op_count > 1000".to_string()])
+            &root, None,
+            &[crate::stop_conditions::StopConditionDecl {
+                when: "op_count > 1000".to_string(),
+                effect: Outcome::interrupted(),
+            }])
             .expect("build set");
         let shell = WorkloadShell::new(set);
 
         assert_eq!(shell.record_phase(false, 600, 0), None);
         assert!(!shell.should_stop());
-        // Cumulative op_count is now 1200 > 1000 → trips.
+        // Cumulative op_count is now 1200 > 1000 → trips (graceful stop effect).
         assert_eq!(
             shell.record_phase(false, 600, 0),
-            Some("stop_condition: op_count > 1000".to_string()));
+            Some((Outcome::interrupted(), "stop_condition: op_count > 1000".to_string())));
         assert!(shell.should_stop());
     }
 

@@ -34,7 +34,18 @@ fn layer(crate_name: &str) -> Option<u32> {
         // L0 — leaf substrates (zero internal deps). cassandra-cpp is
         // a vendored fork; it has no internal deps, so L0 keeps the
         // cql→cassandra edge valid without special-casing.
-        "polydat-derive" | "nbrs-errorhandler" | "nbrs-metricsql" | "cassandra-cpp" => 0,
+        "polydat-derive" | "nbrs-errorhandler" | "cassandra-cpp" => 0,
+        // SRD-86 §"The metric-reader surface" — metricsql is the query
+        // language ATOP nbrs-metrics' data-access library: it evaluates
+        // over the metrics `queryapi` (Vector shape + MetricAccess), so
+        // it sits above metrics (L2) and polydat (L1). No longer a
+        // standalone L0 leaf, by design.
+        "nbrs-metricsql" => 3,
+        // SRD-86 — the optimizer algorithms are an inventory PLUGIN: they
+        // register against the core contract (defined in nbrs-activity) and
+        // are discovered via inventory, so the crate depends on the core and
+        // sits ABOVE it, exactly like an adapter. The core never names it.
+        "nbrs-optimizers" => 5,
         "polydat" => 1,
         "nbrs-metrics" | "nbrs-workload" => 2,
         "nbrs-rate" | "nbrs-adapter-openapi" => 3,
@@ -81,11 +92,10 @@ fn workspace_members(root: &Path) -> Vec<PathBuf> {
             if t.starts_with(']') {
                 break;
             }
-            if let Some(start) = t.find('"') {
-                if let Some(end) = t[start + 1..].find('"') {
+            if let Some(start) = t.find('"')
+                && let Some(end) = t[start + 1..].find('"') {
                     out.push(root.join(&t[start + 1..start + 1 + end]));
                 }
-            }
         }
     }
     out
@@ -144,13 +154,11 @@ fn parse_manifest(dir: &Path) -> Manifest {
         }
         match sec {
             Sec::Package => {
-                if let Some(v) = line.strip_prefix("name") {
-                    if let Some(q) = v.find('"') {
-                        if let Some(end) = v[q + 1..].find('"') {
+                if let Some(v) = line.strip_prefix("name")
+                    && let Some(q) = v.find('"')
+                        && let Some(end) = v[q + 1..].find('"') {
                             name = v[q + 1..q + 1 + end].to_string();
                         }
-                    }
-                }
             }
             Sec::Deps | Sec::DevDeps => {
                 // dep key is the token before `=`, then before any `.`
@@ -285,8 +293,8 @@ fn scan_rs(dir: &Path, needles: &[&str], hits: &mut Vec<String>) {
         let p = e.path();
         if p.is_dir() {
             scan_rs(&p, needles, hits);
-        } else if p.extension().and_then(|s| s.to_str()) == Some("rs") {
-            if let Ok(txt) = fs::read_to_string(&p) {
+        } else if p.extension().and_then(|s| s.to_str()) == Some("rs")
+            && let Ok(txt) = fs::read_to_string(&p) {
                 for (i, line) in txt.lines().enumerate() {
                     for n in needles {
                         if line.contains(n) {
@@ -295,7 +303,6 @@ fn scan_rs(dir: &Path, needles: &[&str], hits: &mut Vec<String>) {
                     }
                 }
             }
-        }
     }
 }
 
@@ -385,15 +392,14 @@ fn scan_for(dir: &Path, needle: &str, hits: &mut Vec<String>) {
             scan_for(&p, needle, hits);
         } else {
             let ext = p.extension().and_then(|s| s.to_str());
-            if matches!(ext, Some("md") | Some("rs")) {
-                if let Ok(txt) = fs::read_to_string(&p) {
+            if matches!(ext, Some("md") | Some("rs"))
+                && let Ok(txt) = fs::read_to_string(&p) {
                     for (i, line) in txt.lines().enumerate() {
                         if line.contains(needle) {
                             hits.push(format!("{}:{}: {}", p.display(), i + 1, line.trim()));
                         }
                     }
                 }
-            }
         }
     }
 }

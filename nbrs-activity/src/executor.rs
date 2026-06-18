@@ -272,6 +272,15 @@ pub struct ExecCtx {
     /// already compiled into it; this is the unfiltered source for the
     /// structural `each:` fan-out at the phase level.
     pub workload_stop_when: Vec<nbrs_workload::model::StopConditionSpec>,
+    /// SRD-86 — when set (by `dispatch_optimization` during an optimize-node
+    /// search), `run_phase` pulls this objective wire off the phase's **single
+    /// live kernel** just before execution and stores the value in
+    /// `optimize_objective_value`. `None` everywhere else. The objective must be
+    /// a wire fully qualified on the phase node (validity = ordinary kernel
+    /// compilation); there is no second/reconstructed kernel.
+    pub optimize_objective: Option<String>,
+    /// The value `run_phase` pulled for `optimize_objective` this iteration.
+    pub optimize_objective_value: Option<f64>,
 }
 
 /// Workload YAML source kept alongside the parsed model so
@@ -328,7 +337,7 @@ impl ExecCtx {
     /// cross-session queries should group on.
     pub fn labels(&self) -> Labels {
         let mut labels = Labels::of("session", &self.session_id)
-            .with("exec_id", &self.exec_id.to_string())
+            .with("exec_id", self.exec_id.to_string())
             .with("workload", &self.workload_name);
         for (k, v) in &self.label_stack {
             labels = labels.with(k, v);
@@ -780,10 +789,23 @@ fn execute_node<'a>(
                     // point 2 — runs at every depth.
                     let mut scope_path = ctx.scene_tree_path.clone();
                     scope_path.push(PathSegment::ForEach { var: var_parsed.clone() });
-                    let header = format!("phase.for_each {var_parsed} in [{}]",
-                        steps.iter()
-                            .filter_map(|s| s.bindings.first().map(|(_, v)| v.to_display_string()))
-                            .collect::<Vec<_>>().join(", "));
+                    let optimize_block = ctx.phases.get(name.as_str())
+                        .and_then(|p| p.optimize.clone());
+                    let header = if let Some(b) = &optimize_block {
+                        // SRD-86 A12 — a search node, not a sweep: its spec and
+                        // budget, never an enumerated coordinate set.
+                        let axes = steps.first()
+                            .map(|s| s.bindings.iter().map(|(k, _)| k.as_str())
+                                .collect::<Vec<_>>().join(", "))
+                            .unwrap_or_default();
+                        format!("search · {} · maximize {} · {{{axes}}} · ≤{} evals",
+                            b.method, b.objective, b.max_evals)
+                    } else {
+                        format!("phase.for_each {var_parsed} in [{}]",
+                            steps.iter()
+                                .filter_map(|s| s.bindings.first().map(|(_, v)| v.to_display_string()))
+                                .collect::<Vec<_>>().join(", "))
+                    };
                     let scope_id = push_scope_scene_node(
                         ctx.scene_tree_parent_id, scope_path.clone(), header, Vec::new(),
                     );
@@ -799,12 +821,19 @@ fn execute_node<'a>(
                         p.push(PathSegment::Phase(name.clone()));
                         p
                     };
-                    let res = dispatch_comprehension(
-                        ctx, steps,
-                        TerminalAction::Phase(name), depth + 1, false,
-                        "for_each",
-                        Some((name.clone(), op_names, phase_path_for_iters)),
-                    ).await;
+                    let res = if let Some(b) = optimize_block {
+                        dispatch_optimization(
+                            ctx, steps, b, name, depth + 1,
+                            Some((name.clone(), op_names, phase_path_for_iters)),
+                        ).await
+                    } else {
+                        dispatch_comprehension(
+                            ctx, steps,
+                            TerminalAction::Phase(name), depth + 1, false,
+                            "for_each",
+                            Some((name.clone(), op_names, phase_path_for_iters)),
+                        ).await
+                    };
                     ctx.scene_tree_parent_id = saved_parent;
                     ctx.scene_tree_path = saved_path;
                     return res.map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
@@ -1502,6 +1531,270 @@ fn dispatch_comprehension<'a>(
     })
 }
 
+/// SRD-86 A12 — drive an `optimize:` node as a **search**, not a sweep. The
+/// optimizer (resolved from the link-time registry) produces a pull-through
+/// coordinate stream; we run the phase once per pulled coordinate **sequentially**
+/// (the next coordinate depends on the last objective), read the objective
+/// metric off the iteration's kernel, and feed it back. The candidate grid in
+/// `steps` only derives the discrete `SearchSpace` — the node represents a
+/// bounded search, and pre-map (depth < Op) pre-maps the coordinate-invariant
+/// subtree once.
+fn dispatch_optimization<'a>(
+    ctx: &'a mut ExecCtx,
+    steps: Vec<IterationStep>,
+    block: nbrs_workload::model::OptimizeBlock,
+    phase_name: &'a str,
+    depth: usize,
+    phase_meta: Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        if steps.is_empty() {
+            return Ok(());
+        }
+
+        // Pre-map (depth < Op): represent the search + pre-map the
+        // coordinate-invariant subtree ONCE (one representative evaluation).
+        // `run_one_iteration`'s Phase terminal is itself depth-gated, so this is
+        // a purely structural pass — no real phase run, no objective read.
+        if ctx.diag.depth < crate::runner::ExecDepth::Op {
+            return run_one_eval(ctx, &steps[0], phase_name, depth, &phase_meta).await;
+        }
+
+        // ─── Execution: the adaptive search loop ───
+        let space = search_space_from_steps(&steps);
+        let step_index = index_steps(&steps);
+        let mut params = crate::optimize::OptimizerParams::new();
+        for (k, v) in &block.params {
+            params = params.with(k.clone(), *v);
+        }
+        let optimizer = crate::optimize::by_name(&block.method, &params).ok_or_else(|| {
+            format!("phase '{phase_name}': unknown optimizer method '{}'", block.method)
+        })?;
+        let budget = crate::optimize::Budget::seeded(block.max_evals, block.seed);
+        let lex: Box<dyn crate::optimize::PullSource> =
+            Box::new(crate::optimize::LexSource::new(&space));
+        let mut src = optimizer.coordinate_source(&space, &budget, lex);
+
+        // Ask `run_phase` to read this objective wire off each iteration's single
+        // live kernel (SRD-86 — a fully-qualified-on-node objective).
+        ctx.optimize_objective = Some(block.objective.clone());
+
+        let mut best_value = f64::NEG_INFINITY;
+        let mut best_coord: Option<crate::optimize::Coord> = None;
+        let mut evals = 0usize;
+
+        let mut batch = source_next(&mut src, &[]);
+        'outer: while let Some(coords) = batch.take() {
+            let mut evaluated: Vec<(crate::optimize::Coord, f64)> = Vec::new();
+            for coord in coords {
+                if evals >= block.max_evals {
+                    break 'outer;
+                }
+                let key = coord_key(&coord);
+                let Some(&si) = step_index.get(&key) else {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "optimizer '{method}' on '{phase_name}': coordinate [{key}] is not in the \
+                         enumerable grid — skipping", method = block.method);
+                    continue;
+                };
+                run_one_eval(ctx, &steps[si], phase_name, depth, &phase_meta).await?;
+                evals += 1;
+                let value = ctx.optimize_objective_value.ok_or_else(|| {
+                    format!(
+                        "phase '{phase_name}': optimize objective '{}' produced no value — it must \
+                         be a numeric wire fully qualified on the phase node",
+                        block.objective
+                    )
+                })?;
+                if value > best_value {
+                    best_value = value;
+                    best_coord = Some(coord.clone());
+                }
+                evaluated.push((coord, value));
+            }
+            batch = source_next(&mut src, &evaluated);
+        }
+        ctx.optimize_objective = None;
+
+        let best_disp = best_coord
+            .as_ref()
+            .map(|c| c.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "))
+            .unwrap_or_else(|| "<none>".into());
+        crate::diag!(crate::observer::LogLevel::Info,
+            "optimizer '{method}' on '{phase_name}': best [{best_disp}] → {objective}={best_value} \
+             after {evals} evals",
+            method = block.method, objective = block.objective);
+        Ok(())
+    })
+}
+
+/// Push the per-evaluation scene node (mirrors `dispatch_comprehension`'s
+/// per-iter Phase node) and run the iteration inline (sequential).
+async fn run_one_eval(
+    ctx: &mut ExecCtx,
+    step: &IterationStep,
+    phase_name: &str,
+    depth: usize,
+    phase_meta: &Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
+) -> Result<(), String> {
+    let scene_id = match phase_meta {
+        Some((pn, op_names, ypath)) => {
+            let labels = canonical_phase_label(&step.coord_path);
+            push_phase_scene_node(
+                ctx.scene_tree_parent_id,
+                ypath.clone(),
+                pn.clone(),
+                labels,
+                op_names.clone(),
+            )
+        }
+        None => ctx.scene_tree_parent_id,
+    };
+    let saved = ctx.scene_tree_parent_id;
+    ctx.scene_tree_parent_id = scene_id;
+    let terminal = TerminalAction::Phase(phase_name);
+    let res = run_one_iteration(ctx, step, &terminal, depth, "optimize").await;
+    ctx.scene_tree_parent_id = saved;
+    res
+}
+
+/// Pull the next coordinate batch from a source via its most-capable
+/// decorator (feedback favored over pull), mirroring the contract driver.
+fn source_next(
+    src: &mut Box<dyn crate::optimize::CoordinateSource>,
+    evaluated: &[(crate::optimize::Coord, f64)],
+) -> Option<Vec<crate::optimize::Coord>> {
+    if let Some(f) = src.as_feedback() {
+        f.step(evaluated)
+    } else if let Some(p) = src.as_pull() {
+        p.pull()
+    } else {
+        None
+    }
+}
+
+/// A stable per-coordinate key (per-axis display value) for matching an
+/// optimizer-produced coordinate back to its enumerated `IterationStep`.
+fn coord_key(coord: &crate::optimize::Coord) -> String {
+    coord.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\u{1f}")
+}
+
+/// Index the enumerated steps by their coordinate key.
+fn index_steps(steps: &[IterationStep]) -> std::collections::HashMap<String, usize> {
+    let mut m = std::collections::HashMap::new();
+    for (i, step) in steps.iter().enumerate() {
+        let key = step
+            .bindings
+            .iter()
+            .map(|(_, v)| polydat_value_to_axis(v).to_string())
+            .collect::<Vec<_>>()
+            .join("\u{1f}");
+        m.entry(key).or_insert(i);
+    }
+    m
+}
+
+/// Convert a polydat `Value` to the optimizer's `AxisValue`.
+fn polydat_value_to_axis(v: &polydat::ast::Value) -> crate::optimize::AxisValue {
+    use polydat::ast::Value;
+    match v {
+        Value::F64(f) => crate::optimize::AxisValue::Num(*f),
+        Value::U64(u) => crate::optimize::AxisValue::Num(*u as f64),
+        Value::Bool(b) => crate::optimize::AxisValue::Bool(*b),
+        Value::Str(s) => crate::optimize::AxisValue::Label(s.to_string()),
+        other => crate::optimize::AxisValue::Label(other.to_display_string()),
+    }
+}
+
+/// Build the `SearchSpace` from the enumerated candidate grid (SRD-86 A12 — the
+/// grid informs the space, it is not the node's representation): per axis, the
+/// distinct values (first-seen order) become detents — `Discrete` when all
+/// numeric, `Categorical` otherwise. (Continuous-sampling spaces are a
+/// follow-up; they need comprehension `Source` decoding.)
+fn search_space_from_steps(steps: &[IterationStep]) -> crate::optimize::SearchSpace {
+    use crate::optimize::{Axis, AxisKind, AxisValue, Changeover, SearchSpace};
+    let n_axes = steps.first().map(|s| s.bindings.len()).unwrap_or(0);
+    let mut axes = Vec::with_capacity(n_axes);
+    for a in 0..n_axes {
+        let name = steps[0].bindings[a].0.clone();
+        let mut seen: Vec<String> = Vec::new();
+        let mut values: Vec<AxisValue> = Vec::new();
+        let mut all_numeric = true;
+        for step in steps {
+            let av = polydat_value_to_axis(&step.bindings[a].1);
+            let key = av.to_string();
+            if !seen.contains(&key) {
+                seen.push(key);
+                if !matches!(av, AxisValue::Num(_)) {
+                    all_numeric = false;
+                }
+                values.push(av);
+            }
+        }
+        let kind = if all_numeric {
+            AxisKind::Discrete { detents: values }
+        } else {
+            AxisKind::Categorical { options: values }
+        };
+        axes.push(Axis { name, kind, changeover: Changeover::Coordinate });
+    }
+    SearchSpace::new(axes)
+}
+
+/// SRD-86 A10 — read an optimize objective wire POST-EXECUTION via the canonical
+/// completion-pull. The single phase kernel that ran was consumed by
+/// `OpBuilder`, so (as `emit_phase_metrics` does) we rebuild a completion view —
+/// here off the **live parent** kernel (carrying this iteration's coordinate)
+/// with the phase node's program. Because it runs after the ops, `metric(...)`
+/// reads the run's produced values. `catch_unwind` keeps a bad name a clean
+/// error rather than a fiber-pool panic.
+/// Read a *coordinate-function* objective wire after the phase has
+/// executed.
+///
+/// SRD-86 A10. Node X's kernel at runtime *is* node X's program
+/// evaluated as a subscope of its live parent scope: the parent
+/// (`current_parent_kernel` = the iteration step's bound kernel)
+/// carries the per-eval coordinate, and node X's program defines the
+/// objective transform that reads it. So the completion read rebuilds
+/// exactly that — node X's program (`phase_kernel.program()`) bound
+/// to the live parent — and pulls the objective. This is not a
+/// context-free clone: the coordinate resolves through the parent
+/// scope (verified by `optimizer_null_sweep`, which regresses the
+/// moment the build is reparented onto the cached phase template,
+/// which holds no per-eval coordinate).
+///
+/// This path is correct for objectives that are a deterministic
+/// function of the coordinate (and of session-stable reads). A
+/// *volatile* objective over a windowed metric (`metric_window`)
+/// settles to an empty trailing window here and must instead be read
+/// from the cadence-fed settle daemon's register — see SRD-86
+/// §"Settling via the cadence pulse". The caller selects the path by
+/// objective shape.
+fn read_objective_at_completion(
+    parent: &std::sync::Arc<polydat::kernel::PolydatKernel>,
+    phase_kernel: &std::sync::Arc<polydat::kernel::PolydatKernel>,
+    objective: &str,
+) -> Option<f64> {
+    use polydat::ast::Value;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut k = parent
+            .build_subscope(
+                polydat::kernel::subcontext::PolydatMatter::builder()
+                    .program(phase_kernel.program().clone())
+                    .build()
+                    .ok()?,
+            )
+            .ok()?;
+        Some(k.pull(objective).clone())
+    }));
+    match result {
+        Ok(Some(Value::F64(f))) => Some(f),
+        Ok(Some(Value::U64(u))) => Some(u as f64),
+        Ok(Some(Value::Bool(b))) => Some(if b { 1.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
 /// Route a `do_while` / `do_until` scenario node through the
 /// streaming dispatcher (SRD-18b §"Deferred follow-on:
 /// Streaming dispatch for state-driven comprehensions").
@@ -1680,7 +1973,7 @@ async fn run_do_loop(
             .iter()
             .rev()
             .filter(|c| !c.is_empty())
-            .map(|c| coord_to_btree(c))
+            .map(coord_to_btree)
             .collect();
         if let Some(writer) = ctx.checkpoint_writer.as_ref() {
             writer.emit_scope_enter(kind, iter_coords.clone(), path.clone());
@@ -2392,7 +2685,7 @@ async fn run_phase(
                         return Err(format!(
                             "{polydat_context}: phase-scoped override `{}.{}=`: {e}",
                             ov.pattern.source(), ov.param,
-                        ).into());
+                        ));
                     }
                 }
             }
@@ -2419,7 +2712,16 @@ async fn run_phase(
         // `over` clause's resolved partition. Empty when the cursor
         // wasn't declared with an `over` clause.
         let mut runtime_partition: HashMap<String, (u64, u64)> = HashMap::new();
-        let cursor_specs: Vec<(String, Option<(String, String)>, Option<u64>, polydat::iteration::source::CursorKind, Option<String>)>
+        // One resolved cursor spec: (name, extent-output wires,
+        // extent limit, cursor kind, partition-output wire).
+        type CursorSpec = (
+            String,
+            Option<(String, String)>,
+            Option<u64>,
+            polydat::iteration::source::CursorKind,
+            Option<String>,
+        );
+        let cursor_specs: Vec<CursorSpec>
             = kernel.program()
             .cursor_schemas()
             .iter()
@@ -2515,7 +2817,7 @@ async fn run_phase(
                     Err(e) => {
                         return Err(format!(
                             "cursor '{name}': `over` clause failed to resolve: {e}"
-                        ).into());
+                        ));
                     }
                 }
             }
@@ -2881,7 +3183,7 @@ async fn run_phase(
     // common case for `cursor q = range(0, N)` with `N`
     // divisible by stanza_len.
     let stanza_len_u64 = stanza_len as u64;
-    if stanza_len_u64 > 0 && progress_extent > 0 && progress_extent % stanza_len_u64 != 0 {
+    if stanza_len_u64 > 0 && progress_extent > 0 && !progress_extent.is_multiple_of(stanza_len_u64) {
         let remainder = progress_extent % stanza_len_u64;
         let full_stanzas = progress_extent / stanza_len_u64;
         crate::diag!(crate::observer::LogLevel::Warn,
@@ -3053,7 +3355,15 @@ async fn run_phase(
             .chain(ctx.workload_stop_when.iter()
                 .filter(|c| c.each.iter().any(|l| matches!(l,
                     nbrs_workload::model::ScopeLevel::Phase))))
-            .map(|c| c.when.clone())
+            // SRD-83 Part 5 — a phase-level trip defaults to `fail`
+            // (the phase result is suspect once a phase predicate fires).
+            .map(|c| crate::stop_conditions::StopConditionDecl {
+                when: c.when.clone(),
+                effect: crate::stop_conditions::StopConditionDecl::effect_from_str(
+                    c.effect.as_deref(),
+                    crate::phase_outcome::Outcome::failed(),
+                ),
+            })
             .collect(),
         max_retries: 3,
         stanza_concurrency: 1,
@@ -3110,9 +3420,8 @@ async fn run_phase(
     let mut adapter_names = std::collections::HashSet::new();
     adapter_names.insert(phase_driver.to_string());
     for t in op_sequence.templates() {
-        if let Some(a) = t.params.get("adapter").and_then(|v| v.as_str()) {
-            if a != phase_driver { adapter_names.insert(a.to_string()); }
-        }
+        if let Some(a) = t.params.get("adapter").and_then(|v| v.as_str())
+            && a != phase_driver { adapter_names.insert(a.to_string()); }
     }
     // SRD-35 Push A: every adapter is acquired via the
     // session's resource pool. The legacy
@@ -3450,11 +3759,48 @@ async fn run_phase(
     // pattern above. Drained at phase end into
     // `PhaseOutcome.errors`.
     let activity_phase_errors = activity.phase_errors.clone();
+
+    // SRD-86 §"Settling" — for an optimize phase whose objective reads
+    // live metrics, drive a cadence-fed settle detector across the run.
+    // It samples the objective off node X's kernel on every cadence
+    // pulse, holds the windowed median in a register, and stops the
+    // phase early (interrupted = settled / failed = settle timeout) via
+    // the activity stop flag. `None` for a non-volatile objective (the
+    // one-shot post-completion read is correct there).
+    let settle = ctx.optimize_objective.clone().and_then(|obj| {
+        let parent = ctx.current_parent_kernel.clone()?;
+        let phase_kernel = ctx
+            .scope_tree
+            .phase_node_by_name(phase_name)
+            .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned())?;
+        crate::optimize::settle::start_settle(
+            &parent,
+            &phase_kernel,
+            &obj,
+            &ctx.cadence_reporter,
+            activity.stop_flag.clone(),
+        )
+    });
+
     let stopped = crate::runner::run_activity_simple(
         activity, adapters, phase_driver, iter_op_builder,
     ).await;
     crate::diag!(crate::observer::LogLevel::Debug,
         "phase '{phase_name}': activity returned (stopped={stopped})");
+
+    // A settled phase stopped early with a trustworthy register
+    // (Interrupted+Succeeded); a settle timeout (Interrupted+Failed)
+    // leaves the phase failed. Tear down the subscription — the
+    // register + outcome cell stay readable.
+    let settle_succeeded = settle.as_ref().is_some_and(|h| {
+        matches!(
+            **h.outcome.load(),
+            Some(o) if o.validity == crate::phase_outcome::Validity::Succeeded
+        )
+    });
+    if let Some(h) = &settle {
+        ctx.cadence_reporter.unsubscribe(h.subscriber);
+    }
 
     // Stop progress thread
     progress_running.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -3546,6 +3892,35 @@ async fn run_phase(
         }
     }
 
+    // SRD-86 A10 — for an optimize-node search, read the objective wire
+    // POST-EXECUTION (here, after `run_activity_simple`), so it observes the
+    // run's produced state — never at setup. Node X's kernel is its program
+    // bound to its live parent scope (which carries the per-eval coordinate), so
+    // the read rebuilds exactly that. This is the coordinate-function path —
+    // correct for objectives that are a deterministic function of the
+    // coordinate. A volatile objective over a windowed metric is settled across
+    // the run by the cadence-fed detector instead (`settle` above, SRD-86
+    // §"Settling via the cadence pulse"): its register holds the windowed,
+    // coordinate-scoped value, which we read here in preference to the one-shot
+    // pull (the trailing window a one-shot read would see is empty).
+    ctx.optimize_objective_value = None;
+    if let Some(h) = &settle {
+        // Volatile objective: the one-shot read cannot capture it. Use
+        // the windowed value settled (or last-smoothed) across the run.
+        ctx.optimize_objective_value = Some(h.register.load().value);
+    } else if !stopped
+        && let (Some(obj), Some(parent), Some(phase_kernel)) = (
+            ctx.optimize_objective.clone(),
+            ctx.current_parent_kernel.clone(),
+            ctx.scope_tree
+                .phase_node_by_name(phase_name)
+                .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned()),
+        )
+    {
+        ctx.optimize_objective_value =
+            read_objective_at_completion(&parent, &phase_kernel, &obj);
+    }
+
     // Lifecycle flush: capture final delta, route through the
     // cadence reporter (single writer of windowed snapshots), and
     // deliver to the scheduler-tree reporters for external sinks.
@@ -3621,7 +3996,7 @@ async fn run_phase(
     // is ops dispatched; `errors_total` is the counted op errors.
     let phase_op_count = progress_metrics.cycles_completed();
     let phase_error_count = progress_metrics.errors_total.get();
-    if stopped {
+    if stopped && !settle_succeeded {
         // Pull the first triggering error captured by the
         // activity's stop_flag setter (activity.rs per-cycle
         // dispatch). Fall back to a bare reason when the stop
@@ -3639,10 +4014,10 @@ async fn run_phase(
         // tui=terminal output.
         let depth_indent = crate::scene_tree::running_phase_indent();
         let color = crate::observer::use_color();
-        let bold = color.then(|| "\x1b[1m").unwrap_or("");
-        let red = color.then(|| "\x1b[31m").unwrap_or("");
-        let dim = color.then(|| "\x1b[2m").unwrap_or("");
-        let reset = color.then(|| "\x1b[0m").unwrap_or("");
+        let bold = if color { "\x1b[1m" } else { "" };
+        let red = if color { "\x1b[31m" } else { "" };
+        let dim = if color { "\x1b[2m" } else { "" };
+        let reset = if color { "\x1b[0m" } else { "" };
         // SRD-? — include the phase's striated scope-coord
         // chain on the error line so a sweep-cell failure
         // points at the specific cell. Same change-only
@@ -3712,14 +4087,13 @@ async fn run_phase(
         // write itself is best-effort: a sqlite failure
         // logs at Warn and doesn't propagate (the in-memory
         // scene tree remains the canonical state).
-        if let Ok(mut guard) = ctx.sqlite_reporter.lock() {
-            if let Some(reporter) = guard.as_mut() {
+        if let Ok(mut guard) = ctx.sqlite_reporter.lock()
+            && let Some(reporter) = guard.as_mut() {
                 let row = outcome.to_sqlite_row(
                     &ctx.session_id, ctx.exec_id, phase_start_nanos,
                 );
                 reporter.write_phase_outcome(&row);
             }
-        }
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_failed(phase_name, &phase_labels, &detail_msg);
             t.set_phase_outcome(phase_name, &phase_labels, outcome);
@@ -3739,9 +4113,12 @@ async fn run_phase(
         // session-level failure itself rides on this `Err` (which exits
         // before the unreached-phase check), so the graceful-stop flag
         // is moot on this path but set for symmetry with the success one.
-        if let Some(reason) = ctx.workload_shell
+        if let Some((_outcome, reason)) = ctx.workload_shell
             .record_phase(true, phase_op_count, phase_error_count)
         {
+            // The phase already failed (we return Err below); the
+            // workload condition's own effect is moot on this path —
+            // the walk-stop latch just halts unreached siblings.
             crate::session_signals::request_graceful_stop();
             crate::diag!(crate::observer::LogLevel::Warn,
                 "workload stop condition tripped ({reason}) after phase \
@@ -3788,14 +4165,13 @@ async fn run_phase(
     // SRD-76 Push 3 — persist the success outcome. Same
     // best-effort policy as the failure path above; the
     // scene tree is the canonical in-memory state.
-    if let Ok(mut guard) = ctx.sqlite_reporter.lock() {
-        if let Some(reporter) = guard.as_mut() {
+    if let Ok(mut guard) = ctx.sqlite_reporter.lock()
+        && let Some(reporter) = guard.as_mut() {
             let row = success_outcome.to_sqlite_row(
                 &ctx.session_id, ctx.exec_id, phase_start_nanos,
             );
             reporter.write_phase_outcome(&row);
         }
-    }
     crate::scene_tree::with_global_mut(|t| {
         t.set_phase_completed(phase_name, &phase_labels, phase_duration);
         t.set_phase_outcome(phase_name, &phase_labels, success_outcome);
@@ -3816,9 +4192,24 @@ async fn run_phase(
     // end-of-run unreached-phase check treats the deliberately-skipped
     // tail like a Ctrl-C stop (no "phases were not executed" warning,
     // clean exit) rather than as stranded-by-failure.
-    if let Some(reason) = ctx.workload_shell
+    if let Some((outcome, reason)) = ctx.workload_shell
         .record_phase(false, phase_op_count, phase_error_count)
     {
+        if outcome.is_failure() {
+            // SRD-83 Part 5 — a `fail`-effect workload condition tripped
+            // on the new aggregate even though this phase succeeded
+            // (e.g. an aggregate error-rate breach). The run is a
+            // failure: return Err so the session exits non-zero and the
+            // walk halts. The phase's own outcome stays Completed (it
+            // did complete); the workload-level breach is what fails.
+            crate::diag!(crate::observer::LogLevel::Error,
+                "workload stop condition tripped ({reason}) after phase \
+                 '{phase_name}' — failing session");
+            return Err(format!("workload stop condition tripped: {reason}"));
+        }
+        // A graceful `stop` effect: nothing failed, halt the walk and
+        // flag the deliberately-skipped tail so the unreached-phase
+        // check treats it like a clean Ctrl-C stop.
         crate::session_signals::request_graceful_stop();
         crate::diag!(crate::observer::LogLevel::Warn,
             "workload stop condition tripped ({reason}) after phase \
@@ -4000,8 +4391,8 @@ fn phase_identity_for(phase_name: &str, phase_labels: &str) -> crate::checkpoint
     }
 }
 
-/// Format bindings as a sorted labels string for stable matching.
-///
+// Format bindings as a sorted labels string for stable matching.
+//
 // `format_scope_coordinate_path` lives on the Polydat side — see
 // `polydat::kernel::format_scope_coordinate_path`. Re-exporting
 // the path here would just be alias chrome; consumers in this crate

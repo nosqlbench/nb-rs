@@ -78,6 +78,8 @@ impl Sandbox {
 /// Read every `executions` row (verb, scope, disposition,
 /// has_ended_timestamp) ordered by exec_id. Returns a Vec of
 /// tuples for easy assertion shapes.
+// (exec_id, verb, scope, disposition, has_ended_timestamp) rows.
+#[allow(clippy::type_complexity)]
 fn read_executions(db: &Path) -> Vec<(u64, String, Option<String>, Option<String>, bool)> {
     let conn = rusqlite::Connection::open_with_flags(
         db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,

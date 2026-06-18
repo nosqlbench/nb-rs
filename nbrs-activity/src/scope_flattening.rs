@@ -190,6 +190,7 @@ mod tests {
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
+            optimize: None,
         }
     }
 

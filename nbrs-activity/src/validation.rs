@@ -195,16 +195,16 @@ impl AssertionSpec {
             AssertionPredicate::NotNull => field_val.is_some(),
             AssertionPredicate::IsNull => field_val.is_none(),
             AssertionPredicate::Eq(expected) => {
-                field_val.map_or(false, |v| json_value_as_string(&v) == *expected)
+                field_val.is_some_and(|v| json_value_as_string(v) == *expected)
             }
             AssertionPredicate::Gte(threshold) => {
-                field_val.and_then(|v| v.as_f64()).map_or(false, |v| v >= *threshold)
+                field_val.and_then(|v| v.as_f64()).is_some_and(|v| v >= *threshold)
             }
             AssertionPredicate::Lte(threshold) => {
-                field_val.and_then(|v| v.as_f64()).map_or(false, |v| v <= *threshold)
+                field_val.and_then(|v| v.as_f64()).is_some_and(|v| v <= *threshold)
             }
             AssertionPredicate::Contains(substr) => {
-                field_val.map_or(false, |v| json_value_as_string(&v).contains(substr.as_str()))
+                field_val.is_some_and(|v| json_value_as_string(v).contains(substr.as_str()))
             }
             AssertionPredicate::MinRows(_) => unreachable!(
                 "MinRows handled in early-return above"
@@ -315,8 +315,8 @@ impl ValidationMetrics {
     ) -> Self {
         let r_value = r.unwrap_or(k);
         let stats_labels = labels
-            .with("k", &k.to_string())
-            .with("r", &r_value.to_string());
+            .with("k", k.to_string())
+            .with("r", r_value.to_string());
         let mut stats = HashMap::new();
         let mut running = HashMap::new();
         for func in functions {
@@ -417,6 +417,11 @@ pub struct ValidatingDispenser {
     strict: bool,
 }
 
+/// Result of [`ValidatingDispenser::wrap`]: the (possibly-wrapped)
+/// dispenser plus the live [`ValidationMetrics`] handle when a
+/// `relevancy:` block was declared (`None` otherwise).
+type WrappedDispenser = (Arc<dyn OpDispenser>, Option<Arc<ValidationMetrics>>);
+
 impl ValidatingDispenser {
     /// Wrap a dispenser with validation, registering the relevancy
     /// `expected` binding into the supplied scope fixture.
@@ -429,7 +434,7 @@ impl ValidatingDispenser {
         labels: &Labels,
         program: Option<&polydat::kernel::PolydatProgram>,
         fx: &mut crate::fixture::ScopeFixture,
-    ) -> Result<(Arc<dyn OpDispenser>, Option<Arc<ValidationMetrics>>), String> {
+    ) -> Result<WrappedDispenser, String> {
         // SRD-68 Push 5c-cleanup: validation wrapper does its own
         // construction-time resolution of `{name}` placeholders
         // in op.params against the dispenser's canonical kernel.
@@ -605,8 +610,8 @@ impl OpDispenser for ValidatingDispenser {
                 // what the operator asked for. Fail the op rather
                 // than silently producing a recall figure for an
                 // off-by-one retrieval window.
-                if let Some(r) = config.r {
-                    if actual_ordered.len() != r {
+                if let Some(r) = config.r
+                    && actual_ordered.len() != r {
                         return Err(ExecutionError::Op(crate::adapter::AdapterError {
                             error_name: "relevancy_error".into(),
                             message: format!(
@@ -619,7 +624,6 @@ impl OpDispenser for ValidatingDispenser {
                             retryable: false,
                         }));
                     }
-                }
 
                 // k-recall@r semantics: the recall metric counts
                 // how many of the *top-k* ground-truth items appear
@@ -1004,15 +1008,14 @@ fn parse_relevancy(
     let r: Option<usize> = parse_count_param(obj.get("r"), &r_label, wires)?
         .map(|n| n as usize);
 
-    if let Some(rv) = r {
-        if rv < k {
+    if let Some(rv) = r
+        && rv < k {
             return Err(format!(
                 "op '{op}' relevancy: r={rv} is smaller than k={k}; \
                  the k-recall@r contract requires r >= k",
                 op = template.name,
             ));
         }
-    }
 
     let functions: Vec<RelevancyFn> = match obj.get("functions") {
         None => vec![RelevancyFn::Recall],

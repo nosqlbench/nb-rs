@@ -14,8 +14,8 @@ use veks_completion::{CommandTree, Node, StrictNode, fn_provider};
 use super::*;
 
 /// Convert the root spec into a `CommandTree`. Subcommands at
-/// the root are wired via `strict_command` (carrying category
-/// + level metadata); deeper subcommands are plain `Node::group`
+/// the root are wired via `strict_command` (carrying category +
+/// level metadata); deeper subcommands are plain `Node::group`
 /// children.
 pub fn build_command_tree(root: &Command) -> CommandTree {
     let mut tree = CommandTree::new(root.name).require_metadata();

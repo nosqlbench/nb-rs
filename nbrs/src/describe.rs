@@ -28,6 +28,8 @@ pub fn describe_command(args: &[String]) {
     match (topic, subtopic) {
         ("adapter", "") => describe_adapters_list(),
         ("adapter", name) => describe_adapter(name),
+        ("optimizers", "") | ("optimizer", "") => describe_optimizers_list(),
+        ("optimizers", name) | ("optimizer", name) => describe_optimizer(name),
         ("wiring", "functions") => describe_wiring_functions(verbose),
         ("wiring", "functions-md") => {
             let rest: Vec<String> = args.iter().skip(2)
@@ -119,10 +121,10 @@ pub fn describe_command(args: &[String]) {
 /// - `--all`       — list curated + examples tiers.
 /// - `examples`    — list the examples tier only.
 /// - `--json`      — machine-readable listing (composes with the
-///                   selectors above).
+///   selectors above).
 /// - `<name>`      — one workload in detail (catalog name, or a
-///                   local path — the same renderer introspects
-///                   un-bundled files).
+///   local path — the same renderer introspects
+///   un-bundled files).
 fn describe_workloads(args: &[String]) {
     use nbrs_workload::catalog::{self, Tier};
     let all = args.iter().any(|a| a == "--all");
@@ -163,13 +165,11 @@ fn describe_workloads(args: &[String]) {
 /// field's first line, falling back to the leading comment
 /// block (the established header convention for examples).
 fn workload_summary(source: &str) -> String {
-    if let Ok(jval) = serde_yaml::from_str::<serde_json::Value>(source) {
-        if let Some(desc) = jval.get("description").and_then(|d| d.as_str()) {
-            if let Some(first) = desc.lines().find(|l| !l.trim().is_empty()) {
+    if let Ok(jval) = serde_yaml::from_str::<serde_json::Value>(source)
+        && let Some(desc) = jval.get("description").and_then(|d| d.as_str())
+            && let Some(first) = desc.lines().find(|l| !l.trim().is_empty()) {
                 return first.trim().to_string();
             }
-        }
-    }
     // Comment-block fallback: first non-empty, non-decorative
     // comment line (skipping shebangs, license headers, and the
     // bare-filename line examples conventionally start with).
@@ -188,11 +188,10 @@ fn workload_summary(source: &str) -> String {
         // `<file>.yaml — actual summary` headers: keep the part
         // after the dash.
         for dash in [" — ", " - "] {
-            if let Some((head, rest)) = t.split_once(dash) {
-                if head.ends_with(".yaml") && !rest.trim().is_empty() {
+            if let Some((head, rest)) = t.split_once(dash)
+                && head.ends_with(".yaml") && !rest.trim().is_empty() {
                     return rest.trim().to_string();
                 }
-            }
         }
         return t.to_string();
     }
@@ -322,6 +321,37 @@ fn describe_one_workload(name: &str) -> Result<(), String> {
         println!("copy:     nbrs copy {identity}");
     }
     Ok(())
+}
+
+/// The first non-heading, non-empty line of a markdown doc (its summary).
+fn first_prose_line(md: &str) -> &str {
+    md.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or("")
+}
+
+/// `nbrs describe optimizers` — list the optimizers registered in this binary
+/// (the built-in `null` + the `nbrs-optimizers` plugins discovered via
+/// inventory against the core contract), each with its one-line summary
+/// (SRD-86 §6).
+fn describe_optimizers_list() {
+    let infos = nbrs_activity::optimize::describe();
+    println!("Registered optimizers:");
+    for info in &infos {
+        println!("  {:<22} {}", info.name, first_prose_line(info.doc_md));
+    }
+    println!();
+    println!("For details: nbrs describe optimizers <name>");
+}
+
+/// `nbrs describe optimizers <name>` — print the optimizer's full markdown doc.
+fn describe_optimizer(name: &str) {
+    match nbrs_activity::optimize::describe().into_iter().find(|i| i.name == name) {
+        Some(info) => print!("{}", info.doc_md),
+        None => {
+            eprintln!("No optimizer named '{name}' is registered in this binary.");
+            eprintln!();
+            describe_optimizers_list();
+        }
+    }
 }
 
 fn describe_adapters_list() {
@@ -1472,6 +1502,7 @@ pub fn spec() -> crate::cli_spec::Command {
         positionals: Vec::new(),
         subcommands: vec![
             adapter_spec(),
+            optimizers_spec(),
             wiring_spec(),
             workloads_spec(),
             wrappers_spec(),
@@ -1504,6 +1535,35 @@ fn adapter_spec() -> crate::cli_spec::Command {
             help: "Adapter to describe.",
             kind: crate::cli_spec::PositionalKind::ZeroOrOne,
             value: crate::cli_spec::ValueProvider::Custom(crate::completion::adapter_names_provider),
+        }],
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: true,
+        completion_override: None,
+    }
+}
+
+fn optimizers_spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        let mut argv = vec!["optimizers".to_string()];
+        argv.extend(p.raw.iter().cloned());
+        describe_command(&argv);
+        Ok(())
+    }
+    Command {
+        name: "optimizers",
+        help: "List the optimizers registered in this binary, or show one's markdown docs.",
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        kv_params: &[],
+        dynamic_options: None,
+        positionals: vec![crate::cli_spec::Positional {
+            name: "optimizer",
+            help: "Optimizer to describe.",
+            kind: crate::cli_spec::PositionalKind::ZeroOrOne,
+            value: crate::cli_spec::ValueProvider::None,
         }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
@@ -1751,11 +1811,10 @@ pub fn render_wrappers_table() -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:<name_w$}  {:<owned_w$}  {:<trigger_w$}  {}",
+        "{:<name_w$}  {:<owned_w$}  {:<trigger_w$}  CONSTRAINTS",
         "NAME",
         "OWNED FIELDS",
         "TRIGGER",
-        "CONSTRAINTS",
         name_w = name_w,
         owned_w = owned_w,
         trigger_w = trigger_w,

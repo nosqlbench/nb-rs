@@ -43,6 +43,7 @@ use nbrs_workload::report::{Kind, ReportItem, SeriesOverride, Style};
 /// orthogonal CLI flags that drive dispatch (where to write,
 /// whether to promote to workload, etc.).
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct BuildResult {
     pub item: ReportItem,
     pub dispatch: Dispatch,
@@ -96,14 +97,6 @@ pub struct Dispatch {
     pub body_file: Option<String>,
 }
 
-impl Default for BuildResult {
-    fn default() -> Self {
-        Self {
-            item: ReportItem::default(),
-            dispatch: Dispatch::default(),
-        }
-    }
-}
 
 /// Build a [`ReportItem`] from `args`, validated against
 /// `kind`. The first positional arg (if any, and not a
@@ -140,9 +133,7 @@ pub fn build_item(kind: Kind, args: &[String]) -> Result<BuildResult, String> {
         // shadow vocab lookups for any future name overlap.
         if let Some((consumed, applied)) =
             try_consume_dispatch_flag(arg, args.get(i + 1), &mut dispatch, &mut item)?
-        {
-            if applied { i += consumed; continue; }
-        }
+            && applied { i += consumed; continue; }
 
         // Vocab-driven flags.
         let flag = arg.trim_start_matches('-');
@@ -337,10 +328,10 @@ fn applicable_kinds_label(d: &Directive) -> String {
 fn validate_value(d: &Directive, value: &str) -> Result<(), String> {
     match d.value {
         ValueProvider::Closed(allowed) => {
-            if !allowed.iter().any(|s| *s == value) {
+            if !allowed.contains(&value) {
                 return Err(format!(
                     "'{value}' not one of [{}]",
-                    allowed.iter().map(|s| *s).collect::<Vec<_>>().join(", ")
+                    allowed.to_vec().join(", ")
                 ));
             }
             Ok(())

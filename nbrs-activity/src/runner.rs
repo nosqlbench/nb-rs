@@ -1441,11 +1441,10 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             interval.tick().await;
             loop {
                 interval.tick().await;
-                if let Ok(g) = reporter.lock() {
-                    if let Some(r) = g.as_ref() {
+                if let Ok(g) = reporter.lock()
+                    && let Some(r) = g.as_ref() {
                         r.passive_checkpoint();
                     }
-                }
             }
         });
     }
@@ -1563,8 +1562,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         if phase.for_each.is_some() {
             continue; // for_each phase cycles resolved per-iteration
         }
-        if let Some(ref c) = phase.cycles {
-            if c.starts_with('{') && c.ends_with('}') {
+        if let Some(ref c) = phase.cycles
+            && c.starts_with('{') && c.ends_with('}') {
                 let mut inner = c[1..c.len()-1].to_string();
                 for (key, value) in &workload_params {
                     let placeholder = format!("{{{key}}}");
@@ -1574,7 +1573,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 }
                 config_refs.push(inner);
             }
-        }
         let _ = name; // suppress unused warning
     }
 
@@ -1742,6 +1740,12 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     ));
     session.set_metrics_query(metrics_query.clone());
     nbrs_metrics::polydat_nodes::set_global_query(metrics_query.clone());
+    // SRD-86 §"The metric-reader surface" — install the live in-process
+    // metrics-access service so the `metricsql_*` nodes can locate it
+    // (`queryapi::live_access()`) and evaluate queries against this run.
+    nbrs_metrics::queryapi::install_live_access(std::sync::Arc::new(
+        nbrs_metrics::queryapi::MetricsQueryAccess::new(metrics_query.clone()),
+    ));
     observer.on_metrics_query(metrics_query.clone());
 
     let session_for_capture = session.component.clone();
@@ -1769,8 +1773,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let sqlite_cadence = cadence_tree.align_to_declared(
         std::time::Duration::from_secs(30),
     );
-    if let (Some(cadence), Ok(guard)) = (sqlite_cadence, sqlite_reporter.lock()) {
-        if guard.is_some() {
+    if let (Some(cadence), Ok(guard)) = (sqlite_cadence, sqlite_reporter.lock())
+        && guard.is_some() {
             drop(guard);
             let sqlite_for_sub = sqlite_reporter.clone();
             match cadence_reporter.subscribe(
@@ -1788,7 +1792,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 }
             }
         }
-    }
 
     // Per-instance JSONL snapshot reporter — opt-in. Writes
     // one file per (metric, label-tuple) in `<session>/metrics/`,
@@ -1845,8 +1848,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // `jobname` / `instance` params match the nosqlbench-java
     // `PromPushReporterComponent` convention; they're substituted
     // into any `JOBNAME` / `INSTANCE` placeholders in the URL.
-    if let Some(url) = openmetrics_url.as_ref() {
-        if let Some(cadence) = cadence_tree.align_to_declared(
+    if let Some(url) = openmetrics_url.as_ref()
+        && let Some(cadence) = cadence_tree.align_to_declared(
             std::time::Duration::from_secs(10),
         ) {
             let jobname = merged_params.get("jobname").cloned()
@@ -1888,7 +1891,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
             );
         }
-    }
 
     // Register the observer's reporters at their requested cadences
     // on the scheduler tree (base-interval live-frame forwarding for
@@ -2034,6 +2036,12 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // (DoWhile, DoUntil) carry an optional counter +
         // condition expression. Both produce installed kernels
         // that the unified dispatch_comprehension reads from.
+        // reason: function-local, short-lived spec list built once per
+        // install pass; the `OpTemplate`/`ParsedOp` variant dominates the
+        // size, but boxing it would ripple `Box::new` + deref across every
+        // construction and destructuring match arm below for no real gain
+        // on a vector that is consumed immediately.
+        #[allow(clippy::large_enum_variant)]
         enum InstallSpec {
             ForComprehension {
                 idx: crate::scope_tree::ScopeNodeIdx,
@@ -2530,10 +2538,19 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // error-rate condition is installed at the workload aggregate.
         let workload_shell = {
             use nbrs_workload::model::ScopeLevel;
-            let declared: Vec<String> = workload.stop_when.iter()
+            let declared: Vec<crate::stop_conditions::StopConditionDecl> = workload.stop_when.iter()
                 .filter(|c| c.each.iter().any(|l| matches!(l,
                     ScopeLevel::SelfScope | ScopeLevel::Workload)))
-                .map(|c| c.when.clone())
+                // SRD-83 Part 5 — a workload-level trip defaults to a
+                // graceful `stop` (Interrupted+Succeeded): nothing failed,
+                // the later phases are deliberately skipped.
+                .map(|c| crate::stop_conditions::StopConditionDecl {
+                    when: c.when.clone(),
+                    effect: crate::stop_conditions::StopConditionDecl::effect_from_str(
+                        c.effect.as_deref(),
+                        crate::phase_outcome::Outcome::interrupted(),
+                    ),
+                })
                 .collect();
             let set = match scope_tree.nodes[scope_tree.root].cached_kernel.get() {
                 Some(root_kernel) if !declared.is_empty() => {
@@ -2565,6 +2582,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
         let mut exec_ctx = crate::executor::ExecCtx {
             phases: phases.clone(),
+            optimize_objective: None,
+            optimize_objective_value: None,
             phase_param_overrides,
             workload_shell,
             workload_stop_when: workload.stop_when.clone(),
@@ -2702,7 +2721,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let invocation = saved_doc.as_ref().map(|d| d.invocation + 1).unwrap_or(1);
         let started_at = saved_doc.as_ref()
             .map(|d| d.started_at.clone())
-            .unwrap_or_else(|| crate::checkpoint::storage::now_rfc3339());
+            .unwrap_or_else(crate::checkpoint::storage::now_rfc3339);
         let checkpoint_writer = std::sync::Arc::new(match saved_doc.as_ref() {
             Some(_doc) => {
                 // Restore from saved.
@@ -3004,8 +3023,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // Summary report always comes from SQLite — the
         // durable record. The in-memory store exists for GK
         // access and reactive control, not for reporting.
-        if let Ok(mut guard) = sqlite_reporter.lock() {
-            if let Some(ref mut reporter) = *guard {
+        if let Ok(mut guard) = sqlite_reporter.lock()
+            && let Some(ref mut reporter) = *guard {
                 // Persist every report item (SRD-46) under
                 // `report.<name>` keys. Value carries the kind
                 // keyword (`plot ...` / `table ...`) followed
@@ -3067,7 +3086,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     }
                 }
             }
-        }
     }
 
     // Refresh convenience symlinks at the logs/ root so
@@ -3261,19 +3279,17 @@ struct MutexReporter(std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::report
 
 impl Reporter for MutexReporter {
     fn report(&mut self, snapshot: &nbrs_metrics::snapshot::MetricSet) {
-        if let Ok(mut guard) = self.0.lock() {
-            if let Some(ref mut r) = *guard {
+        if let Ok(mut guard) = self.0.lock()
+            && let Some(ref mut r) = *guard {
                 Reporter::report(r, snapshot);
             }
-        }
     }
 
     fn flush(&mut self) {
-        if let Ok(mut guard) = self.0.lock() {
-            if let Some(ref mut r) = *guard {
+        if let Ok(mut guard) = self.0.lock()
+            && let Some(ref mut r) = *guard {
                 Reporter::flush(r);
             }
-        }
     }
 }
 
@@ -4407,13 +4423,8 @@ fn format_scenario_nodes(
                 use polydat::iteration::comprehension::Comprehension as Comp;
                 // Peel outer Order/Filter for structural detection.
                 let mut body = comprehension;
-                loop {
-                    match body {
-                        Comp::Order { child, .. } | Comp::Filter { child, .. } => {
-                            body = child;
-                        }
-                        _ => break,
-                    }
+                while let Comp::Order { child, .. } | Comp::Filter { child, .. } = body {
+                    body = child;
                 }
                 let header = match body {
                     Comp::Union { children } => {
@@ -4488,16 +4499,14 @@ fn format_scenario_nodes(
 /// declared intent rather than a runtime-evaluated number.
 fn format_phase_config_suffix(phase: &nbrs_workload::model::WorkloadPhase) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if let Some(c) = phase.cycles.as_deref() {
-        if !c.is_empty() {
+    if let Some(c) = phase.cycles.as_deref()
+        && !c.is_empty() {
             parts.push(format!("cycles: {c}"));
         }
-    }
-    if let Some(c) = phase.concurrency.as_deref() {
-        if !c.is_empty() {
+    if let Some(c) = phase.concurrency.as_deref()
+        && !c.is_empty() {
             parts.push(format!("concurrency: {c}"));
         }
-    }
     if parts.is_empty() {
         String::new()
     } else {
@@ -4745,11 +4754,10 @@ pub fn collect_repeated_flag(args: &[String], name: &str) -> Vec<String> {
             out.push(elide_outer_quotes(v).to_string());
         } else if let Some(v) = unquoted.strip_prefix(&bare_eq) {
             out.push(elide_outer_quotes(v).to_string());
-        } else if unquoted == format!("--{name}") {
-            if let Some(v) = iter.next() {
+        } else if unquoted == format!("--{name}")
+            && let Some(v) = iter.next() {
                 out.push(elide_outer_quotes(v.as_str()).to_string());
             }
-        }
     }
     out
 }
@@ -5154,8 +5162,8 @@ mod tests {
         // Cycle and Full do not.
         assert!(ExecDepth::Phase < ExecDepth::Cycle);
         assert!(ExecDepth::Op    < ExecDepth::Cycle);
-        assert!(!(ExecDepth::Cycle < ExecDepth::Cycle));
-        assert!(!(ExecDepth::Full  < ExecDepth::Cycle));
+        assert!((ExecDepth::Cycle >= ExecDepth::Cycle));
+        assert!((ExecDepth::Full >= ExecDepth::Cycle));
     }
 
     #[test]
@@ -5171,6 +5179,7 @@ mod tests {
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             bindings: BindingsDef::default(),
             poll: None,
+            optimize: None,
         };
         let mut phases = HashMap::new();
         phases.insert("predict".to_string(), phase);

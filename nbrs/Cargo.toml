@@ -57,8 +57,10 @@ flamegraph = ["nbrs-activity/flamegraph"]
 
 [dependencies]
 polydat = { path = "../polydat", version = "0.1.0" }
-nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1" }
-nbrs-metricsql = { path = "../nbrs-metricsql", version = "0.1.0", features = ["sqlite", "runtime"] }
+# The sqlite metrics-access backend now lives in nbrs-metrics (SRD-86
+# §"The metric-reader surface"); the CLI locates it via the queryapi.
+nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1", features = ["sqlite"] }
+nbrs-metricsql = { path = "../nbrs-metricsql", version = "0.1.0", features = ["runtime", "polydat-nodes"] }
 nbrs-workload = { path = "../nbrs-workload", version = "0.1.1" }
 nbrs-rate = { path = "../nbrs-rate", version = "0.1.1" }
 nbrs-errorhandler = { path = "../nbrs-errorhandler", version = "0.1.1" }
@@ -81,6 +83,11 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 nbrs-tui = { path = "../nbrs-tui", version = "0.1.1" }
 nbrs-web = { path = "../nbrs-web", version = "0.1.1" }
+# SRD-86 — the optimizer algorithms are an inventory plugin (like an adapter):
+# `features = ["runtime"]` pulls in the bridge that registers them against the
+# core contract, so `nbrs describe optimizers` and the executor seam discover
+# them at link time.
+nbrs-optimizers = { path = "../nbrs-optimizers", version = "0.1.2", features = ["runtime"] }
 nbrs-adapter-stdout = { path = "../adapters/stdout", version = "0.1.1" }
 nbrs-adapter-testkit = { path = "../adapters/testkit", version = "0.1.1" }
 nbrs-adapter-http = { path = "../adapters/http", version = "0.1.1" }

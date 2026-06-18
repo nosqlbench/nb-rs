@@ -113,12 +113,11 @@ pub fn write_named_section(
 
     if !modified { return Ok(false); }
 
-    if let Some(parent) = report_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
+    if let Some(parent) = report_path.parent()
+        && !parent.as_os_str().is_empty() && !parent.exists() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create dir '{}': {e}", parent.display()))?;
         }
-    }
     std::fs::write(report_path, updated)
         .map_err(|e| format!("write '{}': {e}", report_path.display()))?;
     Ok(true)
@@ -189,7 +188,7 @@ pub fn write_named_section_first(
         // before the first `## ` section.
         let insertion = current.find("\n## ")
             .map(|p| p + 1) // land on the `#` of the heading
-            .or_else(|| current.find("\n# ").and_then(|_| {
+            .or_else(|| current.find("\n# ").and({
                 // no `## ` yet — append after the header
                 // paragraph (look for the second `\n\n`)
                 None
@@ -207,12 +206,11 @@ pub fn write_named_section_first(
         format!("{prefix}{new_section}{suffix}")
     };
 
-    if let Some(parent) = report_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
+    if let Some(parent) = report_path.parent()
+        && !parent.as_os_str().is_empty() && !parent.exists() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create dir '{}': {e}", parent.display()))?;
         }
-    }
     std::fs::write(report_path, updated)
         .map_err(|e| format!("write '{}': {e}", report_path.display()))?;
     Ok(true)

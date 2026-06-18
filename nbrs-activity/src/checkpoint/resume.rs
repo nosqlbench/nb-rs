@@ -217,7 +217,7 @@ fn phase_label(yaml_path: &[super::identity::PathSegment]) -> String {
             PathSegment::Phase(n) => Some(n.clone()),
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap_or_else(|| "<unknown>".to_string())
 }
 

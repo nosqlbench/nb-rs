@@ -7,10 +7,10 @@
 //! through the two-step report pipeline:
 //!
 //!   1. `nbrs run`       — populates metrics.db + standalone
-//!                         `<item>_summary.md` files for table items.
+//!      `<item>_summary.md` files for table items.
 //!   2. `nbrs report all` — injects text/table/file content into
-//!                          `summary.md` and creates sidecar `.md`
-//!                          files for items routed by `file` directives.
+//!      `summary.md` and creates sidecar `.md`
+//!      files for items routed by `file` directives.
 //!
 //! Tests assert on the resulting markdown structure (sections,
 //! anchors, tables, file routing). The session directory is

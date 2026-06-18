@@ -260,7 +260,7 @@ pub fn fire_lifecycle(
     // workload bound. `build_event_binder` always seeds
     // the default — pass an empty body when none exists
     // so unbound slots stay quiet.
-    let seed = default.unwrap_or_else(crate::readouts::BakedBody::new);
+    let seed = default.unwrap_or_default();
     let mut binder = match crate::readouts::build_event_binder(bindings, event, seed) {
         Ok(b) => b,
         Err(e) => {
@@ -318,6 +318,10 @@ pub fn fire_lifecycle(
 /// each derived once per tick, then handed to the
 /// [`crate::readouts::builtins::phase_status::PhaseStatus`]
 /// readout for actual rendering.
+// reason: cohesive per-tick context builder — each argument is a distinct
+// counter snapshot/handle taken once per refresh tick; grouping them into a
+// struct would only relocate the same fields.
+#[allow(clippy::too_many_arguments)]
 pub fn build_inline_refresh_context(
     progress_metrics: &Arc<crate::activity::ActivityMetrics>,
     activity_name: &str,

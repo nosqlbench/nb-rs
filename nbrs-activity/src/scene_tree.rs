@@ -89,7 +89,7 @@ pub fn with_global<R, F: FnOnce(&SceneTree) -> R>(f: F) -> Option<R> {
         let guard = GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner());
         guard.clone()
     };
-    arc.and_then(|a| a.read().ok().map(|g| f(&*g)))
+    arc.and_then(|a| a.read().ok().map(|g| f(&g)))
 }
 
 /// Stable index into [`SceneTree::nodes`]. Indices never change for
@@ -214,6 +214,7 @@ pub struct SceneNode {
     /// - Scope nodes are `active` iff any descendant phase is
     ///   active; otherwise they're elided from the execution
     ///   walk along with their subtree.
+    ///
     /// Inactive nodes are still in the tree (so coordinate
     /// chains, scope-init kernels, and parent context stay
     /// intact for active siblings under the same scope) but
@@ -642,9 +643,9 @@ impl SceneTree {
                 }
                 PhaseStatus::Completed => {}
             }
-            if self.nodes[child].kind == NodeKind::Phase {
-                seen_phase = true;
-            } else if self.descendants_contain_phase(child) {
+            if self.nodes[child].kind == NodeKind::Phase
+                || self.descendants_contain_phase(child)
+            {
                 seen_phase = true;
             }
         }

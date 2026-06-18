@@ -110,8 +110,8 @@ pub fn build_for_each_scope_kernel(
         // this iter-var's first value into later specs.
         for v in &values {
             let v_str = v.to_display_string();
-            for next_idx in (idx + 1)..spec_exprs.len() {
-                let mut substituted = spec_exprs[next_idx].clone();
+            for next_spec in &spec_exprs[idx + 1..] {
+                let mut substituted = next_spec.clone();
                 substituted = substituted.replace(&format!("{{{var}}}"), &v_str);
                 let mut emergent = HashSet::new();
                 scan_one(&substituted, &mut emergent);

@@ -81,7 +81,7 @@ fn print_command(cmd: &Command, full_path: &[&str]) {
         // Compute label width across all flags so help columns
         // align. Label = `--long [aliases…] <value>?`.
         let labels: Vec<String> = cmd.flags.iter()
-            .map(|f| flag_label(f))
+            .map(flag_label)
             .collect();
         let lw = labels.iter().map(|s| s.len()).max().unwrap_or(0);
         for (f, label) in cmd.flags.iter().zip(labels.iter()) {

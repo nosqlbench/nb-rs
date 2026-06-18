@@ -286,6 +286,11 @@ pub(crate) fn prepend_effective_pragmas(
 /// semicolon-chain Map-bindings branch that no shipped workload
 /// shape exercises (workload params are always present, so the
 /// `needs_scope` gate always picked the modern path).
+// reason: cohesive compile entry point — each argument is an
+// independent compile input (parent scope, ops, lib paths, strictness,
+// required-names, context label, cursor bound); bundling them into a
+// struct would only move the same fields without adding clarity.
+#[allow(clippy::too_many_arguments)]
 pub fn build_workload_root_kernel(
     parent: &PolydatKernel,
     ops: &[ParsedOp],
@@ -316,11 +321,10 @@ pub fn build_workload_root_kernel(
     // `bindings:` block lives on the workload-root scope as
     // local matter. Ingest before validate/emit so emit()
     // produces a single coherent source.
-    if let Some(extra) = workload_level_polydat {
-        if !extra.trim().is_empty() {
+    if let Some(extra) = workload_level_polydat
+        && !extra.trim().is_empty() {
             scope.ingest_polydat_source(extra, crate::scope::BindingOrigin::Inherited);
         }
-    }
     scope.validate().map_err(|e| format!("{context}: {e}"))?;
 
     // DCE-keepalive list: caller's config refs plus every

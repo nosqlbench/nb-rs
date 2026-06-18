@@ -30,6 +30,8 @@ use polydat::ast::Value;
 use polydat::dsl::stub::{ExprStub, GraphMatter, ScopedExpr};
 use polydat::kernel::{Dataflow, PolydatKernel};
 
+use crate::phase_outcome::Outcome;
+
 /// Canonical runtime-state wire names a stop-condition predicate may
 /// read. A predicate references the ones it needs; the rest are absent
 /// from its kernel and skipped at injection.
@@ -155,6 +157,36 @@ pub fn compile_stop_condition(
         .map_err(|e| format!("stop condition {idx} predicate `{when}`: {e}"))
 }
 
+/// A declared stop condition resolved to its predicate text and its
+/// SRD-83 Part 5 `effect` — the two-axis [`Outcome`] the shell adopts
+/// when the predicate trips. Built from a `StopConditionSpec` at the
+/// gather sites (executor / runner), so this module need not depend on
+/// the workload model's spec shape.
+#[derive(Debug, Clone)]
+pub struct StopConditionDecl {
+    /// The polydat predicate over runtime-state wires.
+    pub when: String,
+    /// The Outcome the shell adopts when `when` trips.
+    pub effect: Outcome,
+}
+
+impl StopConditionDecl {
+    /// Map an SRD-83 `effect:` string to its [`Outcome`]. `"stop"` is a
+    /// clean halt (`Interrupted + Succeeded`, keep the partial result);
+    /// `"fail"` is the failure halt (`Interrupted + Failed`). `None` —
+    /// and any unrecognized value — resolves to `default`, which the
+    /// caller sets per shell level (phase trips default to `fail`,
+    /// workload trips default to a graceful `stop`). Effect-string
+    /// validation proper belongs to workload load (dryrun).
+    pub fn effect_from_str(effect: Option<&str>, default: Outcome) -> Outcome {
+        match effect {
+            Some("stop") => Outcome::interrupted(),
+            Some("fail") => Outcome::failed(),
+            _ => default,
+        }
+    }
+}
+
 /// A shell's compiled stop conditions (SRD-83 steps 3–5): the default
 /// `error_rate > error_rate_max` condition (when a max is set) plus each
 /// phase-declared predicate, every one a scope-bound [`ScopedExpr`].
@@ -167,7 +199,11 @@ pub struct StopConditionSet {
 
 struct StopCondition {
     expr: ScopedExpr,
-    /// The error class recorded when this condition trips.
+    /// SRD-83 Part 5 — the two-axis Outcome the shell adopts when this
+    /// condition trips. `fail` → Interrupted+Failed; `stop` →
+    /// Interrupted+Succeeded.
+    effect: Outcome,
+    /// The error/reason class recorded when this condition trips.
     reason: String,
 }
 
@@ -180,7 +216,7 @@ impl StopConditionSet {
     pub fn build_for_phase(
         phase_kernel: &PolydatKernel,
         error_rate_max: Option<f64>,
-        declared: &[String],
+        declared: &[StopConditionDecl],
     ) -> Result<Self, String> {
         let mut conditions = Vec::new();
         let mut idx = 0;
@@ -188,14 +224,24 @@ impl StopConditionSet {
             // Preserve the interim `AggregateGuard`'s 50-op floor: don't
             // judge the error rate until enough ops have run for it to be
             // meaningful (a single early error must not abort the phase).
+            // The rate breach is a `fail` effect — the result is not
+            // trustworthy once the error rate is over the bound.
             let expr = compile_stop_condition(
                 phase_kernel, idx, &format!("op_count >= 50 && error_rate > {max}"))?;
-            conditions.push(StopCondition { expr, reason: "error_rate_exceeded".into() });
+            conditions.push(StopCondition {
+                expr,
+                effect: Outcome::failed(),
+                reason: "error_rate_exceeded".into(),
+            });
             idx += 1;
         }
-        for when in declared {
-            let expr = compile_stop_condition(phase_kernel, idx, when)?;
-            conditions.push(StopCondition { expr, reason: format!("stop_condition: {when}") });
+        for decl in declared {
+            let expr = compile_stop_condition(phase_kernel, idx, &decl.when)?;
+            conditions.push(StopCondition {
+                expr,
+                effect: decl.effect,
+                reason: format!("stop_condition: {}", decl.when),
+            });
             idx += 1;
         }
         Ok(Self { conditions })
@@ -215,10 +261,10 @@ impl StopConditionSet {
     /// Evaluate every condition against `state`; return the error class
     /// of the first that trips, or `None`. (First-match: any trip stops
     /// the shell, so the order only affects which reason is recorded.)
-    pub fn evaluate(&mut self, state: &RuntimeState) -> Option<String> {
+    pub fn evaluate(&mut self, state: &RuntimeState) -> Option<(Outcome, String)> {
         for cond in &mut self.conditions {
             if state.trips(&mut cond.expr) {
-                return Some(cond.reason.clone());
+                return Some((cond.effect, cond.reason.clone()));
             }
         }
         None
@@ -288,7 +334,8 @@ mod tests {
             .expect("phase kernel");
         // Default error-rate (0.1) + a declared op-count predicate.
         let mut set = StopConditionSet::build_for_phase(
-            &phase_kernel, Some(0.1), &["op_count > 1000".to_string()])
+            &phase_kernel, Some(0.1),
+            &[StopConditionDecl { when: "op_count > 1000".to_string(), effect: Outcome::failed() }])
             .expect("build set");
         // The compiled set is independent of the parent kernel — drop it
         // and evaluation still works (each predicate is its own
@@ -305,10 +352,10 @@ mod tests {
         // 20% errors → the default error-rate condition trips.
         assert_eq!(
             set.evaluate(&RuntimeState { op_count: 100, error_count: 20, ..Default::default() }),
-            Some("error_rate_exceeded".to_string()));
+            Some((Outcome::failed(), "error_rate_exceeded".to_string())));
         // Low errors but op_count over 1000 → the declared predicate trips.
         assert_eq!(
             set.evaluate(&RuntimeState { op_count: 2000, error_count: 1, ..Default::default() }),
-            Some("stop_condition: op_count > 1000".to_string()));
+            Some((Outcome::failed(), "stop_condition: op_count > 1000".to_string())));
     }
 }

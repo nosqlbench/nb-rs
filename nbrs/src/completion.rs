@@ -260,9 +260,9 @@ pub(crate) fn phase_name_db_provider(partial: &str, _ctx: &[&str]) -> Vec<String
 fn workload_phase_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
     for word in ctx {
         if let Some(name) = word.strip_prefix("workload=") {
-            if let Some(text) = workload_text_for_completion(name) {
-                if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&text) {
-                    if let Some(phases) = doc.get("phases").and_then(|v| v.as_mapping()) {
+            if let Some(text) = workload_text_for_completion(name)
+                && let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&text)
+                    && let Some(phases) = doc.get("phases").and_then(|v| v.as_mapping()) {
                         let mut out: Vec<String> = phases.keys()
                             .filter_map(|k| k.as_str())
                             .filter(|n| n.starts_with(partial))
@@ -271,8 +271,6 @@ fn workload_phase_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
                         out.sort();
                         return out;
                     }
-                }
-            }
             return Vec::new();
         }
     }
@@ -699,7 +697,7 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
 /// directive's value space isn't a closed set (handled by
 /// the calling match arm).
 fn closed_set_provider_for(yaml_directive: &str)
-    -> Option<fn(&str, &[&str]) -> Vec<String>>
+    -> Option<crate::cli_spec::DynamicOptions>
 {
     match yaml_directive {
         "palette" => Some(palette_provider),
@@ -1253,11 +1251,7 @@ fn used_label_keys<'a>(ctx: &'a [&'a str]) -> std::collections::HashSet<&'a str>
             iter.next().copied()
         } else if let Some(v) = w.strip_prefix("--x=") {
             Some(v)
-        } else if let Some(v) = w.strip_prefix("--series=") {
-            Some(v)
-        } else {
-            None
-        };
+        } else { w.strip_prefix("--series=") };
         if let Some(v) = val {
             for k in v.split(',') {
                 let k = k.trim();
@@ -1564,6 +1558,48 @@ impl CommandTreeExt for CommandTree {
     fn with_openapi_commands(self) -> Self { self }
 }
 
+// ── cli_spec entry for `nbrs completions` ─────────────────
+
+/// `nbrs completions [--shell <name>]` — emit the bash/zsh
+/// completion shim or the activation eval line. Walker-parsed.
+pub fn spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Arity, Category, Command, Flag, Handler,
+        Level, ParsedCommand, ValueProvider};
+    fn shells(p: &str, _: &[&str]) -> Vec<String> {
+        ["bash","zsh","fish","elvish","powershell"].iter()
+            .filter(|s| s.starts_with(p))
+            .map(|s| s.to_string()).collect()
+    }
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        let mut argv: Vec<String> = Vec::new();
+        if let Some(v) = p.flag("--shell") {
+            argv.push("--shell".into());
+            argv.push(v.into());
+        }
+        super::completion::print_completions(&argv);
+        Ok(())
+    }
+    Command {
+        name: "completions",
+        help: "Print shell-completion shim or activation line.",
+        category: Category::Shell,
+        level: Level::FullSurface,
+        flags: vec![Flag {
+            long: "--shell", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::Custom(shells),
+            help: "bash | zsh | fish | elvish | powershell. Omit for activation line.",
+            repeatable: false,
+        }],
+        kv_params: &[],
+        dynamic_options: None,
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: false,
+        completion_override: None,
+    }
+}
+
 #[cfg(test)]
 mod walker_tests {
     use super::*;
@@ -1859,47 +1895,5 @@ mod walker_tests {
         // Other palettes filtered.
         assert!(!cands.iter().any(|c| c == "ibm"),
             "filter should remove non-matching: {cands:?}");
-    }
-}
-
-// ── cli_spec entry for `nbrs completions` ─────────────────
-
-/// `nbrs completions [--shell <name>]` — emit the bash/zsh
-/// completion shim or the activation eval line. Walker-parsed.
-pub fn spec() -> crate::cli_spec::Command {
-    use crate::cli_spec::{Arity, Category, Command, Flag, Handler,
-        Level, ParsedCommand, ValueProvider};
-    fn shells(p: &str, _: &[&str]) -> Vec<String> {
-        ["bash","zsh","fish","elvish","powershell"].iter()
-            .filter(|s| s.starts_with(p))
-            .map(|s| s.to_string()).collect()
-    }
-    fn handle(p: ParsedCommand) -> Result<(), String> {
-        let mut argv: Vec<String> = Vec::new();
-        if let Some(v) = p.flag("--shell") {
-            argv.push("--shell".into());
-            argv.push(v.into());
-        }
-        super::completion::print_completions(&argv);
-        Ok(())
-    }
-    Command {
-        name: "completions",
-        help: "Print shell-completion shim or activation line.",
-        category: Category::Shell,
-        level: Level::FullSurface,
-        flags: vec![Flag {
-            long: "--shell", short: None, aliases: &[],
-            arity: Arity::Value, value: ValueProvider::Custom(shells),
-            help: "bash | zsh | fish | elvish | powershell. Omit for activation line.",
-            repeatable: false,
-        }],
-        kv_params: &[],
-        dynamic_options: None,
-        positionals: Vec::new(),
-        subcommands: Vec::new(),
-        handler: Some(Handler::Sync(handle)),
-        raw_args: false,
-        completion_override: None,
     }
 }

@@ -4,7 +4,7 @@
 //! `nbrs metrics query <expr>` — evaluate a metricsql
 //! expression against the active session's `metrics.db`.
 //!
-//! Wraps the `nbrs_metricsql::adapters::sqlite::SqliteDataSource`
+//! Wraps the `nbrs_metrics::queryapi::sqlite::SqliteDataSource`
 //! adapter (SRD-47 §"What this push enables next") plus the
 //! batch evaluator. End-to-end: `parse -> compile-shape ->
 //! evaluate -> format`. Two modes:
@@ -28,8 +28,10 @@
 
 use std::path::PathBuf;
 
-use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
-use nbrs_metricsql::eval::{DataSource, DataSourceError, EvalContext, evaluate, Matcher, Series};
+use nbrs_metrics::queryapi::sqlite::SqliteDataSource;
+use nbrs_metricsql::eval::{
+    DataSourceError, EvalContext, Matcher, MetricAccess, Series, Vector, evaluate,
+};
 use nbrs_metricsql::runtime::{
     ContinuousQueryRuntime, QueryHandle, RegisterError, RegisterOptions,
     SampleFeed, WindowPolicy,
@@ -57,7 +59,7 @@ pub fn query(args: &[String]) {
         // SRD-77 — coalesce across executions by default: each series
         // comes from the newest execution that produced it.
         Ok(ds) => ds.with_execution_selection(
-            nbrs_metricsql::adapters::sqlite::ExecutionSelection::LatestPerInstance),
+            nbrs_metrics::queryapi::sqlite::ExecutionSelection::LatestPerInstance),
         Err(e) => {
             eprintln!("nbrs metrics query: open db: {e}");
             std::process::exit(2);
@@ -215,7 +217,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
         }
     }
     let query = query.ok_or("metricsql expression required (positional argument)")?;
-    let db_path = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
+    let db_path = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
     Ok(ParsedArgs {
         db_path, query, anchor_ms, lookback_ms, step_ms,
         stale_window_ms, latest_only,
@@ -457,13 +459,13 @@ struct SqliteCliFeed {
 
 impl SampleFeed for SqliteCliFeed {
     fn fetch_since(&self, matchers: &[Matcher], since_ms: i64, until_ms: i64)
-        -> Result<Vec<Series>, DataSourceError>
+        -> Result<Vector, DataSourceError>
     {
         // Mirror PullFeed's exclusive-since → inclusive
         // conversion.
         let start = since_ms.saturating_add(1);
-        if start > until_ms { return Ok(Vec::new()); }
-        self.source.fetch(matchers, start, until_ms)
+        if start > until_ms { return Ok(Vector::default()); }
+        self.source.select_range(matchers, start, until_ms)
     }
 
     fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> {
@@ -577,7 +579,7 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
         }
     }
     let query = query.ok_or("metricsql expression required (positional argument)")?;
-    let db_path = db_path.unwrap_or_else(|| nbrs_activity::session::latest_metrics_db());
+    let db_path = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
     Ok(WatchArgs { db_path, query, interval_ms, warmup_ms, latest_only, no_clear })
 }
 

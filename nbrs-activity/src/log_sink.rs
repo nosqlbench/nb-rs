@@ -50,6 +50,10 @@ pub struct LogSink {
 impl LogSink {
     /// Try to enqueue a fully-formatted log line. Never blocks.
     /// Returns `Ok(())` if accepted, `Err(())` if dropped.
+    // reason: the only failure is "dropped"; there is no error payload to
+    // carry, and callers branch on Ok/Err alone — a richer error type would
+    // be noise.
+    #[allow(clippy::result_unit_err)]
     pub fn try_send(&self, line: Vec<u8>) -> Result<(), ()> {
         match self.sender.try_send(line) {
             Ok(()) => Ok(()),

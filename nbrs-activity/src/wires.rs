@@ -197,6 +197,7 @@ impl WireSource for PolydatKernel {
 /// 1. Output (memoizing pull through the eval cone).
 /// 2. Input slot (cell-aware read).
 /// 3. Scope-init constant.
+///
 /// `None` when the name doesn't appear on this kernel — callers
 /// surface as an unresolved-bindpoint error per SRD-68 I-1.
 pub struct CycleWires<'a> {
@@ -362,7 +363,7 @@ pub fn substitute_via_wires(
                 j += 1;
             }
             let end = (j + 2).min(n);
-            for k in start..end { out.push(chars[k]); }
+            out.extend(&chars[start..end]);
             i = end;
             continue;
         }

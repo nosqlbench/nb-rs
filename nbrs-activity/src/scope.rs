@@ -114,6 +114,12 @@ pub struct BindingScope {
     config_refs: Vec<String>,
 }
 
+impl Default for BindingScope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BindingScope {
     /// Create an empty scope.
     pub fn new() -> Self {
@@ -165,8 +171,8 @@ impl BindingScope {
             //   const prebuffer := dataset_prebuffer("example")
             // These are Polydat statements that the compiler handles directly.
             // Pass them through as bindings so they survive emission.
-            if trimmed.starts_with("cursor ") || trimmed.starts_with("init ") {
-                if let Some(eq_pos) = trimmed.find('=') {
+            if (trimmed.starts_with("cursor ") || trimmed.starts_with("init "))
+                && let Some(eq_pos) = trimmed.find('=') {
                     // Check it's `=` not `:=`
                     let before_eq = &trimmed[..eq_pos];
                     if !before_eq.ends_with(':') {
@@ -182,7 +188,6 @@ impl BindingScope {
                         continue;
                     }
                 }
-            }
 
             if let Some(pos) = trimmed.find(":=") {
                 let lhs = trimmed[..pos].trim();
@@ -276,13 +281,15 @@ impl BindingScope {
         // the entry point where the operator IS in a scope
         // context with visible wires to reference.
         let trimmed = value.trim();
+        // A bare numeric/bool literal, or an already-quoted polydat
+        // string / array literal, passes through verbatim; anything else
+        // is wrapped as a quoted polydat string. (Both pass-through cases
+        // yield the same text, so they share one arm.)
         let literal = if trimmed.parse::<u64>().is_ok()
             || trimmed.parse::<f64>().is_ok()
             || trimmed == "true"
             || trimmed == "false"
-        {
-            trimmed.to_string()
-        } else if is_polydat_quoted_string(trimmed)
+            || is_polydat_quoted_string(trimmed)
             || is_polydat_array_literal(trimmed)
         {
             trimmed.to_string()
@@ -744,16 +751,16 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
     (tag, rest)
 }
 
-/// Build a `BindingScope` from phase ops and execution context.
-///
-/// This is the main entry point that replaces the string mutation
-/// pipeline in the executor. It:
-/// 1. Classifies each op's bindings by origin (Inherited vs Op)
-/// 2. Adds iteration variables
-/// 3. Generates auto-externs from the outer manifest
-/// 4. Expands workload params
-/// 5. Extracts inline expressions
-/// 6. Collects required outputs from op templates
+// Build a `BindingScope` from phase ops and execution context.
+//
+// This is the main entry point that replaces the string mutation
+// pipeline in the executor. It:
+// 1. Classifies each op's bindings by origin (Inherited vs Op)
+// 2. Adds iteration variables
+// 3. Generates auto-externs from the outer manifest
+// 4. Expands workload params
+// 5. Extracts inline expressions
+// 6. Collects required outputs from op templates
 // =========================================================================
 // For-each / comprehension scope kernel synthesis (M3.2)
 // =========================================================================
@@ -872,7 +879,6 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 /// workload author falls back to a different pattern.
 /// SRD-75 §"Open questions: Capture-type inference
 /// granularity" tracks the refinement.
-
 pub fn synthesize_phase_scope_bindings(
     phase: &nbrs_workload::model::WorkloadPhase,
 ) -> Result<nbrs_workload::model::BindingsDef, String> {
@@ -1011,6 +1017,10 @@ pub fn synthesize_phase_scope_bindings(
 /// the shared cascade walker to declare every parent-visible
 /// name the body references plus the standard workload-param +
 /// parent-output + parent-input cascade.
+// reason: cohesive scope-kernel constructor — each argument is a distinct
+// piece of the scope's compile context (bindings, parent kernel, params,
+// cascade inputs); a parameter struct would only relocate the same fields.
+#[allow(clippy::too_many_arguments)]
 pub fn build_phase_scope_kernel(
     bindings: &nbrs_workload::model::BindingsDef,
     parent_manifest: &[crate::runner::ManifestEntry],
@@ -1112,6 +1122,10 @@ pub fn build_phase_scope_kernel(
     Ok(kernel)
 }
 
+// reason: cohesive scope-kernel constructor — each argument is a distinct
+// piece of the do-loop's compile context (counter, condition, parent kernel,
+// params, cascade inputs); a parameter struct would only relocate the fields.
+#[allow(clippy::too_many_arguments)]
 pub fn build_do_loop_scope_kernel(
     counter: Option<&str>,
     condition: &str,
@@ -1339,6 +1353,10 @@ pub(crate) fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
 /// 3. Emits the op's own bindings.
 /// 4. Compiles + `materialize_wiring_from_outer`s to the parent kernel and
 ///    propagates inherited inputs.
+// reason: cohesive scope-kernel constructor — each argument is a distinct
+// piece of the op-template's compile context (op, parent kernel, params,
+// cascade inputs); a parameter struct would only relocate the same fields.
+#[allow(clippy::too_many_arguments)]
 pub fn build_op_template_scope_kernel(
     op: &nbrs_workload::model::ParsedOp,
     parent_manifest: &[crate::runner::ManifestEntry],
@@ -1695,7 +1713,6 @@ pub fn build_op_template_scope_kernel(
         context_label: Some(context.to_string()),
         cursor_limit: None,
         kernel_opt,
-        ..Default::default()
     };
 
     // SRD-67 Phase 5 — fold the SRD-66 `result:` source through
@@ -1815,6 +1832,10 @@ fn collect_result_bindings_source(spec: &nbrs_workload::model::ResultSpec) -> St
 }
 
 
+// reason: cohesive scope builder — each argument is a distinct compile input
+// (ops, iteration vars, outer manifest, workload params, …); grouping them
+// into a struct would only relocate the same fields without adding clarity.
+#[allow(clippy::too_many_arguments)]
 pub fn build_scope(
     ops: &[ParsedOp],
     iteration_vars: &HashMap<String, String>,
@@ -2067,7 +2088,7 @@ pub fn build_scope(
                 continue;
             }
             let manifest_modifier = outer_manifest.iter()
-                .find(|e| &e.name == name)
+                .find(|e| e.name == name)
                 .map(|e| e.modifier);
             let is_workload_param = workload_params.contains_key(name);
             if let Some(m) = manifest_modifier {
@@ -2149,15 +2170,13 @@ pub fn build_scope(
             // without poisoning the workload-root with `final`
             // constants that would block scenario-tree
             // shadowing.
-            if is_workload_param {
-                if let Some(value) = parent_kernel_ref.lookup(name) {
-                    if let Some(natural) = value_to_param_string(&value) {
+            if is_workload_param
+                && let Some(value) = parent_kernel_ref.lookup(name)
+                    && let Some(natural) = value_to_param_string(&value) {
                         scope.add_param_binding(name, &natural);
                         already_satisfied.insert(name.to_string());
                         continue;
                     }
-                }
-            }
             // Pull the inclusion chain. If the name isn't in the
             // parent's AST (or it's a final/shared binding in
             // the AST), the chain is empty — the auto-extern
@@ -2185,13 +2204,10 @@ pub fn build_scope(
                 if let Some(expr) = body {
                     polydat::dsl::collect_expr_references(expr, &mut referenced);
                 }
-                match stmt {
-                    polydat::dsl::ast::Statement::Binding(b) => {
-                        for t in &b.targets {
-                            already_satisfied.insert(t.clone());
-                        }
+                if let polydat::dsl::ast::Statement::Binding(b) = stmt {
+                    for t in &b.targets {
+                        already_satisfied.insert(t.clone());
                     }
-                    _ => {}
                 }
             }
         }
@@ -2230,14 +2246,14 @@ pub fn build_scope(
         let defined_now = scope.defined_names();
         let extern_now = scope.extern_names();
         let mut satisfied: HashSet<String> = HashSet::new();
-        satisfied.extend(defined_now.into_iter());
-        satisfied.extend(extern_now.into_iter());
+        satisfied.extend(defined_now);
+        satisfied.extend(extern_now);
         for var in iteration_vars.keys() { satisfied.insert(var.clone()); }
         for name in workload_params.keys() { satisfied.insert(name.clone()); }
         for entry in outer_manifest { satisfied.insert(entry.name.clone()); }
         // Coord names from this scope's `input ...: u64` line.
-        if let Some(coords_line) = &scope.coordinates {
-            if let Some(rhs) = coords_line.split(":=").nth(1) {
+        if let Some(coords_line) = &scope.coordinates
+            && let Some(rhs) = coords_line.split(":=").nth(1) {
                 let inner = rhs.trim()
                     .trim_start_matches('(')
                     .trim_end_matches(')');
@@ -2248,7 +2264,6 @@ pub fn build_scope(
                     }
                 }
             }
-        }
         // `referenced` is built from a textual scan that catches
         // both wire refs and bare identifiers — including GK
         // function names like `mod`, `hash`, `range` that
@@ -2338,14 +2353,13 @@ pub fn build_scope(
     }
     // Also check phase config values for param refs
     for phase in phases.values() {
-        if let Some(ref c) = phase.cycles {
-            if c.starts_with('{') && c.ends_with('}') {
+        if let Some(ref c) = phase.cycles
+            && c.starts_with('{') && c.ends_with('}') {
                 let name = &c[1..c.len()-1];
                 if workload_params.contains_key(name) && !scope.defined_names().contains(name) {
                     scope.add_param_binding(name, &workload_params[name]);
                 }
             }
-        }
     }
 
     // --- Step 5: Inline expression extraction ---
@@ -2357,13 +2371,12 @@ pub fn build_scope(
     let mut expr_to_name: HashMap<String, String> = HashMap::new();
     let mut collect = |s: &str| {
         for bp in nbrs_workload::bindpoints::extract_bind_points(s) {
-            if let nbrs_workload::bindpoints::BindPoint::InlineDefinition(ref expr) = bp {
-                if !expr_to_name.contains_key(expr) {
+            if let nbrs_workload::bindpoints::BindPoint::InlineDefinition(ref expr) = bp
+                && !expr_to_name.contains_key(expr) {
                     let name = format!("__expr_{inline_idx}");
                     inline_idx += 1;
                     expr_to_name.insert(expr.clone(), name);
                 }
-            }
         }
     };
     for op in ops {
@@ -2419,11 +2432,10 @@ pub fn build_scope(
                 for bp in bps {
                     match bp {
                         nbrs_workload::bindpoints::BindPoint::InlineDefinition(expr) => {
-                            if let Some(name) = expr_to_name.get(&expr) {
-                                if !exclude.contains(name) {
+                            if let Some(name) = expr_to_name.get(&expr)
+                                && !exclude.contains(name) {
                                     scope.add_required_output(name);
                                 }
-                            }
                         }
                         nbrs_workload::bindpoints::BindPoint::Reference { name, .. } => {
                             if !exclude.contains(&name) {
@@ -2479,8 +2491,8 @@ pub fn build_scope(
     }
 
     // Config refs (from cycles={expr})
-    if let Some(cycles_spec) = phase_cycles {
-        if cycles_spec.starts_with('{') && cycles_spec.ends_with('}') {
+    if let Some(cycles_spec) = phase_cycles
+        && cycles_spec.starts_with('{') && cycles_spec.ends_with('}') {
             let mut inner = cycles_spec[1..cycles_spec.len()-1].to_string();
             for (v, val) in iteration_vars {
                 inner = inner.replace(&format!("{{{v}}}"), val);
@@ -2488,7 +2500,6 @@ pub fn build_scope(
             inner = crate::runner::expand_workload_params(&inner, workload_params);
             scope.add_config_ref(&inner);
         }
-    }
 
     Ok(scope)
 }
@@ -3516,7 +3527,7 @@ mod tests {
         assert!(kernel.program().find_input("load").is_some(),
             "extern load slot should land on op-template kernel");
         // And `forecast`, the op-local binding, is an output.
-        assert!(kernel.program().output_names().iter().any(|n| *n == "forecast"),
+        assert!(kernel.program().output_names().contains(&"forecast"),
             "op-local binding should be an output");
     }
 
@@ -3961,12 +3972,12 @@ extern keyspace: String
             .unwrap_or_else(|e| panic!("compile failed for source:\n{source}\nerror: {e}"));
         let shared = kernel.program().shared_outputs();
         assert!(
-            shared.iter().any(|n| *n == "has_sai_column_indexes"),
+            shared.contains(&"has_sai_column_indexes"),
             "expected `has_sai_column_indexes` in shared_outputs after scope-ingest/emit/compile;\n\
              got shared_outputs={shared:?}\nemitted source:\n{source}",
         );
         assert!(
-            shared.iter().any(|n| *n == "has_indexes"),
+            shared.contains(&"has_indexes"),
             "expected `has_indexes` in shared_outputs after scope-ingest/emit/compile;\n\
              got shared_outputs={shared:?}\nemitted source:\n{source}",
         );
@@ -4027,8 +4038,7 @@ extern keyspace: String
         // `__metric_time_to_index` surfacing as an output.
         let kernel = polydat::dsl::compile_polydat(&src)
             .unwrap_or_else(|e| panic!("compile failed:\n{src}\nerror: {e}"));
-        assert!(kernel.program().output_names().iter()
-            .any(|n| *n == "__metric_time_to_index"),
+        assert!(kernel.program().output_names().contains(&"__metric_time_to_index"),
             "metric binding must be a kernel output; outputs: {:?}",
             kernel.program().output_names());
     }
@@ -4164,7 +4174,7 @@ extern keyspace: String
             "phase kernel's `p` must be Ext-typed",
         );
         // Sanity: phase has `n` as an output (the mod_in result).
-        assert!(phase_kernel.program().output_names().iter().any(|name| *name == "n"),
+        assert!(phase_kernel.program().output_names().contains(&"n"),
             "phase kernel should expose `n` as an output");
     }
 
@@ -4469,7 +4479,7 @@ extern keyspace: String
 
         // Sanity: has_a SHARED at root.
         let shared = root.program().shared_outputs();
-        assert!(shared.iter().any(|n| *n == "has_a"),
+        assert!(shared.contains(&"has_a"),
             "root should have has_a as SHARED output; got {shared:?}");
 
         // Step 3: outer for_each scope.
@@ -4687,7 +4697,7 @@ extern keyspace: String
              got {modifier:?}");
 
         let shared = root.program().shared_outputs();
-        assert!(shared.iter().any(|n| *n == "has_a"),
+        assert!(shared.contains(&"has_a"),
             "workload root must have has_a in shared_outputs (so seed_shared_cells creates a cell);\n\
              got shared_outputs={shared:?}");
     }

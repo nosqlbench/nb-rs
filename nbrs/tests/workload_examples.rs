@@ -115,6 +115,68 @@ fn math_and_bitwise_operators() {
 }
 
 #[test]
+fn optimizer_null_sweep_finds_the_manifold_peak() {
+    // SRD-86 — a phase carrying `optimize:` is a SEARCH node (A12), not a
+    // `for_each` sweep. The `null` optimizer visits the discrete axis and the
+    // objective (a parabola `0 - (ef-3)^2`, peaked at ef=3) is read off each
+    // iteration's kernel; the search reports the peak.
+    let (stdout, stderr) = run_workload("examples/workloads/optimizer_null_sweep.yaml", &[]);
+    let out = format!("{stdout}\n{stderr}");
+    assert!(!stderr.contains("error:"), "run errored: {stderr}");
+    // A12: rendered as a search node, with its spec — not an enumerated sweep.
+    assert!(
+        out.contains("search · null · maximize score"),
+        "search node header missing: {out}"
+    );
+    // The objective is maximized (score=0) at ef=3 — proves the coordinate
+    // propagates into the objective read off the iteration kernel.
+    assert!(out.contains("best [3]"), "optimizer should locate the peak at ef=3: {out}");
+}
+
+#[test]
+fn optimizer_saturation_objective_is_causal() {
+    // SRD-86 — the NON-DEGENERATE causal test. The objective reads a
+    // RUN-PRODUCED metric (testkit overload error rate), so its value exists
+    // only *after* the phase executes. The optimum is the LOWEST concurrency
+    // (conc=2), which fits the 2-server / depth-4 backend and eliminates
+    // overloads (err_rate → 0); high concurrency saturates the queue and
+    // rejects with Overload. The objective is settled across the run from the
+    // windowed metric (SRD-86 §"Settling", the cadence-fed detector) — a
+    // setup-time read sees err_rate=0 for every coordinate and picks the first
+    // (conc=32), so this test passes only when the objective is read from the
+    // produced run state.
+    let (stdout, stderr) = run_workload("examples/workloads/optimizer_saturation.yaml", &[]);
+    let out = format!("{stdout}\n{stderr}");
+    assert!(!stderr.contains("error:"), "run errored: {out}");
+    assert!(
+        out.contains("best [2]"),
+        "causal optimizer must pick the concurrency that eliminates overloads \
+         (conc=2) — proving the objective is read from the produced run state: {out}"
+    );
+}
+
+#[test]
+fn optimizer_metricsql_objective_settles() {
+    // SRD-86 §"Settling" + the metric-reader surface — the SAME causal search
+    // as optimizer_saturation, but the objective is read through the
+    // `metricsql_scalar` reader node (a MetricsQL query,
+    // `sum(rate(errors_total[3s]))`, over this run's live metrics) and settled
+    // across the run by the cadence-fed detector. Counters are stored
+    // cumulative, so rate() is PromQL-correct and per-coordinate (the baseline
+    // cancels in the difference). The optimum is the lowest concurrency
+    // (conc=2) that eliminates overloads — passing only when the metricsql
+    // rate() objective is read from the produced run state.
+    let (stdout, stderr) = run_workload("examples/workloads/optimizer_metricsql.yaml", &[]);
+    let out = format!("{stdout}\n{stderr}");
+    assert!(!stderr.contains("error:"), "run errored: {out}");
+    assert!(
+        out.contains("best [2]"),
+        "metricsql_scalar objective must settle to the concurrency that \
+         eliminates overloads (conc=2): {out}"
+    );
+}
+
+#[test]
 fn conditional_ops_skip_falsy() {
     let (stdout, stderr) = run_workload("examples/workloads/conditional_ops.yaml", &["cycles=18"]);
     assert!(stderr.contains("done"), "stderr: {stderr}");
@@ -802,6 +864,8 @@ fn synthetic_metrics_workload_records_correct_values() {
             .collect();
 
         instances.into_iter().filter_map(|(id, label_set_json)| {
+            // (mean, count, sum, max) for the latest sample row.
+            #[allow(clippy::type_complexity)]
             let row: rusqlite::Result<(Option<f64>, Option<i64>, Option<f64>, Option<f64>)> =
                 conn.query_row(
                     "SELECT s.mean, s.count, s.sum, s.max FROM sample_value s \

@@ -54,7 +54,9 @@ fn render_compact(
     let f = ctx.session_phases_failed();
     let p = ctx.session_phases_pending();
     let fail_color = if f > 0 { red } else { dim };
-    let pending_color = if p > 0 { dim } else { dim };
+    // Pending phases render dim regardless of count (no emphasis colour
+    // is defined for "not yet run").
+    let pending_color = dim;
     let mut tmp = String::with_capacity(64);
     let _ = write!(
         &mut tmp,
