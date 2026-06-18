@@ -95,3 +95,9 @@ pub mod metrics_query;
 // standalone. See `polydat_nodes::set_global_query` for the runner
 // hookup.
 pub mod polydat_nodes;
+// The metrics query API — the data-access *service* boundary (SRD-86
+// §"The metric-reader surface"): the `Vector`/`Series` result shapes,
+// the `MetricAccess` service trait, and runtime service location. The
+// MetricsQL engine locates a service here and layers aggregation over
+// it; nbrs-metrics owns no query language, only the access surface.
+pub mod queryapi;

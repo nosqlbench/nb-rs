@@ -174,6 +174,59 @@ root (1s base)
 Each tick costs one histogram merge per tree edge, regardless of
 the ratio between the outermost visible cadences.
 
+### Histogram rank semantics — discrete data lives only at the base rank
+
+A layer's position in the realized tree is its **rank**: rank 0 is the
+smallest cadence (`CadenceReporter::layers()` is ordered smallest-first),
+rank 1 the next larger layer, and so on up through any hidden
+intermediates to the largest declared cadence. Histogram fidelity is
+**not uniform across ranks** — it falls directly out of the streaming
+cascade (§"Streaming coalesce semantics" below).
+
+**Where discrete data enters.** The scheduler captures the live
+instruments — including the raw per-interval HDR reservoir — at the
+**base interval**, and folds each capture into the **smallest cadence's
+accumulator** (§"Cadence reporter — single writer"). A base capture is
+transient: it is never retained as its own rank, it is merged into
+rank 0's prebuffer the moment it arrives. Rank 0 (the smallest declared
+cadence) is therefore the **finest retained, queryable rank** — its
+window is the smallest coalesced unit the system publishes: exactly one
+base capture when the smallest declared cadence equals the base interval
+(the default `1s,…` list), or a small merge of base captures when the
+smallest declared cadence is larger than the base.
+
+**Where it stops being discrete.** Every coarser rank holds a *merged*
+reservoir, never fresh discrete observations. A rank-`n` window is
+assembled by folding rank-`(n−1)`'s immutable closed window into
+rank-`n`'s prebuffer (`HdrHistogram::add`, §"Combine semantics —
+algebraic uniformity"). The merge is lossless *as a distribution* —
+`p99` of a rank-3 window is the true p99 over that window's whole span,
+not an average-of-percentiles — so an upper-rank histogram is a faithful
+roll-up, not the wrong shape. What a higher rank gives up is **temporal
+resolution** (no per-base-window detail) and, when adjacent fan-in is
+wide, **percentile accuracy of the roll-up** — exactly the loss
+§"Max fan-in" caps. Hidden intermediate ranks exist only to keep each
+rank-to-rank merge inside the `max_fan_in` accuracy bound; they carry
+merged reservoirs like any coarser rank and are simply never surfaced as
+columns.
+
+**Consequences.**
+
+- **Discrete-distribution reads target rank 0.** The live query backend
+  (`queryapi::live`) draws its series from `declared_cadences().smallest()`
+  — rank 0 — the finest rank with per-window distribution data.
+  `cadence_window(c)` for a coarser `c` returns that rank's merged
+  roll-up by design; `now` peeks the live reservoir directly (finer than
+  any rank); `recent_window` / `session_lifetime` ephemerally re-merge
+  ranks at read time.
+- **The histogram count is rank-independent.** The monotonic
+  `cumulative_count` (the cumulative-counter model,
+  `notes/cumulative_counter_model.md`) rides *every* rank: it coalesces
+  latest-wins up the cascade (each rank carries the count as of its
+  window close) and sums only on cross-component aggregate. So
+  `rate()` / `increase` over a histogram count is correct read from any
+  rank — even though the *distribution* is discrete only at rank 0.
+
 ### Streaming coalesce semantics
 
 Coalescing is incremental and pull-free. There is no batched
@@ -454,9 +507,13 @@ Snapshots with matching label sets are the same metric instance,
 just at different points in time. Combining them is well-defined:
 
 - **Histograms** combine reservoir-wise (`HdrHistogram::add`). All
-  derived properties (`p50`, `p99`, `min`, `max`, `mean`, `count`)
-  fall out of the combined reservoir — there is no per-percentile
-  special case in the combine path.
+  *distribution* properties (`p50`, `p99`, `min`, `max`, `mean`, and the
+  per-window `count`) fall out of the combined reservoir — there is no
+  per-percentile special case in the combine path. The separate monotonic
+  `cumulative_count` is *carried*, not derived: it coalesces latest-wins
+  up the cascade and sums on cross-component aggregate, exactly like
+  `CounterValue::cumulative` (§"Histogram rank semantics", the
+  cumulative-counter model).
 - **Counters** sum.
 - **Gauges** weighted-average by the originating window's interval.
 
@@ -523,25 +580,72 @@ of zero (instantaneous read).
 
 ## Wire-Up
 
+### The metrics cadence feed — the consumable service endpoint
+
+The windowed-metrics service has **two intentionally separate
+responsibilities**. They are an effective unit, but the boundary
+between them is deliberate and must not be collapsed:
+
+- **The metrics scheduler** (`nbrs-metrics::scheduler`) is the
+  *pacer*. A dedicated thread captures one OpenMetrics-shaped frame
+  of the live component tree (`capture_tree`) at the base interval
+  and ingests it into the cadence reporter. It owns *when* a frame
+  is taken and *what* the tree currently holds.
+- **The cadence reporter** (`nbrs-metrics::cadence_reporter`) is the
+  *publisher and store*. It is command-driven — it has **no internal
+  timer**. That is deliberate, not passivity: being driven by
+  ingest commands is what keeps it lock-free on the async hot path.
+  On each ingested frame it runs the cascade (close → coalesce →
+  promote, §"Streaming coalesce semantics"), **publishes** each
+  closed window to subscribers, and retains it for pull reads.
+
+Together they are the **metrics cadence pipeline**. Its consumable
+endpoint — the canonical name used throughout the SRDs — is the
+**metrics cadence feed**: the cadence reporter's per-cadence
+publish/subscribe surface (`CadenceReporter::subscribe`), backstopped
+by `MetricsQuery` for pull reads.
+
+Canonical vocabulary (one name per concept — no synonyms):
+
+| Term | Meaning |
+|---|---|
+| **metrics cadence feed** | the consumable service endpoint: subscribe to a cadence, receive its published windows |
+| **subscribe to a cadence** | register a consumer on the feed for one declared cadence (`CadenceReporter::subscribe`) |
+| **cadence pulse** | one interval closing and being published to subscribers |
+| **published MetricSet** (cadence window) | the immutable `Arc<MetricSet>` delivered on a pulse |
+| **cadence read** | reading the current framed window *without* subscribing, via `MetricsQuery` |
+
+A consumer that needs to *react* to fresh data (the SQLite emitter
+today; the settle/objective evaluation of SRD-86 §"Settling")
+**subscribes to a cadence** on the feed and acts **per pulse**. A
+consumer that only needs the latest value performs a **cadence read**.
+Nothing outside the scheduler captures or re-feeds, and nothing on the
+consumer side snapshots or frames — that responsibility lives only in
+the pipeline.
+
 ### Cadence reporter — single writer
 
-The cadence-scheduling reporter is the single writer of windowed
-snapshots. On every smallest-cadence tick it:
+The cadence reporter is the single writer of windowed snapshots — but
+it does not capture them. The metrics scheduler (above) paces the
+capture: on every base-interval tick it walks the live component tree
+once, captures an OpenMetrics-shaped frame of every instrument
+(counter values, gauge values, non-draining histogram peeks), and
+ingests that frame into the reporter. The reporter then, per ingested
+frame:
 
-1. Walks the live component tree once.
-2. Captures an OpenMetrics-shaped snapshot of every instrument
-   (counter values, gauge values, non-draining histogram peeks).
-3. Folds the captured frame into the smallest-cadence window's
-   accumulator. When that accumulator's interval is satisfied,
-   it closes into an immutable snapshot, notifies subscribers,
-   and is folded into the next-larger cadence's prebuffer (see
-   §"Streaming coalesce semantics" above for the full cascade).
-4. Each closed snapshot is published into the reporter's
-   internal store keyed by
-   `(component_path, label_set, cadence)`, replacing the
-   previous "last closed window" for that key. Older windows
-   are retained in the per-cadence ring (SRD-42 §Phase 4) for
+1. Folds the frame into the smallest-cadence window's accumulator.
+   When that accumulator's interval is satisfied, it closes into an
+   immutable snapshot, publishes it to subscribers, and folds it into
+   the next-larger cadence's prebuffer (see §"Streaming coalesce
+   semantics" above for the full cascade).
+2. Publishes each closed snapshot into the reporter's internal store
+   keyed by `(component_path, label_set, cadence)`, replacing the
+   previous "last closed window" for that key. Older windows are
+   retained in the per-cadence ring (SRD-42 §Phase 4) for
    `recent_window` queries.
+
+The reporter has no internal timer — the cascade runs only when a
+frame is ingested; the scheduler supplies the timing.
 
 There are no per-component windowed handles. Components own their
 instruments; the reporter owns the windowed view of those

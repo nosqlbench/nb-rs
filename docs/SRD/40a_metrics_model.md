@@ -208,7 +208,7 @@ suffixes:
 A MetricFamily name MUST NOT clash with any other family's
 exposition-suffixed name. nbrs writers and readers honour
 this via the `STAT_SUFFIXES` table in
-`nbrs-metricsql::adapters::sqlite` — bare-name lookup tries
+`nbrs-metrics::queryapi::sqlite` — bare-name lookup tries
 the family name first, then strips known suffixes and
 retries.
 
@@ -263,7 +263,7 @@ resolves it to series + samples via the
 [`MetricCatalog`](49_metricsql_supported_scope.md) trait.
 
 The resolution algorithm (see
-`nbrs-metricsql::adapters::sqlite::SqliteDataSource`):
+`nbrs-metrics::queryapi::sqlite::SqliteDataSource`):
 
 1. Find the `__name__` matcher; resolve to `family_id`
    (Eq required by current sqlite impl; regex on
@@ -299,7 +299,7 @@ the catalog needs to drive autocompletion + dashboards.
 | Exemplar lookup        | `exemplar(instance_id, sample_timestamp_ms)` index |
 
 These indexes are the contract for the
-`nbrs-metricsql::adapters::sqlite::SqliteDataSource` query
+`nbrs-metrics::queryapi::sqlite::SqliteDataSource` query
 plans. Removing one degrades to full scans.
 
 ---

@@ -140,10 +140,6 @@ pub struct Component {
     /// `instruments` first, then invokes this if present. See
     /// [`DynamicCapture`].
     dynamic_capture: Option<Arc<dyn DynamicCapture>>,
-    /// Per-counter previous-snapshot baseline for delta computation.
-    /// Keyed by counter labels' `identity_hash`. Populated lazily on
-    /// each `capture_delta` call.
-    prev_counters: Mutex<HashMap<u64, u64>>,
     /// Wall-clock instant of the most recent `capture_delta` /
     /// `capture_delta_auto` call. Used by `capture_delta_auto` to
     /// compute the true elapsed-time interval for a phase-end
@@ -174,7 +170,6 @@ impl Component {
             state: ComponentState::Starting,
             instruments: Vec::new(),
             dynamic_capture: None,
-            prev_counters: Mutex::new(HashMap::new()),
             last_capture_instant: Mutex::new(None),
             controls: crate::controls::ControlRegistry::new(),
         }
@@ -290,8 +285,8 @@ impl Component {
 
     /// Capture a delta snapshot covering `interval`.
     ///
-    /// Resets internal delta accumulators (histograms drain;
-    /// counter baselines advance). Called by the scheduler on
+    /// Drains histogram/timer reservoirs; counters report their
+    /// absolute running total (no draining). Called by the scheduler on
     /// every tick — the result feeds the cadence reporter's
     /// smallest-cadence accumulator. The caller-supplied
     /// `interval` is recorded on the snapshot verbatim; the
@@ -371,9 +366,9 @@ impl Component {
     }
 
     /// Walk the registered instruments and emit their samples into
-    /// `out`. `drain=true` drains histograms and advances counter
-    /// baselines (delta semantics); `drain=false` peeks without
-    /// disturbing reservoirs (current semantics).
+    /// `out`. `drain=true` drains histogram/timer reservoirs;
+    /// `drain=false` peeks without disturbing them. Counters always
+    /// report their absolute running total — `drain` does not apply.
     fn capture_registry_into(&self, out: &mut MetricSet, now: Instant, drain: bool) {
         for ri in &self.instruments {
             let family = ri.family.clone();
@@ -381,13 +376,12 @@ impl Component {
             match &ri.instrument {
                 InstrumentRef::Counter(c) => {
                     let lbl = strip_name_label(c.labels());
-                    let absolute = c.get();
-                    let value = if drain {
-                        self.counter_delta(c.labels().identity_hash(), absolute)
-                    } else {
-                        absolute
-                    };
-                    out.insert_counter_with_unit(family, unit, lbl, value, now);
+                    // A counter is its absolute running total — captured the
+                    // same on every path (the `drain` flag only governs
+                    // histogram/timer reservoirs). Per-interval deltas are
+                    // derived downstream by differencing samples. See the
+                    // cumulative-counter note.
+                    out.insert_counter_with_unit(family, unit, lbl, c.get(), now);
                 }
                 InstrumentRef::Gauge(g) => {
                     let lbl = strip_name_label(g.labels());
@@ -396,28 +390,23 @@ impl Component {
                 InstrumentRef::Histogram(h) => {
                     let lbl = strip_name_label(h.labels());
                     let reservoir = if drain { h.snapshot() } else { h.peek_snapshot() };
-                    out.insert_histogram_with_unit(family, unit, lbl, reservoir, now);
+                    // `cumulative_count` is the instrument's lifetime total
+                    // (monotonic, never drained); the reservoir carries the
+                    // per-window distribution. See the cumulative-counter note.
+                    out.insert_histogram_with_unit_cumulative(
+                        family, unit, lbl, reservoir, h.total(), now,
+                    );
                 }
                 InstrumentRef::Timer(t) => {
                     let lbl = strip_name_label(t.labels());
                     let snap = if drain { t.snapshot() } else { t.peek_snapshot() };
-                    out.insert_histogram_with_unit(family, unit, lbl, snap.histogram, now);
+                    // `snap.count` is the Timer's absolute lifetime count.
+                    out.insert_histogram_with_unit_cumulative(
+                        family, unit, lbl, snap.histogram, snap.count, now,
+                    );
                 }
             }
         }
-    }
-
-    /// Compute the delta for a counter: current minus previous,
-    /// updating the stored baseline. Mirrors the sidecar that
-    /// `ActivityMetrics` used to maintain. `identity_hash` keys
-    /// the per-counter prev-value cell.
-    fn counter_delta(&self, identity_hash: u64, current: u64) -> u64 {
-        let mut prev = self
-            .prev_counters
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let previous = prev.insert(identity_hash, current).unwrap_or(0);
-        current.saturating_sub(previous)
     }
 
     /// Get a property by name, walking up the tree.
@@ -839,7 +828,7 @@ fn capture_recursive(
 /// Non-mutating counterpart of [`capture_tree`]. Walks every RUNNING
 /// component and returns absolute/peeked snapshots via
 /// [`Component::capture_current`]. Safe to call arbitrarily often —
-/// doesn't drain histograms or advance counter baselines.
+/// doesn't drain histogram/timer reservoirs.
 pub fn capture_tree_current(
     root: &Arc<RwLock<Component>>,
 ) -> Vec<(Labels, MetricSet)> {
@@ -1530,7 +1519,7 @@ mod tests {
         let f = latest.family("test_counter").expect("test_counter family present");
         let m = f.metrics().next().unwrap();
         match m.point().unwrap().value() {
-            crate::snapshot::MetricValue::Counter(c) => assert_eq!(c.total, 42),
+            crate::snapshot::MetricValue::Counter(c) => assert_eq!(c.cumulative, 42),
             v => panic!("expected counter, got {v:?}"),
         }
     }

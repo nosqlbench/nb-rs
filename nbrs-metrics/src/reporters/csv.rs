@@ -60,7 +60,7 @@ impl Reporter for CsvReporter {
                 match point.value() {
                     MetricValue::Counter(c) => {
                         let file = self.ensure_file(&name, "timestamp_ms,count");
-                        if let Err(e) = writeln!(file, "{now_ms},{}", c.total) {
+                        if let Err(e) = writeln!(file, "{now_ms},{}", c.cumulative) {
                             crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
                         }
                     }

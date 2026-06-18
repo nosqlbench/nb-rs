@@ -189,6 +189,16 @@ impl MetricSet {
     /// snapshot's `captured_at`; `interval` is the sum of contributing
     /// intervals.
     pub fn coalesce(snapshots: &[MetricSet]) -> MetricSet {
+        // Time-coalesce of consecutive windows (the cadence cascade):
+        // counter `cumulative` keeps the latest. Cross-component
+        // aggregation uses [`Self::coalesce_with_mode`] with `Aggregate`.
+        Self::coalesce_with_mode(snapshots, CombineMode::Coalesce)
+    }
+
+    /// [`coalesce`](Self::coalesce) with an explicit [`CombineMode`] —
+    /// the only difference is how counter `cumulative` folds (latest vs.
+    /// sum). See the cumulative-counter note.
+    pub fn coalesce_with_mode(snapshots: &[MetricSet], mode: CombineMode) -> MetricSet {
         if snapshots.is_empty() {
             return MetricSet::default();
         }
@@ -274,7 +284,7 @@ impl MetricSet {
                                 let (Some(dp), Some(sp)) = (dm.points.first_mut(), m.points.first()) else {
                                     continue;
                                 };
-                                combine_into(dp, sp).expect("matching identity must combine");
+                                combine_into(dp, sp, mode).expect("matching identity must combine");
                             }
                             None => {
                                 dst.metrics.push(m.clone());
@@ -513,7 +523,7 @@ impl Metric {
 /// `timestamp` is **always populated** in nb-rs snapshots (the
 /// cadence-window-close instant for cadence-window points, the live
 /// read instant for `now` points, the merge instant for ephemeral
-/// `recent_window` / `session_lifetime` points) — even though the
+/// `increase_over` / `session_lifetime` points) — even though the
 /// spec marks it optional.
 #[derive(Clone, Debug)]
 pub struct MetricPoint {
@@ -574,7 +584,14 @@ pub enum MetricValue {
 /// spec-required `_total` suffix on exposition (not stored here).
 #[derive(Clone, Debug)]
 pub struct CounterValue {
-    pub total: u64,
+    /// The counter's **cumulative** running total at this point's
+    /// timestamp — the single canonical, Prometheus/VM-schematic
+    /// monotonic value. Per-interval deltas are DERIVED by differencing
+    /// consecutive samples (the metricsql engine, the sqlite `_rate`
+    /// suffix, windowed-throughput readers), never stored. Time-coalesce
+    /// keeps the latest (monotonic ⇒ window-end); cross-component
+    /// aggregate sums it. See `docs/SRD/notes/cumulative_counter_model.md`.
+    pub cumulative: u64,
     /// Series start time per spec §5.1; lets external consumers
     /// detect counter resets. Optional in spec.
     pub created: Option<Instant>,
@@ -584,8 +601,9 @@ pub struct CounterValue {
 }
 
 impl CounterValue {
-    pub fn new(total: u64) -> Self {
-        Self { total, created: None, exemplar: None }
+    /// A counter point at the given cumulative running total.
+    pub fn new(cumulative: u64) -> Self {
+        Self { cumulative, created: None, exemplar: None }
     }
 
     pub fn with_created(mut self, t: Instant) -> Self {
@@ -631,8 +649,18 @@ pub struct HistogramValue {
     /// HDR reservoir — the lossless source of truth for combining
     /// across cascade folds and ephemeral merges.
     pub reservoir: Arc<HdrHistogram<u64>>,
-    /// Cached observation count. Equal to `reservoir.len()`.
+    /// Cached observation count. Equal to `reservoir.len()` — the
+    /// per-window count in a delta snapshot.
     pub count: u64,
+    /// The **cumulative** total observation count at this point's
+    /// timestamp (monotonic, Prometheus/VM-schematic), carried
+    /// alongside the per-window `count` exactly as `CounterValue`
+    /// carries `cumulative` alongside `total`. The queryapi exposes
+    /// this so MetricsQL `rate()`/`increase`/`*_over_time` over a
+    /// histogram's count are PromQL-correct. Time-coalesce keeps the
+    /// latest; cross-component aggregate sums it. (The percentile
+    /// reservoir stays windowed — see the cumulative-counter note.)
+    pub cumulative_count: u64,
     /// Cached observation sum (nanoseconds for latency timers).
     pub sum: f64,
     /// Series start time per spec §5.3; optional.
@@ -650,10 +678,21 @@ impl HistogramValue {
         Self {
             reservoir: Arc::new(reservoir),
             count,
+            // Defaults to the per-window count (the value is both for a
+            // one-shot snapshot); the cadence capture path overrides it
+            // with the accumulated absolute via `with_cumulative_count`.
+            cumulative_count: count,
             sum,
             created: None,
             bucket_exemplars: Vec::new(),
         }
+    }
+
+    /// Override the cumulative observation count (the cadence capture
+    /// path sets the accumulated absolute total here).
+    pub fn with_cumulative_count(mut self, cumulative_count: u64) -> Self {
+        self.cumulative_count = cumulative_count;
+        self
     }
 
     pub fn with_created(mut self, t: Instant) -> Self {
@@ -737,8 +776,16 @@ pub struct BucketedHistogramValue {
     pub buckets: Vec<(BucketBound, u64)>,
     /// Optional sum of all observations.
     pub sum: Option<f64>,
-    /// Total observation count (== last bucket count).
+    /// Total observation count (== last bucket count) — the
+    /// per-window total in a delta snapshot.
     pub count: u64,
+    /// The **cumulative** total observation count (monotonic,
+    /// Prometheus/VM-schematic) carried alongside the per-window
+    /// `count`, mirroring [`HistogramValue::cumulative_count`] and
+    /// `CounterValue::cumulative`. (The per-bucket `le` counts in
+    /// `buckets` are the separate OpenMetrics bucket-cumulative
+    /// thing and are unchanged.)
+    pub cumulative_count: u64,
     /// Series start time per spec §5.3 / §5.4.
     pub created: Option<Instant>,
     /// Optional per-bucket exemplars, parallel to `buckets`.
@@ -756,9 +803,16 @@ impl BucketedHistogramValue {
             buckets,
             sum: None,
             count,
+            cumulative_count: count,
             created: None,
             bucket_exemplars: Vec::new(),
         }
+    }
+
+    /// Override the cumulative total observation count.
+    pub fn with_cumulative_count(mut self, cumulative_count: u64) -> Self {
+        self.cumulative_count = cumulative_count;
+        self
     }
 
     pub fn with_sum(mut self, sum: f64) -> Self {
@@ -854,14 +908,30 @@ impl Exemplar {
 // Combine — algebraic uniformity (SRD-42 §"Combine semantics")
 // =========================================================================
 
+/// How two matching metric points combine. The counter `cumulative`
+/// field is the only thing that differs (see the cumulative-counter
+/// note): time-coalesce keeps the latest cumulative (monotonic), a
+/// cross-component aggregate sums it. Everything else — counter `total`
+/// (delta), gauges, histograms — is identical in both modes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CombineMode {
+    /// Consecutive windows of one series (the cadence cascade): counter
+    /// `cumulative` = most-recent by timestamp.
+    Coalesce,
+    /// Same family+labels across components (cross-component totals):
+    /// counter `cumulative` = sum.
+    Aggregate,
+}
+
 /// In-place combine of `other` into `self`. Both must have the same
 /// identity `(family.name, labels)` and the same value variant —
 /// otherwise this is a hard error (panic) per the SRD's "matching
 /// identity → matching combine" rule.
 ///
 /// Combine rules per SRD-42 §"Combine semantics":
-/// - Counter `total` sums; `created` keeps the earliest;
-///   exemplar most-recent-wins by `MetricPoint.timestamp`.
+/// - Counter `total` (delta) sums in both modes; `cumulative` folds per
+///   `mode` (latest on `Coalesce`, sum on `Aggregate`); `created` keeps
+///   the earliest; exemplar most-recent-wins by `MetricPoint.timestamp`.
 /// - Gauge values weighted-average — but values alone don't carry
 ///   a weight, so `combine_into` here just keeps the most recent
 ///   (newer timestamp wins). Use [`combine_gauge_weighted`] for the
@@ -871,10 +941,23 @@ impl Exemplar {
 pub fn combine_into(
     dst: &mut MetricPoint,
     src: &MetricPoint,
+    mode: CombineMode,
 ) -> Result<(), CombineError> {
     match (&mut dst.value, &src.value) {
         (MetricValue::Counter(a), MetricValue::Counter(b)) => {
-            a.total = a.total.saturating_add(b.total);
+            // A counter is its monotonic running total. Time-coalescing
+            // consecutive windows of one series keeps the LATEST (the
+            // window-end cumulative — never a sum); aggregating the same
+            // series across components sums the running totals. Per-window
+            // deltas are derived downstream by differencing samples.
+            a.cumulative = match mode {
+                CombineMode::Coalesce => {
+                    let take_src = dst.timestamp.is_none()
+                        || src.timestamp.map(|s| Some(s) >= dst.timestamp).unwrap_or(false);
+                    if take_src { b.cumulative } else { a.cumulative }
+                }
+                CombineMode::Aggregate => a.cumulative.saturating_add(b.cumulative),
+            };
             a.created = match (a.created, b.created) {
                 (Some(x), Some(y)) => Some(x.min(y)),
                 (Some(x), None) | (None, Some(x)) => Some(x),
@@ -898,6 +981,17 @@ pub fn combine_into(
             a.count = merged.len();
             a.sum = hdr_sum(&merged);
             a.reservoir = Arc::new(merged);
+            // `cumulative_count` (the monotonic lifetime count) follows the
+            // counter rule: keep the latest when coalescing consecutive
+            // windows of one series; sum when aggregating across components.
+            a.cumulative_count = match mode {
+                CombineMode::Coalesce => {
+                    let take_src = dst.timestamp.is_none()
+                        || src.timestamp.map(|s| Some(s) >= dst.timestamp).unwrap_or(false);
+                    if take_src { b.cumulative_count } else { a.cumulative_count }
+                }
+                CombineMode::Aggregate => a.cumulative_count.saturating_add(b.cumulative_count),
+            };
             a.created = match (a.created, b.created) {
                 (Some(x), Some(y)) => Some(x.min(y)),
                 (Some(x), None) | (None, Some(x)) => Some(x),
@@ -924,6 +1018,19 @@ pub fn combine_into(
                 a.buckets[i].1 = a.buckets[i].1.saturating_add(*count_b);
             }
             a.count = a.count.saturating_add(b.count);
+            // `cumulative_count` (the monotonic lifetime total) follows the
+            // counter rule, like the HDR histogram above: latest when
+            // coalescing one series' consecutive windows, summed when
+            // aggregating across components. (The per-bucket `le` counts are
+            // the separate OpenMetrics bucket-cumulative thing, summed above.)
+            a.cumulative_count = match mode {
+                CombineMode::Coalesce => {
+                    let take_src = dst.timestamp.is_none()
+                        || src.timestamp.map(|s| Some(s) >= dst.timestamp).unwrap_or(false);
+                    if take_src { b.cumulative_count } else { a.cumulative_count }
+                }
+                CombineMode::Aggregate => a.cumulative_count.saturating_add(b.cumulative_count),
+            };
             a.sum = match (a.sum, b.sum) {
                 (Some(sa), Some(sb)) => Some(sa + sb),
                 (Some(s), None) | (None, Some(s)) => Some(s),
@@ -968,7 +1075,7 @@ pub fn combine_into(
 
 /// Combine two `HistogramValue` reservoirs into a new owned HDR
 /// histogram. Used both by `combine_into` and by ephemeral
-/// `recent_window` / `session_lifetime` queries that fold many
+/// `increase_over` / `session_lifetime` queries that fold many
 /// reservoirs without mutating any of them.
 pub fn combine_hdr(
     a: &HdrHistogram<u64>,
@@ -1144,28 +1251,30 @@ impl MetricSet {
         &mut self,
         family_name: impl Into<String>,
         labels: Labels,
-        total: u64,
+        cumulative: u64,
         timestamp: Instant,
     ) {
         self.insert_metric(
             family_name, MetricType::Counter, labels,
-            MetricValue::Counter(CounterValue::new(total)),
+            MetricValue::Counter(CounterValue::new(cumulative)),
             timestamp,
         );
     }
 
-    /// Counter variant of [`insert_metric_with_unit`].
+    /// Counter variant of [`insert_metric_with_unit`]. `cumulative` is the
+    /// counter's running total (the cadence capture path passes the
+    /// instrument's absolute); per-interval deltas are derived downstream.
     pub fn insert_counter_with_unit(
         &mut self,
         family_name: impl Into<String>,
         unit: Option<&str>,
         labels: Labels,
-        total: u64,
+        cumulative: u64,
         timestamp: Instant,
     ) {
         self.insert_metric_with_unit(
             family_name, MetricType::Counter, unit, labels,
-            MetricValue::Counter(CounterValue::new(total)),
+            MetricValue::Counter(CounterValue::new(cumulative)),
             timestamp,
         );
     }
@@ -1230,6 +1339,30 @@ impl MetricSet {
         self.insert_metric_with_unit(
             family_name, MetricType::Histogram, unit, labels,
             MetricValue::Histogram(HistogramValue::from_hdr(reservoir)),
+            timestamp,
+        );
+    }
+
+    /// Like [`insert_histogram_with_unit`] but stamps the **cumulative**
+    /// observation count (the instrument's lifetime total) onto the
+    /// value, so `HistogramValue::cumulative_count` is the authoritative
+    /// running total — like the counter's `cumulative`. The cadence
+    /// capture path uses this; the queryapi then exposes a cumulative
+    /// histogram count over which `rate()` is PromQL-correct.
+    pub fn insert_histogram_with_unit_cumulative(
+        &mut self,
+        family_name: impl Into<String>,
+        unit: Option<&str>,
+        labels: Labels,
+        reservoir: HdrHistogram<u64>,
+        cumulative_count: u64,
+        timestamp: Instant,
+    ) {
+        self.insert_metric_with_unit(
+            family_name, MetricType::Histogram, unit, labels,
+            MetricValue::Histogram(
+                HistogramValue::from_hdr(reservoir).with_cumulative_count(cumulative_count),
+            ),
             timestamp,
         );
     }
@@ -1366,26 +1499,29 @@ mod tests {
         assert_eq!(m.interval(), Duration::from_secs(1));
         let f = m.family("cycles").unwrap();
         let c = match f.metrics().next().unwrap().point().unwrap().value() {
-            MetricValue::Counter(c) => c.total,
+            MetricValue::Counter(c) => c.cumulative,
             _ => panic!("wrong type"),
         };
         assert_eq!(c, 10);
     }
 
     #[test]
-    fn coalesce_counters_sum_total_and_intervals() {
+    fn coalesce_counters_keep_latest_cumulative_sum_intervals() {
+        // Time-coalesce of one series keeps the latest (window-end)
+        // cumulative — never a sum — and sums the intervals. (Monotonic
+        // cumulatives in window order; the last one wins.)
         let merged = MetricSet::coalesce(&[
             make_counter_set(Duration::from_secs(1), 10),
             make_counter_set(Duration::from_secs(1), 25),
-            make_counter_set(Duration::from_secs(1), 7),
+            make_counter_set(Duration::from_secs(1), 42),
         ]);
         assert_eq!(merged.interval(), Duration::from_secs(3));
-        let total = match merged.family("cycles").unwrap()
+        let cumulative = match merged.family("cycles").unwrap()
             .metrics().next().unwrap().point().unwrap().value() {
-            MetricValue::Counter(c) => c.total,
+            MetricValue::Counter(c) => c.cumulative,
             _ => panic!("wrong type"),
         };
-        assert_eq!(total, 42);
+        assert_eq!(cumulative, 42, "latest window's cumulative, not the sum");
     }
 
     #[test]
@@ -1433,11 +1569,11 @@ mod tests {
         let load = f.metric_with_labels(&Labels::of("phase", "load")).unwrap();
         let verify = f.metric_with_labels(&Labels::of("phase", "verify")).unwrap();
         match load.point().unwrap().value() {
-            MetricValue::Counter(c) => assert_eq!(c.total, 100),
+            MetricValue::Counter(c) => assert_eq!(c.cumulative, 100),
             _ => panic!(),
         }
         match verify.point().unwrap().value() {
-            MetricValue::Counter(c) => assert_eq!(c.total, 50),
+            MetricValue::Counter(c) => assert_eq!(c.cumulative, 50),
             _ => panic!(),
         }
     }
@@ -1505,7 +1641,7 @@ mod tests {
 
         let load = f.metric_with_labels(&Labels::of("phase", "load")).unwrap();
         match load.point().unwrap().value() {
-            MetricValue::Counter(c) => assert_eq!(c.total, 10),
+            MetricValue::Counter(c) => assert_eq!(c.cumulative, 10),
             _ => panic!("wrong type"),
         }
         assert!(f.metric_with_labels(&Labels::of("phase", "missing")).is_none());
@@ -1524,7 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn counter_combine_sums_total_keeps_earlier_created() {
+    fn counter_aggregate_sums_cumulative_keeps_earlier_created() {
         let t1 = Instant::now();
         let t0 = t1 - Duration::from_secs(60);
 
@@ -1536,12 +1672,31 @@ mod tests {
             MetricValue::Counter(CounterValue::new(25).with_created(t0)),
             t1,
         );
-        combine_into(&mut a, &b).unwrap();
+        // Aggregate (cross-component): the running totals sum across the
+        // matching series from different components.
+        combine_into(&mut a, &b, CombineMode::Aggregate).unwrap();
         match a.value() {
             MetricValue::Counter(c) => {
-                assert_eq!(c.total, 35);
+                assert_eq!(c.cumulative, 35, "aggregate sums cumulative across components");
                 assert_eq!(c.created, Some(t0), "earliest created wins");
             }
+            _ => panic!("wrong type"),
+        }
+    }
+
+    #[test]
+    fn counter_coalesce_keeps_latest_cumulative() {
+        let t1 = Instant::now();
+        let t2 = t1 + Duration::from_secs(1);
+        // Two consecutive windows of ONE series: cumulative 100 then 113.
+        // Time-coalesce keeps the latest (window-end) running total — never
+        // a sum. Per-window deltas are derived downstream by differencing.
+        let mut a = MetricPoint::new(MetricValue::Counter(CounterValue::new(100)), t1);
+        let b = MetricPoint::new(MetricValue::Counter(CounterValue::new(113)), t2);
+        combine_into(&mut a, &b, CombineMode::Coalesce).unwrap();
+        match a.value() {
+            MetricValue::Counter(c) =>
+                assert_eq!(c.cumulative, 113, "coalesce keeps the latest cumulative (no summing)"),
             _ => panic!("wrong type"),
         }
     }
@@ -1562,7 +1717,7 @@ mod tests {
             MetricValue::Histogram(HistogramValue::from_hdr(h2)),
             Instant::now(),
         );
-        combine_into(&mut a, &b).unwrap();
+        combine_into(&mut a, &b, CombineMode::Coalesce).unwrap();
         match a.value() {
             MetricValue::Histogram(h) => {
                 assert_eq!(h.count, 3);
@@ -1579,7 +1734,7 @@ mod tests {
         let t2 = t1 + Duration::from_secs(1);
         let mut a = MetricPoint::new(MetricValue::Gauge(GaugeValue::new(5.0)), t1);
         let b = MetricPoint::new(MetricValue::Gauge(GaugeValue::new(9.0)), t2);
-        combine_into(&mut a, &b).unwrap();
+        combine_into(&mut a, &b, CombineMode::Coalesce).unwrap();
         match a.value() {
             MetricValue::Gauge(g) => assert_eq!(g.value, 9.0),
             _ => panic!("wrong type"),
@@ -1590,7 +1745,7 @@ mod tests {
     fn combine_type_mismatch_is_hard_error() {
         let mut a = MetricPoint::untimed(MetricValue::Counter(CounterValue::new(1)));
         let b = MetricPoint::untimed(MetricValue::Gauge(GaugeValue::new(1.0)));
-        let err = combine_into(&mut a, &b).unwrap_err();
+        let err = combine_into(&mut a, &b, CombineMode::Coalesce).unwrap_err();
         assert_eq!(err, CombineError::TypeMismatch);
     }
 
@@ -1609,7 +1764,7 @@ mod tests {
             MetricValue::Counter(CounterValue::new(5).with_exemplar(ex_new.clone())),
             t2,
         );
-        combine_into(&mut a, &b).unwrap();
+        combine_into(&mut a, &b, CombineMode::Coalesce).unwrap();
         match a.value() {
             MetricValue::Counter(c) => {
                 let e = c.exemplar.as_ref().expect("exemplar should survive");

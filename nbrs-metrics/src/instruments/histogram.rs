@@ -8,6 +8,7 @@
 //! atomically, so the hot path (`record()`) and the snapshot path
 //! don't contend.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use hdrhistogram::Histogram as HdrHistogram;
 use crate::labels::Labels;
@@ -31,6 +32,13 @@ pub struct Histogram {
     labels: Labels,
     /// The accumulating histogram. Protected by mutex for the swap.
     current: Mutex<HdrHistogram<u64>>,
+    /// Lifetime observation count — monotonic, never reset by
+    /// `snapshot()`. The drain model resets the reservoir per window,
+    /// so this is the authoritative **cumulative** count the cadence
+    /// capture stamps onto `HistogramValue::cumulative_count`
+    /// (Prometheus/VM-schematic, like `Counter`'s absolute total). See
+    /// the cumulative-counter note.
+    total: AtomicU64,
 }
 
 impl Histogram {
@@ -50,6 +58,7 @@ impl Histogram {
                 HdrHistogram::new_with_bounds(1, MAX_VALUE, sigdigs)
                     .expect("failed to create HDR histogram")
             ),
+            total: AtomicU64::new(0),
         }
     }
 
@@ -81,12 +90,23 @@ impl Histogram {
 
     /// Record a value (typically nanoseconds).
     pub fn record(&self, value: u64) {
+        // Count the observation in the lifetime total regardless of the
+        // reservoir outcome (an out-of-range clamp is still an
+        // observation) — keeps `total()` the authoritative cumulative.
+        self.total.fetch_add(1, Ordering::Relaxed);
         let value = value.min(MAX_VALUE);
         let mut h = self.current.lock()
             .unwrap_or_else(|e| e.into_inner());
         if let Err(e) = h.record(value) {
             crate::diag::warn(&format!("warning: histogram record failed for value {value}: {e}"));
         }
+    }
+
+    /// Lifetime (cumulative) observation count — monotonic, unaffected
+    /// by `snapshot()` draining. The cadence capture stamps this onto
+    /// `HistogramValue::cumulative_count`.
+    pub fn total(&self) -> u64 {
+        self.total.load(Ordering::Relaxed)
     }
 
     /// Swap out the current histogram and return the delta.
@@ -232,6 +252,27 @@ mod tests {
         let h = Histogram::new(Labels::of("name", "empty"));
         let snap = h.snapshot();
         assert_eq!(snap.len(), 0);
+    }
+
+    #[test]
+    fn total_is_cumulative_across_snapshots() {
+        // The reservoir is per-window (drained by snapshot()), but total()
+        // is the monotonic lifetime count the cadence capture stamps onto
+        // `HistogramValue::cumulative_count` — so rate() over a histogram
+        // count is PromQL-correct, like a counter.
+        let h = Histogram::new(Labels::of("name", "cum"));
+        h.record(1_000);
+        h.record(2_000);
+        assert_eq!(h.total(), 2);
+
+        let s1 = h.snapshot(); // drains the reservoir
+        assert_eq!(s1.len(), 2);
+        assert_eq!(h.total(), 2, "snapshot() must NOT reset the lifetime total");
+
+        h.record(3_000);
+        let s2 = h.snapshot();
+        assert_eq!(s2.len(), 1, "reservoir is per-window (delta)");
+        assert_eq!(h.total(), 3, "total() is the monotonic cumulative count");
     }
 
     #[test]

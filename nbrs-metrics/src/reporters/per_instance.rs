@@ -159,7 +159,7 @@ fn render_record(now_ms: i64, name: &str, labels: &Labels, value: &MetricValue) 
             out.push(',');
             write_kv(&mut out, "type", "counter", true);
             out.push(',');
-            write_kv(&mut out, "count", &c.total.to_string(), false);
+            write_kv(&mut out, "count", &c.cumulative.to_string(), false);
         }
         MetricValue::Gauge(g) => {
             out.push(',');

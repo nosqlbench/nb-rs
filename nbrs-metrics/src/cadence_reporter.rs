@@ -63,7 +63,7 @@ pub const DEFAULT_SUBSCRIPTION_CHANNEL_CAPACITY: usize = 8;
 ///   from the next-smaller cadence — or the smallest cadence's
 ///   accumulating window when this is the smallest cadence),
 /// - the most-recently-closed snapshot, exposed as `Arc` to readers,
-/// - a bounded ring of past closed snapshots for `recent_window` and
+/// - a bounded ring of past closed snapshots for `increase_over` and
 ///   `past(span)` queries.
 struct CadenceWindow {
     cadence: Duration,
@@ -554,6 +554,16 @@ impl CadenceReporter {
                 while let Ok(snapshot) = receiver.recv() {
                     reporter.report(&snapshot);
                     state_for_worker.mark_delivered();
+                    // A one-shot subscriber (e.g. a settle/stop
+                    // evaluator that just set a terminal phase
+                    // disposition) unregisters itself by signalling
+                    // `finished` — the worker exits its own loop, so no
+                    // self-join deadlock. The map entry is reaped by the
+                    // owner's `unsubscribe` at phase completion (joining
+                    // an already-exited worker is immediate).
+                    if reporter.finished() {
+                        break;
+                    }
                 }
                 reporter.flush();
             })
@@ -1024,7 +1034,7 @@ mod tests {
         let f = snap.family("ops").expect("ops family");
         let m = f.metrics().next().expect("series");
         match m.point().unwrap().value() {
-            MetricValue::Counter(c) => c.total,
+            MetricValue::Counter(c) => c.cumulative,
             _ => panic!("not a counter"),
         }
     }
@@ -1039,20 +1049,21 @@ mod tests {
         let reporter = CadenceReporter::new(tree);
         let labels = Labels::of("phase", "load");
 
-        // 4× 100ms snapshots @ 5 each → expect 100ms latest after each,
-        // 400ms latest after the 4th.
-        for _ in 0..4 {
-            reporter.ingest(&labels, counter_set(Duration::from_millis(100), 5));
+        // 4× 100ms snapshots of a counter climbing 5→20. Each cadence's
+        // latest is the latest cumulative (coalesce keeps latest, no sum).
+        for v in [5, 10, 15, 20] {
+            reporter.ingest(&labels, counter_set(Duration::from_millis(100), v));
         }
         reporter.flush_for_tests();
 
         let latest_100 = reporter.latest(&labels, Duration::from_millis(100))
             .expect("100ms cadence should have a latest");
-        assert_eq!(first_counter_total(&latest_100), 5);
+        assert_eq!(first_counter_total(&latest_100), 20, "last 100ms window's cumulative");
 
         let latest_400 = reporter.latest(&labels, Duration::from_millis(400))
             .expect("400ms cadence should have promoted after 4 ticks");
-        assert_eq!(first_counter_total(&latest_400), 20);
+        assert_eq!(first_counter_total(&latest_400), 20,
+            "promoted 400ms window holds the latest cumulative");
     }
 
     #[test]
@@ -1107,7 +1118,7 @@ mod tests {
 
         let pb = reporter.prebuffer(&labels, Duration::from_millis(1000))
             .expect("prebuffer present");
-        assert_eq!(first_counter_total(&pb), 15);
+        assert_eq!(first_counter_total(&pb), 8, "in-flight prebuffer holds the latest cumulative");
         // Latest still empty — no full cadence elapsed.
         assert!(reporter.latest(&labels, Duration::from_millis(1000)).is_none());
     }
@@ -1334,14 +1345,17 @@ mod tests {
         assert!(p400.is_partial(),
             "partial flag is sticky across the cascade fold");
 
-        for _ in 0..4 {
-            reporter.ingest(&labels, counter_set(Duration::from_millis(100), 3));
+        // Natural cadence pulse: a counter climbing 6→15 over four 100ms
+        // windows. The 400ms close holds the latest cumulative — no sum,
+        // no partial carryover — and is NOT marked partial.
+        for v in [6, 9, 12, 15] {
+            reporter.ingest(&labels, counter_set(Duration::from_millis(100), v));
         }
         reporter.flush_for_tests();
 
         let np400 = reporter.latest(&labels, Duration::from_millis(400)).unwrap();
-        assert_eq!(first_counter_total(&np400), 4 * 3,
-            "natural-pulse window: 4×3 with no partial carryover");
+        assert_eq!(first_counter_total(&np400), 15,
+            "natural-pulse window holds the latest cumulative");
         assert!(!np400.is_partial(),
             "natural-pulse close must NOT be marked partial");
     }

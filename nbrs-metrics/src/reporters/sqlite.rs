@@ -600,6 +600,10 @@ mod inner {
         /// returns Err verbatim from sqlite so the runner can
         /// surface "this exec_id is already taken" rather than
         /// silently overwriting prior history.
+        // Args map 1:1 to the `executions` table columns written in
+        // one statement; bundling them into a struct would only
+        // shuffle the same fields across a call boundary.
+        #[allow(clippy::too_many_arguments)]
         pub fn insert_execution_start(
             &mut self,
             session: &str,
@@ -852,6 +856,10 @@ mod inner {
         /// Errors are logged but not propagated — snapshot
         /// retention is a best-effort surface that must never
         /// block the run.
+        // Args map 1:1 to the `readout_snapshots` table columns
+        // written in one statement; a wrapper struct would only
+        // relocate the same fields across the call boundary.
+        #[allow(clippy::too_many_arguments)]
         pub fn upsert_readout_snapshot(
             &mut self,
             slot: &str,
@@ -1087,10 +1095,14 @@ mod inner {
                         let elapsed = t.elapsed();
                         now_ms - elapsed.as_millis() as i64
                     });
+                    // Store the cumulative running total so metrics.db is
+                    // numerically a Prometheus/VM-schematic counter series
+                    // (monotonic) and MetricsQL rate() is exact over it —
+                    // see the cumulative-counter note.
                     self.conn.execute(
                         "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count, created_ms) \
                          VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![instance_id, now_ms, interval_ms, c.total as i64, created_ms],
+                        params![instance_id, now_ms, interval_ms, c.cumulative as i64, created_ms],
                     ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
                 }
                 MetricValue::Gauge(g) => {
@@ -1108,7 +1120,11 @@ mod inner {
                     let instance_id = self.upsert_instance(family_id, name, labels);
 
                     let r = &h.reservoir;
-                    let obs = h.count as i64;
+                    // Store the CUMULATIVE observation count (Prometheus/VM-
+                    // schematic) so MetricsQL rate()/increase over a histogram
+                    // count is correct over sqlite too. The percentiles below
+                    // stay windowed (from the per-window reservoir).
+                    let obs = h.cumulative_count as i64;
                     let min = r.min() as f64;
                     let max = r.max() as f64;
                     let mean = r.mean();
@@ -2072,11 +2088,10 @@ mod inner {
                 .filter(|r| {
                     // Look for key=value in the activity string where value contains pattern
                     for segment in r.activity.split(", ") {
-                        if let Some((k, v)) = segment.split_once('=') {
-                            if k.trim() == agg.label_key && v.trim().contains(&agg.label_pattern) {
+                        if let Some((k, v)) = segment.split_once('=')
+                            && k.trim() == agg.label_key && v.trim().contains(&agg.label_pattern) {
                                 return true;
                             }
-                        }
                     }
                     false
                 })
@@ -2546,11 +2561,10 @@ mod inner {
             if self.consumed.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
-            if let Ok(guard) = self.reporter.lock() {
-                if let Some(ref r) = *guard {
+            if let Ok(guard) = self.reporter.lock()
+                && let Some(ref r) = *guard {
                     r.consolidate_wal();
                 }
-            }
         }
     }
 
@@ -2565,11 +2579,10 @@ mod inner {
             if self.consumed.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
-            if let Ok(guard) = self.reporter.lock() {
-                if let Some(ref r) = *guard {
+            if let Ok(guard) = self.reporter.lock()
+                && let Some(ref r) = *guard {
                     r.shutdown_consolidate();
                 }
-            }
         }
     }
 
@@ -2725,7 +2738,7 @@ mod inner {
             assert_eq!(read.errors[0].class, "poll_timeout");
             assert_eq!(read.errors[1].class, "BindError");
             assert_eq!(read.errors[1].cycle, Some(42));
-            assert_eq!(read.errors[1].retryable, true);
+            assert!(read.errors[1].retryable);
         }
 
         #[test]

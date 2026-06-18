@@ -25,6 +25,19 @@ use crate::snapshot::MetricSet;
 pub trait Reporter: Send + 'static {
     fn report(&mut self, snapshot: &MetricSet);
     fn flush(&mut self) {}
+
+    /// Self-termination signal. After a [`report`](Reporter::report)
+    /// that leaves this `true`, the subscriber's cadence-feed dispatch
+    /// worker exits its loop (calling [`flush`](Reporter::flush) on the
+    /// way out) — the subscriber receives no further pulses. A one-shot
+    /// subscriber — e.g. a settle / stop evaluator that has set a
+    /// terminal phase disposition — uses this to **unregister itself**
+    /// without a self-join deadlock (it runs on the worker thread, so it
+    /// cannot call `unsubscribe` on itself directly). Default `false`
+    /// (a long-lived subscriber that never self-terminates).
+    fn finished(&self) -> bool {
+        false
+    }
 }
 
 /// Capture function that produces per-component delta snapshots
@@ -562,7 +575,7 @@ mod tests {
             .expect("cadence reporter should have a closed 100ms snapshot");
         let ops_total = match latest.family("ops").unwrap()
             .metrics().next().unwrap().point().unwrap().value() {
-            MetricValue::Counter(c) => c.total,
+            MetricValue::Counter(c) => c.cumulative,
             _ => panic!("expected counter"),
         };
         assert_eq!(ops_total, 10, "one tick = 10");

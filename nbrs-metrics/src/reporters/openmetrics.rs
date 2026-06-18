@@ -23,7 +23,7 @@ pub fn render_prometheus_text(snapshot: &MetricSet) -> String {
             match point.value() {
                 MetricValue::Counter(c) => {
                     let name_total = format!("{name}_total");
-                    out.push_str(&format!("{name_total}{label_str} {}\n", c.total));
+                    out.push_str(&format!("{name_total}{label_str} {}\n", c.cumulative));
                 }
                 MetricValue::Gauge(g) => {
                     out.push_str(&format!("{name}{label_str} {}\n", g.value));

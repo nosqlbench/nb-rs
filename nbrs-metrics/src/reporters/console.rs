@@ -77,14 +77,14 @@ impl Reporter for ConsoleReporter {
                     MetricValue::Counter(c) => {
                         let key = metric.labels().identity_hash();
                         let prev = self.prev_counts.get(&key).copied().unwrap_or(0);
-                        let delta = c.total.saturating_sub(prev);
+                        let delta = c.cumulative.saturating_sub(prev);
                         let rate = delta as f64 / interval_secs;
-                        self.prev_counts.insert(key, c.total);
+                        self.prev_counts.insert(key, c.cumulative);
 
-                        if delta > 0 || c.total > 0 {
+                        if delta > 0 || c.cumulative > 0 {
                             self.emit(format_args!(
                                 "  {name}  count={total}  delta={delta}  rate={rate:.0}/s\n",
-                                total = c.total));
+                                total = c.cumulative));
                         }
                     }
                     MetricValue::Histogram(h) => {

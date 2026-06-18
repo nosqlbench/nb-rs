@@ -308,7 +308,7 @@ mod tests {
         let m = f.metrics().next().unwrap();
         assert_eq!(m.labels().get("activity"), Some("write"));
         match m.point().unwrap().value() {
-            MetricValue::Counter(c) => assert_eq!(c.total, 42),
+            MetricValue::Counter(c) => assert_eq!(c.cumulative, 42),
             _ => panic!("expected counter"),
         }
     }

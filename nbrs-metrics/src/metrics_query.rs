@@ -8,17 +8,19 @@
 //! through this single interface. There is no per-consumer access
 //! layer — the query speaks the metrics system's native types
 //! ([`MetricSet`] / [`MetricFamily`] / [`Metric`] / [`MetricPoint`]),
-//! and exposes four uniform query modes:
+//! and exposes these query modes — the method name says whether a value is a
+//! running **total**, a span **increase** (delta), or a **distribution**:
 //!
-//! - [`MetricsQuery::now`] — read-through to the live instrument(s).
-//! - [`MetricsQuery::cadence_window`] — last full closed window for a
-//!   declared cadence.
-//! - [`MetricsQuery::recent_window`] — approximation of "the last
-//!   `span` of time": closed cadence windows tiled to span the
-//!   request, plus `now` for the trailing fragment.
-//! - [`MetricsQuery::session_lifetime`] — full canonical span of the
-//!   session, walking the cascade down at read time so no in-flight
-//!   data is missed.
+//! - [`MetricsQuery::now`] — running-total snapshot at the live cadence.
+//! - [`MetricsQuery::cadence_window`] — the last full closed window's running
+//!   totals for a declared cadence.
+//! - [`MetricsQuery::session_lifetime`] — the session's running totals,
+//!   walking the cascade down at read time so no in-flight data is missed.
+//! - [`MetricsQuery::increase_over`] — the counter **increase** over the last
+//!   `span` (PromQL `increase`; a rate is `increase / span`), differenced
+//!   from the retained finest ring at the finest covering resolution.
+//! - [`MetricsQuery::distribution_over`] — the merged latency/value
+//!   **distribution** (histogram reservoir) over the last `span`.
 //!
 //! ## Selection
 //!
@@ -34,7 +36,9 @@ use std::time::{Duration, Instant};
 use crate::cadence_reporter::CadenceReporter;
 use crate::component::Component;
 use crate::labels::Labels;
-use crate::snapshot::{MetricSet, MetricFamily, Metric};
+use crate::snapshot::{
+    CounterValue, Metric, MetricFamily, MetricPoint, MetricSet, MetricValue,
+};
 
 /// A label-based filter for selecting which metrics a query operates
 /// on. Composes by AND — every constraint must match.
@@ -237,51 +241,88 @@ impl MetricsQuery {
         out
     }
 
-    // ---- recent_window: cadence windows tiling span + now -------------
+    // ---- increase_over / distribution_over: sliding span derivations ----
 
-    /// Approximate "the last `span` of wall-clock time", filtered by
-    /// `selection`.
-    ///
-    /// Implementation walks the smallest cadence whose ring covers
-    /// `span`, merges the most recent `ceil(span / cadence)` closed
-    /// windows of that cadence, then tops up with a `now` peek for
-    /// the trailing fragment. Per SRD-42 §"Cost rule for recent_window",
-    /// only matched metric instances combine — never the whole frame.
-    pub fn recent_window(&self, span: Duration, selection: &Selection) -> MetricSet {
-        let mut out = MetricSet::at(Instant::now(), span);
-
-        // Pick the smallest declared cadence whose ring may cover span.
+    /// The finest declared cadence whose retained ring (`HISTORY_RING_CAP`
+    /// windows) covers `span`, so a sliding lookback stays at the finest
+    /// available resolution. `None` if no cadence is declared.
+    fn finest_cadence_covering(&self, span: Duration) -> Option<Duration> {
+        let cap = crate::cadence_reporter::HISTORY_RING_CAP as u128;
         let mut chosen: Option<Duration> = None;
         for layer in self.reporter.layers() {
             if layer.hidden { continue; }
             chosen = Some(layer.interval);
-            if layer.interval >= span { break; }
+            if layer.interval.as_nanos().saturating_mul(cap) >= span.as_nanos() { break; }
         }
-        let Some(cadence) = chosen else { return out };
+        chosen
+    }
 
-        // Per-component, take the last `needed` windows from the ring.
-        let needed = ((span.as_nanos().max(1)) / (cadence.as_nanos().max(1))) as usize + 1;
+    /// The counter **increase** over the trailing `span` (PromQL `increase`):
+    /// for each matched counter, `cum[now] − cum[now−span]` differenced from
+    /// the retained finest-cadence ring at the finest covering resolution — a
+    /// continuous/sliding window (e.g. "the last 10 s" off the 1 s ring).
+    /// Emits **counters only**, and their values are DELTAS — contrast the
+    /// running-total readers [`Self::now`] / [`Self::cadence_window`] /
+    /// [`Self::session_lifetime`]. A rate is `increase / span`. For the recent
+    /// latency/value distribution use [`Self::distribution_over`].
+    pub fn increase_over(&self, span: Duration, selection: &Selection) -> MetricSet {
+        let mut out = MetricSet::at(Instant::now(), span);
+        let Some(cadence) = self.finest_cadence_covering(span) else { return out };
+        let windows = ((span.as_nanos().max(1)) / (cadence.as_nanos().max(1))).max(1) as usize;
+        let now = Instant::now();
         for component in self.reporter.component_labels() {
             let ring = self.reporter.ring(&component, cadence);
-            let take = ring.len().min(needed);
-            let start = ring.len().saturating_sub(take);
-            for snap in &ring[start..] {
-                for family in snap.families() {
-                    if !selection.matches_family(family.name()) { continue; }
-                    for metric in family.metrics() {
-                        if !selection.matches_labels(metric.labels()) { continue; }
+            if ring.is_empty() { continue; }
+            let end = ring.len();
+            let start = end.saturating_sub(windows);
+            let per = coalesce_component_windows(
+                ring[start..end].iter().map(|a| a.as_ref()),
+                selection, now, span,
+            );
+            // Baseline = the running total just BEFORE the span (window at
+            // start-1); subtracting it turns a counter's window-end cumulative
+            // into the span increase. `None` (→ 0) at the ring's start.
+            let baseline = start.checked_sub(1).map(|i| ring[i].clone());
+            for family in per.families() {
+                for metric in family.metrics() {
+                    insert_counter_increase_into(&mut out, family, metric, baseline.as_deref());
+                }
+            }
+        }
+        out
+    }
+
+    /// The merged latency/value **distribution** over the trailing `span`:
+    /// for each matched histogram, the HDR reservoir merged across the windows
+    /// in the span (read `p50`/`p99`/`mean` from it — the PromQL `*_over_time`
+    /// quantile family). Same finest-covering-resolution sliding window as
+    /// [`Self::increase_over`]. Emits **histograms only** — the recent
+    /// distribution, never a counter increase.
+    pub fn distribution_over(&self, span: Duration, selection: &Selection) -> MetricSet {
+        let mut out = MetricSet::at(Instant::now(), span);
+        let Some(cadence) = self.finest_cadence_covering(span) else { return out };
+        let windows = ((span.as_nanos().max(1)) / (cadence.as_nanos().max(1))).max(1) as usize;
+        let now = Instant::now();
+        for component in self.reporter.component_labels() {
+            let ring = self.reporter.ring(&component, cadence);
+            if ring.is_empty() { continue; }
+            let end = ring.len();
+            let start = end.saturating_sub(windows);
+            let per = coalesce_component_windows(
+                ring[start..end].iter().map(|a| a.as_ref()),
+                selection, now, span,
+            );
+            for family in per.families() {
+                for metric in family.metrics() {
+                    if matches!(
+                        metric.point().map(|p| p.value()),
+                        Some(MetricValue::Histogram(_)) | Some(MetricValue::BucketedHistogram(_))
+                    ) {
                         insert_metric_into(&mut out, family, metric);
                     }
                 }
             }
         }
-
-        // `recent_window` / `session_lifetime` used to top up with
-        // a live-instrument peek here. Since `now` now returns the
-        // 1 s cadence window (SRD-42 decision), the recent fragment
-        // is already visible through the smallest cadence's
-        // prebuffer walked above. No additional top-up.
-
         out
     }
 
@@ -290,51 +331,50 @@ impl MetricsQuery {
     /// Full canonical session span as of *now*, filtered by
     /// `selection`. Walks the cascade *down* at read time:
     ///
-    /// 1. Read-clones every cadence's prebuffer (in-flight partials).
-    /// 2. Folds the latest closed snapshot per cadence too (as long
-    ///    as it's still in the ring — defensive).
-    /// 3. Tops up with a live `now` peek for samples since the last
-    ///    smallest-cadence tick.
+    /// Per component, COALESCEs the cascade's disjoint time-slices — every
+    /// layer's in-flight prebuffer plus the largest cadence's retained
+    /// accumulator (the lifetime buffer) and its last-closed window — then
+    /// AGGREGATEs the per-component results across components. Coalescing
+    /// the time dimension keeps the latest `cumulative` and merges
+    /// reservoirs, so a session-cumulative counter is the latest running
+    /// total — not multiplied by the number of cascade sources it appears in.
     ///
-    /// Per SRD-42 §"Cost rule for recent_window", only matched
-    /// metric instances combine — same shape as `recent_window`.
+    /// Per SRD-42 §"Cost rule for recent_window", only matched metric
+    /// instances combine — same shape as `increase_over` / `distribution_over`.
     pub fn session_lifetime(&self, selection: &Selection) -> MetricSet {
         let session_age = self.reporter.started_at().elapsed();
-        let mut out = MetricSet::at(Instant::now(), session_age);
+        let now = Instant::now();
+        let mut out = MetricSet::at(now, session_age);
+        let largest = self.reporter.layers().last().map(|l| l.interval);
 
         for component in self.reporter.component_labels() {
+            // Gather this component's disjoint cascade sources.
+            let mut sources: Vec<MetricSet> = Vec::new();
             for layer in self.reporter.layers() {
-                // Prebuffer (in-flight partial).
                 if let Some(pre) = self.reporter.prebuffer(&component, layer.interval) {
-                    for family in pre.families() {
-                        if !selection.matches_family(family.name()) { continue; }
-                        for metric in family.metrics() {
-                            if !selection.matches_labels(metric.labels()) { continue; }
-                            insert_metric_into(&mut out, family, metric);
-                        }
-                    }
+                    sources.push(pre);
                 }
-                // Plus the largest-cadence latest closed snapshot
-                // — represents data that already promoted out of
-                // smaller layers.
-                if layer.interval == self.reporter.layers().last().map(|l| l.interval).unwrap_or_default()
-                    && let Some(latest) = self.reporter.latest(&component, layer.interval) {
-                        for family in latest.families() {
-                            if !selection.matches_family(family.name()) { continue; }
-                            for metric in family.metrics() {
-                                if !selection.matches_labels(metric.labels()) { continue; }
-                                insert_metric_into(&mut out, family, metric);
-                            }
-                        }
-                    }
+                // Only the LARGEST cadence's last-closed window is read: a
+                // smaller layer's closed window already folded into the next
+                // layer's prebuffer (reading it too would double-count); the
+                // largest cadence has no parent to fold into. (The earlier
+                // `now`/closed-window top-up re-read a promoted window — the
+                // source of the session-cumulative overcount.)
+                if Some(layer.interval) == largest
+                    && let Some(latest) = self.reporter.latest(&component, layer.interval)
+                {
+                    sources.push((*latest).clone());
+                }
             }
-        }
-
-        // Top up with live now.
-        let live = self.now(selection);
-        for family in live.families() {
-            for metric in family.metrics() {
-                insert_metric_into(&mut out, family, metric);
+            if sources.is_empty() {
+                continue;
+            }
+            // Coalesce the time dimension, then aggregate across components.
+            let per = coalesce_component_windows(sources.iter(), selection, now, session_age);
+            for family in per.families() {
+                for metric in family.metrics() {
+                    insert_metric_into(&mut out, family, metric);
+                }
             }
         }
 
@@ -420,9 +460,28 @@ impl MetricHandle {
     }
 }
 
-/// Insert one `(family, metric)` pair into `out`, merging with an
-/// existing same-identity entry per OpenMetrics §4.5.1.
+/// Insert one `(family, metric)` pair into `out`, merging an existing
+/// same-identity entry (OpenMetrics §4.5.1) as a **cross-component
+/// aggregate** ([`CombineMode::Aggregate`]): counter `cumulative` and
+/// histogram `cumulative_count` SUM across the matching series from
+/// different components.
 fn insert_metric_into(out: &mut MetricSet, family: &MetricFamily, metric: &Metric) {
+    insert_metric_with_mode(out, family, metric, crate::snapshot::CombineMode::Aggregate);
+}
+
+/// Insert one `(family, metric)` pair into `out`, merging an existing
+/// same-identity entry under `mode`. Use [`CombineMode::Coalesce`] to
+/// fold the **time dimension** (consecutive windows / cascade layers of
+/// one series: keep the latest `cumulative`, merge reservoirs) and
+/// [`CombineMode::Aggregate`] to fold **across components** (sum). Mixing
+/// them up double-counts a cumulative value — see `session_lifetime` /
+/// `increase_over`.
+fn insert_metric_with_mode(
+    out: &mut MetricSet,
+    family: &MetricFamily,
+    metric: &Metric,
+    mode: crate::snapshot::CombineMode,
+) {
     let Some(point) = metric.point() else { return };
     let existing = out.family(family.name())
         .and_then(|f| f.metric_with_labels(metric.labels()))
@@ -441,9 +500,12 @@ fn insert_metric_into(out: &mut MetricSet, family: &MetricFamily, metric: &Metri
             point.value().clone(),
             point.timestamp().unwrap_or(out.captured_at()),
         );
-        let merged = MetricSet::coalesce(std::slice::from_ref(out)
-            .iter().chain(std::slice::from_ref(&tmp).iter())
-            .cloned().collect::<Vec<_>>().as_slice());
+        let merged = MetricSet::coalesce_with_mode(
+            std::slice::from_ref(out)
+                .iter().chain(std::slice::from_ref(&tmp).iter())
+                .cloned().collect::<Vec<_>>().as_slice(),
+            mode,
+        );
         *out = merged;
     } else {
         out.insert_metric(
@@ -454,6 +516,67 @@ fn insert_metric_into(out: &mut MetricSet, family: &MetricFamily, metric: &Metri
             point.timestamp().unwrap_or(out.captured_at()),
         );
     }
+}
+
+/// Fold one component's time-ordered window `sources` into a single
+/// per-component snapshot, COALESCING the time dimension (keep the latest
+/// `cumulative`, merge reservoirs) over the matched selection only. The
+/// caller then AGGREGATEs the result across components. This split keeps a
+/// cumulative counter at its latest running total rather than multiplied
+/// by the number of cascade sources it appears in.
+fn coalesce_component_windows<'a>(
+    sources: impl IntoIterator<Item = &'a MetricSet>,
+    selection: &Selection,
+    captured_at: Instant,
+    interval: Duration,
+) -> MetricSet {
+    let mut per = MetricSet::at(captured_at, interval);
+    for src in sources {
+        for family in src.families() {
+            if !selection.matches_family(family.name()) { continue; }
+            for metric in family.metrics() {
+                if !selection.matches_labels(metric.labels()) { continue; }
+                insert_metric_with_mode(
+                    &mut per, family, metric, crate::snapshot::CombineMode::Coalesce,
+                );
+            }
+        }
+    }
+    per
+}
+
+/// Insert a counter's span **increase** into `out`, converting its
+/// window-end cumulative into `cum[end] − cum[before span]` by subtracting
+/// the `baseline` running total (the window just before the span), then
+/// aggregating (summing) across components. **Counters only** — non-counter
+/// points are skipped (the distribution lives in `distribution_over`). This
+/// is the consumer-side derivation `increase_over` applies.
+fn insert_counter_increase_into(
+    out: &mut MetricSet,
+    family: &MetricFamily,
+    metric: &Metric,
+    baseline: Option<&MetricSet>,
+) {
+    let Some(point) = metric.point() else { return };
+    let MetricValue::Counter(c) = point.value() else { return };
+    let base = baseline
+        .and_then(|b| b.family(family.name()))
+        .and_then(|f| f.metric_with_labels(metric.labels()))
+        .and_then(|m| m.point())
+        .and_then(|p| match p.value() {
+            MetricValue::Counter(bc) => Some(bc.cumulative),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let increase = c.cumulative.saturating_sub(base);
+    let inc = Metric::single(
+        metric.labels().clone(),
+        MetricPoint::new(
+            MetricValue::Counter(CounterValue::new(increase)),
+            point.timestamp().unwrap_or(out.captured_at()),
+        ),
+    );
+    insert_metric_into(out, family, &inc);
 }
 
 // =========================================================================
@@ -508,7 +631,7 @@ mod tests {
         let snap = query.now(&Selection::family("ops"));
         let total = match snap.family("ops").unwrap()
             .metrics().next().unwrap().point().unwrap().value() {
-            MetricValue::Counter(c) => c.total,
+            MetricValue::Counter(c) => c.cumulative,
             _ => panic!("not a counter"),
         };
         assert_eq!(total, 42);
@@ -527,9 +650,107 @@ mod tests {
         let snap = query.cadence_window(Duration::from_millis(100), &Selection::family("ops"));
         let f = snap.family("ops").expect("ops family in cadence_window result");
         match f.metrics().next().unwrap().point().unwrap().value() {
-            MetricValue::Counter(c) => assert_eq!(c.total, 99),
+            MetricValue::Counter(c) => assert_eq!(c.cumulative, 99),
             _ => panic!("not a counter"),
         }
+    }
+
+    #[test]
+    fn session_lifetime_does_not_overcount_a_single_counter() {
+        // session_lifetime walks the cascade down (every layer's prebuffer
+        // + the largest's latest) and combines. With ONE ingested counter
+        // the canonical value is its cumulative — not a multiple from the
+        // same value appearing in several cascade sources.
+        let (_root, reporter, query) = build_one_component_query();
+        let labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
+        let mut s = MetricSet::new(Duration::from_millis(100));
+        s.insert_counter("ops", Labels::default(), 42, Instant::now());
+        reporter.ingest(&labels, s);
+        reporter.flush_for_tests();
+
+        let snap = query.session_lifetime(&Selection::family("ops"));
+        let cumulative = match snap.family("ops").unwrap()
+            .metrics().next().unwrap().point().unwrap().value() {
+            MetricValue::Counter(c) => c.cumulative,
+            _ => panic!("not a counter"),
+        };
+        assert_eq!(cumulative, 42, "session_lifetime cumulative overcounted (got {cumulative})");
+    }
+
+    #[test]
+    fn increase_over_gives_the_span_increment() {
+        // Two windows of a counter — cumulative 10 then 20, no prior data.
+        // The recent-span value is the increment over the span (cum[end] −
+        // cum[before span] = 20 − 0 = 20), derived from the running totals.
+        let (_root, reporter, query) = build_one_component_query();
+        let labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
+
+        let mut s1 = MetricSet::new(Duration::from_millis(100));
+        s1.insert_counter("ops", Labels::default(), 10, Instant::now());
+        reporter.ingest(&labels, s1);
+        reporter.flush_for_tests();
+        std::thread::sleep(Duration::from_millis(2)); // distinct window timestamps
+        let mut s2 = MetricSet::new(Duration::from_millis(100));
+        s2.insert_counter("ops", Labels::default(), 20, Instant::now());
+        reporter.ingest(&labels, s2);
+        reporter.flush_for_tests();
+
+        let snap = query.increase_over(Duration::from_millis(250), &Selection::family("ops"));
+        let value = match snap.family("ops").unwrap()
+            .metrics().next().unwrap().point().unwrap().value() {
+            MetricValue::Counter(c) => c.cumulative,
+            _ => panic!("not a counter"),
+        };
+        assert_eq!(value, 20, "span increment over the recent window (got {value})");
+    }
+
+    #[test]
+    fn increase_over_subtracts_prior_cumulative() {
+        // A counter climbing 100→110→120 over three windows. The recent
+        // window's value is the INCREASE over the span — the running total
+        // BEFORE the span is subtracted — not the latest cumulative.
+        let (_root, reporter, query) = build_one_component_query();
+        let labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
+        for v in [100u64, 110, 120] {
+            let mut s = MetricSet::new(Duration::from_millis(100));
+            s.insert_counter("ops", Labels::default(), v, Instant::now());
+            reporter.ingest(&labels, s);
+            reporter.flush_for_tests();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let read = |span| match query.increase_over(span, &Selection::family("ops"))
+            .family("ops").unwrap().metrics().next().unwrap().point().unwrap().value() {
+            MetricValue::Counter(c) => c.cumulative,
+            _ => panic!("not a counter"),
+        };
+        assert_eq!(read(Duration::from_millis(100)), 10, "last window increase = 120−110");
+        assert_eq!(read(Duration::from_millis(200)), 20, "last two windows increase = 120−100");
+    }
+
+    #[test]
+    fn distribution_over_merges_histogram_windows() {
+        use hdrhistogram::Histogram as HdrHistogram;
+        // Two windows of a 2-sample histogram; the recent distribution over a
+        // span covering both is the MERGED reservoir (4 samples).
+        let (_root, reporter, query) = build_one_component_query();
+        let labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
+        for _ in 0..2 {
+            let mut s = MetricSet::new(Duration::from_millis(100));
+            let mut h = HdrHistogram::<u64>::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
+            h.record(1_000_000).unwrap();
+            h.record(2_000_000).unwrap();
+            s.insert_histogram("latency", Labels::default(), h, Instant::now());
+            reporter.ingest(&labels, s);
+            reporter.flush_for_tests();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let snap = query.distribution_over(Duration::from_millis(250), &Selection::family("latency"));
+        let count = match snap.family("latency").unwrap()
+            .metrics().next().unwrap().point().unwrap().value() {
+            MetricValue::Histogram(h) => h.count,
+            _ => panic!("not a histogram"),
+        };
+        assert_eq!(count, 4, "two windows of 2 samples merge to 4");
     }
 
     #[test]
@@ -549,7 +770,7 @@ mod tests {
         let f = snap.family("ops").expect("ops family");
         assert_eq!(f.len(), 1);
         match f.metrics().next().unwrap().point().unwrap().value() {
-            MetricValue::Counter(c) => assert_eq!(c.total, 9),
+            MetricValue::Counter(c) => assert_eq!(c.cumulative, 9),
             _ => panic!("not a counter"),
         }
     }

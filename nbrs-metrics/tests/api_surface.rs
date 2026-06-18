@@ -32,7 +32,7 @@ use nbrs_metrics::labels::Labels;
 use nbrs_metrics::metrics_query::{MetricsQuery, SelectError, Selection};
 use nbrs_metrics::scheduler::{Reporter, SchedulerBuilder};
 use nbrs_metrics::snapshot::{
-    Bucket, BucketBound, CounterValue, Exemplar, GaugeValue, HistogramValue,
+    Bucket, BucketBound, CombineMode, CounterValue, Exemplar, GaugeValue, HistogramValue,
     Metric, MetricFamily, MetricPoint, MetricSet, MetricType, MetricValue,
     combine_hdr, combine_into, counter_family, gauge_family, histogram_family,
     split_name_label,
@@ -180,7 +180,7 @@ fn exemplar_attaches_to_counter_value() {
 }
 
 #[test]
-fn combine_counter_sums_and_keeps_earlier_created() {
+fn combine_counter_aggregate_sums_keeps_earlier_created() {
     let t1 = Instant::now();
     let t0 = t1 - Duration::from_secs(60);
     let mut a = MetricPoint::new(
@@ -191,10 +191,10 @@ fn combine_counter_sums_and_keeps_earlier_created() {
         MetricValue::Counter(CounterValue::new(25).with_created(t0)),
         t1,
     );
-    combine_into(&mut a, &b).unwrap();
+    combine_into(&mut a, &b, CombineMode::Aggregate).unwrap();
     match a.value() {
         MetricValue::Counter(c) => {
-            assert_eq!(c.total, 35);
+            assert_eq!(c.cumulative, 35, "aggregate sums cumulative across components");
             assert_eq!(c.created, Some(t0));
         }
         _ => panic!("wrong type"),
@@ -212,20 +212,22 @@ fn combine_histogram_merges_reservoirs() {
 }
 
 #[test]
-fn metric_set_coalesce_sums_counters_across_intervals() {
+fn metric_set_coalesce_keeps_latest_counter_sum_intervals() {
+    // Time-coalesce keeps the latest (window-end) cumulative — never a
+    // sum — and sums the intervals.
     let mut a = MetricSet::new(Duration::from_secs(1));
     a.insert_counter("ops", Labels::default(), 5, Instant::now());
     let mut b = MetricSet::new(Duration::from_secs(2));
     b.insert_counter("ops", Labels::default(), 7, Instant::now());
     let merged = MetricSet::coalesce(&[a, b]);
     assert_eq!(merged.interval(), Duration::from_secs(3));
-    let total = match merged.family("ops").unwrap()
+    let cumulative = match merged.family("ops").unwrap()
         .metrics().next().unwrap().point().unwrap().value()
     {
-        MetricValue::Counter(c) => c.total,
+        MetricValue::Counter(c) => c.cumulative,
         _ => panic!("wrong type"),
     };
-    assert_eq!(total, 12);
+    assert_eq!(cumulative, 7, "latest cumulative, not the sum");
 }
 
 #[test]
@@ -322,8 +324,10 @@ fn cadence_reporter_promotes_on_interval_boundary() {
     let reporter = CadenceReporter::new(tree);
     let labels = Labels::of("phase", "load");
 
-    for _ in 0..4 {
-        reporter.ingest(&labels, ts_counter_set(Duration::from_millis(100), 5));
+    // A counter climbing 5→20 over four 100ms windows; the promoted
+    // 400ms window holds the latest cumulative (coalesce keeps latest).
+    for v in [5, 10, 15, 20] {
+        reporter.ingest(&labels, ts_counter_set(Duration::from_millis(100), v));
     }
     // Ingest is fire-and-forget (SRD-02 §"No Blocking Primitives
     // in Async Contexts"); the actor publishes the snapshot
@@ -331,12 +335,12 @@ fn cadence_reporter_promotes_on_interval_boundary() {
     // to observe in-flight effects deterministically.
     reporter.flush_for_tests();
     let latest_400 = reporter.latest(&labels, Duration::from_millis(400)).unwrap();
-    let total = match latest_400.family("ops").unwrap()
+    let cumulative = match latest_400.family("ops").unwrap()
         .metrics().next().unwrap().point().unwrap().value() {
-        MetricValue::Counter(c) => c.total,
+        MetricValue::Counter(c) => c.cumulative,
         _ => panic!(),
     };
-    assert_eq!(total, 20);
+    assert_eq!(cumulative, 20, "promoted window holds the latest cumulative");
 }
 
 #[test]
@@ -352,7 +356,7 @@ fn cadence_reporter_force_close_publishes_trailing_partial() {
     assert!(partial.interval() < Duration::from_millis(1000));
     let total = match partial.family("ops").unwrap()
         .metrics().next().unwrap().point().unwrap().value() {
-        MetricValue::Counter(c) => c.total,
+        MetricValue::Counter(c) => c.cumulative,
         _ => panic!(),
     };
     assert_eq!(total, 3);
@@ -424,7 +428,7 @@ fn metrics_query_now_reads_smallest_cadence_window() {
     let total = match snap.family("ops").unwrap()
         .metrics().next().unwrap().point().unwrap().value()
     {
-        MetricValue::Counter(c) => c.total,
+        MetricValue::Counter(c) => c.cumulative,
         _ => panic!(),
     };
     assert_eq!(total, 42);
@@ -446,7 +450,7 @@ fn metrics_query_cadence_window_returns_latest_closed_snapshot() {
     let total = match snap.family("ops").unwrap()
         .metrics().next().unwrap().point().unwrap().value()
     {
-        MetricValue::Counter(c) => c.total,
+        MetricValue::Counter(c) => c.cumulative,
         _ => panic!(),
     };
     assert_eq!(total, 99);
@@ -471,7 +475,7 @@ fn metrics_query_selection_filters_by_labels() {
     let family = snap.family("ops").unwrap();
     assert_eq!(family.len(), 1);
     let total = match family.metrics().next().unwrap().point().unwrap().value() {
-        MetricValue::Counter(c) => c.total,
+        MetricValue::Counter(c) => c.cumulative,
         _ => panic!(),
     };
     assert_eq!(total, 5);
@@ -528,7 +532,7 @@ fn metrics_query_session_lifetime_includes_in_flight_partial() {
     let total = match snap.family("ops").unwrap()
         .metrics().next().unwrap().point().unwrap().value()
     {
-        MetricValue::Counter(c) => c.total,
+        MetricValue::Counter(c) => c.cumulative,
         // session_lifetime merges the live-now counter too, so the
         // observed total may be larger than 7 (adds the stub's 42).
         _ => panic!(),

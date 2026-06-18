@@ -59,7 +59,7 @@ pub fn rows_from_query(query: &MetricsQuery) -> Vec<ActivityRow> {
             .and_then(|f| f.metrics().next())
             .and_then(|m| m.point())
             .and_then(|p| match p.value() {
-                MetricValue::Counter(c) => Some(c.total),
+                MetricValue::Counter(c) => Some(c.cumulative),
                 _ => None,
             })
             .unwrap_or(0);
@@ -278,11 +278,10 @@ fn compute_aggregates(
         let matching: Vec<&ActivityRow> = rows.iter()
             .filter(|r| {
                 for segment in r.activity.split(", ") {
-                    if let Some((k, v)) = segment.split_once('=') {
-                        if k.trim() == agg.label_key && v.trim().contains(&agg.label_pattern) {
+                    if let Some((k, v)) = segment.split_once('=')
+                        && k.trim() == agg.label_key && v.trim().contains(&agg.label_pattern) {
                             return true;
                         }
-                    }
                 }
                 false
             })

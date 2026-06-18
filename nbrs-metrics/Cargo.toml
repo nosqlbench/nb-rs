@@ -30,8 +30,10 @@ polydat = { path = "../polydat", version = "0.1.0" }
 # (`polydat::register_nodes!`) to emit its `inventory::submit!`
 # block from this crate.
 inventory = "0.3.24"
-rusqlite = { version = "0.31", features = ["bundled"], optional = true }
-regex = { version = "1", optional = true }
+rusqlite = { version = "0.31", features = ["bundled", "functions"], optional = true }
+# Used by the query API's label matchers (anchored regex). Core to the
+# `queryapi` module, so non-optional.
+regex = "1"
 reqwest = { version = "0.12", features = ["blocking"], optional = true }
 base64 = { version = "0.22", optional = true }
 
@@ -41,7 +43,7 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] 
 
 [features]
 default = []
-sqlite = ["dep:rusqlite", "dep:regex"]
+sqlite = ["dep:rusqlite"]
 victoriametrics = ["dep:reqwest"]
 all-reporters = ["sqlite", "victoriametrics", "dep:base64"]
 
