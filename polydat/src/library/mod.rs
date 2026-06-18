@@ -55,6 +55,7 @@ pub mod pick;
 pub mod exactly_one;
 pub mod log_levels;
 pub mod partition;
+pub mod stability;
 #[cfg(feature = "vectordata")]
 pub mod vectors;
 

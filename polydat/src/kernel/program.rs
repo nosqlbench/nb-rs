@@ -806,6 +806,43 @@ impl PolydatProgram {
         (*ni, *pi)
     }
 
+    /// Output names whose dependency cone contains a side-effecting
+    /// (`Purity::SideChannel`) node — `log_*`, diagnostics, etc. These
+    /// are the outputs a per-cycle "fire side effects" pass must pull so
+    /// the effect runs even when the value is unused. An output whose
+    /// cone is side-effect-free — including a pure or volatile
+    /// metric-reader value — is excluded: it is evaluated only when its
+    /// value is actually consumed, never per cycle just to fire a
+    /// non-existent effect.
+    pub fn outputs_with_side_effects(&self) -> Vec<String> {
+        self.output_list
+            .iter()
+            .filter(|(_, node_idx, _)| self.cone_has_side_channel(*node_idx))
+            .map(|(name, _, _)| name.clone())
+            .collect()
+    }
+
+    /// True if `start`'s transitive input cone contains a node declaring
+    /// `Purity::SideChannel`.
+    fn cone_has_side_channel(&self, start: usize) -> bool {
+        let mut stack = vec![start];
+        let mut seen = vec![false; self.nodes.len()];
+        while let Some(idx) = stack.pop() {
+            if std::mem::replace(&mut seen[idx], true) {
+                continue;
+            }
+            if matches!(self.nodes[idx].purity(), crate::ast::Purity::SideChannel { .. }) {
+                return true;
+            }
+            for src in &self.wiring[idx] {
+                if let WireSource::NodeOutput(up, _) = src {
+                    stack.push(*up);
+                }
+            }
+        }
+        false
+    }
+
     /// Find the output index for a name (for building memoized getters).
     pub(crate) fn output_list(&self) -> &[(String, usize, usize)] {
         &self.output_list
@@ -1145,6 +1182,17 @@ impl PolydatProgram {
     /// Number of nodes in the program.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// The widest temporal lookback window (ms) declared by any node in
+    /// this program — the max of [`crate::ast::PolydatNode::temporal_window_ms`]
+    /// across all nodes, or `None` if no node is temporally windowed.
+    ///
+    /// The SRD-86 optimizer settle gate reads this to size warmup so a
+    /// windowed reader's range clears the prior coordinate before the
+    /// objective is trusted.
+    pub fn max_temporal_window_ms(&self) -> Option<i64> {
+        self.nodes.iter().filter_map(|n| n.temporal_window_ms()).max()
     }
 
     /// Total wire count (sum of all node input edges).

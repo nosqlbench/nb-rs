@@ -1074,6 +1074,25 @@ fn positional_int_lit(arg: &crate::dsl::ast::Arg) -> Option<u64> {
     }
 }
 
+/// Collect the declared port type of every `input <name>: <type>`
+/// declaration in the file (bare and tuple forms both lower to one
+/// `InputDecl` per name). An unrecognised or absent type keyword is
+/// omitted, leaving the assembler's `U64` default in force.
+fn declared_input_types(
+    file: &PolydatFile,
+) -> std::collections::HashMap<String, crate::ast::PortType> {
+    let mut types = std::collections::HashMap::new();
+    for stmt in &file.statements {
+        if let Statement::InputDecl(d) = stmt
+            && let Some(ty) = &d.ty
+            && let Some(pt) = crate::ast::PortType::from_keyword(ty)
+        {
+            types.insert(d.name.clone(), pt);
+        }
+    }
+    types
+}
+
 /// Extract a string literal from an optional positional argument.
 /// Re-exported for cursor-sugar handlers in node modules that
 /// validate string-literal-only constructor args.
@@ -1698,6 +1717,13 @@ impl Compiler {
         }
 
         let mut asm = PolydatAssembler::new(self.input_names.clone());
+        // Apply declared `input <name>: <type>` types — `new` seeds
+        // every input as U64, so an `input x: f64` would otherwise read
+        // back as U64 and force a spurious U64→F64 adapter at every f64
+        // consumer.
+        for (name, ty) in declared_input_types(file) {
+            asm.set_input_type(&name, ty);
+        }
         // Honour module-level pragmas: a `pragma strict_values` (or
         // `strict`) directive at the source head opts into
         // auto-inserted assertion nodes (SRD 15 §"Module-Level
@@ -1713,8 +1739,11 @@ impl Compiler {
         // Inputs and externs are now uniform: declaration syntax
         // differs but the resulting input+output shape is identical.
         for input_name in self.input_names.clone() {
+            // Mirror the input's (now correctly-typed) slot so the
+            // auto-exposed output carries the declared type, not U64.
+            let port_type = asm.input_type(&input_name).unwrap_or(crate::ast::PortType::U64);
             let passthrough = Box::new(
-                crate::library::identity::PortPassthrough::new(&input_name, crate::ast::PortType::U64)
+                crate::library::identity::PortPassthrough::new(&input_name, port_type)
             );
             let passthrough_name = format!("__port_{input_name}");
             asm.add_node(
@@ -2035,6 +2064,9 @@ impl Compiler {
         // Zero inferred inputs means all bindings are constants — valid.
 
         let mut asm = PolydatAssembler::new(self.input_names.clone());
+        for (name, ty) in declared_input_types(file) {
+            asm.set_input_type(&name, ty);
+        }
         asm.set_strict_wires(self.pragmas.strict_types(), self.pragmas.strict_values());
 
         for stmt in file.statements.clone() {
@@ -2132,12 +2164,18 @@ impl Compiler {
         // Zero inferred inputs means all bindings are constants — valid.
 
         let mut asm = PolydatAssembler::new(self.input_names.clone());
+        for (name, ty) in declared_input_types(file) {
+            asm.set_input_type(&name, ty);
+        }
 
         // Auto-expose every declared input as a passthrough output
         // (parity with `extern`). See `compile()` for the same wiring.
         for input_name in self.input_names.clone() {
+            // Mirror the input's (now correctly-typed) slot so the
+            // auto-exposed output carries the declared type, not U64.
+            let port_type = asm.input_type(&input_name).unwrap_or(crate::ast::PortType::U64);
             let passthrough = Box::new(
-                crate::library::identity::PortPassthrough::new(&input_name, crate::ast::PortType::U64)
+                crate::library::identity::PortPassthrough::new(&input_name, port_type)
             );
             let passthrough_name = format!("__port_{input_name}");
             asm.add_node(

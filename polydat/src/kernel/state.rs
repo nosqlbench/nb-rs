@@ -275,11 +275,22 @@ impl PolydatKernel {
         // Populate buffers for folded constants so get_constant() works.
         let dummy = vec![0u64; program.coord_count()];
         state.set_inputs(&dummy);
+        // Seed buffers for folded *constant* nullary nodes so
+        // `get_constant()` works. Skip `Nondeterministic` nullary nodes
+        // (live-metric readers, entropy, clocks): they have no
+        // compile-time value, and pulling one here would evaluate it
+        // against an empty/absent runtime source — mirrors the same
+        // skip the fold pass makes (`fold_init_constants`).
         for name in program.output_names() {
             if let Some(&(node_idx, _)) = program.output_map.get(name)
-                && program.wiring[node_idx].is_empty() {
-                    state.pull(&program, name);
-                }
+                && program.wiring[node_idx].is_empty()
+                && !matches!(
+                    program.nodes[node_idx].purity(),
+                    crate::ast::Purity::Nondeterministic { .. }
+                )
+            {
+                state.pull(&program, name);
+            }
         }
         seed_shared_cells(&mut state, &program);
         state.core.seed_output_cells(&program);

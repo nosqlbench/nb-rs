@@ -470,6 +470,16 @@ impl PolydatAssembler {
         self
     }
 
+    /// Override a declared input's port type. `new` seeds every
+    /// `input_names` entry with `PortType::U64`; this applies the type
+    /// from an `input <name>: <type>` declaration. No-op if the input
+    /// isn't present.
+    pub fn set_input_type(&mut self, name: &str, port_type: crate::ast::PortType) {
+        if let Some(d) = self.input_defs.iter_mut().find(|d| d.name == name) {
+            d.port_type = port_type;
+        }
+    }
+
     /// Return the names of all inputs (coordinates + captures).
     pub fn input_names(&self) -> Vec<&str> {
         self.input_defs.iter().map(|d| d.name.as_str()).collect()

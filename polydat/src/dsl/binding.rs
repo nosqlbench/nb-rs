@@ -523,14 +523,26 @@ impl Compiler {
                     // Multi-output: add the node under an internal name,
                     // then add identity nodes for each destructured target
                     // that reference specific output ports.
+                    //
+                    // Each target's alias must carry that output port's own
+                    // type — a heterogeneous tuple (e.g. `is_stable`'s
+                    // `(f64, u64)`) otherwise fails wire-type resolution.
+                    // Capture the port types before the node is moved.
+                    let out_types: Vec<PortType> = node
+                        .meta()
+                        .outs
+                        .iter()
+                        .map(|p| p.typ)
+                        .collect();
                     let internal_name = format!("__destruct_{}", self.anon_counter);
                     self.anon_counter += 1;
                     asm.add_node(&internal_name, node, wire_refs);
 
                     for (i, target) in targets.iter().enumerate() {
+                        let ty = out_types.get(i).copied().unwrap_or(PortType::U64);
                         asm.add_node(
                             target,
-                            Box::new(Identity::new(crate::ast::PortType::U64)),
+                            Box::new(Identity::new(ty)),
                             vec![WireRef::node_port(&internal_name, i)],
                         );
                         self.all_names.push(target.clone());

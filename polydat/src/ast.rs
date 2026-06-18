@@ -1972,6 +1972,25 @@ pub trait PolydatNode: Send + Sync {
     fn purity(&self) -> Purity {
         Purity::Pure
     }
+
+    /// The temporal lookback window, in milliseconds, that this node's
+    /// evaluation reads over — the span of past time its value depends
+    /// on. Returns `None` for the common case of a node whose value
+    /// does not span a past interval.
+    ///
+    /// A windowed reader (e.g. a metrics-query node evaluating
+    /// `rate(m[30s])`) declares the widest range its result depends on.
+    /// A host driving the node across a sequence of *episodes* (the
+    /// SRD-86 optimizer's per-coordinate phases) reads the maximum over
+    /// a program's nodes to size a warmup gate, so a windowed read's
+    /// window clears the prior episode's data before the result is
+    /// trusted. The declaration is intentionally metric-agnostic — just
+    /// a duration — so polydat need not know what is being read.
+    ///
+    /// Default `None`: the node is not temporally windowed.
+    fn temporal_window_ms(&self) -> Option<i64> {
+        None
+    }
 }
 
 /// Determine the compile level of a node (works on trait objects).
