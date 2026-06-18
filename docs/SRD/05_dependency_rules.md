@@ -19,12 +19,12 @@ legitimately pull in real adapters as fixtures.)
 
 | Layer | Crates | Rationale |
 |------:|--------|-----------|
-| **L0** | `polydat-derive`, `nbrs-errorhandler`, `nbrs-metricsql` | leaf substrates; zero internal deps; independently extractable |
+| **L0** | `polydat-derive`, `nbrs-errorhandler` | leaf substrates; zero internal deps; independently extractable |
 | **L1** | `polydat` | depends only on `polydat-derive`; the deterministic variate kernel |
 | **L2** | `nbrs-metrics`, `nbrs-workload` | depend only on `polydat` |
-| **L3** | `nbrs-rate`, `nbrs-adapter-openapi` | `rate`→`metrics`; `openapi`→`workload` only |
+| **L3** | `nbrs-rate`, `nbrs-adapter-openapi`, `nbrs-metricsql` | `rate`→`metrics`; `openapi`→`workload`; `metricsql`→`metrics` (the query language atop the metric query API, [SRD 40c](40c_metric_query_api.md)) |
 | **L4** | `nbrs-activity` | the integration hub: `polydat` + `metrics` + `rate` + `errorhandler` + `workload` |
-| **L5** | `nbrs-adapter-{stdout,http,plotter,cql}`, `nbrs-tui`, `nbrs-web` | implement / consume the activity contract |
+| **L5** | `nbrs-adapter-{stdout,http,plotter,cql}`, `nbrs-tui`, `nbrs-web`, `nbrs-optimizers` | implement / consume the activity contract (`nbrs-optimizers` registers optimizer plugins via inventory — SRD-86) |
 | **L6** | `nbrs-adapter-testkit` | composite adapter (`→ stdout`) |
 | **L7** | `nbrs` (binary) | composition root; depends on everything |
 
@@ -51,7 +51,7 @@ and outside the layer rules; only `nbrs-adapter-cql` consumes it, feature-gated)
   the regression guard (fails if one is re-widened to bare `pub`). **Scope:** D5 applies only
   to crates whose public API *is* "what the workspace consumes" (`nbrs-activity`, `nbrs-tui`,
   `nbrs-web`). **Standalone, extractable libraries** (`polydat`, `nbrs-metricsql`, `nbrs-rate`,
-  `nbrs-errorhandler`) are **exempt** — their public API is their own library contract,
+  `nbrs-errorhandler`, `nbrs-optimizers`) are **exempt** — their public API is their own library contract,
   legitimately broader than any single consumer; narrowing it would amputate real API.
   Modules used by a crate's *own* integration tests also stay `pub` (white-box tests are
   external crates) and are exempt.
@@ -82,13 +82,14 @@ depend on).
 |---|---|---|---|
 | `polydat-derive` | `#[polydat_node]` proc-macro | — | — |
 | `polydat` | `ast`,`kernel`,`compile`,`dsl`,`library`,`viz`,`binder`,`iteration`,`audit` (host-log sink bridge) | — | `polydat-derive` |
-| `nbrs-metricsql` ([SRD 08](08_metricsql.md)) | **full library API** (`lexer`,`parser`,`prettifier`,`ast`,`query_rewrite`,`eval`,`streaming`,`adapters`,`catalog`,`grammar`,`runtime`) — standalone library, **D5-exempt** | pluggable `DataSource` impl (caller-provided) | — |
+| `nbrs-metricsql` ([SRD 08](08_metricsql.md)) | **full library API** (`lexer`,`parser`,`prettifier`,`ast`,`query_rewrite`,`eval`,`streaming`,`grammar`,`runtime`, + the four `metricsql_*` polydat reader nodes under feature `polydat-nodes`) — reusable library, **D5-exempt** (own contract; no longer zero-dep) | a `MetricAccess` impl from `nbrs-metrics::queryapi` ([SRD 40c](40c_metric_query_api.md)) | `nbrs-metrics`; `polydat` (feature `polydat-nodes`) |
 | `nbrs-errorhandler` ([SRD 07](07_error_routing.md)) | `ErrorDetail`,`ErrorHandler`,`ErrorRouter` (re-exported), `handlers` | — | — |
-| `nbrs-metrics` ([SRD 39](39_metrics_contract.md)) | `component`,`instruments`,`labels`,`selector`,`controls`,`snapshot`,`cadence`,`cadence_reporter`,`scheduler`,`summaries`,`metrics_query`,`reporters`,`diag` — *internal: `validation`* | `polydat::{ast,kernel}` | `polydat` |
+| `nbrs-optimizers` ([SRD 86](86_optimization.md)) | **full algorithm API** (`Optimizer`/`Objective`/`SearchSpace`/`algos` — the local trait + 9 optimizers), **D5-exempt**; the `runtime` feature adds the inventory **bridge** (`bridge.rs`) that registers each against the core contract. The contract itself lives in `nbrs-activity`, NOT here | the core `nbrs_activity::optimize` contract (only under the `runtime` feature) | `nbrs-activity` (runtime feature only) |
+| `nbrs-metrics` ([SRD 39](39_metrics_contract.md)) | `component`,`instruments`,`labels`,`selector`,`controls`,`snapshot`,`cadence`,`cadence_reporter`,`scheduler`,`summaries`,`metrics_query`,`reporters`,`diag`,`queryapi` (the metric query API: `MetricAccess` + `Vector`/`Series`/`Sample`/`Matcher` shapes + `MetricCatalog` + live/sqlite backends + `AccessProvider`, [SRD 40c](40c_metric_query_api.md)) — *internal: `validation`* | `polydat::{ast,kernel}` | `polydat` |
 | `nbrs-workload` ([SRD 25](25_workload_contract.md)) | `model`,`parse`,`bindpoints`,`tags`,`inline`,`catalog`,`edit`,`extends`,`report`,`metric_format`,`polydat_matter` — *internal: `template`,`spectest`* | `polydat::{ast,dsl}` | `polydat` |
 | `nbrs-rate` ([SRD 06](06_rate_limiter.md)) | `RateSpec`,`RateLimiter`,`RateLimiterApplier` (re-exported; modules private) | `nbrs_metrics::controls` | `nbrs-metrics` |
 | `nbrs-adapter-openapi` | `DriverAdapter` impl (inventory) | `nbrs_workload::model` | `nbrs-workload` |
-| `nbrs-activity` | `adapter`,`op_modifier`,`wrapper_registry`/`wrapper_resolver`,`runner`,`activity`,`session`,`scene_tree`,`scope_tree`,`bindings`,`phase_outcome`,`phase_end_triggers`,`refine_plan`,`checkpoint`,`observer`,`diag!`,`readouts`,`lifecycle`,`log_sink`,`wires`,`polydat_nodes`,`resource_pool`,`fixture`(test) — **full surface + the ~25-module internal narrowing target in [SRD 29](29_execution_engine.md)** | `polydat`,`nbrs-metrics`,`nbrs-rate`,`nbrs-errorhandler`,`nbrs-workload` | L0–L3 |
+| `nbrs-activity` | `adapter`,`op_modifier`,`wrapper_registry`/`wrapper_resolver`,`runner`,`activity`,`session`,`scene_tree`,`scope_tree`,`bindings`,`phase_outcome`,`phase_end_triggers`,`refine_plan`,`checkpoint`,`observer`,`diag!`,`readouts`,`lifecycle`,`log_sink`,`wires`,`polydat_nodes`,`resource_pool`,`optimize`(the SRD-86 optimizer **contract** + registry),`fixture`(test) — **full surface + the ~25-module internal narrowing target in [SRD 29](29_execution_engine.md)** | `polydat`,`nbrs-metrics`,`nbrs-rate`,`nbrs-errorhandler`,`nbrs-workload` | L0–L3 |
 | `nbrs-adapter-{stdout,http,plotter,cql}` | `DriverAdapter`/`OpDispenser` impls (inventory) | `nbrs_activity::adapter` | `nbrs-activity`,`nbrs-workload`,`polydat`(+`metrics`/`cassandra-cpp` for cql) |
 | `nbrs-tui` ([SRD 59](59_tui_contract.md)) | `observer`(`TuiObserver`),`state`,`run_state_actor`, sink seam (`display_sink`/`log_only_sink`/…), inspector (`inspector_server`/`repl_state`/`key_watcher`) — *internal: `app`/`widgets`/`reporter`/`frame_broker`/`prompt_state`/`readout_panel`/`readout_sink`/`tui_sink`* | `nbrs_activity::observer`, `nbrs_metrics` | `nbrs-activity`,`nbrs-metrics`,`polydat` |
 | `nbrs-web` ([SRD 54](54_web_ui.md)) | `server`,`ws` — *internal: `routes`,`models`,`graph`* | `nbrs_activity`, `nbrs_metrics` | `nbrs-activity`,`nbrs-metrics`,`polydat` |
@@ -101,7 +102,9 @@ depend on).
 > `scope`, `wrappers`, `validation`) stay `pub` only because the crate's own integration
 > tests use them. D5 is **enforced** — the compiler walls off the `pub(crate)` set and
 > `tests::d5_public_surface` guards against re-widening. Likewise `nbrs-tui` (6 narrowed).
-> (`nbrs-metricsql` is a standalone library and is D5-exempt — see the D5 scope note above.)
+> (`nbrs-metricsql` is D5-exempt — its public API is its own library contract — but it is
+> **L3**, depending on `nbrs-metrics` for the data-access seam ([SRD 40c](40c_metric_query_api.md));
+> "extractable" here means own-contract, not zero-dep, exactly as for `nbrs-rate`.)
 
 ---
 

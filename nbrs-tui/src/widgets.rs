@@ -242,8 +242,8 @@ pub fn bar_str_braille(fraction: f64, width: usize) -> (String, String) {
     for _ in 0..full_cells { filled.push('\u{2588}'); }
     if partial > 0 && full_cells < width {
         let mut bits: u32 = 0;
-        for i in 0..partial {
-            bits |= PIP_ORDER[i];
+        for &pip in &PIP_ORDER[..partial] {
+            bits |= pip;
         }
         // Unicode Braille block starts at U+2800; the low byte
         // is the pip-pattern bitmask.

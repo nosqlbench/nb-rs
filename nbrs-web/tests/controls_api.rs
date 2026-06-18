@@ -1,5 +1,11 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
+//
+// These async tests serialize on a process-global `TEST_LOCK` (a pure
+// `Mutex<()>`) held across `.await` so global session-root installs don't
+// race; the awaited router code never locks it, so there's no deadlock —
+// `await_holding_lock` is a false positive for this deliberate pattern.
+#![allow(clippy::await_holding_lock)]
 
 //! Axum integration tests for the `/api/controls` list + the
 //! `/api/control/{name}` POST write endpoint (SRD 23 §"Web API").
@@ -172,7 +178,7 @@ async fn set_control_final_scope_returns_400_with_code() {
     root.read().unwrap().controls().declare(
         ControlBuilder::new("rate", 100f64)
             .reify_as_gauge(|v: &f64| Some(*v))
-            .from_f64(|v| Ok(v))
+            .from_f64(Ok)
             .final_at_scope("session_root")
             .branch_scope(BranchScope::Subtree)
             .build(),

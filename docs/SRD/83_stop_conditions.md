@@ -242,6 +242,23 @@ and the phase-end outcome records the chosen axes. A scenario shell's
 fired condition aborts in-flight siblings via the same cooperative path
 (SRD-82 Part 4).
 
+> **Implemented 2026-06-16** (`nbrs-activity::stop_conditions`,
+> `workload_shell`, `activity`, `executor`). Each `StopCondition` carries
+> an `effect: Outcome`; `StopConditionSet::evaluate` returns
+> `Option<(Outcome, String)>`; `WorkloadShell::record_phase` threads the
+> `Outcome` and exposes `stop_outcome()`. **Effect-less default is
+> level-dependent** (preserving prior behaviour, codified): an internal
+> error-rate breach and a **phase**-level trip default to `fail`
+> (`Interrupted+Failed`); a **workload**-level trip defaults to a graceful
+> `stop` (`Interrupted+Succeeded`). Explicit `effect: fail|stop`
+> overrides. At the phase shell a `fail` records a `PhaseErrorDetail`
+> (phase ends Failed) and a `stop` halts cleanly (phase ends Completed);
+> at the workload shell a `fail` returns `Err` (session exits non-zero)
+> and a `stop` requests the graceful walk-halt. Tested:
+> `stop_conditions` unit set + `nbrs/tests/{stop_conditions,workload_shell_e2e}`.
+> The optimizer (SRD-86) reconfigures the per-point default so a failed
+> probe is a feasibility datum, not a search abort.
+
 ---
 
 ## Part 6 — Orthogonality and reconciliation
@@ -318,8 +335,10 @@ workload on a failed phase" without any `stop_when:` in the workload.
    per-cycle events); add `Every`- and `settle`-scheduled timing
    daemons to the `DaemonPool` at the phase and scenario layers that
    raise `Tick`.
-4. **Effects.** Map `fail`/`stop` to `StopCause::{Fault,Interrupt}` and
-   the two-axis `Outcome` (depends on SRD-82 Part 1).
+4. **Effects.** ✅ DONE (2026-06-16). `fail`/`stop` map to the two-axis
+   `Outcome` (`Outcome::failed()` / `Outcome::interrupted()`) per
+   condition, with a level-dependent default for effect-less conditions
+   (phase → `fail`, workload → `stop`). See the Part 5 implementation note.
 5. **Retire the `AggregateGuard` breach.** Replace the drain-loop
    `guard.assess` delegation with stop-condition evaluation; drop
    `ErrorPolicy.guard`; install the default conditions.

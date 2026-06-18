@@ -888,6 +888,66 @@ pub struct WorkloadPhase {
     /// §"Architectural shape").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll: Option<PhasePollSpec>,
+    /// SRD-86 — when present, the executor dispatches the named optimizer over
+    /// the phase: it writes each axis as an input wire on the phase's binding
+    /// kernel and reads the `objective` wire back (the objective is *just a
+    /// wire read*). Workload-local config; `nbrs-activity` maps it to its
+    /// optimizer contract and discovers the optimizer via the link-time
+    /// registry (`nbrs describe optimizers`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimize: Option<OptimizeBlock>,
+}
+
+/// SRD-86 — a phase `optimize:` block. The optimizer **maximizes** the
+/// `objective` wire by writing the `axes` input wires on the phase kernel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizeBlock {
+    /// Registered optimizer name (`null`, `cmaes`, `nelder_mead`, … — see
+    /// `nbrs describe optimizers`).
+    pub method: String,
+    /// The objective — a declared phase `metrics:` entry the optimizer
+    /// maximizes (SRD-86 §10).
+    pub objective: String,
+    /// Optional per-axis metadata (e.g. changeover class). The search axes
+    /// themselves are auto-gathered from the node's `for_each` comprehensions
+    /// (SRD-86 A12); this list is not required.
+    #[serde(default)]
+    pub axes: Vec<OptimizeAxis>,
+    #[serde(default = "default_optimize_max_evals")]
+    pub max_evals: usize,
+    #[serde(default = "default_optimize_seed")]
+    pub seed: u64,
+    /// Optimizer-specific knobs (e.g. `{ lambda: 8 }`).
+    #[serde(default)]
+    pub params: HashMap<String, f64>,
+}
+
+/// One optimization axis: continuous (`lo`/`hi`[/`min_step`]) or discrete
+/// (`detents`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizeAxis {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lo: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hi: Option<f64>,
+    #[serde(default)]
+    pub min_step: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detents: Option<Vec<f64>>,
+    /// `coordinate` (default) | `control` | `fixture` (SRD-86 changeover class).
+    #[serde(default = "default_optimize_changeover")]
+    pub changeover: String,
+}
+
+fn default_optimize_max_evals() -> usize {
+    100
+}
+fn default_optimize_seed() -> u64 {
+    1
+}
+fn default_optimize_changeover() -> String {
+    "coordinate".to_string()
 }
 
 /// Phase-level `poll:` block (SRD-75). When set on a

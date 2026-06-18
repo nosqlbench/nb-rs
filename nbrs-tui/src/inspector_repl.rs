@@ -388,12 +388,11 @@ impl ReplApp {
             // Refresh pinned metrics if the interval elapsed.
             self.maybe_refresh_pins();
             terminal.draw(|frame| self.draw(frame))?;
-            if event::poll(Duration::from_millis(100))? {
-                if let Event::Key(k) = event::read()? {
+            if event::poll(Duration::from_millis(100))?
+                && let Event::Key(k) = event::read()? {
                     if k.kind != KeyEventKind::Press { continue; }
                     self.handle_key(k.code, k.modifiers);
                 }
-            }
         }
         Ok(())
     }
@@ -510,7 +509,6 @@ impl ReplApp {
         // against server-side).
         if let Some(rest) = input.strip_prefix("readout ") {
             self.complete_readout_arg(rest);
-            return;
         }
     }
 
@@ -714,7 +712,6 @@ impl ReplApp {
                         self.trim_scrollback();
                     }
                 }
-                return;
             }
             Some(brace_idx) => {
                 let family = &rest[..brace_idx];
@@ -738,11 +735,10 @@ impl ReplApp {
         let last = body.rsplit(',').next().unwrap_or("").trim_start();
         let mut matching_instances: Vec<Vec<(String, String)>> = Vec::new();
         for row in metrics {
-            if let Some((f, pairs)) = split_metric_row(row) {
-                if family == "*" || f == family {
+            if let Some((f, pairs)) = split_metric_row(row)
+                && (family == "*" || f == family) {
                     matching_instances.push(pairs);
                 }
-            }
         }
 
         // Decide between key-completion and value-completion.

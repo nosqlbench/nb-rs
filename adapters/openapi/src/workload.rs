@@ -78,9 +78,11 @@ pub fn generate_ops(
             // Generate bindings for body fields
             for field in &body_info.fields {
                 let bind_name = field.name.replace('.', "_");
-                if !seen_bindings.contains_key(&bind_name) {
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    seen_bindings.entry(bind_name.clone())
+                {
                     binding_lines.push(polydat_binding_for_param(&bind_name, &field.schema_type));
-                    seen_bindings.insert(bind_name, true);
+                    e.insert(true);
                 }
             }
         }

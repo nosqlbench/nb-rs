@@ -89,9 +89,9 @@ impl CqlConfig {
         nbrs_activity::resource_pool::ResourceKey::new("cql")
             .with("driver", driver_name)
             .with("hosts", &self.hosts)
-            .with("port", &self.port.to_string())
+            .with("port", self.port.to_string())
             .with("keyspace", &self.keyspace)
-            .with("consistency", &format!("{:?}", self.consistency))
+            .with("consistency", format!("{:?}", self.consistency))
             // Auth identity is part of the instance —
             // changing the username produces a different
             // logical session. The key's `fmt_for_log`
@@ -161,11 +161,10 @@ impl CqlConfig {
             }
             config.trace_rate = Some(parsed);
         }
-        if let Some(v) = params.get("trace_log") {
-            if !v.is_empty() {
+        if let Some(v) = params.get("trace_log")
+            && !v.is_empty() {
                 config.trace_log_path = Some(v.clone());
             }
-        }
         Ok(config)
     }
 }

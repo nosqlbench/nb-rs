@@ -365,6 +365,10 @@ pub fn write_control_f64_from_tui(
 /// `None` means "no data yet" (e.g. completed phase, or phase
 /// that hasn't received any frames) — no marker renders in that
 /// case.
+// The six percentile/min/max nanos plus the two rolling peaks are
+// each an independent metric the renderer plots; grouping them into
+// a struct would only move the same eight values across the call.
+#[allow(clippy::too_many_arguments)]
 fn latency_detail_lines(
     min_ns: u64,
     p50_ns: u64,
@@ -652,7 +656,7 @@ impl App {
     /// Returns the parsed `(name, value)` on successful
     /// dispatch so tests can assert.
     pub fn submit_control_edit(&mut self) -> Option<(String, f64)> {
-        let Some(p) = self.edit_prompt.as_mut() else { return None; };
+        let p = self.edit_prompt.as_mut()?;
         let buf = p.buffer.trim().to_string();
         // Parse name=value.
         let (name, value_str) = match buf.split_once('=') {
@@ -1335,11 +1339,10 @@ impl App {
             self.tree_selected = self.default_tree_selection();
         }
         self.tree_selection_auto = false;
-        if let Some(start) = self.tree_selected {
-            if let Some(next) = self.step_selectable_for_lod(start, delta) {
+        if let Some(start) = self.tree_selected
+            && let Some(next) = self.step_selectable_for_lod(start, delta) {
                 self.tree_selected = Some(next);
             }
-        }
         self.scroll_selection_into_view();
     }
 
@@ -1994,8 +1997,7 @@ impl App {
             if phase.summary.as_ref()
                 .map(|sm| sm.p50_nanos > 0 || sm.p99_nanos > 0 || sm.max_nanos > 0)
                 .unwrap_or(false)
-            {
-                if let Some(ref sm) = phase.summary {
+                && let Some(ref sm) = phase.summary {
                     out.push(Line::from(Span::styled(
                         format!("latency: min {}  p50 {}  p99 {}  max {}",
                             widgets::format_nanos(sm.min_nanos),
@@ -2005,7 +2007,6 @@ impl App {
                         Style::default().fg(colors::LAT_P50),
                     )));
                 }
-            }
 
             // Relevancy aggregates (recall / precision / f1 / …), one
             // line per metric. Shows the moving-window mean (last N
@@ -2145,7 +2146,7 @@ impl App {
             ])
             .split(area);
 
-        self.draw_header(frame, sections[0], &state);
+        self.draw_header(frame, sections[0], state);
 
         // Bottom section routing:
         //   - tree hidden (LOD:off): always show the log in the full
@@ -2154,7 +2155,7 @@ impl App {
         //   - tree visible + log off: tree takes the whole section.
         //   - tree visible + log on: split 50/50.
         if self.tree_lod == TreeLod::Hidden {
-            self.draw_log(frame, sections[1], &state);
+            self.draw_log(frame, sections[1], state);
         } else if self.show_log {
             let bottom = Layout::default()
                 .direction(Direction::Vertical)
@@ -2163,10 +2164,10 @@ impl App {
                     Constraint::Percentage(50),
                 ])
                 .split(sections[1]);
-            self.draw_tree(frame, bottom[0], &state);
-            self.draw_log(frame, bottom[1], &state);
+            self.draw_tree(frame, bottom[0], state);
+            self.draw_log(frame, bottom[1], state);
         } else {
-            self.draw_tree(frame, sections[1], &state);
+            self.draw_tree(frame, sections[1], state);
         }
 
         self.draw_footer(frame, sections[2]);
@@ -3103,8 +3104,8 @@ fn extract_latency_from_frame(snapshot: &MetricSet) -> Option<LiveLatency> {
     use nbrs_metrics::snapshot::MetricValue;
     let family = snapshot.family("cycles_servicetime")?;
     for metric in family.metrics() {
-        if let Some(point) = metric.point() {
-            if let MetricValue::Histogram(h) = point.value() {
+        if let Some(point) = metric.point()
+            && let MetricValue::Histogram(h) = point.value() {
                 let r = &h.reservoir;
                 return Some(LiveLatency {
                     min:  r.min(),
@@ -3115,7 +3116,6 @@ fn extract_latency_from_frame(snapshot: &MetricSet) -> Option<LiveLatency> {
                     max:  r.max(),
                 });
             }
-        }
     }
     None
 }

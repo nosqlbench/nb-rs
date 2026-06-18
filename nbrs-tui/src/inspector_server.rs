@@ -659,9 +659,8 @@ impl MetricSelector {
     }
 
     fn matches(&self, family: &str, labels: &Labels) -> bool {
-        if let Some(ref name) = self.family {
-            if name != family { return false; }
-        }
+        if let Some(ref name) = self.family
+            && name != family { return false; }
         for (k, v) in &self.label_eq {
             if labels.get(k) != Some(v.as_str()) { return false; }
         }
@@ -727,7 +726,7 @@ fn format_metric_line(inst: &MetricInstance) -> String {
     let labels = inst.labels.to_prometheus();
     let prefix = format!("{}{}", inst.family, labels);
     match &inst.value {
-        MetricValue::Counter(c) => format!("{prefix} = {} (counter)", c.total),
+        MetricValue::Counter(c) => format!("{prefix} = {} (counter)", c.cumulative),
         MetricValue::Gauge(g) => format!("{prefix} = {} (gauge)", g.value),
         MetricValue::Histogram(h) => {
             let ms_mode = is_latency_family(&inst.family);

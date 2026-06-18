@@ -92,7 +92,7 @@ pub fn parse_spec(source: &str) -> Result<(OpenAPI, Vec<ApiOperation>), String> 
             let Some(op) = maybe_op else { continue };
 
             let operation_id = op.operation_id.clone().unwrap_or_else(|| {
-                let clean = path.replace('/', "_").replace('{', "").replace('}', "");
+                let clean = path.replace('/', "_").replace(['{', '}'], "");
                 format!("{}{clean}", method.to_lowercase())
             });
 
@@ -153,11 +153,8 @@ pub fn parse_spec(source: &str) -> Result<(OpenAPI, Vec<ApiOperation>), String> 
 fn extract_param_type(param: &Parameter) -> String {
     let data = param.parameter_data_ref();
     match &data.format {
-        ParameterSchemaOrContent::Schema(schema_ref) => {
-            match schema_ref {
-                ReferenceOr::Item(schema) => schema_type_name(&schema.schema_kind),
-                _ => "string".into(),
-            }
+        ParameterSchemaOrContent::Schema(ReferenceOr::Item(schema)) => {
+            schema_type_name(&schema.schema_kind)
         }
         _ => "string".into(),
     }
@@ -180,6 +177,10 @@ fn extract_body_info(body: &openapiv3::RequestBody, spec: &OpenAPI) -> Option<Bo
 }
 
 /// Flatten a schema reference into field info.
+// `parent_required` is part of the recursive contract: the `$ref`
+// branch forwards it to the nested `flatten_schema_ref` call so a
+// resolved component inherits its referencing site's required flag.
+#[allow(clippy::only_used_in_recursion)]
 fn flatten_schema_ref(
     schema_ref: &ReferenceOr<Schema>,
     spec: &OpenAPI,
@@ -190,16 +191,16 @@ fn flatten_schema_ref(
         ReferenceOr::Item(schema) => flatten_schema(&schema.schema_kind, spec, prefix, &[]),
         ReferenceOr::Reference { reference } => {
             // Resolve $ref by name from components/schemas
-            if let Some(name) = reference.strip_prefix("#/components/schemas/") {
-                if let Some(schema_ref) = spec.components.as_ref().and_then(|c| c.schemas.get(name)) {
-                    return flatten_schema_ref(
-                        &match schema_ref {
-                            ReferenceOr::Item(s) => ReferenceOr::Item(s.clone()),
-                            r @ ReferenceOr::Reference { .. } => r.clone(),
-                        },
-                        spec, prefix, parent_required,
-                    );
-                }
+            if let Some(name) = reference.strip_prefix("#/components/schemas/")
+                && let Some(schema_ref) = spec.components.as_ref().and_then(|c| c.schemas.get(name))
+            {
+                return flatten_schema_ref(
+                    &match schema_ref {
+                        ReferenceOr::Item(s) => ReferenceOr::Item(s.clone()),
+                        r @ ReferenceOr::Reference { .. } => r.clone(),
+                    },
+                    spec, prefix, parent_required,
+                );
             }
             vec![]
         }
@@ -274,17 +275,17 @@ fn flatten_object(
                 }
             }
             ReferenceOr::Reference { reference } => {
-                if let Some(schema_name) = reference.strip_prefix("#/components/schemas/") {
-                    if let Some(schema_ref) = spec.components.as_ref().and_then(|c| c.schemas.get(schema_name)) {
-                        let resolved = flatten_schema_ref(
-                            &match schema_ref {
-                                ReferenceOr::Item(s) => ReferenceOr::Item(s.clone()),
-                                r @ ReferenceOr::Reference { .. } => r.clone(),
-                            },
-                            spec, &full_name, &is_required,
-                        );
-                        fields.extend(resolved);
-                    }
+                if let Some(schema_name) = reference.strip_prefix("#/components/schemas/")
+                    && let Some(schema_ref) = spec.components.as_ref().and_then(|c| c.schemas.get(schema_name))
+                {
+                    let resolved = flatten_schema_ref(
+                        &match schema_ref {
+                            ReferenceOr::Item(s) => ReferenceOr::Item(s.clone()),
+                            r @ ReferenceOr::Reference { .. } => r.clone(),
+                        },
+                        spec, &full_name, &is_required,
+                    );
+                    fields.extend(resolved);
                 }
             }
         }

@@ -26,7 +26,7 @@ async fn rate_accuracy_100_ops_per_sec() {
 
     // 50 ops at 100/s should take ~500ms. Allow 200ms-1200ms for CI jitter.
     let ms = elapsed.as_millis();
-    assert!(ms >= 200 && ms <= 1500,
+    assert!((200..=1500).contains(&ms),
         "50 ops at 100/s took {ms}ms, expected ~500ms");
 }
 
@@ -44,7 +44,7 @@ async fn rate_accuracy_1000_ops_per_sec() {
 
     // 200 ops at 1000/s should take ~200ms
     let ms = elapsed.as_millis();
-    assert!(ms >= 80 && ms <= 800,
+    assert!((80..=800).contains(&ms),
         "200 ops at 1000/s took {ms}ms, expected ~200ms");
 }
 
@@ -62,7 +62,7 @@ async fn rate_accuracy_10000_ops_per_sec() {
 
     // 1000 ops at 10000/s should take ~100ms
     let ms = elapsed.as_millis();
-    assert!(ms >= 30 && ms <= 500,
+    assert!((30..=500).contains(&ms),
         "1000 ops at 10000/s took {ms}ms, expected ~100ms");
 }
 
@@ -234,9 +234,9 @@ async fn acquire_order_is_fair() {
     let counters: Vec<Arc<AtomicU64>> = (0..4).map(|_| Arc::new(AtomicU64::new(0))).collect();
     let mut handles = Vec::new();
 
-    for i in 0..4 {
+    for counter in &counters {
         let limiter = limiter.clone();
-        let counter = counters[i].clone();
+        let counter = counter.clone();
         handles.push(tokio::spawn(async move {
             for _ in 0..25 {
                 limiter.acquire().await;

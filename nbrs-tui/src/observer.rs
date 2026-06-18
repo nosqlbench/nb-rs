@@ -547,14 +547,13 @@ pub fn print_post_run_summary(
             // failure and past the small tail window, count the
             // remainder for the summary line and skip the
             // output.
-            if let Some(fi) = last_failed {
-                if i > fi && printed_after_failure >= pending_tail_limit {
+            if let Some(fi) = last_failed
+                && i > fi && printed_after_failure >= pending_tail_limit {
                     if phase.kind == EntryKind::Phase {
                         truncated_phases += 1;
                     }
                     continue;
                 }
-            }
 
             if phase.kind == EntryKind::Scope {
                 // Group header — no status glyph. Scope nodes
@@ -621,11 +620,10 @@ pub fn print_post_run_summary(
             }
             eprintln!("  {indent}{s_buf}");
 
-            if let Some(fi) = last_failed {
-                if i > fi {
+            if let Some(fi) = last_failed
+                && i > fi {
                     printed_after_failure += 1;
                 }
-            }
         }
 
         // SRD-63 Push 9h: route the post-failure tail-trim
@@ -810,41 +808,10 @@ fn format_elapsed_seconds(elapsed_secs: f64) -> String {
         format!("{s:.5}")          // 0.00000 → 9.99999  (7 chars)
     } else if s < 100.0 {
         format!("{s:.4}")          // 10.0000 → 99.9999 (7 chars)
-    } else if s < 1000.0 {
-        format!("{s:.3}")          // 100.000 → 999.999 (7 chars)
     } else {
-        format!("{s:.3}")          // 1000.000 and beyond — 3 millis fixed,
-                                   // integer part widens (8+ chars)
-    }
-}
-
-#[cfg(test)]
-mod elapsed_format_tests {
-    use super::format_elapsed_seconds;
-
-    #[test]
-    fn buckets_widen_seconds_keep_seven_until_thousand() {
-        // [0, 10): one integer digit + 5 fractional
-        assert_eq!(format_elapsed_seconds(0.0),       "0.00000");
-        assert_eq!(format_elapsed_seconds(0.000123),  "0.00012");
-        assert_eq!(format_elapsed_seconds(9.99999),   "9.99999");
-        // [10, 100): two integer digits + 4 fractional
-        assert_eq!(format_elapsed_seconds(10.0),      "10.0000");
-        assert_eq!(format_elapsed_seconds(99.9999),   "99.9999");
-        // [100, 1000): three integer digits + 3 fractional
-        assert_eq!(format_elapsed_seconds(100.0),     "100.000");
-        assert_eq!(format_elapsed_seconds(999.999),   "999.999");
-        // [1000, ∞): integer widens, millis stays at 3
-        assert_eq!(format_elapsed_seconds(1234.5678), "1234.568");
-        assert_eq!(format_elapsed_seconds(12345.6),   "12345.600");
-    }
-
-    #[test]
-    fn negative_or_clock_skew_clamps_to_zero() {
-        // SystemTime can run backward across a clock
-        // adjustment. Don't surface a negative-elapsed
-        // string; just clamp.
-        assert_eq!(format_elapsed_seconds(-0.5), "0.00000");
+        // 100.0+ : 3 fractional digits fixed; the integer part widens
+        // (7 chars over 100–999.999, 8+ from 1000.000 on).
+        format!("{s:.3}")
     }
 }
 
@@ -918,4 +885,34 @@ pub fn unreached_phase_exit_code(
         eprintln!("  - {}{labels}", p.name);
     }
     Some(2)
+}
+
+#[cfg(test)]
+mod elapsed_format_tests {
+    use super::format_elapsed_seconds;
+
+    #[test]
+    fn buckets_widen_seconds_keep_seven_until_thousand() {
+        // [0, 10): one integer digit + 5 fractional
+        assert_eq!(format_elapsed_seconds(0.0),       "0.00000");
+        assert_eq!(format_elapsed_seconds(0.000123),  "0.00012");
+        assert_eq!(format_elapsed_seconds(9.99999),   "9.99999");
+        // [10, 100): two integer digits + 4 fractional
+        assert_eq!(format_elapsed_seconds(10.0),      "10.0000");
+        assert_eq!(format_elapsed_seconds(99.9999),   "99.9999");
+        // [100, 1000): three integer digits + 3 fractional
+        assert_eq!(format_elapsed_seconds(100.0),     "100.000");
+        assert_eq!(format_elapsed_seconds(999.999),   "999.999");
+        // [1000, ∞): integer widens, millis stays at 3
+        assert_eq!(format_elapsed_seconds(1234.5678), "1234.568");
+        assert_eq!(format_elapsed_seconds(12345.6),   "12345.600");
+    }
+
+    #[test]
+    fn negative_or_clock_skew_clamps_to_zero() {
+        // SystemTime can run backward across a clock
+        // adjustment. Don't surface a negative-elapsed
+        // string; just clamp.
+        assert_eq!(format_elapsed_seconds(-0.5), "0.00000");
+    }
 }

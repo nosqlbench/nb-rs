@@ -1,5 +1,11 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
+//
+// These async tests serialize on a process-global lock held across
+// `.await` so global session state doesn't race; the awaited code never
+// locks it, so there's no deadlock — `await_holding_lock` is a false
+// positive for this deliberate pattern.
+#![allow(clippy::await_holding_lock)]
 
 //! End-to-end test for the inspector server: spawn the
 //! actor + server, send commands over the Unix socket, verify

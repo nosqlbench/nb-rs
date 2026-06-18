@@ -296,11 +296,11 @@ impl RunObserver for LogOnlyObserver {
         // Falls back to plain text in pipelined / CI contexts
         // so log archives stay readable.
         let color = nbrs_activity::observer::use_color();
-        let dim = color.then(|| "\x1b[2m").unwrap_or("");
-        let bold = color.then(|| "\x1b[1m").unwrap_or("");
-        let cyan = color.then(|| "\x1b[36m").unwrap_or("");
-        let italic = color.then(|| "\x1b[3m").unwrap_or("");
-        let reset = color.then(|| "\x1b[0m").unwrap_or("");
+        let dim = if color { "\x1b[2m" } else { "" };
+        let bold = if color { "\x1b[1m" } else { "" };
+        let cyan = if color { "\x1b[36m" } else { "" };
+        let italic = if color { "\x1b[3m" } else { "" };
+        let reset = if color { "\x1b[0m" } else { "" };
 
         let tree = match nbrs_activity::scene_tree::current() {
             Some(t) => t,

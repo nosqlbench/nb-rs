@@ -111,8 +111,8 @@ Tracks each subsystem against the five pillars. Tick as the treatment lands.
 | **polydat** (exemplar) | ✅ | ✅ | ✅ | ✅ | ✅ (D1) | **09** contract; substrate in `polydat/docs/` |
 | nbrs-activity | ✅ | ✅ | ✅ | ✅ | ✅ | **29** + 30/31/32/32a/33/34/35/68/71/73/75/76/82/83 |
 | nbrs-workload | ✅ | ✅ | ✅ | ✅ | ✅ | **25** + 18/18b–f, 20, 21, 22, 72, 85 |
-| nbrs-metrics | ✅ | ✅ | ✅ | ✅ | ✅ | **39** + 40/40a/40b, 42, 43, 24 |
-| nbrs-metricsql | ✅ | ✅ | ✅ | ✅ | ✅ (D5-exempt: standalone lib) | **08** + 47, 48, 49 |
+| nbrs-metrics | ✅ | ✅ | ✅ | ✅ | ✅ | **39** + 40/40a/40b/40c, 42, 43, 24 |
+| nbrs-metricsql | ✅ | ✅ | ✅ | ✅ | ✅ (D5-exempt: own contract; L3 atop nbrs-metrics) | **08** + 40c, 47, 48, 49 |
 | nbrs-rate | ✅ | ✅ | ✅ | ✅ | ✅ | **06** (+ 02, 23) |
 | nbrs-errorhandler | ✅ | ✅ | ✅ | ✅ | ✅ | **07** (+ 03, 82, 83) |
 | nbrs-tui | ✅ | ✅ | ✅ | ✅ | ✅ | **59** + 62, 63, 81 |

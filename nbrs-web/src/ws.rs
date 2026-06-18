@@ -167,10 +167,10 @@ fn extract_raw_counters(snapshot: &MetricSet) -> RawCounters {
             match point.value() {
                 MetricValue::Counter(c) => {
                     if fname.contains("ops") || fname.contains("cycles") {
-                        cumulative_ops += c.total;
+                        cumulative_ops += c.cumulative;
                     }
                     if fname.contains("error") {
-                        cumulative_errors += c.total;
+                        cumulative_errors += c.cumulative;
                     }
                 }
                 MetricValue::Histogram(h) => {

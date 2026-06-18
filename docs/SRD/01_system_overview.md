@@ -54,7 +54,7 @@ nb-rs/
 ├── nbrs-workload/         YAML workload parser
 ├── nbrs-activity/         execution engine
 ├── nbrs-metrics/          metrics instruments and reporters
-├── nbrs-metricsql/        MetricsQL parser / evaluator (standalone)
+├── nbrs-metricsql/        MetricsQL parser / evaluator (atop nbrs-metrics queryapi)
 ├── nbrs-rate/             rate limiter
 ├── nbrs-errorhandler/     error routing
 ├── nbrs-web/              web UI

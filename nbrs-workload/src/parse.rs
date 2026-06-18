@@ -1389,6 +1389,14 @@ fn parse_phases(
         let metrics = parse_phase_metrics_field(phase_obj.get("metrics"), phase_name)
             .map_err(|e| format!("phase '{phase_name}' metrics: {e}"))?;
 
+        // SRD-86 — phase `optimize:` block (workload-local config).
+        let optimize = match phase_obj.get("optimize") {
+            Some(v) => Some(
+                serde_json::from_value(v.clone())
+                    .map_err(|e| format!("phase '{phase_name}' invalid `optimize` block: {e}"))?,
+            ),
+            None => None,
+        };
         phases.insert(phase_name.clone(), WorkloadPhase {
             cycles,
             concurrency,
@@ -1407,6 +1415,7 @@ fn parse_phases(
             bindings: phase_bindings_only,
             metrics,
             poll: phase_poll,
+            optimize,
         });
         phase_order.push(phase_name.clone());
     }

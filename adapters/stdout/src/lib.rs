@@ -303,6 +303,12 @@ pub struct StdoutAdapter {
     color: bool,
 }
 
+impl Default for StdoutAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StdoutAdapter {
     /// Create with default config (stdout, newlines, assignments format).
     pub fn new() -> Self {
@@ -588,7 +594,7 @@ mod tests {
             vec![
                 polydat::ast::Value::Str("alice".into()),
                 polydat::ast::Value::U64(30),
-                polydat::ast::Value::F64(3.14),
+                polydat::ast::Value::F64(3.5),
             ],
         )
     }
@@ -635,7 +641,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
         assert_eq!(parsed["name"], "alice");
         assert_eq!(parsed["age"], 30);
-        assert!((parsed["score"].as_f64().unwrap() - 3.14).abs() < 0.001);
+        assert!((parsed["score"].as_f64().unwrap() - 3.5).abs() < 0.001);
     }
 
     #[test]
@@ -770,14 +776,18 @@ mod tests {
     /// Other test processes don't share this observer.
     use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
 
-    static CAPTURED_LOGS: StdOnceLock<Arc<StdMutex<Vec<(LogLevel, String)>>>> = StdOnceLock::new();
+    /// Shared sink of `(level, message)` pairs captured from the
+    /// process-wide observer used by the channel-routing tests.
+    type CapturedLogs = Arc<StdMutex<Vec<(LogLevel, String)>>>;
 
-    fn captured_logs() -> &'static Arc<StdMutex<Vec<(LogLevel, String)>>> {
+    static CAPTURED_LOGS: StdOnceLock<CapturedLogs> = StdOnceLock::new();
+
+    fn captured_logs() -> &'static CapturedLogs {
         CAPTURED_LOGS.get_or_init(|| Arc::new(StdMutex::new(Vec::new())))
     }
 
     struct CapturingObserver {
-        sink: Arc<StdMutex<Vec<(LogLevel, String)>>>,
+        sink: CapturedLogs,
     }
 
     impl nbrs_activity::observer::RunObserver for CapturingObserver {
@@ -796,7 +806,7 @@ mod tests {
     /// that silently no-ops on a second `set` — the first call
     /// wins. As long as every channel-routing test takes this
     /// path, they share one observer and the captured-logs vec.
-    fn install_capturing_observer() -> Arc<StdMutex<Vec<(LogLevel, String)>>> {
+    fn install_capturing_observer() -> CapturedLogs {
         let sink = captured_logs().clone();
         let observer: Arc<dyn nbrs_activity::observer::RunObserver> =
             Arc::new(CapturingObserver { sink: sink.clone() });
@@ -831,7 +841,7 @@ mod tests {
         });
         let template = ParsedOp::simple("t", "stmt");
         // No `params.stdout` set.
-        assert!(template.params.get("stdout").is_none(),
+        assert!(!template.params.contains_key("stdout"),
             "guard: this test relies on the param being absent");
 
         // Re-bind the template stmt to the marker so the rendered

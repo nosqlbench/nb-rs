@@ -163,6 +163,12 @@ pub struct ModelAdapter {
     diagnose: bool,
 }
 
+impl Default for ModelAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelAdapter {
     /// Create with default config.
     pub fn new() -> Self {
@@ -529,7 +535,7 @@ mod tests {
 
     #[test]
     fn parse_latency_bare_number() {
-        assert_eq!(parse_latency("3.14"), Some(3.14));
+        assert_eq!(parse_latency("3.5"), Some(3.5));
     }
 
     #[test]

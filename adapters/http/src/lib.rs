@@ -69,6 +69,12 @@ pub struct HttpAdapter {
     base_url: Option<String>,
 }
 
+impl Default for HttpAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HttpAdapter {
     /// Create with default config.
     pub fn new() -> Self {
@@ -452,7 +458,7 @@ impl OpDispenser for HttpDispenser {
                 // "42" into a JSON number" — a real risk for
                 // plain-text endpoints — from happening.
                 let looks_like_json = body_text.trim_start()
-                    .starts_with(|c: char| c == '{' || c == '[');
+                    .starts_with(['{', '[']);
                 let parsed_json = if content_type_says_json || looks_like_json {
                     serde_json::from_str::<serde_json::Value>(&body_text).ok()
                 } else { None };
@@ -509,20 +515,14 @@ mod tests {
             // Each accepted socket is just held — never read,
             // never written — until the test process tears it
             // down.
-            loop {
-                match listener.accept().await {
-                    Ok((sock, _)) => {
-                        // Stash the socket on the task heap so
-                        // the OS doesn't drop the connection
-                        // and let the client see EOF instead
-                        // of a timeout.
-                        tokio::spawn(async move {
-                            let _hold = sock;
-                            std::future::pending::<()>().await;
-                        });
-                    }
-                    Err(_) => break,
-                }
+            while let Ok((sock, _)) = listener.accept().await {
+                // Stash the socket on the task heap so the OS
+                // doesn't drop the connection and let the client
+                // see EOF instead of a timeout.
+                tokio::spawn(async move {
+                    let _hold = sock;
+                    std::future::pending::<()>().await;
+                });
             }
         });
         port

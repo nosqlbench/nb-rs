@@ -551,14 +551,13 @@ fn run_render_loop(
             // minus the header row. `set_window_rows` is the single
             // geometry chokepoint; re-applied each tick so the
             // REPL-mode override wins over Alt-Up / Alt-Down.
-            if window_mode {
-                if let Some(p) = prompt.as_mut() {
+            if window_mode
+                && let Some(p) = prompt.as_mut() {
                     let target = rows.saturating_sub(2).max(1);
                     if p.window_rows() != target {
                         p.set_window_rows(target);
                     }
                 }
-            }
             let prompt_input = if repl_visible {
                 prompt.as_ref().map(|p| {
                     let win_rows = p.window_rows() as usize;
@@ -597,7 +596,7 @@ fn run_render_loop(
                         // multi-row render is what we want.
                         let mut input_row = String::with_capacity(128);
                         p.render(&mut input_row, cols_usize, true);
-                        let last = input_row.split('\n').last().unwrap_or("");
+                        let last = input_row.split('\n').next_back().unwrap_or("");
                         composed.push_str(last.strip_suffix('\r').unwrap_or(last));
                         composed
                     } else {
@@ -768,8 +767,8 @@ fn run_render_loop(
 
 /// Build the left-margin prefix carrying the session timer
 /// (compact 8-char clock from
-/// [`nbrs_activity::readouts::format::format_compact_session_elapsed`])
-/// + current phase index, followed by a `│` gutter. The
+/// [`nbrs_activity::readouts::format::format_compact_session_elapsed`]),
+/// plus the current phase index, followed by a `│` gutter. The
 /// magnitude-tracking color span from
 /// [`nbrs_activity::readouts::format::session_elapsed_color`]
 /// wraps the clock so glance-readability tracks how deep
@@ -996,7 +995,7 @@ fn redraw_console_altscreen<W: Write>(
     if let Some(p) = prompt {
         let mut input = String::with_capacity(128);
         p.render(&mut input, cols_usize, true);
-        let last = input.split('\n').last().unwrap_or("");
+        let last = input.split('\n').next_back().unwrap_or("");
         let last = last.strip_suffix('\r').unwrap_or(last);
         let _ = write!(out, "\x1b[{rows};1H\x1b[K{last}");
         cursor_col = p.cursor_col() as u16;

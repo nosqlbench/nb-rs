@@ -345,6 +345,12 @@ pub struct PlotterAdapter {
     render_thread: Option<std::thread::JoinHandle<()>>,
 }
 
+impl Default for PlotterAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlotterAdapter {
     pub fn new() -> Self { Self::with_config(PlotterConfig::default()) }
 
@@ -624,9 +630,9 @@ fn plot_line(fb: &mut FrameBuffer, vals: &[f64], y_off: usize, bh: usize, ci: us
     let pw = fb.width * 2;
     let ph = bh * 4;
     let n = vals.len();
-    for i in from..n {
+    for (i, &v) in vals.iter().enumerate().skip(from) {
         let px = (i as f64 / n as f64 * (pw-1) as f64) as usize;
-        let py = ((vals[i] - mn) / range * (ph-1) as f64) as usize;
+        let py = ((v - mn) / range * (ph-1) as f64) as usize;
         fb.set_dot_idx(px.min(pw-1), y_off * 4 + (ph-1).saturating_sub(py), ci);
     }
 }
