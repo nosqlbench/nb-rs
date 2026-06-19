@@ -453,6 +453,7 @@ impl nbrs_activity::observer::RunObserver for TuiObserver {
 pub fn print_post_run_summary(
     run_state: &RunStateHandle,
     run_result: &Result<(), String>,
+    session_dir: &std::path::Path,
 ) {
     let s = run_state.load();
     let s: &RunState = &s;
@@ -507,7 +508,7 @@ pub fn print_post_run_summary(
             eprintln!("{s_buf}");
         }
     }
-    eprintln!("logs:    logs/latest/");
+    eprintln!("logs:    {}", session_dir.display());
 
     if phases_only.is_empty() {
         eprintln!("phases:  none executed");

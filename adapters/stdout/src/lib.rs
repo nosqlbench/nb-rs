@@ -495,41 +495,59 @@ impl OpDispenser for StdoutDispenser {
             // records.
             match self.channel {
                 StdoutChannel::Terminal => {
-                    let result = {
-                        let mut writer = self.writer.lock()
-                            .unwrap_or_else(|e| e.into_inner());
-
-                        // Emit header row once for tabular formats
+                    // The real-stdout target staircases when a status display holds
+                    // the terminal in raw mode, so route it through the observer's
+                    // op-output channel (coordinated with the display when
+                    // interactive; straight to stdout when piped/redirected, so
+                    // `nbrs run | grep` keeps working). A file target has no
+                    // terminal — write to it directly.
+                    let to_stdout = matches!(
+                        &*self.writer.lock().unwrap_or_else(|e| e.into_inner()),
+                        OutputTarget::Stdout(_)
+                    );
+                    if to_stdout {
                         if self.header && self.format.supports_header()
                             && !self.header_emitted.swap(true, Ordering::Relaxed)
                         {
                             let header = self.format.render_header(render_fields, &self.separator);
                             if !header.is_empty() {
-                                let _ = writeln!(writer, "{header}");
+                                nbrs_activity::observer::op_output(&header);
                             }
                         }
-
-                        let write_result = if self.newline {
-                            writeln!(writer, "{text}")
-                        } else {
-                            write!(writer, "{text}")
+                        nbrs_activity::observer::op_output(&text);
+                    } else {
+                        let result = {
+                            let mut writer = self.writer.lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            if self.header && self.format.supports_header()
+                                && !self.header_emitted.swap(true, Ordering::Relaxed)
+                            {
+                                let header = self.format.render_header(render_fields, &self.separator);
+                                if !header.is_empty() {
+                                    let _ = writeln!(writer, "{header}");
+                                }
+                            }
+                            let write_result = if self.newline {
+                                writeln!(writer, "{text}")
+                            } else {
+                                write!(writer, "{text}")
+                            };
+                            if let Err(e) = writer.flush() {
+                                return Err(ExecutionError::Op(AdapterError {
+                                    error_name: "FlushError".into(),
+                                    message: e.to_string(),
+                                    retryable: false,
+                                }));
+                            }
+                            write_result
                         };
-                        if let Err(e) = writer.flush() {
+                        if let Err(e) = result {
                             return Err(ExecutionError::Op(AdapterError {
-                                error_name: "FlushError".into(),
+                                error_name: "IoError".into(),
                                 message: e.to_string(),
                                 retryable: false,
                             }));
                         }
-                        write_result
-                    };
-
-                    if let Err(e) = result {
-                        return Err(ExecutionError::Op(AdapterError {
-                            error_name: "IoError".into(),
-                            message: e.to_string(),
-                            retryable: false,
-                        }));
                     }
                 }
                 StdoutChannel::EventLog => {
@@ -1019,6 +1037,7 @@ inventory::submit! {
                 nbrs_activity::adapter::DisplayPreference::Auto
             }
         },
+        supported_controls: || &[],
         create: |params| Box::pin(async move {
             // Reject an unknown `format=` rather than silently falling
             // back to the default (`feedback_never_ignore_silently`).

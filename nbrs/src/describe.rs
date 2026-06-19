@@ -30,6 +30,8 @@ pub fn describe_command(args: &[String]) {
         ("adapter", name) => describe_adapter(name),
         ("optimizers", "") | ("optimizer", "") => describe_optimizers_list(),
         ("optimizers", name) | ("optimizer", name) => describe_optimizer(name),
+        ("controls", "") | ("control", "") => describe_controls(),
+        ("controls", name) | ("control", name) => describe_control(name),
         ("wiring", "functions") => describe_wiring_functions(verbose),
         ("wiring", "functions-md") => {
             let rest: Vec<String> = args.iter().skip(2)
@@ -100,7 +102,9 @@ pub fn describe_command(args: &[String]) {
         }
         _ => {
             eprintln!("nbrs describe <topic>");
-            eprintln!("  adapter[=<name>]   List adapters / show one adapter's params + drivers");
+            eprintln!("  adapter[=<name>]   List adapters / show one adapter's params + drivers + controls");
+            eprintln!("  controls [<name>]  List every dynamic control (SRD-23) the binary can declare");
+            eprintln!("  optimizers [<n>]   List registered optimizers / show one in detail");
             eprintln!("  wiring             Wiring (graph-kernel) topics: functions, modules, dag, stdlib");
             eprintln!("  workloads          List bundled workloads / show one in detail");
             eprintln!("  wrappers           List the registered op-template wrappers");
@@ -354,6 +358,86 @@ fn describe_optimizer(name: &str) {
     }
 }
 
+/// Render an f64 bound compactly for `describe` tables — integers without a
+/// trailing `.0`, infinities as `∞`.
+fn fmt_num(v: f64) -> String {
+    if v.is_infinite() {
+        return if v > 0.0 { "∞".into() } else { "-∞".into() };
+    }
+    if v.fract() == 0.0 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
+/// Render one control's type + range + unit (e.g. `count(u32), [1, 100000] fibers`).
+fn control_shape(d: &nbrs_activity::control_catalog::ControlDesc) -> String {
+    use nbrs_activity::control_catalog::ControlValueType;
+    let range = match d.value_type {
+        // `rate`'s floor is exclusive and its ceiling unbounded — "> 0" reads
+        // truer than `(0, ∞]`.
+        ControlValueType::Rate => "> 0".to_string(),
+        _ => format!("[{}, {}]", fmt_num(d.min), fmt_num(d.max)),
+    };
+    format!("{}, {} {}", d.value_type.label(), range, d.unit)
+}
+
+/// `nbrs describe controls` — the static **capability** catalog of dynamic
+/// controls (SRD-23). Lists every control the binary *can* declare — core plus
+/// each registered adapter's — with the condition under which it appears, so a
+/// user discovers knobs (including conditional ones like `rate`) without
+/// running a workload. Complementary to `dryrun=controls`, which shows what a
+/// *specific* run actually declares on the live component tree.
+fn describe_controls() {
+    use nbrs_activity::control_catalog::all_controls;
+
+    let entries = all_controls();
+    println!("Dynamic controls (SRD-23) — retarget live via the TUI `e` prompt, web POST,");
+    println!("polydat `control_set`, or `optimize.steer`, without restarting a phase.");
+    println!();
+    if entries.is_empty() {
+        println!("  (no dynamic controls registered in this binary)");
+        return;
+    }
+    let name_w = entries.iter().map(|e| e.desc.name.len()).max().unwrap_or(4).max(4);
+    let owner_w = entries.iter().map(|e| e.owner.to_string().len()).max().unwrap_or(5).max(5);
+    for e in &entries {
+        let d = e.desc;
+        println!("  {:<name_w$}  {:<owner_w$}  {}", d.name, e.owner.to_string(), control_shape(d));
+        println!("  {:<name_w$}  {:<owner_w$}  declared {}", "", "", d.declared_when);
+        println!("  {:<name_w$}  {:<owner_w$}  {}", "", "", d.doc);
+        println!();
+    }
+    println!("Steer any toward an objective with `optimize: {{ steer: <name> }}` (SRD-86 §4).");
+    println!("Run-specific view (what a given workload declares): nbrs run workload=… dryrun=controls");
+}
+
+/// `nbrs describe controls <name>` — detail for one control, or the full list
+/// with a hint if the name is unknown.
+fn describe_control(name: &str) {
+    use nbrs_activity::control_catalog::all_controls;
+
+    match all_controls().into_iter().find(|e| e.desc.name == name) {
+        Some(e) => {
+            let d = e.desc;
+            println!("Control: {}", d.name);
+            println!("  Owner:        {}", e.owner);
+            println!("  Shape:        {}", control_shape(d));
+            println!("  Default:      {}", fmt_num(d.default));
+            println!("  Declared:     {}", d.declared_when);
+            println!("  Steerable:    optimize: {{ steer: {} }}", d.name);
+            println!();
+            println!("  {}", d.doc);
+        }
+        None => {
+            eprintln!("No dynamic control named '{name}' can be declared by this binary.");
+            eprintln!();
+            describe_controls();
+        }
+    }
+}
+
 fn describe_adapters_list() {
     use nbrs_activity::adapter::{registered_driver_names, default_drivers};
 
@@ -408,6 +492,18 @@ fn describe_adapter(name: &str) {
     let adapter_params = (reg.known_params)();
     if !adapter_params.is_empty() {
         println!("  Adapter params: {}", adapter_params.join(", "));
+    }
+
+    // SRD-23 — the dynamic controls this adapter can declare (capability view,
+    // read off the registration without constructing the adapter).
+    let controls = (reg.supported_controls)();
+    if !controls.is_empty() {
+        println!();
+        println!("  Dynamic controls (SRD-23):");
+        for d in controls {
+            println!("    {:<16} {}", d.name, control_shape(d));
+            println!("    {:<16} declared {}", "", d.declared_when);
+        }
     }
 
     let drivers = default_drivers(name);
@@ -1484,11 +1580,13 @@ fn render_flattening_summary(yaml_source: &str, path: &str) -> Result<String, St
 /// per-topic parsers don't lose access to their argv).
 pub fn spec() -> crate::cli_spec::Command {
     use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
-    fn handle_default(_p: ParsedCommand) -> Result<(), String> {
-        // `nbrs describe` with no subcommand — render the
-        // topic list (matches the historical default-arm
-        // usage text).
-        describe_command(&[]);
+    fn handle_default(p: ParsedCommand) -> Result<(), String> {
+        // `nbrs describe` with no recognized subcommand. Forward any leftover
+        // tokens — the walker collects them as positionals — so the
+        // `topic=value` shorthand (`describe adapter=cql`) reaches
+        // `describe_command`'s `=`-handler instead of being dropped. With no
+        // leftovers this renders the topic list (the historical default).
+        describe_command(&p.positionals);
         Ok(())
     }
     Command {
@@ -1502,6 +1600,7 @@ pub fn spec() -> crate::cli_spec::Command {
         positionals: Vec::new(),
         subcommands: vec![
             adapter_spec(),
+            controls_spec(),
             optimizers_spec(),
             wiring_spec(),
             workloads_spec(),
@@ -1535,6 +1634,35 @@ fn adapter_spec() -> crate::cli_spec::Command {
             help: "Adapter to describe.",
             kind: crate::cli_spec::PositionalKind::ZeroOrOne,
             value: crate::cli_spec::ValueProvider::Custom(crate::completion::adapter_names_provider),
+        }],
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: true,
+        completion_override: None,
+    }
+}
+
+fn controls_spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        let mut argv = vec!["controls".to_string()];
+        argv.extend(p.raw.iter().cloned());
+        describe_command(&argv);
+        Ok(())
+    }
+    Command {
+        name: "controls",
+        help: "List every dynamic control (SRD-23) the binary can declare, or detail one.",
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        kv_params: &[],
+        dynamic_options: None,
+        positionals: vec![crate::cli_spec::Positional {
+            name: "control",
+            help: "Control to describe.",
+            kind: crate::cli_spec::PositionalKind::ZeroOrOne,
+            value: crate::cli_spec::ValueProvider::Custom(crate::completion::control_names_provider),
         }],
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),

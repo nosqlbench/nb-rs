@@ -11,7 +11,7 @@
 use std::process::Command;
 
 const EXPECTED: &[&str] = &[
-    "null",
+    "sweep",
     "cost_greedy_traversal",
     "centroid_variant",
     "nelder_mead",

@@ -1,0 +1,81 @@
+# optimizer_control.yaml — SRD-86 §4 Control-class actuation (live retarget)
+#
+# The third member of the optimizer family. optimizer_saturation and
+# optimizer_metricsql search `concurrency` by RE-RUNNING the phase once per
+# coordinate (Coordinate actuation). This workload searches the SAME axis, the
+# SAME backend, the SAME objective — but names the axis in `steer:`,
+# so the optimizer becomes a STEERING DAEMON: it runs ONE continuous phase and
+# live-retargets the `concurrency` control (SRD-23, no restart) between settings,
+# settling the windowed objective at each before stepping. No phase reruns.
+#
+# `concurrency: "{conc}"` both (a) starts the phase at a warmup setting and
+# (b) tells the classifier which live control the `conc` axis drives. The phase
+# runs continuously; the daemon retargets concurrency 32 → 2, settles
+# `sum(rate(errors_total[3s]))` at each (the 3s window clears the prior setting
+# before the value is trusted — SRD-86 §6 step 2), and stops the phase once the
+# search is done. `score = -err_rate` is maximized (≈ 0) at the lowest
+# concurrency (conc=2), which fits the 2-server / depth-4 backend.
+#
+# `error_rate_max: 1.0` compiles to `error_rate > 1.0`, which can never trip
+# (a rate is in [0,1]) — i.e. "allow 100% overload". A Control-class phase is ONE
+# continuous run that deliberately dwells at a saturating setting while the
+# daemon explores, so it must NOT carry a tripping error guard; the per-rerun
+# optimizer_saturation / optimizer_metricsql workloads can, because each short
+# rerun never sustains 100%.
+#
+# Runs standalone:
+#   nbrs run workload=examples/workloads/optimizer_control.yaml \
+#       --session-path /tmp/opt-control
+
+description: |
+  SRD-86 Control-class actuation: the optimizer steers a live `concurrency`
+  control (SRD-23 retarget, no restart) across ONE continuous phase, settling a
+  windowed MetricsQL objective per setting — finding the concurrency that
+  eliminates backend overloads without ever rerunning the phase.
+
+phases:
+  saturate:
+    # ONE continuous phase: sized generously so the daemon (≈ one settle window
+    # per setting) finishes and stops it early; if it runs out first, the daemon
+    # uses the best setting found so far.
+    cycles: 60000
+    # The phase starts here (warmup setting); the steerer retargets the live
+    # concurrency control from this point. The `{conc}` reference also tells the
+    # classifier that the `conc` axis drives the `concurrency` control.
+    concurrency: "{conc}"
+    rate: 2000
+    # Overload errors are the objective SIGNAL, not failures — warn, and never
+    # stop on the error rate (see the header note on `error_rate_max: 1.0`).
+    errors: warn
+    error_rate_max: 1.0
+    # The search axis. `steer: conc` opts it into live-retarget actuation
+    # (SRD-86 §4) — the daemon steers it instead of rerunning the phase.
+    for_each: "conc in 32, 2"
+    optimize:
+      objective: score
+      max_evals: 10
+      # Steer `conc` as a live control (retarget without restarting the phase).
+      # Every other axis steps through by re-running; naming it here opts into
+      # steering. Validated: `conc` must sink into a control AND the objective must
+      # be windowed (it is, below).
+      steer: conc
+    bindings: |
+      input cycle: u64
+      # The windowed Overload error RATE, read through the MetricsQL engine over
+      # this run's live metrics. errors_total is a CUMULATIVE counter, so
+      # rate(...[3s]) is the per-setting rate: the cumulative baseline carried
+      # from the prior setting cancels in rate()'s difference, and the settle's
+      # min_elapsed gate (sized to the 3s window) holds the verdict until the
+      # window has cleared the prior setting.
+      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      # Maximize -err_rate: the concurrency with fewest overloads wins.
+      score := 0 - err_rate
+    ops:
+      insert:
+        adapter: testkit
+        stmt: "INSERT INTO demo.events (id) VALUES ({cycle});"
+        # A fixed saturating backend: 2 servers, 5ms each, queue depth 4. Past
+        # ~4 in-flight ops it returns Overload — so high concurrency saturates.
+        result-latency: "5ms"
+        result-capacity: 2
+        result-overload: 4

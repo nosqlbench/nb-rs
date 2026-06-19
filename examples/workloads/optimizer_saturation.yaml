@@ -1,6 +1,6 @@
 # optimizer_saturation.yaml — SRD-86 *causal* optimizer test (non-degenerate)
 #
-# Unlike optimizer_null_sweep (whose objective is a pure function of the
+# Unlike optimizer_sweep (whose objective is a pure function of the
 # coordinate, so it can't distinguish a pre- from a post-execution read), this
 # objective reads a RUN-PRODUCED metric: the testkit backend's saturation error
 # rate. That rate exists only *after* the phase executes, so the objective value
@@ -31,7 +31,7 @@ phases:
   saturate:
     cycles: 12000
     # The search axis: concurrency, a dynamic control (SRD-23). Each evaluation
-    # re-runs the phase at this concurrency (Coordinate changeover).
+    # re-runs the phase at this concurrency (coordinate / step-through).
     concurrency: "{conc}"
     # Paced so each coordinate spans several 1s metrics-cadence pulses — the
     # SRD-86 settle detector reads the windowed overload rate per pulse. The
@@ -43,9 +43,12 @@ phases:
     error_rate_max: 1.0
     for_each: "conc in 32, 16, 2"
     optimize:
-      method: "null"
       objective: score
       max_evals: 10
+      # No `steer:` → `conc` steps through by re-running the phase per value
+      # (coordinate, the default). That's required here: the objective is a
+      # session-cumulative `metric(...)` read that can't isolate a live setting,
+      # so each value needs its own phase run.
     bindings: |
       input cycle: u64
       # The run-produced signal: the testkit backend's overload error rate.

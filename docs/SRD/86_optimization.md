@@ -12,14 +12,29 @@
   **`ThreadBridge`** in the `runtime` bridge; `inventory` registers them and
   `nbrs describe optimizers` discovers them. The phase-level `optimize:` block
   parses in `nbrs-workload`.
-- **DESIGNED, folding in next (this draft):** the **value-model `Coord`**
-  (`Vec<AxisValue>`, not `Vec<f64>`); the **node-level `optimizer:` property**
-  (any scope-tree node, purview = subtree, lex outside, nested functors
-  compose, axes auto-gathered from the subtree comprehensions); the **objective
-  wire** designation (a named wire read off the live phase kernel); the
-  **two-driver model** (changeover class selects phase-rerun vs in-phase
-  daemon); and the **settle-detector pipeline** (sample cadence, viability
-  gate, sparsity handling, timeout→error).
+- **LANDED + verified (2026-06-18):** the **value-model `Coord`**
+  (`Vec<AxisValue>`); the phase-level **`optimize:` block** wired end-to-end
+  through `executor::dispatch_optimization` (axes auto-gathered from the phase's
+  multi-clause `for_each`); the **objective wire** (a named phase-kernel wire,
+  read post-execution or *settled* across the run); the **two actuation
+  strategies** selected by changeover class — `Coordinate`/`Fixture` →
+  phase-rerun, `Control` → in-phase steering daemon (`optimize::steer`) — plus
+  the **hybrid** (mixed coordinate + control in one node,
+  `executor::run_hybrid_search`); the **settle-detector pipeline** (cadence-pulse
+  `is_stable` verdict + a time-based viability gate); and all three **axis
+  kinds** — discrete, **continuous** (sampled by metric-space solvers like
+  `nelder_mead`/`cmaes`), and **categorical** — at single OR multiple axes.
+  Examples: `examples/workloads/optimizer_*.yaml`; user guide:
+  `docs/guide/optimizer.md`.
+- **DESIGNED, not yet shipped:** the **node-level `optimizer:` property** over an
+  arbitrary subtree (the phase-level `optimize:` block shipped instead); the §6
+  settle refinements (viability ladder-walking, EWMA/slope nodes, the `settle:`
+  YAML trigger, finer-cadence auto-reconfiguration); the `Control` daemon's
+  **Pulse-event** trigger; `Fixture` re-install/re-stack as a path distinct from
+  the Coordinate rerun; and a **continuous coordinate** axis alongside a control
+  axis in one node (`IndexFn::Hybrid`). (`rate` as a steered control **landed** —
+  via the direct `steer: rate` form, since the fixed `f64` field can't carry a
+  `{var}`.)
 
 **Owner:**
 - `nbrs-activity` owns the **contract** (`nbrs_activity::optimize`): the
@@ -377,13 +392,37 @@ flat per-axis Cartesian product would discard:
   respect to the outer (non-normalized) parameters — exactly the node nesting
   (A9), at the search-space level.
 
-*Status (Pass-2 cut):* `search_space_from_steps` derives a flat per-axis hull
-from the enumerated grid. It still visits the feasible set *correctly* — a
-proposed coordinate with no matching `IterationStep` is skipped — but it presents
-the **hull** to the optimizer, so an adaptive method wastes proposals on holes
-and mismodels dependent axes. Preserving the holey / hierarchic structure (so the
-optimizer proposes only feasible coordinates and models the per-outer subspace)
-is the correct design and the next refinement.
+**Two coordinate-realization paths (`CoordEval`).** How a proposed coordinate
+becomes the `IterationStep` to run depends on whether the axis is enumerable:
+
+- **Discrete / categorical — `Enumerated`.** The feasible set *is* the
+  pre-enumerated grid (it carries holes), so a proposed coordinate is matched to
+  its step by coordinate key and an off-grid proposal is skipped as infeasible.
+- **Pure-continuous — `Synthesized`.** A float-range source (`x in lo .. hi` →
+  `Source::ContinuousInterval`) enumerates **zero** tuples; the optimizer *is*
+  the sampling strategy. The space is read straight from the comprehension's
+  static `IndexFn::Continuous { intervals }` metadata (no enumeration), and each
+  proposed real coordinate is bound into a fresh iteration kernel via the **same
+  `PolydatKernel::for_iteration` path** a discrete tuple uses — `AxisValue →
+  polydat::Value` at the scope-materialization boundary the executor already
+  owns. No hull, no holes, no skipping: every proposal is feasible by
+  construction. (V8's continuous-requires-order check is a *validation* concern;
+  the executor reads `metadata()` directly and never enumerates, so it never
+  applies here.) Reference: `examples/workloads/optimizer_continuous.yaml`.
+
+*Status:* The **continuous** path is fully operational at **single OR multiple**
+axes — a multi-clause `for_each` of float ranges (`x in 0.0 .. 6.0, y in 0.0 ..
+8.0`) is sampled jointly by a metric-space solver (see
+`examples/workloads/optimizer_multiaxis.yaml`). **Refinement still open** on the
+**discrete** path: `search_space_from_steps` derives a flat per-axis hull from
+the enumerated grid — it visits the feasible set *correctly* (off-grid proposals
+are skipped) but presents the **hull** to the optimizer, so an adaptive method
+wastes proposals on holes and mismodels dependent axes. Preserving the holey /
+hierarchic structure (so the optimizer proposes only feasible coordinates and
+models the per-outer subspace) is the next refinement. A **continuous coordinate**
+axis *combined with a control axis* in one node (`IndexFn::Hybrid`) is the
+remaining hybrid follow-up (today the hybrid path requires enumerated coordinate
+axes).
 
 The `objective:` is a **plain wire reference** — any binding / metric / capture
 in the subtree. The requirement is **capability-conditional**: a `FeedbackSource`
@@ -401,8 +440,63 @@ The `FeedbackSource` is the same; the changeover class picks how the executor
 | `Coordinate` / `Fixture` | **phase-rerun** | pull coord → re-run the target phase (Fixture: re-install + re-stack via refine, A6) → read objective → `step`. One phase per coordinate. |
 | `Control` | **in-phase daemon** | ONE continuous phase + a concurrent daemon: pull the next control setting → apply it to the live `Control<T>` (SRD-23 retarget, no restart) → wait the feedback cadence → read the windowed objective wire → `step`. |
 
-Mixed = node nesting (outer rerun for fixture/coordinate, inner daemon for
-control).
+Mixed = **partition within one node** (or node nesting): coordinate/fixture axes
+iterate at their boundary (rerun), control axes steer interior — see the hybrid
+note below.
+
+**Status — `Coordinate`, `Control`, and mixed (`hybrid`) are wired; `Fixture`
+shares the Coordinate path.** Every axis is a `Coordinate` (stepped through by
+re-running the phase) by **default**; steering is an **explicit, validated
+opt-in** via `optimize.steer` (`steer: concurrency` or `steer: [concurrency,
+rate]`). The classifier (`executor::classify_control_axes`) resolves each *named*
+var to a live control either **directly** (the var's name IS a control —
+`steer: concurrency`, `steer: rate`) or **indirectly** (it sinks into a control
+field, `concurrency: "{conc}"` ⇒ the `concurrency` control, then `steer: conc`).
+Downstream (`require_windowed_objective`) the objective must be a windowed metric
+the steerer can settle — any miss is a **clear error**, never a silent downgrade
+(so a half-specified steer surfaces, rather than masking the author's mistake).
+There is no inference and no separate override: presence/absence of `steer:` *is*
+the choice. (The **direct** form is the only way to steer `rate`, whose fixed
+`f64` field can't carry a `{var}`; steering `rate` therefore requires the phase to
+set `rate:` — its value is the warmup the daemon retargets from — checked at
+validation time, not at runtime, since the `rate` control is only declared when the
+field is set, whereas `concurrency` is always declared. The indirect "sinks into a
+control" check is a textual `{var}` match against `concurrency:`; the principled
+form traces the var's l-value flow to a control sink.)
+The daemon (`optimize::steer`) is a **concurrent async task `tokio::join!`'d with
+one continuous phase** inside `run_phase` — *not* a cadence callback, because
+`Control::set` is async (confirmed-apply) while the cadence callback is sync. It
+reuses `start_settle` **per setting** (a throwaway per-setting stop flag absorbs
+the settle verdict so it doesn't end the phase), `await`s the retarget
+(`ErasedControl::set_f64` resolved off the phase component), and ends the phase
+itself on budget exhaustion — a **clean** stop (`steer_completed`), distinct from
+an error-handler stop, mirroring `settle_succeeded`. Caveat: a continuous control
+phase that dwells at a saturating setting sustains a high error rate, so a
+`Control` sweep must not carry a *tripping* error guard (`error_rate_max: 1.0`
+compiles to `error_rate > 1.0` — never trips — i.e. "allow 100%").
+
+**Hybrid (mixed coordinate + control in ONE node) — `executor::run_hybrid_search`.**
+A single optimize node may carry both: a multi-clause phase `for_each: "batch in
+[1,2], conc in [8,16]"` with `steer: conc` — `conc` is steered, `batch` (not in
+`steer:`) steps through. The dispatch
+**partitions** the search space — control axes are the inner steered subspace K,
+the rest are the coordinate subspace C. The coordinate axes form the OUTER rerun
+grid (the distinct cells are enumerated and de-duplicated from the steps); for
+each cell the phase is re-run bound at that cell and `run_steer_cell` runs the
+Control daemon over K interior to it (`method`/`budget` per cell). A coordinate
+axis is therefore realized **only** by iterating its scope (never set
+ineffectually); the control varies live within each fixed-coordinate phase. The
+best is reported as `(coordinate-cell ; control-setting)`. `conc` written last is
+innermost by lex order, but the partition is order-independent within a node.
+References: `examples/workloads/optimizer_control.yaml` (all-control),
+`examples/workloads/optimizer_hybrid.yaml` (mixed).
+
+**Deferred:** the `Control`-daemon's `Pulse-event` trigger and configurable
+feedback cadence (§5) beyond the reused settle; `Fixture` re-install/re-stack
+(A6) as a distinct path; a **continuous** coordinate axis alongside a control
+axis in one node (`IndexFn::Hybrid`); a joint optimizer over coordinate×control
+with adaptive coordinate search + axis reordering to push controls inner from an
+intermediate level (honoring infra-stacking rules + stack-churn cost).
 
 ### 5. The in-phase daemon + configurable feedback cadence
 
@@ -749,23 +843,29 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
    the categorical index↔label round-trip, and value-native label enumeration
    (`null` visiting labels directly).
 
-**Remaining (this draft's design):**
-6. **Node-level search wiring — ✓ LANDED (discrete/categorical).**
-   `dispatch_optimization` (executor, additive) drives an `optimize:` phase as a
-   **search** (A12: a distinct Search scene node, depth-gated — pre-map
-   represents + pre-maps the subtree once, execution runs the adaptive
-   sequential loop). Discrete/categorical axes auto-gathered from the `for_each`
-   grid; the objective read off each iteration's kernel (the coordinate
-   propagates in). Validated end-to-end — `null` (pull) and `cmaes` (feedback
-   via `ThreadBridge`) both converge in a real `nbrs run`
-   (`examples/workloads/optimizer_null_sweep.yaml` +
-   `workload_examples.rs`). *Follow-ups:* (a) a pre-existing synthesis gap means
-   a phase cannot yet combine `for_each` with phase-level `metrics:`, so the
+**Landed + verified (continued):**
+6. **Node-level search wiring — ✓ LANDED (discrete / categorical / continuous,
+   single + multi-axis).** `dispatch_optimization` (executor) drives an
+   `optimize:` phase as a **search** (A12: a distinct Search scene node,
+   depth-gated — pre-map represents + pre-maps the subtree once, execution runs
+   the adaptive sequential loop). Axes auto-gathered from the phase's multi-clause
+   `for_each` grid (`CoordEval::Enumerated`) or, for float ranges, sampled
+   (`CoordEval::Synthesized`); the objective read off each iteration's kernel.
+   Validated end-to-end — `null` (pull), `nelder_mead`/`cmaes` (feedback via
+   `ThreadBridge`) converge in a real `nbrs run` across discrete, continuous,
+   multi-axis, and categorical axes (`examples/workloads/optimizer_*.yaml` +
+   `workload_examples.rs`). *Follow-ups:* (a) a pre-existing synthesis gap means a
+   phase cannot yet combine `for_each` with phase-level `metrics:`, so the
    objective is a `bindings:` wire (not a `metrics:` entry) for now; (b)
-   continuous-sampling axes (comprehension `Source` decoding); (c)
-   nesting/composition of multiple optimize nodes.
-7. **Two actuation strategies** — the in-phase `Control` daemon over the SRD-23 controls
-   plane; changeover-class driver selection.
+   nesting/composition of multiple optimize nodes (the node-level `optimizer:`
+   property over a subtree).
+7. **Two actuation strategies — ✓ LANDED.** The in-phase `Control` daemon
+   (`optimize::steer`, `tokio::join!`'d with one continuous phase) over the SRD-23
+   controls plane, plus changeover-class driver selection (`Coordinate`/`Fixture`
+   → rerun, `Control` → daemon) and the **hybrid** (`run_hybrid_search`: mixed
+   coordinate + control in one node — coordinate axes are the outer rerun grid,
+   control axes steer interior per cell). Examples: `optimizer_control.yaml`,
+   `optimizer_hybrid.yaml`.
 8. **Settle-detector pipeline** — *first push SHIPPED 2026-06-18.* A
    `PhaseStopEvaluator` (general cadence-pulse phase evaluator,
    `nbrs-activity::optimize::phase_pulse`) subscribes to the smallest metrics
@@ -778,13 +878,16 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
    instead of the one-shot post-completion read, gated on a volatile objective
    (its program contains a metrics reader). Proven causal by
    `optimizer_saturation` (best = the concurrency that eliminates overloads).
-   *Deferred:* the SRD-86 §6 refinements — the viability gate, sparsity
-   handling by walking up the cadence window ladder, the EWMA / freshness /
-   slope statistic nodes (the first push uses `is_stable`'s median verdict),
-   the settle-timeout `ErrorPolicy` surfacing, and the `settle:` YAML trigger;
-   plus the §5 in-phase `Control` daemon and objective-cone-precise volatility
-   detection. Short phases that span < a few cadence pulses still need item 9's
-   finer-interval reconfiguration.
+   The **time-based viability gate** (`min_elapsed`, sized to the objective's
+   widest rollup window) also landed, so a per-coordinate `rate(...[W])` cannot
+   settle until its window has cleared the prior coordinate. The §5 in-phase
+   `Control` daemon **reuses this settle per setting** (item 7). *Deferred:* the
+   remaining SRD-86 §6 refinements — sparsity handling by walking up the cadence
+   window ladder, the EWMA / freshness / slope statistic nodes (the first push
+   uses `is_stable`'s median verdict), the settle-timeout `ErrorPolicy` surfacing,
+   the `settle:` YAML trigger, and objective-cone-precise volatility detection.
+   Short phases that span < a few cadence pulses still need item 9's finer-interval
+   reconfiguration.
 9. **(SRD-42) Cadence self-instrumentation + finer-interval reconfiguration** —
    a per-cadence coalesce-time metric (nanos, name aligned to the cadence) as
    the hot-spot guard, plus optional on-demand auto-reconfiguration of a cadence

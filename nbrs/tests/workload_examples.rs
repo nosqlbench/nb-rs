@@ -115,22 +115,126 @@ fn math_and_bitwise_operators() {
 }
 
 #[test]
-fn optimizer_null_sweep_finds_the_manifold_peak() {
+fn optimizer_sweep_finds_the_manifold_peak() {
     // SRD-86 — a phase carrying `optimize:` is a SEARCH node (A12), not a
-    // `for_each` sweep. The `null` optimizer visits the discrete axis and the
-    // objective (a parabola `0 - (ef-3)^2`, peaked at ef=3) is read off each
+    // `for_each` sweep. The default `sweep` optimizer visits the discrete axis and
+    // the objective (a parabola `0 - (ef-3)^2`, peaked at ef=3) is read off each
     // iteration's kernel; the search reports the peak.
-    let (stdout, stderr) = run_workload("examples/workloads/optimizer_null_sweep.yaml", &[]);
+    let (stdout, stderr) = run_workload("examples/workloads/optimizer_sweep.yaml", &[]);
     let out = format!("{stdout}\n{stderr}");
     assert!(!stderr.contains("error:"), "run errored: {stderr}");
     // A12: rendered as a search node, with its spec — not an enumerated sweep.
     assert!(
-        out.contains("search · null · maximize score"),
+        out.contains("search · sweep · maximize score"),
         "search node header missing: {out}"
     );
     // The objective is maximized (score=0) at ef=3 — proves the coordinate
     // propagates into the objective read off the iteration kernel.
     assert!(out.contains("best [3]"), "optimizer should locate the peak at ef=3: {out}");
+}
+
+#[test]
+fn optimizer_continuous_axis_climbs_to_off_center_peak() {
+    // SRD-86 continuous axis — the optimizer SAMPLES a real interval
+    // (`ef in 1.0 .. 5.0`) instead of visiting an enumerated grid. There is no
+    // grid to fall back on: a float-range source enumerates zero points, so the
+    // `nelder_mead` simplex solver is the only thing producing coordinates, and
+    // each proposed real value is bound into the phase kernel via the same
+    // `for_iteration` path a discrete iteration tuple uses.
+    //
+    // The objective is a parabola peaked at ef=4 — interior to [1,5] but OFF the
+    // interval's centre (3.0), so the solver must genuinely climb from its
+    // starting simplex to the optimum. Proving the continuous path end-to-end
+    // means showing both: (1) coordinates land at non-integer values no grid
+    // would name, and (2) the search converges near the true peak.
+    let (stdout, stderr) = run_workload("examples/workloads/optimizer_continuous.yaml", &[]);
+    let out = format!("{stdout}\n{stderr}");
+    assert!(!stderr.contains("error:"), "run errored: {out}");
+
+    // A12 — a search node carrying its spec; the axis name is the clause var
+    // (`ef`), since a continuous axis has no enumerated steps to read it from.
+    assert!(
+        out.contains("search · nelder_mead · maximize score · {ef}"),
+        "continuous search node header missing: {out}"
+    );
+
+    // (1) The manifold was sampled, not a grid: at least one probe lands at a
+    // non-integer coordinate strictly inside [1,5]. A discrete sweep could only
+    // ever emit integer-named grid points. (The `eventlog` probe stream surfaces
+    // on stderr through the observer plane, so scan the combined output.)
+    let off_grid = out
+        .lines()
+        .filter_map(|l| l.split("probe ef=").nth(1))
+        .filter_map(|s| s.split_whitespace().next())
+        .filter_map(|s| s.parse::<f64>().ok())
+        .any(|v| (1.0..=5.0).contains(&v) && (v - v.round()).abs() > 1e-6);
+    assert!(off_grid, "continuous search must sample non-grid coordinates:\n{out}");
+
+    // (2) The reported best coordinate converged near the off-centre peak
+    // (ef≈4). Parse `best [<ef>] → score=<v> after <n> evals`.
+    let best_line = out
+        .lines()
+        .find(|l| l.contains("best ["))
+        .unwrap_or_else(|| panic!("no optimizer result line:\n{out}"));
+    let best_ef: f64 = best_line
+        .split("best [")
+        .nth(1)
+        .and_then(|s| s.split(']').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or_else(|| panic!("could not parse best coordinate from: {best_line}"));
+    // Climbed off the centre toward the peak (start was 3.0; a stuck solver
+    // would report ~3.0), and converged within a simplex step of ef=4.
+    assert!(
+        best_ef > 3.5,
+        "solver must climb off the interval centre toward ef=4, got {best_ef}: {best_line}"
+    );
+    assert!(
+        (best_ef - 4.0).abs() < 0.5,
+        "solver must converge near the off-centre peak ef=4, got {best_ef}: {best_line}"
+    );
+}
+
+#[test]
+fn optimizer_multiaxis_cmaes_converges_on_a_2d_manifold() {
+    // SRD-86 multi-axis — a multi-clause `for_each` over TWO continuous axes,
+    // searched by the cmaes population solver. Proves the multi-axis path: the
+    // optimizer proposes joint (x, y) coordinates over a 2-D continuous space and
+    // converges to the synthetic paraboloid's interior peak (3, 5). Determinism is
+    // from the optimize block's fixed seed.
+    let (stdout, stderr) = run_workload("examples/workloads/optimizer_multiaxis.yaml", &[]);
+    let out = format!("{stdout}\n{stderr}");
+    assert!(!stderr.contains("error:"), "run errored: {out}");
+    let best_line = out
+        .lines()
+        .find(|l| l.contains("best ["))
+        .unwrap_or_else(|| panic!("no optimizer result line:\n{out}"));
+    // Parse `best [x, y]`.
+    let inner = best_line
+        .split("best [")
+        .nth(1)
+        .and_then(|s| s.split(']').next())
+        .unwrap_or_else(|| panic!("could not parse best coordinate from: {best_line}"));
+    let coords: Vec<f64> = inner.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    assert_eq!(coords.len(), 2, "multi-axis best must have 2 coordinates: {best_line}");
+    assert!(
+        (coords[0] - 3.0).abs() < 0.6 && (coords[1] - 5.0).abs() < 0.6,
+        "cmaes must converge near the 2-D peak (3, 5), got {coords:?}: {best_line}"
+    );
+}
+
+#[test]
+fn optimizer_categorical_picks_the_best_named_option() {
+    // SRD-86 categorical — an optimize axis of named string labels (no
+    // order/distance), visited by the value-native default `sweep` optimizer. The
+    // synthetic objective scores `beta` highest, so the search reports it. Proves
+    // labels survive end-to-end as the optimized coordinate (not cast to numbers).
+    let (stdout, stderr) = run_workload("examples/workloads/optimizer_categorical.yaml", &[]);
+    let out = format!("{stdout}\n{stderr}");
+    assert!(!stderr.contains("error:"), "run errored: {out}");
+    assert!(
+        out.contains("best [beta]"),
+        "categorical search must pick the highest-scoring label (beta): {out}"
+    );
 }
 
 #[test]
@@ -174,6 +278,361 @@ fn optimizer_metricsql_objective_settles() {
         "metricsql_scalar objective must settle to the concurrency that \
          eliminates overloads (conc=2): {out}"
     );
+}
+
+#[test]
+fn optimizer_control_steers_a_live_control() {
+    // SRD-86 §4 Control-class actuation — the SAME causal search as
+    // optimizer_metricsql, but `conc` is named in `steer:`, so the
+    // optimizer STEERS the live `concurrency` control (SRD-23 retarget, no
+    // restart) across ONE continuous phase instead of rerunning per coordinate.
+    // The daemon retargets concurrency 32 → 2, settles the windowed objective at
+    // each, and finds conc=2 (the setting that eliminates overloads). The
+    // `(control)` marker proves the Control branch ran (the Coordinate path logs
+    // without it); `best [2]` proves the daemon found the optimum.
+    let (stdout, stderr) = run_workload("examples/workloads/optimizer_control.yaml", &[]);
+    let out = format!("{stdout}\n{stderr}");
+    assert!(!stderr.contains("error:"), "run errored: {out}");
+    assert!(
+        out.contains("(control): best [2]"),
+        "the control daemon must steer the live concurrency to the overload-free \
+         setting (conc=2) on ONE continuous phase: {out}"
+    );
+    // The phase completed cleanly (the daemon's stop is a clean early stop, not
+    // an error-handler failure).
+    assert!(
+        out.contains("1 completed, 0 failed") || out.contains("[ok]"),
+        "the steered phase must complete cleanly, not fail: {out}"
+    );
+}
+
+#[test]
+fn optimizer_control_nests_inside_a_coordinate_sweep() {
+    // SRD-86 §4 "mixed = node nesting" — a phase whose sweeps cover BOTH a
+    // non-control (the outer `for: batch`, re-run actuation) AND a control (the
+    // inner `steer: conc` axis, daemon actuation). The outer scope reruns
+    // the phase per `batch`; within EACH rerun the control daemon steers the live
+    // concurrency. Two outer values ⇒ the Control daemon must fire twice, each a
+    // clean continuous phase. (Inner sweep is a single setting so the test stays
+    // to one settle per rerun.)
+    let yaml = r#"
+scenarios:
+  sweep:
+    - for: "batch in 1, 2"
+      phases:
+        - saturate
+
+phases:
+  saturate:
+    cycles: 60000
+    concurrency: "{conc}"
+    rate: 2000
+    errors: warn
+    error_rate_max: 1.0
+    for_each: "conc in 2"
+    optimize:
+      objective: score
+      max_evals: 10
+      steer: conc
+    bindings: |
+      input cycle: u64
+      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      score := 0 - err_rate
+    ops:
+      insert:
+        adapter: testkit
+        stmt: "INSERT INTO demo.events (id) VALUES ({cycle});"
+        result-latency: "5ms"
+        result-capacity: 2
+        result-overload: 4
+"#;
+    let (path, session) = write_inline_workload("optimizer_control_nested", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    cmd.arg("scenario=sweep");
+    let output = cmd.output().expect("failed to run nbrs");
+    let out = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!out.contains("error:"), "nested control sweep errored: {out}");
+    // The Control daemon composed under the outer Coordinate rerun: one steered
+    // continuous phase per `batch`, each finding the overload-free setting.
+    let control_runs = out.matches("(control): best [2]").count();
+    assert_eq!(
+        control_runs, 2,
+        "the control daemon must steer once per outer `batch` iteration (2): {out}"
+    );
+}
+
+#[test]
+fn optimizer_hybrid_iterates_coordinate_and_steers_control() {
+    // SRD-86 §4 hybrid actuation — ONE optimize node mixing a coordinate axis
+    // (`batch`, rerun) and a control axis (`conc`, steered), expressed in one
+    // multi-clause phase `for_each`. The coordinate axis forms the outer rerun
+    // grid (one phase activation per `batch`), and the Control daemon steers the
+    // control subspace interior to each cell. (Single control value keeps the
+    // test to one settle per cell.)
+    let yaml = r#"
+phases:
+  saturate:
+    cycles: 60000
+    concurrency: "{conc}"
+    rate: 2000
+    errors: warn
+    error_rate_max: 1.0
+    for_each: "batch in [1,2], conc in [2]"
+    optimize:
+      objective: score
+      max_evals: 10
+      steer: conc
+    bindings: |
+      input cycle: u64
+      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      score := 0 - err_rate
+    ops:
+      insert:
+        adapter: testkit
+        stmt: "INSERT INTO demo.events (batch, id) VALUES ({batch}, {cycle});"
+        result-latency: "5ms"
+        result-capacity: 2
+        result-overload: 4
+"#;
+    let (path, session) = write_inline_workload("optimizer_hybrid", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    let output = cmd.output().expect("failed to run nbrs");
+    let out = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!out.contains("error:"), "hybrid optimize errored: {out}");
+    // The hybrid partition ran: the coordinate axis `batch` is the outer rerun
+    // grid (2 cells), and `conc` was steered interior to each — reaching the
+    // overload-free setting (conc=2) without rerunning per conc value.
+    assert!(
+        out.contains("(hybrid 2 coordinate cells × control)") && out.contains("; 2]"),
+        "the hybrid must rerun per coordinate cell and steer the control to conc=2: {out}"
+    );
+    // One clean phase activation per coordinate cell (no failures).
+    assert!(
+        out.contains("2 completed, 0 failed"),
+        "each coordinate cell must complete as a clean steered phase: {out}"
+    );
+}
+
+#[test]
+fn optimizer_steer_without_control_field_is_rejected() {
+    // SRD-86 §4 steer validation — `steer: conc` must be wired to a live control
+    // by a referencing control field (`concurrency: "{conc}"`). Without it, the
+    // steerer cannot know which control to retarget, so the dispatch rejects it
+    // with an actionable error — surfacing the half-specified-steer mistake
+    // rather than silently downgrading to a coordinate.
+    let yaml = r#"
+phases:
+  bad:
+    cycles: 4
+    for_each: "conc in 1, 2"
+    optimize:
+      objective: score
+      max_evals: 5
+      steer: conc
+    bindings: |
+      score := 0 - conc
+    ops:
+      probe:
+        adapter: stdout
+        params:
+          stdout: eventlog
+        stmt: "c={conc}"
+"#;
+    let (path, session) = write_inline_workload("optimizer_steer_unwired", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    let output = cmd.output().expect("failed to run nbrs");
+    let out = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        out.contains("is neither a live control nor wired to one"),
+        "`steer:` on a var with no control field must be rejected: {out}"
+    );
+}
+
+#[test]
+fn optimizer_steers_a_control_directly_by_name() {
+    // SRD-86 §4 — `steer:` can name a live control DIRECTLY (the axis IS the
+    // control), with no `{var}`-bind wire. `for_each: "concurrency in …"` +
+    // `steer: concurrency` steers the concurrency control itself. (`concurrency:
+    // 16` is just the warmup the daemon retargets from.)
+    let yaml = r#"
+phases:
+  saturate:
+    cycles: 60000
+    concurrency: 16
+    rate: 2000
+    errors: warn
+    error_rate_max: 1.0
+    for_each: "concurrency in 32, 2"
+    optimize:
+      objective: score
+      max_evals: 10
+      steer: concurrency
+    bindings: |
+      input cycle: u64
+      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      score := 0 - err_rate
+    ops:
+      insert:
+        adapter: testkit
+        stmt: "INSERT INTO demo.events (id) VALUES ({cycle});"
+        result-latency: "5ms"
+        result-capacity: 2
+        result-overload: 4
+"#;
+    let (path, session) = write_inline_workload("optimizer_steer_direct", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    let output = cmd.output().expect("failed to run nbrs");
+    let out = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!out.contains("error:"), "direct steer errored: {out}");
+    assert!(
+        out.contains("(control): best [2]"),
+        "steering the `concurrency` control by name must find the overload-free setting: {out}"
+    );
+}
+
+#[test]
+fn optimizer_steers_the_rate_control_directly() {
+    // SRD-86 §4 — `steer:` can name the `rate` control DIRECTLY. This is the ONLY
+    // way to steer `rate`: the phase `rate:` field is a fixed `f64` that can't carry
+    // a `{var}` bind, so the indirect form is unavailable. The `rate:` value is the
+    // warmup the daemon retargets from.
+    let yaml = r#"
+phases:
+  saturate:
+    cycles: 60000
+    concurrency: 8
+    rate: 2000
+    errors: warn
+    error_rate_max: 1.0
+    for_each: "rate in 4000, 1000"
+    optimize:
+      objective: score
+      max_evals: 10
+      steer: rate
+    bindings: |
+      input cycle: u64
+      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      score := 0 - err_rate
+    ops:
+      insert:
+        adapter: testkit
+        stmt: "INSERT INTO demo.events (id) VALUES ({cycle});"
+        result-latency: "2ms"
+        result-capacity: 2
+        result-overload: 4
+"#;
+    let (path, session) = write_inline_workload("optimizer_steer_rate_direct", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    let output = cmd.output().expect("failed to run nbrs");
+    let out = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!out.contains("error:"), "direct rate steer errored: {out}");
+    assert!(
+        out.contains("(control): best [1000]"),
+        "steering the `rate` control by name must find the lower, overload-free rate: {out}"
+    );
+}
+
+#[test]
+fn optimizer_steer_rate_without_rate_field_is_rejected() {
+    // SRD-86 §4 — `steer: rate` needs the phase to declare a `rate:` field, since the
+    // rate control only exists when set (concurrency is always declared). Without it
+    // there is no control to steer, so the dispatch rejects it at validation time —
+    // a clean pre-run error, symmetric to the windowed-objective check, NOT a runtime
+    // phase failure when the daemon can't find the control.
+    let yaml = r#"
+phases:
+  bad:
+    cycles: 60000
+    concurrency: 8
+    error_rate_max: 1.0
+    for_each: "rate in 4000, 1000"
+    optimize:
+      objective: score
+      max_evals: 5
+      steer: rate
+    bindings: |
+      input cycle: u64
+      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      score := 0 - err_rate
+    ops:
+      probe:
+        adapter: testkit
+        stmt: "INSERT INTO demo.events (id) VALUES ({cycle});"
+        result-latency: "2ms"
+"#;
+    let (path, session) = write_inline_workload("optimizer_steer_rate_norate", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    let output = cmd.output().expect("failed to run nbrs");
+    let out = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        out.contains("declares no `rate:` field"),
+        "`steer: rate` without a `rate:` field must be rejected before the run: {out}"
+    );
+}
+
+#[test]
+fn phase_for_each_multi_clause_cartesian() {
+    // Polydat owns the comprehension grammar; the PHASE `for_each` now
+    // delegates to the same multi-clause bridge the scenario level uses
+    // (it previously split on the first ` in ` → single axis only). A
+    // two-clause phase for_each produces the full cartesian, consistent
+    // with scenario-level `for:`.
+    let yaml = r#"
+phases:
+  walk:
+    cycles: 1
+    for_each: "a in [1,2], b in [10,20]"
+    ops:
+      emit:
+        adapter: stdout
+        params:
+          stdout: eventlog
+        stmt: "pair a={a} b={b}"
+"#;
+    let (path, session) = write_inline_workload("phase_multi_clause", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    let output = cmd.output().expect("failed to run nbrs");
+    let out = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pairs = out.matches("pair a=").count();
+    assert_eq!(pairs, 4, "phase multi-clause for_each must produce the cartesian {{1,2}}×{{10,20}}: {out}");
+    for expected in ["pair a=1 b=10", "pair a=1 b=20", "pair a=2 b=10", "pair a=2 b=20"] {
+        assert!(out.contains(expected), "missing `{expected}`: {out}");
+    }
 }
 
 #[test]

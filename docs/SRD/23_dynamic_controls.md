@@ -261,6 +261,13 @@ and inherited downward via the walk-up.
 | `max_retries` | phase | `u32` | Retry cap. Today compiled into the dispenser; hoist to a control so it can track `errors` changes without a phase restart. |
 | `log_level` | session | `LogLevel` | Live log-filter tuning. |
 
+**Shipped status:** `concurrency` and `rate` are wired end-to-end
+(declared via `control_catalog::{CONCURRENCY, RATE}`); `errors`,
+`max_retries`, and `log_level` remain planned. Adapters contribute
+their own beyond this core set — e.g. `cql_trace_rate` (the
+`cassandra-cpp` driver). The live, build-accurate inventory is
+`nbrs describe controls`; this table is the core design scope.
+
 Metric cadences (SRD 42) are not part of this v1 because they
 are a universal platform-level concern rather than a dynamic
 control — the cadence tree is declared by the runner and
@@ -576,6 +583,48 @@ through the component tree. Two direct consequences:
   (`GET /controls`), the TUI (edit affordance
   surfacing), and anything else that needs to render the
   catalog.
+
+### Two enumeration tiers — instance vs capability
+
+The component-tree enumeration above is the **instance tier**:
+it shows what *this run* declared. That tier alone is not
+enough for discovery, because declaration is *conditional* —
+`concurrency` is always declared, but `rate` only when a phase
+sets `rate:`, and `cql_trace_rate` only when the
+`cassandra-cpp` driver backs the `cql` adapter. So a user who
+never sets `rate:` can't learn from a live tree that `rate` is
+steerable at all. That is the discoverability asymmetry between
+`concurrency` and `rate`.
+
+The complementary **capability tier** closes it. Each control
+has a static [`ControlDesc`](../../nbrs-activity/src/control_catalog.rs)
+— `name`, value-type, default, range, unit, doc, and a
+`declared_when` condition — that is the **single source of
+truth**: the imperative `declare` *derives* the live control
+from it (`ControlDesc::build_u32` / `build_f64` / `build_rate`
+supply the name / range / gauge; only the instance-specific
+applier is wired separately), and the discovery surface reads
+the same descriptor, so the two cannot drift. Owners contribute
+their descriptors where they already live:
+
+- **core** controls (`concurrency`, `rate`) — `control_catalog::core_controls()`.
+- **adapter** controls — each adapter's
+  `AdapterRegistration::supported_controls` (e.g. the `cql`
+  adapter contributes `cql_trace_rate`, feature-gated so a
+  scylla-only binary doesn't advertise a knob it can't declare).
+
+`control_catalog::all_controls()` unions them. Surfaced by:
+
+- **`nbrs describe controls [<name>]`** — the static capability
+  catalog: every control the binary *can* declare, each with
+  its `declared_when` condition, listed without running
+  anything. `describe adapter <name>` shows that adapter's
+  controls too.
+
+The capability tier answers "what knobs does this binary
+support, and when do they appear?"; the instance tier
+(`dryrun=controls`) answers "what knobs are live in *this*
+run?". Both read controls as structural — neither invents one.
 
 Because declaration is structural, the type of a control's
 value is known at registration time — applier types are in

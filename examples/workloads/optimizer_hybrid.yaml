@@ -1,0 +1,65 @@
+# optimizer_hybrid.yaml — SRD-86 §4 hybrid actuation (coordinate × control)
+#
+# A single optimize node whose sweep covers BOTH a non-control and a control
+# axis — the case that resolves by node nesting in SRD-86, here expressed in ONE
+# comprehension scope. The phase `for_each` is multi-clause:
+#
+#     for_each: "batch in [1,2], conc in [16,2]"
+#
+# `batch` is a plain COORDINATE axis (structural — it must be realized by
+# re-running the phase), and `conc` is named in `steer:` (a live
+# CONTROL — retargeted without restart). The hybrid executor partitions them:
+#
+#   - the coordinate axes form the OUTER rerun grid (one phase activation per
+#     `batch` value);
+#   - within each activation the Control daemon steers the control subspace
+#     INTERIOR to it (retargets `concurrency` across {16, 2}, settling the
+#     windowed objective at each).
+#
+# So `batch` iterates at its proper boundary and `conc` varies live within each
+# batch's continuous phase — `conc` written last is innermost by lex order. The
+# reported best is `(batch ; conc)` over all cells; here conc=2 fits the
+# 2-server / depth-4 backend (no overloads) for every batch.
+#
+# Runs standalone:
+#   nbrs run workload=examples/workloads/optimizer_hybrid.yaml \
+#       --session-path /tmp/opt-hybrid
+
+description: |
+  SRD-86 hybrid actuation: one optimize node mixing a coordinate axis (`batch`,
+  rerun) and a control axis (`conc`, live-retargeted). The coordinate axis is the
+  outer rerun grid; the Control daemon steers the control subspace interior to
+  each cell — coordinate at its boundary, control varying live within.
+
+phases:
+  saturate:
+    # Each coordinate cell is ONE continuous phase, sized generously so the daemon
+    # finishes and stops it early.
+    cycles: 60000
+    concurrency: "{conc}"
+    rate: 2000
+    # Overloads are the objective signal, not failures; `error_rate_max: 1.0`
+    # compiles to `error_rate > 1.0` (never trips — "allow 100%"), required for a
+    # continuous control phase that dwells at a saturating setting.
+    errors: warn
+    error_rate_max: 1.0
+    # Multi-clause: `batch` (coordinate, rerun) × `conc` (control, steered).
+    for_each: "batch in [1,2], conc in [16,2]"
+    optimize:
+      objective: score
+      max_evals: 10
+      # `steer: conc` opts conc into live steering; `batch` is not steered, so it
+      # steps through by re-running the phase — the hybrid (coordinate outer grid,
+      # control steered interior to each cell).
+      steer: conc
+    bindings: |
+      input cycle: u64
+      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      score := 0 - err_rate
+    ops:
+      insert:
+        adapter: testkit
+        stmt: "INSERT INTO demo.events (batch, id) VALUES ({batch}, {cycle});"
+        result-latency: "5ms"
+        result-capacity: 2
+        result-overload: 4

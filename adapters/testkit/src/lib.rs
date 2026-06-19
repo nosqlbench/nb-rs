@@ -294,27 +294,39 @@ impl OpDispenser for ModelDispenser {
             // Write the resolved op (same as stdout). Done before
             // any saturation simulation so the trace reflects the
             // op the caller issued, regardless of how it resolved.
+            // A real-stdout target routes through the observer's op-output
+            // channel (coordinated with a live status display; straight to stdout
+            // when piped) so it doesn't staircase under a raw-mode terminal; a
+            // file target writes directly.
             {
-                let mut writer = self.writer.lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                let write_result = if self.newline {
-                    writeln!(writer, "{text}")
+                let to_stdout = matches!(
+                    &*self.writer.lock().unwrap_or_else(|e| e.into_inner()),
+                    OutputTarget::Stdout(_)
+                );
+                if to_stdout {
+                    nbrs_activity::observer::op_output(&text);
                 } else {
-                    write!(writer, "{text}")
-                };
-                if let Err(e) = write_result {
-                    return Err(ExecutionError::Op(AdapterError {
-                        error_name: "IoError".into(),
-                        message: format!("write failed: {e}"),
-                        retryable: false,
-                    }));
-                }
-                if let Err(e) = writer.flush() {
-                    return Err(ExecutionError::Op(AdapterError {
-                        error_name: "FlushError".into(),
-                        message: format!("flush failed: {e}"),
-                        retryable: false,
-                    }));
+                    let mut writer = self.writer.lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let write_result = if self.newline {
+                        writeln!(writer, "{text}")
+                    } else {
+                        write!(writer, "{text}")
+                    };
+                    if let Err(e) = write_result {
+                        return Err(ExecutionError::Op(AdapterError {
+                            error_name: "IoError".into(),
+                            message: format!("write failed: {e}"),
+                            retryable: false,
+                        }));
+                    }
+                    if let Err(e) = writer.flush() {
+                        return Err(ExecutionError::Op(AdapterError {
+                            error_name: "FlushError".into(),
+                            message: format!("flush failed: {e}"),
+                            retryable: false,
+                        }));
+                    }
                 }
             }
 
@@ -718,6 +730,7 @@ inventory::submit! {
             "result-throw-at", "result-throw-name",
         ],
         display_preference: |_params| nbrs_activity::adapter::DisplayPreference::Auto,
+        supported_controls: || &[],
         create: |params| Box::pin(async move {
             Ok(std::sync::Arc::new(ModelAdapter::with_config(ModelConfig {
                 stdout: StdoutConfig::from_params(&params),

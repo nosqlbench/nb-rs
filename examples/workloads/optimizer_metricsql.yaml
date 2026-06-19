@@ -49,9 +49,12 @@ phases:
     error_rate_max: 1.0
     for_each: "conc in 32, 16, 2"
     optimize:
-      method: "null"
       objective: score
       max_evals: 10
+      # No `steer:` → `conc` steps through by re-running the phase (coordinate, the
+      # default) — demonstrating the phase-RERUN actuation with a settled
+      # run-produced objective. The live-steer form (`steer: conc`) is
+      # optimizer_control.yaml.
     bindings: |
       input cycle: u64
       # The run-produced signal, read through the MetricsQL engine over this

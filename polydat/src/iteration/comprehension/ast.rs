@@ -205,8 +205,13 @@ impl Comprehension {
                         Source::Generator { expr, .. } => expr.clone(),
                         Source::WorkloadParamList { name, .. } => format!("{{{name}}}"),
                         Source::ContinuousInterval { interval, .. } => {
-                            if interval.hi_open { format!("{}..{}", interval.lo, interval.hi) }
-                            else { format!("{}..={}", interval.lo, interval.hi) }
+                            // `{:?}` (not `{}`) keeps the decimal point so the
+                            // endpoints re-parse as floats — `{}` on `1.0f64`
+                            // prints "1", round-tripping a continuous `[1.0,5.0)`
+                            // to "1..5", which `parse_source` would re-classify as
+                            // an INTEGER range (typing the iter-var `U64`).
+                            if interval.hi_open { format!("{:?}..{:?}", interval.lo, interval.hi) }
+                            else { format!("{:?}..={:?}", interval.lo, interval.hi) }
                         }
                         Source::Distribution { .. } => "<distribution>".to_string(),
                     };
@@ -360,6 +365,33 @@ mod tests {
         assert!(c.is_clause());
         assert!(!c.is_combinator());
         assert!(!c.is_modifier());
+    }
+
+    #[test]
+    fn continuous_interval_spec_text_round_trips_as_float() {
+        // A continuous `[1.0, 5.0)` must reconstruct to a spec the
+        // source parser re-classifies as CONTINUOUS, not an integer
+        // range. `{}` on `1.0f64` prints "1", so the reconstruction
+        // must use a float-preserving format ("1.0..5.0"), else a
+        // downstream type-probe re-parses "1..5" and types the
+        // iter-var `U64` — silently corrupting a float optimize axis.
+        use crate::iteration::comprehension::cardinality::{Interval, ProductMeasure};
+        let c = Comprehension::clause(
+            "ef",
+            Source::ContinuousInterval {
+                interval: Interval { lo: 1.0, hi: 5.0, lo_open: false, hi_open: true },
+                measure: ProductMeasure::Uniform,
+            },
+        );
+        let (var, spec_text) = c.coordinate_specs().into_iter().next().unwrap();
+        assert_eq!(var, "ef");
+        // Re-parsing the reconstructed text must yield a continuous
+        // interval again — the round-trip the kernel-type probe relies on.
+        let reparsed = crate::iteration::comprehension::spec::parse_source(&spec_text).unwrap();
+        assert!(
+            matches!(reparsed, Source::ContinuousInterval { .. }),
+            "reconstructed '{spec_text}' re-parsed to {reparsed:?}, expected ContinuousInterval"
+        );
     }
 
     #[test]

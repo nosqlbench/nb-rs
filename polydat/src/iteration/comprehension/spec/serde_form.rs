@@ -126,6 +126,24 @@ impl From<ConvertError> for SpecConvertError {
     }
 }
 
+/// Parse a single inline `for`-clause string — **possibly
+/// multi-clause**, e.g. `"k in 1..10, limit in [1, 2, 3]"` — into the
+/// algebra-layer [`AlgebraAst`].
+///
+/// The canonical entry for consumers that hold only the for-clause text
+/// (no separate `where` / `order`): both **scenario- and phase-level**
+/// `for_each` in nbrs route through this, so the comprehension grammar
+/// has a single owner (polydat) rather than ad-hoc `var in expr` splits
+/// scattered in the runtime.
+pub fn parse_inline(spec: &str) -> Result<AlgebraAst, SpecConvertError> {
+    ComprehensionSpec {
+        r#for: ForSpec::Inline(spec.to_string()),
+        r#where: None,
+        order: None,
+    }
+    .into_algebra()
+}
+
 impl ComprehensionSpec {
     /// Convert this spec into the algebra-layer
     /// [`AlgebraAst`].  Routes the `for` shape through the

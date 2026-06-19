@@ -785,6 +785,14 @@ pub struct AdapterRegistration {
     /// to the console, but is TUI-compatible when `filename=` redirects
     /// to a file).
     pub display_preference: fn(&std::collections::HashMap<String, String>) -> DisplayPreference,
+    /// SRD-23 — the dynamic controls this adapter can declare, as static
+    /// [`ControlDesc`](crate::control_catalog::ControlDesc) capability
+    /// descriptors. This is the *discovery* surface (`nbrs describe controls`
+    /// / `describe adapter=<name>`), read without constructing the adapter;
+    /// the adapter's [`declare_controls`](DriverAdapter::declare_controls)
+    /// *derives* the live control from the same descriptors so the two cannot
+    /// drift. Default `|| &[]` for adapters with no dynamic knobs.
+    pub supported_controls: fn() -> &'static [crate::control_catalog::ControlDesc],
     /// Async factory: given params, create the adapter.
     /// Returns a boxed future so async connect is supported (e.g., CQL).
     pub create: fn(std::collections::HashMap<String, String>) -> CreateAdapterFuture,

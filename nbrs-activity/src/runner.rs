@@ -2197,23 +2197,31 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                             );
                             return None;
                         }
-                        let (var, expr) = if let Some(pos) = spec.find(" in ") {
-                            let (lhs, rhs) = spec.split_at(pos);
-                            (lhs.trim().to_string(), rhs[" in ".len()..].trim().to_string())
-                        } else {
-                            (String::new(), spec.clone())
+                        // Delegate the for_each grammar to polydat (the
+                        // single owner): `parse_inline` handles single- AND
+                        // multi-clause, and `coordinate_specs()` yields the
+                        // per-clause (var, spec) pairs — identical to the
+                        // scenario-level path above. A single-clause spec
+                        // yields exactly one pair, preserving prior behaviour.
+                        let comp = match polydat::iteration::comprehension::spec::parse_inline(spec) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                crate::diag!(crate::observer::LogLevel::Error,
+                                    "phase '{name}' for_each '{spec}': {e}");
+                                return None;
+                            }
                         };
-                        // SRD-13f Push E: phases declaring both
-                        // `for_each:` and `bindings:` fold the
-                        // bindings into the for_each scope kernel
-                        // (one kernel, one install). Pure-for_each
-                        // phases (no bindings) pass an empty
-                        // `BindingsDef`, which `synthesize_for_each_scope`
-                        // treats as no-op.
+                        let pairs = comp.coordinate_specs();
+                        let iter_vars: Vec<String> = pairs.iter().map(|(v, _)| v.clone()).collect();
+                        let spec_exprs: Vec<String> = pairs.iter().map(|(_, e)| e.clone()).collect();
+                        // SRD-13f Push E: phases declaring both `for_each:`
+                        // and `bindings:` fold the bindings into the for_each
+                        // scope kernel (one kernel, one install). Pure-for_each
+                        // phases pass an empty `BindingsDef` (no-op).
                         Some(InstallSpec::ForComprehension {
                             idx,
-                            iter_vars: vec![var],
-                            spec_exprs: vec![expr],
+                            iter_vars,
+                            spec_exprs,
                             phase_bindings: phase.bindings.clone(),
                         })
                     } else {
@@ -2584,6 +2592,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             phases: phases.clone(),
             optimize_objective: None,
             optimize_objective_value: None,
+            optimize_steer: None,
             phase_param_overrides,
             workload_shell,
             workload_stop_when: workload.stop_when.clone(),

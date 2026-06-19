@@ -578,7 +578,7 @@ fn print_post_run_reports(
     // terminal it goes to `session.log` only (the phase outcomes are
     // already there); the console stays the adapter's.
     if !silent_console {
-        print_post_run_summary(run_state, run_result);
+        print_post_run_summary(run_state, run_result, &session_dir);
     }
 }
 

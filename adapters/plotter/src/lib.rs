@@ -678,6 +678,7 @@ inventory::submit! {
         names: || &["plotter", "plot"],
         known_params: || &["mode", "fade", "lanes", "render", "width", "height", "no_color"],
         display_preference: |_params| nbrs_activity::adapter::DisplayPreference::Off,
+        supported_controls: || &[],
         create: |params| Box::pin(async move {
             let mode = params.get("mode").cloned().unwrap_or_else(|| "auto".into());
             let fade = params.get("fade")

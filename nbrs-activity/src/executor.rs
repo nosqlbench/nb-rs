@@ -281,6 +281,13 @@ pub struct ExecCtx {
     pub optimize_objective: Option<String>,
     /// The value `run_phase` pulled for `optimize_objective` this iteration.
     pub optimize_objective_value: Option<f64>,
+    /// SRD-86 Control-class actuation — when set (by `dispatch_optimization`'s
+    /// Control branch), `run_phase` runs ONE continuous phase and `tokio::join!`s
+    /// the [`steer`](crate::optimize::steer::steer) daemon alongside the activity
+    /// loop: the daemon live-retargets the phase's controls per setting instead
+    /// of rerunning. `None` for the Coordinate path (and `optimize_objective`
+    /// stays `None` here — the steerer owns settling, not `run_phase`).
+    pub optimize_steer: Option<crate::optimize::steer::SteerSpec>,
 }
 
 /// Workload YAML source kept alongside the parsed model so
@@ -752,7 +759,6 @@ fn execute_node<'a>(
                     // is set as the parent for the leaf phase
                     // compile, the phase runs once per iter
                     // value.
-                    let (var_parsed, expr_parsed) = parse_var_in_expr(&spec);
                     let scope_idx = ctx.scope_tree.phase_node_by_name(name)
                         .ok_or_else(|| format!(
                             "phase '{name}' for_each '{spec}': no matching scope-tree entry."
@@ -767,41 +773,63 @@ fn execute_node<'a>(
                         .ok_or_else(|| format!(
                             "phase '{name}' for_each '{spec}': no installed ancestor kernel."
                         ))?;
-                    // Build the algebra::Comprehension for this
-                    // phase-level for_each: a single Clause whose
-                    // source is the parsed expr text (routed
-                    // through parse_source for typing).
-                    use polydat::iteration::comprehension::spec::parse_source;
-                    let source = parse_source(&expr_parsed)
-                        .map_err(|e| format!("phase '{name}' for_each '{spec}': {e}"))?;
-                    let comprehension = polydat::iteration::comprehension::Comprehension::clause(
-                        var_parsed.clone(), source,
-                    );
+                    // Delegate the for_each grammar to polydat (the single
+                    // owner): `parse_inline` builds the algebra comprehension for
+                    // single- OR multi-clause specs (e.g. "batch in [1,2], conc in
+                    // [8,16]"), identical to the scenario-level for_each path.
+                    let comprehension =
+                        polydat::iteration::comprehension::spec::parse_inline(&spec)
+                            .map_err(|e| format!("phase '{name}' for_each '{spec}': {e}"))?;
+                    let iter_vars: Vec<String> = comprehension
+                        .coordinate_specs()
+                        .into_iter()
+                        .map(|(v, _)| v)
+                        .collect();
+                    // Joined display/identity label for the scope (one var in the
+                    // common case; multi-clause joins them).
+                    let var_label = iter_vars.join(", ");
                     let needle = spec.clone();
                     let parent_coords = ctx.current_parent_kernel.as_ref()
                         .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
                         .unwrap_or_default();
-                    let steps = runtime_iterate(
-                        ctx, &canonical, &parent, &parent_coords, &comprehension,
-                    ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
+                    let optimize_block = ctx.phases.get(name.as_str())
+                        .and_then(|p| p.optimize.clone());
+                    // A continuous optimize axis (`x in lo .. hi`, float range) is
+                    // SAMPLED by the optimizer — read its bounds from the
+                    // comprehension and skip enumeration (a continuous source
+                    // yields no tuples; the optimizer IS the sampling strategy,
+                    // so V8's order-requirement never applies here).
+                    let continuous_axes = optimize_block.as_ref()
+                        .and_then(|_| continuous_axis_intervals(&comprehension));
+                    let steps = if continuous_axes.is_some() {
+                        Vec::new()
+                    } else {
+                        runtime_iterate(
+                            ctx, &canonical, &parent, &parent_coords, &comprehension,
+                        ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?
+                    };
                     // Structural push: outer phase.for_each scope
                     // header. Per SRD 18b §"Single Walker Contract"
                     // point 2 — runs at every depth.
                     let mut scope_path = ctx.scene_tree_path.clone();
-                    scope_path.push(PathSegment::ForEach { var: var_parsed.clone() });
-                    let optimize_block = ctx.phases.get(name.as_str())
-                        .and_then(|p| p.optimize.clone());
+                    scope_path.push(PathSegment::ForEach { var: var_label.clone() });
                     let header = if let Some(b) = &optimize_block {
                         // SRD-86 A12 — a search node, not a sweep: its spec and
-                        // budget, never an enumerated coordinate set.
-                        let axes = steps.first()
-                            .map(|s| s.bindings.iter().map(|(k, _)| k.as_str())
-                                .collect::<Vec<_>>().join(", "))
-                            .unwrap_or_default();
+                        // budget, never an enumerated coordinate set. A continuous
+                        // axis is sampled, so it has no enumerated steps to read a
+                        // name from — use the clause variable directly.
+                        let axes = if continuous_axes.is_some() {
+                            var_label.clone()
+                        } else {
+                            steps.first()
+                                .map(|s| s.bindings.iter().map(|(k, _)| k.as_str())
+                                    .collect::<Vec<_>>().join(", "))
+                                .unwrap_or_default()
+                        };
                         format!("search · {} · maximize {} · {{{axes}}} · ≤{} evals",
                             b.method, b.objective, b.max_evals)
                     } else {
-                        format!("phase.for_each {var_parsed} in [{}]",
+                        format!("phase.for_each {var_label} in [{}]",
                             steps.iter()
                                 .filter_map(|s| s.bindings.first().map(|(_, v)| v.to_display_string()))
                                 .collect::<Vec<_>>().join(", "))
@@ -822,8 +850,26 @@ fn execute_node<'a>(
                         p
                     };
                     let res = if let Some(b) = optimize_block {
+                        // Continuous axes are sampled from their bounds; discrete
+                        // axes carry feasibility (holes) in the enumerated grid.
+                        let (space, coord_eval) = if let Some(intervals) = continuous_axes {
+                            let names = iter_vars.clone();
+                            (
+                                search_space_continuous(&names, &intervals),
+                                CoordEval::Synthesized {
+                                    axis_names: names,
+                                    canonical: canonical.clone(),
+                                    parent: parent.clone(),
+                                    parent_coords: parent_coords.clone(),
+                                },
+                            )
+                        } else {
+                            let space = search_space_from_steps(&steps);
+                            let index = index_steps(&steps);
+                            (space, CoordEval::Enumerated { steps, index })
+                        };
                         dispatch_optimization(
-                            ctx, steps, b, name, depth + 1,
+                            ctx, space, coord_eval, b, name, depth + 1,
                             Some((name.clone(), op_names, phase_path_for_iters)),
                         ).await
                     } else {
@@ -1541,28 +1587,59 @@ fn dispatch_comprehension<'a>(
 /// subtree once.
 fn dispatch_optimization<'a>(
     ctx: &'a mut ExecCtx,
-    steps: Vec<IterationStep>,
+    space: crate::optimize::SearchSpace,
+    coord_eval: CoordEval,
     block: nbrs_workload::model::OptimizeBlock,
     phase_name: &'a str,
     depth: usize,
     phase_meta: Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
-        if steps.is_empty() {
+        if space.dims() == 0 {
             return Ok(());
         }
 
         // Pre-map (depth < Op): represent the search + pre-map the
-        // coordinate-invariant subtree ONCE (one representative evaluation).
+        // coordinate-invariant subtree ONCE (one representative evaluation —
+        // the first enumerated step, or the continuous space's centre).
         // `run_one_iteration`'s Phase terminal is itself depth-gated, so this is
         // a purely structural pass — no real phase run, no objective read.
         if ctx.diag.depth < crate::runner::ExecDepth::Op {
-            return run_one_eval(ctx, &steps[0], phase_name, depth, &phase_meta).await;
+            if let Some(step) = coord_eval.representative(&space) {
+                return run_one_eval(ctx, &step, phase_name, depth, &phase_meta).await;
+            }
+            return Ok(());
         }
 
-        // ─── Execution: the adaptive search loop ───
-        let space = search_space_from_steps(&steps);
-        let step_index = index_steps(&steps);
+        // SRD-86 §4 Control-class actuation. An axis declared `changeover:
+        // control` is STEERED (live retarget); the rest are coordinate axes
+        // (rerun). Three shapes:
+        //  - all-control  → ONE continuous phase, daemon steers everything.
+        //  - mixed        → hybrid: iterate the coordinate axes (rerun) and steer
+        //                   the control axes interior to each cell.
+        //  - none         → fall through to the Coordinate adaptive loop below.
+        let phase_concurrency = ctx.phases.get(phase_name).and_then(|p| p.concurrency.clone());
+        let phase_has_rate = ctx.phases.get(phase_name).is_some_and(|p| p.rate.is_some());
+        let control_axes = classify_control_axes(
+            &space,
+            &block.steer,
+            phase_concurrency.as_deref(),
+            phase_has_rate,
+        )?;
+        if !control_axes.is_empty() {
+            if control_axes.len() == space.dims() {
+                return run_control_search(
+                    ctx, space, coord_eval, control_axes, block, phase_name, depth, phase_meta,
+                )
+                .await;
+            }
+            return run_hybrid_search(
+                ctx, space, coord_eval, control_axes, block, phase_name, depth, phase_meta,
+            )
+            .await;
+        }
+
+        // ─── Execution: the adaptive search loop (Coordinate actuation) ───
         let mut params = crate::optimize::OptimizerParams::new();
         for (k, v) in &block.params {
             params = params.with(k.clone(), *v);
@@ -1590,14 +1667,14 @@ fn dispatch_optimization<'a>(
                 if evals >= block.max_evals {
                     break 'outer;
                 }
-                let key = coord_key(&coord);
-                let Some(&si) = step_index.get(&key) else {
+                let Some(step) = coord_eval.materialize(&coord) else {
                     crate::diag!(crate::observer::LogLevel::Warn,
                         "optimizer '{method}' on '{phase_name}': coordinate [{key}] is not in the \
-                         enumerable grid — skipping", method = block.method);
+                         enumerable grid — skipping",
+                        method = block.method, key = coord_key(&coord));
                     continue;
                 };
-                run_one_eval(ctx, &steps[si], phase_name, depth, &phase_meta).await?;
+                run_one_eval(ctx, &step, phase_name, depth, &phase_meta).await?;
                 evals += 1;
                 let value = ctx.optimize_objective_value.ok_or_else(|| {
                     format!(
@@ -1624,6 +1701,283 @@ fn dispatch_optimization<'a>(
             "optimizer '{method}' on '{phase_name}': best [{best_disp}] → {objective}={best_value} \
              after {evals} evals",
             method = block.method, objective = block.objective);
+        Ok(())
+    })
+}
+
+/// SRD-86 §4 — resolve the **explicitly steered** axes (`optimize.steer`). Every
+/// axis is a **coordinate** (stepped through by re-running the phase) by default;
+/// a var named in `steer` is actuated as a live **control** instead. Each steered
+/// var is *validated*: it must be a search axis, and it resolves to a control
+/// either **directly** (its name IS a live control — `steer: concurrency`,
+/// `steer: rate`) or **indirectly** (it sinks into a control via a `{var}`-bind,
+/// `concurrency: "{conc}"` → the `concurrency` control). Neither → a clear error,
+/// not a silent downgrade. (The other half of "steering is meaningful" — that the
+/// objective is a windowed metric the steerer can settle — is checked downstream
+/// by [`require_windowed_objective`].) Returns the control axes (`axis_idx` into
+/// `space`); the rest are coordinate axes — a node may mix the two (the hybrid
+/// path). The direct form is the only way to steer `rate`, whose `f64` field
+/// can't carry a `{var}`.
+fn classify_control_axes(
+    space: &crate::optimize::SearchSpace,
+    steer: &[String],
+    phase_concurrency: Option<&str>,
+    phase_has_rate: bool,
+) -> Result<Vec<crate::optimize::steer::ControlAxis>, String> {
+    use crate::optimize::steer::ControlAxis;
+    // The live controls a phase declares (SRD-23). A steered var resolves to one
+    // either DIRECTLY (its name IS a control — `steer: concurrency`) or
+    // INDIRECTLY (it feeds a control via `concurrency: "{var}"` — `steer: conc`).
+    const KNOWN_CONTROLS: &[&str] = &["concurrency", "rate"];
+    let mut controls = Vec::new();
+    for var in steer {
+        // The steered var must be a search axis (gathered from the `for_each`).
+        let Some(i) = space.axes.iter().position(|ax| &ax.name == var) else {
+            return Err(format!(
+                "optimize `steer: {var}` is not a search axis — name a var that appears in the \
+                 phase's `for_each`"
+            ));
+        };
+        let control = if KNOWN_CONTROLS.contains(&var.as_str()) {
+            // Direct: the axis var IS a live control — steer it by name, no
+            // `{var}`-bind wire needed. (This is how `rate` is steerable at all,
+            // since `rate:` can't carry a `{var}`.) The `concurrency` control is
+            // always declared; the `rate` control only when the phase sets `rate:`,
+            // so steering `rate` requires that field — caught here, not at runtime.
+            if var == "rate" && !phase_has_rate {
+                return Err(
+                    "optimize `steer: rate` but the phase declares no `rate:` field, so there is no \
+                     rate control to steer — add a `rate:` to the phase (its value is the warmup the \
+                     steerer retargets from)"
+                        .to_string(),
+                );
+            }
+            var.clone()
+        } else if phase_concurrency.is_some_and(|c| c.contains(&format!("{{{var}}}"))) {
+            // Indirect: the var sinks into the `concurrency` control via
+            // `concurrency: "{var}"`. (Textual match for now; the principled form
+            // traces the var's l-value flow to a control sink.)
+            "concurrency".to_string()
+        } else {
+            return Err(format!(
+                "optimize `steer: {var}` but '{var}' is neither a live control nor wired to one — \
+                 name a control directly (`steer: concurrency`) or wire the var \
+                 (`concurrency: \"{{{var}}}\"`); or drop it from `steer:` to step through its \
+                 values by re-running the phase"
+            ));
+        };
+        controls.push(ControlAxis { axis_idx: i, control });
+    }
+    Ok(controls)
+}
+
+/// A Control-class sweep settles a windowed objective per setting — reject an
+/// objective that reads no live metric upfront, with an actionable message.
+fn require_windowed_objective(
+    ctx: &ExecCtx,
+    phase_name: &str,
+    objective: &str,
+) -> Result<(), String> {
+    let phase_kernel = ctx
+        .scope_tree
+        .phase_node_by_name(phase_name)
+        .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned());
+    if let Some(pk) = &phase_kernel
+        && !crate::optimize::settle::program_reads_live_metrics(pk.program())
+    {
+        return Err(format!(
+            "phase '{phase_name}': Control-class optimize needs a windowed objective \
+             ('{objective}') to settle per setting, but the phase reads no live metric. \
+             Use metric_window(...) or metricsql_scalar(rate(...[W]))."
+        ));
+    }
+    Ok(())
+}
+
+/// Run the Control daemon for ONE phase activation (one continuous phase bound at
+/// `step`): set up the [`SteerSpec`](crate::optimize::steer::SteerSpec) over
+/// `space`/`controls`, run the phase with the daemon `tokio::join!`'d in
+/// `run_phase`, and return what it found. Shared by the pure-control path (one
+/// cell at the centre) and the hybrid path (one cell per coordinate combination).
+#[allow(clippy::too_many_arguments)] // mirrors `dispatch_optimization`'s shape
+async fn run_steer_cell(
+    ctx: &mut ExecCtx,
+    step: &IterationStep,
+    space: crate::optimize::SearchSpace,
+    controls: Vec<crate::optimize::steer::ControlAxis>,
+    block: &nbrs_workload::model::OptimizeBlock,
+    phase_name: &str,
+    depth: usize,
+    phase_meta: &Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
+) -> Result<crate::optimize::steer::SteerOutcome, String> {
+    let result = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+        crate::optimize::steer::SteerOutcome::default(),
+    ));
+    let spec = crate::optimize::steer::SteerSpec {
+        method: block.method.clone(),
+        params: block.params.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        objective: block.objective.clone(),
+        max_evals: block.max_evals,
+        seed: block.seed,
+        space,
+        controls,
+        result: result.clone(),
+    };
+    // The steerer owns settling; leave `optimize_objective` None so `run_phase`'s
+    // own per-phase settle does NOT fire.
+    ctx.optimize_objective = None;
+    ctx.optimize_steer = Some(spec);
+    run_one_eval(ctx, step, phase_name, depth, phase_meta).await?;
+    ctx.optimize_steer = None;
+    Ok((**result.load()).clone())
+}
+
+/// SRD-86 §4–§6 — drive an **all-control** search: run ONE continuous phase and
+/// `tokio::join!` the [`steer`](crate::optimize::steer::steer) daemon to
+/// live-retarget its controls per setting. The phase starts at the space centre
+/// (a neutral warmup binding); the steerer retargets from there.
+#[allow(clippy::too_many_arguments)] // mirrors `dispatch_optimization`'s shape
+fn run_control_search<'a>(
+    ctx: &'a mut ExecCtx,
+    mut space: crate::optimize::SearchSpace,
+    coord_eval: CoordEval,
+    control_axes: Vec<crate::optimize::steer::ControlAxis>,
+    block: nbrs_workload::model::OptimizeBlock,
+    phase_name: &'a str,
+    depth: usize,
+    phase_meta: Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        require_windowed_objective(ctx, phase_name, &block.objective)?;
+        // Stamp Control on the steered axes so any describe/dryrun renders truthfully.
+        for ca in &control_axes {
+            space.axes[ca.axis_idx].changeover = crate::optimize::Changeover::Control;
+        }
+        // The continuous phase starts at the space centre; the steerer retargets
+        // each control immediately, so this is only the warmup setting.
+        let center = coord_eval.representative(&space).ok_or_else(|| {
+            format!("phase '{phase_name}': control optimize has no representative coordinate")
+        })?;
+        let outcome =
+            run_steer_cell(ctx, &center, space, control_axes, &block, phase_name, depth, &phase_meta)
+                .await?;
+        let (best_disp, best_value) = match &outcome.best {
+            Some(b) => (
+                b.coord.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "),
+                b.value,
+            ),
+            None => ("<none>".to_string(), f64::NEG_INFINITY),
+        };
+        crate::diag!(crate::observer::LogLevel::Info,
+            "optimizer '{method}' on '{phase_name}' (control): best [{best_disp}] → \
+             {objective}={best_value} after {evals} evals",
+            method = block.method, objective = block.objective, evals = outcome.evals);
+        Ok(())
+    })
+}
+
+/// SRD-86 §4 hybrid actuation — a single optimize node mixing coordinate axes
+/// (rerun) and control axes (steer). The coordinate axes form the OUTER rerun
+/// grid; for each distinct coordinate cell the phase is re-run bound at that
+/// cell, and the Control daemon steers the control subspace INTERIOR to it. The
+/// node's `method`/`budget` drive the inner control search per cell; the
+/// coordinate cells are enumerated (a continuous coordinate axis alongside a
+/// control axis — the `IndexFn::Hybrid` shape — is a follow-up). The reported
+/// best is `(coordinate-cell ; control-setting)` over all cells.
+#[allow(clippy::too_many_arguments)] // mirrors `dispatch_optimization`'s shape
+fn run_hybrid_search<'a>(
+    ctx: &'a mut ExecCtx,
+    space: crate::optimize::SearchSpace,
+    coord_eval: CoordEval,
+    control_axes: Vec<crate::optimize::steer::ControlAxis>,
+    block: nbrs_workload::model::OptimizeBlock,
+    phase_name: &'a str,
+    depth: usize,
+    phase_meta: Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        require_windowed_objective(ctx, phase_name, &block.objective)?;
+
+        // Partition axes: control indices (K, inner/steered) vs the rest
+        // (C, outer/rerun).
+        let control_idx: std::collections::HashSet<usize> =
+            control_axes.iter().map(|c| c.axis_idx).collect();
+        let coord_indices: Vec<usize> =
+            (0..space.axes.len()).filter(|i| !control_idx.contains(i)).collect();
+
+        // The control subspace the daemon searches, with axis indices remapped
+        // into K (the daemon proposes coordinates over K alone).
+        let k_axes: Vec<crate::optimize::Axis> = control_axes
+            .iter()
+            .map(|ca| {
+                let mut ax = space.axes[ca.axis_idx].clone();
+                ax.changeover = crate::optimize::Changeover::Control;
+                ax
+            })
+            .collect();
+        let k_space = crate::optimize::SearchSpace::new(k_axes);
+        let k_controls: Vec<crate::optimize::steer::ControlAxis> = control_axes
+            .iter()
+            .enumerate()
+            .map(|(k_pos, ca)| crate::optimize::steer::ControlAxis {
+                axis_idx: k_pos,
+                control: ca.control.clone(),
+            })
+            .collect();
+
+        // Enumerate the distinct coordinate cells (the outer rerun grid): project
+        // each enumerated step onto the coordinate axes and dedup, keeping one
+        // representative step per cell (its control values are a warmup the
+        // daemon immediately overrides).
+        let CoordEval::Enumerated { steps, .. } = &coord_eval else {
+            return Err(format!(
+                "phase '{phase_name}': hybrid coordinate+control optimize requires enumerated \
+                 coordinate axes (a continuous coordinate axis alongside a control axis is not \
+                 yet supported)"
+            ));
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut cells: Vec<IterationStep> = Vec::new();
+        for step in steps {
+            let key: String = coord_indices
+                .iter()
+                .map(|&i| step.bindings[i].1.to_display_string())
+                .collect::<Vec<_>>()
+                .join("\u{1f}");
+            if seen.insert(key) {
+                cells.push(step.clone());
+            }
+        }
+
+        // Per coordinate cell: re-run the phase bound at the cell and steer the
+        // control subspace within it. Best is tracked across cells.
+        let mut best_value = f64::NEG_INFINITY;
+        let mut best_disp = "<none>".to_string();
+        let mut total_evals = 0usize;
+        for cell in &cells {
+            let outcome = run_steer_cell(
+                ctx, cell, k_space.clone(), k_controls.clone(), &block, phase_name, depth,
+                &phase_meta,
+            )
+            .await?;
+            total_evals += outcome.evals;
+            if let Some(b) = &outcome.best
+                && b.value > best_value
+            {
+                best_value = b.value;
+                let c_disp = coord_indices
+                    .iter()
+                    .map(|&i| format!("{}={}", cell.bindings[i].0, cell.bindings[i].1.to_display_string()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let k_disp = b.coord.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
+                best_disp = format!("{c_disp}; {k_disp}");
+            }
+        }
+        crate::diag!(crate::observer::LogLevel::Info,
+            "optimizer '{method}' on '{phase_name}' (hybrid {ncells} coordinate cells × control): \
+             best [{best_disp}] → {objective}={best_value} after {total_evals} evals",
+            method = block.method, objective = block.objective, ncells = cells.len());
         Ok(())
     })
 }
@@ -1660,7 +2014,7 @@ async fn run_one_eval(
 
 /// Pull the next coordinate batch from a source via its most-capable
 /// decorator (feedback favored over pull), mirroring the contract driver.
-fn source_next(
+pub(crate) fn source_next(
     src: &mut Box<dyn crate::optimize::CoordinateSource>,
     evaluated: &[(crate::optimize::Coord, f64)],
 ) -> Option<Vec<crate::optimize::Coord>> {
@@ -1739,6 +2093,107 @@ fn search_space_from_steps(steps: &[IterationStep]) -> crate::optimize::SearchSp
         axes.push(Axis { name, kind, changeover: Changeover::Coordinate });
     }
     SearchSpace::new(axes)
+}
+
+/// Convert an optimizer [`AxisValue`](crate::optimize::AxisValue) to the
+/// polydat [`Value`](polydat::ast::Value) bound into an iteration kernel.
+fn axis_value_to_polydat(v: &crate::optimize::AxisValue) -> polydat::ast::Value {
+    use crate::optimize::AxisValue;
+    match v {
+        AxisValue::Num(f) => polydat::ast::Value::F64(*f),
+        AxisValue::Bool(b) => polydat::ast::Value::Bool(*b),
+        AxisValue::Label(s) => polydat::ast::Value::Str(s.as_str().into()),
+    }
+}
+
+/// If `comp` is a **pure-continuous** comprehension (a `lo .. hi` float range —
+/// `Source::ContinuousInterval`), its axis intervals in clause order; `None` for
+/// discrete or mixed (the first scope handles pure-continuous axes — a mixed
+/// continuous/Ext space is a follow-up). Read from the comprehension's static
+/// metadata, so no enumeration (a continuous source yields no tuples).
+fn continuous_axis_intervals(
+    comp: &polydat::iteration::comprehension::Comprehension,
+) -> Option<Vec<polydat::iteration::comprehension::Interval>> {
+    use polydat::iteration::comprehension::IndexFn;
+    match comp.metadata().index_addressable {
+        Some(IndexFn::Continuous { intervals, .. }) => Some(intervals),
+        _ => None,
+    }
+}
+
+/// Build a continuous [`SearchSpace`](crate::optimize::SearchSpace) from axis
+/// names zipped with their `(lo, hi)` intervals — the optimizer samples each
+/// interval; nothing is enumerated.
+fn search_space_continuous(
+    axis_names: &[String],
+    intervals: &[polydat::iteration::comprehension::Interval],
+) -> crate::optimize::SearchSpace {
+    use crate::optimize::{Axis, AxisKind, Changeover, SearchSpace};
+    SearchSpace::new(
+        axis_names
+            .iter()
+            .zip(intervals)
+            .map(|(name, iv)| Axis {
+                name: name.clone(),
+                kind: AxisKind::Continuous { lo: iv.lo, hi: iv.hi, min_step: 0.0 },
+                changeover: Changeover::Coordinate,
+            })
+            .collect(),
+    )
+}
+
+/// How a proposed optimizer coordinate becomes the [`IterationStep`] to run.
+///
+/// - `Enumerated` (discrete): the feasible set IS the pre-enumerated grid, so a
+///   proposed coordinate is matched to its step and an off-grid coordinate is
+///   infeasible (SRD-86 §"holes" — the grid carries feasibility/holes).
+/// - `Synthesized` (continuous): no enumeration — the realized coordinate is
+///   bound into a fresh iteration kernel via [`PolydatKernel::for_iteration`],
+///   exactly as `runtime_iterate` materializes a comprehension tuple.
+enum CoordEval {
+    Enumerated {
+        steps: Vec<IterationStep>,
+        index: std::collections::HashMap<String, usize>,
+    },
+    Synthesized {
+        axis_names: Vec<String>,
+        canonical: std::sync::Arc<polydat::kernel::PolydatKernel>,
+        parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
+        parent_coords: Vec<polydat::kernel::ScopeCoord>,
+    },
+}
+
+impl CoordEval {
+    /// The [`IterationStep`] to run for a proposed coordinate, or `None` when an
+    /// enumerated coordinate falls off the feasible grid.
+    fn materialize(&self, coord: &crate::optimize::Coord) -> Option<IterationStep> {
+        match self {
+            CoordEval::Enumerated { steps, index } => {
+                index.get(&coord_key(coord)).map(|&i| steps[i].clone())
+            }
+            CoordEval::Synthesized { axis_names, canonical, parent, parent_coords } => {
+                let tuple: Vec<(String, polydat::ast::Value)> = axis_names
+                    .iter()
+                    .zip(coord)
+                    .map(|(n, av)| (n.clone(), axis_value_to_polydat(av)))
+                    .collect();
+                let bound_kernel =
+                    polydat::kernel::PolydatKernel::for_iteration(canonical, parent, &tuple);
+                let mut coord_path = parent_coords.clone();
+                coord_path.push(polydat::kernel::ScopeCoord::from(tuple.iter().cloned()));
+                Some(IterationStep { bindings: tuple, bound_kernel, coord_path })
+            }
+        }
+    }
+
+    /// A representative [`IterationStep`] for the structural pre-map pass: the
+    /// first enumerated step, or the continuous space's centre.
+    fn representative(&self, space: &crate::optimize::SearchSpace) -> Option<IterationStep> {
+        match self {
+            CoordEval::Enumerated { steps, .. } => steps.first().cloned(),
+            CoordEval::Synthesized { .. } => self.materialize(&space.center()),
+        }
+    }
 }
 
 /// SRD-86 A10 — read an optimize objective wire POST-EXECUTION via the canonical
@@ -3782,9 +4237,63 @@ async fn run_phase(
         )
     });
 
-    let stopped = crate::runner::run_activity_simple(
-        activity, adapters, phase_driver, iter_op_builder,
-    ).await;
+    // SRD-86 §4 Control-class actuation — when `dispatch_optimization`'s Control
+    // branch set `ctx.optimize_steer`, run ONE continuous phase and drive the
+    // steering daemon concurrently (it live-retargets the phase's controls per
+    // setting). The daemon ends the phase (`stop_flag`) once its budget is spent;
+    // `phase_done` lets it bail if the phase ends first. `optimize_objective` is
+    // None here, so the per-phase settle above did not fire — the steerer owns
+    // settling.
+    // `steer_completed` — true when the steering daemon ran its search to
+    // completion and ended the phase itself (a CLEAN early stop, like
+    // `settle_succeeded`, NOT an error-handler stop). A steering error leaves it
+    // false so the phase fails.
+    let mut steer_completed = false;
+    let stopped = if let Some(steer_spec) = ctx.optimize_steer.take() {
+        let parent = ctx.current_parent_kernel.clone();
+        let phase_kernel = ctx
+            .scope_tree
+            .phase_node_by_name(phase_name)
+            .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned());
+        match (parent, phase_kernel) {
+            (Some(parent), Some(phase_kernel)) => {
+                let stop_flag = activity.stop_flag.clone();
+                let reporter = ctx.cadence_reporter.clone();
+                let pc = phase_component.clone();
+                let phase_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let pd = phase_done.clone();
+                let act = async {
+                    let s = crate::runner::run_activity_simple(
+                        activity, adapters, phase_driver, iter_op_builder,
+                    )
+                    .await;
+                    pd.store(true, std::sync::atomic::Ordering::Relaxed);
+                    s
+                };
+                let steered = crate::optimize::steer::steer(
+                    steer_spec, stop_flag, reporter, parent, phase_kernel, pc, phase_done,
+                );
+                let (stopped, steer_res) = tokio::join!(act, steered);
+                match steer_res {
+                    Ok(()) => steer_completed = true,
+                    Err(e) => crate::diag!(crate::observer::LogLevel::Warn,
+                        "phase '{phase_name}': optimizer steering error: {e}"),
+                }
+                stopped
+            }
+            _ => {
+                crate::runner::run_activity_simple(
+                    activity, adapters, phase_driver, iter_op_builder,
+                )
+                .await
+            }
+        }
+    } else {
+        crate::runner::run_activity_simple(
+            activity, adapters, phase_driver, iter_op_builder,
+        )
+        .await
+    };
     crate::diag!(crate::observer::LogLevel::Debug,
         "phase '{phase_name}': activity returned (stopped={stopped})");
 
@@ -3996,7 +4505,7 @@ async fn run_phase(
     // is ops dispatched; `errors_total` is the counted op errors.
     let phase_op_count = progress_metrics.cycles_completed();
     let phase_error_count = progress_metrics.errors_total.get();
-    if stopped && !settle_succeeded {
+    if stopped && !settle_succeeded && !steer_completed {
         // Pull the first triggering error captured by the
         // activity's stop_flag setter (activity.rs per-cycle
         // dispatch). Fall back to a bare reason when the stop
@@ -4398,20 +4907,6 @@ fn phase_identity_for(phase_name: &str, phase_labels: &str) -> crate::checkpoint
 // the path here would just be alias chrome; consumers in this crate
 // import it directly from `polydat::kernel`.
 
-/// Resolve a for_each expression.
-/// Split a `for_each` spec string of the form `"<var> in <expr>"`
-/// into its two halves. Mirrors `scope_tree::parse_for_each_spec`
-/// (private to that module); we duplicate the logic locally
-/// rather than expose it because the splits are trivial and
-/// the routing code is the only consumer that needs both halves.
-fn parse_var_in_expr(spec: &str) -> (String, String) {
-    if let Some(idx) = spec.find(" in ") {
-        let (lhs, rhs) = spec.split_at(idx);
-        (lhs.trim().to_string(), rhs[" in ".len()..].trim().to_string())
-    } else {
-        (String::new(), spec.to_string())
-    }
-}
 
 
 /// SRD 71: decode a cursor's `over` clause result into a

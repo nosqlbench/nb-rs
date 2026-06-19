@@ -670,9 +670,7 @@ impl DriverAdapter for CqlAdapter {
         parent: &Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
     ) {
         use nbrs_metrics::component::{attach, Component};
-        use nbrs_metrics::controls::{
-            BranchScope, ControlBuilder, SyncApplier,
-        };
+        use nbrs_metrics::controls::SyncApplier;
         use nbrs_metrics::labels::Labels;
 
         // One subcomponent per adapter instance, attached to the
@@ -724,20 +722,11 @@ impl DriverAdapter for CqlAdapter {
         // the write is just an atomic store, no I/O.
         let bits_for_apply = self.trace_rate_bits.clone();
         let initial_rate = f64::from_bits(self.trace_rate_bits.load(Ordering::Acquire));
-        let trace_control: nbrs_metrics::controls::Control<f64> =
-            ControlBuilder::new("cql_trace_rate", initial_rate)
-                .reify_as_gauge(|v: &f64| Some(*v))
-                .from_f64(|v| {
-                    if !v.is_finite() || !(0.0..=1.0).contains(&v) {
-                        Err(format!(
-                            "cql_trace_rate must be a finite probability in [0.0, 1.0]; got {v}"
-                        ))
-                    } else {
-                        Ok(v)
-                    }
-                })
-                .branch_scope(BranchScope::Local)
-                .build();
+        // Derive the live control from its single-source capability descriptor
+        // (SRD-23): name, `[0,1]` range, and gauge all come from
+        // `CQL_TRACE_RATE`, the same descriptor `describe controls` reads — so
+        // the discovery surface and the real knob cannot drift.
+        let trace_control = crate::common::CQL_TRACE_RATE.build_f64(initial_rate);
         trace_control.register_applier(SyncApplier::new(move |v: f64| {
             bits_for_apply.store(v.to_bits(), Ordering::Release);
             Ok(())

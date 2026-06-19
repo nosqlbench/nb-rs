@@ -443,6 +443,40 @@ pub fn log_categorized(level: LogLevel, category: LogCategory, message: &str) {
     }
 }
 
+/// Emit a line of adapter **op output** through the display subsystem (SRD-41 /
+/// "console belongs to the adapter"). Captures it to the durable session.log at
+/// INFO (ANSI-stripped, timestamped — the same projection as [`log_categorized`])
+/// and then dispatches the display to the global observer's [`RunObserver::op_output`]
+/// (stdout when no observer / non-TUI; the live display under a TUI). A bare
+/// `writeln!(io::stdout())` from an adapter staircases when a TUI holds the
+/// terminal in raw mode; this is the channel that avoids that.
+pub fn op_output(line: &str) {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal() {
+        // Interactive terminal: route through the log channel at INFO so the line
+        // is coordinated with the live status display (avoiding the raw-mode
+        // staircase) and captured in session.log — the same path every other
+        // user-visible signal takes. The op renders on the display (stderr /
+        // scrollback), not raw stdout.
+        log(LogLevel::Info, line);
+        return;
+    }
+    // stdout is a pipe/file: write op output to stdout (so `nbrs run | grep` and
+    // `> file` keep working) and capture it to session.log at INFO (the same
+    // durable projection `log_categorized` writes).
+    if LogLevel::Info >= retain_level()
+        && let Some(sink) = crate::log_sink::global()
+    {
+        let ts = crate::session::now_log_timestamp();
+        let bytes = format!("{ts} INF {}\n", crate::readouts::snapshot::strip_ansi(line)).into_bytes();
+        let _ = sink.try_send(bytes);
+    }
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
+}
+
 /// ANSI-colorize a log line by severity for console
 /// output. Always applied at the producer side — every
 /// console emission of a log entry runs through this so

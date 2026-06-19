@@ -68,6 +68,7 @@
 pub mod polydat_nodes;
 pub mod wires;
 pub mod adapter;
+pub mod control_catalog;
 pub mod op_modifier;
 pub mod opseq;
 pub mod activity;

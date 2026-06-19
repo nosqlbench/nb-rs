@@ -30,11 +30,43 @@
 use nbrs_activity::adapter::{
     AdapterRegistration, DisplayPreference, instantiate_with_driver,
 };
+use nbrs_activity::control_catalog::{ControlDesc, ControlValueType, DeclaredWhen};
 
 /// The workload-param name a user sets to pick a specific CQL
 /// driver, overriding the rank-derived default. Single value
 /// (not a list) — name one driver.
 pub const CQL_DRIVER_PARAM: &str = "cqldriver";
+
+/// SRD-23 — the `cql_trace_rate` dynamic control's capability descriptor.
+/// The single source of truth: the live control declared in
+/// [`declare_controls`](nbrs_activity::adapter::DriverAdapter::declare_controls)
+/// derives its name / range / gauge from this (via [`ControlDesc::build_f64`]),
+/// and `nbrs describe controls` reads it without constructing the adapter.
+pub const CQL_TRACE_RATE: ControlDesc = ControlDesc {
+    name: "cql_trace_rate",
+    value_type: ControlValueType::Fraction,
+    default: 0.0,
+    min: 0.0,
+    max: 1.0,
+    unit: "probability",
+    doc: "Fraction of CQL ops to request server-side tracing for (0 = off, 1 = all).",
+    declared_when: DeclaredWhen::Driver("cassandra-cpp"),
+};
+
+/// The dynamic controls the `cql` adapter can declare *in this build*. Only the
+/// `cassandra-cpp` driver declares `cql_trace_rate`, so a scylla-only binary
+/// advertises none — `describe controls` reflects what the binary can actually
+/// do, not an aspirational superset.
+fn cql_supported_controls() -> &'static [ControlDesc] {
+    #[cfg(feature = "engine-cassandra-cpp")]
+    {
+        &[CQL_TRACE_RATE]
+    }
+    #[cfg(not(feature = "engine-cassandra-cpp"))]
+    {
+        &[]
+    }
+}
 
 // `cql` adapter registration. The factory delegates to
 // `instantiate_with_driver`, which picks among the registered
@@ -50,6 +82,7 @@ inventory::submit! {
         names: || &["cql"],
         known_params: || &[CQL_DRIVER_PARAM],
         display_preference: |_params| DisplayPreference::Auto,
+        supported_controls: cql_supported_controls,
         create: |params| Box::pin(instantiate_with_driver("cql", CQL_DRIVER_PARAM, params)),
     }
 }

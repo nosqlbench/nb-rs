@@ -351,6 +351,17 @@ pub(crate) fn workload_positional_provider(partial: &str, ctx: &[&str]) -> Vec<S
     workload_provider(partial, ctx)
 }
 
+/// Dynamic-control names — `nbrs describe controls <TAB>`. Drawn from the
+/// static capability catalog (SRD-23) so every control the binary can declare
+/// is completable, conditional ones included.
+pub(crate) fn control_names_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    let names: Vec<&str> = nbrs_activity::control_catalog::all_controls()
+        .iter()
+        .map(|e| e.desc.name)
+        .collect();
+    filter_prefix(&names, partial)
+}
+
 /// Benchmark topics — `nbrs bench <TAB>`.
 pub(crate) fn bench_topic_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(&["wiring"], partial)

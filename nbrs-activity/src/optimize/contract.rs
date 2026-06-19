@@ -17,8 +17,8 @@
 //!   a [`SearchSpace`] within a [`Budget`], maximizes the objective and
 //!   returns a [`Report`].
 //!
-//! [`NullOptimizer`] is the built-in default (the full Cartesian sweep) —
-//! installing the seam is a no-op until a non-null optimizer is named.
+//! [`SweepOptimizer`] (`sweep`) is the built-in default (the full Cartesian
+//! sweep + best-selection) — the identity until an adaptive method is named.
 //! Algorithm crates submit an [`OptimizerRegistration`]; [`by_name`] and
 //! [`describe`] discover them.
 
@@ -241,7 +241,7 @@ pub trait CoordinateSource: Send {
     fn as_feedback(&mut self) -> Option<&mut dyn FeedbackSource> {
         None
     }
-    /// The pull-only decorator (null / lex / discrete traversal), or `None` if
+    /// The pull-only decorator (sweep / lex / discrete traversal), or `None` if
     /// this source is feedback-only.
     fn as_pull(&mut self) -> Option<&mut dyn PullSource> {
         None
@@ -267,7 +267,7 @@ pub trait FeedbackSource {
 
 /// The default lexicographic coordinate stream over a search space: the full
 /// Cartesian product of the discrete-axis detents and the `{lo, hi}` corners
-/// of continuous axes, in lex order, one coordinate per `pull`. The `null`
+/// of continuous axes, in lex order, one coordinate per `pull`. The `sweep`
 /// functor returns it unchanged (identity).
 pub struct LexSource {
     lists: Vec<Vec<AxisValue>>,
@@ -338,7 +338,7 @@ pub trait Optimizer: Send {
     /// `nbrs describe optimizers`.
     fn doc_md(&self) -> &str;
     /// Build the coordinate source from the param space, the budget, and the
-    /// default lex stream. `null` returns `lex` unchanged (identity). The
+    /// default lex stream. `sweep` returns `lex` unchanged (identity). The
     /// source owns its own termination (budget / convergence); the driver
     /// pulls until it yields `None`.
     fn coordinate_source(
@@ -429,19 +429,21 @@ fn drive_source(
 /// default lexicographic stream unchanged — a full Cartesian sweep, the
 /// engine's ordinary parameter enumeration. Always available, no plugin
 /// required (SRD-86 A1).
-pub struct NullOptimizer;
+pub struct SweepOptimizer;
 
-const NULL_DOC: &str = "# null\n\nThe identity optimizer (the default). Returns the default \
-lexicographic coordinate stream unchanged — the full Cartesian product of the discrete-axis \
-detents (and the `{lo, hi}` corners of continuous axes), in lex order. Installing the optimizer \
-seam with `null` is a behavioural no-op: it reproduces the engine's ordinary parameter sweep.\n";
+const SWEEP_DOC: &str = "# sweep\n\nThe identity optimizer — the **default** when no `method:` is \
+set. Returns the default lexicographic coordinate stream unchanged — the full Cartesian product of \
+the discrete-axis detents (and the `{lo, hi}` corners of continuous axes), in lex order. So `sweep` \
+evaluates EVERY coordinate exhaustively and reports the best by the objective; it reproduces the \
+engine's ordinary parameter sweep, now with best-selection. (Use an adaptive method — `nelder_mead`, \
+`cmaes`, … — to search a continuous space without enumerating it.)\n";
 
-impl Optimizer for NullOptimizer {
+impl Optimizer for SweepOptimizer {
     fn name(&self) -> &str {
-        "null"
+        "sweep"
     }
     fn doc_md(&self) -> &str {
-        NULL_DOC
+        SWEEP_DOC
     }
     fn coordinate_source(
         &self,
@@ -480,11 +482,11 @@ pub struct OptimizerInfo {
     pub doc_md: &'static str,
 }
 
-/// Resolve an optimizer by name: the built-in `null`, or a link-time
+/// Resolve an optimizer by name: the built-in `sweep`, or a link-time
 /// registration. Returns `None` for an unknown name.
 pub fn by_name(name: &str, params: &OptimizerParams) -> Option<Box<dyn Optimizer>> {
-    if name == "null" {
-        return Some(Box::new(NullOptimizer));
+    if name == "sweep" {
+        return Some(Box::new(SweepOptimizer));
     }
     inventory::iter::<OptimizerRegistration>
         .into_iter()
@@ -492,10 +494,10 @@ pub fn by_name(name: &str, params: &OptimizerParams) -> Option<Box<dyn Optimizer
         .map(|r| (r.make)(params))
 }
 
-/// Every available optimizer (the built-in `null` + all registrations),
+/// Every available optimizer (the built-in `sweep` + all registrations),
 /// sorted by name, for `nbrs describe optimizers`.
 pub fn describe() -> Vec<OptimizerInfo> {
-    let mut out = vec![OptimizerInfo { name: "null", doc_md: NULL_DOC }];
+    let mut out = vec![OptimizerInfo { name: "sweep", doc_md: SWEEP_DOC }];
     for r in inventory::iter::<OptimizerRegistration> {
         out.push(OptimizerInfo { name: (r.name)(), doc_md: (r.doc_md)() });
     }
@@ -504,7 +506,7 @@ pub fn describe() -> Vec<OptimizerInfo> {
     out
 }
 
-/// Every registered optimizer name (built-in `null` + registrations).
+/// Every registered optimizer name (built-in `sweep` + registrations).
 pub fn registered_names() -> Vec<&'static str> {
     describe().into_iter().map(|i| i.name).collect()
 }
@@ -530,12 +532,12 @@ mod tests {
     }
 
     #[test]
-    fn null_is_always_available_and_sweeps_the_grid() {
+    fn sweep_is_always_available_and_sweeps_the_grid() {
         let space = SearchSpace::new(vec![
             Axis { name: "x".into(), kind: AxisKind::Discrete { detents: vec![AxisValue::Num(0.0), AxisValue::Num(1.0), AxisValue::Num(2.0)] }, changeover: Changeover::Coordinate },
             Axis { name: "y".into(), kind: AxisKind::Discrete { detents: vec![AxisValue::Num(0.0), AxisValue::Num(1.0), AxisValue::Num(2.0)] }, changeover: Changeover::Coordinate },
         ]);
-        let opt = by_name("null", &OptimizerParams::new()).expect("null is built in");
+        let opt = by_name("sweep", &OptimizerParams::new()).expect("sweep is built in");
         let mut obj = Paraboloid { target: vec![1.0, 2.0] };
         let r = opt.optimize(&space, &mut obj, &Budget::seeded(100, 0));
         assert_eq!(r.evals, 9);
@@ -545,10 +547,10 @@ mod tests {
     }
 
     #[test]
-    fn describe_includes_null_and_unknown_is_none() {
+    fn describe_includes_sweep_and_unknown_is_none() {
         let infos = describe();
-        assert!(infos.iter().any(|i| i.name == "null"));
-        assert!(infos.iter().any(|i| i.doc_md.contains("# null")));
+        assert!(infos.iter().any(|i| i.name == "sweep"));
+        assert!(infos.iter().any(|i| i.doc_md.contains("# sweep")));
         assert!(by_name("definitely_not_registered", &OptimizerParams::new()).is_none());
     }
 }

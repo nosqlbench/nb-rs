@@ -922,43 +922,24 @@ impl Activity {
         &mut self,
         component: Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
     ) {
-        use nbrs_metrics::controls::{BranchScope, ControlBuilder};
-        let initial = self.config.concurrency as u32;
-        let concurrency_control: nbrs_metrics::controls::Control<u32> =
-            ControlBuilder::new("concurrency", initial)
-                .reify_as_gauge(|v| Some(*v as f64))
-                .from_f64(|v| {
-                    if !(1.0..=100_000.0).contains(&v) {
-                        Err(format!("concurrency out of range: {v}"))
-                    } else {
-                        Ok(v as u32)
-                    }
-                })
-                .branch_scope(BranchScope::Local)
-                .build();
+        use crate::control_catalog::{CONCURRENCY, RATE};
+        // Derive both controls from their single-source capability descriptors
+        // (SRD-23) — name, range, and gauge come from the same `ControlDesc`
+        // that `describe controls` reads, so the discovery surface and the
+        // live knob can't drift. The instance-specific appliers (fiber-pool
+        // resize, rate limiter) are registered later in `run_with_adapters`.
+        let concurrency_control = CONCURRENCY.build_u32(self.config.concurrency as u32);
         component.read().unwrap_or_else(|e| e.into_inner())
             .controls().declare(concurrency_control);
 
-        // Declare a `rate` control whenever the activity config
-        // has a rate set. The control's reified gauge projects
-        // ops/sec so metric sinks and the f64-writable surface
-        // (TUI `e` prompt, web POST, Polydat `control_set`) all read
-        // and write in the same unit. The [`RateLimiterApplier`]
-        // gets registered at run time once the limiter exists
-        // (see `run_with_adapters`).
+        // Declare a `rate` control whenever the activity config has a rate
+        // set. Its reified gauge projects ops/sec so metric sinks and the
+        // f64-writable surface (TUI `e` prompt, web POST, Polydat
+        // `control_set`, `optimize.steer: rate`) all read and write the same
+        // unit. The [`RateLimiterApplier`] gets registered at run time once
+        // the limiter exists (see `run_with_adapters`).
         if let Some(rate) = self.config.rate {
-            let rate_control: nbrs_metrics::controls::Control<nbrs_rate::RateSpec> =
-                ControlBuilder::new("rate", nbrs_rate::RateSpec::new(rate))
-                    .reify_as_gauge(|spec: &nbrs_rate::RateSpec| Some(spec.ops_per_sec))
-                    .from_f64(|v| {
-                        if v <= 0.0 {
-                            Err(format!("rate must be > 0, got {v}"))
-                        } else {
-                            Ok(nbrs_rate::RateSpec::new(v))
-                        }
-                    })
-                    .branch_scope(BranchScope::Local)
-                    .build();
+            let rate_control = RATE.build_rate(rate);
             component.read().unwrap_or_else(|e| e.into_inner())
                 .controls().declare(rate_control);
         }

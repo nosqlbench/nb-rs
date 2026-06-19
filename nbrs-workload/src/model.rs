@@ -902,17 +902,28 @@ pub struct WorkloadPhase {
 /// `objective` wire by writing the `axes` input wires on the phase kernel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizeBlock {
-    /// Registered optimizer name (`null`, `cmaes`, `nelder_mead`, … — see
-    /// `nbrs describe optimizers`).
+    /// Registered optimizer name (`cmaes`, `nelder_mead`, … — see
+    /// `nbrs describe optimizers`). Defaults to `sweep` (the identity: evaluate
+    /// every coordinate and report the best), so a plain "find the best by
+    /// sweeping" search omits this field; set an adaptive method to search a
+    /// large or continuous space without enumerating it.
+    #[serde(default = "default_optimize_method")]
     pub method: String,
     /// The objective — a declared phase `metrics:` entry the optimizer
     /// maximizes (SRD-86 §10).
     pub objective: String,
-    /// Optional per-axis metadata (e.g. changeover class). The search axes
-    /// themselves are auto-gathered from the node's `for_each` comprehensions
-    /// (SRD-86 A12); this list is not required.
-    #[serde(default)]
-    pub axes: Vec<OptimizeAxis>,
+    /// Search axes to actuate as **live controls** — steered (retargeted without
+    /// restarting the phase) rather than stepped through by re-running the phase
+    /// (SRD-86 §4). Every axis is a coordinate (step-through / re-run) by default;
+    /// naming one here opts it into steering. Accepts a single name (`steer:
+    /// concurrency`) or a list (`steer: [concurrency, rate]`). A steered var
+    /// resolves to a control either directly (its name IS a control — `steer:
+    /// concurrency` / `steer: rate`) or indirectly (it feeds one via a `{var}`
+    /// bind — `concurrency: "{conc}"`, then `steer: conc`). It is validated: it
+    /// must resolve to a control AND the objective must be a windowed metric the
+    /// steerer can settle — else a clear error, never a silent downgrade.
+    #[serde(default, deserialize_with = "de_string_or_seq")]
+    pub steer: Vec<String>,
     #[serde(default = "default_optimize_max_evals")]
     pub max_evals: usize,
     #[serde(default = "default_optimize_seed")]
@@ -922,32 +933,32 @@ pub struct OptimizeBlock {
     pub params: HashMap<String, f64>,
 }
 
-/// One optimization axis: continuous (`lo`/`hi`[/`min_step`]) or discrete
-/// (`detents`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OptimizeAxis {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lo: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hi: Option<f64>,
-    #[serde(default)]
-    pub min_step: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detents: Option<Vec<f64>>,
-    /// `coordinate` (default) | `control` | `fixture` (SRD-86 changeover class).
-    #[serde(default = "default_optimize_changeover")]
-    pub changeover: String,
+/// Deserialize a single string OR a sequence of strings into a `Vec<String>` —
+/// lets `steer: conc` and `steer: [conc, rate]` both parse.
+fn de_string_or_seq<'de, D>(d: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
 }
 
+fn default_optimize_method() -> String {
+    "sweep".to_string()
+}
 fn default_optimize_max_evals() -> usize {
     100
 }
 fn default_optimize_seed() -> u64 {
     1
-}
-fn default_optimize_changeover() -> String {
-    "coordinate".to_string()
 }
 
 /// Phase-level `poll:` block (SRD-75). When set on a

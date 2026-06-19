@@ -36,4 +36,5 @@ pub mod status;
 
 pub use config::{CqlConfig, CqlConsistency};
 pub use opmode::{OpMode, STMT_FIELD_NAMES};
+pub use resolver::CQL_TRACE_RATE;
 pub use status::default_status_metrics;

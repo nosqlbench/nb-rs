@@ -381,7 +381,7 @@ mod tests {
             changeover: core::Changeover::Coordinate,
         }]);
         let report = core::Optimizer::optimize(
-            &core::NullOptimizer,
+            &core::SweepOptimizer,
             &space,
             &mut PrefersDot,
             &core::Budget::seeded(10, 0),
