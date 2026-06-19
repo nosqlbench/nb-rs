@@ -555,12 +555,12 @@ the old `Comprehension` shape with the new polydat surfaces.
   `validate(_, Strict)` for the workload-load path.
   No continuous-source parser yet (SRD-18c follow-up
   deferred).
-- [x] **Executor** (`nbrs-activity`): `runtime_iterate` calls
+- [x] **Executor** (`nbrs-runtime`): `runtime_iterate` calls
   `polydat::comprehension::runtime::evaluate_for_iteration`
   directly; per-iter kernel built via `PolydatKernel::for_iteration`.
   Two-branch Cartesian/Union dispatch collapsed into one
   algebra-native path (PR 9c-4).
-- [x] **Scope-tree** (`nbrs-activity`):
+- [x] **Scope-tree** (`nbrs-runtime`):
   `ScenarioNode::Comprehension` field is
   `polydat::comprehension::Comprehension` (the algebra type)
   end-to-end (PR 9c-2).

@@ -114,7 +114,7 @@ The compiler scans op fields AND params for `{name}` references.
 Unreferenced bindings are dead code — compiled into the DAG but
 never pulled, so constant folding may eliminate them entirely.
 
-This is an nbrs-activity concern: the activity layer is what
+This is an nbrs-runtime concern: the activity layer is what
 defines "consumer" (which fields and which params count). The
 polydat compiler's Output Selection step (see
 [polydat/docs/design/language_spec.md §Compilation Pipeline](../../polydat/docs/design/language_spec.md#compilation-pipeline))

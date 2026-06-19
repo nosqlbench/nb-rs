@@ -16,19 +16,19 @@
 //!   `checkpoint.json` shape — as pretty-printed JSON for
 //!   diff / inspection.
 //!
-//! Session resolution mirrors `nbrs-activity::runner::run`:
+//! Session resolution mirrors `nbrs-runtime::runner::run`:
 //! a session arg can be a file (used directly), a directory
 //! (we append `checkpoint.jsonl`), or a bare session id
 //! (resolved as `logs/<id>/checkpoint.jsonl`).
 
 use std::path::PathBuf;
 
-use nbrs_activity::checkpoint::storage::{self, OpCounts};
-use nbrs_activity::checkpoint::{CheckpointData, PathSegment, PhaseIdentity};
+use nbrs_runtime::checkpoint::storage::{self, OpCounts};
+use nbrs_runtime::checkpoint::{CheckpointData, PathSegment, PhaseIdentity};
 
 /// Resolve a session argument to an on-disk `checkpoint.jsonl`
 /// path, mirroring the runner's resume-target resolution
-/// (see `nbrs-activity::runner::run`):
+/// (see `nbrs-runtime::runner::run`):
 ///
 /// 1. existing file → used verbatim
 /// 2. existing directory → joined with `checkpoint.jsonl`
@@ -44,7 +44,7 @@ fn resolve_checkpoint_path(arg: &str) -> PathBuf {
     } else if p.is_dir() {
         p.join("checkpoint.jsonl")
     } else {
-        nbrs_activity::session::session_dir_named(arg).join("checkpoint.jsonl")
+        nbrs_runtime::session::session_dir_named(arg).join("checkpoint.jsonl")
     }
 }
 
@@ -334,8 +334,8 @@ fn print_checkpoint_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nbrs_activity::checkpoint::CheckpointWriter;
-    use nbrs_activity::checkpoint::{PathSegment, PhaseIdentity};
+    use nbrs_runtime::checkpoint::CheckpointWriter;
+    use nbrs_runtime::checkpoint::{PathSegment, PhaseIdentity};
     use std::path::Path;
 
     fn ident(name: &str) -> PhaseIdentity {

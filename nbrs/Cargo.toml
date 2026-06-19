@@ -52,8 +52,8 @@ all-engines = ["engine-scylla", "engine-cassandra-cpp"]
 # adapter (or stdout for dry-run).
 openapi = ["dep:nbrs-adapter-openapi", "dep:openapiv3"]
 
-# Forward to nbrs-activity's flamegraph profiler.
-flamegraph = ["nbrs-activity/flamegraph"]
+# Forward to nbrs-runtime's flamegraph profiler.
+flamegraph = ["nbrs-runtime/flamegraph"]
 
 [dependencies]
 polydat = { path = "../polydat", version = "0.1.0" }
@@ -64,7 +64,7 @@ nbrs-metricsql = { path = "../nbrs-metricsql", version = "0.1.0", features = ["r
 nbrs-workload = { path = "../nbrs-workload", version = "0.1.1" }
 nbrs-rate = { path = "../nbrs-rate", version = "0.1.1" }
 nbrs-errorhandler = { path = "../nbrs-errorhandler", version = "0.1.1" }
-nbrs-activity = { path = "../nbrs-activity", version = "0.1.1" }
+nbrs-runtime = { path = "../nbrs-runtime", version = "0.1.1" }
 # Used by the `vectordata-audit` bin to scrutinise dataset
 # relationships through the catalog API (transport- and
 # cache-layout-agnostic). The generic typed surface

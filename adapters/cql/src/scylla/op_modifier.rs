@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nbrs_activity::op_modifier::OpFieldModifier;
+use nbrs_runtime::op_modifier::OpFieldModifier;
 use polydat::ast::Value;
 use scylla::statement::{Consistency, SerialConsistency, Statement};
 use scylla::statement::prepared::PreparedStatement;

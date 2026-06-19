@@ -205,7 +205,7 @@ Reference points in the code:
 - `polydat::kernel::engines::GkState::seed_node_buffer` —
   primitive that writes a value into a node's buffer slot and
   marks it clean.
-- `nbrs_activity::synthesis::OpBuilder::init_overrides` — the
+- `nbrs_runtime::synthesis::OpBuilder::init_overrides` — the
   per-activation snapshot that fiber state inherits.
 - `polydat::kernel::polydatkernel::PolydatKernel::materialize_wiring_from_outer`
   Step 3 — the per-const-output pull + non-None verification,

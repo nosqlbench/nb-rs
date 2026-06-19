@@ -355,7 +355,7 @@ impl PolydatKernel {
     /// installing parent-chain wiring would skip the load-
     /// bearing materialization step.
     ///
-    /// Used by the cache-and-rebind path in nbrs-activity (SRD 18b
+    /// Used by the cache-and-rebind path the host drives (SRD 18b
     /// §"Cache-and-rebind contract"): a phase scope compiles once,
     /// caches its program, and instantiates a fresh kernel per
     /// `run_phase` call against the cached program.
@@ -873,7 +873,7 @@ impl PolydatKernel {
         //   value through the cell; inner reads through
         //   `read_input` transparently. The read invariant
         //   from SRD-13f §"The read invariant" holds because
-        //   the chain restructure in `nbrs-activity` ensures
+        //   the chain restructure in `nbrs-runtime` ensures
         //   inner and outer are per-fiber kernels in the
         //   same lineage — no shared-kernel race on the
         //   cell.
@@ -1083,7 +1083,7 @@ impl PolydatKernel {
     /// # Cache-and-rehydrate pattern
     ///
     /// `for_iteration` is the public entry point for the
-    /// **cache-and-rehydrate pattern** that nbrs builds on:
+    /// **cache-and-rehydrate pattern** a host builds on:
     /// compile a scope's program **once**, then hydrate many
     /// per-instance kernels from it — one per iteration tuple,
     /// per fiber, per scenario-tree visit. The program is

@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
-use nbrs_activity::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
-use nbrs_activity::op_modifier::ModifierChain;
+use nbrs_runtime::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
+use nbrs_runtime::op_modifier::ModifierChain;
 use scylla::client::session::Session;
 use scylla::statement::{Consistency, Statement};
 
@@ -48,11 +48,11 @@ impl OpDispenser for ScyllaRawDispenser {
     fn execute<'a>(
         &'a self,
         _cycle: u64,
-        ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
+        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
         Box::pin(async move {
-            let text = nbrs_activity::wires::substitute_via_wires(&self.stmt_template, wires)
+            let text = nbrs_runtime::wires::substitute_via_wires(&self.stmt_template, wires)
                 .map_err(|e| op_error("bind_error", e, false))?;
 
             let mut stmt = Statement::new(text.clone());

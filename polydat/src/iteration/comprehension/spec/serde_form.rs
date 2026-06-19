@@ -132,7 +132,7 @@ impl From<ConvertError> for SpecConvertError {
 ///
 /// The canonical entry for consumers that hold only the for-clause text
 /// (no separate `where` / `order`): both **scenario- and phase-level**
-/// `for_each` in nbrs route through this, so the comprehension grammar
+/// `for_each` in a host route through this, so the comprehension grammar
 /// has a single owner (polydat) rather than ad-hoc `var in expr` splits
 /// scattered in the runtime.
 pub fn parse_inline(spec: &str) -> Result<AlgebraAst, SpecConvertError> {

@@ -2,7 +2,7 @@
 
 **Status:** normative
 **Owner:** runtime / CLI
-**Implementation:** `nbrs-activity/src/session.rs::parse_session_kv` (pilot)
+**Implementation:** `nbrs-runtime/src/session.rs::parse_session_kv` (pilot)
 
 ---
 
@@ -181,7 +181,7 @@ There's no precedence rule for "which one wins" because
 running.
 
 The implementation lives in
-`nbrs_activity::session::resolve_flag` and is reusable for
+`nbrs_runtime::session::resolve_flag` and is reusable for
 every flag site that adopts this pattern.
 
 ---

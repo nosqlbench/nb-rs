@@ -20,7 +20,7 @@ askama = "0.15"
 askama-derive-axum = "0.1"
 nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1" }
 polydat = { path = "../polydat", version = "0.1.0" }
-nbrs-activity = { path = "../nbrs-activity", version = "0.1.1" }
+nbrs-runtime = { path = "../nbrs-runtime", version = "0.1.1" }
 socket2 = "0.5"
 
 [dev-dependencies]

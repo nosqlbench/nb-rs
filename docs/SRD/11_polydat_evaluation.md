@@ -20,7 +20,7 @@ levels) has moved into the polydat crate:
   — moved 2026-05-30 as part of the import-first reorganization
   (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 
-This file retains the nbrs-activity surface: the FiberBuilder
+This file retains the nbrs-runtime surface: the FiberBuilder
 bridge and the cursor-driven evaluation pump.
 
 ---

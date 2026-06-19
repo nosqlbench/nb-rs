@@ -11,7 +11,7 @@ homepage.workspace = true
 readme.workspace = true
 
 [dependencies]
-nbrs-activity = { path = "../../nbrs-activity", version = "0.1.1" }
+nbrs-runtime = { path = "../../nbrs-runtime", version = "0.1.1" }
 nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
 inventory = "0.3.24"
 # `ParsedOp.params` is `HashMap<String, serde_json::Value>`; the

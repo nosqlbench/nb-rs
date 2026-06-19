@@ -44,14 +44,14 @@
 //!
 //! Comprehensions cut across three subsystems:
 //!
-//! - The **YAML parser** (`nbrs-workload`) needs to recognise
+//! - The **YAML parser** (in the host) needs to recognise
 //!   the textual shapes (`for_each`, `for_combinations`,
 //!   `for_each_union`).
-//! - The **scope synthesiser** (`nbrs-activity::scope_synth`)
+//! - The **scope synthesiser** (in the host)
 //!   needs to emit the Polydat source for each comprehension's child
 //!   kernel — extern declarations for the coordinates, final
 //!   injections for workload params the spec interpolates, etc.
-//! - The **executor** (`nbrs-activity::executor`) needs to
+//! - The **executor** (in the host) needs to
 //!   enumerate the iteration tuples, drive the per-iteration
 //!   `materialize_wiring_from_outer`, and run the children.
 //!

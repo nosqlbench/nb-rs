@@ -8,7 +8,7 @@
 >   `from_f64`), `ControlRegistry`, `ErasedControl::set_f64`.
 > - `nbrs-rate/src/applier.rs` — `RateLimiterApplier` +
 >   `RateLimiter::reconfigure`.
-> - `nbrs-activity/src/fiber_pool.rs` — `FiberPool` +
+> - `nbrs-runtime/src/fiber_pool.rs` — `FiberPool` +
 >   `ConcurrencyApplier`; wired into
 >   `Activity::run_with_adapters`, declared on the activity's
 >   component at `attach_component` time.
@@ -17,7 +17,7 @@
 >   `rate`, `concurrency`, `phase`, `cycle`. The Polydat compiler
 >   threads the enclosing DSL binding name into `ControlSet`
 >   for attribution (`ControlOrigin::Gk { binding }`).
-> - `nbrs-activity/src/runner.rs` — `dryrun=controls` renders the
+> - `nbrs-runtime/src/runner.rs` — `dryrun=controls` renders the
 >   component tree after phase construction.
 > - `nbrs-tui/src/app.rs` — inline `e` keybind + `ControlEditPrompt`
 >   with validator / final-scope error surfacing.
@@ -597,7 +597,7 @@ servo at all. That is the discoverability asymmetry between
 `concurrency` and `rate`.
 
 The complementary **capability tier** closes it. Each control
-has a static [`ControlDesc`](../../nbrs-activity/src/control_catalog.rs)
+has a static [`ControlDesc`](../../nbrs-runtime/src/control_catalog.rs)
 — `name`, value-type, default, range, unit, doc, and a
 `declared_when` condition — that is the **single source of
 truth**: the imperative `declare` *derives* the live control

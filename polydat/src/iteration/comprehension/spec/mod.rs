@@ -69,7 +69,7 @@ pub use source_parser::{parse_source, SourceParseError};
 pub use text::{parse_text, TextParseError};
 
 // Leaf grammar utilities — re-exported here so external
-// consumers (nbrs-workload, nbrs-activity) reach the polydat
+// consumers (nbrs-workload, nbrs-runtime) reach the polydat
 // grammar through a single chokepoint module. The
 // implementations live in `crate::iteration::comprehension::parse` but
 // that module is not external API after Surface 1.

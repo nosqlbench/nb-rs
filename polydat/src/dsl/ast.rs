@@ -20,7 +20,7 @@ pub enum Statement {
     ///
     /// Surface forms (parser desugars the tuple into N `InputDecl`s,
     /// mirroring the module-signature param-list shape from
-    /// `nbrs/stdlib/modeling.polydat`):
+    /// a host-provided cycle module):
     /// ```text
     /// input cycle: u64
     /// input (cycle: u64, q: f64)

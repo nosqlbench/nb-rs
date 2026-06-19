@@ -6,7 +6,7 @@ to do with an individual error; stop conditions decide whether to stop
 a shell based on predicates over its accumulated state. Neither
 subsumes the other.
 
-**Owner:** nbrs-activity (executor shells, daemon scheduler, the
+**Owner:** nbrs-runtime (executor shells, daemon scheduler, the
 runtime-state wires), polydat (predicate compilation against shell
 state), nbrs-workload (the `stop_when:` configuration surface).
 
@@ -90,7 +90,7 @@ a trigger is then `RuntimeState::trips(&mut expr)` — inject the live
 state, read the predicate's truthiness — never an ad-hoc per-trigger
 compile.
 
-> **Implemented 2026-06-09** (`nbrs-activity::stop_conditions`):
+> **Implemented 2026-06-09** (`nbrs-runtime::stop_conditions`):
 > `compile_stop_condition(phase_kernel, idx, when) -> ScopedExpr` builds
 > the runtime-state externs as SRD-84 shape-1 `GraphMatter`
 > (`extern_wire::<T: Wire>`, constructed not parsed), binds the
@@ -242,7 +242,7 @@ and the phase-end outcome records the chosen axes. A scenario shell's
 fired condition aborts in-flight siblings via the same cooperative path
 (SRD-82 Part 4).
 
-> **Implemented 2026-06-16** (`nbrs-activity::stop_conditions`,
+> **Implemented 2026-06-16** (`nbrs-runtime::stop_conditions`,
 > `workload_shell`, `activity`, `executor`). Each `StopCondition` carries
 > an `effect: Outcome`; `StopConditionSet::evaluate` returns
 > `Option<(Outcome, String)>`; `WorkloadShell::record_phase` threads the
@@ -316,7 +316,7 @@ workload on a failed phase" without any `stop_when:` in the workload.
 
 ## Part 8 — Migration
 
-1. **Runtime-state wires.** ✅ DONE (`nbrs-activity/src/stop_conditions.rs`).
+1. **Runtime-state wires.** ✅ DONE (`nbrs-runtime/src/stop_conditions.rs`).
    `RuntimeState { op_count, error_count, elapsed_ms, children_* }` +
    `error_rate()` + the `wire::*` name vocabulary +
    `inject_into<D: Dataflow>` (per-wire `find_input` + `set_wire_idx`,

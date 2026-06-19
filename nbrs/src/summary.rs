@@ -7,7 +7,7 @@
 //! Internally calls the same
 //! [`nbrs_metrics::reporters::sqlite::SqliteReporter::format_summary`]
 //! that the workload-end-of-run path uses (via
-//! [`nbrs_activity::runner::report_config_from_summary`]). Two
+//! [`nbrs_runtime::runner::report_config_from_summary`]). Two
 //! call sites, one source of truth for what a summary looks
 //! like.
 //!
@@ -58,7 +58,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nbrs_activity::runner::report_config_from_summary;
+use nbrs_runtime::runner::report_config_from_summary;
 use nbrs_metrics::reporters::sqlite::{derive_name_and_format, SqliteReporter};
 use nbrs_workload::model::SummaryConfig;
 
@@ -431,7 +431,7 @@ pub fn summary_command(args: &[String]) {
     // first, producing a temp file whose merged rows feed
     // SqliteReporter as if from one logical session.
     let primary_db = opts.db.clone().unwrap_or_else(
-        nbrs_activity::session::latest_metrics_db);
+        nbrs_runtime::session::latest_metrics_db);
     let effective_dbs: Vec<PathBuf> = if opts.dbs.is_empty() {
         vec![primary_db.clone()]
     } else {
@@ -653,8 +653,8 @@ pub fn summary_command(args: &[String]) {
             let session_dir = db_path.parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
-            nbrs_activity::refine_plan::warn_multi_execution_default(&session_dir);
-            let exec_id_filter = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+            nbrs_runtime::refine_plan::warn_multi_execution_default(&session_dir);
+            let exec_id_filter = nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir)
                 .specific_id();
             let report_cfg = report_config_from_summary(cfg, exec_id_filter);
             reporter.format_summary_with_format(&report_cfg, &format)
@@ -855,9 +855,9 @@ fn parse_args(args: &[String]) -> SummaryOpts {
     let mut opts = SummaryOpts::default();
     // `--session` / `--session-path` / `--session-name` resolve
     // to a session dir uniformly across read-side tools — see
-    // `nbrs_activity::session::read_session_dir`. `--db` below
+    // `nbrs_runtime::session::read_session_dir`. `--db` below
     // overrides this when it's given explicitly.
-    if let Some(session_dir) = nbrs_activity::session::read_session_dir(args) {
+    if let Some(session_dir) = nbrs_runtime::session::read_session_dir(args) {
         opts.db = Some(session_dir.join("metrics.db"));
     }
     let mut iter = args.iter().peekable();

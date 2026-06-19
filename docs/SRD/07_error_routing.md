@@ -18,7 +18,7 @@ zero internal dependencies (standalone).
 - **E2 — Router = ordered pattern → handler-chain.** First match wins within a scope;
   handlers compose (count, warn, retry, stop). [SRD 03].
 - **E3 — Standalone primitive.** The router knows nothing about activities. The engine
-  composes it (`nbrs-activity::error_policy`); how error *handling* stays orthogonal to
+  composes it (`nbrs-runtime::error_policy`); how error *handling* stays orthogonal to
   *stop conditions* is [SRD 82](82_uniform_execution_shells.md)/[SRD 83](83_stop_conditions.md).
 
 ## Mechanism (Pillar 3)

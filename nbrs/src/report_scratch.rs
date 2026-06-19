@@ -75,8 +75,8 @@ pub fn timestamp_id() -> String {
     let nanos = now.subsec_nanos();
     let pid = std::process::id();
     // YYYYMMDD_HHmmss — same shape `format_timestamp` uses
-    // in `nbrs_activity::session`, kept inline so this
-    // module doesn't pull in nbrs-activity for one helper.
+    // in `nbrs_runtime::session`, kept inline so this
+    // module doesn't pull in nbrs-runtime for one helper.
     let (y, mo, d, h, mi, s) = ymd_hms(secs);
     let tail = ((pid as u64).wrapping_mul(1_000_003)
         .wrapping_add(nanos as u64))

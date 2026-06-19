@@ -455,7 +455,7 @@ mod inner {
                 -- scenarios (late error promotion, resume-on-
                 -- restart). `session` + `exec_id` ride on the
                 -- root component as dimensional labels (see
-                -- nbrs-activity::session::Session::new_with_args)
+                -- nbrs-runtime::session::Session::new_with_args)
                 -- so every per-component metric carries them
                 -- alongside the existing phase / workload axes.
                 --
@@ -666,7 +666,7 @@ mod inner {
         /// `Some(n)` narrows to one execution; `None` reads
         /// every execution (the explicit "aggregate" semantic).
         /// Higher layers translate `ExecutionQualifier` (in
-        /// nbrs-activity) into this primitive — the storage
+        /// nbrs-runtime) into this primitive — the storage
         /// layer doesn't depend on the activity crate. Ordered
         /// by `exec_id` so callers see them in cardinal
         /// sequence.
@@ -717,7 +717,7 @@ mod inner {
         /// scoped by `exec_id_filter`. `Some(n)` narrows to one
         /// execution; `None` reads across every execution (the
         /// explicit aggregate intent). Higher layers translate
-        /// `ExecutionQualifier` (nbrs-activity) into this
+        /// `ExecutionQualifier` (nbrs-runtime) into this
         /// primitive. Ordered by chronological phase-end time.
         /// Each outcome carries its full error list.
         pub fn read_phase_outcomes(&self, exec_id_filter: Option<u64>)
@@ -1458,9 +1458,9 @@ mod inner {
     }
 
     /// SRD-76 — storage-layer mirror of
-    /// `nbrs-activity::phase_outcome::PhaseOutcome`.
+    /// `nbrs-runtime::phase_outcome::PhaseOutcome`.
     /// `nbrs-metrics` deliberately doesn't depend on
-    /// `nbrs-activity`, so this POD shape exists at the
+    /// `nbrs-runtime`, so this POD shape exists at the
     /// storage boundary; the executor converts in the write
     /// direction, and `nbrs replay` converts back in the read
     /// direction. The two shapes evolve together.
@@ -1502,7 +1502,7 @@ mod inner {
     }
 
     /// SRD-76 — storage-layer mirror of
-    /// `nbrs-activity::phase_outcome::PhaseErrorDetail`.
+    /// `nbrs-runtime::phase_outcome::PhaseErrorDetail`.
     /// `cycle` is `Option<u64>` because phase-level errors
     /// (poll_timeout, validation failures) have no cycle
     /// number.
@@ -1550,7 +1550,7 @@ mod inner {
         /// summary's metric queries to one execution_id;
         /// `None` aggregates across every execution recorded in
         /// the session. Higher layers translate
-        /// `ExecutionQualifier` (nbrs-activity) into this
+        /// `ExecutionQualifier` (nbrs-runtime) into this
         /// primitive at the call site. There is no aggregate-
         /// by-default fallback — callers MUST decide.
         pub exec_id_filter: Option<u64>,
@@ -2424,7 +2424,7 @@ mod inner {
         /// session record after this sequence.
         ///
         /// Called once at session end from
-        /// `nbrs-activity::runner` after every reporter has
+        /// `nbrs-runtime::runner` after every reporter has
         /// flushed and before the reporter is dropped.
         /// Failures are logged and swallowed — a partial
         /// consolidation is preferable to a panic during
@@ -2526,7 +2526,7 @@ mod inner {
     /// runner unwind). The only skip path is
     /// `std::process::exit`, which is the canonical
     /// force-exit semantic the operator gets on a SECOND
-    /// Ctrl-C — declared in `nbrs-activity::session_signals`.
+    /// Ctrl-C — declared in `nbrs-runtime::session_signals`.
     pub struct SqliteShutdownGuard {
         reporter: std::sync::Arc<std::sync::Mutex<Option<SqliteReporter>>>,
         consumed: std::sync::atomic::AtomicBool,

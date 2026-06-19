@@ -407,7 +407,7 @@ the chosen sequencing strategy.
 
 Each takes parallel lists — `items[i]` paired with `ratios[i]`
 — and returns a `Vec<Value>` of length `sum(ratios)`. The
-algorithms are exactly those in `nbrs-activity::opseq` (see
+algorithms are exactly those in `nbrs-runtime::opseq` (see
 `build_bucket_lut`, `build_concat_lut`, `build_interval_lut`);
 the comprehension stdlib reuses them so behavior is
 guaranteed-identical to the executor's op-sequencing path.
@@ -639,7 +639,7 @@ function works in a clause expression, in a regular Polydat binding,
 in a const-folded final, and in a workload param.
 
 **LUT facility for free.** The sequencer functions (bucket,
-concat, interval) reuse `nbrs-activity::opseq`'s algorithms
+concat, interval) reuse `nbrs-runtime::opseq`'s algorithms
 unchanged. SRD-22's op-sequencing strategies become available
 to any clause; weighted dispatch tables, replay sequences, and
 deterministic-but-non-uniform sweeps all compose cleanly.
@@ -668,7 +668,7 @@ layer needing to know about any of it.
    `binomial`, `linear_starts`, `log_steps`). Each is one stdlib
    node + a short test. Land in any order.
 5. **Sequencer expansions** (`bucket`, `concat_seq`,
-   `interval_seq`). Reuse `nbrs-activity::opseq` algorithms.
+   `interval_seq`). Reuse `nbrs-runtime::opseq` algorithms.
 6. **Layer 5 — set operators.** Trivial once lists are
    first-class clause sources.
 7. **Layer 7b — destructure form.** Requires `Value::Tuple` or

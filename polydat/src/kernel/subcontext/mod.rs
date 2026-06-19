@@ -46,9 +46,9 @@
 //!
 //! ## Cross-crate boundary
 //!
-//! [`PullConsumer`] is defined as a trait so that `nbrs-activity`'s
+//! [`PullConsumer`] is defined as a trait so that `nbrs-runtime`'s
 //! `ScopeFixture` can implement it without `polydat`
-//! depending on `nbrs-activity` (the crate dependency runs the
+//! depending on `nbrs-runtime` (the crate dependency runs the
 //! other way). Phase 1 ships a minimal trait shape — the names a
 //! consumer wants to pull at cycle time — sufficient for the
 //! activity-side `ScopeFixture::register_consumer` adapter to

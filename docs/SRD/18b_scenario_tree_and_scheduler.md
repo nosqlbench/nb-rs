@@ -16,7 +16,7 @@ SRD 18 §"Principles" already stated the design intent:
 > — visible to all children via the standard scope composition
 > mechanism (auto-externs, `shared`/`final`).
 
-The current implementation in `nbrs-activity` does not do this.
+The current implementation in `nbrs-runtime` does not do this.
 Instead it accumulates iteration variables as a flat
 `HashMap<String, String>` and *text-substitutes* `{var}` into the
 leaf phase's source before compiling per iteration. That collapses
@@ -36,7 +36,7 @@ scheduler that decides when those scopes run.
 | Tree | What it is | Source of truth |
 |------|-----------|-----------------|
 | **Scenario tree** | The static structure of the workload as authored: scenarios, `Comprehension` nodes (each wrapping a polydat-defined comprehension AST per polydat spec §3; surface forms include `for_each`, `for_combinations`, `for_each_union`), `do_while`, `do_until`, phases. Each node is a kind. | `nbrs-workload` parses YAML / `.polydat` into this. |
-| **Scope tree** | The runtime hierarchy of Polydat scopes (one `PolydatProgram` per non-trivial node) plus their pragma chains and extern wiring. Mirrors the scenario tree 1:1 for control-flow and phase nodes. | `nbrs-activity` builds this from the scenario tree at compile time. |
+| **Scope tree** | The runtime hierarchy of Polydat scopes (one `PolydatProgram` per non-trivial node) plus their pragma chains and extern wiring. Mirrors the scenario tree 1:1 for control-flow and phase nodes. | `nbrs-runtime` builds this from the scenario tree at compile time. |
 
 ### The Comprehension model
 
@@ -263,7 +263,7 @@ a co-named coord deeper) would collapse together.
 
 Lives in [`polydat::kernel::scope_coords`]; presentation-
 layer formatter is `format_scope_coordinate_path` in
-`nbrs_activity::executor`.
+`nbrs_runtime::executor`.
 
 ---
 
@@ -325,7 +325,7 @@ plan-preview and execution.
 ### The contract
 
 1. **One walker function** owns scenario-tree traversal. Today
-   that's `nbrs_activity::executor::execute_tree_at`. There is no
+   that's `nbrs_runtime::executor::execute_tree_at`. There is no
    sibling function with a similar shape that does "the same walk
    but for pre-map" or "the same walk but serial." Any new dryrun
    level, any new diagnostic surface, any new concurrency policy
@@ -393,7 +393,7 @@ The contract is load-bearing enough to deserve more than
 documentation:
 
 1. **Doc-comment at the walker entry point** in
-   `nbrs-activity/src/executor.rs` repeats this contract verbatim
+   `nbrs-runtime/src/executor.rs` repeats this contract verbatim
    and redirects to this SRD section.
 2. **Regression test**: an integration test runs the same workload
    at `depth=Phase` and at `depth=Cycle` (with a no-op stub
@@ -553,14 +553,14 @@ paths.
 
 ## Migration
 
-The scope-tree model is a sizeable change to `nbrs-activity`. The
+The scope-tree model is a sizeable change to `nbrs-runtime`. The
 migration is incremental:
 
 1. **Introduce the canonical scope tree as a data structure** —
    a new `ScopeTree` mirroring `ScenarioNode` 1:1 plus parent
    pointers, depth, scope-level pragma sets, and slots for
    per-node compiled kernels. Build it lazily at first; existing
-   code continues to work. *Done — `nbrs-activity/src/scope_tree.rs`.*
+   code continues to work. *Done — `nbrs-runtime/src/scope_tree.rs`.*
 
 2. **Wire scope-aware compilation** —
    - Per-phase pragma extraction + chain attach
@@ -641,7 +641,7 @@ internal-only constructors.
 
 4. **Hierarchical display** — surface the scope tree to the TUI /
    observers / web API so renderers can show nesting. *Done.*
-   - New canonical type `nbrs_activity::scene_tree::SceneTree` —
+   - New canonical type `nbrs_runtime::scene_tree::SceneTree` —
      parent / children pointers, depth tags, per-node lifecycle
      status, DFS iterator, scope-level aggregate-status walk.
      Distinct from the static `ScopeTree`: for_each iterations
@@ -659,7 +659,7 @@ internal-only constructors.
      code paths read it as before. Heavy `PhaseSummary` data
      lives in a `summaries: HashMap<SceneNodeId, PhaseSummary>`
      side-map keyed by node id.
-   - `nbrs_activity::scene_tree::install_global` / `current` /
+   - `nbrs_runtime::scene_tree::install_global` / `current` /
      `with_global_mut` give out-of-band consumers a process-wide
      `OnceLock<Arc<RwLock<SceneTree>>>`. The runner publishes
      after pre-map; executor lifecycle emits update the global
@@ -1048,19 +1048,19 @@ retiring. Better to land (1) first and keep the runner thin.
 
 ### Test coverage map (M3.1-3.6)
 
-- `nbrs-activity/src/scope_tree.rs::tests::install_kernel_seeds_canonical_state`
+- `nbrs-runtime/src/scope_tree.rs::tests::install_kernel_seeds_canonical_state`
   — install primitive + cached canonical via standard GK
   `get_constant`. (M3.1)
-- `nbrs-activity/src/scope_tree.rs::tests::install_is_idempotent_via_oncelock`
+- `nbrs-runtime/src/scope_tree.rs::tests::install_is_idempotent_via_oncelock`
   — `OnceLock` semantics. (M3.1)
-- `nbrs-activity/src/scope_tree.rs::tests::for_each_scope_kernel_inherits_parent_via_bind_outer_scope`
+- `nbrs-runtime/src/scope_tree.rs::tests::for_each_scope_kernel_inherits_parent_via_bind_outer_scope`
   — synthesis + chain inheritance through extern auto-passthrough. (M3.2)
-- `nbrs-activity/src/scope_tree.rs::tests::for_each_scope_kernel_uses_native_type_for_numeric_iter_var`
+- `nbrs-runtime/src/scope_tree.rs::tests::for_each_scope_kernel_uses_native_type_for_numeric_iter_var`
   — native-type detection from non-dependent clause pre-eval. (M3.2)
-- `nbrs-activity/src/scope_tree.rs::tests::for_each_scope_kernel_recursive_probe_for_dependent_clause`
+- `nbrs-runtime/src/scope_tree.rs::tests::for_each_scope_kernel_recursive_probe_for_dependent_clause`
   — recursive probe types `limit` as `u64` via `k=1` →
   `k_1_limits` chain. (M3.2)
-- `nbrs-activity/src/interpolate.rs::tests::kernel_*` — four
+- `nbrs-runtime/src/interpolate.rs::tests::kernel_*` — four
   tests covering `interpolate_via_kernel` lookup
   (`get_constant`, `get_input`, unresolved error, nested
   fixed-point). (M3.3a, M3.5)
@@ -1078,7 +1078,7 @@ retiring. Better to land (1) first and keep the runner thin.
   params flowing as `final` bindings on the workload kernel
   (M3.6) into both op-template substitution and binding-RHS
   literal injection.
-- `nbrs-activity/src/bindings.rs::tests::compile_provides_cycle_output`
+- `nbrs-runtime/src/bindings.rs::tests::compile_provides_cycle_output`
   — declared inputs auto-expose as kernel outputs (parity
   with `extern`); user-written `cycle := identity(cycle)`
   shim no longer required. (M3.4b prerequisite for the

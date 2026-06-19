@@ -56,7 +56,7 @@
 //! observer logged faster than the sink could drain. The
 //! diagnostic notes the count and continues; the dropped lines
 //! are still in `session.log` (the async sink in
-//! `nbrs_activity::log_sink` takes every level unconditionally,
+//! `nbrs_runtime::log_sink` takes every level unconditionally,
 //! see SRD 02 §"Display and Diagnostic Decoupling").
 
 use std::io::{self, Write};
@@ -66,7 +66,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use nbrs_activity::observer::LogLevel;
+use nbrs_runtime::observer::LogLevel;
 
 use crate::display_sink::{DisplayInputs, DisplaySink, SinkHandle};
 use crate::key_watcher::WatcherSignal;
@@ -508,7 +508,7 @@ fn run_render_loop(
             // timer + phase counter tick along with the running
             // phase, matching the log lines above.
             let status_margin = format_margin_prefix(&snap,
-                nbrs_activity::observer::use_color());
+                nbrs_runtime::observer::use_color());
             let margin_visible_width = visible_width(&status_margin) as u16;
             // Row-2 margin for the running-phase status block:
             // progress bar + ETA + spinner replacing the `│`
@@ -517,7 +517,7 @@ fn run_render_loop(
             let row2_margin = format_running_phase_row2_margin(
                 &snap,
                 margin_visible_width,
-                nbrs_activity::observer::use_color(),
+                nbrs_runtime::observer::use_color(),
             );
             let status_cols = (cols as usize)
                 .saturating_sub(margin_visible_width as usize);
@@ -536,7 +536,7 @@ fn run_render_loop(
                 crate::repl_state::ReplVisibility::Hidden);
 
             let new_status_text: Option<String> = if window_mode {
-                let color = nbrs_activity::observer::use_color();
+                let color = nbrs_runtime::observer::use_color();
                 let dim   = if color { "\x1b[2m" } else { "" };
                 let reset = if color { "\x1b[0m" } else { "" };
                 Some(format!(
@@ -585,7 +585,7 @@ fn run_render_loop(
                             composed.push_str("\r\n");
                         }
                         for line in tail.iter() {
-                            let row = nbrs_activity::activity::truncate_to_width(
+                            let row = nbrs_runtime::activity::truncate_to_width(
                                 line, cols_usize);
                             composed.push_str(&row);
                             composed.push_str("\r\n");
@@ -666,7 +666,7 @@ fn run_render_loop(
                     );
                 }
                 let margin = format_margin_prefix(&snap,
-                    nbrs_activity::observer::use_color());
+                    nbrs_runtime::observer::use_color());
                 for entry in &ring[start_idx..] {
                     let entry_level = severity_to_level(entry.severity);
                     if entry_level < min_level {
@@ -695,7 +695,7 @@ fn run_render_loop(
                     // messages get `\r\n` (raw mode needs the explicit
                     // `\r`); each row gets the margin and a trailing
                     // newline so it scrolls the surface.
-                    let painted = nbrs_activity::observer::colorize_log_line(
+                    let painted = nbrs_runtime::observer::colorize_log_line(
                         entry_level, &entry.message);
                     for row in painted.split('\n') {
                         let _ = write!(stderr, "{margin}{row}\r\n");
@@ -767,10 +767,10 @@ fn run_render_loop(
 
 /// Build the left-margin prefix carrying the session timer
 /// (compact 8-char clock from
-/// [`nbrs_activity::readouts::format::format_compact_session_elapsed`]),
+/// [`nbrs_runtime::readouts::format::format_compact_session_elapsed`]),
 /// plus the current phase index, followed by a `│` gutter. The
 /// magnitude-tracking color span from
-/// [`nbrs_activity::readouts::format::session_elapsed_color`]
+/// [`nbrs_runtime::readouts::format::session_elapsed_color`]
 /// wraps the clock so glance-readability tracks how deep
 /// into the run the log line is (dim under a minute,
 /// default under an hour, bold beyond).
@@ -778,7 +778,7 @@ fn format_margin_prefix(
     snap: &std::sync::Arc<crate::state::RunState>,
     color: bool,
 ) -> String {
-    use nbrs_activity::readouts::format::{
+    use nbrs_runtime::readouts::format::{
         format_compact_session_elapsed, session_elapsed_color,
     };
 
@@ -842,7 +842,7 @@ fn format_margin_prefix(
 /// Direct `TIOCGWINSZ` ioctl on `fd 2` (stderr). Returns
 /// `(cols, rows)` when stderr is a terminal and the call
 /// succeeds; `None` otherwise. Mirrors
-/// [`nbrs_activity::activity::terminal_cols`] but also captures
+/// [`nbrs_runtime::activity::terminal_cols`] but also captures
 /// the row count we need for absolute positioning of the
 /// bottom region.
 fn terminal_size_via_ioctl() -> Option<(u16, u16)> {
@@ -963,7 +963,7 @@ fn redraw_console_altscreen<W: Write>(
     cols: u16,
     rows: u16,
 ) {
-    let color = nbrs_activity::observer::use_color();
+    let color = nbrs_runtime::observer::use_color();
     let dim   = if color { "\x1b[2m" } else { "" };
     let reset = if color { "\x1b[0m" } else { "" };
     let cols_usize = cols as usize;
@@ -984,7 +984,7 @@ fn redraw_console_altscreen<W: Write>(
         row += 1;
     }
     for line in &tail {
-        let painted = nbrs_activity::activity::truncate_to_width(line, cols_usize);
+        let painted = nbrs_runtime::activity::truncate_to_width(line, cols_usize);
         let _ = write!(out, "\x1b[{row};1H\x1b[K{painted}");
         row += 1;
     }
@@ -1022,7 +1022,7 @@ fn format_running_phase_row2_margin(
     target_width: u16,
     color: bool,
 ) -> String {
-    use nbrs_activity::readouts::format::{
+    use nbrs_runtime::readouts::format::{
         braille_bar, format_eta, spinner_frame,
     };
     let Some(active) = snap.active_phases.values().next() else {
@@ -1098,7 +1098,7 @@ fn clamp_multiline(s: &str, max_cols: usize) -> String {
     let mut first = true;
     for row in s.split('\n') {
         if !first { out.push('\n'); }
-        out.push_str(&nbrs_activity::activity::truncate_to_width(row, max_cols));
+        out.push_str(&nbrs_runtime::activity::truncate_to_width(row, max_cols));
         first = false;
     }
     out

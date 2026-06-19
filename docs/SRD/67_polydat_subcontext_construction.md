@@ -27,7 +27,7 @@ the chokepoint that
 identifies as load-bearing.
 
 nbrs-side composition concerns (typed `ScopeModule`
-interface tailored for nbrs-activity, integration with
+interface tailored for nbrs-runtime, integration with
 SRD-13e) remain in
 [SRD 13e Scope-as-Module Refinement](13e_scope_as_module.md).
 

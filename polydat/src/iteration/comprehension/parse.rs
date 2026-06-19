@@ -22,7 +22,7 @@
 //!   over the flattened list.
 //!
 //! YAML-shape detection (string vs list vs object) stays in
-//! `nbrs-workload` — it's YAML-shaped, not GK-shaped. The
+//! the host — it's YAML-shaped, not GK-shaped. The
 //! workload parser builds `Vec<Vec<Clause>>` from the YAML
 //! using these primitives, then calls
 //! [`comprehension_from_subspaces`].
@@ -266,7 +266,7 @@ pub fn parse_comprehension_text(text: &str) -> Result<Comprehension, String> {
 }
 
 /// Backward-compat shim — call [`Comprehension::validate`]
-/// instead. Kept so external `nbrs-workload` callers don't
+/// instead. Kept so external host callers don't
 /// need a same-day update; will be retired once those move.
 #[deprecated(note = "use Comprehension::validate() — single source of truth for AST invariants")]
 pub fn validate_order_for_mode(
@@ -562,7 +562,7 @@ pub fn parse_clause_list(text: &str) -> Result<Vec<Clause>, String> {
 /// Cartesian shape when names are distinct, while still
 /// detecting repeats as a Union signal. Same rule the
 /// pre-refactor workload parser applied — see
-/// `nbrs-workload/src/parse.rs::parse_scenario_nodes`.
+/// the host's scenario-node parser.
 pub fn comprehension_from_subspaces(subspaces: Vec<Vec<Clause>>) -> Comprehension {
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for set in &subspaces {

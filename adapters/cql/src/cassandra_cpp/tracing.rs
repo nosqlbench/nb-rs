@@ -256,8 +256,8 @@ impl TraceLog {
                 let new_depth = self.inner.queue_depth
                     .fetch_add(1, Ordering::AcqRel) + 1;
                 if prev_depth >= 1 {
-                    nbrs_activity::diag!(
-                        nbrs_activity::observer::LogLevel::Warn,
+                    nbrs_runtime::diag!(
+                        nbrs_runtime::observer::LogLevel::Warn,
                         "cql_trace: retirement worker behind \
                          (queue_depth={new_depth}/{cap})",
                         cap = Self::QUEUE_CAPACITY,
@@ -267,8 +267,8 @@ impl TraceLog {
             Err(mpsc::error::TrySendError::Full(_)) => {
                 let dropped = self.inner.dropped
                     .fetch_add(1, Ordering::AcqRel) + 1;
-                nbrs_activity::diag!(
-                    nbrs_activity::observer::LogLevel::Error,
+                nbrs_runtime::diag!(
+                    nbrs_runtime::observer::LogLevel::Error,
                     "cql_trace: queue full at capacity {cap}, \
                      dropping trace record (cumulative drops: {dropped})",
                     cap = Self::QUEUE_CAPACITY,
@@ -459,8 +459,8 @@ async fn retirement_worker(
     let prepared = match prepare_trace_queries(&session).await {
         Ok(p) => Some(p),
         Err(e) => {
-            nbrs_activity::diag!(
-                nbrs_activity::observer::LogLevel::Warn,
+            nbrs_runtime::diag!(
+                nbrs_runtime::observer::LogLevel::Warn,
                 "cql_trace: failed to prepare system_traces queries: {e} \
                  — falling back to client-side-only trace records",
             );
@@ -487,8 +487,8 @@ async fn retirement_worker(
         // top-level object per line, escaping per JSON spec.
         let line = format_record_jsonl(&record, session_meta.as_ref(), &events);
         if let Err(e) = file.write_all(line.as_bytes()) {
-            nbrs_activity::diag!(
-                nbrs_activity::observer::LogLevel::Error,
+            nbrs_runtime::diag!(
+                nbrs_runtime::observer::LogLevel::Error,
                 "cql_trace: write failed: {e} \
                  — disabling further trace logging",
             );
@@ -537,8 +537,8 @@ async fn fetch_server_side(
     let parsed = match uuid::Uuid::parse_str(trace_id_str) {
         Ok(u) => u,
         Err(e) => {
-            nbrs_activity::diag!(
-                nbrs_activity::observer::LogLevel::Warn,
+            nbrs_runtime::diag!(
+                nbrs_runtime::observer::LogLevel::Warn,
                 "cql_trace: invalid trace_id '{trace_id_str}': {e}",
             );
             return (None, Vec::new());
@@ -549,8 +549,8 @@ async fn fetch_server_side(
     let session_meta = match fetch_session_meta(&prepared.sessions, cass_uuid).await {
         Ok(m) => m,
         Err(e) => {
-            nbrs_activity::diag!(
-                nbrs_activity::observer::LogLevel::Warn,
+            nbrs_runtime::diag!(
+                nbrs_runtime::observer::LogLevel::Warn,
                 "cql_trace: system_traces.sessions fetch failed for {trace_id_str}: {e}",
             );
             None
@@ -559,16 +559,16 @@ async fn fetch_server_side(
     let (events, retries) = match fetch_events(&prepared.events, cass_uuid).await {
         Ok(p) => p,
         Err(e) => {
-            nbrs_activity::diag!(
-                nbrs_activity::observer::LogLevel::Warn,
+            nbrs_runtime::diag!(
+                nbrs_runtime::observer::LogLevel::Warn,
                 "cql_trace: system_traces.events fetch failed for {trace_id_str}: {e}",
             );
             (Vec::new(), 0)
         }
     };
     if retries > 0 {
-        nbrs_activity::diag!(
-            nbrs_activity::observer::LogLevel::Debug,
+        nbrs_runtime::diag!(
+            nbrs_runtime::observer::LogLevel::Debug,
             "cql_trace: events retry fired {retries}x for {trace_id_str} \
              (events flushed asynchronously by Cassandra)",
         );

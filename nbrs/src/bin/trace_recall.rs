@@ -16,7 +16,7 @@
 //!   predicates) down to "just the predicate=N queries"
 //!   apples-to-apples against a per-label profile run.
 //!
-//! Trace event grammar (per [`nbrs_activity::observer::trace`]
+//! Trace event grammar (per [`nbrs_runtime::observer::trace`]
 //! at the relevancy scoring site):
 //!
 //! ```text

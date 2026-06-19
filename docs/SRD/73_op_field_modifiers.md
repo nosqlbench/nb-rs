@@ -24,7 +24,7 @@ end-to-end.
 This SRD introduces:
 
 1. A generic **`OpFieldModifier<T>`** trait + **`ModifierChain<T>`**
-   composer in `nbrs-activity` (the adapter API crate). One
+   composer in `nbrs-runtime` (the adapter API crate). One
    abstraction every adapter can reuse.
 2. A **GK-scoped initializer-time resolution** pattern that mirrors
    the upstream nosqlbench `enhanceFuncOptionally` (a.k.a.
@@ -86,7 +86,7 @@ OpFieldModifier<T>>` plays the role of the per-knob closure;
 
 ### `OpFieldModifier<T>` trait
 
-Lives in `nbrs-activity::adapter` (the adapter API surface). Generic
+Lives in `nbrs-runtime::adapter` (the adapter API surface). Generic
 over the target type so each adapter can specialize for its driver's
 per-statement type:
 
@@ -186,7 +186,7 @@ pub trait ModifierTraceSink: Send + Sync {
 }
 ```
 
-Built-in sinks (both in `nbrs-activity`):
+Built-in sinks (both in `nbrs-runtime`):
 
 - **`TracingTraceSink`** — emits a `tracing::trace!(target:
   "nbrs::op_modifier", op, field, value = ?value_fn())` event,
@@ -438,7 +438,7 @@ standard SRD-16 walk-up.
 
 ## Phased delivery
 
-**P1 — Trait + chain + sinks** (`nbrs-activity`). Generic
+**P1 — Trait + chain + sinks** (`nbrs-runtime`). Generic
 `OpFieldModifier<T>`, `ModifierChain<T>`, `ModifierTraceSink` +
 `TracingTraceSink` impl. Unit tests on a synthetic target type.
 No adapter changes.

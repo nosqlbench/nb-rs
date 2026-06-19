@@ -8,7 +8,7 @@ polydat crate:
   — moved 2026-05-30 as part of the import-first reorganization
   (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 
-This file retains the nbrs-activity-facing diagnostic API.
+This file retains the nbrs-runtime-facing diagnostic API.
 
 > Composition mechanics — how modules combine with the host
 > program and with other Polydat kernels — live in

@@ -31,8 +31,8 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
-use nbrs_activity::observer::PhaseProgressUpdate;
-use nbrs_activity::scene_tree::SceneTree;
+use nbrs_runtime::observer::PhaseProgressUpdate;
+use nbrs_runtime::scene_tree::SceneTree;
 use nbrs_metrics::summaries::binomial_summary::BinomialSummary;
 use nbrs_metrics::summaries::ewma::Ewma;
 use nbrs_metrics::summaries::peak_tracker::PeakTracker;

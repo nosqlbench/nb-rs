@@ -205,7 +205,7 @@ impl Compiler {
         // separate scope. The outer-wins / conflict-detection
         // semantics from SRD 15 §"Pragma Scope" fire at *scope
         // composition* boundaries (workload → phase → for_each),
-        // which live in `nbrs-activity`, not here.
+        // which live in `nbrs-runtime`, not here.
         for stmt in &module_stmts {
             if let crate::dsl::ast::Statement::Pragma { name, span } = stmt {
                 self.pragmas.entries.push(super::pragmas::Pragma {

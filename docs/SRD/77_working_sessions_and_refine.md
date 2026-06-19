@@ -7,7 +7,7 @@ Execution). No code lands until reviewed against SRD-44
 (checkpoint event log) + SRD-76 (PhaseOutcome /
 SessionDisposition).
 
-**Owner:** nbrs-activity (session model, runner,
+**Owner:** nbrs-runtime (session model, runner,
 checkpoint-resume planner), nbrs-metrics (sqlite
 schema), nbrs (CLI verbs + flags), workloads (consumers
 of the new verb).
@@ -405,7 +405,7 @@ surface usable.
 
 ### Push 2 — Execution entity
 
-- New `Execution` struct in `nbrs-activity/src/session.rs`
+- New `Execution` struct in `nbrs-runtime/src/session.rs`
   alongside `Session`.
 - `executions` sqlite table with the schema above.
 - Lifecycle: at runner start, INSERT a row; at shutdown

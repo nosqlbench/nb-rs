@@ -2,7 +2,7 @@
 
 **Status:** normative (design — not yet implemented)
 **Owner:** polydat (kernel/program API, ScopeModule type),
-  nbrs-activity (scope-tree walk, OpBuilder/FiberBuilder rewrite,
+  nbrs-runtime (scope-tree walk, OpBuilder/FiberBuilder rewrite,
   retirement of ad-hoc string-concat synthesisers)
 **Cross-refs:** SRD-11 (GK evaluation lifecycles), SRD-13 (GK
   modules — formal `name(params) -> (outputs) := { body }` form,

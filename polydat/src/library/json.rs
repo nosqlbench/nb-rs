@@ -309,10 +309,9 @@ fn walk_json_leaves(j: &serde_json::Value, out: &mut String) {
 ///   here.
 ///
 /// Rows whose column is absent / null / unparseable contribute
-/// nothing (no zero-fill, no error). Mirrors the legacy
-/// `extract_indices_from_json` behaviour in `nbrs_activity::validation`
-/// so workloads can swap from the old JSON-walk to this typed-wire
-/// path without recall-value drift.
+/// nothing (no zero-fill, no error). Mirrors the legacy host-side
+/// `extract_indices_from_json` JSON-walk so workloads can swap to
+/// this typed-wire path without recall-value drift.
 ///
 /// SRD-80b Phase E migration — PolyWire body so the non-Json
 /// fallback ("empty vector, no panic") stays intact; `column`

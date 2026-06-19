@@ -514,7 +514,7 @@ impl ReplApp {
 
     /// Tab in `readout <prefix>` argument position: complete the
     /// readout name from the built-in registry
-    /// (`nbrs_activity::readouts::Registry::all_names()`) — the
+    /// (`nbrs_runtime::readouts::Registry::all_names()`) — the
     /// authoritative set the server's `render_readout` accepts. The
     /// command takes a single name argument, so once the cursor is
     /// past it (whitespace in `prefix`) there's nothing to complete.
@@ -1180,10 +1180,10 @@ impl ReplApp {
 
 /// Built-in readout names matching `prefix`, for `readout <name>`
 /// tab-completion. Pure helper over the authoritative registry
-/// (`nbrs_activity::readouts::Registry::all_names()`) so it's
+/// (`nbrs_runtime::readouts::Registry::all_names()`) so it's
 /// unit-testable without constructing a `ReplApp`.
 fn readout_name_candidates(prefix: &str) -> Vec<&'static str> {
-    nbrs_activity::readouts::Registry::all_names()
+    nbrs_runtime::readouts::Registry::all_names()
         .iter()
         .copied()
         .filter(|n| n.starts_with(prefix))

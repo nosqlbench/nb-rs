@@ -26,7 +26,7 @@
 //!     content_type: application/json
 //! ```
 
-use nbrs_activity::adapter::{
+use nbrs_runtime::adapter::{
     AdapterError, DriverAdapter, ExecutionError, JsonBody, OpDispenser, OpResult, ResultBody, TextBody,
 };
 use nbrs_workload::model::ParsedOp;
@@ -146,7 +146,7 @@ impl DriverAdapter for HttpAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<nbrs_activity::adapter::PolydatKernel>,
+        parent: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
         Box::pin(async move {
         // Extract static method from template (default GET)
@@ -231,7 +231,7 @@ struct HttpDispenser {
     method: String,
     content_type: String,
     /// SRD-68 invariant I-3: dispenser-owned canonical Polydat Kernel.
-    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::PolydatKernel>,
+    canonical_kernel: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
     /// Cycle-time templates rendered through `substitute_via_wires`.
     /// `uri` is mandatory; `body` and `headers` are optional.
     uri_template: Option<String>,
@@ -257,14 +257,14 @@ struct HttpDispenser {
 
 
 impl OpDispenser for HttpDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::PolydatKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
     fn execute<'a>(
         &'a self,
         _cycle: u64,
-        ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
+        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
         Box::pin(async move {
@@ -278,7 +278,7 @@ impl OpDispenser for HttpDispenser {
             // SRD-68 Push 5: render each per-cycle template via the
             // generic wires API. Bind-point resolution failures are
             // returned as op errors so the error router decides.
-            let uri = nbrs_activity::wires::substitute_via_wires(uri_template, wires)
+            let uri = nbrs_runtime::wires::substitute_via_wires(uri_template, wires)
                 .map_err(|e| ExecutionError::Op(AdapterError {
                     error_name: "BindError".into(),
                     message: format!("uri: {e}"),
@@ -296,7 +296,7 @@ impl OpDispenser for HttpDispenser {
             };
 
             let body = match &self.body_template {
-                Some(t) => Some(nbrs_activity::wires::substitute_via_wires(t, wires)
+                Some(t) => Some(nbrs_runtime::wires::substitute_via_wires(t, wires)
                     .map_err(|e| ExecutionError::Op(AdapterError {
                         error_name: "BindError".into(),
                         message: format!("body: {e}"),
@@ -309,7 +309,7 @@ impl OpDispenser for HttpDispenser {
             // field. Per-line `Name: Value` entries.
             let extra_headers: Vec<(String, String)> = match &self.headers_template {
                 Some(t) => {
-                    let rendered = nbrs_activity::wires::substitute_via_wires(t, wires)
+                    let rendered = nbrs_runtime::wires::substitute_via_wires(t, wires)
                         .map_err(|e| ExecutionError::Op(AdapterError {
                             error_name: "BindError".into(),
                             message: format!("headers: {e}"),
@@ -388,8 +388,8 @@ impl OpDispenser for HttpDispenser {
                         let configured_ms = self.per_op_timeout_ms
                             .map(|n| n.to_string())
                             .unwrap_or_else(|| "client-default".to_string());
-                        nbrs_activity::observer::log(
-                            nbrs_activity::observer::LogLevel::Warn,
+                        nbrs_runtime::observer::log(
+                            nbrs_runtime::observer::LogLevel::Warn,
                             &format!(
                                 "http: `on_timeout: accept` swallowed a \
                                  request timeout after {elapsed_ms}ms \
@@ -579,10 +579,10 @@ mod tests {
             .expect("map_op");
 
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
-        let cw = nbrs_activity::wires::CycleWires::new(&mut k);
-        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-        let empty = nbrs_activity::adapter::ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+        let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
+        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+        let empty = nbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
 
         let result = dispenser.execute(0, &ctx).await
             .expect("on_timeout: accept should map Timeout → Ok(empty)");
@@ -610,10 +610,10 @@ mod tests {
             .expect("map_op");
 
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
-        let cw = nbrs_activity::wires::CycleWires::new(&mut k);
-        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-        let empty = nbrs_activity::adapter::ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+        let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
+        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+        let empty = nbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
 
         let err = dispenser.execute(0, &ctx).await
             .expect_err("default behaviour: client-side timeout → op error");
@@ -669,10 +669,10 @@ mod tests {
             .expect("map_op");
 
         let mut k = polydat::dsl::compile::compile_polydat("input cycle: u64\n").unwrap();
-        let cw = nbrs_activity::wires::CycleWires::new(&mut k);
-        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-        let empty = nbrs_activity::adapter::ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+        let cw = nbrs_runtime::wires::CycleWires::new(&mut k);
+        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+        let empty = nbrs_runtime::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nbrs_runtime::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
 
         let result = dispenser.execute(0, &ctx).await
             .expect("successful HTTP request should return Ok");
@@ -692,14 +692,14 @@ mod tests {
 // =========================================================================
 
 inventory::submit! {
-    nbrs_activity::adapter::AdapterRegistration {
+    nbrs_runtime::adapter::AdapterRegistration {
         names: || &["http"],
         known_params: || &["base_url", "host", "timeout"],
-        display_preference: |_params| nbrs_activity::adapter::DisplayPreference::Auto,
+        display_preference: |_params| nbrs_runtime::adapter::DisplayPreference::Auto,
         supported_controls: || &[],
         create: |params| Box::pin(async move {
             Ok(std::sync::Arc::new(HttpAdapter::with_config(HttpConfig::from_params(&params)))
-                as std::sync::Arc<dyn nbrs_activity::adapter::DriverAdapter>)
+                as std::sync::Arc<dyn nbrs_runtime::adapter::DriverAdapter>)
         }),
     }
 }
@@ -716,13 +716,13 @@ inventory::submit! {
 // per-call URL paths and method overrides come in via the
 // op-template layer and don't affect the resource key.
 inventory::submit! {
-    nbrs_activity::adapter::SharedDriverRegistration {
+    nbrs_runtime::adapter::SharedDriverRegistration {
         adapter: "http",
-        driver: nbrs_activity::adapter::DEFAULT_DRIVER_NAME,
-        share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
+        driver: nbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
             let cfg = HttpConfig::from_params(params);
-            Ok(nbrs_activity::resource_pool::ResourceKey::new("http")
+            Ok(nbrs_runtime::resource_pool::ResourceKey::new("http")
                 .with("base_url", cfg.base_url.unwrap_or_default())
                 .with("timeout_ms", cfg.timeout_ms.to_string()))
         },

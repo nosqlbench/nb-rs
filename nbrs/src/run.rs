@@ -10,7 +10,7 @@
 //! - **TUI mode** — stderr is a TTY, no `dryrun=`, the adapter
 //!   doesn't claim raw terminal. Builds an
 //!   [`nbrs_tui::observer::TuiObserver`], runs via
-//!   [`nbrs_activity::runner::run_with_observer`], prints a
+//!   [`nbrs_runtime::runner::run_with_observer`], prints a
 //!   post-teardown summary, and exits 2 if any pre-mapped
 //!   phases were skipped.
 //! - **Plain mode** — stderr is not a TTY, or `tui=off`, or a
@@ -57,7 +57,7 @@ pub async fn run_command(args: &[String]) {
         .filter(|a| a.contains('=') || a.ends_with(".yaml") || a.ends_with(".yml"))
         .cloned()
         .collect();
-    let params = nbrs_activity::runner::parse_params(&param_args);
+    let params = nbrs_runtime::runner::parse_params(&param_args);
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
     // Every `dryrun=...` value is a first-class dryrun. They split
     // into two operational shapes that ask different things of the
@@ -83,8 +83,8 @@ pub async fn run_command(args: &[String]) {
     // they don't drive this decision themselves.
     let dryrun_runs_cycles = params.get("dryrun")
         .map(|s| {
-            let cfg = nbrs_activity::runner::DiagnosticConfig::parse(s);
-            cfg.depth >= nbrs_activity::runner::ExecDepth::Cycle
+            let cfg = nbrs_runtime::runner::DiagnosticConfig::parse(s);
+            cfg.depth >= nbrs_runtime::runner::ExecDepth::Cycle
         })
         .unwrap_or(false);
     let dryrun_is_early_exit = params.contains_key("dryrun") && !dryrun_runs_cycles;
@@ -108,9 +108,9 @@ pub async fn run_command(args: &[String]) {
     // a `workload=…` run with no `adapter=` would default to `stdout`,
     // reserve the console, and suppress the ENTIRE run display.
     let adapter_pref = match explicit_adapter {
-        Some(a) => nbrs_activity::adapter::adapter_display_preference(a, &params),
-        None if has_workload => nbrs_activity::adapter::DisplayPreference::Auto,
-        None => nbrs_activity::adapter::adapter_display_preference("stdout", &params),
+        Some(a) => nbrs_runtime::adapter::adapter_display_preference(a, &params),
+        None if has_workload => nbrs_runtime::adapter::DisplayPreference::Auto,
+        None => nbrs_runtime::adapter::adapter_display_preference("stdout", &params),
     };
 
     // A console-owning adapter (stdout-to-terminal, plotter) on an
@@ -121,7 +121,7 @@ pub async fn run_command(args: &[String]) {
     // post-run summary — go to `session.log` only. Non-TTY (pipes/CI)
     // keeps diagnostics on stderr (a separate stream); `dryrun=` always
     // shows since its output IS the requested result.
-    let silent_console = adapter_pref == nbrs_activity::adapter::DisplayPreference::Off
+    let silent_console = adapter_pref == nbrs_runtime::adapter::DisplayPreference::Off
         && is_tty
         && !params.contains_key("dryrun");
 
@@ -138,12 +138,12 @@ pub async fn run_command(args: &[String]) {
     // regardless of what the user asked for, with a log line
     // explaining the override.
     let user_tui = params.get("tui").map(|s| s.as_str());
-    let tui_mode: &str = if adapter_pref == nbrs_activity::adapter::DisplayPreference::Off {
+    let tui_mode: &str = if adapter_pref == nbrs_runtime::adapter::DisplayPreference::Off {
         if let Some(req) = user_tui
             && req != "off"
         {
-            nbrs_activity::diag!(
-                nbrs_activity::observer::LogLevel::Warn,
+            nbrs_runtime::diag!(
+                nbrs_runtime::observer::LogLevel::Warn,
                 "display: adapter '{adapter_name}' writes its own output to the \
                  terminal — forcing tui=off (overriding tui={req}) so the dashboard \
                  doesn't overwrite it; run detail is still captured in the log"
@@ -227,7 +227,7 @@ pub async fn run_command(args: &[String]) {
         match nbrs_tui::inspector_server::spawn(run_state.clone(), runtime_handle.clone()) {
             Ok((_path, join)) => Some(join),
             Err(e) => {
-                nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Warn,
+                nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Warn,
                     "inspector endpoint disabled: {e}");
                 None
             }
@@ -255,7 +255,7 @@ pub async fn run_command(args: &[String]) {
             Some("run") => &args[1..],
             _ => args,
         };
-        let cli_params = nbrs_activity::runner::parse_params(stripped);
+        let cli_params = nbrs_runtime::runner::parse_params(stripped);
         // dryrun=phase walks the scenario tree purely to dump the
         // plan; the per-phase construction trace ("=== phase: X ===",
         // "phase 'X' (...): N op templates …", "phase 'X' complete")
@@ -272,9 +272,9 @@ pub async fn run_command(args: &[String]) {
         // (session/metrics banners, phase walk, shutdown notices) stays
         // in the session log only and doesn't bury the adapter's output.
         let default_min_level = if dryrun_phase_default {
-            nbrs_activity::observer::LogLevel::Warn
+            nbrs_runtime::observer::LogLevel::Warn
         } else {
-            nbrs_activity::observer::LogLevel::Info
+            nbrs_runtime::observer::LogLevel::Info
         };
         // Two independent log-level knobs:
         //
@@ -292,14 +292,14 @@ pub async fn run_command(args: &[String]) {
         let stderr_min_level = cli_params.get("loglevel")
             .or_else(|| cli_params.get("loglevel-display"))
             .or_else(|| cli_params.get("loglevel_display"))
-            .and_then(|s| nbrs_activity::runner::parse_log_level(s))
+            .and_then(|s| nbrs_runtime::runner::parse_log_level(s))
             .unwrap_or(default_min_level);
         let retain_min_level = cli_params.get("loglevel-retain")
             .or_else(|| cli_params.get("loglevel_retain"))
-            .and_then(|s| nbrs_activity::runner::parse_log_level(s))
-            .unwrap_or(nbrs_activity::observer::LogLevel::Debug);
-        nbrs_activity::observer::set_retain_level(retain_min_level);
-        nbrs_activity::observer::set_display_level(stderr_min_level);
+            .and_then(|s| nbrs_runtime::runner::parse_log_level(s))
+            .unwrap_or(nbrs_runtime::observer::LogLevel::Debug);
+        nbrs_runtime::observer::set_retain_level(retain_min_level);
+        nbrs_runtime::observer::set_display_level(stderr_min_level);
         // Same cadence parsing the `tui=on` path uses, so the
         // metrics scheduler plans the same windows whether the
         // observer eventually drives a LogOnlySink or a TuiSink.
@@ -308,7 +308,7 @@ pub async fn run_command(args: &[String]) {
             .and_then(|s| match nbrs_metrics::cadence::Cadences::parse(s) {
                 Ok(c) => Some(c),
                 Err(e) => {
-                    nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Warn,
+                    nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Warn,
                         "latency-cadences='{s}': {e} — using defaults");
                     None
                 }
@@ -323,7 +323,7 @@ pub async fn run_command(args: &[String]) {
             observer_concrete
         };
         let observer_arc = std::sync::Arc::new(observer_concrete);
-        let observer: std::sync::Arc<dyn nbrs_activity::observer::RunObserver> =
+        let observer: std::sync::Arc<dyn nbrs_runtime::observer::RunObserver> =
             observer_arc.clone();
 
         // `tui=terminal`: hand off to the SinkSupervisor. The
@@ -370,7 +370,7 @@ pub async fn run_command(args: &[String]) {
             None
         };
 
-        let run_result = nbrs_activity::runner::run_with_observer(args, observer).await;
+        let run_result = nbrs_runtime::runner::run_with_observer(args, observer).await;
 
         if let Some(s) = supervisor {
             // Two-step teardown so the terminal is **fully
@@ -438,7 +438,7 @@ pub async fn run_command(args: &[String]) {
         .and_then(|s| match Cadences::parse(s) {
             Ok(c) => Some(c),
             Err(e) => {
-                nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Warn,
+                nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Warn,
                     "latency-cadences='{s}': {e} — using defaults");
                 None
             }
@@ -457,14 +457,14 @@ pub async fn run_command(args: &[String]) {
     let stderr_min_level = params.get("loglevel")
         .or_else(|| params.get("loglevel-display"))
         .or_else(|| params.get("loglevel_display"))
-        .and_then(|s| nbrs_activity::runner::parse_log_level(s))
-        .unwrap_or(nbrs_activity::observer::LogLevel::Info);
+        .and_then(|s| nbrs_runtime::runner::parse_log_level(s))
+        .unwrap_or(nbrs_runtime::observer::LogLevel::Info);
     let retain_min_level = params.get("loglevel-retain")
         .or_else(|| params.get("loglevel_retain"))
-        .and_then(|s| nbrs_activity::runner::parse_log_level(s))
-        .unwrap_or(nbrs_activity::observer::LogLevel::Debug);
-    nbrs_activity::observer::set_retain_level(retain_min_level);
-    nbrs_activity::observer::set_display_level(stderr_min_level);
+        .and_then(|s| nbrs_runtime::runner::parse_log_level(s))
+        .unwrap_or(nbrs_runtime::observer::LogLevel::Debug);
+    nbrs_runtime::observer::set_retain_level(retain_min_level);
+    nbrs_runtime::observer::set_display_level(stderr_min_level);
     let observer = Arc::new(
         TuiObserver::new(run_state.clone(), cadences)
             .with_min_level(stderr_min_level),
@@ -472,7 +472,7 @@ pub async fn run_command(args: &[String]) {
 
     // Run with the TUI observer. The TUI thread is spawned
     // lazily on the first phase_starting event.
-    let run_result = nbrs_activity::runner::run_with_observer(args, observer.clone()).await;
+    let run_result = nbrs_runtime::runner::run_with_observer(args, observer.clone()).await;
 
     // Wait for the TUI to tear down the alternate screen before
     // any further stderr / stdout writes.
@@ -531,15 +531,15 @@ fn print_post_run_reports(
     // previous run left behind. Falling back to `logs/latest`
     // when no override is set preserves the historical
     // bare-CLI behavior.
-    let session_dir = nbrs_activity::session::read_session_dir(args)
-        .unwrap_or_else(nbrs_activity::session::latest_session_dir);
+    let session_dir = nbrs_runtime::session::read_session_dir(args)
+        .unwrap_or_else(nbrs_runtime::session::latest_session_dir);
 
     // SRD-46 auto-render: when the workload completed without
     // being aborted by the error handler, render every plot
     // item the runner persisted into the session db. Tables
     // were already rendered inline by the runner. Plots have
     // to land here because plot_metrics lives in this crate
-    // (cross-crate from nbrs-activity); same fault-gate as
+    // (cross-crate from nbrs-runtime); same fault-gate as
     // tables (run_result.is_ok() ⇒ render, else skip).
     if run_result.is_ok() {
         auto_render_plots(&session_dir);
@@ -568,7 +568,7 @@ fn print_post_run_reports(
                         print!("{rendered}");
                     }
             } else {
-                nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Info,
+                nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Info,
                     "summary ({ext}): {}", path.display());
             }
         }
@@ -642,7 +642,7 @@ fn auto_render_plots(session_dir: &std::path::Path) {
         total += 1;
     }
     if total > 0 {
-        nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Info,
+        nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Info,
             "auto-render: {total} plot{} rendered (SRD-46)",
             if total == 1 { "" } else { "s" });
     }
@@ -729,7 +729,7 @@ fn auto_inject_details(session_dir: &std::path::Path) {
         if let Err(e) = crate::report::write_named_section_first(
             &path, "run_details", "Run Details", &body,
         ) {
-            nbrs_activity::diag!(nbrs_activity::observer::LogLevel::Warn,
+            nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Warn,
                 "details auto-inject failed on '{}': {e}",
                 path.display());
         }

@@ -292,7 +292,7 @@ the post-interpolation text still reaches a dynamic input,
 the eval rejects it; if every name was substituted to a
 static value, the fold succeeds.
 
-Use case: nbrs-activity's predicate evaluation — the host
+Use case: nbrs-runtime's predicate evaluation — the host
 has a text like `"{k} > 5"` (where `{k}` is an iter-var
 bound in the calling kernel) and needs a boolean answer.
 The two-step composition resolves the placeholder and
@@ -489,7 +489,7 @@ declaring per-expression node availability.**
 
 Enforcement: the compiler reads the runtime registry at
 compile time. Host crates that extend the registry (e.g.,
-nbrs-activity registers runtime-context nodes; nbrs-metrics
+nbrs-runtime registers runtime-context nodes; nbrs-metrics
 registers Polydat metric nodes) make those nodes available to all
 embedded expression evaluation.
 
@@ -613,7 +613,7 @@ takes responsibility for any type expectations it imposes
 on the result (accessor panics, mismatch handling).
 
 Two host crates in the workspace operate at this level
-today: nbrs-activity's predicate evaluation reaches for
+today: nbrs-runtime's predicate evaluation reaches for
 `.as_bool()` post-hoc; nbrs-workload's parameter
 evaluation reaches for `.as_u64()` post-hoc. Both work
 correctly because the host has out-of-band knowledge of
@@ -930,7 +930,7 @@ Examples of current host contributions:
 
 | Host crate | Virtual node | Purpose |
 |---|---|---|
-| nbrs-activity | `runtime_context` family | Surfaces per-cycle activity state (current op name, scope path, etc.) as typed input values to Polydat expressions. |
+| nbrs-runtime | `runtime_context` family | Surfaces per-cycle activity state (current op name, scope path, etc.) as typed input values to Polydat expressions. |
 | nbrs-metrics | Polydat metric nodes | Surfaces metric values (counters, gauges) to Polydat predicates without leaking metric infrastructure into polydat. |
 | Adapters | Driver-aware nodes | A CQL adapter might register a `cql_table_exists` predicate node usable in workload expressions. |
 
@@ -1136,7 +1136,7 @@ Two host crates evaluating the same expression text against
 the same kernel context get the same typed return value
 (D1). This is the load-bearing property that lets
 expression evaluation be a shared utility across the
-workspace: nbrs-activity and nbrs-workload calling
+workspace: nbrs-runtime and nbrs-workload calling
 `eval_const_expr` on `"{k} * 2 + 1"` with the same kernel
 get identical `Value::U64`s, every time, in every fiber.
 
@@ -1306,10 +1306,10 @@ for:
 
 | Host site | Surface | Pattern |
 |---|---|---|
-| **nbrs-activity** `executor.rs:1433` | `interpolate_via_kernel` + `eval_const_expr` | Predicate evaluation for `if:` / `where:` conditions in op fields. Text is e.g. `"{recall_at_k} >= 0.8"`; kernel is the phase scope. |
-| **nbrs-activity** `executor.rs:2351` | `eval_const_expr` directly | Inline constant evaluation in op-template field text (SRD-14 `{...}` form). |
-| **nbrs-activity** `runner.rs:3661` | `eval_const_expr` | Parameter expression evaluation in workload context (e.g., a `--params` overlay containing arithmetic). |
-| **nbrs-activity** `scope.rs:776` | Same two-step pattern | Children inherit counter bindings; the host text references them via `{...}` and the pattern evaluates against the scope's kernel. |
+| **nbrs-runtime** `executor.rs:1433` | `interpolate_via_kernel` + `eval_const_expr` | Predicate evaluation for `if:` / `where:` conditions in op fields. Text is e.g. `"{recall_at_k} >= 0.8"`; kernel is the phase scope. |
+| **nbrs-runtime** `executor.rs:2351` | `eval_const_expr` directly | Inline constant evaluation in op-template field text (SRD-14 `{...}` form). |
+| **nbrs-runtime** `runner.rs:3661` | `eval_const_expr` | Parameter expression evaluation in workload context (e.g., a `--params` overlay containing arithmetic). |
+| **nbrs-runtime** `scope.rs:776` | Same two-step pattern | Children inherit counter bindings; the host text references them via `{...}` and the pattern evaluates against the scope's kernel. |
 | **polydat** `iteration::comprehension::eval::evaluate_spec` | List-yielding evaluator | Comprehension clause-source expansion. The host text (e.g., `"1, 2, 4, 8"` or `"{kvs}"`) becomes a value list. |
 | **polydat** `iteration::comprehension::eval::pre_evaluate_clause` | `evaluate_spec` | Pre-iteration evaluation of clause sources for early validation / dryrun. |
 
@@ -1422,7 +1422,7 @@ errors, not runtime mysteries.
 
 ### 11.3 Library extensions are shared across the workspace
 
-When nbrs-activity registers runtime-context nodes, every
+When nbrs-runtime registers runtime-context nodes, every
 embedded expression in every host crate gains access to
 them automatically. There's no per-host opt-in; the
 factory registry is process-level. This makes adding new

@@ -44,7 +44,7 @@ all in-scope names — see *Polydat Is Canonical Scope* in MEMORY.md.
 ## Sketch
 
 ```rust
-// nbrs-activity::adapter::spec
+// nbrs-runtime::adapter::spec
 
 pub struct AdapterSpec {
     /// User-facing adapter name (matches AdapterRegistration::names)
@@ -140,7 +140,7 @@ connect).
 
 ## Migration path
 
-1. Land the types in `nbrs-activity::adapter::spec`. New types
+1. Land the types in `nbrs-runtime::adapter::spec`. New types
    only — no consumer changes yet.
 2. Convert one adapter (stdout — smallest surface) end-to-end:
    declare its `AdapterSpec`, route `known_op_fields()` through

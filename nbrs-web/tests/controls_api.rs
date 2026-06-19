@@ -25,7 +25,7 @@ use tower::ServiceExt;
 use nbrs_metrics::component::Component;
 use nbrs_metrics::controls::{BranchScope, ControlBuilder};
 use nbrs_metrics::labels::Labels;
-use nbrs_activity::polydat_nodes::runtime_context::set_session_root;
+use nbrs_runtime::polydat_nodes::runtime_context::set_session_root;
 use nbrs_web::ws::MetricsBroadcast;
 
 /// Sequence tests that touch the process-global session root.

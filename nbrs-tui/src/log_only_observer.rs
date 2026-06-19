@@ -13,7 +13,7 @@
 //!    the future Ctrl-T toggle a non-empty state to display.
 //! 2. Synchronously write the same line to stderr (filtered by
 //!    `min_level`). Identical output to the legacy
-//!    [`nbrs_activity::observer::StderrObserver`] path —
+//!    [`nbrs_runtime::observer::StderrObserver`] path —
 //!    operators see no behaviour change.
 //!
 //! This is the minimum-viable observer for Phase 1 of the
@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
-use nbrs_activity::observer::{LogCategory, LogLevel, PhaseProgressUpdate, RunObserver};
+use nbrs_runtime::observer::{LogCategory, LogLevel, PhaseProgressUpdate, RunObserver};
 use nbrs_metrics::cadence::Cadences;
 use nbrs_metrics::metrics_query::MetricsQuery;
 use nbrs_metrics::scheduler::Reporter;
@@ -48,7 +48,7 @@ struct ScopeAncestorContext {
     use_color: bool,
 }
 
-impl nbrs_activity::readouts::ReadoutContext for ScopeAncestorContext {
+impl nbrs_runtime::readouts::ReadoutContext for ScopeAncestorContext {
     fn subject_name(&self) -> &str { &self.name }
     fn subject_seq(&self) -> Option<(usize, usize)> { None }
     fn subject_labels(&self) -> &str { "" }
@@ -63,12 +63,12 @@ impl nbrs_activity::readouts::ReadoutContext for ScopeAncestorContext {
     fn status_metric_chips(&self) -> String { String::new() }
     fn depth_indent(&self) -> &str { "" }
     fn use_color(&self) -> bool { self.use_color }
-    fn event(&self) -> nbrs_activity::lifecycle::EventType {
+    fn event(&self) -> nbrs_runtime::lifecycle::EventType {
         // Live mid-run scope-ancestor walker fires the
         // scope_header readout at the same boundary that
         // `EventType::EachStart` would fire it at — replay the
         // live render path against historical state.
-        nbrs_activity::lifecycle::EventType::EachStart
+        nbrs_runtime::lifecycle::EventType::EachStart
     }
 }
 use crate::run_state_actor::{RunStateCmd, RunStateHandle};
@@ -95,7 +95,7 @@ use crate::state::LogSeverity;
 pub struct LogOnlyObserver {
     state: RunStateHandle,
     /// Minimum severity that reaches stderr. Session log file
-    /// (via the async sink in `nbrs_activity::log_sink`) gets
+    /// (via the async sink in `nbrs_runtime::log_sink`) gets
     /// every level regardless. Defaults to `Info` to match the
     /// TUI log panel's default filter.
     min_level: LogLevel,
@@ -109,7 +109,7 @@ pub struct LogOnlyObserver {
     sink_active: Arc<AtomicBool>,
     /// Distinct from `sink_active`: this flag tells the
     /// activity's inline-status thread (the
-    /// `\r\x1b[K…` rewriter in `nbrs-activity::activity`) to
+    /// `\r\x1b[K…` rewriter in `nbrs-runtime::activity`) to
     /// yield. Set only when an alt-screen TUI owns the
     /// terminal — i.e. `tui=on` from-startup or after a
     /// Ctrl-T swap into `TuiSink`. In plain `tui=terminal`
@@ -206,7 +206,7 @@ impl LogOnlyObserver {
     /// Returns the inline-status suppression flag. Distinct
     /// from `sink_active_flag` — this one's job is to tell the
     /// activity's inline-status thread (the `\r\x1b[K…`
-    /// per-cycle rewriter in `nbrs-activity::activity`) to
+    /// per-cycle rewriter in `nbrs-runtime::activity`) to
     /// yield while an alt-screen TUI owns the terminal. Held
     /// high by the supervisor when `TuiSink` is up; held low
     /// (or unset) in plain `tui=terminal` mode so the live
@@ -256,7 +256,7 @@ fn level_to_severity(level: LogLevel) -> LogSeverity {
 }
 
 impl RunObserver for LogOnlyObserver {
-    fn scenario_pre_mapped(&self, tree: &nbrs_activity::scene_tree::SceneTree) {
+    fn scenario_pre_mapped(&self, tree: &nbrs_runtime::scene_tree::SceneTree) {
         // Forward the pre-mapped scene tree to the actor so
         // `print_post_run_summary` (and any future sink reading
         // from the snapshot) can render hierarchy and indent
@@ -292,24 +292,24 @@ impl RunObserver for LogOnlyObserver {
         let cycle_word = if total_cycles == 1 { "cycle" } else { "cycles" };
 
         // ANSI color codes — only when stderr is a TTY and
-        // `NO_COLOR` isn't set. See `nbrs_activity::observer::use_color`.
+        // `NO_COLOR` isn't set. See `nbrs_runtime::observer::use_color`.
         // Falls back to plain text in pipelined / CI contexts
         // so log archives stay readable.
-        let color = nbrs_activity::observer::use_color();
+        let color = nbrs_runtime::observer::use_color();
         let dim = if color { "\x1b[2m" } else { "" };
         let bold = if color { "\x1b[1m" } else { "" };
         let cyan = if color { "\x1b[36m" } else { "" };
         let italic = if color { "\x1b[3m" } else { "" };
         let reset = if color { "\x1b[0m" } else { "" };
 
-        let tree = match nbrs_activity::scene_tree::current() {
+        let tree = match nbrs_runtime::scene_tree::current() {
             Some(t) => t,
             None => {
                 // Pre-map didn't run (or the resume planner
                 // hasn't published yet). Without a scene tree we
                 // also have no scope-ancestor headers to emit,
                 // so this branch becomes a true no-op — the
-                // condensed ✓ line from `nbrs-activity::activity`
+                // condensed ✓ line from `nbrs-runtime::activity`
                 // is the sole per-phase log entry, same as the
                 // hierarchic path below.
                 let _ = (op_templates, total_cycles, concurrency,
@@ -325,7 +325,7 @@ impl RunObserver for LogOnlyObserver {
         // Root parents at the top of the chain — we only emit
         // Scope ancestors as headers.
         let phase_id = tree.find_phase(name, labels,
-            Some(&nbrs_activity::scene_tree::PhaseStatus::Running));
+            Some(&nbrs_runtime::scene_tree::PhaseStatus::Running));
         let phase_node = phase_id.and_then(|id| tree.nodes.get(id));
         let (seq, phase_depth, ancestor_chain) = match phase_node {
             Some(n) => {
@@ -333,7 +333,7 @@ impl RunObserver for LogOnlyObserver {
                 let mut cursor = n.parent;
                 while let Some(pid) = cursor {
                     if let Some(p) = tree.nodes.get(pid) {
-                        if p.kind == nbrs_activity::scene_tree::NodeKind::Scope {
+                        if p.kind == nbrs_runtime::scene_tree::NodeKind::Scope {
                             chain.push(pid);
                         }
                         cursor = p.parent;
@@ -370,12 +370,12 @@ impl RunObserver for LogOnlyObserver {
                 let indent = " ".repeat(depth);
                 let mut s_buf = String::with_capacity(64);
                 {
-                    use nbrs_activity::readouts as ro;
+                    use nbrs_runtime::readouts as ro;
                     let mut buf = ro::buf::StringBuf::new(&mut s_buf);
                     use ro::Readout;
                     let ctx = ScopeAncestorContext {
                         name: scope.name.clone(),
-                        use_color: nbrs_activity::observer::use_color(),
+                        use_color: nbrs_runtime::observer::use_color(),
                     };
                     ro::builtins::scope_header::ScopeHeader.render(
                         &ctx,
@@ -386,7 +386,7 @@ impl RunObserver for LogOnlyObserver {
                     );
                 }
                 let _ = (cyan, italic);
-                nbrs_activity::observer::log(LogLevel::Info,
+                nbrs_runtime::observer::log(LogLevel::Info,
                     &format!("{indent}{s_buf}"));
             }
         }
@@ -394,7 +394,7 @@ impl RunObserver for LogOnlyObserver {
         drop(guard);
 
         // No phase-starting detail row. The condensed completed-
-        // phase line emitted by `nbrs-activity::activity` (the
+        // phase line emitted by `nbrs-runtime::activity` (the
         // ✓ DONE summary, single line carrying identity + stats
         // + duration) is now the only per-phase log entry. Scope
         // ancestor headers above this point still emit, so the
@@ -448,7 +448,7 @@ impl RunObserver for LogOnlyObserver {
         // Re-emit the canonical end-of-run marker through the observer
         // so session.log captures it. `RunLifecycle` category so a
         // console-owning adapter can keep it off the console.
-        nbrs_activity::observer::log(LogLevel::Info, "all phases complete");
+        nbrs_runtime::observer::log(LogLevel::Info, "all phases complete");
     }
 
     fn log(&self, level: LogLevel, message: &str) {
@@ -486,7 +486,7 @@ impl RunObserver for LogOnlyObserver {
             // `colorize_log_line` is a no-op on
             // non-tty / NO_COLOR.
             eprintln!("{}",
-                nbrs_activity::observer::colorize_log_line(level, message));
+                nbrs_runtime::observer::colorize_log_line(level, message));
         }
     }
 

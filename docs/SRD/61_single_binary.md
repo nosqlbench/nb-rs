@@ -35,7 +35,7 @@ toolchains.
 | `engine-cassandra-cpp` | no | DataStax Cassandra C++ driver. `cqldriver=cassandra-cpp`. Requires `libcassandra` + libuv + openssl on the host or via `adapters/cql/build.sh`. |
 | `all-engines` | no | Both CQL engines linked; runtime selection via `cqldriver=`. |
 | `openapi` | no | Adds `describe-openapi` and `run-openapi` subcommands that synthesize ops from an OpenAPI 3.x spec. |
-| `flamegraph` | no | Forwards to `nbrs-activity/flamegraph` for built-in CPU profiling. |
+| `flamegraph` | no | Forwards to `nbrs-runtime/flamegraph` for built-in CPU profiling. |
 
 ---
 
@@ -102,7 +102,7 @@ User-facing names (registered in inventory):
 - `adapter=cql`
 
 `adapter=cql` is a meta-adapter that resolves to a concrete
-engine via [`AliasResolverEntry`](../../nbrs-activity/src/adapter.rs).
+engine via [`AliasResolverEntry`](../../nbrs-runtime/src/adapter.rs).
 The user picks the engine with `cqldriver=scylla` /
 `cqldriver=cassandra-cpp`. Direct dispatch by engine name is
 intentionally not exposed — engines stay an internal concept.
@@ -127,7 +127,7 @@ nbrs run adapter=cql cqldriver=cassandra-cpp
   `cargo build --features ...` for any other Rust crate can
   drive nbrs the same way.
 - **Reusable glue.** TUI observer, post-run summary, completion
-  shell — all live in `nbrs-tui` / `nbrs-activity` / `nbrs-workload`
+  shell — all live in `nbrs-tui` / `nbrs-runtime` / `nbrs-workload`
   and are reachable from any future binary that wants them.
 - **Honest minimal default.** `cargo build -p nbrs` builds
   cleanly on a stock Rust toolchain with no system packages.
@@ -150,6 +150,6 @@ nbrs run adapter=cql cqldriver=cassandra-cpp
 | Redis | `nbrs-adapter-redis` (planned) | `redis` | Planned |
 
 Each new driver follows the same pattern: a library crate that
-implements [`DriverAdapter`](../../nbrs-activity/src/adapter.rs)
+implements [`DriverAdapter`](../../nbrs-runtime/src/adapter.rs)
 or registers an `AliasResolverEntry`, plus a feature flag on
 `nbrs` that pulls it in.

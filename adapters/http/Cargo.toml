@@ -11,7 +11,7 @@ homepage.workspace = true
 readme.workspace = true
 
 [dependencies]
-nbrs-activity = { path = "../../nbrs-activity", version = "0.1.1", default-features = false }
+nbrs-runtime = { path = "../../nbrs-runtime", version = "0.1.1", default-features = false }
 polydat = { path = "../../polydat", version = "0.1.0" }
 nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
 reqwest = { version = "0.12", features = ["json"] }

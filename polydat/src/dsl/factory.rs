@@ -187,7 +187,7 @@ pub fn build_node(
         msg.push_str(&format!("\n  Did you mean '{suggestion}'?"));
     }
     msg.push_str("\n\n  This function is not registered in the wiring function library.");
-    msg.push_str("\n  Use 'nbrs describe wiring functions' to see all available functions.");
+    msg.push_str("\n  See the registered wiring functions for the available names.");
     Err(msg)
 }
 

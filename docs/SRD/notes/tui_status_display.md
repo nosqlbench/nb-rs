@@ -225,9 +225,9 @@ Dim text:    #606060 (used for pending phases, help text)
 | `nbrs-tui/src/tree.rs` | NEW — `TreeState` struct, scenario tree rendering |
 | `nbrs-tui/src/sparkline.rs` | NEW — Rolling sparkline widget with 24-bit gradient |
 | `nbrs-tui/src/latency.rs` | NEW — Horizontal bar chart for percentiles |
-| `nbrs-activity/src/executor.rs` | Update `TreeState` on phase start/complete |
-| `nbrs-activity/src/activity.rs` | Remove single-line progress thread when TUI is active |
-| `nbrs-activity/src/runner.rs` | TUI activation logic, reporter registration |
+| `nbrs-runtime/src/executor.rs` | Update `TreeState` on phase start/complete |
+| `nbrs-runtime/src/activity.rs` | Remove single-line progress thread when TUI is active |
+| `nbrs-runtime/src/runner.rs` | TUI activation logic, reporter registration |
 
 ### Not Changing
 

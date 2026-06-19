@@ -217,7 +217,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
         }
     }
     let query = query.ok_or("metricsql expression required (positional argument)")?;
-    let db_path = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
+    let db_path = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     Ok(ParsedArgs {
         db_path, query, anchor_ms, lookback_ms, step_ms,
         stale_window_ms, latest_only,
@@ -387,8 +387,8 @@ pub fn watch(args: &[String]) {
         let session_dir = parsed.db_path.parent()
             .map(std::path::Path::to_path_buf)
             .unwrap_or_default();
-        nbrs_activity::refine_plan::warn_multi_execution_default(&session_dir);
-        let resolved = nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+        nbrs_runtime::refine_plan::warn_multi_execution_default(&session_dir);
+        let resolved = nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir)
             .specific_id();
         nbrs_metricsql::query_rewrite::inject_default_exec_id(&mut expr, resolved);
     }
@@ -579,7 +579,7 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
         }
     }
     let query = query.ok_or("metricsql expression required (positional argument)")?;
-    let db_path = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
+    let db_path = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     Ok(WatchArgs { db_path, query, interval_ms, warmup_ms, latest_only, no_clear })
 }
 

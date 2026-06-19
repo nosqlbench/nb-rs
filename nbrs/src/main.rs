@@ -74,7 +74,7 @@ fn main() {
     // wiring. Must run before subcommand dispatch — read-side
     // commands (plot, report) resolve their default
     // `logs/latest/metrics.db` paths immediately on entry.
-    nbrs_activity::session::apply_session_directory_at_startup(&args);
+    nbrs_runtime::session::apply_session_directory_at_startup(&args);
 
     if args.is_empty() {
         cli_spec::help::render_usage(&root, &[]);

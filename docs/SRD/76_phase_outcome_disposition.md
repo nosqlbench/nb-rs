@@ -4,7 +4,7 @@
 disposition surface that flows through both realtime
 displays and `nbrs replay`.
 
-**Owner:** nbrs-activity (scene tree + observer +
+**Owner:** nbrs-runtime (scene tree + observer +
 executor extensions), nbrs-metrics (sqlite persistence),
 nbrs-tui / nbrs-cli (consumers), nbrs (replay command).
 
@@ -442,7 +442,7 @@ impl SqliteReporter {
 ## Readout integration
 
 Two new built-in readouts in
-`nbrs-activity::readouts::builtins`:
+`nbrs-runtime::readouts::builtins`:
 
 ### `phase_outcome`
 
@@ -525,7 +525,7 @@ new tables are additive.
 
 - `PhaseOutcome`, `PhaseStatus`, `PhaseErrorDetail`,
   `PhaseIdentity` in a new module
-  `nbrs-activity/src/phase_outcome.rs`.
+  `nbrs-runtime/src/phase_outcome.rs`.
 - `SceneNode.outcome: Option<PhaseOutcome>` field +
   `set_phase_outcome(idx, outcome)` mutator.
 - Unit tests for the data shape; no executor wiring
@@ -561,7 +561,7 @@ new tables are additive.
 ### Push 4 — New readouts
 
 - `phase_outcome` and `phase_errors` built-ins in
-  `nbrs-activity::readouts::builtins`.
+  `nbrs-runtime::readouts::builtins`.
 - Default binding: `on_phase_end: phase_outcome
   (phase_errors)` — the parens-grouping signals
   conditional render (skip when error list is

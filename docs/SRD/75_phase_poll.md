@@ -15,7 +15,7 @@ this SRD is reviewed against the Polydat invariants listed in
 >
 > The load-bearing correction: a daemon op does **not** "fire once at
 > phase init". It dispatches **at its position in the cycle/op walk** —
-> `nbrs-activity/src/activity.rs`'s cycle loop spawns the daemon fiber
+> `nbrs-runtime/src/activity.rs`'s cycle loop spawns the daemon fiber
 > when the stanza walk reaches that op (pinned by the
 > `daemon_op_dispatches_at_cycle_pool_position` test). So daemon ordering
 > follows normal op declaration order: a regular op declared *before* a
@@ -31,12 +31,12 @@ this SRD is reviewed against the Polydat invariants listed in
 > §"Runner integration" around the daemon-based `trigger_compact`;
 > (2) state the daemon dispatch-at-op-position semantics explicitly and
 > cross-ref SRD-79; (3) fix the stale module doc in
-> `nbrs-activity/src/daemon_pool.rs` ("spawned at phase init" → "spawned
+> `nbrs-runtime/src/daemon_pool.rs` ("spawned at phase init" → "spawned
 > when the cycle-pool stanza walk reaches the daemon op"). Until then,
 > the shipped `ensure_compacted` phase is the source of truth, not this
 > draft's example.
 
-**Owner:** nbrs-workload (model), nbrs-activity (synthesis,
+**Owner:** nbrs-workload (model), nbrs-runtime (synthesis,
 runner / executor), workloads (consumers under
 `adapters/cql/workloads/`).
 
@@ -279,7 +279,7 @@ the parent export carries `shared` (SRD-67 Rule 1
 ### Runner integration
 
 The change is bounded to one site:
-`nbrs-activity/src/runner.rs::run_phase` (or its current
+`nbrs-runtime/src/runner.rs::run_phase` (or its current
 equivalent — the function that drives a phase's cycles).
 When `phase.poll.is_some()`, the existing cycle loop is
 invoked from a `PollController` that:

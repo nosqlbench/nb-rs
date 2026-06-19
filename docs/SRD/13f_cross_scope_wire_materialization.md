@@ -9,7 +9,7 @@ has moved into the polydat crate:
   — moved 2026-05-30 as part of the import-first reorganization
   (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 
-This file retains the nbrs-activity surface: the wire-reference
+This file retains the nbrs-runtime surface: the wire-reference
 classification synthesizer rule (how scope synthesizers build
 each subscope's matter from authored YAML + the parent's
 matter/AST), the current-implementation-status walkthrough,
@@ -19,7 +19,7 @@ the Plan-to-true-up history, and open questions.
 update shipped; §"Wire-reference classification (synthesizer
 rule)" added 2026-05-11 as the canonical synthesizer contract.
 **Owner:** polydat (kernel construction, cell mechanism,
-  matter interpretation), nbrs-activity (scope synthesizers,
+  matter interpretation), nbrs-runtime (scope synthesizers,
   dispenser wires layer)
 **Cross-refs:** SRD-13 (GK modules), [scope_model](../../polydat/docs/design/scope_model.md)
   (visibility rules, the "Default: Immutable Propagation" clause
@@ -41,7 +41,7 @@ materialization gradient — is specified in
 [polydat/docs/design/wire_materialization.md](../../polydat/docs/design/wire_materialization.md).
 
 This file picks up at the **synthesizer rule** — how scope
-synthesizers (nbrs-activity layer) build each subscope's
+synthesizers (nbrs-runtime layer) build each subscope's
 matter from authored YAML + the parent's matter/AST,
 producing the four terminal cases that the polydat-side
 materialization gradient consumes.
@@ -280,13 +280,13 @@ The cascade stays; the emission *kind* changes to `const`.
 
 The codebase changes break into three pushes, ordered by
 dependency. **Pushes A, B.1, and C have landed** (commits in
-nbrs-activity); B.2 — the full cell-on-outputs mechanism in
+nbrs-runtime); B.2 — the full cell-on-outputs mechanism in
 polydat — remains for a follow-up SRD-67 / SRD-13e
 intersection.
 
 ### Push A — Workload-param cascade as `const` *(shipped)*
 
-Scope: `nbrs-activity/src/scope.rs::build_op_template_scope_kernel`.
+Scope: `nbrs-runtime/src/scope.rs::build_op_template_scope_kernel`.
 
 Change: emit each workload param as `const {name} := {literal}`
 (folded constant) on every op-template kernel's synthesized
@@ -303,8 +303,8 @@ with the cascade-as-`const` form.
 
 ### Push B.1 — Construction-time slot wiring + per-cycle refresh *(shipped)*
 
-Scope: `nbrs-activity/src/scope.rs::build_op_template_scope_kernel`
-and `nbrs-activity/src/synthesis.rs::FiberBuilder::set_inputs`.
+Scope: `nbrs-runtime/src/scope.rs::build_op_template_scope_kernel`
+and `nbrs-runtime/src/synthesis.rs::FiberBuilder::set_inputs`.
 
 Change:
 
@@ -337,9 +337,9 @@ O(num_extern_slots × num_per_op_kernels) — small in practice
 
 ### Push C — Single-kernel-handle wires *(shipped)*
 
-Scope: `nbrs-activity/src/wires.rs`,
-`nbrs-activity/src/activity.rs`,
-`nbrs-activity/src/synthesis.rs`.
+Scope: `nbrs-runtime/src/wires.rs`,
+`nbrs-runtime/src/activity.rs`,
+`nbrs-runtime/src/synthesis.rs`.
 
 Change:
 
@@ -579,7 +579,7 @@ actually carries phase bindings); D.2 is independent of B.2.
 
 ### Push E — Combined `for_each:` + `bindings:` phase support *(shipped)*
 
-Scope: `nbrs-activity/src/runner.rs` install-spec loop, plus
+Scope: `nbrs-runtime/src/runner.rs` install-spec loop, plus
 the polydat-side comprehension synthesis path (the public API
 that materializes a comprehension's scope; see polydat spec
 §9.5 consumption surfaces).
@@ -614,7 +614,7 @@ combined-case workloads on legacy behavior until E lands.
 ### Push F — `bind_outer_scope` rename *(shipped — chose `materialize_wiring_from_outer`)*
 
 Scope: `polydat/src/kernel/polydatkernel.rs::bind_outer_scope`
-and every caller in `nbrs-activity/src/scope.rs` and
+and every caller in `nbrs-runtime/src/scope.rs` and
 `polydat/src/subcontext/`.
 
 The operation is matter-AST interpretation, not "bind to outer

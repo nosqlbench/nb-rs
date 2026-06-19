@@ -15,7 +15,7 @@ and *where each polydat-integration SRD's substrate lives*, read here.
 
 ## What nb-rs consumes from polydat
 
-The public boundary, by import frequency across `nbrs-activity` / `nbrs-workload` /
+The public boundary, by import frequency across `nbrs-runtime` / `nbrs-workload` /
 `nbrs-metrics` / adapters (see [SRD 05 §Contract Registry](05_dependency_rules.md)):
 
 | polydat surface | Role at the boundary |

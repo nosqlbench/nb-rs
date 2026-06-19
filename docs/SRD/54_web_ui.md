@@ -13,7 +13,7 @@ dynamic controls, a Polydat function browser, and a DAG viewer. Pillars 1+2 of t
 **Surface, inbound contract, and allowed edges:** authoritative in
 [SRD 05 §Contract Registry](05_dependency_rules.md). In brief — exports `server` (router
 assembly; embedded + standalone) + `ws` (WebSocket metric fanout); `routes`/`models`/`graph`
-are internal; consumes `nbrs_activity` + `nbrs_metrics` (the read-side metric/control surface).
+are internal; consumes `nbrs_runtime` + `nbrs_metrics` (the read-side metric/control surface).
 
 ## Axioms
 

@@ -279,7 +279,7 @@ pub struct App {
     /// Wrapped in `RefCell` so render paths that take
     /// `&self` can fire the binder; the App is single-
     /// threaded so a runtime borrow check is safe.
-    readout_binder: std::cell::RefCell<nbrs_activity::readouts::TuiReadoutBinder>,
+    readout_binder: std::cell::RefCell<nbrs_runtime::readouts::TuiReadoutBinder>,
     /// Monotonic frame counter — passed to the readout
     /// engine as the `refresh_tick` so animated readouts
     /// (the spinner glyph in `phase_status`) advance
@@ -325,7 +325,7 @@ pub fn write_control_f64_from_tui(
     name: String,
     value: f64,
 ) -> Result<(), String> {
-    let root = nbrs_activity::polydat_nodes::runtime_context::session_root_handle()
+    let root = nbrs_runtime::polydat_nodes::runtime_context::session_root_handle()
         .ok_or_else(|| "no session root installed — TUI cannot resolve controls".to_string())?;
     let erased = {
         let Ok(guard) = root.read() else {
@@ -602,7 +602,7 @@ impl App {
             edit_prompt: None,
             frame_sync,
             readout_binder: std::cell::RefCell::new(
-                nbrs_activity::readouts::TuiReadoutBinder::new(),
+                nbrs_runtime::readouts::TuiReadoutBinder::new(),
             ),
             frame_tick: std::cell::Cell::new(0),
         }
@@ -891,7 +891,7 @@ impl App {
                 // completed-frame lifetime doesn't conflict with the
                 // rest of the loop.
                 let mut text = String::new();
-                let ts = nbrs_activity::session::now_log_timestamp();
+                let ts = nbrs_runtime::session::now_log_timestamp();
                 let w = area.width as usize;
                 let h = area.height as usize;
                 text.push_str(&format!("# nbrs-tui screen dump — {ts}\n"));
@@ -1194,8 +1194,8 @@ impl App {
     /// that never produces a dump. We create it here, at the
     /// moment the stable-named copy actually lands.
     fn write_dump(&mut self, text: String, ts: &str) {
-        let logs_dir = nbrs_activity::session::default_sessions_root();
-        let session_dir = nbrs_activity::session::latest_session_dir();
+        let logs_dir = nbrs_runtime::session::default_sessions_root();
+        let session_dir = nbrs_runtime::session::latest_session_dir();
         // `sessions/latest` exists as a symlink once Session::new has
         // run. If it's not there yet (very early failure), fall back
         // to the sessions root so the timestamped archive still lands
@@ -1209,17 +1209,17 @@ impl App {
         let stable_result = std::fs::write(&stable_path, &text);
         match (archive_result, stable_result) {
             (Ok(()), Ok(())) => {
-                nbrs_activity::observer::log(
-                    nbrs_activity::observer::LogLevel::Info,
+                nbrs_runtime::observer::log(
+                    nbrs_runtime::observer::LogLevel::Info,
                     &format!("tui dump written to {} (also {})",
                         archive_path.display(), stable_path.display()),
                 );
                 // Convenience symlink lives at `logs/tui.dump`.
-                nbrs_activity::session::Session::link_artifact("tui.dump");
+                nbrs_runtime::session::Session::link_artifact("tui.dump");
             }
             (Err(e), _) | (_, Err(e)) => {
-                nbrs_activity::observer::log(
-                    nbrs_activity::observer::LogLevel::Warn,
+                nbrs_runtime::observer::log(
+                    nbrs_runtime::observer::LogLevel::Warn,
                     &format!("failed to write tui dump {}: {e}", archive_path.display()),
                 );
             }
@@ -3005,14 +3005,14 @@ impl App {
     /// `Tab` keybind. No-op when the binder hasn't fired
     /// yet (no slot context).
     pub fn cycle_readout_focus_next(&mut self) {
-        use nbrs_activity::readouts::{BinderKey, ReadoutBinder};
+        use nbrs_runtime::readouts::{BinderKey, ReadoutBinder};
         self.readout_binder.borrow_mut().on_key(BinderKey::CycleFocusNext);
     }
 
     /// Cycle focus backward through the most-recent slot's
     /// readouts. Bound to Shift-Tab.
     pub fn cycle_readout_focus_prev(&mut self) {
-        use nbrs_activity::readouts::{BinderKey, ReadoutBinder};
+        use nbrs_runtime::readouts::{BinderKey, ReadoutBinder};
         self.readout_binder.borrow_mut().on_key(BinderKey::CycleFocusPrev);
     }
 
@@ -3020,13 +3020,13 @@ impl App {
     /// (compact → labeled → expanded → compact). Bound to
     /// `+`. No-op when no readout is focused.
     pub fn cycle_readout_lod_up(&mut self) {
-        use nbrs_activity::readouts::{BinderKey, ReadoutBinder};
+        use nbrs_runtime::readouts::{BinderKey, ReadoutBinder};
         self.readout_binder.borrow_mut().on_key(BinderKey::CycleLodUp);
     }
 
     /// Cycle the focused readout's LOD down. Bound to `-`.
     pub fn cycle_readout_lod_down(&mut self) {
-        use nbrs_activity::readouts::{BinderKey, ReadoutBinder};
+        use nbrs_runtime::readouts::{BinderKey, ReadoutBinder};
         self.readout_binder.borrow_mut().on_key(BinderKey::CycleLodDown);
     }
 
@@ -3037,7 +3037,7 @@ impl App {
     /// crossterm's standard polling doesn't surface key-
     /// release reliably.
     pub fn toggle_readout_overlay(&mut self) {
-        use nbrs_activity::readouts::{BinderKey, ReadoutBinder};
+        use nbrs_runtime::readouts::{BinderKey, ReadoutBinder};
         let mut b = self.readout_binder.borrow_mut();
         let now = !b.overlay_held();
         b.on_key(BinderKey::OverlayHeld(now));
@@ -3336,8 +3336,8 @@ fn install_tui_panic_hook() {
             .unwrap_or_else(|| "<non-string panic payload>".into());
         let thread = std::thread::current()
             .name().unwrap_or("<unnamed>").to_string();
-        nbrs_activity::observer::log(
-            nbrs_activity::observer::LogLevel::Error,
+        nbrs_runtime::observer::log(
+            nbrs_runtime::observer::LogLevel::Error,
             &format!("PANIC at {location} on thread '{thread}': {message}"),
         );
 

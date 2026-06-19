@@ -25,7 +25,7 @@ deliberate; everything else is internal and may change freely.
   exposed from `lib.rs`, with the cross-boundary contract row in
   [SRD 01 §Contract Boundaries](01_system_overview.md) (`PolydatProgram` + `PolydatState`).
 - *Anti-pattern:* a crate that re-exports its entire internal module tree as `pub`,
-  so consumers reach arbitrarily deep and the "contract" is undefined. `nbrs-activity`
+  so consumers reach arbitrarily deep and the "contract" is undefined. `nbrs-runtime`
   is in this state today (~50 public modules) — its Contract section must declare the
   *intended* surface and mark the rest internal, even before the visibility is narrowed.
 
@@ -109,7 +109,7 @@ Tracks each subsystem against the five pillars. Tick as the treatment lands.
 | Subsystem (crate) | P1 Contract | P2 Axioms | P3 Mechanism | P4 Xref | P5 Enforced | Owning SRDs |
 |---|:--:|:--:|:--:|:--:|:--:|---|
 | **polydat** (exemplar) | ✅ | ✅ | ✅ | ✅ | ✅ (D1) | **09** contract; substrate in `polydat/docs/` |
-| nbrs-activity | ✅ | ✅ | ✅ | ✅ | ✅ | **29** + 30/31/32/32a/33/34/35/68/71/73/75/76/82/83 |
+| nbrs-runtime | ✅ | ✅ | ✅ | ✅ | ✅ | **29** + 30/31/32/32a/33/34/35/68/71/73/75/76/82/83 |
 | nbrs-workload | ✅ | ✅ | ✅ | ✅ | ✅ | **25** + 18/18b–f, 20, 21, 22, 72, 85 |
 | nbrs-metrics | ✅ | ✅ | ✅ | ✅ | ✅ | **39** + 40/40a/40b/40c, 42, 43, 24 |
 | nbrs-metricsql | ✅ | ✅ | ✅ | ✅ | ✅ (D5-exempt: own contract; L3 atop nbrs-metrics) | **08** + 40c, 47, 48, 49 |

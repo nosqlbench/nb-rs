@@ -10,7 +10,7 @@
 //!
 //! Unlike a transport adapter (`stdout`, `cql`, `http`), this
 //! crate is a *workload generator*. It doesn't implement
-//! [`DriverAdapter`](nbrs_activity::adapter::DriverAdapter); it
+//! [`DriverAdapter`](nbrs_runtime::adapter::DriverAdapter); it
 //! produces synthesized ops that the http adapter executes.
 //!
 //! ## Usage

@@ -23,7 +23,7 @@
 //! unchanged — the extra slots have no eval cone hanging off them.
 //!
 //! The knob threads through [`crate::kernel::subcontext::CompileOptions`]
-//! and is consulted at op-template synthesis. The nbrs CLI exposes
+//! and is consulted at op-template synthesis. A host CLI exposes
 //! it as `--kernel-opt=release|diagnostic` (default `release`).
 
 /// Optimization level for op-template kernel synthesis.

@@ -5,7 +5,7 @@
 //!
 //! Each engine — `cassandra_cpp` (DataStax C++ driver), `scylla`
 //! (pure-Rust driver), and any future addition — implements its
-//! own [`nbrs_activity::adapter::DriverAdapter`] but consumes this
+//! own [`nbrs_runtime::adapter::DriverAdapter`] but consumes this
 //! module for everything that isn't transport-specific:
 //!
 //! - [`CqlConfig`] and its [`from_params`](CqlConfig::from_params)

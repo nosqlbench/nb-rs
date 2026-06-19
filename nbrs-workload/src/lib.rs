@@ -15,7 +15,7 @@
 //! shorthand into a [`model::Workload`] tree and exposes helpers
 //! to extract bind-points, tag-filter ops, and resolve template
 //! parameters. It does not execute anything — that's
-//! `nbrs-activity`'s job.
+//! `nbrs-runtime`'s job.
 //!
 //! ## Pieces
 //!

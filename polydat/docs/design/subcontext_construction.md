@@ -26,7 +26,7 @@ per-cycle write through `FiberBuilder::commit_op_template_write_throughs`
 green; CQL workload `full_cql_vector.yaml` compiles cleanly
 through the new kernel-driven path with the dialect-detection
 booleans materialising as workload-root shared cells.
-**Owner:** polydat (kernel/program API), nbrs-activity
+**Owner:** polydat (kernel/program API), nbrs-runtime
 (scope synthesis call sites)
 **Cross-refs:** SRD-13c (scope model — `bind_outer_scope`,
 manifest extraction), SRD-13d (op-template scope layer),
@@ -165,7 +165,7 @@ The construction protocol below collapses all three into
 impl<P> ScopeKernel<P> {
     /// Begin construction of a child sub-context. Takes
     /// an `Arc` of the parent — kernels are already shared
-    /// via `Arc` across fibers in the nbrs-activity layer,
+    /// via `Arc` across fibers in the nbrs-runtime layer,
     /// so this is the natural shape; an `&self` overload
     /// would force a clone for the builder's lifetime.
     /// The builder is the ONLY way to produce a child
@@ -504,7 +504,7 @@ Two reasons:
    surface; no parallel "what scopes exist" map needed.
 
 `ChildName` should match the scope-tree node naming used
-elsewhere in nbrs-activity (per SRD-13d / SRD-18b's scope-
+elsewhere in nbrs-runtime (per SRD-13d / SRD-18b's scope-
 tree pre-walk). The runtime constructs the name
 structurally; user-visible identifiers (phase names, op-
 template names, iteration coords) compose into it.
@@ -643,7 +643,7 @@ It does **NOT** expose:
   spawned through the protocol.
 
 The crate's tests can use the internal surfaces; consumers
-(including `nbrs-activity`) can't. This is the "walled-off"
+(including `nbrs-runtime`) can't. This is the "walled-off"
 property the user's guidelines call for.
 
 Direct compile-from-string (`compile_polydat(src)`) stays as a
@@ -661,15 +661,15 @@ When this SRD lands, the following call sites — each of
 which is a manual cross-binding implementation — collapse
 into `parent.subcontext_builder() ... .spawn()`:
 
-1. `nbrs-activity/src/synthesis.rs::build_op_template_scope_kernel`
+1. `nbrs-runtime/src/synthesis.rs::build_op_template_scope_kernel`
    — string-concatenated externs, hand-rolled bind, manual
    init pull.
-2. `nbrs-activity/src/scope_tree.rs::synthesize_for_each_scope`
+2. `nbrs-runtime/src/scope_tree.rs::synthesize_for_each_scope`
    — comprehension scope synthesis with iteration-var
    externs.
-3. `nbrs-activity/src/scope_tree.rs::build_do_loop_scope_kernel`
+3. `nbrs-runtime/src/scope_tree.rs::build_do_loop_scope_kernel`
    — do-loop scope synthesis with counter externs.
-4. `nbrs-activity/src/scope.rs::build_scope` — phase scope
+4. `nbrs-runtime/src/scope.rs::build_scope` — phase scope
    synthesis with cascade externs.
 5. The `bind_outer_scope` + `propagate_parent_inputs` +
    `mark_inherited_outputs` + post-bind init-pull dance in
@@ -839,7 +839,7 @@ suites.
 ### Phase 4 — Lock the door
 
 `bind_outer_scope`, `from_program`, direct `compile_polydat`
-become `pub(crate)`. The `nbrs-activity` crate compiles
+become `pub(crate)`. The `nbrs-runtime` crate compiles
 only against the new public surface.
 
 ### Phase 5 — Wire SRD-66's polydat-call form
@@ -935,7 +935,7 @@ Always-error, strict-independent:
 
 5. **Parent ref: `Arc<ScopeKernel<P>>` only.** Single API
    signature on `subcontext_builder`. Kernels in
-   `nbrs-activity` are already shared via `Arc` across
+   `nbrs-runtime` are already shared via `Arc` across
    fibers; an `&self` overload would force a clone for
    the builder's lifetime. Callers that have `&kernel`
    wrap with `Arc::new(...)` (rare) or use the existing

@@ -868,7 +868,7 @@ pub struct WorkloadPhase {
     ///
     /// The synthesiser emits `volatile __metric_<name> := <value>`
     /// onto the phase kernel (see
-    /// `nbrs_activity::scope::synthesize_metric_binding_name`); the
+    /// `nbrs_runtime::scope::synthesize_metric_binding_name`); the
     /// executor pulls each at completion and records it on the
     /// phase component as the declared instrument (gauge by default).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -891,7 +891,7 @@ pub struct WorkloadPhase {
     /// SRD-86 — when present, the executor dispatches the named optimizer over
     /// the phase: it writes each axis as an input wire on the phase's binding
     /// kernel and reads the `objective` wire back (the objective is *just a
-    /// wire read*). Workload-local config; `nbrs-activity` maps it to its
+    /// wire read*). Workload-local config; `nbrs-runtime` maps it to its
     /// optimizer contract and discovers the optimizer via the link-time
     /// registry (`nbrs describe optimizers`).
     ///

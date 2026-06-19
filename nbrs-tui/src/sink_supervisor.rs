@@ -229,7 +229,7 @@ fn run_supervision(
                             // while on turns it off. Auto-
                             // repeat-safe via the debounce
                             // inside `toggle_explain`.
-                            nbrs_activity::observer::toggle_explain();
+                            nbrs_runtime::observer::toggle_explain();
                         }
                         WatcherSignal::ReplToggleBar => {
                             // `~` keystroke: cycle REPL

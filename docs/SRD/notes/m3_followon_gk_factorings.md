@@ -81,7 +81,7 @@ queries).
 ## 4. `for_each` as a first-class Polydat library construct
 
 **Today:** for_each is a workload-YAML directive driven by
-`nbrs-activity`. The runtime walks scenario nodes and dispatches
+`nbrs-runtime`. The runtime walks scenario nodes and dispatches
 per-iteration phase execution.
 
 **Possible extension:** promote for_each to a Polydat stdlib node

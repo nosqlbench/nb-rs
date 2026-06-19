@@ -85,8 +85,8 @@ impl CqlConfig {
     pub fn to_resource_key(
         &self,
         driver_name: &str,
-    ) -> nbrs_activity::resource_pool::ResourceKey {
-        nbrs_activity::resource_pool::ResourceKey::new("cql")
+    ) -> nbrs_runtime::resource_pool::ResourceKey {
+        nbrs_runtime::resource_pool::ResourceKey::new("cql")
             .with("driver", driver_name)
             .with("hosts", &self.hosts)
             .with("port", self.port.to_string())

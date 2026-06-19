@@ -21,7 +21,7 @@
 //! rest.
 //!
 //! Resolution policy lives with the resolver
-//! (`nbrs-activity::runner::resolve_workload_file`): local
+//! (`nbrs-runtime::runner::resolve_workload_file`): local
 //! files first, catalog second, and a name that resolves both
 //! ways is a hard error — never silent shadowing.
 

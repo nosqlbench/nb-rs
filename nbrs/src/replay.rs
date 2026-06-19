@@ -130,7 +130,7 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
         }
         i += 1;
     }
-    let db_path = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
+    let db_path = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     if !db_path.exists() {
         return Err(format!(
             "session db not found at '{}' — pass --session=<dir> or --db=<path>",
@@ -149,7 +149,7 @@ fn session_db(session_arg: &str) -> Result<PathBuf, String> {
         Ok(p)
     } else {
         // Try as a logs/<name> session directory.
-        let candidate = nbrs_activity::session::session_dir_named(session_arg).join("metrics.db");
+        let candidate = nbrs_runtime::session::session_dir_named(session_arg).join("metrics.db");
         if candidate.exists() {
             Ok(candidate)
         } else {
@@ -211,8 +211,8 @@ fn run(opts: Opts) -> Result<(), String> {
             // or `--all-executions` means the operator is
             // already aware of the choice and doesn't need
             // the disambiguation hint.
-            nbrs_activity::refine_plan::warn_multi_execution_default(&session_dir);
-            nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+            nbrs_runtime::refine_plan::warn_multi_execution_default(&session_dir);
+            nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir)
                 .specific_id()
         }
     };
@@ -290,13 +290,13 @@ fn render_outcome(
     row: &nbrs_metrics::reporters::sqlite::PhaseOutcomeRow,
     plain: bool,
 ) -> String {
-    use nbrs_activity::readouts::{
+    use nbrs_runtime::readouts::{
         Lod, ContentMode, ReadoutContext,
         ReadoutOptions,
     };
-    use nbrs_activity::lifecycle::EventType;
-    use nbrs_activity::readouts::buf::StringBuf;
-    use nbrs_activity::phase_outcome::{
+    use nbrs_runtime::lifecycle::EventType;
+    use nbrs_runtime::readouts::buf::StringBuf;
+    use nbrs_runtime::phase_outcome::{
         PhaseStatus, PhaseErrorDetail, ResumeCursor,
     };
 
@@ -340,7 +340,7 @@ fn render_outcome(
         errors,
         use_color: !plain,
     };
-    let readout = nbrs_activity::readouts::Registry::lookup("phase_outcome")
+    let readout = nbrs_runtime::readouts::Registry::lookup("phase_outcome")
         .expect("phase_outcome registered");
     let mut s = String::with_capacity(192);
     let mut buf = StringBuf::new(&mut s);
@@ -351,8 +351,8 @@ fn render_outcome(
     s
 }
 
-fn parse_status(label: &str) -> nbrs_activity::phase_outcome::PhaseStatus {
-    use nbrs_activity::phase_outcome::PhaseStatus;
+fn parse_status(label: &str) -> nbrs_runtime::phase_outcome::PhaseStatus {
+    use nbrs_runtime::phase_outcome::PhaseStatus;
     match label {
         "completed"        => PhaseStatus::Completed,
         "failed"           => PhaseStatus::Failed,

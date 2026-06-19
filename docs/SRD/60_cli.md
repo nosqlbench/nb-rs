@@ -141,7 +141,7 @@ nbrs run workload=fknn.yaml watch=report,plot:recall,plot:throughput
   worker thread is never spawned — zero overhead.
 
 Implementation: `nbrs/src/watch_trigger.rs` (subprocess
-trigger), `nbrs-activity/src/phase_end_triggers.rs`
+trigger), `nbrs-runtime/src/phase_end_triggers.rs`
 (content-agnostic registry the executor fires into after
 every `phase_completed` / `phase_failed`).
 

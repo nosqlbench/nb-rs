@@ -5,13 +5,13 @@
 //!
 //! This crate's optimizers target a *local* trait so the algorithms are
 //! fully testable with no runtime dependency (SRD-86 §2). This module — the
-//! only part that depends on `nbrs-activity` — adapts each local optimizer to
-//! the core [`Optimizer`](nbrs_activity::optimize::Optimizer) contract and
+//! only part that depends on `nbrs-runtime` — adapts each local optimizer to
+//! the core [`Optimizer`](nbrs_runtime::optimize::Optimizer) contract and
 //! `inventory::submit!`s an
-//! [`OptimizerRegistration`](nbrs_activity::optimize::OptimizerRegistration),
+//! [`OptimizerRegistration`](nbrs_runtime::optimize::OptimizerRegistration),
 //! so the core discovers them at link time without ever naming this crate.
 
-use nbrs_activity::optimize as core;
+use nbrs_runtime::optimize as core;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 // ── local ↔ core type conversions (the contracts are structurally

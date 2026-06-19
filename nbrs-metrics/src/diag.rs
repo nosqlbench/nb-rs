@@ -8,7 +8,7 @@
 //! To avoid corrupting TUI output with raw `eprintln!`, all such
 //! warnings go through [`warn`] which routes to a pluggable callback.
 //!
-//! Consumers (like `nbrs-activity`) install a callback at startup that
+//! Consumers (like `nbrs-runtime`) install a callback at startup that
 //! forwards into their observer/log infrastructure. If no callback is
 //! set, the default falls back to `eprintln!` so standalone/test use
 //! still surfaces messages.

@@ -34,7 +34,7 @@ use-case shapes that justify the additional surface.
 ## The mechanism
 
 Today's `ResultDispenser` already supports path-expression
-result-bindings (`nbrs-activity/src/wrappers.rs:~720`):
+result-bindings (`nbrs-runtime/src/wrappers.rs:~720`):
 
 ```rust
 enum ResultSource {

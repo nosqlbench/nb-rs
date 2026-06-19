@@ -11,7 +11,7 @@ homepage.workspace = true
 readme.workspace = true
 
 [dependencies]
-nbrs-activity = { path = "../../nbrs-activity", version = "0.1.1" }
+nbrs-runtime = { path = "../../nbrs-runtime", version = "0.1.1" }
 nbrs-adapter-stdout = { path = "../stdout", version = "0.1.1" }
 nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
 tokio = { version = "1", features = ["time", "sync"] }

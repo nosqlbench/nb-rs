@@ -34,7 +34,7 @@
 //! Codes outside this subset are passed through as plain text
 //! so the surface degrades visibly rather than silently.
 
-use nbrs_activity::readouts as ro;
+use nbrs_runtime::readouts as ro;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -266,7 +266,7 @@ fn palette_256_to_color(n: u8) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nbrs_activity::readouts::ReadoutSink;
+    use nbrs_runtime::readouts::ReadoutSink;
 
     fn span_str<'a>(span: &'a Span<'static>) -> &'a str { &span.content }
 
@@ -397,7 +397,7 @@ mod tests {
             fn elapsed_secs(&self) -> f64 { 0.01 }
             fn consumed(&self) -> u64 { 3 }
             fn use_color(&self) -> bool { true }
-            fn event(&self) -> nbrs_activity::lifecycle::EventType { nbrs_activity::lifecycle::EventType::PhaseEnd }
+            fn event(&self) -> nbrs_runtime::lifecycle::EventType { nbrs_runtime::lifecycle::EventType::PhaseEnd }
         }
         let mut sink = TuiReadoutSink::new();
         let phase_outcome = ro::Registry::lookup("phase_outcome").unwrap();

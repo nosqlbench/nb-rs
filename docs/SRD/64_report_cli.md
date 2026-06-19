@@ -523,7 +523,7 @@ explicitly rejected (cf. memory: "Never Ignore Silently").
 
 - **Session resolution helper.** Already exists in spirit
   across `replay.rs` / `summary.rs`; consolidate into one
-  `nbrs_activity::session::resolve_active(args, env) -> SessionHandle`
+  `nbrs_runtime::session::resolve_active(args, env) -> SessionHandle`
   that all post-run commands share.
 
 - **Workload edit.** Use a YAML AST library that preserves

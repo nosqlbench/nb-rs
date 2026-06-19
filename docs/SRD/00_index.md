@@ -79,7 +79,7 @@ for the public surface nb-rs consumes and the map into `polydat/docs/`. Several 
 | 23 | [Dynamic Controls](23_dynamic_controls.md) | Runtime-mutable per-component parameters (concurrency, rates, log level), confirmed-apply writes, enumerable declaration, reification as gauges |
 | 24 | [Component Lookup](24_component_lookup.md) | Finding components by dimensional-label predicates — the selector grammar and lookup API used by dynamic controls, metrics selection, and scripted orchestration |
 
-### 4. Execution Engine (nbrs-activity)
+### 4. Execution Engine (nbrs-runtime)
 
 Start at [29 Execution Engine — Contract & Axioms](29_execution_engine.md): the
 front door carrying the public surface, the load-bearing axioms (one walker, no-blocking-
@@ -88,7 +88,7 @@ documents below (30+) are the mechanism tier beneath it.
 
 | # | Document | Scope |
 |---|----------|-------|
-| 29 | [Execution Engine — Contract & Axioms](29_execution_engine.md) | **Front door** for nbrs-activity: public surface (+ the ~25-module internal narrowing target), the 8 engine axioms, and the SRD↔module map. Pillars 1+2 for the engine |
+| 29 | [Execution Engine — Contract & Axioms](29_execution_engine.md) | **Front door** for nbrs-runtime: public surface (+ the ~25-module internal narrowing target), the 8 engine axioms, and the SRD↔module map. Pillars 1+2 for the engine |
 | 30 | [Adapter Interface](30_adapter_interface.md) | DriverAdapter/OpDispenser contract, ResolvedFields, ResultBody |
 | 31 | [Op Execution Pipeline](31_op_pipeline.md) | Resolve → wrap → execute → metrics flow, stanza concurrency |
 | 32 | [Dispenser Wrappers](32_wrappers.md) | TraversingDispenser, ValidatingDispenser, composition order |

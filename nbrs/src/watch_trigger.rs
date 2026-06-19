@@ -6,7 +6,7 @@
 //! completion.
 //!
 //! Architecture: each `watch=<spec>` registers a
-//! [`nbrs_activity::phase_end_triggers::PhaseEndTrigger`]
+//! [`nbrs_runtime::phase_end_triggers::PhaseEndTrigger`]
 //! that spawns `nbrs report ...` (or `nbrs plot ...`) as a
 //! detached subprocess and waits for it. The subprocess runs
 //! against the live session db, so its output reflects the
@@ -23,7 +23,7 @@
 //!
 //! `<S>` is the active run's session directory (resolved at
 //! registration time from the same logic as
-//! `nbrs_activity::session::read_session_dir`). If
+//! `nbrs_runtime::session::read_session_dir`). If
 //! resolution fails the trigger registration is skipped with
 //! a warning — the run continues uninterrupted.
 
@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
-use nbrs_activity::phase_end_triggers::{
+use nbrs_runtime::phase_end_triggers::{
     PhaseEndEvent, PhaseEndTrigger,
 };
 
@@ -62,15 +62,15 @@ impl PhaseEndTrigger for SubprocessTrigger {
         match cmd.status() {
             Ok(s) if s.success() => {}
             Ok(s) => {
-                nbrs_activity::diag!(
-                    nbrs_activity::observer::LogLevel::Warn,
+                nbrs_runtime::diag!(
+                    nbrs_runtime::observer::LogLevel::Warn,
                     "watch trigger '{label}' exited with status {s}",
                     label = self.label,
                 );
             }
             Err(e) => {
-                nbrs_activity::diag!(
-                    nbrs_activity::observer::LogLevel::Warn,
+                nbrs_runtime::diag!(
+                    nbrs_runtime::observer::LogLevel::Warn,
                     "watch trigger '{label}' failed to spawn: {e}",
                     label = self.label,
                 );
@@ -86,7 +86,7 @@ impl PhaseEndTrigger for SubprocessTrigger {
 /// holds no state beyond the trigger list, and the registry
 /// is process-global.)
 pub fn register_watch_triggers(specs: &[String])
-    -> Vec<nbrs_activity::phase_end_triggers::TriggerId>
+    -> Vec<nbrs_runtime::phase_end_triggers::TriggerId>
 {
     let mut ids = Vec::new();
     let session_dir = match resolve_session_dir() {
@@ -119,7 +119,7 @@ pub fn register_watch_triggers(specs: &[String])
                     argv,
                     session_dir: session_dir.clone(),
                 });
-                let id = nbrs_activity::phase_end_triggers::register(trigger);
+                let id = nbrs_runtime::phase_end_triggers::register(trigger);
                 ids.push(id);
             }
             None => {
@@ -164,8 +164,8 @@ fn spec_to_argv(spec: &str) -> Option<Vec<String>> {
 /// command line. Returns `None` when neither path is set.
 fn resolve_session_dir() -> Option<PathBuf> {
     let argv: Vec<String> = std::env::args().collect();
-    nbrs_activity::session::read_session_dir(&argv).or_else(|| {
-        let p = nbrs_activity::session::latest_session_dir();
+    nbrs_runtime::session::read_session_dir(&argv).or_else(|| {
+        let p = nbrs_runtime::session::latest_session_dir();
         if p.exists() { Some(p) } else { None }
     })
 }

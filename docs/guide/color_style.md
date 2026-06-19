@@ -12,7 +12,7 @@ and **SRD-63 §5.2** (readout body color grammar).
 ## Color is on by default
 
 The runtime decides whether to emit ANSI escapes by checking
-[`crate::observer::use_color()`](../../nbrs-activity/src/observer.rs)
+[`crate::observer::use_color()`](../../nbrs-runtime/src/observer.rs)
 once per process. It returns `true` when **both**:
 
 - `stderr` is a TTY (interactive terminal, not a pipe / CI
@@ -69,7 +69,7 @@ only use Wong; future revisions may add a runtime selector.
 
 Inside readouts, **use semantic names, not raw colors**.
 The mapping lives in
-[`nbrs-activity/src/readouts/color.rs::StyleName::resolve`](../../nbrs-activity/src/readouts/color.rs).
+[`nbrs-runtime/src/readouts/color.rs::StyleName::resolve`](../../nbrs-runtime/src/readouts/color.rs).
 
 | Style      | Meaning                              | Wong-derived ANSI      |
 |------------|--------------------------------------|------------------------|
@@ -119,9 +119,9 @@ colors at the call site.
 
 Existing readouts that already follow this (good
 references):
-- `nbrs-activity/src/readouts/builtins/phase_done.rs`
-- `nbrs-activity/src/readouts/builtins/phase_status.rs`
-- `nbrs-activity/src/readouts/builtins/scope_open.rs`
+- `nbrs-runtime/src/readouts/builtins/phase_done.rs`
+- `nbrs-runtime/src/readouts/builtins/phase_status.rs`
+- `nbrs-runtime/src/readouts/builtins/scope_open.rs`
 
 ---
 
@@ -129,7 +129,7 @@ references):
 
 The async log sink colorizes by severity (independent of the
 readout color grammar). Mapping is in
-[`colorize_log_line`](../../nbrs-activity/src/observer.rs):
+[`colorize_log_line`](../../nbrs-runtime/src/observer.rs):
 
 | Level | Style                              |
 |-------|------------------------------------|

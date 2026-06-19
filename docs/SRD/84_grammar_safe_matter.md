@@ -7,7 +7,7 @@ operators. Motivated by SRD-83 stop-condition predicates, but the
 matter change is foundational and touches every synthesizer.
 
 **Owner:** polydat (`dsl` grammar + parser, `kernel::subcontext` matter
-/ builder, evaluation), nbrs-activity (the synthesizers that emit
+/ builder, evaluation), nbrs-runtime (the synthesizers that emit
 matter: metrics, poll, scope, stop conditions).
 
 **Cross-refs:**
@@ -58,7 +58,7 @@ then re-parses them at compile. Three problems:
 > `BinOpKind::And`/`Or`; lowering desugars `a && b` → `u64_and(a != 0,
 > b != 0)` (and `||` → `u64_or`) reusing existing nodes — eager, with
 > truthiness normalisation; `infer_expr_type` → `U64`; pprint `&&`/`||`.
-> Tests: polydat precedence/truthiness unit test + an nbrs-activity
+> Tests: polydat precedence/truthiness unit test + an nbrs-runtime
 > stop-condition end-to-end test; 1353 polydat tests green.
 > **Found (separate, latent) bug:** `infer_expr_type` returns `U64` for
 > *every* name in `input_names`, so an `f64` extern in a comparison

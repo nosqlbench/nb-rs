@@ -5,7 +5,7 @@ report results, handle errors, and decide stop conditions. Supersedes
 the ad-hoc, per-level error mechanisms and folds SRD-03 (the error
 router) and SRD-76 (phase outcome) into one recursive shape.
 
-**Owner:** nbrs-activity (executor walker, `run_phase`, the activity
+**Owner:** nbrs-runtime (executor walker, `run_phase`, the activity
 cycle/stanza loop), nbrs-errorhandler (the router, generalised),
 nbrs-metrics (outcome persistence), nbrs-workload (the per-level
 `errors:` configuration surface).
@@ -341,7 +341,7 @@ Incremental; each step compiles and is independently testable.
    semantics.
 3. **Phase shell.** ✅ DONE. `AggregateGuard`
    (`nbrs-errorhandler/src/aggregate.rs`) holds the `rate>N:fail,stop`
-   rule; `ErrorPolicy` (`nbrs-activity/src/error_policy.rs`, Part 3a)
+   rule; `ErrorPolicy` (`nbrs-runtime/src/error_policy.rs`, Part 3a)
    composes it with the op router; the phase shell's drain loop
    delegates the breach decision to `error_policy.guard.assess(cycles,
    errors)` rather than testing a hardcoded threshold. `run_phase`

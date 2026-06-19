@@ -7,12 +7,12 @@
 //! Defines the universal field name list and the factory trait
 //! each engine implements to bridge from a resolved Polydat scope
 //! value into an engine-specific
-//! [`OpFieldModifier`](nbrs_activity::op_modifier::OpFieldModifier).
+//! [`OpFieldModifier`](nbrs_runtime::op_modifier::OpFieldModifier).
 //!
 //! See [`SRD 73`](../../../../docs/SRD/73_op_field_modifiers.md)
 //! §"CQL universal field superset" for naming rationale.
 
-use nbrs_activity::op_modifier::{ModifierChain, OpFieldModifier};
+use nbrs_runtime::op_modifier::{ModifierChain, OpFieldModifier};
 use polydat::kernel::PolydatKernel;
 use polydat::ast::Value;
 
@@ -48,7 +48,7 @@ pub const CQL_UNIVERSAL_FIELDS: &[&str] = &[
 
 /// Engines implement this to translate a resolved Polydat [`Value`]
 /// into a typed
-/// [`OpFieldModifier`](nbrs_activity::op_modifier::OpFieldModifier).
+/// [`OpFieldModifier`](nbrs_runtime::op_modifier::OpFieldModifier).
 ///
 /// The factory is called once per universal field that the user
 /// bound in the Polydat scope. Returning `Ok(None)` means "this
@@ -83,7 +83,7 @@ pub trait CqlModifierFactory {
 ///   critical path. No further Polydat access happens at execute time.
 ///
 /// The session-global trace sink is fetched once via
-/// [`nbrs_activity::op_modifier::session_sink`] and attached to
+/// [`nbrs_runtime::op_modifier::session_sink`] and attached to
 /// the chain. Sessions with no sink installed produce chains
 /// that fall through the no-observer hot path.
 pub fn build_cql_modifier_chain<F>(
@@ -107,7 +107,7 @@ where
     Ok(ModifierChain::new(
         op_label,
         active,
-        nbrs_activity::op_modifier::session_sink(),
+        nbrs_runtime::op_modifier::session_sink(),
     ))
 }
 

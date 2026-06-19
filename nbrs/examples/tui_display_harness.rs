@@ -47,7 +47,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::mpsc;
 
-use nbrs_activity::observer::LogLevel;
+use nbrs_runtime::observer::LogLevel;
 use nbrs_tui::display_sink::{DisplayInputs, DisplaySink, SinkHandle};
 use nbrs_tui::key_watcher::WatcherSignal;
 use nbrs_tui::log_only_sink::{fresh_resume_cursor, LogOnlySink};

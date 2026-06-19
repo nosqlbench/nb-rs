@@ -18,8 +18,8 @@
 
 use std::time::Instant;
 
-use nbrs_activity::lifecycle::EventType;
-use nbrs_activity::readouts as ro;
+use nbrs_runtime::lifecycle::EventType;
+use nbrs_runtime::readouts as ro;
 use ratatui::style::{Color, Modifier};
 use ratatui::text::{Line, Span};
 

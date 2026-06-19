@@ -2327,7 +2327,7 @@ pub fn plot_metrics_command(args: &[String]) {
     //   - `nbrs plot all`         → render every stored plot
     // Stored specs live in the metrics db's `session_metadata`
     // table under `plot.<name>` keys (written by the runner at
-    // end-of-run; see `nbrs-activity::runner`).
+    // end-of-run; see `nbrs-runtime::runner`).
     if let Some(stored_args) = peel_stored_mode(args) {
         run_stored(stored_args);
         return;
@@ -2357,7 +2357,7 @@ pub fn plot_metrics_command(args: &[String]) {
 
 /// Detect SRD-15 strict mode from the arg list (`--strict`)
 /// or env var (`NBRS_STRICT`). Mirrors the convention in
-/// `nbrs-activity/src/runner.rs`. Local helper because
+/// `nbrs-runtime/src/runner.rs`. Local helper because
 /// `plot_metrics_command` only sees the per-invocation
 /// args slice — not the global runner context.
 fn is_strict_mode(args: &[String]) -> bool {
@@ -2402,7 +2402,7 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     } else if let Some(p) = opts.db.clone() {
         vec![p]
     } else {
-        vec![nbrs_activity::session::latest_metrics_db()]
+        vec![nbrs_runtime::session::latest_metrics_db()]
     };
     for db in &dbs {
         if !db.exists() {
@@ -2882,7 +2882,7 @@ fn peel_stored_mode(args: &[String]) -> Option<StoredArgs> {
 
 fn run_stored(stored: StoredArgs) {
     let db_path = stored.db.clone().unwrap_or_else(
-        nbrs_activity::session::latest_metrics_db);
+        nbrs_runtime::session::latest_metrics_db);
     if !db_path.exists() {
         eprintln!("nbrs plot: metrics db not found at '{}'.",
             db_path.display());
@@ -2986,7 +2986,7 @@ fn run_stored(stored: StoredArgs) {
 /// instead of `process::exit`-ing.
 fn run_stored_result(stored: StoredArgs) -> Result<(), String> {
     let db_path = stored.db.clone().unwrap_or_else(
-        nbrs_activity::session::latest_metrics_db);
+        nbrs_runtime::session::latest_metrics_db);
     if !db_path.exists() {
         return Err(format!("metrics db not found at '{}'", db_path.display()));
     }
@@ -3224,7 +3224,7 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
     //
     // `--db` overrides this — explicit db wins over inferred
     // session.
-    if let Some(session_dir) = nbrs_activity::session::read_session_dir(args) {
+    if let Some(session_dir) = nbrs_runtime::session::read_session_dir(args) {
         opts.db = Some(session_dir.join("metrics.db"));
     }
     // First, sweep for a bare positional spec (one whose token
@@ -6773,7 +6773,7 @@ mod tests {
             .filter(|p| p.exists())
             .or_else(|| ["sessions/latest/metrics.db", "logs/latest/metrics.db"]
                 .iter().map(std::path::PathBuf::from).find(|p| p.exists()))
-            .unwrap_or_else(nbrs_activity::session::latest_metrics_db);
+            .unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
         if !db.exists() {
             eprintln!("no session db found (tried NBRS_TEST_DB, sessions/latest, \
                        logs/latest, default {}) — nothing to check", db.display());

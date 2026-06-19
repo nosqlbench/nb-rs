@@ -73,18 +73,18 @@ pub struct LogEntry {
 }
 
 // `EntryKind` and `PhaseStatus` now live on the canonical
-// [`nbrs_activity::scene_tree`] types — re-exported here so existing
+// [`nbrs_runtime::scene_tree`] types — re-exported here so existing
 // `crate::state::EntryKind::Phase` references keep working without
 // touching every call site.
-pub use nbrs_activity::scene_tree::NodeKind as EntryKind;
-pub use nbrs_activity::scene_tree::PhaseStatus;
-pub use nbrs_activity::scene_tree::{SceneNode, SceneNodeId, SceneTree};
+pub use nbrs_runtime::scene_tree::NodeKind as EntryKind;
+pub use nbrs_runtime::scene_tree::PhaseStatus;
+pub use nbrs_runtime::scene_tree::{SceneNode, SceneNodeId, SceneTree};
 
 // Provenance tag for log entries, owned by the observer layer.
 // Re-exported so `crate::state::LogCategory` reads naturally at
 // the sink call sites (mirrors the `EntryKind` / `PhaseStatus`
 // re-export pattern above).
-pub use nbrs_activity::observer::LogCategory;
+pub use nbrs_runtime::observer::LogCategory;
 
 /// End-of-phase metrics snapshot attached to a completed phase.
 /// Mirrors the live progress bar so an expanded tree entry shows the

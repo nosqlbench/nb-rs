@@ -2,7 +2,7 @@
 
 **Status:** normative (sketch — not yet implemented; tracked under
   SRD-98 deferred until phases A–E land)
-**Owner:** nbrs-workload (model + parser), nbrs-activity (wrapper +
+**Owner:** nbrs-workload (model + parser), nbrs-runtime (wrapper +
   registration), nbrs-metrics (component-level family registry),
   adapters (output-channel convention)
 **Cross-refs:** SRD-40 (metrics umbrella), SRD-40a (data model),
@@ -443,7 +443,7 @@ two clarifications:
 ## 6. Wrapper: `MetricsDispenser`
 
 A new op-dispenser wrapper, sibling to the existing decorators in
-[`nbrs-activity/src/wrappers.rs`][wrappers]. Stacks **outermost**
+[`nbrs-runtime/src/wrappers.rs`][wrappers]. Stacks **outermost**
 in the op-dispenser construction chain:
 
 ```text
@@ -840,9 +840,9 @@ op-template kernel handle.
 | A     | `ParsedOp.metrics` + `MetricSpec` + `ParsedOp.result` model + parsing (full + sugared) | `nbrs-workload/src/{model,parse}.rs`              |
 | B     | `format:` numeric-sanitiser parser (Excel hash patterns → round/trunc op)           | `nbrs-workload/src/report.rs` or sibling           |
 | C     | `unit:` flow into both family-name suffix and `metric_family.unit` column           | `nbrs-metrics/src/reporters/sqlite.rs`             |
-| D     | Result-as-GK adapter layer (§5): dispenser-owned, writes captured wires to GkState  | `nbrs-activity/src/wrappers.rs`                    |
-| E     | `MetricsDispenser` wrapper + kind→instrument dispatch (§6.1)                        | `nbrs-activity/src/wrappers.rs`                    |
-| F     | Wrapper insertion at op-dispenser construction; op-dispenser as component (op label) | `nbrs-activity/src/{runner,activity}.rs`           |
+| D     | Result-as-GK adapter layer (§5): dispenser-owned, writes captured wires to GkState  | `nbrs-runtime/src/wrappers.rs`                    |
+| E     | `MetricsDispenser` wrapper + kind→instrument dispatch (§6.1)                        | `nbrs-runtime/src/wrappers.rs`                    |
+| F     | Wrapper insertion at op-dispenser construction; op-dispenser as component (op label) | `nbrs-runtime/src/{runner,activity}.rs`           |
 | G     | Component instrument-set duplicate check on registration (§7)                       | `nbrs-metrics/src/component.rs`                    |
 | H     | `scope_close` cadence-streamer flush signal (§11) — generic, not synthetic-specific | `nbrs-metrics/src/scheduler.rs` (or sibling)       |
 | I     | Adapter output-channel convention (stdout impl)                                     | `adapters/stdout/src/...`                          |
@@ -858,4 +858,4 @@ belongs in a design memo and per-workload follow-up — not part
 of this SRD.
 
 [parsed-op]: ../../nbrs-workload/src/model.rs
-[wrappers]: ../../nbrs-activity/src/wrappers.rs
+[wrappers]: ../../nbrs-runtime/src/wrappers.rs

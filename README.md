@@ -157,7 +157,7 @@ See [`examples/`](examples/):
 ```
 polydat     Polydat engine: DAG compilation, node functions, JIT, provenance
 nbrs-workload     YAML parsing, bind points, inline expressions, phasing
-nbrs-activity     Async execution engine, dispenser wrappers, capture flow
+nbrs-runtime     Async execution engine, dispenser wrappers, capture flow
 nbrs-metrics      HDR histograms, frame capture, OpenMetrics export
 nbrs-rate         Async token bucket rate limiter
 nbrs-errorhandler Composable error routing

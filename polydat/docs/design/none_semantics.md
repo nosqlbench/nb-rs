@@ -112,7 +112,7 @@ GK call that the kernel can JIT (e.g.
 Status: **shipped**. `Value::to_display_strict` lives in
 `polydat/src/node.rs` and returns `Option<String>` (None for
 `Value::None`, Some(string) otherwise). `substitute_via_wires` in
-`nbrs-activity/src/wires.rs` uses the strict primitive and returns
+`nbrs-runtime/src/wires.rs` uses the strict primitive and returns
 an explicit "wire resolved to `Value::None`" error naming the
 bind-point and pointing operators at the resolution options
 (workload-param default, `bindings:` / `set:`, or optional-syntax
@@ -236,7 +236,7 @@ Four layers of test coverage, mirroring the rules:
    protects pure-literal iter-var consts from getting
    auto-externed.
 
-4. `nbrs-activity/src/wires.rs::tests` — Rule 3 strict
+4. `nbrs-runtime/src/wires.rs::tests` — Rule 3 strict
    rendering:
    - `to_display_strict_returns_none_for_value_none` — the
      primitive's contract.

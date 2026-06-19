@@ -469,7 +469,7 @@ external-write ports, no non-deterministic sources); see
 
 ### Per-Scope Canonical Kernel Cache
 
-Each non-trivial `ScopeNode` in `nbrs-activity::scope_tree`
+Each non-trivial `ScopeNode` in `nbrs-runtime::scope_tree`
 carries a `cached_kernel: OnceLock<Arc<PolydatKernel>>` slot
 (M3.1+). The canonical kernel is the *single authoritative
 answer* for "what is `<name>` at this scope?" — every name
@@ -486,7 +486,7 @@ references this section directly. The canonical's program is
 `Arc`-shared; only state is cloned per execution.
 
 For text interpolation against a kernel's name space, callers
-use `nbrs_activity::interpolate::interpolate_via_kernel(text,
+use `nbrs_runtime::interpolate::interpolate_via_kernel(text,
 &kernel)`. The implementation tries `get_constant` (own
 outputs) first, then `get_input` (extern slots populated by
 `bind_outer_scope` or the dispatcher's per-clause `set_input`).

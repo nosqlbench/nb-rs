@@ -35,7 +35,7 @@ use crate::dsl::lexer::Span;
 /// desugar a string literal as a printf interpolation node or
 /// emit it as a plain `ConstStr`.
 ///
-/// Mirrors `nbrs_workload::bindpoints::is_literal_content` so the
+/// Mirrors the host's literal-content rule so the
 /// compile-time and parse-time disambiguation rules stay aligned:
 /// a `{...}` whose trimmed body starts with `'` or `"` is literal
 /// content (e.g. `{'class': 'SimpleStrategy'}`,

@@ -587,8 +587,8 @@ impl MetricsExecFlag {
             .unwrap_or_default();
         match self {
             MetricsExecFlag::Latest => {
-                nbrs_activity::refine_plan::warn_multi_execution_default(&session_dir);
-                nbrs_activity::refine_plan::ExecutionQualifier::latest(&session_dir)
+                nbrs_runtime::refine_plan::warn_multi_execution_default(&session_dir);
+                nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir)
                     .specific_id()
             }
             MetricsExecFlag::Specific(n) => Some(n),
@@ -641,7 +641,7 @@ fn match_specs(args: &[String]) {
         Ok(f) => f,
         Err(e) => { eprintln!("nbrs metrics match: filter: {e}"); std::process::exit(2); }
     };
-    let db = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
+    let db = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     if !db.exists() {
         eprintln!("nbrs metrics match: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -840,7 +840,7 @@ fn groups_command(args: &[String]) {
         Err(e) => { eprintln!("nbrs metrics groups: filter: {e}"); std::process::exit(2); }
     };
 
-    let db = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
+    let db = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     if !db.exists() {
         eprintln!("nbrs metrics groups: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -1277,7 +1277,7 @@ fn list(args: &[String], show_values_in: bool) {
         std::process::exit(2);
     }
 
-    let db = db_path.unwrap_or_else(nbrs_activity::session::latest_metrics_db);
+    let db = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     if !db.exists() {
         eprintln!("nbrs metrics: db not found at '{}'", db.display());
         std::process::exit(2);

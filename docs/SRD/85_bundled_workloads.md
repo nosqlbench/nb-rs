@@ -7,7 +7,7 @@ assembler, so it is the only generator (adapter directories are
 included there behind the same feature gates that compile the
 adapters in, read as `CARGO_FEATURE_*`); resolution + ambiguity
 error in
-`nbrs-activity::runner::resolve_workload`; bundled loading
+`nbrs-runtime::runner::resolve_workload`; bundled loading
 through `extends::load_and_merge_bundled` with catalog-name
 session identity; `nbrs describe workloads`
 (list/detail/`--all`/`examples`/`--json`) in `nbrs/src/describe.rs`;

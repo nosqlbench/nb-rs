@@ -8,7 +8,7 @@ that drives it from the run's event stream. Pillars 1+2 of the
 
 **Surface, inbound contract, and allowed edges:** authoritative in
 [SRD 05 §Contract Registry](05_dependency_rules.md). In brief — exports the `TuiObserver` +
-`RunState` + the sink seam + the inspector REPL; consumes `nbrs_activity::observer` and the
+`RunState` + the sink seam + the inspector REPL; consumes `nbrs_runtime::observer` and the
 `nbrs_metrics` snapshot it folds; the render/dispatch internals (`widgets`, `frame_broker`,
 `readout_panel`, `readout_sink`, `prompt_state`, `tui_sink`) are `pub(crate)` (SRD-05 D5).
 

@@ -8,7 +8,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
-use nbrs_activity::adapter::ResultBody;
+use nbrs_runtime::adapter::ResultBody;
 use scylla::response::query_result::QueryResult;
 use scylla::value::{CqlValue, Row};
 

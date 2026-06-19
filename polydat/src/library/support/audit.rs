@@ -19,9 +19,9 @@
 
 use std::sync::OnceLock;
 
-/// Severity for audit-channel events. Mirrors the activity-layer
-/// observer levels so the runner's installed sink can map 1:1 to
-/// `nbrs_activity::observer::LogLevel` without reformatting.
+/// Severity for audit-channel events. A conventional severity
+/// ladder so a host's installed sink can map it 1:1 to its own
+/// logger levels without reformatting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
     Trace,
@@ -35,9 +35,8 @@ type LogFn = Box<dyn Fn(LogLevel, &str) + Send + Sync>;
 
 static LOG_FN: OnceLock<LogFn> = OnceLock::new();
 
-/// Install the audit sink. Called once by the activity runner so
-/// audit lines flow through `nbrs_activity::observer::log` and
-/// land in `session.log` alongside the rest of the run output.
+/// Install the audit sink. A host installs this once so audit lines
+/// flow through its own logger alongside the rest of the run output.
 /// Subsequent calls are no-ops.
 pub fn set_log_fn<F>(f: F)
 where F: Fn(LogLevel, &str) + Send + Sync + 'static

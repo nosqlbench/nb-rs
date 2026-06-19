@@ -4,7 +4,7 @@
 //! TUI-driving [`RunObserver`] implementation.
 //!
 //! [`TuiObserver`] is the glue layer between
-//! [`nbrs_activity::observer::RunObserver`] (lifecycle callbacks
+//! [`nbrs_runtime::observer::RunObserver`] (lifecycle callbacks
 //! emitted by the runner) and the rest of this crate
 //! ([`crate::run_state_actor`], [`crate::reporter::TuiReporter`],
 //! [`crate::app::App`]). The runner only knows about the trait;
@@ -18,7 +18,7 @@
 //!    [`crate::run_state_actor::spawn_run_state_actor`]),
 //!    constructs a [`TuiObserver`] holding the resulting
 //!    [`crate::run_state_actor::RunStateHandle`], and hands it
-//!    to [`nbrs_activity::runner::run_with_observer`].
+//!    to [`nbrs_runtime::runner::run_with_observer`].
 //! 2. The runner calls `phase_starting` / `phase_progress` /
 //!    `phase_completed` / `log` / etc. as the workload runs;
 //!    each call sends one or more `RunStateCmd`s into the
@@ -48,8 +48,8 @@ use crate::reporter::TuiReporter;
 use crate::run_state_actor::{RunStateCmd, RunStateHandle};
 use crate::state::{EntryKind, LogEntry, LogSeverity, PhaseEntry, PhaseStatus, RunState};
 
-use nbrs_activity::lifecycle::EventType;
-use nbrs_activity::readouts as ro;
+use nbrs_runtime::lifecycle::EventType;
+use nbrs_runtime::readouts as ro;
 
 /// Per-row `ReadoutContext` for the post-run summary's
 /// `[ok] [N/total] name 0.02s` lines. Routes through the
@@ -145,16 +145,16 @@ impl ro::ReadoutContext for SummaryRowContext {
 }
 
 /// Convert a TUI-side [`LogSeverity`] back to the activity-side
-/// [`nbrs_activity::observer::LogLevel`] for comparison against
+/// [`nbrs_runtime::observer::LogLevel`] for comparison against
 /// [`TuiObserver::min_level`]. The two enums carry the same four
 /// rungs in the same order; this is a flat one-to-one mapping
 /// kept private to the observer.
-fn log_severity_to_level(s: LogSeverity) -> nbrs_activity::observer::LogLevel {
+fn log_severity_to_level(s: LogSeverity) -> nbrs_runtime::observer::LogLevel {
     match s {
-        LogSeverity::Debug => nbrs_activity::observer::LogLevel::Debug,
-        LogSeverity::Info  => nbrs_activity::observer::LogLevel::Info,
-        LogSeverity::Warn  => nbrs_activity::observer::LogLevel::Warn,
-        LogSeverity::Error => nbrs_activity::observer::LogLevel::Error,
+        LogSeverity::Debug => nbrs_runtime::observer::LogLevel::Debug,
+        LogSeverity::Info  => nbrs_runtime::observer::LogLevel::Info,
+        LogSeverity::Warn  => nbrs_runtime::observer::LogLevel::Warn,
+        LogSeverity::Error => nbrs_runtime::observer::LogLevel::Error,
     }
 }
 
@@ -193,12 +193,12 @@ pub struct TuiObserver {
     tui_active: Arc<AtomicBool>,
     /// Minimum severity that the stderr fallback paths emit.
     /// Same role as
-    /// [`nbrs_activity::observer::StderrObserver::min_level`] —
+    /// [`nbrs_runtime::observer::StderrObserver::min_level`] —
     /// without this filter, dropping out of the TUI at runtime
     /// (`q` pressed) drowned the operator in `Debug`-level
     /// fiber-lifecycle traces. Default `Info`, override via
     /// the workload's `loglevel=` param.
-    min_level: nbrs_activity::observer::LogLevel,
+    min_level: nbrs_runtime::observer::LogLevel,
 }
 
 impl TuiObserver {
@@ -217,7 +217,7 @@ impl TuiObserver {
             tui_active: Arc::new(AtomicBool::new(false)),
             cadences,
             metrics_query: Mutex::new(None),
-            min_level: nbrs_activity::observer::LogLevel::Info,
+            min_level: nbrs_runtime::observer::LogLevel::Info,
         }
     }
 
@@ -227,7 +227,7 @@ impl TuiObserver {
     /// is filtered by the panel's own LOD knobs.
     pub fn with_min_level(
         mut self,
-        min_level: nbrs_activity::observer::LogLevel,
+        min_level: nbrs_runtime::observer::LogLevel,
     ) -> Self {
         self.min_level = min_level;
         self
@@ -295,7 +295,7 @@ impl TuiObserver {
     }
 }
 
-impl nbrs_activity::observer::RunObserver for TuiObserver {
+impl nbrs_runtime::observer::RunObserver for TuiObserver {
     fn phase_starting(&self, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
         self.ensure_tui_started();
         self.state.send(RunStateCmd::PhaseStarting {
@@ -317,8 +317,8 @@ impl nbrs_activity::observer::RunObserver for TuiObserver {
         } else {
             format!(" {}", crate::widgets::coords_root_first(labels))
         };
-        nbrs_activity::observer::log(
-            nbrs_activity::observer::LogLevel::Info,
+        nbrs_runtime::observer::log(
+            nbrs_runtime::observer::LogLevel::Info,
             &format!("[{name}]{coords_part}: {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}"));
     }
 
@@ -352,7 +352,7 @@ impl nbrs_activity::observer::RunObserver for TuiObserver {
         }
     }
 
-    fn phase_progress(&self, update: &nbrs_activity::observer::PhaseProgressUpdate) {
+    fn phase_progress(&self, update: &nbrs_runtime::observer::PhaseProgressUpdate) {
         self.state.send(RunStateCmd::PhaseProgress(update.clone()));
     }
 
@@ -372,23 +372,23 @@ impl nbrs_activity::observer::RunObserver for TuiObserver {
         self.state.send(RunStateCmd::RunFinished);
     }
 
-    fn log(&self, level: nbrs_activity::observer::LogLevel, message: &str) {
+    fn log(&self, level: nbrs_runtime::observer::LogLevel, message: &str) {
         self.log_categorized(
-            level, nbrs_activity::observer::LogCategory::Diagnostic, message);
+            level, nbrs_runtime::observer::LogCategory::Diagnostic, message);
     }
 
     fn log_categorized(
         &self,
-        level: nbrs_activity::observer::LogLevel,
-        category: nbrs_activity::observer::LogCategory,
+        level: nbrs_runtime::observer::LogLevel,
+        category: nbrs_runtime::observer::LogCategory,
         message: &str,
     ) {
         let severity = match level {
-            nbrs_activity::observer::LogLevel::Trace => LogSeverity::Debug,
-            nbrs_activity::observer::LogLevel::Debug => LogSeverity::Debug,
-            nbrs_activity::observer::LogLevel::Info => LogSeverity::Info,
-            nbrs_activity::observer::LogLevel::Warn => LogSeverity::Warn,
-            nbrs_activity::observer::LogLevel::Error => LogSeverity::Error,
+            nbrs_runtime::observer::LogLevel::Trace => LogSeverity::Debug,
+            nbrs_runtime::observer::LogLevel::Debug => LogSeverity::Debug,
+            nbrs_runtime::observer::LogLevel::Info => LogSeverity::Info,
+            nbrs_runtime::observer::LogLevel::Warn => LogSeverity::Warn,
+            nbrs_runtime::observer::LogLevel::Error => LogSeverity::Error,
         };
         self.state.send(RunStateCmd::Log {
             severity,
@@ -422,7 +422,7 @@ impl nbrs_activity::observer::RunObserver for TuiObserver {
         Some(self.tui_active.clone())
     }
 
-    fn scenario_pre_mapped(&self, tree: &nbrs_activity::scene_tree::SceneTree) {
+    fn scenario_pre_mapped(&self, tree: &nbrs_runtime::scene_tree::SceneTree) {
         self.state.send(RunStateCmd::InstallTree(tree.clone()));
     }
 
@@ -751,7 +751,7 @@ pub fn print_post_run_summary(
         // Operators who want the dump fuller pass
         // `loglevel=debug` (or set the env var) — same
         // knob as the live path.
-        let display_min = nbrs_activity::observer::display_level();
+        let display_min = nbrs_runtime::observer::display_level();
         let recent: Vec<&LogEntry> = s.log_messages.iter()
             .rev()
             .filter(|e| log_severity_to_level(e.severity) >= display_min)
@@ -765,7 +765,7 @@ pub fn print_post_run_summary(
         eprintln!();
         eprintln!("--- recent log messages ---");
         eprintln!("  (elapsed-seconds since session start at {} UTC)",
-            nbrs_activity::session::format_log_timestamp(s.started_at_utc));
+            nbrs_runtime::session::format_log_timestamp(s.started_at_utc));
         for entry in recent.into_iter().rev() {
             let elapsed = entry.at.duration_since(s.started_at_utc)
                 .map(|d| d.as_secs_f64())
@@ -782,7 +782,7 @@ pub fn print_post_run_summary(
             // dump matches the live console look.
             let line = format!("  {ts} {lvl_tag} {}", entry.message);
             eprintln!("{}",
-                nbrs_activity::observer::colorize_log_line(level, &line));
+                nbrs_runtime::observer::colorize_log_line(level, &line));
         }
         eprintln!("---");
     }
@@ -861,7 +861,7 @@ pub fn unreached_phase_exit_code(
     // "graceful shutdown requested" notice already fired). The dump below
     // is reserved for the genuine case: a phase failed and stopped the
     // run, leaving downstream phases stranded.
-    if nbrs_activity::session_signals::stop_requested() {
+    if nbrs_runtime::session_signals::stop_requested() {
         return Some(130);
     }
     // An SRD-83 workload-shell stop condition also intentionally halts
@@ -871,7 +871,7 @@ pub fn unreached_phase_exit_code(
     // it like Ctrl-C: no warning, clean exit. The trip was already
     // logged ("workload stop condition tripped … halting remaining
     // walk"), so the skip is not silent.
-    if nbrs_activity::session_signals::graceful_stop_requested() {
+    if nbrs_runtime::session_signals::graceful_stop_requested() {
         return None;
     }
     eprintln!();

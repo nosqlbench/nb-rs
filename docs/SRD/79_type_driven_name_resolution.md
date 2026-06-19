@@ -10,7 +10,7 @@ below is reviewed.
 
 **Owner:** polydat (compile pipeline, name resolution, auto-
 extern emission), nbrs-workload (`set:` block sugar and YAML
-param shape), nbrs-activity (workload-root params kernel,
+param shape), nbrs-runtime (workload-root params kernel,
 scope synth cascade).
 
 **Cross-refs:**
@@ -1080,8 +1080,8 @@ Workload-side surface (stays as-is across all phases):
   `is_polydat_array_literal`, `is_bare_ident`) classify
   YAML syntax; the polydat-side resolution is Phase A/C's
   job.
-- **`nbrs-activity::params::format_value_as_polydat_literal`**
-  and **`nbrs-activity::scope::add_param_binding`** are the
+- **`nbrs-runtime::params::format_value_as_polydat_literal`**
+  and **`nbrs-runtime::scope::add_param_binding`** are the
   scope-cascade emission sites. Once Phase A drives type
   inference, these emission sites can simplify — they emit
   the polydat literal, and Phase A's graph tells the

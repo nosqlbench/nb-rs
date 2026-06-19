@@ -28,7 +28,7 @@
 //! ## Display preference
 //!
 //! Plotter declares
-//! [`DisplayPreference::Off`](nbrs_activity::adapter::DisplayPreference::Off):
+//! [`DisplayPreference::Off`](nbrs_runtime::adapter::DisplayPreference::Off):
 //! running this adapter auto-disables the dashboard TUI.
 //! Plotter and TUI both want raw terminal control of the same
 //! screen real estate; the resolution is "plotter wins" — `nbrs
@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use nbrs_activity::adapter::{
+use nbrs_runtime::adapter::{
     DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields,
 };
 use polydat::ast::Value;
@@ -457,7 +457,7 @@ impl DriverAdapter for PlotterAdapter {
     fn map_op<'a>(
         &'a self,
         template: &'a ParsedOp,
-        parent: std::sync::Arc<nbrs_activity::adapter::PolydatKernel>,
+        parent: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn OpDispenser>, String>> + Send + 'a>> {
         Box::pin(async move {
             // SRD-68 Push 5: snapshot the op-field templates at map_op.
@@ -472,8 +472,8 @@ impl DriverAdapter for PlotterAdapter {
             }) as Box<dyn OpDispenser>)
         })
     }
-    fn display_preference(&self) -> nbrs_activity::adapter::DisplayPreference {
-        nbrs_activity::adapter::DisplayPreference::Off
+    fn display_preference(&self) -> nbrs_runtime::adapter::DisplayPreference {
+        nbrs_runtime::adapter::DisplayPreference::Off
     }
 }
 
@@ -487,7 +487,7 @@ impl Drop for PlotterAdapter {
 struct PlotterDispenser {
     data: Arc<Mutex<PlotData>>,
     /// SRD-68 invariant I-3: dispenser-owned canonical Polydat Kernel.
-    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::PolydatKernel>,
+    canonical_kernel: std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>,
     /// Op-field templates snapshotted at `map_op`. Resolved per
     /// cycle via the generic `wires` API; typed `Value`s feed the
     /// numeric plot data store.
@@ -495,17 +495,17 @@ struct PlotterDispenser {
 }
 
 impl OpDispenser for PlotterDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::PolydatKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_runtime::adapter::PolydatKernel>> {
         Some(&self.canonical_kernel)
     }
 
-    fn execute<'a>(&'a self, _cycle: u64, ctx: &'a nbrs_activity::adapter::ExecCtx<'a>)
+    fn execute<'a>(&'a self, _cycle: u64, ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>)
         -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>>
     {
         let wires = ctx.wires;
         Box::pin(async move {
-            let resolved = nbrs_activity::wires::resolve_op_fields_via_wires(&self.op_fields, wires)
-                .map_err(|msg| ExecutionError::Op(nbrs_activity::adapter::AdapterError {
+            let resolved = nbrs_runtime::wires::resolve_op_fields_via_wires(&self.op_fields, wires)
+                .map_err(|msg| ExecutionError::Op(nbrs_runtime::adapter::AdapterError {
                     error_name: "BindError".into(),
                     message: msg,
                     retryable: false,
@@ -674,10 +674,10 @@ fn atty_stdout() -> bool { unsafe { libc::isatty(1) != 0 } }
 // =========================================================================
 
 inventory::submit! {
-    nbrs_activity::adapter::AdapterRegistration {
+    nbrs_runtime::adapter::AdapterRegistration {
         names: || &["plotter", "plot"],
         known_params: || &["mode", "fade", "lanes", "render", "width", "height", "no_color"],
-        display_preference: |_params| nbrs_activity::adapter::DisplayPreference::Off,
+        display_preference: |_params| nbrs_runtime::adapter::DisplayPreference::Off,
         supported_controls: || &[],
         create: |params| Box::pin(async move {
             let mode = params.get("mode").cloned().unwrap_or_else(|| "auto".into());
@@ -700,7 +700,7 @@ inventory::submit! {
                 .unwrap_or(false);
             Ok(std::sync::Arc::new(PlotterAdapter::with_config(PlotterConfig {
                 mode, fade, lanes, render, width, height, no_color,
-            })) as std::sync::Arc<dyn nbrs_activity::adapter::DriverAdapter>)
+            })) as std::sync::Arc<dyn nbrs_runtime::adapter::DriverAdapter>)
         }),
     }
 }
@@ -712,12 +712,12 @@ inventory::submit! {
 // share one adapter, avoiding the per-phase plot-state
 // reset that would otherwise wipe accumulated history.
 inventory::submit! {
-    nbrs_activity::adapter::SharedDriverRegistration {
+    nbrs_runtime::adapter::SharedDriverRegistration {
         adapter: "plotter",
-        driver: nbrs_activity::adapter::DEFAULT_DRIVER_NAME,
-        share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
+        driver: nbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
-            let mut k = nbrs_activity::resource_pool::ResourceKey::new("plotter");
+            let mut k = nbrs_runtime::resource_pool::ResourceKey::new("plotter");
             for field in ["mode", "fade", "lanes", "render", "width", "height", "no_color"] {
                 if let Some(v) = params.get(field) {
                     k = k.with(field, v.clone());

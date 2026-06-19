@@ -3,7 +3,7 @@
 
 //! Usage text and utility functions shared across subcommands.
 //!
-//! Shell completion is owned by [`nbrs_activity::completions`] — the
+//! Shell completion is owned by [`nbrs_runtime::completions`] — the
 //! same harness `nbrs` uses — so `nbrs run workload=<TAB>`,
 //! `scenario=<TAB>`, `adapter=<TAB>`, etc. all expand identically
 //! regardless of which adapter features are linked. `main.rs` wires

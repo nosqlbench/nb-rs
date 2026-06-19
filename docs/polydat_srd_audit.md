@@ -211,7 +211,7 @@ Each candidate SRD falls into one of three tiers:
 | SRD-13 Polydat Modules | 109 | 3 (split) | `imported/polydat_modules.md` (module system semantics) | `docs/SRD/13_polydat_modules.md` keeps: Compiler Diagnostic Event Stream |
 | SRD-13b Polydat Combination Modes | 208 | KEEP nbrs | — | nbrs-side terminology doc; add cross-refs to polydat |
 | SRD-13c Polydat Scope Model | 891 | 2 | `imported/scope_model.md` (whole) | stub with What-This-Does-NOT-Change + Open Design Issue + Design Rationale |
-| SRD-13d Op-template Polydat Scope Layer | 779 | KEEP nbrs | — | nbrs-activity-specific; add cross-refs |
+| SRD-13d Op-template Polydat Scope Layer | 779 | KEEP nbrs | — | nbrs-runtime-specific; add cross-refs |
 | SRD-13e Scope-as-Module Refinement | 678 | KEEP nbrs | — | nbrs-side typed ScopeModule on top of polydat substrate; add cross-refs |
 | SRD-13f Cross-Scope Wire Materialization | 944 | 3 (split) | `imported/wire_materialization.md` (architectural model, materialization gradient, cell classification) | `docs/SRD/13f_*.md` keeps: synthesizer rule, plan-to-true-up, open questions |
 | SRD-14 Polydat Config Expressions | 170 | 3 (split) | `imported/config_expressions.md` (Expression Syntax, Const Expression Evaluation, embedding mechanics) | `docs/SRD/14_*.md` keeps: Resolution Order, Param Substitution Interaction (host-side param resolution) |
@@ -358,21 +358,21 @@ are now all formally specified in polydat docs.
 | Section | Disposition | Action |
 |---|---|---|
 | §"GK as the unified access surface" | KEEP | nbrs-side framing — why Polydat exists in the workload runtime. |
-| §"Reification: runtime state → Polydat wire" | KEEP | nbrs-activity integration concern. |
+| §"Reification: runtime state → Polydat wire" | KEEP | nbrs-runtime integration concern. |
 | §"DSL Syntax" (lines 82–384) | **DELETE** | Now owned by [grammar.md §2 (productions)](../polydat/docs/design/grammar.md). Replace with a one-line pointer. |
 | §"Bitwise Operations" (lines 385–418) | KEEP | Library-catalog reference; concrete operator behavior. |
 | §"Const Expression Syntax" (lines 419–441) | **REDUCE** | Cross-reference [grammar.md G2 + expression_engine.md §3.1](../polydat/docs/design/expression_engine.md); keep only nbrs-side use cases. |
 | §"Type Inference Details" (lines 442–462) | **DELETE** | Owned by [grammar.md §3 type-inference rules](../polydat/docs/design/grammar.md). |
-| §"Compilation Pipeline" (lines 463–500) | **REDUCE** | Cross-reference [graph_compiler.md §2 pipeline overview](../polydat/docs/design/graph_compiler.md). Keep only nbrs-activity-level invocation context. |
-| §"Output Selection" (lines 501–515) | KEEP | nbrs-activity scope; how the activity selects which kernel output to consume. |
-| §"Type System" (lines 516–571) | **REDUCE** | Cross-reference [composition_substrate.md T1](../polydat/docs/design/composition_substrate.md) + [grammar.md §3](../polydat/docs/design/grammar.md). Keep only the part listing nbrs-activity's use of PortType. |
+| §"Compilation Pipeline" (lines 463–500) | **REDUCE** | Cross-reference [graph_compiler.md §2 pipeline overview](../polydat/docs/design/graph_compiler.md). Keep only nbrs-runtime-level invocation context. |
+| §"Output Selection" (lines 501–515) | KEEP | nbrs-runtime scope; how the activity selects which kernel output to consume. |
+| §"Type System" (lines 516–571) | **REDUCE** | Cross-reference [composition_substrate.md T1](../polydat/docs/design/composition_substrate.md) + [grammar.md §3](../polydat/docs/design/grammar.md). Keep only the part listing nbrs-runtime's use of PortType. |
 | §"Node Contract" (lines 572–592) | **DELETE** | Owned by [composition_substrate.md §2 (slot contract)](../polydat/docs/design/composition_substrate.md). |
 | §"Wiring Model" (lines 593–616) | **DELETE** | Owned by [composition_substrate.md §2 + runtime_model.md §1](../polydat/docs/design/runtime_model.md). |
-| §"GK as Unified State Holder" (lines 617–637) | KEEP | nbrs-activity framing — why Polydat kernels hold scope state. |
+| §"GK as Unified State Holder" (lines 617–637) | KEEP | nbrs-runtime framing — why Polydat kernels hold scope state. |
 | §"Incremental Invalidation" (lines 638–663) | **DELETE** | Owned by [runtime_model.md §3-§4 (R1, R2)](../polydat/docs/design/runtime_model.md). |
 | §"GK Scope Model" (lines 664–688) | **DELETE** | Owned by SRD-13c + [composition_substrate.md L1/L2](../polydat/docs/design/composition_substrate.md). |
-| §"Op-Level Bindings" | KEEP | nbrs-activity-specific. |
-| §"Cursor Declarations" | KEEP | nbrs-activity-specific. |
+| §"Op-Level Bindings" | KEEP | nbrs-runtime-specific. |
+| §"Cursor Declarations" | KEEP | nbrs-runtime-specific. |
 
 **Estimated reduction:** ~450 lines DELETE + ~80 lines REDUCE. SRD-10 shrinks from 897 → ~350 lines, becoming an nbrs-side integration doc that points at polydat for the substrate.
 
@@ -391,8 +391,8 @@ composition_substrate.md.
 | §"Input Spaces" | **DELETE** | Owned by [composition_substrate.md §2 (slot contract)](../polydat/docs/design/composition_substrate.md). |
 | §"Capture Context" | **REDUCE** | Cross-reference [composition_substrate.md L3](../polydat/docs/design/composition_substrate.md). Keep nbrs-side capture integration. |
 | §"Compilation Levels" | **DELETE** | Owned by [graph_compiler.md §6 (pipeline) + SRD-16](../polydat/docs/design/graph_compiler.md). |
-| §"FiberBuilder" | KEEP | nbrs-activity integration surface. |
-| §"Cursor-Driven Evaluation" | KEEP | nbrs-activity scope — how the activity cycle pump drives polydat. |
+| §"FiberBuilder" | KEEP | nbrs-runtime integration surface. |
+| §"Cursor-Driven Evaluation" | KEEP | nbrs-runtime scope — how the activity cycle pump drives polydat. |
 
 **Estimated reduction:** ~280 lines DELETE + ~60 lines REDUCE. SRD-11 shrinks from 498 → ~170 lines.
 
@@ -417,7 +417,7 @@ design doc.
 | Section | Disposition | Action |
 |---|---|---|
 | §"Module System" | **REDUCE** | Module definition syntax is owned by [grammar.md §2.4](../polydat/docs/design/grammar.md). Keep nbrs-side module-resolution concerns (file paths, stdlib organization). |
-| §"Compiler Diagnostic Event Stream" | KEEP | nbrs-activity-facing diagnostic API. |
+| §"Compiler Diagnostic Event Stream" | KEEP | nbrs-runtime-facing diagnostic API. |
 
 **Estimated reduction:** minor. SRD-13 shrinks from 109 → ~80 lines.
 
@@ -446,7 +446,7 @@ formalisation now.
 | Section | Disposition | Action |
 |---|---|---|
 | §"Principles" | **REDUCE** | The S/T/L pillars now formalise these principles. Cross-reference and keep the nbrs-framing intro. |
-| §"Scope Hierarchy" | **REDUCE** | Cross-reference [composition_substrate.md L1 + L4](../polydat/docs/design/composition_substrate.md). Keep nbrs-activity scope-tree integration. |
+| §"Scope Hierarchy" | **REDUCE** | Cross-reference [composition_substrate.md L1 + L4](../polydat/docs/design/composition_substrate.md). Keep nbrs-runtime scope-tree integration. |
 | §"No Flattening, No Duplication" | **DELETE** | Owned by [composition_substrate.md L1](../polydat/docs/design/composition_substrate.md). |
 | §"Visibility Rules" | **REDUCE** | Cross-reference [grammar.md G3 (scope-chain transparency) + composition_substrate.md L1](../polydat/docs/design/grammar.md). Keep workload-author-visible behavior. |
 | §"Mutability Rules" | **REDUCE** | Cross-reference [composition_substrate.md L4 + SRD-13f](../polydat/docs/design/composition_substrate.md). Keep nbrs-side `shared` / `const` author guidance. |
@@ -463,16 +463,16 @@ formalisation now.
 
 ### SRD-13d: Op-template Polydat Scope Layer (779 lines)
 
-Mostly nbrs-activity-specific (op templates aren't a polydat
+Mostly nbrs-runtime-specific (op templates aren't a polydat
 concept). Keep with cross-references to substrate.
 
 | Section | Disposition | Action |
 |---|---|---|
-| §"1-3" + §"4. Realisation lifecycle" | KEEP | nbrs-activity-specific. |
+| §"1-3" + §"4. Realisation lifecycle" | KEEP | nbrs-runtime-specific. |
 | §"5. Walking parent-kernel reference" | **CROSS-REF** | Add pointer to [composition_substrate.md L1 + graph_compiler.md CF1](../polydat/docs/design/composition_substrate.md). |
-| §"6. Proving-out test suite" | KEEP | nbrs-activity tests. |
+| §"6. Proving-out test suite" | KEEP | nbrs-runtime tests. |
 | §"7. Structural rules carried forward from SRD-13c" | **REDUCE** | Cross-reference SRD-13c (which now points at polydat). |
-| §"8-9" | KEEP | nbrs-activity-specific. |
+| §"8-9" | KEEP | nbrs-runtime-specific. |
 
 **Estimated reduction:** ~30 lines. SRD-13d shrinks from 779 → ~750 lines.
 
@@ -482,7 +482,7 @@ DESIGN doc; reframe as integration spec with polydat substrate.
 
 | Section | Disposition | Action |
 |---|---|---|
-| §"What this SRD covers" | **REWRITE** | Reframe: nbrs-activity uses polydat's `kernel/subcontext/` (per SRD-67); this SRD specifies the typed `ScopeModule` interface on top. |
+| §"What this SRD covers" | **REWRITE** | Reframe: nbrs-runtime uses polydat's `kernel/subcontext/` (per SRD-67); this SRD specifies the typed `ScopeModule` interface on top. |
 | §"Why this SRD now" | KEEP | Historical motivation. |
 | §"1. The contract surface" | **REDUCE** | Cross-reference [composition_substrate.md L1 + L4 + SRD-67](../polydat/docs/design/composition_substrate.md). Keep nbrs-side typed-module shape. |
 | §"2-4" | KEEP | nbrs-side mechanism. |
@@ -501,7 +501,7 @@ formalises the gradient honoring.
 | §"What this SRD covers" | KEEP | Scoping intro. |
 | §"Architectural model" | **REDUCE** | Cross-reference [composition_substrate.md L4 (write-through) + graph_compiler.md CF3](../polydat/docs/design/composition_substrate.md). Keep the cell-classification visual. |
 | §"Materialization gradient" | **REDUCE** | Cross-reference [graph_compiler.md CF3 (gradient honoring)](../polydat/docs/design/graph_compiler.md). Keep nbrs-side classification details. |
-| §"Wire-reference classification (synthesizer rule)" | KEEP | nbrs-activity synthesizer is the consumer. |
+| §"Wire-reference classification (synthesizer rule)" | KEEP | nbrs-runtime synthesizer is the consumer. |
 | §"How this differs from what's coded today" | KEEP | Implementation status. |
 | §"Plan to true-up" | KEEP | nbrs-side work. |
 | §"Open questions / deferred" | KEEP | Future work. |
@@ -545,7 +545,7 @@ selection) and §5.3 (Node Fusion polyfills).
 
 | Section | Disposition | Action |
 |---|---|---|
-| §"Compilation Levels" | **REDUCE** | Cross-reference [graph_compiler.md §2 pipeline + §6 ordered composition](../polydat/docs/design/graph_compiler.md). Keep nbrs-activity invocation. |
+| §"Compilation Levels" | **REDUCE** | Cross-reference [graph_compiler.md §2 pipeline + §6 ordered composition](../polydat/docs/design/graph_compiler.md). Keep nbrs-runtime invocation. |
 | §"Provenance Optimization" | **DELETE** | Owned by [runtime_model.md §2 (Dependency tracking) + §4 (Invalidation)](../polydat/docs/design/runtime_model.md). |
 | §"Automatic Selection Heuristic" | KEEP | Engine selection is a polydat-internal concern; details stay here for now (no polydat doc owns it). |
 | §"Type System" | **DELETE** | Owned by [grammar.md §3 + composition_substrate.md T1](../polydat/docs/design/grammar.md). |
@@ -575,7 +575,7 @@ references it as the chokepoint enforcer for L1/L4.
 | §"Vocabulary" | KEEP | nbrs-side terminology. |
 | §"The construction protocol" | KEEP | Polydat-internal but no polydat doc owns the parent-gated protocol in depth. SRD-67 IS the authority. **Possible gap:** consider migrating to polydat-side `subcontext_construction.md`. |
 | §"Compile once, spawn once, fiber-state separately" | **CROSS-REF** | Add pointer to [composition_substrate.md L1](../polydat/docs/design/composition_substrate.md). |
-| §"Named-child registry" | KEEP | nbrs-activity integration. |
+| §"Named-child registry" | KEEP | nbrs-runtime integration. |
 | §"Cross-binding rules" | **REDUCE** | Cross-reference [composition_substrate.md L1+L4 + graph_compiler.md CF3](../polydat/docs/design/composition_substrate.md). |
 | §"Walled-off invariant" | KEEP | The chokepoint contract — load-bearing for substrate enforcement. |
 | §"What disappears" | KEEP | Historical context. |
@@ -594,7 +594,7 @@ reference but the high-level model is polydat's.
 |---|---|---|
 | §"Motivation" | KEEP | nbrs-side motivation. |
 | §"Three orthogonal rules" | KEEP | Concrete rule list useful as reference; cross-reference [composition_substrate.md T1 + runtime_model.md D1](../polydat/docs/design/composition_substrate.md). |
-| §"Interaction with set: and the GK-grammar invariant" | KEEP | nbrs-activity workload integration. |
+| §"Interaction with set: and the GK-grammar invariant" | KEEP | nbrs-runtime workload integration. |
 | §"Conditional-shadow semantics for const" | KEEP | Workload-author behavior. |
 | §"Test contract" | KEEP | nbrs-side tests. |
 | §"Phased delivery" | DELETE | Stale tracking. |
@@ -678,7 +678,7 @@ GK source text and invoke `compile_polydat`."
 
 **G3b — Capture-points cross-tier integration.** SRD-34
 (Capture Points), SRD-69 (Capture Semantics, draft),
-SRD-70 (Capture Paths, draft) cover the nbrs-activity
+SRD-70 (Capture Paths, draft) cover the nbrs-runtime
 side. composition_substrate.md L3 references captures
 as the cycle-time-binding mechanism. The cross-tier
 integration — how captures cross from op-execution into

@@ -227,5 +227,5 @@ that feeds the TUI. The web server subscribes to the same
   Both TUI and web consume frames from the capture thread.
 - **polydat (SRD 24/27/30)**: Registry, stdlib, and viz module
   power the function browser, stdlib browser, and DAG viewer.
-- **nbrs-activity (SRD 21)**: Live activity state for the dashboard.
+- **nbrs-runtime (SRD 21)**: Live activity state for the dashboard.
   Shared via `Arc`.

@@ -1290,13 +1290,13 @@ fn try_eval_setop(text: &str, kernel: &PolydatKernel) -> Result<Option<Vec<Value
 
 /// Recognise `bucket(items, ratios)` / `bucket("3:a, 1:b")`,
 /// `concat_seq(...)`, `interval_seq(...)`. Reuses the
-/// algorithms from `nbrs-activity::opseq`.
+/// algorithms from the host's op-sequencing.
 ///
 /// The algorithms aren't exposed cross-crate as raw functions
 /// today, so we re-implement the small set we need here. The
 /// outputs match `build_bucket_lut` / `build_concat_lut` /
 /// `build_interval_lut` byte-for-byte (covered by the
-/// op-sequencing tests in `nbrs-activity`).
+/// the host's op-sequencing tests).
 fn try_eval_sequencer(text: &str, kernel: &PolydatKernel) -> Result<Option<Vec<Value>>, String> {
     let Some((name, args)) = parse_func_call(text) else {
         return Ok(None);

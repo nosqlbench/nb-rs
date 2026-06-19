@@ -558,10 +558,10 @@ selecting from a fan-out of per-`k` family names. The
 `recall_at_<N>_<stat>` shape was scoped out and never
 shipped; the bare-family + labels shape is canonical.
 
-The change lives in `nbrs-activity/src/validation.rs`
+The change lives in `nbrs-runtime/src/validation.rs`
 (`ValidationMetrics::new` builds the labelled stats family),
 the recall observer in
-`nbrs-activity/src/observer.rs`, and the control reporter
+`nbrs-runtime/src/observer.rs`, and the control reporter
 in `nbrs-metrics/src/controls.rs`. Stored summary-vs-gauge
 model is unchanged; only the family-name shape canonicalizes.
 

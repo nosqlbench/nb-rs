@@ -232,7 +232,7 @@ pub async fn list_controls() -> axum::Json<Vec<ControlView>> {
     use nbrs_metrics::selector::Selector;
 
     let mut views = Vec::new();
-    let Some(root) = nbrs_activity::polydat_nodes::runtime_context::session_root_handle() else {
+    let Some(root) = nbrs_runtime::polydat_nodes::runtime_context::session_root_handle() else {
         return axum::Json(views);
     };
     for comp in find(&root, &Selector::new()) {
@@ -311,7 +311,7 @@ pub async fn set_control(
     axum::extract::Path(name): axum::extract::Path<String>,
     axum::Json(body): axum::Json<SetControlBody>,
 ) -> Result<axum::Json<SetControlResponse>, (StatusCode, axum::Json<SetControlError>)> {
-    let Some(root) = nbrs_activity::polydat_nodes::runtime_context::session_root_handle() else {
+    let Some(root) = nbrs_runtime::polydat_nodes::runtime_context::session_root_handle() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(SetControlError {
@@ -384,7 +384,7 @@ pub async fn set_control(
 ///
 /// Endpoint: `GET /api/scope-tree`
 pub async fn scope_tree() -> axum::Json<ScopeTreeResponse> {
-    match nbrs_activity::scene_tree::current() {
+    match nbrs_runtime::scene_tree::current() {
         Some(tree) => axum::Json(ScopeTreeResponse { installed: true, tree: Some(tree) }),
         None => axum::Json(ScopeTreeResponse { installed: false, tree: None }),
     }
@@ -393,7 +393,7 @@ pub async fn scope_tree() -> axum::Json<ScopeTreeResponse> {
 #[derive(serde::Serialize)]
 pub struct ScopeTreeResponse {
     pub installed: bool,
-    pub tree: Option<nbrs_activity::scene_tree::SceneTree>,
+    pub tree: Option<nbrs_runtime::scene_tree::SceneTree>,
 }
 
 // ─── Data Building ──────────────────────────────────────────
@@ -435,7 +435,7 @@ fn build_function_groups(filter: Option<&str>) -> Vec<(String, Vec<FunctionView>
                 } else {
                     format!("{}\u{2192}{}", sig.wire_input_count(), sig.outputs)
                 };
-                let level = nbrs_activity::bindings::probe_compile_level(sig.name);
+                let level = nbrs_runtime::bindings::probe_compile_level(sig.name);
                 let (ls, lc) = match level {
                     registry::CompileLevel::Phase3 => ("P3", "green"),
                     registry::CompileLevel::Phase2 => ("P2", "yellow"),

@@ -196,11 +196,10 @@ pub struct BinderViolation {
 ///
 /// Convenience wrapper around [`verify_binders`] for the common
 /// case where the wire-type lookup comes from a polydat kernel
-/// the adapter was handed during dispenser init. Adapters call
-/// this inline inside their `map_op` as part of completing the
-/// currying stack — see `nbrs_activity::adapter::DriverAdapter::map_op`
-/// for the per-op compulsion to verify any typed binders before
-/// returning the constructed dispenser.
+/// the host was handed during dispenser init. A host adapter calls
+/// this inline while mapping an op — completing the currying stack
+/// — to verify any typed binders before returning the constructed
+/// dispenser.
 ///
 /// Looks up each binder slot's wire as either an output or an
 /// input of the kernel's program (outputs are checked first;

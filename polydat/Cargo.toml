@@ -63,9 +63,8 @@ inventory = "0.3.24"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # Insertion-ordered map. Used by `kernel::ScopeCoord` so the
 # coordinate names within a scope appear in clause-declaration
-# order — matching the comprehension's source-level intent
-# (and the IndexMap usage in nbrs-activity for the same
-# reason). See `kernel::scope_coords` doc.
+# order — matching the comprehension's source-level intent.
+# See `kernel::scope_coords` doc.
 indexmap = "2"
 # IEEE 754 half-precision float (`f16`). Used by the
 # `Value::VecF16` / `PortType::VecF16` carrier so embeddings

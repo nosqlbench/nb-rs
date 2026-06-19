@@ -80,7 +80,7 @@ fn cached_or_advance(
 /// provide (each `nbrs run` is a fresh process) without
 /// spawning real subprocesses in the tests.
 ///
-/// Public so cross-crate integration tests in nbrs-activity can
+/// Public so cross-crate integration tests in nbrs-runtime can
 /// simulate multiple resume invocations within one cargo-test
 /// process. Real workloads must not call this — it's a test-
 /// affordance only.

@@ -18,11 +18,10 @@
 //! the detected facts at session start without a custom readout is
 //! the load-bearing use case.
 //!
-//! Diag emission routes through [`crate::library::support::audit`] so the activity
-//! runner's installed sink forwards every line to
-//! `nbrs_activity::observer::log` and into `session.log` alongside
-//! the rest of the run trace. With no sink installed (unit tests,
-//! dryrun, pre-init) lines fall back to stderr.
+//! Diag emission routes through [`crate::library::support::audit`] so the
+//! host's installed audit sink forwards every line to its own logger
+//! alongside the rest of the run trace. With no sink installed (unit
+//! tests, dryrun, pre-init) lines fall back to stderr.
 
 use crate::ast::Value;
 

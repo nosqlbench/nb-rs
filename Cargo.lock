@@ -2694,7 +2694,6 @@ dependencies = [
  "cassandra-cpp 3.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "glob",
  "libc",
- "nbrs-activity",
  "nbrs-adapter-cql",
  "nbrs-adapter-http",
  "nbrs-adapter-openapi",
@@ -2706,6 +2705,7 @@ dependencies = [
  "nbrs-metricsql",
  "nbrs-optimizers",
  "nbrs-rate",
+ "nbrs-runtime",
  "nbrs-tui",
  "nbrs-web",
  "nbrs-workload",
@@ -2727,34 +2727,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nbrs-activity"
-version = "0.1.2"
-dependencies = [
- "arc-swap",
- "futures",
- "indexmap",
- "inventory",
- "libc",
- "nbrs-adapter-stdout",
- "nbrs-adapter-testkit",
- "nbrs-errorhandler",
- "nbrs-metrics",
- "nbrs-rate",
- "nbrs-workload",
- "polydat",
- "pprof",
- "proptest",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "tokio",
- "xxhash-rust",
-]
-
-[[package]]
 name = "nbrs-adapter-cql"
 version = "0.1.2"
 dependencies = [
@@ -2762,8 +2734,8 @@ dependencies = [
  "cassandra-cpp-sys",
  "half",
  "inventory",
- "nbrs-activity",
  "nbrs-metrics",
+ "nbrs-runtime",
  "nbrs-workload",
  "polydat",
  "rand 0.9.4",
@@ -2779,7 +2751,7 @@ name = "nbrs-adapter-http"
 version = "0.1.2"
 dependencies = [
  "inventory",
- "nbrs-activity",
+ "nbrs-runtime",
  "nbrs-workload",
  "polydat",
  "reqwest 0.12.28",
@@ -2804,7 +2776,7 @@ version = "0.1.2"
 dependencies = [
  "inventory",
  "libc",
- "nbrs-activity",
+ "nbrs-runtime",
  "nbrs-workload",
  "polydat",
  "serde_json",
@@ -2815,7 +2787,7 @@ name = "nbrs-adapter-stdout"
 version = "0.1.2"
 dependencies = [
  "inventory",
- "nbrs-activity",
+ "nbrs-runtime",
  "nbrs-workload",
  "polydat",
  "serde_json",
@@ -2827,8 +2799,8 @@ name = "nbrs-adapter-testkit"
 version = "0.1.2"
 dependencies = [
  "inventory",
- "nbrs-activity",
  "nbrs-adapter-stdout",
+ "nbrs-runtime",
  "nbrs-workload",
  "polydat",
  "serde_json",
@@ -2882,7 +2854,7 @@ name = "nbrs-optimizers"
 version = "0.1.2"
 dependencies = [
  "inventory",
- "nbrs-activity",
+ "nbrs-runtime",
 ]
 
 [[package]]
@@ -2895,6 +2867,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "nbrs-runtime"
+version = "0.1.2"
+dependencies = [
+ "arc-swap",
+ "futures",
+ "indexmap",
+ "inventory",
+ "libc",
+ "nbrs-adapter-stdout",
+ "nbrs-adapter-testkit",
+ "nbrs-errorhandler",
+ "nbrs-metrics",
+ "nbrs-rate",
+ "nbrs-workload",
+ "polydat",
+ "pprof",
+ "proptest",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "nbrs-tui"
 version = "0.1.2"
 dependencies = [
@@ -2902,8 +2902,8 @@ dependencies = [
  "crossterm",
  "hdrhistogram",
  "libc",
- "nbrs-activity",
  "nbrs-metrics",
+ "nbrs-runtime",
  "parking_lot",
  "polydat",
  "ratatui",
@@ -2920,8 +2920,8 @@ dependencies = [
  "askama-derive-axum",
  "axum",
  "http-body-util",
- "nbrs-activity",
  "nbrs-metrics",
+ "nbrs-runtime",
  "polydat",
  "serde",
  "serde_json",

@@ -35,7 +35,7 @@ pub mod space;
 pub mod testmodels;
 
 /// SRD-86 — the inventory bridge that registers these optimizers against the
-/// core `nbrs-activity` contract. Enabled by the `runtime` feature; the
+/// core `nbrs-runtime` contract. Enabled by the `runtime` feature; the
 /// algorithm core (everything else) needs no runtime dependency.
 #[cfg(feature = "runtime")]
 pub mod bridge;

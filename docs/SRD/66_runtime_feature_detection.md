@@ -24,13 +24,13 @@ and the workload won't actually detect the dialect at
 runtime until the path lands. See §"Push 2 follow-up:
 kernel-driven path" below for the design constraints
 discovered during the partial implementation.
-**Owner:** runtime / polydat / nbrs-activity / workload
+**Owner:** runtime / polydat / nbrs-runtime / workload
 authors
 **Implementation target:**
   `polydat/src/nodes/pick.rs` (new),
-  `nbrs-activity/src/wrappers.rs` (result-wire polydat-call dispatch
+  `nbrs-runtime/src/wrappers.rs` (result-wire polydat-call dispatch
   — replaces today's deferred-Warn stub at line ~751),
-  `nbrs-activity/src/fixture.rs` / op-template scope wiring
+  `nbrs-runtime/src/fixture.rs` / op-template scope wiring
   (magic `body` extern),
   `adapters/cql/workloads/full_cql_vector.yaml` (first consumer)
 **Cross-refs:** SRD-12 (GK stdlib), SRD-13d (op-template scope),
@@ -145,7 +145,7 @@ string in one of four forms: `count` (row count), `ok`
 (success boolean), `<path-expr>` (JSON-path into the result
 body), or `<polydat-call>` (arbitrary Polydat expression). The first
 three are implemented in
-`nbrs-activity/src/wrappers.rs::ResultDispenser`. The polydat-call
+`nbrs-runtime/src/wrappers.rs::ResultDispenser`. The polydat-call
 form emits a one-time Warn ("not yet supported — slot will
 resolve to its default") at runtime; the parser at
 `wrappers.rs:751` recognises it via a `(` detector but the
@@ -734,7 +734,7 @@ Three pushes with gates:
   variant for the body wire (see §"Open: body type" in
   Surface 4) and how it round-trips through the JSON-AST
   for map-shape composite output.
-- `nbrs-activity/src/wrappers.rs::ResultDispenser`:
+- `nbrs-runtime/src/wrappers.rs::ResultDispenser`:
   - Replaces the count/ok/path-expr/polydat-call source dispatch
     with a kernel-driven path. The wrapper still occupies
     its position in the SRD-32a registry with
@@ -746,7 +746,7 @@ Three pushes with gates:
     GkState. Map-shape adds the composite-wire assembly step
     (collect each entry's typed value, project to JSON AST,
     materialise as a single typed-map wire).
-- `nbrs-activity/src/wrapper_registrations.rs::trigger_result`
+- `nbrs-runtime/src/wrapper_registrations.rs::trigger_result`
   flips from "result map non-empty" to "result spec
   present and non-empty."
 - Tests:

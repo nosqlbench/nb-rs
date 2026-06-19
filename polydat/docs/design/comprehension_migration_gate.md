@@ -27,7 +27,7 @@ end-to-end. All passing under the legacy code path:
 | `nbrs-workload` | `tests/for_each_forms.rs` | 13 | `cargo test --test for_each_forms -p nbrs-workload` |
 | `nbrs` | `tests/workload_examples.rs` | 41 | `cargo test --test workload_examples -p nbrs` |
 | `nbrs` | `tests/scope.rs` | 9 | `cargo test --test scope -p nbrs` |
-| `nbrs-activity` | `tests/srd71_scope_tree_probe.rs` | 3 | `cargo test --test srd71_scope_tree_probe -p nbrs-activity` |
+| `nbrs-runtime` | `tests/srd71_scope_tree_probe.rs` | 3 | `cargo test --test srd71_scope_tree_probe -p nbrs-runtime` |
 
 **Baseline total: 93 tests passing.** Plus the polydat-internal
 algebra suite (1262 lib + 73 integration) which is invariant
@@ -117,7 +117,7 @@ cargo test --test comprehension -p nbrs && \
 cargo test --test for_each_forms -p nbrs-workload && \
 cargo test --test workload_examples -p nbrs && \
 cargo test --test scope -p nbrs && \
-cargo test --test srd71_scope_tree_probe -p nbrs-activity
+cargo test --test srd71_scope_tree_probe -p nbrs-runtime
 ```
 
 Total runtime: ~10 seconds on a modern dev machine.

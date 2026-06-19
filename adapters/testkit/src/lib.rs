@@ -45,7 +45,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Semaphore;
 
-use nbrs_activity::adapter::{
+use nbrs_runtime::adapter::{
     AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, TextBody,
 };
 use nbrs_workload::model::ParsedOp;
@@ -279,11 +279,11 @@ impl OpDispenser for ModelDispenser {
     fn execute<'a>(
         &'a self,
         cycle: u64,
-        ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
+        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
         Box::pin(async move {
-            let resolved = nbrs_activity::wires::resolve_op_fields_via_wires(&self.op_fields, wires)
+            let resolved = nbrs_runtime::wires::resolve_op_fields_via_wires(&self.op_fields, wires)
                 .map_err(|msg| ExecutionError::Op(AdapterError {
                     error_name: "BindError".into(),
                     message: msg,
@@ -304,7 +304,7 @@ impl OpDispenser for ModelDispenser {
                     OutputTarget::Stdout(_)
                 );
                 if to_stdout {
-                    nbrs_activity::observer::op_output(&text);
+                    nbrs_runtime::observer::op_output(&text);
                 } else {
                     let mut writer = self.writer.lock()
                         .unwrap_or_else(|e| e.into_inner());
@@ -524,7 +524,7 @@ fn parse_latency(s: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nbrs_activity::adapter::ResolvedFields;
+    use nbrs_runtime::adapter::ResolvedFields;
 
     /// Minimal kernel used as the `parent` argument to `map_op`
     /// in tests that don't need a richer Polydat context (SRD-68 Push 2).
@@ -622,8 +622,8 @@ mod tests {
             let d = dispenser.clone();
             let f = fields.clone();
             handles.push(tokio::spawn(async move {
-                let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-                let ctx = nbrs_activity::adapter::ExecCtx::new(&f, &pulls);
+                let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+                let ctx = nbrs_runtime::adapter::ExecCtx::new(&f, &pulls);
                 d.execute(cycle, &ctx).await
             }));
         }
@@ -648,8 +648,8 @@ mod tests {
             vec!["stmt".into()],
             vec![polydat::ast::Value::Str("SELECT 1;".into())],
         );
-        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-        let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
+        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+        let ctx = nbrs_runtime::adapter::ExecCtx::new(&fields, &pulls);
         let result = dispenser.execute(0, &ctx).await.unwrap();
         assert!(result.body.is_some());
     }
@@ -691,8 +691,8 @@ mod tests {
             vec!["stmt".into()],
             vec![polydat::ast::Value::Str("SELECT 1;".into())],
         );
-        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-        let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
+        let pulls = nbrs_runtime::fixture::ResolvedPulls::empty();
+        let ctx = nbrs_runtime::adapter::ExecCtx::new(&fields, &pulls);
 
         // Cycles below threshold succeed.
         for c in [0u64, 1, 2] {
@@ -721,7 +721,7 @@ mod tests {
 // =========================================================================
 
 inventory::submit! {
-    nbrs_activity::adapter::AdapterRegistration {
+    nbrs_runtime::adapter::AdapterRegistration {
         names: || &["testkit"],
         known_params: || &[
             "result", "result-latency",
@@ -729,13 +729,13 @@ inventory::submit! {
             "result-capacity", "result-overload",
             "result-throw-at", "result-throw-name",
         ],
-        display_preference: |_params| nbrs_activity::adapter::DisplayPreference::Auto,
+        display_preference: |_params| nbrs_runtime::adapter::DisplayPreference::Auto,
         supported_controls: || &[],
         create: |params| Box::pin(async move {
             Ok(std::sync::Arc::new(ModelAdapter::with_config(ModelConfig {
                 stdout: StdoutConfig::from_params(&params),
                 diagnose: false,
-            })) as std::sync::Arc<dyn nbrs_activity::adapter::DriverAdapter>)
+            })) as std::sync::Arc<dyn nbrs_runtime::adapter::DriverAdapter>)
         }),
     }
 }
@@ -749,10 +749,10 @@ inventory::submit! {
 // adapter's per-call behaviour is configured at
 // construction.
 inventory::submit! {
-    nbrs_activity::adapter::SharedDriverRegistration {
+    nbrs_runtime::adapter::SharedDriverRegistration {
         adapter: "testkit",
-        driver: nbrs_activity::adapter::DEFAULT_DRIVER_NAME,
-        share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
+        driver: nbrs_runtime::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
             let identity_fields = [
                 "result", "result-latency",
@@ -760,7 +760,7 @@ inventory::submit! {
                 "result-capacity", "result-overload",
                 "result-throw-at", "result-throw-name",
             ];
-            let mut k = nbrs_activity::resource_pool::ResourceKey::new("testkit");
+            let mut k = nbrs_runtime::resource_pool::ResourceKey::new("testkit");
             for field in identity_fields {
                 if let Some(v) = params.get(field) {
                     k = k.with(field, v.clone());

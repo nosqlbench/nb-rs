@@ -19,7 +19,7 @@ service targets using composable data generation kernels.
 │  nbrs-adapter-cql  (engine-scylla / engine-cassandra-cpp) │
 │  nbrs-adapter-openapi (openapi feature)                   │
 ├───────────────────────────────────────────────────────────┤
-│                       nbrs-activity                         │
+│                       nbrs-runtime                         │
 │  Activity engine: executor, op synthesis, sequencing,     │
 │  validation, dispenser wrappers                           │
 ├───────────────┬─────────────────────┬─────────────────────┤
@@ -40,9 +40,9 @@ The crate/module dependency rules — the 8-layer DAG, the per-crate Contract
 Registry, polydat-standalone, no-upward-imports, no-cross-adapter edges — are
 specified and **CI-enforced** in [SRD 05 — Dependency Rules](05_dependency_rules.md)
 (D1–D7, gate: `nbrs/tests/architecture_rules.rs`). In one line: dependencies flow
-strictly downward, `polydat` depends only on `polydat-derive`, `nbrs-activity` is the
+strictly downward, `polydat` depends only on `polydat-derive`, `nbrs-runtime` is the
 integration hub above the foundation crates, adapters implement the
-`nbrs_activity::adapter` contract, and `nbrs` is the composition root.
+`nbrs_runtime::adapter` contract, and `nbrs` is the composition root.
 
 ### Workspace Structure
 
@@ -52,7 +52,7 @@ nb-rs/
 ├── polydat/               Polydat kernel and node library (standalone, extractable)
 ├── polydat-derive/        #[polydat_node] proc-macro
 ├── nbrs-workload/         YAML workload parser
-├── nbrs-activity/         execution engine
+├── nbrs-runtime/         execution engine
 ├── nbrs-metrics/          metrics instruments and reporters
 ├── nbrs-metricsql/        MetricsQL parser / evaluator (atop nbrs-metrics queryapi)
 ├── nbrs-rate/             rate limiter
@@ -102,7 +102,7 @@ Workload YAML ──▶ nbrs-workload ──▶ ParsedOp[]
                                       │        │
 CLI params ─────────────────────────┐ │        │
                                     ▼ ▼        ▼
-                                nbrs-activity
+                                nbrs-runtime
                               ┌────────────────────┐
                               │  Activity           │
                               │  ├── OpSequence     │

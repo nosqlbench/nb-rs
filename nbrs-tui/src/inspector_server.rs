@@ -286,7 +286,7 @@ fn render_meta(state: &RunState) -> String {
     s.push_str(&format!("limit    : {}\n", state.limit));
     s.push_str(&format!("elapsed  : {:.2}s\n", state.elapsed_secs()));
     s.push_str(&format!("finished : {}\n", state.finished));
-    if let Some(sink) = nbrs_activity::log_sink::global() {
+    if let Some(sink) = nbrs_runtime::log_sink::global() {
         let dropped = sink.dropped_count();
         if dropped > 0 {
             s.push_str(&format!("log lines dropped: {dropped} (sink overflow)\n"));
@@ -438,7 +438,7 @@ fn render_snapshot(state: &RunState) -> String {
 /// One row in the `controls` listing. Matches the structure of
 /// `nbrs-web::routes::list_controls` but rendered as text.
 fn render_controls() -> String {
-    let Some(root) = nbrs_activity::polydat_nodes::runtime_context::session_root_handle() else {
+    let Some(root) = nbrs_runtime::polydat_nodes::runtime_context::session_root_handle() else {
         return "(no session)".into();
     };
     let mut rows: Vec<String> = Vec::new();
@@ -511,7 +511,7 @@ fn render_set(
         return "ERR no_runtime: inspector server has no tokio runtime handle; \
                 control writes are unavailable".into();
     };
-    let Some(root) = nbrs_activity::polydat_nodes::runtime_context::session_root_handle() else {
+    let Some(root) = nbrs_runtime::polydat_nodes::runtime_context::session_root_handle() else {
         return format!("ERR no_session: no active session; cannot resolve control '{name}'");
     };
 
@@ -593,7 +593,7 @@ fn walk_live_metrics(
 }
 
 fn render_metrics() -> String {
-    let Some(root) = nbrs_activity::polydat_nodes::runtime_context::session_root_handle() else {
+    let Some(root) = nbrs_runtime::polydat_nodes::runtime_context::session_root_handle() else {
         return "(no session)".into();
     };
     let instances = walk_live_metrics(&root);
@@ -673,7 +673,7 @@ fn render_metric(tail: &str) -> String {
         Ok(s) => s,
         Err(e) => return format!("ERR parse: {e}"),
     };
-    let Some(root) = nbrs_activity::polydat_nodes::runtime_context::session_root_handle() else {
+    let Some(root) = nbrs_runtime::polydat_nodes::runtime_context::session_root_handle() else {
         return "(no session)".into();
     };
     let mut hits: Vec<&MetricInstance> = Vec::new();
@@ -774,7 +774,7 @@ fn is_latency_family(family: &str) -> bool {
 /// scrape the same status the TUI shows, without parsing
 /// terminal output.
 fn render_readout(state: &RunState, tail: &str) -> String {
-    use nbrs_activity::readouts as ro;
+    use nbrs_runtime::readouts as ro;
     use ro::ReadoutContext;
 
     let name = if tail.is_empty() { "phase_status" } else { tail.trim() };

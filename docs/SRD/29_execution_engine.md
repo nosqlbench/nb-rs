@@ -1,6 +1,6 @@
-# 29: Execution Engine — Contract & Axioms (nbrs-activity)
+# 29: Execution Engine — Contract & Axioms (nbrs-runtime)
 
-The front door for **nbrs-activity**, the integration hub (layer L4): the async
+The front door for **nbrs-runtime**, the integration hub (layer L4): the async
 dispatch loop, the adapter trait, op sequencing, scenario-tree walking, error/stop
 handling, observation, and the runner. It depends on every foundation crate
 (`polydat` + `nbrs-metrics` + `nbrs-rate` + `nbrs-errorhandler` + `nbrs-workload`) and
@@ -17,7 +17,7 @@ mechanism docs (SRD 30–35, 68, 71–76, 82–83) are the Pillar-3 tier beneath
 ### Public surface (what nb-rs consumes)
 
 The authoritative surface + edges are in [SRD 05 §Contract Registry](05_dependency_rules.md);
-grouped here by consumption role for navigation. `nbrs-activity` declares 51 public modules
+grouped here by consumption role for navigation. `nbrs-runtime` declares 51 public modules
 today, but the surface other crates actually depend on is the set below. New cross-crate use
 should stay within it.
 
@@ -121,7 +121,7 @@ Scenario-tree / scope / scheduler structure is [SRD 18b](18b_scenario_tree_and_s
 
 ## Runtime context nodes (DSL surface)
 
-The engine registers a set of Polydat library nodes (in `nbrs-activity::polydat_nodes`)
+The engine registers a set of Polydat library nodes (in `nbrs-runtime::polydat_nodes`)
 that project nb-rs runtime state into the DSL — the host-registered nodes the open
 polydat registry allows (polydat itself provides only deterministic nodes; these depend
 on the component tree / executor / controls, which is why they live here, not in
@@ -153,8 +153,8 @@ access surface"](10_polydat_language.md); the open-registry mechanism is
 ---
 
 ## See also (Pillar 4)
-- crate root: `nbrs-activity/src/lib.rs` (module doc) — `runner::Runner` is the entry point
-- tests: `nbrs-activity/tests/`, `nbrs/tests/op_composition_dryrun.rs`
+- crate root: `nbrs-runtime/src/lib.rs` (module doc) — `runner::Runner` is the entry point
+- tests: `nbrs-runtime/tests/`, `nbrs/tests/op_composition_dryrun.rs`
 - [SRD 00b — Subsystem Treatment Standard](00b_subsystem_standard.md) (the rubric)
 - [SRD 05 — Dependency Rules](05_dependency_rules.md) (the enforced edges + Contract Registry)
 - [SRD 01 — System Overview](01_system_overview.md)

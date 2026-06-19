@@ -16,7 +16,7 @@
 //! - **D6** — no non-polydat crate reaches past polydat's public
 //!   surface into a deep internal path.
 //! - **D5** — consumers honor each crate's declared public surface.
-//!   Staged `#[ignore]` until `nbrs-activity`'s ~50-module surface is
+//!   Staged `#[ignore]` until `nbrs-runtime`'s ~50-module surface is
 //!   narrowed to its declared Contract Registry row.
 //!
 //! The layer map below is the *specification*: the test asserts the
@@ -42,14 +42,14 @@ fn layer(crate_name: &str) -> Option<u32> {
         // standalone L0 leaf, by design.
         "nbrs-metricsql" => 3,
         // SRD-86 — the optimizer algorithms are an inventory PLUGIN: they
-        // register against the core contract (defined in nbrs-activity) and
+        // register against the core contract (defined in nbrs-runtime) and
         // are discovered via inventory, so the crate depends on the core and
         // sits ABOVE it, exactly like an adapter. The core never names it.
         "nbrs-optimizers" => 5,
         "polydat" => 1,
         "nbrs-metrics" | "nbrs-workload" => 2,
         "nbrs-rate" | "nbrs-adapter-openapi" => 3,
-        "nbrs-activity" => 4,
+        "nbrs-runtime" => 4,
         "nbrs-adapter-stdout" | "nbrs-adapter-http" | "nbrs-adapter-plotter"
         | "nbrs-adapter-cql" | "nbrs-tui" | "nbrs-web" => 5,
         "nbrs-adapter-testkit" => 6,
@@ -328,7 +328,7 @@ fn d5_public_surface() {
             &["widgets", "frame_broker", "prompt_state", "readout_panel", "readout_sink", "tui_sink"],
         ),
         (
-            "nbrs-activity",
+            "nbrs-runtime",
             &[
                 "adapters", "params", "scope_flattening", "phase_filter",
                 "phase_params", "scheduler", "profiler", "trace_router", "executor", "error_policy",
@@ -367,7 +367,7 @@ fn d5_public_surface() {
 /// extractable (D1); its design must not depend on the consumer's docs,
 /// or lifting it out would leave dangling references. This is the
 /// docs-level analog of D1/D6. Conceptual mentions of the host ("the
-/// host", even "nbrs-activity" in migration notes) are fine — only
+/// host", even "nbrs-runtime" in migration notes) are fine — only
 /// references *into* `docs/SRD/` are forbidden.
 #[test]
 fn d7_polydat_self_contained() {

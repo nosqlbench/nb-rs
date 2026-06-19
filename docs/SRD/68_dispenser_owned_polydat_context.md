@@ -22,7 +22,7 @@ surface — the dispenser-owned per-fiber kernel via the narrow
 (workload params, iter vars) into the adapter's `map_op` (and the
 validation wrapper's `wrap`) against its own canonical kernel.
 
-**Owner:** nbrs-activity (synthesis, executor, scope, dispenser
+**Owner:** nbrs-runtime (synthesis, executor, scope, dispenser
 construction), nbrs-adapter-* (every adapter's `map_op`).
 
 **Cross-refs:** SRD-13c (scope model — `bind_outer_scope`, manifest
@@ -367,7 +367,7 @@ Each push leaves the tree green; the system is functional at every
 boundary.
 
 ### Push 1 — `WireSource` trait + `ExecCtx.wires`
-- Define `WireSource` on `nbrs-activity::adapter`.
+- Define `WireSource` on `nbrs-runtime::adapter`.
 - Implement for `PolydatKernel`.
 - Add `wires: &dyn WireSource` to `ExecCtx`.
 - Adapters keep their existing `fields`/`pulls` paths; new field

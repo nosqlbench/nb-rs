@@ -10,7 +10,7 @@
 //! here — only the `nbrs` binary force-links them).
 #![cfg(feature = "runtime")]
 
-use nbrs_activity::optimize as core;
+use nbrs_runtime::optimize as core;
 
 /// Maximize `-||x - target||²` — a single bowl with maximum 0 at `target`.
 struct ShiftedSphere {

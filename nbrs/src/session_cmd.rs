@@ -11,7 +11,7 @@
 //! datetime fields and accepts polydat string form.
 
 use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
-use nbrs_activity::session::{init_empty_session, utc_datetime_fields, SessionReuse};
+use nbrs_runtime::session::{init_empty_session, utc_datetime_fields, SessionReuse};
 
 /// Spec for the `session` command tree.
 pub fn spec() -> Command {

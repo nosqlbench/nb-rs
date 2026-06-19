@@ -3,7 +3,7 @@
 **Status:** DRAFT — the optimizer subsystem.
 
 - **LANDED + verified (2026-06-17):** the **pull-through functor contract**
-  (in `nbrs-activity`) — `Optimizer::coordinate_source`, the
+  (in `nbrs-runtime`) — `Optimizer::coordinate_source`, the
   `CoordinateSource` capability decorators (`as_feedback`/`as_pull`),
   `FeedbackSource::step` (the optimizer primitive), `PullSource`/`LexSource`,
   the capability-favoring default driver, and `NullOptimizer` as the literal
@@ -37,7 +37,7 @@
   `{var}`.)
 
 **Owner:**
-- `nbrs-activity` owns the **contract** (`nbrs_activity::optimize`): the
+- `nbrs-runtime` owns the **contract** (`nbrs_runtime::optimize`): the
   `Optimizer` functor, `CoordinateSource`/`PullSource`/`FeedbackSource`,
   `Coord`/`AxisValue`, `SearchSpace`/`Axis`/`AxisKind`/`Changeover`,
   `LexSource`/`PullOnly`, `Budget`/`Report`/`Observation`/`StopReason`,
@@ -113,7 +113,7 @@ normative form.
 
 ## Contract surface
 
-### The functor + the pull-through source (core, `nbrs_activity::optimize`)
+### The functor + the pull-through source (core, `nbrs_runtime::optimize`)
 
 An optimizer is a **stateless functor**; the search state lives in the
 **source** it produces, which the executor pulls through.
@@ -800,15 +800,15 @@ Both adopted methods consume `AxisKind::Discrete` / `Categorical` **value-native
 
 | Artifact | Location |
 |---|---|
-| Core contract (functor + sources + value model) | `nbrs-activity/src/optimize/contract.rs` |
-| Runtime seam + node-level dispatch | `nbrs-activity/src/optimize/mod.rs`, `executor.rs` |
+| Core contract (functor + sources + value model) | `nbrs-runtime/src/optimize/contract.rs` |
+| Runtime seam + node-level dispatch | `nbrs-runtime/src/optimize/mod.rs`, `executor.rs` |
 | Algorithm library (loop-form) | `nbrs-optimizers/src/{lib,space,optimizer,registry}.rs` + `src/algos/*.rs` |
 | Loop→source `ThreadBridge` + numeric projector + inventory | `nbrs-optimizers/src/bridge.rs` |
 | Embedded markdown docs | `nbrs-optimizers/src/docs.rs` |
 | Manifold test models | `nbrs-optimizers/src/testmodels.rs` (sphere/rosenbrock/rastrigin/branin) |
 | Convergence tests (local loops) + bridge e2e | `nbrs-optimizers/tests/{converges,bridge_e2e}.rs` + `bridge.rs` unit test |
 | `optimizer:` config | `nbrs-workload/src/model.rs` (`OptimizeBlock`/`OptimizeAxis`), `parse.rs` |
-| Disposition wiring | `nbrs-activity/src/stop_conditions.rs`, `workload_shell.rs` |
+| Disposition wiring | `nbrs-runtime/src/stop_conditions.rs`, `workload_shell.rs` |
 | Settle statistic nodes | `polydat/src/library/*` (EWMA / rolling-variance / freshness / slope) |
 | `describe optimizers` | `nbrs/src/describe.rs`; `nbrs/tests/describe_optimizers.rs` |
 | Example workloads (per feature) | `examples/workloads/optimizer_*.yaml` — testkit synthetic-manifold objectives, runnable standalone |
@@ -822,20 +822,20 @@ Both adopted methods consume `AxisKind::Discrete` / `Categorical` **value-native
 The optimizer follows the **adapter/plugin pattern** — inverted from a naive
 "core depends on the algorithm library":
 
-- **The contract lives in the core.** `nbrs-activity` (L4) defines the functor +
+- **The contract lives in the core.** `nbrs-runtime` (L4) defines the functor +
   source contract, the value model, the `OptimizerRegistration` inventory type,
   and discovery — with **no dependency on any algorithm crate**.
 - **The algorithms are an inventory plugin.** `nbrs-optimizers` (L5) depends on
-  `nbrs-activity` *only* under its `runtime` feature, where `bridge.rs`
+  `nbrs-runtime` *only* under its `runtime` feature, where `bridge.rs`
   `inventory::submit!`s one registration per optimizer; `nbrs-optimizers →
-  nbrs-activity` is a **downward** edge (D2). Verified by D0/D2 in
+  nbrs-runtime` is a **downward** edge (D2). Verified by D0/D2 in
   `architecture_rules`.
 - **The default build is standalone.** Without `runtime`, `nbrs-optimizers`
   depends on nothing — fully-locally-testable, independently extractable;
   its algorithm API is its own contract → **D5-exempt**.
 - **The binary force-links the plugin** (`extern crate nbrs_optimizers;` in
   `nbrs/src/run.rs`) so its registrations are discovered.
-- The two-axis `Outcome` + the `ErrorPolicy` stay in `nbrs-activity`
+- The two-axis `Outcome` + the `ErrorPolicy` stay in `nbrs-runtime`
   (SRD-82); the Report→Outcome mapping lives on the runtime side.
 
 ---
@@ -882,7 +882,7 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
    `optimizer_hybrid.yaml`.
 8. **Settle-detector pipeline** — *first push SHIPPED 2026-06-18.* A
    `PhaseStopEvaluator` (general cadence-pulse phase evaluator,
-   `nbrs-activity::optimize::phase_pulse`) subscribes to the smallest metrics
+   `nbrs-runtime::optimize::phase_pulse`) subscribes to the smallest metrics
    cadence via the existing feed; each pulse it pokes the objective off node
    X's kernel (re-reading the latest window), feeds `is_stable`, publishes the
    windowed median to a register, and on a verdict sets a terminal phase

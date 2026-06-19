@@ -490,7 +490,7 @@ fn dist_normal(
 }
 
 /// Alias of [`dist_normal`]. Preserved because workload examples
-/// and the `nbrs-activity` distribution binding both surface
+/// and the host's distribution binding both surface
 /// `icd_normal` as the public DSL name.
 #[crate::polydat_node(category = Distributions)]
 fn icd_normal(

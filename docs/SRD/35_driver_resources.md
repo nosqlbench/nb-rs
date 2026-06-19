@@ -2,8 +2,8 @@
 
 **Status:** design (not yet implemented)
 **Owner:** runtime / executor + adapters
-**Implementation target:** `nbrs-activity/src/resource_pool.rs` (new),
-  `nbrs-activity/src/adapter.rs` (extension), per-adapter
+**Implementation target:** `nbrs-runtime/src/resource_pool.rs` (new),
+  `nbrs-runtime/src/adapter.rs` (extension), per-adapter
   driver-instance impls
 **Cross-refs:** SRD-30 (adapter interface), SRD-31 (op pipeline),
   SRD-04 (umbrella options), SRD-19 (component tree),
@@ -983,7 +983,7 @@ Three pushes, each independently shippable:
 
 ### Push A — pool layer + `PerPhase` default for everyone
 
-- Add `nbrs-activity::resource_pool` with the new traits, the
+- Add `nbrs-runtime::resource_pool` with the new traits, the
   multi-generation `Entry` machinery, the pre-map-driven
   refcount walker, and the lifecycle event emitters
   (`attach` / `const.{started,completed,failed}` /

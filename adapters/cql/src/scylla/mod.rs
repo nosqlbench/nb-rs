@@ -24,7 +24,7 @@ mod result;
 
 use std::sync::Arc;
 
-use nbrs_activity::adapter::{
+use nbrs_runtime::adapter::{
     AdapterError, DriverImpl, DriverAdapter, ExecutionError, OpDispenser, StatusMetric,
 };
 use crate::common::{CqlConfig, CqlConsistency, OpMode, STMT_FIELD_NAMES};
@@ -229,8 +229,8 @@ impl DriverAdapter for ScyllaCqlAdapter {
                         let (lvalue_type, allow_fusion) =
                             match lvalue_specs.get(idx).and_then(|s| s.as_ref()) {
                                 Some(LvalueSpec::Wildcard) => {
-                                    nbrs_activity::diag!(
-                                        nbrs_activity::observer::LogLevel::Info,
+                                    nbrs_runtime::diag!(
+                                        nbrs_runtime::observer::LogLevel::Info,
                                         "scylla op '{op}' field '{field}' slot [{idx}] wire `{name}`: \
                                          `:*` wildcard opt-in seen on this bind-point — polydat \
                                          binder slot keeps cluster-reported lvalue type \
@@ -244,8 +244,8 @@ impl DriverAdapter for ScyllaCqlAdapter {
                                 Some(LvalueSpec::Explicit(type_name)) => {
                                     match polydat::ast::PortType::from_workload_name(type_name) {
                                         Some(pt) => {
-                                            nbrs_activity::diag!(
-                                                nbrs_activity::observer::LogLevel::Info,
+                                            nbrs_runtime::diag!(
+                                                nbrs_runtime::observer::LogLevel::Info,
                                                 "scylla op '{op}' field '{field}' slot [{idx}] wire `{name}`: \
                                                  `:{type_name}` lvalue assertion seen on this bind-point \
                                                  — using workload-asserted polydat type `{type_name}` \
@@ -270,8 +270,8 @@ impl DriverAdapter for ScyllaCqlAdapter {
                                 }
                                 None => {
                                     if let Some(cql_label) = fallback {
-                                        nbrs_activity::diag!(
-                                            nbrs_activity::observer::LogLevel::Warn,
+                                        nbrs_runtime::diag!(
+                                            nbrs_runtime::observer::LogLevel::Warn,
                                             "scylla op '{op}' field '{field}' slot [{idx}] wire `{name}`: \
                                              CQL type {cql_label} has no precise polydat mapping yet — \
                                              falling back to Str-lvalue, which permits any rvalue and \
@@ -416,10 +416,10 @@ inventory::submit! {
 // `CqlConfig::to_resource_key("scylla")` keys share a
 // single `ScyllaCqlAdapter` for the whole workload.
 inventory::submit! {
-    nbrs_activity::adapter::SharedDriverRegistration {
+    nbrs_runtime::adapter::SharedDriverRegistration {
         adapter: "cql",
         driver: "scylla",
-        share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
+        share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
             let cfg = crate::common::CqlConfig::from_params(params)
                 .map_err(|e| format!("scylla config error: {e}"))?;

@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use nbrs_activity::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
+use nbrs_runtime::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
 use polydat::ast::Value;
 use scylla::client::session::Session;
 use scylla::statement::{Consistency, batch::{Batch, BatchType}, prepared::PreparedStatement};
@@ -75,7 +75,7 @@ impl OpDispenser for ScyllaBatchDispenser {
     fn execute<'a>(
         &'a self,
         cycle: u64,
-        ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
+        ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
         Box::pin(async move {

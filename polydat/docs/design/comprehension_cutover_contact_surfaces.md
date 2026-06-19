@@ -32,11 +32,11 @@ Per-surface outcome:
 |---|---------|---------------|
 | 1 | Text → AST parsing | `ComprehensionSpec` / `parse_text` is the public surface (PR 9c-1a). Legacy `parse` module retained internally; output converted to algebra via `legacy_to_algebra`. |
 | 2 | AST data types | Workload model and scope tree hold `algebra::Comprehension` (now `polydat::comprehension::Comprehension`) — PR 9c-2. |
-| 3 | Polydat source synthesis | Shared cascade walker in `nbrs-activity/src/scope_synth/` drives the polydat `SubcontextBuilder`. Three of four sister scope builders (phase / do_loop / for_each) refactored onto the shared walker; op_template kept its narrow-cascade policy. `polydat::comprehension::synthesis` dissolved — PR 9c-1b. |
+| 3 | Polydat source synthesis | Shared cascade walker in `nbrs-runtime/src/scope_synth/` drives the polydat `SubcontextBuilder`. Three of four sister scope builders (phase / do_loop / for_each) refactored onto the shared walker; op_template kept its narrow-cascade policy. `polydat::comprehension::synthesis` dissolved — PR 9c-1b. |
 | 4 | Iteration driver | Executor calls `polydat::comprehension::runtime::evaluate_for_iteration` directly. Algebra IR's static interpreter (`ir/interpreter.rs`) serves the §9.5 consumption surfaces; the runtime evaluator handles dependent-product semantics for executor use. `iteration` module deleted — PR 9c-4. |
 | 5 | String interpolation | Relocated to `polydat::kernel::interp` — PR 9c-3. |
 | 6 | Order application | Algebra strategies own ordering. `order` module deleted — PR 9c-4b. |
-| 7 | Polydat literal formatters | `nbrs-activity/src/scope_synth/helpers.rs` — PR 9c-1b. |
+| 7 | Polydat literal formatters | `nbrs-runtime/src/scope_synth/helpers.rs` — PR 9c-1b. |
 
 Plus a spec amendment ([comprehension_forms.md](comprehension_forms.md)
 §3.2): Cartesian was reformulated as dependent product (Σ),
@@ -66,7 +66,7 @@ parse, eval, synthesis, order, iteration}`, promote `algebra::*` to
 too compact:
 
 - ~5,000 lines live in the legacy modules.
-- ~48 external call sites across 7 files in `nbrs-activity` and
+- ~48 external call sites across 7 files in `nbrs-runtime` and
   `nbrs-workload`.
 - The legacy modules carry responsibilities the algebra layer does
   **not** yet replicate (notably **Polydat source synthesis for child
@@ -94,7 +94,7 @@ implementation begins.
 | 4 | Iteration driver | polydat (legacy) | polydat | `algebra::surfaces::ScopedKernelStream<PolydatKernelScope>` |
 | 5 | String interpolation against a kernel | polydat (legacy) | polydat (relocated) | `polydat::kernel::interp::*` |
 | 6 | Order application | polydat (internal only) | — (deleted) | (absorbed into algebra strategies) |
-| 7 | Polydat literal formatters | polydat (legacy) | **nbrs-activity** | walker-side helpers |
+| 7 | Polydat literal formatters | polydat (legacy) | **nbrs-runtime** | walker-side helpers |
 
 Surface **#3** is the shared-responsibility surface: polydat owns the
 builder, activity owns the walker that drives it (see Surface 3 below
@@ -133,9 +133,9 @@ Turns the textual comprehension grammar — `var in expr`, `where`,
   (string vs list vs list-of-lists) itself, then calls
   `parse_clause_list` on the entries and `comprehension_from_subspaces`
   to fold them.
-- `nbrs-activity/src/runner.rs` — a one-off call to
+- `nbrs-runtime/src/runner.rs` — a one-off call to
   `parse_comprehension_text` for an inline-text form.
-- `nbrs-activity/src/scope_tree.rs` (tests only) — `parse_clause_list`
+- `nbrs-runtime/src/scope_tree.rs` (tests only) — `parse_clause_list`
   for test setup.
 
 ### Recommendation: **polydat owns; surface is `ComprehensionSpec` + `parse_text`**
@@ -147,7 +147,7 @@ External consumers reach the parser through either:
   already have YAML- or JSON-shaped input. nbrs-workload's YAML loader
   is the primary consumer.
 - `parse_text(&str)` — for callers that have a text block (REPL,
-  inline-text shapes in scenario files). nbrs-activity's runner is
+  inline-text shapes in scenario files). nbrs-runtime's runner is
   the primary consumer.
 
 The structural-detection rule (`comprehension_from_subspaces`)
@@ -161,7 +161,7 @@ shape, builds a `ComprehensionSpec`, calls `.into_algebra()`."
 This was already largely landed in PR 9b. The cutover work here is
 **removing** the external use of `parse_clause_list` /
 `parse_comprehension_text` / `comprehension_from_subspaces` from
-nbrs-workload and nbrs-activity by re-routing through
+nbrs-workload and nbrs-runtime by re-routing through
 `ComprehensionSpec`.
 
 ### Risk
@@ -201,16 +201,16 @@ This is the most-distributed surface. ~25 call sites across:
 
 - `nbrs-workload/src/model.rs` — the workload model holds
   `Comprehension` as a field.
-- `nbrs-activity/src/scope_tree.rs` — match arms over
+- `nbrs-runtime/src/scope_tree.rs` — match arms over
   `ComprehensionMode`, constructs `Comprehension::cartesian(...)` in
   tests, reads `Clause` vars.
-- `nbrs-activity/src/scope.rs` — reads clause vars for binding origin
+- `nbrs-runtime/src/scope.rs` — reads clause vars for binding origin
   determination.
-- `nbrs-activity/src/scope_flattening.rs` — constructs empty
+- `nbrs-runtime/src/scope_flattening.rs` — constructs empty
   `Comprehension::cartesian(vec![])` for flattening edge cases.
-- `nbrs-activity/src/executor.rs` — receives `&[Clause]`, holds
+- `nbrs-runtime/src/executor.rs` — receives `&[Clause]`, holds
   `IterationStep` referring to clauses.
-- `nbrs-activity/src/runner.rs` — match arms over
+- `nbrs-runtime/src/runner.rs` — match arms over
   `ComprehensionMode` and `ClauseSource`.
 
 ### Recommendation: **polydat owns; surface is `algebra::Comprehension`**
@@ -288,7 +288,7 @@ This module is **2,288 lines** — about 45% of all legacy code.
 
 ### Callers
 
-`nbrs-activity` exclusively. ~14 sites across `scope.rs`,
+`nbrs-runtime` exclusively. ~14 sites across `scope.rs`,
 `scope_tree.rs`, `runner.rs`. **No `nbrs-workload` or `polydat`-
 internal callers.**
 
@@ -435,7 +435,7 @@ Medium. Risks specific to this approach:
 ### Alternatives considered and rejected
 
 **Relocate synthesis wholesale.** Earliest draft recommended moving
-`synthesis.rs` to `nbrs-activity/src/synthesis/` as a self-contained
+`synthesis.rs` to `nbrs-runtime/src/synthesis/` as a self-contained
 pipeline. Rejected because it preserves the monolithic
 "synthesis function" shape rather than separating walking, building,
 and synthesis; it bypasses `SubcontextBuilder` (the existing shared-
@@ -472,7 +472,7 @@ The legacy public surface:
 
 ### Callers
 
-- `nbrs-activity/src/executor.rs` — `iterate_scope` is the runtime
+- `nbrs-runtime/src/executor.rs` — `iterate_scope` is the runtime
   driver; `IterationStep` is the executor's per-iteration record.
 
 ### Recommendation: **polydat owns; surface is `algebra::surfaces::ScopedKernelStream<PolydatKernelScope>`**
@@ -489,7 +489,7 @@ The algebra layer already has the canonical replacement:
 The executor consumes a `ScopedKernelStream<PolydatKernelScope>`. Per-
 iteration, it receives a `ScopedKernelInstance` whose `kernel: Arc<PolydatKernel>`
 field is the child kernel ready to use. The synthesis pre-stage
-(now in nbrs-activity) produces the parent kernel; per-iter
+(now in nbrs-runtime) produces the parent kernel; per-iter
 `PolydatKernelScope` does the rebind via the existing
 `PolydatKernel::for_iteration` primitive.
 
@@ -530,7 +530,7 @@ internal helpers, not this surface).
 
 ### Callers
 
-- `nbrs-activity/src/executor.rs` — 1 external call to
+- `nbrs-runtime/src/executor.rs` — 1 external call to
   `interpolate_via_kernel`.
 - Internal: synthesis uses these heavily.
 
@@ -633,15 +633,15 @@ module).
 
 ### Callers
 
-100% nbrs-activity (same distribution as surface #3).
+100% nbrs-runtime (same distribution as surface #3).
 
-### Recommendation: **nbrs-activity owns as walker-side helpers**
+### Recommendation: **nbrs-runtime owns as walker-side helpers**
 
 These are Polydat code-generator details — what the walker (Surface #3)
 needs to emit `import` / `body` declarations into the builder. They
-live in `nbrs-activity` alongside the scope walker that calls them.
+live in `nbrs-runtime` alongside the scope walker that calls them.
 Activity-side because the output shape is governed by
-nbrs-activity's Polydat source conventions, not by polydat's algebra; and
+nbrs-runtime's Polydat source conventions, not by polydat's algebra; and
 because the only callers are the walker and its peers.
 
 If a polydat-internal need for "format a Value as a Polydat literal"
@@ -672,7 +672,7 @@ outside polydat. 93 baseline tests green.
 
 ### PR 9c-1b: Dissolve synthesis into walker + builder + query API
 
-- **Walker (activity, new):** build a walker in `nbrs-activity/src/synthesis/`
+- **Walker (activity, new):** build a walker in `nbrs-runtime/src/synthesis/`
   that performs the comprehension-AST walk, the workload-param
   reference walk, and the parent-program walk (via polydat's public
   query API). The walker drives `SubcontextBuilder` to accumulate
@@ -705,7 +705,7 @@ outside polydat. 93 baseline tests green.
 
 - Workload model holds `algebra::Comprehension` instead of legacy
   `Comprehension`.
-- All inspection sites in nbrs-activity (scope.rs, scope_tree.rs,
+- All inspection sites in nbrs-runtime (scope.rs, scope_tree.rs,
   runner.rs, executor.rs, scope_flattening.rs) migrate match arms
   from legacy AST shape to algebra operator-tree shape.
 - The walker (from 9c-1b) becomes an algebra-AST walker.
@@ -755,8 +755,8 @@ Each push is independently reviewable, has its own acceptance bar
 
 ## Resolved decisions
 
-1. **Walker location in nbrs-activity (Surface #3).** The walker
-   rewrite lives in a new `nbrs-activity/src/synthesis/` module,
+1. **Walker location in nbrs-runtime (Surface #3).** The walker
+   rewrite lives in a new `nbrs-runtime/src/synthesis/` module,
    broken into submodules for the walker itself, the Surface #7
    formatters, and the comprehension-walking helpers. Clean
    separation from existing scope code; easy to test in isolation;

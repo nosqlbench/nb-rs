@@ -711,7 +711,7 @@ crossing into inner kernels via the `set:` /
    `set_wire_idx` then detects the residual type
    mismatch and surfaces `WriteError::TypeMismatch`
    to the host (scope-init code in
-   `nbrs-activity/src/synthesis.rs::apply_scope_values`
+   `nbrs-runtime/src/synthesis.rs::apply_scope_values`
    re-raises this as a `panic!`).
 
 ---

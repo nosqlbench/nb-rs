@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! SRD-86 — end-to-end test of the optimizer service boundary through the
-//! real binary: the core contract (`nbrs-activity`) discovers the
+//! real binary: the core contract (`nbrs-runtime`) discovers the
 //! `nbrs-optimizers` plugin registrations via `inventory` at link time (the
 //! crate is force-linked in `run.rs`, like the adapters), and
 //! `nbrs describe optimizers` renders them. The core never depends on the

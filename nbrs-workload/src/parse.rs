@@ -233,7 +233,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // The slot keys must match the lower-cased
     // Event::slot_name values (`on_update`, `on_phase_end`, …).
     // Inline body strings keep their full text — the
-    // body-grammar parser in nbrs-activity::readouts::parse
+    // body-grammar parser in nbrs-runtime::readouts::parse
     // bakes them at activity-init time.
     let readouts = parse_readouts_block(obj.get("readouts"))?;
 
@@ -433,7 +433,7 @@ fn collect_idempotent_under_do_loop(
 /// (`[A-Za-z_][A-Za-z0-9_]*`), pass through unchanged.
 /// Otherwise treat as an inline expression and wrap with
 /// `{{...}}` so the existing inline-expression machinery
-/// in `nbrs-activity::scope::build_scope` synthesises a
+/// in `nbrs-runtime::scope::build_scope` synthesises a
 /// hidden binding (`__expr_N := <expr>`) and rewrites the
 /// condition to reference it.
 pub fn normalize_condition_clause(s: &str) -> String {

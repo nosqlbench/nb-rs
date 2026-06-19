@@ -16,7 +16,7 @@ pub mod cursor_sugar;
 pub mod pprint;
 /// External-facing factory module. Made `pub` (was `pub(crate)`) so
 /// crates that host polydat nodes outside the polydat crate
-/// (nbrs-activity, nbrs-metrics) can reach `ConstArg`, `compile_ctx`,
+/// (host runtimes) can reach `ConstArg`, `compile_ctx`,
 /// and `build_node` from their `register_nodes!` invocations.
 pub mod factory;
 pub mod factories;
@@ -42,7 +42,7 @@ pub use compile::{compile_polydat, compile_polydat_checked, compile_polydat_with
 /// literal placeholders (`{name}` form) contribute their
 /// identifier-shaped placeholder bodies.
 ///
-/// Cross-crate consumers (e.g. nbrs-activity's SRD-13f
+/// Cross-crate consumers (e.g. the host's SRD-13f
 /// synthesizer) use this to discover transitive wire refs from
 /// a binding's RHS without depending on the private `validate`
 /// module.

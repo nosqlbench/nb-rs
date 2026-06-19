@@ -31,13 +31,13 @@ CASSANDRA_SYS_INCLUDE_PATH = { value = "adapters/cql/target/sysroot/include", re
 # large binaries (~350 MB debug). mold parallelizes across all cores.
 #
 # `force-frame-pointers=yes` keeps `rbp` reserved as the frame-pointer
-# register on x86_64. `nbrs-activity::profiler` defaults to
+# register on x86_64. `nbrs-runtime::profiler` defaults to
 # `perf record --call-graph fp` (set via `profiler=perf` on the CLI);
 # without this flag, perf would have to fall back to DWARF call-graphs
 # whose post-processing routes through `addr2line` and is 5–10× slower
 # at flamegraph generation. Cost: one register reserved across the
 # binary — negligible for the workload-driver path. The tradeoff is
-# documented in `nbrs-activity::profiler` next to the call-graph
+# documented in `nbrs-runtime::profiler` next to the call-graph
 # selection logic.
 # Linux (x86_64 + aarch64): clang + mold + frame pointers + -lz.
 # Splitting by triple would force the CI matrix to keep two

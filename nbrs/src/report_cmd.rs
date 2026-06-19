@@ -35,12 +35,12 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
     // markdown output, text-section writes) sees the same
     // session dir. Read-side only — never mutates `logs/latest`.
     let session_dir: Option<PathBuf> =
-        nbrs_activity::session::read_session_dir(args);
+        nbrs_runtime::session::read_session_dir(args);
     let session_db: Option<PathBuf> =
         session_dir.as_ref().map(|d| d.join("metrics.db"));
     let output_root: PathBuf = session_dir
         .clone()
-        .unwrap_or_else(nbrs_activity::session::latest_session_dir);
+        .unwrap_or_else(nbrs_runtime::session::latest_session_dir);
 
     // Promote `nbrs report plot ...` / `nbrs report table ...` to
     // the kind-filtered form, peeling the kind keyword off so the
@@ -80,7 +80,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| session_db.as_deref()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| nbrs_activity::session::latest_metrics_db()
+            .unwrap_or_else(|| nbrs_runtime::session::latest_metrics_db()
                 .display().to_string()));
     eprintln!("nbrs report: {} item(s) resolved from {} ({})",
         items.len(), source_kind, source_path);
@@ -496,7 +496,7 @@ fn run_add(
     result: &crate::report_build::BuildResult,
     session_dir: &std::path::Path,
 ) {
-    use nbrs_activity::report_anchor::{self, AnchorFlag};
+    use nbrs_runtime::report_anchor::{self, AnchorFlag};
 
     // The builder enforced `--at` and `--contextual` are
     // mutually exclusive; here we just translate the captured
@@ -930,7 +930,7 @@ fn resolve_item(
     style: &nbrs_workload::report::Style,
     params: &std::collections::HashMap<String, String>,
 ) -> ResolvedItem {
-    let expand = |s: &str| nbrs_activity::runner::expand_workload_params(s, params);
+    let expand = |s: &str| nbrs_runtime::runner::expand_workload_params(s, params);
     ResolvedItem {
         name: item.name.clone(),
         kind: item.kind,
@@ -1036,7 +1036,7 @@ pub(crate) fn resolve_items(
         // report parser ingests.
         let db_path = session_db
             .map(PathBuf::from)
-            .unwrap_or_else(nbrs_activity::session::latest_metrics_db);
+            .unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
         if !db_path.exists() { return Ok(Vec::new()); }
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
@@ -1920,7 +1920,7 @@ fn discover_faceted_tuples(
     use std::collections::BTreeSet;
     let db_path = match session_db {
         Some(p) => p.to_path_buf(),
-        None => nbrs_activity::session::latest_metrics_db(),
+        None => nbrs_runtime::session::latest_metrics_db(),
     };
     if !db_path.exists() {
         return Err(format!("session db '{}' missing", db_path.display()));

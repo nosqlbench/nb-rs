@@ -11,9 +11,9 @@ file sizes; log rotation is canonically incorrect for an
 event-sourced store and explicitly out of scope. The
 session is the durability boundary. Refinement of SRD-44.
 **Owner:** runtime / runner / checkpoint subsystem
-**Implementation target:** `nbrs-activity/src/checkpoint/storage.rs`
-  (rewrite), `nbrs-activity/src/checkpoint/writer.rs` (append-path),
-  `nbrs-activity/src/checkpoint/resume.rs` (replay reader)
+**Implementation target:** `nbrs-runtime/src/checkpoint/storage.rs`
+  (rewrite), `nbrs-runtime/src/checkpoint/writer.rs` (append-path),
+  `nbrs-runtime/src/checkpoint/resume.rs` (replay reader)
 **Cross-refs:** SRD-44 (checkpointing semantics), SRD-41 (logging),
   SRD-45 (sessions), SRD-13d (scope coordinates)
 

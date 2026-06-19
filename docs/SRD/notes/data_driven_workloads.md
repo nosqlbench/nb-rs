@@ -399,11 +399,11 @@ All GK-involved API surface — the `source` keyword, `DataSource` trait, source
 - Source combinators (`zip`, `filter`, `sample`)
 - Source projection nodes for the Polydat graph
 
-The runtime crates (nbrs-activity, adapters) consume these types but don't define them. The Polydat crate maintains sovereignty over the data model — sources are a Polydat concept, not a runtime concept. The runtime asks the Polydat graph "what sources exist?" and "what is their extent?" — the Polydat crate answers authoritatively.
+The runtime crates (nbrs-runtime, adapters) consume these types but don't define them. The Polydat crate maintains sovereignty over the data model — sources are a Polydat concept, not a runtime concept. The runtime asks the Polydat graph "what sources exist?" and "what is their extent?" — the Polydat crate answers authoritatively.
 
 This means:
 - `polydat` defines `DataSource`, `SourceReader`, source nodes
-- `nbrs-activity` implements the fiber loop, work-stealing pool, and executor
+- `nbrs-runtime` implements the fiber loop, work-stealing pool, and executor
 - Adapters (nbrs-adapter-cql, etc.) implement batch dispensers that consume from `DataSource`
 - `nbrs-workload` parses the `source` keyword in YAML and passes it to Polydat compilation
 

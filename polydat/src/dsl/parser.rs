@@ -307,7 +307,7 @@ fn parse_extern_port(p: &mut Parser) -> Result<Statement, String> {
 /// - `input <name>[: <type>]` — bare single
 /// - `input (<name>[: <type>][, ...])` — tuple form mirroring the
 ///   module-signature param-list shape (see
-///   `nbrs/stdlib/modeling.polydat`). Desugars to N InputDecls.
+///   a host-provided cycle module). Desugars to N InputDecls.
 ///
 /// Empty tuple `input ()` is rejected — declare zero inputs by
 /// simply omitting the `input` line.
@@ -889,7 +889,7 @@ fn parse_call(p: &mut Parser, func: String, span: Span) -> Result<Expr, String> 
 ///
 /// `name` accepts both plain identifiers and the soft keyword
 /// `input` — the latter is the canonical parameter name in
-/// `nbrs/stdlib/modeling.polydat` and other cycle-driven modules.
+/// host-provided cycle-driven modules.
 fn parse_arg(p: &mut Parser) -> Result<Arg, String> {
     let arg_name: Option<String> = match p.peek() {
         TokenKind::Ident(name) => Some(name.clone()),

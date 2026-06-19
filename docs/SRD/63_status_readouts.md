@@ -719,7 +719,7 @@ Worked example. Three input layers, four slots involved:
 
 ```yaml
 # Layer 1 — built-in defaults (registered in
-#           nbrs-activity::readouts::registry).
+#           nbrs-runtime::readouts::registry).
 on_session_start: session_banner
 on_each_start:    scope_header
 on_update:        phase_status
@@ -1375,7 +1375,7 @@ The same compiled readout drives:
 
 **Push 1 — `on_phase` only.** Readout trait, registry,
 `ReadoutContext` facade, baked-step renderer. Built-ins:
-`phase_done`. Wire `nbrs-activity::activity`'s ✓ DONE +
+`phase_done`. Wire `nbrs-runtime::activity`'s ✓ DONE +
 inline progress lines through the engine. Workload
 `readouts:` parses and validates but only `on_phase` slot
 is wired. Output byte-equivalent to today's.

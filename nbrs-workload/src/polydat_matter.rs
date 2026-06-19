@@ -67,7 +67,7 @@ fn bindings_def_matter(b: &BindingsDef) -> PolydatMatter {
 /// True when any value field on the op uses inline `{{<expr>}}`
 /// substitution. Promotes to `Definitions` because the
 /// rewrite pass (`crate::scope::rewrite_inline_exprs` in
-/// nbrs-activity) hoists each into a `__expr_N := <expr>`
+/// nbrs-runtime) hoists each into a `__expr_N := <expr>`
 /// binding owned by the op.
 fn has_inline_expr(op: &ParsedOp) -> bool {
     fn scan(v: &serde_json::Value) -> bool {
@@ -206,7 +206,7 @@ impl HasPolydatMatter for Workload {
         if !self.params.is_empty() {
             // Params turn into `final <name> := <literal>`
             // bindings on the workload-params kernel
-            // (nbrs-activity/src/params.rs), so any param
+            // (nbrs-runtime/src/params.rs), so any param
             // declaration is Polydat content.
             return PolydatMatter::Definitions;
         }

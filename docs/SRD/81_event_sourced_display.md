@@ -160,7 +160,7 @@ concrete need appears.
 
 ## 5. The load-bearing seam — `ReadoutSink`
 
-`ReadoutSink` (`nbrs-activity/src/readouts/binder.rs`) is already the
+`ReadoutSink` (`nbrs-runtime/src/readouts/binder.rs`) is already the
 projection abstraction:
 
 ```rust

@@ -18,7 +18,7 @@ disjoint places:
 2. **`families: HashSet<String>`** — name-only collision
    guard added in SRD-40b §7. Empty for legacy components;
    populated by `register_family` at op-dispenser init.
-3. **`MetricsDispenser` slots** (in `nbrs-activity::wrappers`)
+3. **`MetricsDispenser` slots** (in `nbrs-runtime::wrappers`)
    hold the *actual* `Arc<Counter>` / `Arc<ValueGauge>` /
    `Arc<Histogram>` for synthetic metrics, and a sibling
    `MetricsInstrumentSet` shim wraps them as a third copy
@@ -332,10 +332,10 @@ Each step is independently testable.
 | 1 | Add `InstrumentRef` + `RegisteredInstrument` types | `nbrs-metrics::component` | ~80 |
 | 2 | Add `register_instrument` / `instruments()` / `find_instrument` / `capture_delta` / `capture_current` on `Component` | `nbrs-metrics::component` | ~120 |
 | 3 | Update cadence reporter to call `Component::capture_delta` | `nbrs-metrics::cadence_reporter` | ~20 |
-| 4 | Migrate `ActivityMetrics` to register Arcs on its component | `nbrs-activity::activity` | ~60 |
+| 4 | Migrate `ActivityMetrics` to register Arcs on its component | `nbrs-runtime::activity` | ~60 |
 | 5 | Migrate every other `InstrumentSet` impl (validation metrics, polling metrics, anything else) | various | ~50 |
 | 6 | Retire `InstrumentSet` trait + `set_instruments` / `register_family` / `families` | `nbrs-metrics::component` | -90 |
-| 7 | Simplify `MetricsDispenser`: drop `MetricsInstrumentSet`, use `register_instrument` | `nbrs-activity::wrappers` | -60 |
+| 7 | Simplify `MetricsDispenser`: drop `MetricsInstrumentSet`, use `register_instrument` | `nbrs-runtime::wrappers` | -60 |
 | 8 | Update tests that constructed `MockInstruments` impls of `InstrumentSet` to use the registry | tests across crates | ~40 |
 
 Net: ~+220 LOC added, ~-150 retired, **+70 LOC for a real

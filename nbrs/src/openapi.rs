@@ -21,11 +21,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nbrs_activity::activity::{Activity, ActivityConfig};
-use nbrs_activity::adapter::DriverAdapter;
-use nbrs_activity::bindings::compile_bindings;
-use nbrs_activity::opseq::{OpSequence, SequencerType};
-use nbrs_activity::synthesis::OpBuilder;
+use nbrs_runtime::activity::{Activity, ActivityConfig};
+use nbrs_runtime::adapter::DriverAdapter;
+use nbrs_runtime::bindings::compile_bindings;
+use nbrs_runtime::opseq::{OpSequence, SequencerType};
+use nbrs_runtime::synthesis::OpBuilder;
 use nbrs_adapter_openapi::{describe_operations, generate_ops, parse_spec, ApiOperation};
 use nbrs_metrics::labels::Labels;
 

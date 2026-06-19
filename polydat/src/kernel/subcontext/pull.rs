@@ -6,8 +6,8 @@
 //! ## Cross-crate boundary
 //!
 //! The runtime fixture / pull-plan machinery (SRD-32) lives in
-//! `nbrs-activity`. This crate (`polydat`) cannot depend on
-//! `nbrs-activity` — the dependency runs the other way. The
+//! `nbrs-runtime`. This crate (`polydat`) cannot depend on
+//! `nbrs-runtime` — the dependency runs the other way. The
 //! [`PullConsumer`] trait below carries only the *intent*: a list
 //! of names the consumer wants to pull at cycle time. The
 //! activity-side `ScopeFixture::register_consumer` adapter walks

@@ -353,9 +353,9 @@ fields and params, so the Polydat kernel has always known about every
 referenced name; the side channel was a plumbing artifact that
 this slice retired.
 
-[`ScopeFixture`]: ../../nbrs-activity/src/fixture.rs
-[`PullPlan`]: ../../nbrs-activity/src/fixture.rs
-[`PullHandle`]: ../../nbrs-activity/src/fixture.rs
+[`ScopeFixture`]: ../../nbrs-runtime/src/fixture.rs
+[`PullPlan`]: ../../nbrs-runtime/src/fixture.rs
+[`PullHandle`]: ../../nbrs-runtime/src/fixture.rs
 [SRD 32 §"Init-Time Fixture and Consumer Self-Registration"]: 32_wrappers.md
 [SRD 31 §"Pull plan vs bind plan"]: 31_op_pipeline.md
 

@@ -16,10 +16,10 @@ readme.workspace = true
 # against synthetic manifold models with zero runtime, and the subsystem
 # stays independently extractable. The optional `runtime` feature adds ONLY
 # the inventory bridge (`src/bridge.rs`) that registers these optimizers
-# against the core `nbrs-activity` contract; the algorithms never touch it.
-nbrs-activity = { path = "../nbrs-activity", version = "0.1.2", optional = true }
+# against the core `nbrs-runtime` contract; the algorithms never touch it.
+nbrs-runtime = { path = "../nbrs-runtime", version = "0.1.2", optional = true }
 inventory = { version = "0.3.24", optional = true }
 
 [features]
 # Off by default: the default build is the standalone algorithm library.
-runtime = ["dep:nbrs-activity", "dep:inventory"]
+runtime = ["dep:nbrs-runtime", "dep:inventory"]

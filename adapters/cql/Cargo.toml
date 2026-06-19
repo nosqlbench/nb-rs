@@ -35,7 +35,7 @@ engine-cassandra-cpp = ["dep:cassandra-cpp", "dep:cassandra-cpp-sys", "dep:uuid"
 all-engines = ["engine-scylla", "engine-cassandra-cpp"]
 
 [dependencies]
-nbrs-activity = { path = "../../nbrs-activity", version = "0.1.1", default-features = false }
+nbrs-runtime = { path = "../../nbrs-runtime", version = "0.1.1", default-features = false }
 nbrs-metrics = { path = "../../nbrs-metrics", version = "0.1.1" }
 polydat = { path = "../../polydat", version = "0.1.0" }
 # IEEE 754 half-precision floats — used by the cassandra-cpp

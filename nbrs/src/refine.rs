@@ -22,7 +22,7 @@
 //!   of executions is preserved.
 //!
 //! Internally `refine_command` augments argv with the markers
-//! `nbrs-activity::runner` keys off (`--refine` to enable
+//! `nbrs-runtime::runner` keys off (`--refine` to enable
 //! skip-plan loading, `--resume-latest` to point the session
 //! resolver at the prior dir) and delegates to the existing
 //! `run::run_command` pipeline. The runner's refine branch

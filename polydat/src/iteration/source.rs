@@ -21,7 +21,7 @@
 //! ## Crate Sovereignty
 //!
 //! All source API surface lives here in polydat. The runtime crates
-//! (nbrs-activity, adapters) consume these types but don't define them.
+//! (host runtime, adapters) consume these types but don't define them.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

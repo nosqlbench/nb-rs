@@ -992,7 +992,7 @@ impl PolydatProgram {
     /// the parent-chain walk and feeds the resulting program
     /// chain here. Callers are responsible for ensuring every
     /// piece of state that should affect identity lives in
-    /// some attached Polydat module — e.g. nbrs injects workload
+    /// some attached Polydat module — e.g. a host injects workload
     /// `params:` as a synthetic root module
     /// (`build_workload_params_kernel`) whose `const` bindings
     /// land in const slots `canonical_hash` covers.

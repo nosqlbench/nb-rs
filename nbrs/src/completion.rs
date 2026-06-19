@@ -40,8 +40,8 @@
 
 use veks_completion::{CategoryTag, CommandTree, LevelTag, Node, StrictNode, fn_provider};
 
-use nbrs_activity::adapter::registered_driver_names;
-use nbrs_activity::runner::{
+use nbrs_runtime::adapter::registered_driver_names;
+use nbrs_runtime::runner::{
     resolve_workload_file_public, scenarios_in_workload_file,
 };
 
@@ -225,7 +225,7 @@ pub(crate) fn session_name_provider(partial: &str, _ctx: &[&str]) -> Vec<String>
 /// `phase_outcomes` table (SRD-76). Best-effort, same
 /// convention as [`execution_id_provider`].
 pub(crate) fn phase_name_db_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    let db_path = nbrs_activity::session::latest_metrics_db();
+    let db_path = nbrs_runtime::session::latest_metrics_db();
     if !db_path.exists() {
         return Vec::new();
     }
@@ -355,7 +355,7 @@ pub(crate) fn workload_positional_provider(partial: &str, ctx: &[&str]) -> Vec<S
 /// static capability catalog (SRD-23) so every control the binary can declare
 /// is completable, conditional ones included.
 pub(crate) fn control_names_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    let names: Vec<&str> = nbrs_activity::control_catalog::all_controls()
+    let names: Vec<&str> = nbrs_runtime::control_catalog::all_controls()
         .iter()
         .map(|e| e.desc.name)
         .collect();
@@ -466,7 +466,7 @@ pub fn handle_complete_env(tree: &CommandTree) -> bool {
     if matches_metrics_match(&prior) {
         let db_path = match db_path_from_args(&prior) {
             Some(p) => p,
-            None => nbrs_activity::session::latest_metrics_db(),
+            None => nbrs_runtime::session::latest_metrics_db(),
         };
         if db_path.exists() {
             for c in crate::metrics_cache::match_completions(&cur, &db_path) {
@@ -888,7 +888,7 @@ fn completions_node() -> StrictNode<true, true> {
 }
 
 // ---------------------------------------------------------------------------
-// Value providers (hoisted from nbrs-activity::completions)
+// Value providers (hoisted from nbrs-runtime::completions)
 // ---------------------------------------------------------------------------
 
 fn workload_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
@@ -920,7 +920,7 @@ fn scenario_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
 /// an error message, matching the existing provider
 /// convention.
 pub fn execution_id_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    let db_path = nbrs_activity::session::latest_metrics_db();
+    let db_path = nbrs_runtime::session::latest_metrics_db();
     if !db_path.exists() {
         return Vec::new();
     }
@@ -1017,7 +1017,7 @@ fn static_watch(partial: &str, _ctx: &[&str]) -> Vec<String> {
 }
 
 /// Inspector socket discovery — same logic as the legacy
-/// `nbrs-activity::completions::socket_path_candidates`.
+/// `nbrs-runtime::completions::socket_path_candidates`.
 pub(crate) fn socket_path_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
@@ -1366,10 +1366,10 @@ fn db_path_from_context(ctx: &[&str]) -> std::path::PathBuf {
     // db path the command itself will read. Single source of
     // truth for "what does --session mean".
     let owned: Vec<String> = ctx.iter().map(|s| s.to_string()).collect();
-    if let Some(dir) = nbrs_activity::session::read_session_dir(&owned) {
+    if let Some(dir) = nbrs_runtime::session::read_session_dir(&owned) {
         return dir.join("metrics.db");
     }
-    nbrs_activity::session::latest_metrics_db()
+    nbrs_runtime::session::latest_metrics_db()
 }
 
 /// Dynamic option discovery: when a `workload=…` is on the
@@ -1402,7 +1402,7 @@ pub(crate) fn workload_dynamic_params(_partial: &str, ctx: &[&str]) -> Vec<Strin
 
 // ---------------------------------------------------------------------------
 // Workload-file / scenario name discovery (hoisted from
-// nbrs-activity::completions)
+// nbrs-runtime::completions)
 // ---------------------------------------------------------------------------
 
 /// Maximum directory depth the walker descends from each seed

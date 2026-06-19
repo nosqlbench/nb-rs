@@ -337,7 +337,7 @@ fn first_prose_line(md: &str) -> &str {
 /// inventory against the core contract), each with its one-line summary
 /// (SRD-86 §6).
 fn describe_optimizers_list() {
-    let infos = nbrs_activity::optimize::describe();
+    let infos = nbrs_runtime::optimize::describe();
     println!("Registered optimizers:");
     for info in &infos {
         println!("  {:<22} {}", info.name, first_prose_line(info.doc_md));
@@ -348,7 +348,7 @@ fn describe_optimizers_list() {
 
 /// `nbrs describe optimizers <name>` — print the optimizer's full markdown doc.
 fn describe_optimizer(name: &str) {
-    match nbrs_activity::optimize::describe().into_iter().find(|i| i.name == name) {
+    match nbrs_runtime::optimize::describe().into_iter().find(|i| i.name == name) {
         Some(info) => print!("{}", info.doc_md),
         None => {
             eprintln!("No optimizer named '{name}' is registered in this binary.");
@@ -372,8 +372,8 @@ fn fmt_num(v: f64) -> String {
 }
 
 /// Render one control's type + range + unit (e.g. `count(u32), [1, 100000] fibers`).
-fn control_shape(d: &nbrs_activity::control_catalog::ControlDesc) -> String {
-    use nbrs_activity::control_catalog::ControlValueType;
+fn control_shape(d: &nbrs_runtime::control_catalog::ControlDesc) -> String {
+    use nbrs_runtime::control_catalog::ControlValueType;
     let range = match d.value_type {
         // `rate`'s floor is exclusive and its ceiling unbounded — "> 0" reads
         // truer than `(0, ∞]`.
@@ -390,7 +390,7 @@ fn control_shape(d: &nbrs_activity::control_catalog::ControlDesc) -> String {
 /// running a workload. Complementary to `dryrun=controls`, which shows what a
 /// *specific* run actually declares on the live component tree.
 fn describe_controls() {
-    use nbrs_activity::control_catalog::all_controls;
+    use nbrs_runtime::control_catalog::all_controls;
 
     let entries = all_controls();
     println!("Dynamic controls (SRD-23) — retarget live via the TUI `e` prompt, web POST,");
@@ -416,7 +416,7 @@ fn describe_controls() {
 /// `nbrs describe controls <name>` — detail for one control, or the full list
 /// with a hint if the name is unknown.
 fn describe_control(name: &str) {
-    use nbrs_activity::control_catalog::all_controls;
+    use nbrs_runtime::control_catalog::all_controls;
 
     match all_controls().into_iter().find(|e| e.desc.name == name) {
         Some(e) => {
@@ -439,7 +439,7 @@ fn describe_control(name: &str) {
 }
 
 fn describe_adapters_list() {
-    use nbrs_activity::adapter::{registered_driver_names, default_drivers};
+    use nbrs_runtime::adapter::{registered_driver_names, default_drivers};
 
     let mut names = registered_driver_names();
     names.sort();
@@ -470,7 +470,7 @@ fn describe_adapters_list() {
 }
 
 fn describe_adapter(name: &str) {
-    use nbrs_activity::adapter::{
+    use nbrs_runtime::adapter::{
         find_adapter_registration, default_drivers, find_driver,
     };
 
@@ -540,7 +540,7 @@ fn describe_adapter(name: &str) {
 }
 
 fn describe_wiring_functions(verbose: bool) {
-    use nbrs_activity::bindings::probe_compile_level;
+    use nbrs_runtime::bindings::probe_compile_level;
 
     let grouped = registry::by_category();
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -853,7 +853,7 @@ fn format_commutativity_and_arity(sig: &polydat::dsl::registry::FuncSig) -> Stri
 /// by category, including signatures, parameters, descriptions,
 /// and help text.
 fn describe_wiring_functions_md(path: &str) {
-    use nbrs_activity::bindings::probe_compile_level;
+    use nbrs_runtime::bindings::probe_compile_level;
     use std::io::Write;
 
     let grouped = registry::by_category();
@@ -1481,7 +1481,7 @@ fn describe_wiring_dag(args: &[String]) {
 /// in the header line so the caller can confirm which file
 /// was read.
 fn render_flattening_summary(yaml_source: &str, path: &str) -> Result<String, String> {
-    use nbrs_activity::scope_tree::{ScopeTree, ScopeKind};
+    use nbrs_runtime::scope_tree::{ScopeTree, ScopeKind};
     use nbrs_workload::parse::{parse_workload, parse_workload_from_path};
     use std::collections::HashMap;
 
@@ -1881,7 +1881,7 @@ fn op_spec() -> crate::cli_spec::Command {
 /// test suite can pin the exact output. Iteration order is the
 /// alphabetical order the registry hands us — stable across runs.
 pub fn render_wrappers_table() -> String {
-    use nbrs_activity::wrapper_registry::WrapperRegistry;
+    use nbrs_runtime::wrapper_registry::WrapperRegistry;
     use std::fmt::Write;
 
     let registry = WrapperRegistry::from_inventory();
@@ -2000,8 +2000,8 @@ fn trigger_label(name: &str, owned_fields: &[&str]) -> String {
 /// violations) are surfaced via `Display`, not `Debug` — the user
 /// shouldn't see Rust's struct-debug for a config diagnostic.
 pub fn render_op_description(workload_path: &str, op_name: &str) -> Result<String, String> {
-    use nbrs_activity::wrapper_registry::WrapperRegistry;
-    use nbrs_activity::wrapper_resolver::{WrapperActivation, WrapperResolver};
+    use nbrs_runtime::wrapper_registry::WrapperRegistry;
+    use nbrs_runtime::wrapper_resolver::{WrapperActivation, WrapperResolver};
     use nbrs_workload::model::ParsedOp;
     use std::collections::HashMap;
     use std::fmt::Write;
