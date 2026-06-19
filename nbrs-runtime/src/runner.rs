@@ -2680,6 +2680,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             current_scope_idx: 0,
         };
 
+        // One Walker: seed the scope cursor at the scenario layer (the single
+        // child of the workload root) so the top-level scenario nodes resolve
+        // positionally against its children, not by AST match.
+        exec_ctx.current_scope_idx = exec_ctx.scope_tree.scenario_root_idx();
+
         // Install empty SceneTree global; the walker populates it.
         crate::scene_tree::install_global(crate::scene_tree::SceneTree::new());
 
@@ -2873,7 +2878,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         exec_ctx.diag = diag.clone();
         exec_ctx.scene_tree_parent_id = 0;
         exec_ctx.scene_tree_path = initial_scene_tree_path.clone();
-        exec_ctx.current_scope_idx = 0;
+        // One Walker: seed at the scenario layer (see the pre-map seed above).
+        exec_ctx.current_scope_idx = exec_ctx.scope_tree.scenario_root_idx();
         // Pre-map pass is done — the real execution starts now.
         // dryrun=phase still walks at depth=Phase but with this
         // flag false, so the sentinel set_phase_completed in the

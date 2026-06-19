@@ -138,3 +138,7 @@ phases:
     ops:
       msg:
         stmt: "set/n={n}/{mode}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ run scenario=baseline
+#@ expect completed, 0 failed

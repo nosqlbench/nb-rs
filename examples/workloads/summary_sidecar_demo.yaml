@@ -48,3 +48,6 @@ phases:
     ops:
       req:
         stmt: "region={region} req={req_id} endpoint={endpoint}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

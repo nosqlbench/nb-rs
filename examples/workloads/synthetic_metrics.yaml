@@ -134,3 +134,6 @@ scenarios:
 # the test fixture.
 params:
   cycle_count: 6
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

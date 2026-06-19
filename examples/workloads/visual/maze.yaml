@@ -20,3 +20,6 @@ bindings: |
 ops:
   line:
     stmt: "{row}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

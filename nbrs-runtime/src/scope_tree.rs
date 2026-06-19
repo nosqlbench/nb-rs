@@ -361,6 +361,16 @@ impl ScopeTree {
         tree
     }
 
+    /// The scenario-layer node — the single child of the workload root
+    /// (node 0). The walker seeds its scope cursor here so the top-level
+    /// scenario nodes resolve **positionally** against this node's children
+    /// (one scope-tree child per scenario node, in order — see
+    /// [`Self::append_subtree`]). Falls back to the root if (degenerately)
+    /// there is no scenario layer.
+    pub fn scenario_root_idx(&self) -> ScopeNodeIdx {
+        self.nodes[0].children.first().copied().unwrap_or(0)
+    }
+
     /// Append the subtree rooted at `node` as a child of `parent_idx`.
     /// Recursive — control-flow nodes pull in their own children.
     fn append_subtree(&mut self, parent_idx: ScopeNodeIdx, node: &ScenarioNode) {

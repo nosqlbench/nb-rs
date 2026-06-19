@@ -77,3 +77,6 @@ phases:
     ops:
       query:
         stmt: "profile={profile} k={k} query={query_id} result={result}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

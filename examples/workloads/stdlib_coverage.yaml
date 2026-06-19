@@ -486,3 +486,7 @@ phases:
       emit:
         adapter: stdout
         stmt: "lib/regex matches={matches} replaced={replaced}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ run scenario=arithmetic_named_nodes
+#@ expect completed, 0 failed

@@ -21,3 +21,6 @@ phases:
     ops:
       line:
         stmt: "iteration"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect-fail unresolved placeholder

@@ -130,3 +130,7 @@ phases:
     ops:
       msg:
         stmt: "table={table} mode={mode}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ run scenario=baseline_constant
+#@ expect mode=verbose

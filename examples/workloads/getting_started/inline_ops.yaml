@@ -25,3 +25,6 @@ ops:
   write:
     ratio: 1
     stmt: "INSERT INTO users (id, hash) VALUES ({user_id}, {hashed})"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

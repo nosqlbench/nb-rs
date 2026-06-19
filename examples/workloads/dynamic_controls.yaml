@@ -93,3 +93,7 @@ blocks:
                                  throttle_factor)
     ops:
       tick: "SELECT now();"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ run cycles=300
+#@ expect completed, 0 failed

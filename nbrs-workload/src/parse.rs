@@ -165,6 +165,12 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     if !params.is_empty() {
         for op in &mut all_ops {
             for (key, value) in params {
+                // Same SRD-32a exclusion as the inherited-params merge: a CLI
+                // `rate=…` / `cycles=…` is a phase/activity override, not an op
+                // field — don't leak it into op params (would trip op_rate).
+                if ACTIVITY_PARAM_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
                 op.params.insert(key.clone(), serde_json::Value::String(value.clone()));
             }
         }
@@ -876,22 +882,22 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     // lifetime — author doesn't need to think
                     // about which path the runtime takes.
                     //
-                    // Literal-format rules — same classifier the
-                    // workload-root `add_param_binding` uses, so
-                    // `set: { … }` block bindings carry the same
-                    // bare-identifier / array-literal / quoted-
-                    // string surface as workload params:
+                    // Literal-format rules. YAML erases quote style
+                    // (serde_yaml gives `mode: "verbose"` and
+                    // `mode: verbose` the *same* `String`), so a bare
+                    // string scalar in `set:` is a string VALUE, not a
+                    // wire reference:
                     //
                     //   - bare numeric / `true` / `false` → emit as-is
                     //   - polydat array literal `[…]`     → emit as-is
                     //   - polydat-quoted string `"…"`      → emit as-is
-                    //   - identifier-shaped                → emit as
-                    //     a polydat wire reference (this is the
-                    //     `set: { source_model: sm }` path —
-                    //     `sm` becomes a reference, not a Str
-                    //     literal `"sm"`)
-                    //   - anything else                    → wrap as
-                    //     polydat string literal
+                    //   - anything else (a YAML string)    → wrap as a
+                    //     polydat string literal. `{name}` interpolation
+                    //     still resolves through the in-scope chain at
+                    //     scope-init; a wire *reference* is expressed
+                    //     with a `bindings:` block, not a bare `set:`
+                    //     word (which YAML can't distinguish from a
+                    //     quoted string anyway).
                     let mut source = String::new();
                     for (name, value) in &pairs {
                         let trimmed = value.trim();
@@ -901,7 +907,6 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                             || trimmed == "false"
                             || is_polydat_quoted_string(trimmed)
                             || is_polydat_array_literal(trimmed)
-                            || is_bare_identifier(trimmed)
                         {
                             trimmed.to_string()
                         } else {
@@ -1511,6 +1516,14 @@ fn parse_ops_field(
     tags: &HashMap<String, String>,
     all_ops: &mut Vec<ParsedOp>,
 ) -> Result<(), String> {
+    // SRD-32a: activity/phase-scope param keys (cycles / concurrency /
+    // rate / errors / error_rate_max) are consumed at phase/activity scope,
+    // never as op fields. Strip them from the inherited params before they
+    // reach any op, so an inherited `rate` doesn't collide with the `op_rate`
+    // wrapper's field-ownership guard. A genuine op-level `rate:` reaches the
+    // op via the typed `ParsedOp.rate` field, which is untouched.
+    let op_scope_params = exclude_activity_keys(params);
+    let params = &op_scope_params;
     let mut op_counter = 0;
 
     match ops_val {
@@ -2557,20 +2570,9 @@ fn extract_string_map(val: Option<&JVal>) -> HashMap<String, String> {
     map
 }
 
-// Shared classifier helpers — `set:` block parser and the
-// scope-level `add_param_binding` route every value through
-// the same shape detection so the bare-identifier / array-
-// literal / quoted-string surface is consistent across both
-// param entry points.
-
-fn is_bare_identifier(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
+// Shared classifier helpers — the `set:` block parser routes
+// every value through the same shape detection so the numeric /
+// array-literal / quoted-string surface is consistent.
 
 fn is_polydat_quoted_string(s: &str) -> bool {
     if s.len() < 2 { return false; }
@@ -2627,6 +2629,23 @@ fn merge_string_maps(parent: &HashMap<String, String>, child: &HashMap<String, S
         merged.insert(k.clone(), v.clone());
     }
     merged
+}
+
+/// Activity/phase-scope param keys that must never be blast-merged onto ops.
+/// They are consumed at phase/activity scope; leaking them into op `params`
+/// makes an inherited `rate` collide with the `op_rate` wrapper's
+/// field-ownership guard (SRD-32a). The op-level `rate:` field reaches ops via
+/// the typed [`ParsedOp::rate`] path, not params, so this exclusion is safe.
+const ACTIVITY_PARAM_KEYS: &[&str] =
+    &["cycles", "concurrency", "rate", "errors", "error_rate_max"];
+
+/// Clone `params` minus the activity/phase-scope keys ([`ACTIVITY_PARAM_KEYS`]).
+fn exclude_activity_keys(params: &HashMap<String, JVal>) -> HashMap<String, JVal> {
+    params
+        .iter()
+        .filter(|(k, _)| !ACTIVITY_PARAM_KEYS.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 fn merge_value_maps(parent: &HashMap<String, JVal>, child: &HashMap<String, JVal>) -> HashMap<String, JVal> {
@@ -3529,16 +3548,19 @@ ops:
 
     #[test]
     fn block_level_params_override_workload_default() {
-        // SRD 21 §"Parameter Resolution": closest-wins. The DDL
-        // block declares concurrency=1 and that overrides the
-        // workload-level default of 100 for ops in that block.
+        // SRD 21 §"Parameter Resolution": closest-wins. The DDL block declares
+        // `consistency=1`, overriding the workload-level default `100` for ops
+        // in that block. Uses an op-scope param (`consistency`); activity-scope
+        // keys (`concurrency`/`rate`/`cycles`/`errors`) are deliberately NOT
+        // merged onto ops (SRD-32a — see `ACTIVITY_PARAM_KEYS`), so this tests
+        // op-param precedence with a key that actually reaches ops.
         let yaml = r#"
 params:
-  concurrency: "100"
+  consistency: "100"
 blocks:
   ddl:
     params:
-      concurrency: "1"
+      consistency: "1"
     ops:
       schema_create: "CREATE TABLE foo (id int PRIMARY KEY);"
   bulk:
@@ -3549,12 +3571,12 @@ blocks:
         let ddl = ops.iter().find(|o| o.name == "schema_create").unwrap();
         let bulk = ops.iter().find(|o| o.name == "insert").unwrap();
         assert_eq!(
-            ddl.params.get("concurrency").and_then(|v| v.as_str()),
+            ddl.params.get("consistency").and_then(|v| v.as_str()),
             Some("1"),
             "block-level override should win for ddl op",
         );
         assert_eq!(
-            bulk.params.get("concurrency").and_then(|v| v.as_str()),
+            bulk.params.get("consistency").and_then(|v| v.as_str()),
             Some("100"),
             "non-overriding block inherits workload-level default",
         );
@@ -3562,31 +3584,33 @@ blocks:
 
     #[test]
     fn cli_overrides_block_level_params() {
-        // CLI is the outermost layer per SRD 21 — it wins even
-        // over block-level explicit overrides.
+        // CLI is the outermost layer per SRD 21 — it wins even over block-level
+        // explicit overrides. Uses an op-scope param (`consistency`); see
+        // `block_level_params_override_workload_default` for why not an
+        // activity-scope key like `concurrency`.
         let yaml = r#"
 params:
-  concurrency: "100"
+  consistency: "100"
 blocks:
   ddl:
     params:
-      concurrency: "1"
+      consistency: "1"
     ops:
       schema_create: "CREATE TABLE foo (id int PRIMARY KEY);"
 "#;
         let mut cli = HashMap::new();
-        cli.insert("concurrency".to_string(), "200".to_string());
+        cli.insert("consistency".to_string(), "200".to_string());
         let workload = parse_workload(yaml, &cli).unwrap();
         let ddl = workload.ops.iter()
             .find(|o| o.name == "schema_create").unwrap();
         assert_eq!(
-            ddl.params.get("concurrency").and_then(|v| v.as_str()),
+            ddl.params.get("consistency").and_then(|v| v.as_str()),
             Some("200"),
             "CLI override should beat block-level",
         );
         // Workload-level params likewise reflect CLI.
         assert_eq!(
-            workload.params.get("concurrency").map(|s| s.as_str()),
+            workload.params.get("consistency").map(|s| s.as_str()),
             Some("200"),
         );
     }

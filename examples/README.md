@@ -5,6 +5,10 @@
 Example workload YAML files. All support `#!/usr/bin/env nbrs`
 shebangs — make them executable and run directly.
 
+Each declares its own verification rules (`#@` comments or a `verify:` block);
+`nbrs check examples/workloads/` runs and verifies them all. Use the same on
+your own workloads — see [docs/guide/checking_workloads.md](../docs/guide/checking_workloads.md).
+
 ### workloads/getting_started/
 - `basic_workload.yaml` — Minimal multi-op workload
 - `polydat_bindings.yaml` — Native Polydat DAG syntax for bindings

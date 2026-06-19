@@ -394,3 +394,7 @@ phases:
 # # (assert "delay was actually applied") would need timing
 # # measurement, not stdout grepping. Round-trip via stdout
 # # alone can't verify this construct.
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ run scenario=shared_types
+#@ expect completed, 0 failed

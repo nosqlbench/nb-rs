@@ -65,3 +65,6 @@ bindings: |
 ops:
   lfsr_step:
     stmt: "cycle={cycle} state={state} bits={b7}{b6}{b5}{b4}{b3}{b2}{b1}{b0} next={next_state}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

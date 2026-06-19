@@ -59,7 +59,7 @@ scenarios:
   # Execute children until a condition is met. At least one execution
   # is guaranteed (do-until = test after). Counter variable tracks iterations.
   test_do_until:
-    - do_until: "empty"
+    - do_until: "{attempt} >= 3"
       counter: attempt
       phases:
         - do_step
@@ -68,7 +68,7 @@ scenarios:
   # Execute children while a condition holds. At least one execution
   # is guaranteed (do-while = test after). Counter variable tracks iterations.
   test_do_while:
-    - do_while: "true"
+    - do_while: "{iteration} < 3"
       counter: iteration
       phases:
         - do_step
@@ -79,7 +79,7 @@ scenarios:
     - for_each: "color in {colors}"
       phases:
         - show_color
-        - do_until: "empty"
+        - do_until: "{retry} >= 2"
           counter: retry
           phases:
             - do_step
@@ -150,3 +150,28 @@ phases:
     ops:
       step:
         stmt: "loop step (do_while/do_until runtime eval pending)"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ case for_each
+#@   run scenario=test_for_each
+#@   expect 3 completed, 0 failed
+#@ case nested
+#@   run scenario=test_nested
+#@   expect 6 completed, 0 failed
+#@ case phase_for_each
+#@   run scenario=test_phase_for_each
+#@   expect 2 completed, 0 failed
+#@ case do_until
+#@   run scenario=test_do_until
+#@   expect 2 completed, 0 failed
+#@ case do_while
+#@   run scenario=test_do_while
+#@   expect 2 completed, 0 failed
+#@ case mixed
+#@   run scenario=test_mixed
+#@   expect 7 completed, 0 failed
+#@ case triple
+#@   run scenario=test_triple
+#@   expect completed, 0 failed
+#@ case default
+#@   expect 10 completed, 0 failed

@@ -30,3 +30,6 @@ ops:
   point:
     x: "{x}"
     y: "{y}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

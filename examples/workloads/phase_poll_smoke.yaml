@@ -49,3 +49,6 @@ phases:
         memo:
           before: "polling state"
           after:  "compacted"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ requires backend (phase-poll needs a live service to satisfy the `until:` predicate)

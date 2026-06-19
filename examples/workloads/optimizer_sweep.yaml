@@ -41,3 +41,6 @@ phases:
         params:
           stdout: eventlog
         stmt: "probe ef={ef}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect best \[3\]

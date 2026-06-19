@@ -487,9 +487,29 @@ async fn run_siblings_concurrently(
     //     tokio runtime schedules the spawned tasks.
     //   - With `Serial`: the caller already routed to the
     //     non-concurrent loop above; we never reach here.
+    // Positional scope-tree resolution (One Walker). Each scenario node maps
+    // 1:1, in declaration order, to a child of the current scope-tree node
+    // (the parent cursor) — `append_subtree` pushes exactly one scope node per
+    // scenario node. Resolving each node's scope index by POSITION (not by AST
+    // match) is what lets AST-identical sibling comprehensions / bindings
+    // disambiguate; the old content-keyed lookup returned the first match for
+    // both (the "task #19" drift bug).
+    let parent_scope_idx = ctx.current_scope_idx;
+    let child_scope_indices: Vec<crate::scope_tree::ScopeNodeIdx> =
+        ctx.scope_tree.nodes[parent_scope_idx].children.clone();
+    if child_scope_indices.len() != nodes.len() {
+        return Err(format!(
+            "scope-tree/scenario-tree drift: scope node {parent_scope_idx} has {} \
+             child scopes but the walker is dispatching {} sibling scenario nodes",
+            child_scope_indices.len(),
+            nodes.len(),
+        ));
+    }
+
     let mut set = tokio::task::JoinSet::new();
     let mut first_err: Option<String> = None;
-    for node in nodes {
+    for (i, node) in nodes.iter().enumerate() {
+        let node_scope_idx = child_scope_indices[i];
         let permit = match sem.as_ref() {
             Some(s) => Some(s.clone().acquire_owned().await
                 .map_err(|e| e.to_string())?),
@@ -550,7 +570,7 @@ async fn run_siblings_concurrently(
             // task body returns, freeing a slot for the next
             // dispatch iteration above.
             let _permit = permit;
-            execute_node(&mut task_ctx, &node, depth).await
+            execute_node(&mut task_ctx, &node, node_scope_idx, depth).await
         });
     }
     // Drain any still-running tasks (those spawned before the
@@ -724,6 +744,11 @@ fn subtree_has_active_phase(
 fn execute_node<'a>(
     ctx: &'a mut ExecCtx,
     node: &'a ScenarioNode,
+    // This node's own scope-tree index, resolved positionally by the caller
+    // (`run_siblings_concurrently`). Descending arms set it as the scope cursor
+    // for their children; the Comprehension / Bindings arms also use it to find
+    // their installed kernel — no AST lookup (One Walker positional resolution).
+    node_scope_idx: crate::scope_tree::ScopeNodeIdx,
     depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
@@ -986,22 +1011,21 @@ fn execute_node<'a>(
                 let label = crate::scope_tree::ScopeKind::Comprehension {
                     comprehension: comprehension.clone(),
                 }.label();
-                // TRANSITIONAL WORKAROUND (task #19): the AST
-                // alone is not yet self-identifying — two scope-
-                // tree positions can share Comprehension AST but
-                // produce semantically-distinct kernels via
-                // different parent-chain cascades. Restrict the
-                // lookup to descendants of the executor's current
-                // scope to disambiguate. When AST becomes the
-                // sole-source canonical identity, this reverts
-                // to a plain `find_comprehension_scope` call.
-                let scope_idx = ctx.scope_tree
-                    .find_comprehension_scope_under(ctx.current_scope_idx, comprehension)
-                    .ok_or_else(|| format!(
-                        "{label}: no matching scope-tree entry under scope idx \
-                         {} — scenario/scope-tree drift bug.",
-                        ctx.current_scope_idx,
-                    ))?;
+                // Positional resolution (One Walker): the dispatcher already
+                // mapped this scenario node to its scope-tree node by position,
+                // so AST-identical sibling comprehensions disambiguate (the old
+                // content-keyed `find_comprehension_scope_under` returned the
+                // first match for both — the "task #19" drift bug). The
+                // debug-assert pins the scenario↔scope-tree alignment.
+                let scope_idx = node_scope_idx;
+                debug_assert!(
+                    matches!(
+                        &ctx.scope_tree.nodes[scope_idx].kind,
+                        crate::scope_tree::ScopeKind::Comprehension { comprehension: c }
+                            if c == comprehension
+                    ),
+                    "{label}: positional scope node {scope_idx} is not the matching comprehension",
+                );
                 let canonical = ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
                     .cloned()
                     .ok_or_else(|| format!(
@@ -1079,10 +1103,15 @@ fn execute_node<'a>(
                 );
                 let saved_parent = ctx.scene_tree_parent_id;
                 let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                let saved_scope_idx = ctx.current_scope_idx;
                 ctx.scene_tree_parent_id = scope_id;
+                // One Walker positional cursor: descend with THIS node as the
+                // scope parent so its children resolve against the right scopes.
+                ctx.current_scope_idx = node_scope_idx;
                 let res = execute_tree_at(ctx, children, depth + 1).await;
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
+                ctx.current_scope_idx = saved_scope_idx;
                 res?;
             }
             ScenarioNode::DoWhile { condition, counter, children } => {
@@ -1100,7 +1129,9 @@ fn execute_node<'a>(
                 );
                 let saved_parent = ctx.scene_tree_parent_id;
                 let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                let saved_scope_idx = ctx.current_scope_idx;
                 ctx.scene_tree_parent_id = scope_id;
+                ctx.current_scope_idx = node_scope_idx; // One Walker positional cursor
                 fire_scope_lifecycle(
                     ctx, crate::lifecycle::EventType::ScopeStart,
                     &format!("do_while {condition}"), depth);
@@ -1111,6 +1142,7 @@ fn execute_node<'a>(
                     &format!("do_while {condition}"), depth);
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
+                ctx.current_scope_idx = saved_scope_idx;
                 r?;
             }
             ScenarioNode::DoUntil { condition, counter, children } => {
@@ -1124,7 +1156,9 @@ fn execute_node<'a>(
                 );
                 let saved_parent = ctx.scene_tree_parent_id;
                 let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                let saved_scope_idx = ctx.current_scope_idx;
                 ctx.scene_tree_parent_id = scope_id;
+                ctx.current_scope_idx = node_scope_idx; // One Walker positional cursor
                 fire_scope_lifecycle(
                     ctx, crate::lifecycle::EventType::ScopeStart,
                     &format!("do_until {condition}"), depth);
@@ -1135,6 +1169,7 @@ fn execute_node<'a>(
                     &format!("do_until {condition}"), depth);
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
+                ctx.current_scope_idx = saved_scope_idx;
                 r?;
             }
             ScenarioNode::Bindings { source, children } => {
@@ -1163,18 +1198,18 @@ fn execute_node<'a>(
                 // does for its per-iter bound_kernel
                 // (`from_program → materialize_wiring_from_outer`
                 // sequence, SRD-67 Phase 3).
-                // TRANSITIONAL WORKAROUND (task #19): same
-                // disambiguation as the Comprehension arm —
-                // see `find_bindings_scope_under` doc. Reverts
-                // to plain `find_bindings_scope` when AST/source
-                // becomes the sole-source canonical identity.
-                let scope_idx = ctx.scope_tree
-                    .find_bindings_scope_under(ctx.current_scope_idx, source)
-                    .ok_or_else(|| format!(
-                        "bindings scope: no matching scope-tree entry \
-                         under scope idx {} — scope-tree/scenario-tree drift bug",
-                        ctx.current_scope_idx,
-                    ))?;
+                // Positional resolution (One Walker): same as the Comprehension
+                // arm — the dispatcher mapped this node to its scope index by
+                // position, so AST/source-identical sibling bindings resolve
+                // correctly without the old content-keyed lookup.
+                let scope_idx = node_scope_idx;
+                debug_assert!(
+                    matches!(
+                        &ctx.scope_tree.nodes[scope_idx].kind,
+                        crate::scope_tree::ScopeKind::Bindings { source: s } if s == source
+                    ),
+                    "bindings: positional scope node {scope_idx} is not the matching bindings",
+                );
                 let installed = ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
                     .cloned()
                     .ok_or_else(|| format!(

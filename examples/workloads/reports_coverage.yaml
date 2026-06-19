@@ -90,3 +90,6 @@ scenarios:
   # variation. Tests assert on the resulting `summary.md`.
   default:
     - emit_phase
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

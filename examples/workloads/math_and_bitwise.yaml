@@ -38,3 +38,7 @@ ops:
     stmt: "low_byte={low_byte} high_nybble={high_nybble} packed={packed} flipped={flipped}"
   grouping:
     stmt: "grouped=(cycle+1)*(cycle+2)={grouped}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ run cycles=8
+#@ expect completed, 0 failed

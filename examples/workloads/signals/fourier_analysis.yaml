@@ -48,3 +48,6 @@ phases:
     ops:
       side_by_side:
         stmt: "cycle={cycle} noisy={signal} smooth={smooth}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

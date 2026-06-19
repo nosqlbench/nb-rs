@@ -3349,17 +3349,19 @@ mod tests {
     #[test]
     fn inline_objective_synthesizes_volatile_objective_binding() {
         use nbrs_workload::model::{BindingsDef, OptimizeBlock, WorkloadPhase};
-        let mut phase = WorkloadPhase::default();
-        phase.for_each = Some("rate in 1000, 2000".to_string());
-        phase.bindings = BindingsDef::PolydatSource("input cycle: u64\n".to_string());
-        phase.optimize = Some(OptimizeBlock {
-            method: "sweep".to_string(),
-            objective: "0 - metricsql_scalar(\"sum(rate(errors_total[3s]))\")".to_string(),
-            servo: vec!["rate".to_string()],
-            max_evals: 10,
-            seed: 0,
-            params: Default::default(),
-        });
+        let phase = WorkloadPhase {
+            for_each: Some("rate in 1000, 2000".to_string()),
+            bindings: BindingsDef::PolydatSource("input cycle: u64\n".to_string()),
+            optimize: Some(OptimizeBlock {
+                method: "sweep".to_string(),
+                objective: "0 - metricsql_scalar(\"sum(rate(errors_total[3s]))\")".to_string(),
+                servo: vec!["rate".to_string()],
+                max_evals: 10,
+                seed: 0,
+                params: Default::default(),
+            }),
+            ..Default::default()
+        };
         let out = synthesize_phase_scope_bindings(&phase).expect("synthesis ok");
         let src = match out {
             BindingsDef::PolydatSource(s) => s,

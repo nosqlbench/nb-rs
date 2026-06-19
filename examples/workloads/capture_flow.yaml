@@ -41,3 +41,6 @@ ops:
   greet_user:
     ratio: 1
     stmt: "UPDATE users SET greeting='Hello, {greeting}!' WHERE id={user_id}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

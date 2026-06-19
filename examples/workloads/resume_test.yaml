@@ -64,3 +64,6 @@ phases:
     ops:
       step:
         stmt: "phase3 trip={trip}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ requires stateful multi-invocation resume fixture — the per-session threshold staircase makes single-run output non-deterministic; covered by nbrs-runtime/tests/checkpoint_resume_e2e.rs

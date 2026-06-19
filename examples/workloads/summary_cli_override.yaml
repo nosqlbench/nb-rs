@@ -65,3 +65,6 @@ phases:
     ops:
       req:
         stmt: "GET region={region} query={query_id} latency={latency}ms status={status}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

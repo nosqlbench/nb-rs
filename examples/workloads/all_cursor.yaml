@@ -65,3 +65,7 @@ phases:
     ops:
       info:
         stmt: "xval={xval}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ run scenario=enumerate
+#@ expect 50 completed, 0 failed

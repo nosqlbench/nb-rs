@@ -31,3 +31,6 @@ phases:
         stmt: "json_param/json_object value={json_object}"
       scalar_line:
         stmt: "json_param/scalar_string value={scalar_string}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

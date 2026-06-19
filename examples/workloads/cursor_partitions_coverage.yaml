@@ -1192,3 +1192,7 @@ phases:
       emit:
         adapter: stdout
         stmt: "cp/no_over n={n}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ run scenario=windowed_chunking
+#@ expect 4 completed, 0 failed

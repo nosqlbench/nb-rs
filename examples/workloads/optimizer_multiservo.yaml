@@ -66,3 +66,6 @@ phases:
         result-latency: "5ms"
         result-capacity: 2
         result-overload: 4
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect \(control\): best \[2,

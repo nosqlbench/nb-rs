@@ -87,3 +87,6 @@ phases:
         tags: { phase: verify }
         if: is_tenth
         stmt: "SELECT count(*) FROM {keyspace}.{table}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

@@ -43,3 +43,6 @@ ops:
     row_7: "{row_7}"
     row_8: "{row_8}"
     row_9: "{row_9}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

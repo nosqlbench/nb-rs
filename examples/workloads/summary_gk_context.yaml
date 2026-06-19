@@ -68,3 +68,6 @@ phases:
     ops:
       search:
         stmt: "PROBE algorithm={algorithm} dataset={dataset} k={k} query={query_id} rank={result_rank} result={result_id}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

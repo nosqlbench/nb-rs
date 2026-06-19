@@ -26,6 +26,7 @@ pub fn root() -> Command {
         completion_override: None,
         subcommands: vec![
             crate::run::spec(),
+            crate::check_cmd::spec(),
             crate::refine::spec(),
             crate::session_cmd::spec(),
             crate::inspector::spec(),

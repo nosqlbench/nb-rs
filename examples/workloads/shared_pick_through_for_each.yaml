@@ -45,3 +45,6 @@ phases:
     ops:
       report:
         stmt: "spc/consume outer={outer} inner={inner} chosen={chosen}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

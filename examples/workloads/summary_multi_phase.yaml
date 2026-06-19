@@ -80,3 +80,6 @@ phases:
     ops:
       query:
         stmt: "SEARCH batch={batch} query={query_id} score={score}"
+
+# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+#@ expect completed, 0 failed

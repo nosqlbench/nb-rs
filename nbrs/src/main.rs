@@ -10,6 +10,7 @@
 
 mod bench;
 mod bundled;
+mod check_cmd;
 mod copy_cmd;
 mod diag_cmd;
 mod checkpoint_cmd;
