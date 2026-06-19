@@ -7,12 +7,12 @@
 #     for_each: "batch in [1,2], conc in [16,2]"
 #
 # `batch` is a plain COORDINATE axis (structural — it must be realized by
-# re-running the phase), and `conc` is named in `steer:` (a live
+# re-running the phase), and `conc` is named in `servo:` (a live
 # CONTROL — retargeted without restart). The hybrid executor partitions them:
 #
 #   - the coordinate axes form the OUTER rerun grid (one phase activation per
 #     `batch` value);
-#   - within each activation the Control daemon steers the control subspace
+#   - within each activation the Control daemon servos the control subspace
 #     INTERIOR to it (retargets `concurrency` across {16, 2}, settling the
 #     windowed objective at each).
 #
@@ -28,7 +28,7 @@
 description: |
   SRD-86 hybrid actuation: one optimize node mixing a coordinate axis (`batch`,
   rerun) and a control axis (`conc`, live-retargeted). The coordinate axis is the
-  outer rerun grid; the Control daemon steers the control subspace interior to
+  outer rerun grid; the Control daemon servos the control subspace interior to
   each cell — coordinate at its boundary, control varying live within.
 
 phases:
@@ -43,15 +43,15 @@ phases:
     # continuous control phase that dwells at a saturating setting.
     errors: warn
     error_rate_max: 1.0
-    # Multi-clause: `batch` (coordinate, rerun) × `conc` (control, steered).
+    # Multi-clause: `batch` (coordinate, rerun) × `conc` (control, servoed).
     for_each: "batch in [1,2], conc in [16,2]"
     optimize:
       objective: score
       max_evals: 10
-      # `steer: conc` opts conc into live steering; `batch` is not steered, so it
+      # `servo: conc` opts conc into live servoing; `batch` is not servoed, so it
       # steps through by re-running the phase — the hybrid (coordinate outer grid,
-      # control steered interior to each cell).
-      steer: conc
+      # control servoed interior to each cell).
+      servo: conc
     bindings: |
       input cycle: u64
       err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")

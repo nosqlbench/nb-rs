@@ -45,7 +45,7 @@ phases:
     optimize:
       objective: score
       max_evals: 10
-      # No `steer:` → `conc` steps through by re-running the phase per value
+      # No `servo:` → `conc` steps through by re-running the phase per value
       # (coordinate, the default). That's required here: the objective is a
       # session-cumulative `metric(...)` read that can't isolate a live setting,
       # so each value needs its own phase run.

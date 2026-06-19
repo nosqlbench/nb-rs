@@ -935,7 +935,7 @@ impl Activity {
         // Declare a `rate` control whenever the activity config has a rate
         // set. Its reified gauge projects ops/sec so metric sinks and the
         // f64-writable surface (TUI `e` prompt, web POST, Polydat
-        // `control_set`, `optimize.steer: rate`) all read and write the same
+        // `control_set`, `optimize.servo: rate`) all read and write the same
         // unit. The [`RateLimiterApplier`] gets registered at run time once
         // the limiter exists (see `run_with_adapters`).
         if let Some(rate) = self.config.rate {

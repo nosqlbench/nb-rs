@@ -18,7 +18,7 @@
   multi-clause `for_each`); the **objective wire** (a named phase-kernel wire,
   read post-execution or *settled* across the run); the **two actuation
   strategies** selected by changeover class — `Coordinate`/`Fixture` →
-  phase-rerun, `Control` → in-phase steering daemon (`optimize::steer`) — plus
+  phase-rerun, `Control` → in-phase servoing daemon (`optimize::servo`) — plus
   the **hybrid** (mixed coordinate + control in one node,
   `executor::run_hybrid_search`); the **settle-detector pipeline** (cadence-pulse
   `is_stable` verdict + a time-based viability gate); and all three **axis
@@ -32,8 +32,8 @@
   YAML trigger, finer-cadence auto-reconfiguration); the `Control` daemon's
   **Pulse-event** trigger; `Fixture` re-install/re-stack as a path distinct from
   the Coordinate rerun; and a **continuous coordinate** axis alongside a control
-  axis in one node (`IndexFn::Hybrid`). (`rate` as a steered control **landed** —
-  via the direct `steer: rate` form, since the fixed `f64` field can't carry a
+  axis in one node (`IndexFn::Hybrid`). (`rate` as a servoed control **landed** —
+  via the direct `servo: rate` form, since the fixed `f64` field can't carry a
   `{var}`.)
 
 **Owner:**
@@ -424,11 +424,25 @@ axis *combined with a control axis* in one node (`IndexFn::Hybrid`) is the
 remaining hybrid follow-up (today the hybrid path requires enumerated coordinate
 axes).
 
-The `objective:` is a **plain wire reference** — any binding / metric / capture
-in the subtree. The requirement is **capability-conditional**: a `FeedbackSource`
+The `objective:` is either a **bare wire reference** — a single identifier
+naming any binding / metric / capture in the subtree, read directly off the
+phase kernel — or an **inline polydat expression** (anything with operators or
+calls, e.g. `objective: "0 - metricsql_scalar(\"sum(rate(errors_total[3s]))\")"`).
+An inline expression is lowered to a synthesized `volatile __objective := <expr>`
+binding on the phase kernel by `synthesize_phase_scope_bindings`, and the
+optimizer reads the resolved wire from `scope::objective_wire` (the bare name, or
+`__objective`) — so an author can express the objective inline without
+pre-declaring a `bindings:` entry. Both forms behave identically downstream:
+volatility (settle-vs-one-shot) keys off program-wide reader-node presence, so a
+metricsql inline objective settles per setting and a deterministic one takes the
+one-shot read. As a YAML surface convenience, a bare **string** `optimize:` value
+is sugar for `{ objective: <string> }` with every other field defaulted
+(`OptimizeBlock::from_yaml_value` / `de_optimize`), so the common "just maximize
+this expression" case drops the map entirely. The requirement is
+**capability-conditional**: a `FeedbackSource`
 optimizer cannot run without it (validation errors if absent); a pull-only
-optimizer (`null`) treats it as optional (used only to report the best). Dryrun
-also checks the named wire is a pullable phase-kernel output.
+optimizer (`sweep`) treats it as optional (used only to report the best). Dryrun
+also checks the resolved wire is a pullable phase-kernel output.
 
 ### 4. Two actuation strategies (A5) — selected by changeover class
 
@@ -441,35 +455,35 @@ The `FeedbackSource` is the same; the changeover class picks how the executor
 | `Control` | **in-phase daemon** | ONE continuous phase + a concurrent daemon: pull the next control setting → apply it to the live `Control<T>` (SRD-23 retarget, no restart) → wait the feedback cadence → read the windowed objective wire → `step`. |
 
 Mixed = **partition within one node** (or node nesting): coordinate/fixture axes
-iterate at their boundary (rerun), control axes steer interior — see the hybrid
+iterate at their boundary (rerun), control axes servo interior — see the hybrid
 note below.
 
 **Status — `Coordinate`, `Control`, and mixed (`hybrid`) are wired; `Fixture`
 shares the Coordinate path.** Every axis is a `Coordinate` (stepped through by
-re-running the phase) by **default**; steering is an **explicit, validated
-opt-in** via `optimize.steer` (`steer: concurrency` or `steer: [concurrency,
+re-running the phase) by **default**; servoing is an **explicit, validated
+opt-in** via `optimize.servo` (`servo: concurrency` or `servo: [concurrency,
 rate]`). The classifier (`executor::classify_control_axes`) resolves each *named*
 var to a live control either **directly** (the var's name IS a control —
-`steer: concurrency`, `steer: rate`) or **indirectly** (it sinks into a control
-field, `concurrency: "{conc}"` ⇒ the `concurrency` control, then `steer: conc`).
+`servo: concurrency`, `servo: rate`) or **indirectly** (it sinks into a control
+field, `concurrency: "{conc}"` ⇒ the `concurrency` control, then `servo: conc`).
 Downstream (`require_windowed_objective`) the objective must be a windowed metric
-the steerer can settle — any miss is a **clear error**, never a silent downgrade
-(so a half-specified steer surfaces, rather than masking the author's mistake).
-There is no inference and no separate override: presence/absence of `steer:` *is*
-the choice. (The **direct** form is the only way to steer `rate`, whose fixed
-`f64` field can't carry a `{var}`; steering `rate` therefore requires the phase to
+the servo can settle — any miss is a **clear error**, never a silent downgrade
+(so a half-specified servo surfaces, rather than masking the author's mistake).
+There is no inference and no separate override: presence/absence of `servo:` *is*
+the choice. (The **direct** form is the only way to servo `rate`, whose fixed
+`f64` field can't carry a `{var}`; servoing `rate` therefore requires the phase to
 set `rate:` — its value is the warmup the daemon retargets from — checked at
 validation time, not at runtime, since the `rate` control is only declared when the
 field is set, whereas `concurrency` is always declared. The indirect "sinks into a
 control" check is a textual `{var}` match against `concurrency:`; the principled
 form traces the var's l-value flow to a control sink.)
-The daemon (`optimize::steer`) is a **concurrent async task `tokio::join!`'d with
+The daemon (`optimize::servo`) is a **concurrent async task `tokio::join!`'d with
 one continuous phase** inside `run_phase` — *not* a cadence callback, because
 `Control::set` is async (confirmed-apply) while the cadence callback is sync. It
 reuses `start_settle` **per setting** (a throwaway per-setting stop flag absorbs
 the settle verdict so it doesn't end the phase), `await`s the retarget
 (`ErasedControl::set_f64` resolved off the phase component), and ends the phase
-itself on budget exhaustion — a **clean** stop (`steer_completed`), distinct from
+itself on budget exhaustion — a **clean** stop (`servo_completed`), distinct from
 an error-handler stop, mirroring `settle_succeeded`. Caveat: a continuous control
 phase that dwells at a saturating setting sustains a high error rate, so a
 `Control` sweep must not carry a *tripping* error guard (`error_rate_max: 1.0`
@@ -477,12 +491,12 @@ compiles to `error_rate > 1.0` — never trips — i.e. "allow 100%").
 
 **Hybrid (mixed coordinate + control in ONE node) — `executor::run_hybrid_search`.**
 A single optimize node may carry both: a multi-clause phase `for_each: "batch in
-[1,2], conc in [8,16]"` with `steer: conc` — `conc` is steered, `batch` (not in
-`steer:`) steps through. The dispatch
-**partitions** the search space — control axes are the inner steered subspace K,
+[1,2], conc in [8,16]"` with `servo: conc` — `conc` is servoed, `batch` (not in
+`servo:`) steps through. The dispatch
+**partitions** the search space — control axes are the inner servoed subspace K,
 the rest are the coordinate subspace C. The coordinate axes form the OUTER rerun
 grid (the distinct cells are enumerated and de-duplicated from the steps); for
-each cell the phase is re-run bound at that cell and `run_steer_cell` runs the
+each cell the phase is re-run bound at that cell and `run_servo_cell` runs the
 Control daemon over K interior to it (`method`/`budget` per cell). A coordinate
 axis is therefore realized **only** by iterating its scope (never set
 ineffectually); the control varies live within each fixed-coordinate phase. The
@@ -500,7 +514,7 @@ intermediate level (honoring infra-stacking rules + stack-churn cost).
 
 ### 5. The in-phase daemon + configurable feedback cadence
 
-A `Control`-class node runs its phase continuously; the daemon steers it. The
+A `Control`-class node runs its phase continuously; the daemon servos it. The
 feedback signal is a **subscription to a metrics cadence pulse** — by default
 the **smallest configured cadence** (no separate sampler; a specific rate, e.g.
 10 Hz, means configuring a metrics cadence at that rate). At each pulse the
@@ -539,7 +553,7 @@ predicates — plus a few statistic nodes.
    Only **bounded** readers are gate-scopeable (`metricsql_*` rollups, `metric_window`).
    The session-cumulative `metric(...)` reader (`session_lifetime`) has no bounded
    window — it aggregates across every coordinate — so no warmup can isolate it; the
-   settle **warns** that such an objective won't isolate per-coordinate and steers the
+   settle **warns** that such an objective won't isolate per-coordinate and servos the
    author to a windowed reader instead.
 3. **Sparsity handling — walk *up* the cadence ladder.** When the current
    cadence window is too sparse for viability, **subscribe to the next-coarser
@@ -860,11 +874,11 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
    nesting/composition of multiple optimize nodes (the node-level `optimizer:`
    property over a subtree).
 7. **Two actuation strategies — ✓ LANDED.** The in-phase `Control` daemon
-   (`optimize::steer`, `tokio::join!`'d with one continuous phase) over the SRD-23
+   (`optimize::servo`, `tokio::join!`'d with one continuous phase) over the SRD-23
    controls plane, plus changeover-class driver selection (`Coordinate`/`Fixture`
    → rerun, `Control` → daemon) and the **hybrid** (`run_hybrid_search`: mixed
    coordinate + control in one node — coordinate axes are the outer rerun grid,
-   control axes steer interior per cell). Examples: `optimizer_control.yaml`,
+   control axes servo interior per cell). Examples: `optimizer_control.yaml`,
    `optimizer_hybrid.yaml`.
 8. **Settle-detector pipeline** — *first push SHIPPED 2026-06-18.* A
    `PhaseStopEvaluator` (general cadence-pulse phase evaluator,

@@ -19,10 +19,10 @@
 //!   once per proposed coordinate (`CoordEval::Enumerated` looks a discrete
 //!   coordinate up in the grid; `CoordEval::Synthesized` binds a sampled
 //!   continuous coordinate);
-//! - **Control** → the in-phase steering daemon ([`steer`]), `tokio::join!`'d with
+//! - **Control** → the in-phase servoing daemon ([`servo`]), `tokio::join!`'d with
 //!   one continuous phase, live-retargeting the SRD-23 control per setting;
 //! - **mixed** → the hybrid (`run_hybrid_search`): coordinate axes form the outer
-//!   rerun grid, control axes steer interior to each cell.
+//!   rerun grid, control axes servo interior to each cell.
 //!
 //! Settling a windowed objective per evaluation is [`settle`], driven by the
 //! cadence-pulse [`phase_pulse`] callback. This module proper is the contract
@@ -31,7 +31,7 @@
 pub mod contract;
 pub mod phase_pulse;
 pub mod settle;
-pub mod steer;
+pub mod servo;
 
 pub use contract::{
     by_name, describe, registered_names, Axis, AxisImpact, AxisKind, AxisValue, Budget, Changeover,

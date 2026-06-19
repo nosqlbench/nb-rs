@@ -2218,11 +2218,28 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         // and `bindings:` fold the bindings into the for_each
                         // scope kernel (one kernel, one install). Pure-for_each
                         // phases pass an empty `BindingsDef` (no-op).
+                        //
+                        // Route through the SAME phase-scope synthesis the
+                        // non-for_each branch uses, so phase-level `metrics:` /
+                        // `poll:` and an inline `optimize.objective` (SRD-86)
+                        // are folded into the for_each kernel too — not just the
+                        // author's raw `bindings:`. The synthesizer returns the
+                        // raw bindings unchanged when there is nothing to add,
+                        // so plain for_each phases are unaffected.
+                        let phase_bindings =
+                            match crate::scope::synthesize_phase_scope_bindings(phase) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    crate::diag!(crate::observer::LogLevel::Error,
+                                        "phase '{name}': phase-scope synthesis: {e}");
+                                    return None;
+                                }
+                            };
                         Some(InstallSpec::ForComprehension {
                             idx,
                             iter_vars,
                             spec_exprs,
-                            phase_bindings: phase.bindings.clone(),
+                            phase_bindings,
                         })
                     } else {
                         // SRD-75: when the phase declares `poll:`,
@@ -2592,7 +2609,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             phases: phases.clone(),
             optimize_objective: None,
             optimize_objective_value: None,
-            optimize_steer: None,
+            optimize_servo: None,
             phase_param_overrides,
             workload_shell,
             workload_stop_when: workload.stop_when.clone(),

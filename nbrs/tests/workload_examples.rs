@@ -195,6 +195,37 @@ fn optimizer_continuous_axis_climbs_to_off_center_peak() {
 }
 
 #[test]
+fn optimizer_inline_objective_expression_drives_the_search() {
+    // SRD-86 — `optimize.objective` accepts a full polydat EXPRESSION inline, not
+    // just a bare wire name. This workload writes `objective: "0 - (ef-4)*(ef-4)"`
+    // directly in the `optimize:` block with NO `bindings:` entry; the runtime
+    // lowers it to a synthesized `__objective` wire (`scope::objective_wire`).
+    // Proving it end-to-end: the inline objective must actually be evaluated and
+    // drive convergence to the off-centre peak ef≈4 — exactly the continuous
+    // example's result, but with the objective expressed inline instead of via a
+    // named binding.
+    let (stdout, stderr) =
+        run_workload("examples/workloads/optimizer_inline_objective.yaml", &[]);
+    let out = format!("{stdout}\n{stderr}");
+    assert!(!stderr.contains("error:"), "run errored: {out}");
+
+    let best_line = out
+        .lines()
+        .find(|l| l.contains("best ["))
+        .unwrap_or_else(|| panic!("no optimizer result line:\n{out}"));
+    let best_ef: f64 = best_line
+        .split("best [")
+        .nth(1)
+        .and_then(|s| s.split(']').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or_else(|| panic!("could not parse best coordinate from: {best_line}"));
+    assert!(
+        (best_ef - 4.0).abs() < 0.5,
+        "inline objective must drive convergence near ef=4, got {best_ef}: {best_line}"
+    );
+}
+
+#[test]
 fn optimizer_multiaxis_cmaes_converges_on_a_2d_manifold() {
     // SRD-86 multi-axis — a multi-clause `for_each` over TWO continuous axes,
     // searched by the cmaes population solver. Proves the multi-axis path: the
@@ -281,10 +312,10 @@ fn optimizer_metricsql_objective_settles() {
 }
 
 #[test]
-fn optimizer_control_steers_a_live_control() {
+fn optimizer_control_servos_a_live_control() {
     // SRD-86 §4 Control-class actuation — the SAME causal search as
-    // optimizer_metricsql, but `conc` is named in `steer:`, so the
-    // optimizer STEERS the live `concurrency` control (SRD-23 retarget, no
+    // optimizer_metricsql, but `conc` is named in `servo:`, so the
+    // optimizer SERVOS the live `concurrency` control (SRD-23 retarget, no
     // restart) across ONE continuous phase instead of rerunning per coordinate.
     // The daemon retargets concurrency 32 → 2, settles the windowed objective at
     // each, and finds conc=2 (the setting that eliminates overloads). The
@@ -295,14 +326,49 @@ fn optimizer_control_steers_a_live_control() {
     assert!(!stderr.contains("error:"), "run errored: {out}");
     assert!(
         out.contains("(control): best [2]"),
-        "the control daemon must steer the live concurrency to the overload-free \
+        "the control daemon must servo the live concurrency to the overload-free \
          setting (conc=2) on ONE continuous phase: {out}"
     );
     // The phase completed cleanly (the daemon's stop is a clean early stop, not
     // an error-handler failure).
     assert!(
         out.contains("1 completed, 0 failed") || out.contains("[ok]"),
-        "the steered phase must complete cleanly, not fail: {out}"
+        "the servoed phase must complete cleanly, not fail: {out}"
+    );
+}
+
+#[test]
+fn optimizer_servos_two_controls_in_one_phase() {
+    // SRD-86 §4 — MULTIPLE servo params in one phase. The phase searches a 2-D
+    // control grid (`concurrency in 32, 2, rate in 4000, 1000`) and names BOTH
+    // axes in `servo: [concurrency, rate]`, so the daemon retargets BOTH live
+    // controls (SRD-23, no restart) at every one of the 4 grid points on ONE
+    // continuous phase. This exercises the multi-control servo loop
+    // (`servo.rs` iterates every `ControlAxis` per setting), distinct from the
+    // single-control `optimizer_control.yaml`.
+    let (stdout, stderr) =
+        run_workload("examples/workloads/optimizer_multiservo.yaml", &[]);
+    let out = format!("{stdout}\n{stderr}");
+    assert!(!stderr.contains("error:"), "run errored: {out}");
+
+    // The result is a 2-TUPLE on the Control path — proving both axes were
+    // servoed (a single-control search reports `best [N]`, not `best [N, M]`).
+    // Concurrency=2 caps in-flight below the overload threshold, so the daemon
+    // settles on a concurrency-2 corner at score 0.
+    assert!(
+        out.contains("(control): best [2,"),
+        "must servo BOTH controls (2-tuple best) to the overload-free corner: {out}"
+    );
+    assert!(out.contains("score=0"), "the overload-free corner scores 0: {out}");
+    // 4 evals = the full 2×2 grid was visited, so BOTH axes were genuinely
+    // searched (not one collapsed away).
+    assert!(
+        out.contains("after 4 evals"),
+        "the 2-D control grid (2×2) must be fully searched: {out}"
+    );
+    assert!(
+        out.contains("1 completed, 0 failed") || out.contains("[ok]"),
+        "the multi-servoed phase must complete cleanly: {out}"
     );
 }
 
@@ -310,8 +376,8 @@ fn optimizer_control_steers_a_live_control() {
 fn optimizer_control_nests_inside_a_coordinate_sweep() {
     // SRD-86 §4 "mixed = node nesting" — a phase whose sweeps cover BOTH a
     // non-control (the outer `for: batch`, re-run actuation) AND a control (the
-    // inner `steer: conc` axis, daemon actuation). The outer scope reruns
-    // the phase per `batch`; within EACH rerun the control daemon steers the live
+    // inner `servo: conc` axis, daemon actuation). The outer scope reruns
+    // the phase per `batch`; within EACH rerun the control daemon servos the live
     // concurrency. Two outer values ⇒ the Control daemon must fire twice, each a
     // clean continuous phase. (Inner sweep is a single setting so the test stays
     // to one settle per rerun.)
@@ -333,7 +399,7 @@ phases:
     optimize:
       objective: score
       max_evals: 10
-      steer: conc
+      servo: conc
     bindings: |
       input cycle: u64
       err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
@@ -357,21 +423,21 @@ phases:
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!out.contains("error:"), "nested control sweep errored: {out}");
-    // The Control daemon composed under the outer Coordinate rerun: one steered
+    // The Control daemon composed under the outer Coordinate rerun: one servoed
     // continuous phase per `batch`, each finding the overload-free setting.
     let control_runs = out.matches("(control): best [2]").count();
     assert_eq!(
         control_runs, 2,
-        "the control daemon must steer once per outer `batch` iteration (2): {out}"
+        "the control daemon must servo once per outer `batch` iteration (2): {out}"
     );
 }
 
 #[test]
-fn optimizer_hybrid_iterates_coordinate_and_steers_control() {
+fn optimizer_hybrid_iterates_coordinate_and_servos_control() {
     // SRD-86 §4 hybrid actuation — ONE optimize node mixing a coordinate axis
-    // (`batch`, rerun) and a control axis (`conc`, steered), expressed in one
+    // (`batch`, rerun) and a control axis (`conc`, servoed), expressed in one
     // multi-clause phase `for_each`. The coordinate axis forms the outer rerun
-    // grid (one phase activation per `batch`), and the Control daemon steers the
+    // grid (one phase activation per `batch`), and the Control daemon servos the
     // control subspace interior to each cell. (Single control value keeps the
     // test to one settle per cell.)
     let yaml = r#"
@@ -386,7 +452,7 @@ phases:
     optimize:
       objective: score
       max_evals: 10
-      steer: conc
+      servo: conc
     bindings: |
       input cycle: u64
       err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
@@ -410,25 +476,25 @@ phases:
     );
     assert!(!out.contains("error:"), "hybrid optimize errored: {out}");
     // The hybrid partition ran: the coordinate axis `batch` is the outer rerun
-    // grid (2 cells), and `conc` was steered interior to each — reaching the
+    // grid (2 cells), and `conc` was servoed interior to each — reaching the
     // overload-free setting (conc=2) without rerunning per conc value.
     assert!(
         out.contains("(hybrid 2 coordinate cells × control)") && out.contains("; 2]"),
-        "the hybrid must rerun per coordinate cell and steer the control to conc=2: {out}"
+        "the hybrid must rerun per coordinate cell and servo the control to conc=2: {out}"
     );
     // One clean phase activation per coordinate cell (no failures).
     assert!(
         out.contains("2 completed, 0 failed"),
-        "each coordinate cell must complete as a clean steered phase: {out}"
+        "each coordinate cell must complete as a clean servoed phase: {out}"
     );
 }
 
 #[test]
-fn optimizer_steer_without_control_field_is_rejected() {
-    // SRD-86 §4 steer validation — `steer: conc` must be wired to a live control
+fn optimizer_servo_without_control_field_is_rejected() {
+    // SRD-86 §4 servo validation — `servo: conc` must be wired to a live control
     // by a referencing control field (`concurrency: "{conc}"`). Without it, the
-    // steerer cannot know which control to retarget, so the dispatch rejects it
-    // with an actionable error — surfacing the half-specified-steer mistake
+    // servo cannot know which control to retarget, so the dispatch rejects it
+    // with an actionable error — surfacing the half-specified-servo mistake
     // rather than silently downgrading to a coordinate.
     let yaml = r#"
 phases:
@@ -438,7 +504,7 @@ phases:
     optimize:
       objective: score
       max_evals: 5
-      steer: conc
+      servo: conc
     bindings: |
       score := 0 - conc
     ops:
@@ -448,7 +514,7 @@ phases:
           stdout: eventlog
         stmt: "c={conc}"
 "#;
-    let (path, session) = write_inline_workload("optimizer_steer_unwired", yaml);
+    let (path, session) = write_inline_workload("optimizer_servo_unwired", yaml);
     let mut cmd = nbrs(&session);
     cmd.arg(format!("workload={}", path.display()));
     let output = cmd.output().expect("failed to run nbrs");
@@ -459,15 +525,15 @@ phases:
     );
     assert!(
         out.contains("is neither a live control nor wired to one"),
-        "`steer:` on a var with no control field must be rejected: {out}"
+        "`servo:` on a var with no control field must be rejected: {out}"
     );
 }
 
 #[test]
-fn optimizer_steers_a_control_directly_by_name() {
-    // SRD-86 §4 — `steer:` can name a live control DIRECTLY (the axis IS the
+fn optimizer_servos_a_control_directly_by_name() {
+    // SRD-86 §4 — `servo:` can name a live control DIRECTLY (the axis IS the
     // control), with no `{var}`-bind wire. `for_each: "concurrency in …"` +
-    // `steer: concurrency` steers the concurrency control itself. (`concurrency:
+    // `servo: concurrency` servos the concurrency control itself. (`concurrency:
     // 16` is just the warmup the daemon retargets from.)
     let yaml = r#"
 phases:
@@ -481,7 +547,7 @@ phases:
     optimize:
       objective: score
       max_evals: 10
-      steer: concurrency
+      servo: concurrency
     bindings: |
       input cycle: u64
       err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
@@ -494,7 +560,7 @@ phases:
         result-capacity: 2
         result-overload: 4
 "#;
-    let (path, session) = write_inline_workload("optimizer_steer_direct", yaml);
+    let (path, session) = write_inline_workload("optimizer_servo_direct", yaml);
     let mut cmd = nbrs(&session);
     cmd.arg(format!("workload={}", path.display()));
     let output = cmd.output().expect("failed to run nbrs");
@@ -503,17 +569,78 @@ phases:
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!out.contains("error:"), "direct steer errored: {out}");
+    assert!(!out.contains("error:"), "direct servo errored: {out}");
     assert!(
         out.contains("(control): best [2]"),
-        "steering the `concurrency` control by name must find the overload-free setting: {out}"
+        "servoing the `concurrency` control by name must find the overload-free setting: {out}"
     );
 }
 
 #[test]
-fn optimizer_steers_the_rate_control_directly() {
-    // SRD-86 §4 — `steer:` can name the `rate` control DIRECTLY. This is the ONLY
-    // way to steer `rate`: the phase `rate:` field is a fixed `f64` that can't carry
+fn optimizer_servos_mixed_direct_and_indirect_controls() {
+    // SRD-86 §4 — a single `servo:` LIST can mix resolution forms. Here `conc`
+    // resolves INDIRECTLY (the axis var sinks into the `concurrency` control via
+    // `concurrency: "{conc}"`) while `rate` resolves DIRECTLY (the axis name IS
+    // the rate control). The classifier must handle both kinds in one list, and
+    // the daemon retargets both live controls per setting on ONE continuous
+    // phase. This is the resolution variant the all-direct
+    // `optimizer_multiservo.yaml` doesn't cover.
+    let yaml = r#"
+phases:
+  saturate:
+    cycles: 120000
+    concurrency: "{conc}"
+    rate: 2000
+    errors: warn
+    error_rate_max: 1.0
+    for_each: "conc in 32, 2, rate in 4000, 1000"
+    optimize:
+      objective: score
+      max_evals: 10
+      servo: [conc, rate]
+    bindings: |
+      input cycle: u64
+      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      score := 0 - err_rate
+    ops:
+      insert:
+        adapter: testkit
+        stmt: "INSERT INTO demo.events (id) VALUES ({cycle});"
+        result-latency: "5ms"
+        result-capacity: 2
+        result-overload: 4
+"#;
+    let (path, session) = write_inline_workload("optimizer_servo_mixed", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    let output = cmd.output().expect("failed to run nbrs");
+    let out = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!out.contains("error:"), "mixed-resolution servo errored: {out}");
+    // A 2-tuple on the Control path proves both axes servoed; the indirect
+    // `conc` drove the concurrency control down to 2 (the overload-free corner).
+    assert!(
+        out.contains("(control): best [2,"),
+        "mixed `servo: [conc, rate]` must servo both (indirect conc + direct rate): {out}"
+    );
+    assert!(out.contains("score=0"), "the overload-free corner scores 0: {out}");
+    assert!(
+        out.contains("after 4 evals"),
+        "the 2-D control grid (2×2) must be fully searched: {out}"
+    );
+    assert!(
+        out.contains("1 completed, 0 failed") || out.contains("[ok]"),
+        "the multi-servoed phase must complete cleanly: {out}"
+    );
+}
+
+#[test]
+fn optimizer_servos_the_rate_control_directly() {
+    // SRD-86 §4 — `servo:` can name the `rate` control DIRECTLY. This is the ONLY
+    // way to servo `rate`: the phase `rate:` field is a fixed `f64` that can't carry
     // a `{var}` bind, so the indirect form is unavailable. The `rate:` value is the
     // warmup the daemon retargets from.
     let yaml = r#"
@@ -528,7 +655,7 @@ phases:
     optimize:
       objective: score
       max_evals: 10
-      steer: rate
+      servo: rate
     bindings: |
       input cycle: u64
       err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
@@ -541,7 +668,7 @@ phases:
         result-capacity: 2
         result-overload: 4
 "#;
-    let (path, session) = write_inline_workload("optimizer_steer_rate_direct", yaml);
+    let (path, session) = write_inline_workload("optimizer_servo_rate_direct", yaml);
     let mut cmd = nbrs(&session);
     cmd.arg(format!("workload={}", path.display()));
     let output = cmd.output().expect("failed to run nbrs");
@@ -550,18 +677,18 @@ phases:
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!out.contains("error:"), "direct rate steer errored: {out}");
+    assert!(!out.contains("error:"), "direct rate servo errored: {out}");
     assert!(
         out.contains("(control): best [1000]"),
-        "steering the `rate` control by name must find the lower, overload-free rate: {out}"
+        "servoing the `rate` control by name must find the lower, overload-free rate: {out}"
     );
 }
 
 #[test]
-fn optimizer_steer_rate_without_rate_field_is_rejected() {
-    // SRD-86 §4 — `steer: rate` needs the phase to declare a `rate:` field, since the
+fn optimizer_servo_rate_without_rate_field_is_rejected() {
+    // SRD-86 §4 — `servo: rate` needs the phase to declare a `rate:` field, since the
     // rate control only exists when set (concurrency is always declared). Without it
-    // there is no control to steer, so the dispatch rejects it at validation time —
+    // there is no control to servo, so the dispatch rejects it at validation time —
     // a clean pre-run error, symmetric to the windowed-objective check, NOT a runtime
     // phase failure when the daemon can't find the control.
     let yaml = r#"
@@ -574,7 +701,7 @@ phases:
     optimize:
       objective: score
       max_evals: 5
-      steer: rate
+      servo: rate
     bindings: |
       input cycle: u64
       err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
@@ -585,7 +712,7 @@ phases:
         stmt: "INSERT INTO demo.events (id) VALUES ({cycle});"
         result-latency: "2ms"
 "#;
-    let (path, session) = write_inline_workload("optimizer_steer_rate_norate", yaml);
+    let (path, session) = write_inline_workload("optimizer_servo_rate_norate", yaml);
     let mut cmd = nbrs(&session);
     cmd.arg(format!("workload={}", path.display()));
     let output = cmd.output().expect("failed to run nbrs");
@@ -596,7 +723,7 @@ phases:
     );
     assert!(
         out.contains("declares no `rate:` field"),
-        "`steer: rate` without a `rate:` field must be rejected before the run: {out}"
+        "`servo: rate` without a `rate:` field must be rejected before the run: {out}"
     );
 }
 

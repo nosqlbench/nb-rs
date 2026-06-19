@@ -394,7 +394,7 @@ fn describe_controls() {
 
     let entries = all_controls();
     println!("Dynamic controls (SRD-23) — retarget live via the TUI `e` prompt, web POST,");
-    println!("polydat `control_set`, or `optimize.steer`, without restarting a phase.");
+    println!("polydat `control_set`, or `optimize.servo`, without restarting a phase.");
     println!();
     if entries.is_empty() {
         println!("  (no dynamic controls registered in this binary)");
@@ -409,7 +409,7 @@ fn describe_controls() {
         println!("  {:<name_w$}  {:<owner_w$}  {}", "", "", d.doc);
         println!();
     }
-    println!("Steer any toward an objective with `optimize: {{ steer: <name> }}` (SRD-86 §4).");
+    println!("Servo any toward an objective with `optimize: {{ servo: <name> }}` (SRD-86 §4).");
     println!("Run-specific view (what a given workload declares): nbrs run workload=… dryrun=controls");
 }
 
@@ -426,7 +426,7 @@ fn describe_control(name: &str) {
             println!("  Shape:        {}", control_shape(d));
             println!("  Default:      {}", fmt_num(d.default));
             println!("  Declared:     {}", d.declared_when);
-            println!("  Steerable:    optimize: {{ steer: {} }}", d.name);
+            println!("  Servo:    optimize: {{ servo: {} }}", d.name);
             println!();
             println!("  {}", d.doc);
         }

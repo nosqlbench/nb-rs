@@ -21,11 +21,13 @@ shebangs — make them executable and run directly.
 ### workloads/ — optimizer (SRD-86; see [docs/guide/optimizer.md](../docs/guide/optimizer.md))
 - `optimizer_sweep.yaml` — discrete axis, default `sweep` (identity) + best-selection, synthetic objective
 - `optimizer_continuous.yaml` — continuous (float-range) axis sampled by `nelder_mead`
+- `optimizer_inline_objective.yaml` — objective written as an inline polydat expression (no `bindings:` entry)
 - `optimizer_multiaxis.yaml` — multi-axis continuous search with `cmaes`
 - `optimizer_categorical.yaml` — categorical (named-label) axis
 - `optimizer_saturation.yaml` — run-produced objective (metric reader), settled across the run
 - `optimizer_metricsql.yaml` — run-produced objective via a MetricsQL reader, settled
-- `optimizer_control.yaml` — `changeover: control` — live-retarget steering daemon (no rerun)
+- `optimizer_control.yaml` — `servo:` a live control — retargeted by a daemon on one continuous phase (no rerun)
+- `optimizer_multiservo.yaml` — `servo: [concurrency, rate]` — two live controls retargeted together over a 2-D grid
 - `optimizer_hybrid.yaml` — mixed coordinate + control axes in one node
 
 ### workloads/signals/

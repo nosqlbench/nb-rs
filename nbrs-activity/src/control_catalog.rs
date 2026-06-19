@@ -30,7 +30,7 @@ use nbrs_metrics::controls::{BranchScope, Control, ControlBuilder};
 
 /// The value shape of a control, as projected onto the f64-writable surface
 /// every writer (TUI `e`, `POST /controls`, polydat `control_set`,
-/// `optimize.steer`) shares.
+/// `optimize.servo`) shares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlValueType {
     /// Unsigned integer count (e.g. `concurrency` — fibers). Written as an
@@ -89,7 +89,7 @@ impl std::fmt::Display for DeclaredWhen {
 #[derive(Debug, Clone, Copy)]
 pub struct ControlDesc {
     /// Canonical control name — the key written via `control_set`, the TUI
-    /// `e` prompt, `GET`/`POST /controls`, and `optimize.steer`.
+    /// `e` prompt, `GET`/`POST /controls`, and `optimize.servo`.
     pub name: &'static str,
     /// Value shape (drives the derived gauge + f64 conversion).
     pub value_type: ControlValueType,
@@ -98,7 +98,7 @@ pub struct ControlDesc {
     pub default: f64,
     /// Inclusive lower bound the derived `from_f64` validator enforces. For
     /// [`ControlValueType::Rate`] this is treated as an *exclusive* floor (a
-    /// rate of `0` disables the limiter rather than steering it).
+    /// rate of `0` disables the limiter rather than servoing it).
     pub min: f64,
     /// Inclusive upper bound the derived `from_f64` validator enforces.
     pub max: f64,
@@ -150,7 +150,7 @@ impl ControlDesc {
 
     /// Derive a `RateSpec` throughput control from this descriptor. `min` is an
     /// *exclusive* floor: a non-positive value is rejected (a zero rate
-    /// disables the limiter, which is a phase-config decision, not a steer).
+    /// disables the limiter, which is a phase-config decision, not a servo).
     pub fn build_rate(&self, initial_ops_per_sec: f64) -> Control<nbrs_rate::RateSpec> {
         debug_assert_eq!(self.value_type, ControlValueType::Rate, "{} is not a Rate control", self.name);
         let name = self.name;
@@ -183,7 +183,7 @@ pub const CONCURRENCY: ControlDesc = ControlDesc {
 
 /// `rate` — the cycle-rate limiter (ops/sec). Declared only when a phase sets
 /// `rate:`; that field value seeds the control (and is the warmup an
-/// `optimize.steer: rate` retargets from).
+/// `optimize.servo: rate` retargets from).
 pub const RATE: ControlDesc = ControlDesc {
     name: "rate",
     value_type: ControlValueType::Rate,

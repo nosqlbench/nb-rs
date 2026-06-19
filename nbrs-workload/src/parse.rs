@@ -1389,10 +1389,12 @@ fn parse_phases(
         let metrics = parse_phase_metrics_field(phase_obj.get("metrics"), phase_name)
             .map_err(|e| format!("phase '{phase_name}' metrics: {e}"))?;
 
-        // SRD-86 — phase `optimize:` block (workload-local config).
+        // SRD-86 — phase `optimize:` block (workload-local config). A bare
+        // string is sugar for `{ objective: <string> }` (see
+        // `OptimizeBlock::from_yaml_value`).
         let optimize = match phase_obj.get("optimize") {
             Some(v) => Some(
-                serde_json::from_value(v.clone())
+                crate::model::OptimizeBlock::from_yaml_value(v)
                     .map_err(|e| format!("phase '{phase_name}' invalid `optimize` block: {e}"))?,
             ),
             None => None,
@@ -4002,6 +4004,48 @@ phases:
         assert_eq!(poll.timeout_ms, Some(14_400_000));
         assert_eq!(poll.max_error_retries, Some(3));
         assert_eq!(poll.metric_name.as_deref(), Some("ensure_wait_s"));
+    }
+
+    #[test]
+    fn optimize_string_is_sugar_for_objective_block() {
+        // SRD-86 — `optimize: <string>` is shorthand for
+        // `optimize: { objective: <string> }` with every other field defaulted.
+        let yaml = r#"
+scenarios:
+  default:
+    - search
+phases:
+  search:
+    cycles: 1
+    for_each: "ef in 1.0 .. 5.0"
+    optimize: |
+      0 - (ef - 4) * (ef - 4)
+    ops:
+      probe:
+        stmt: "probe ef={ef}"
+"#;
+        let wl = super::parse_workload(yaml, &HashMap::new())
+            .expect("string-form optimize should parse");
+        let opt = wl
+            .phases
+            .get("search")
+            .and_then(|p| p.optimize.as_ref())
+            .expect("optimize block present");
+        // The whole string became the objective; the rest defaulted.
+        assert_eq!(opt.objective.trim(), "0 - (ef - 4) * (ef - 4)");
+        assert_eq!(opt.method, "sweep");
+        assert!(opt.servo.is_empty());
+
+        // ...and it is equivalent to the explicit map form.
+        let map_yaml = yaml.replace(
+            "    optimize: |\n      0 - (ef - 4) * (ef - 4)\n",
+            "    optimize: { objective: \"0 - (ef - 4) * (ef - 4)\" }\n",
+        );
+        let wl2 = super::parse_workload(&map_yaml, &HashMap::new())
+            .expect("map-form optimize should parse");
+        let opt2 = wl2.phases.get("search").and_then(|p| p.optimize.as_ref()).unwrap();
+        assert_eq!(opt.objective.trim(), opt2.objective.trim());
+        assert_eq!(opt.method, opt2.method);
     }
 
     /// SRD-75 §"Workload-load validation": phase-poll +

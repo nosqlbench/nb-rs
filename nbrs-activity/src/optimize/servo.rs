@@ -7,7 +7,7 @@
 //! per coordinate (`executor::dispatch_optimization`'s default loop), a
 //! `Control`-class axis is actuated by **live-retargeting** the phase's dynamic
 //! control (SRD-23 `concurrency` / `rate`) on **one continuous phase** — no
-//! restart. The optimizer becomes a steering daemon: pull the next setting →
+//! restart. The optimizer becomes a servoing daemon: pull the next setting →
 //! retarget the live control (confirmed-apply, `await`ed) → wait for the
 //! windowed objective to *settle* at that setting → read it → `step`. Repeat
 //! until the budget is spent, then stop the phase.
@@ -16,7 +16,7 @@
 //!
 //! The settle detector ([`super::settle`]) rides the **sync** metrics-cadence
 //! callback, but [`Control::set`](nbrs_metrics::controls::Control::set) is
-//! **async** (confirmed-apply over async appliers). So the steerer is a
+//! **async** (confirmed-apply over async appliers). So the servo is a
 //! concurrent **async future**, [`tokio::join!`]'d with the activity loop inside
 //! `run_phase`. It reuses [`start_settle`] (which legitimately rides the sync
 //! callback) only to *read* the settled objective; the async retarget lives
@@ -26,7 +26,7 @@
 //! The live control is resolved off the **phase component** — where the fiber
 //! pool / rate limiter declared it in `Activity::attach_component`, which runs
 //! *before* the activity loop, so the handle always exists by the time the
-//! steerer retargets.
+//! servo retargets.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -42,35 +42,35 @@ use super::settle::start_settle;
 use super::{Budget, Coord, LexSource, OptimizerParams, PullSource, SearchSpace};
 
 /// One `Control`-class axis: its index in a coordinate tuple + the name of the
-/// live control (`"concurrency"` / `"rate"`) it steers.
+/// live control (`"concurrency"` / `"rate"`) it servos.
 #[derive(Debug, Clone)]
 pub struct ControlAxis {
     pub axis_idx: usize,
     pub control: String,
 }
 
-/// The best coordinate + objective value a steering run found.
+/// The best coordinate + objective value a servoing run found.
 #[derive(Clone)]
-pub struct SteerBest {
+pub struct ServoBest {
     pub coord: Coord,
     pub value: f64,
 }
 
-/// What a steering run produced — read by the dispatch after the continuous
+/// What a servoing run produced — read by the dispatch after the continuous
 /// phase returns. `best` is `None` if no setting ever yielded a value (e.g. the
 /// phase ended before the first settle).
 #[derive(Clone, Default)]
-pub struct SteerOutcome {
-    pub best: Option<SteerBest>,
+pub struct ServoOutcome {
+    pub best: Option<ServoBest>,
     pub evals: usize,
 }
 
-/// The steering job, handed from `dispatch_optimization` to `run_phase` through
-/// `ctx.optimize_steer`. The `result` cell is written by [`steer`] and read by
+/// The servoing job, handed from `dispatch_optimization` to `run_phase` through
+/// `ctx.optimize_servo`. The `result` cell is written by [`servo`] and read by
 /// the dispatch after the continuous phase returns. (`Clone` only so the
 /// enclosing `ExecCtx` stays `Clone`; the spec is moved, not cloned, in use.)
 #[derive(Clone)]
-pub struct SteerSpec {
+pub struct ServoSpec {
     pub method: String,
     pub params: Vec<(String, f64)>,
     pub objective: String,
@@ -78,11 +78,11 @@ pub struct SteerSpec {
     pub seed: u64,
     pub space: SearchSpace,
     pub controls: Vec<ControlAxis>,
-    pub result: Arc<ArcSwap<SteerOutcome>>,
+    pub result: Arc<ArcSwap<ServoOutcome>>,
 }
 
 /// Poll interval for a per-setting settle verdict (the settle detector runs on
-/// the cadence worker; the steerer awaits its `outcome` cell).
+/// the cadence worker; the servo awaits its `outcome` cell).
 const SETTLE_POLL: Duration = Duration::from_millis(50);
 
 /// Retarget one live control to `value` (SRD-23 confirmed-apply). Resolves the
@@ -122,8 +122,8 @@ async fn retarget(
 ///
 /// On budget exhaustion (or when the phase ends first — `phase_done`), it
 /// publishes the best into `spec.best` and raises `stop_flag` to end the phase.
-pub async fn steer(
-    spec: SteerSpec,
+pub async fn servo(
+    spec: ServoSpec,
     stop_flag: Arc<AtomicBool>,
     reporter: Arc<CadenceReporter>,
     parent: Arc<PolydatKernel>,
@@ -145,7 +145,7 @@ pub async fn steer(
     let mut best_coord: Option<Coord> = None;
     let mut evals = 0usize;
 
-    // Accumulate any fatal steering error here; ALL exit paths still publish the
+    // Accumulate any fatal servoing error here; ALL exit paths still publish the
     // best-so-far and stop the phase, so the join never hangs and the dispatch
     // always reads a result.
     let mut err: Option<String> = None;
@@ -168,7 +168,7 @@ pub async fn steer(
 
             // (2) Settle the windowed objective at this setting. A throwaway
             // flag absorbs the settle's own stop verdict so it does NOT end the
-            // phase (the steerer owns the phase stop, on budget exhaustion).
+            // phase (the servo owns the phase stop, on budget exhaustion).
             let settle_done = Arc::new(AtomicBool::new(false));
             let Some(handle) =
                 start_settle(&parent, &phase_kernel, &spec.objective, &reporter, settle_done)
@@ -205,8 +205,8 @@ pub async fn steer(
         batch = crate::executor::source_next(&mut src, &evaluated);
     }
 
-    spec.result.store(Arc::new(SteerOutcome {
-        best: best_coord.map(|coord| SteerBest { coord, value: best_value }),
+    spec.result.store(Arc::new(ServoOutcome {
+        best: best_coord.map(|coord| ServoBest { coord, value: best_value }),
         evals,
     }));
     // End the continuous phase (read at its next cycle boundary).

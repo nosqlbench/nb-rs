@@ -894,8 +894,77 @@ pub struct WorkloadPhase {
     /// wire read*). Workload-local config; `nbrs-activity` maps it to its
     /// optimizer contract and discovers the optimizer via the link-time
     /// registry (`nbrs describe optimizers`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// **Sugar:** a bare **string** value is shorthand for `{ objective: <str> }`
+    /// with every other field defaulted (`method: sweep`, no `servo:`) — so
+    /// `optimize: "0 - err_rate"` ≡ `optimize: { objective: "0 - err_rate" }`.
+    /// See [`de_optimize`].
+    #[serde(default, deserialize_with = "de_optimize", skip_serializing_if = "Option::is_none")]
     pub optimize: Option<OptimizeBlock>,
+}
+
+/// A phase `optimize:` value: **either** a bare string — sugar for
+/// `{ objective: <string> }` with every other field defaulted — **or** a full
+/// [`OptimizeBlock`] map. The untagged enum tries `Inline` first, so a scalar
+/// value never reaches the map variant. Shared by the serde-derive path
+/// ([`de_optimize`]) and the hand-rolled phase parser
+/// (`parse::*` via [`OptimizeBlock::from_yaml_value`]).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OptimizeSpec {
+    Inline(String),
+    Block(OptimizeBlock),
+}
+
+impl From<OptimizeSpec> for OptimizeBlock {
+    fn from(spec: OptimizeSpec) -> Self {
+        match spec {
+            // SRD-86 string sugar: the whole value IS the objective expression.
+            OptimizeSpec::Inline(objective) => OptimizeBlock {
+                method: default_optimize_method(),
+                objective,
+                servo: Vec::new(),
+                max_evals: default_optimize_max_evals(),
+                seed: default_optimize_seed(),
+                params: HashMap::new(),
+            },
+            OptimizeSpec::Block(b) => b,
+        }
+    }
+}
+
+impl OptimizeBlock {
+    /// Parse a phase `optimize:` value from already-parsed JSON, applying the
+    /// string sugar (a bare string ≡ `{ objective: <string> }`). Used by the
+    /// hand-rolled phase parser, which builds [`WorkloadPhase`] field-by-field
+    /// rather than through the derive (so it doesn't see [`de_optimize`]).
+    ///
+    /// Branches explicitly rather than going through the untagged
+    /// [`OptimizeSpec`] so a malformed *map* keeps its precise serde error
+    /// (e.g. `missing field 'objective'`) instead of the untagged enum's
+    /// generic "did not match any variant".
+    pub fn from_yaml_value(v: &serde_json::Value) -> Result<OptimizeBlock, serde_json::Error> {
+        if let Some(s) = v.as_str() {
+            Ok(OptimizeSpec::Inline(s.to_string()).into())
+        } else {
+            serde_json::from_value::<OptimizeBlock>(v.clone())
+        }
+    }
+}
+
+/// Deserialize a phase `optimize:` value via [`OptimizeSpec`] — a bare string is
+/// sugar for `{ objective: <string> }`, a map is a full [`OptimizeBlock`]
+/// (SRD-86):
+///
+/// ```yaml
+/// optimize: |
+///   0 - metricsql_scalar("sum(rate(errors_total[3s]))")
+/// ```
+fn de_optimize<'de, D>(d: D) -> Result<Option<OptimizeBlock>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<OptimizeSpec>::deserialize(d)?.map(Into::into))
 }
 
 /// SRD-86 — a phase `optimize:` block. The optimizer **maximizes** the
@@ -909,21 +978,28 @@ pub struct OptimizeBlock {
     /// large or continuous space without enumerating it.
     #[serde(default = "default_optimize_method")]
     pub method: String,
-    /// The objective — a declared phase `metrics:` entry the optimizer
-    /// maximizes (SRD-86 §10).
+    /// The objective the optimizer **maximizes** (SRD-86 §10). Two forms:
+    /// a **bare wire reference** — a single identifier naming a phase-kernel
+    /// output (a `bindings:` entry), read directly; or an **inline polydat
+    /// expression** (anything with operators / calls, e.g.
+    /// `objective: "0 - metricsql_scalar(\"sum(rate(errors_total[3s]))\")"`),
+    /// which is lowered to a synthesized `__objective` binding on the phase
+    /// kernel (`scope::objective_wire`) so no separate `bindings:` entry is
+    /// needed. An objective reading a windowed/live metric settles per setting;
+    /// a deterministic one takes the one-shot read.
     pub objective: String,
-    /// Search axes to actuate as **live controls** — steered (retargeted without
+    /// Search axes to actuate as **live controls** — servoed (retargeted without
     /// restarting the phase) rather than stepped through by re-running the phase
     /// (SRD-86 §4). Every axis is a coordinate (step-through / re-run) by default;
-    /// naming one here opts it into steering. Accepts a single name (`steer:
-    /// concurrency`) or a list (`steer: [concurrency, rate]`). A steered var
-    /// resolves to a control either directly (its name IS a control — `steer:
-    /// concurrency` / `steer: rate`) or indirectly (it feeds one via a `{var}`
-    /// bind — `concurrency: "{conc}"`, then `steer: conc`). It is validated: it
+    /// naming one here opts it into servoing. Accepts a single name (`servo:
+    /// concurrency`) or a list (`servo: [concurrency, rate]`). A servoed var
+    /// resolves to a control either directly (its name IS a control — `servo:
+    /// concurrency` / `servo: rate`) or indirectly (it feeds one via a `{var}`
+    /// bind — `concurrency: "{conc}"`, then `servo: conc`). It is validated: it
     /// must resolve to a control AND the objective must be a windowed metric the
-    /// steerer can settle — else a clear error, never a silent downgrade.
+    /// servo can settle — else a clear error, never a silent downgrade.
     #[serde(default, deserialize_with = "de_string_or_seq")]
-    pub steer: Vec<String>,
+    pub servo: Vec<String>,
     #[serde(default = "default_optimize_max_evals")]
     pub max_evals: usize,
     #[serde(default = "default_optimize_seed")]
@@ -934,7 +1010,7 @@ pub struct OptimizeBlock {
 }
 
 /// Deserialize a single string OR a sequence of strings into a `Vec<String>` —
-/// lets `steer: conc` and `steer: [conc, rate]` both parse.
+/// lets `servo: conc` and `servo: [conc, rate]` both parse.
 fn de_string_or_seq<'de, D>(d: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,

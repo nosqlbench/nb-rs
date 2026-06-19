@@ -339,7 +339,7 @@ pub fn start_settle(
     }
     // A session-cumulative `metric(...)` objective has no bounded window
     // for the gate to scope, so it cannot isolate per-coordinate — warn
-    // once and steer the author to a windowed reader.
+    // once and servo the author to a windowed reader.
     if program_reads_session_cumulative_metrics(program)
         && warn_once_session_cumulative(objective)
     {

@@ -885,12 +885,18 @@ pub fn synthesize_phase_scope_bindings(
     use nbrs_workload::model::BindingsDef;
     let has_poll = phase.poll.is_some();
     let has_metrics = !phase.metrics.is_empty();
+    // SRD-86 — an `optimize.objective` that is an inline expression (not a bare
+    // wire reference) is lowered to a synthesized `__objective` binding below.
+    let has_objective_expr = phase
+        .optimize
+        .as_ref()
+        .is_some_and(|o| !objective_is_bare_wire(&o.objective));
     // No phase-scope augmentation needed — pass the author's bindings
     // through unchanged so a metrics/poll-free phase keeps its original
     // (possibly empty) `BindingsDef`. Stop conditions do NOT augment the
     // matter (they are scope-bound `ScopedExpr`s built against the phase
     // kernel), so they don't force synthesis here.
-    if !has_poll && !has_metrics {
+    if !has_poll && !has_metrics && !has_objective_expr {
         return Ok(phase.bindings.clone());
     }
 
@@ -1000,6 +1006,23 @@ pub fn synthesize_phase_scope_bindings(
             source.push_str(&format!(
                 "volatile {binding} := {expr}\n", expr = spec.value));
         }
+    }
+
+    if has_objective_expr {
+        // SRD-86 — lower an inline `optimize.objective` expression to one wire
+        // the optimizer reads (`__objective`), so an author can write the
+        // objective inline instead of pre-declaring a `bindings:` entry.
+        // Emitted LAST so it can reference any author binding or synthesized
+        // `__metric_<name>` above it. `volatile` lets a metricsql/clock-reading
+        // objective compile under `--strict` and is harmless for a
+        // deterministic expression; the settle-vs-one-shot routing keys off
+        // program-wide reader-node presence, not this flag, so a deterministic
+        // inline objective still takes the one-shot path.
+        let objective = &phase.optimize.as_ref().expect("has_objective_expr").objective;
+        source.push_str(&format!(
+            "# SRD-86 inline objective — synthesized.\n\
+             volatile {OBJECTIVE_WIRE} := {objective}\n",
+        ));
     }
 
     // SRD-83 stop conditions are NOT synthesized into the phase matter.
@@ -1798,6 +1821,41 @@ pub fn build_op_template_scope_kernel(
 /// names and lets diagnostic surfaces filter them out by prefix.
 pub fn synthesize_metric_binding_name(metric_name: &str) -> String {
     format!("__metric_{metric_name}")
+}
+
+/// The phase-kernel wire an **inline objective expression** is lowered to
+/// (SRD-86). `optimize.objective` is either a bare wire reference (read
+/// directly off the phase kernel) or an inline expression;
+/// [`synthesize_phase_scope_bindings`] lowers the latter to
+/// `volatile __objective := <expr>` so the optimizer reads exactly one wire
+/// regardless of which form the author wrote. The `__` prefix keeps it from
+/// colliding with author-declared outputs (same convention as
+/// [`synthesize_metric_binding_name`]).
+pub const OBJECTIVE_WIRE: &str = "__objective";
+
+/// Whether an `optimize.objective` value is a **bare wire reference** — a
+/// single identifier read directly off the phase kernel — versus an **inline
+/// expression** (operators, calls, dots, whitespace) that must be synthesized.
+/// A bare reference is left untouched (no synthesis, current behavior); an
+/// expression is lowered to [`OBJECTIVE_WIRE`].
+pub fn objective_is_bare_wire(objective: &str) -> bool {
+    let s = objective.trim();
+    !s.is_empty()
+        && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The phase-kernel wire the optimizer reads for `objective`: the bare name
+/// itself, or the synthesized [`OBJECTIVE_WIRE`] for an inline expression.
+/// Pairs with [`synthesize_phase_scope_bindings`], which emits the
+/// `__objective` binding for the expression case — the two agree by sharing
+/// [`objective_is_bare_wire`].
+pub fn objective_wire(objective: &str) -> &str {
+    if objective_is_bare_wire(objective) {
+        objective.trim()
+    } else {
+        OBJECTIVE_WIRE
+    }
 }
 
 /// Flatten a [`nbrs_workload::model::ResultSpec`] into a single
@@ -3265,6 +3323,60 @@ mod tests {
         let mut op = ParsedOp::simple(name, stmt);
         op.bindings = BindingsDef::PolydatSource(bindings.to_string());
         op
+    }
+
+    #[test]
+    fn objective_bare_wire_vs_inline_expression() {
+        // Bare identifiers are read directly off the phase kernel.
+        assert!(objective_is_bare_wire("score"));
+        assert!(objective_is_bare_wire("err_rate"));
+        assert!(objective_is_bare_wire("_objective"));
+        assert!(objective_is_bare_wire("  recall99  ")); // trimmed
+        assert_eq!(objective_wire("score"), "score");
+        assert_eq!(objective_wire("  recall99  "), "recall99");
+
+        // Anything with operators / calls / dots / spaces is an inline
+        // expression → synthesized to the `__objective` wire.
+        assert!(!objective_is_bare_wire("0 - err_rate"));
+        assert!(!objective_is_bare_wire("metricsql_scalar(\"x\")"));
+        assert!(!objective_is_bare_wire("a - b"));
+        assert!(!objective_is_bare_wire("q.cursor.depth"));
+        assert!(!objective_is_bare_wire(""));
+        assert_eq!(objective_wire("0 - err_rate"), OBJECTIVE_WIRE);
+        assert_eq!(objective_wire("metricsql_scalar(\"x\")"), OBJECTIVE_WIRE);
+    }
+
+    #[test]
+    fn inline_objective_synthesizes_volatile_objective_binding() {
+        use nbrs_workload::model::{BindingsDef, OptimizeBlock, WorkloadPhase};
+        let mut phase = WorkloadPhase::default();
+        phase.for_each = Some("rate in 1000, 2000".to_string());
+        phase.bindings = BindingsDef::PolydatSource("input cycle: u64\n".to_string());
+        phase.optimize = Some(OptimizeBlock {
+            method: "sweep".to_string(),
+            objective: "0 - metricsql_scalar(\"sum(rate(errors_total[3s]))\")".to_string(),
+            servo: vec!["rate".to_string()],
+            max_evals: 10,
+            seed: 0,
+            params: Default::default(),
+        });
+        let out = synthesize_phase_scope_bindings(&phase).expect("synthesis ok");
+        let src = match out {
+            BindingsDef::PolydatSource(s) => s,
+            other => panic!("expected PolydatSource, got {other:?}"),
+        };
+        assert!(
+            src.contains("volatile __objective := 0 - metricsql_scalar("),
+            "inline objective must be lowered to a `__objective` binding:\n{src}"
+        );
+
+        // A bare-name objective is NOT synthesized — read directly.
+        let mut bare = phase.clone();
+        bare.optimize.as_mut().unwrap().objective = "score".to_string();
+        let bare_out = synthesize_phase_scope_bindings(&bare).expect("synthesis ok");
+        if let BindingsDef::PolydatSource(s) = bare_out {
+            assert!(!s.contains("__objective"), "bare objective must not synthesize:\n{s}");
+        }
     }
 
     #[test]

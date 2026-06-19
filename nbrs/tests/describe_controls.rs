@@ -37,7 +37,7 @@ fn describe_controls_lists_core_controls_with_conditions() {
 }
 
 #[test]
-fn describe_control_detail_shows_steer_form() {
+fn describe_control_detail_shows_servo_form() {
     let out = Command::new(env!("CARGO_BIN_EXE_nbrs"))
         .args(["describe", "controls", "rate"])
         .output()
@@ -45,10 +45,10 @@ fn describe_control_detail_shows_steer_form() {
     assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Control: rate"), "no detail header:\n{stdout}");
-    // The detail view points at the SRD-86 steering surface for the control.
+    // The detail view points at the SRD-86 servoing surface for the control.
     assert!(
-        stdout.contains("steer: rate"),
-        "detail must show the direct steer form:\n{stdout}"
+        stdout.contains("servo: rate"),
+        "detail must show the direct servo form:\n{stdout}"
     );
 }
 

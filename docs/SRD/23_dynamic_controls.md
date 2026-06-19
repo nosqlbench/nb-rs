@@ -593,7 +593,7 @@ enough for discovery, because declaration is *conditional* —
 sets `rate:`, and `cql_trace_rate` only when the
 `cassandra-cpp` driver backs the `cql` adapter. So a user who
 never sets `rate:` can't learn from a live tree that `rate` is
-steerable at all. That is the discoverability asymmetry between
+servo at all. That is the discoverability asymmetry between
 `concurrency` and `rate`.
 
 The complementary **capability tier** closes it. Each control

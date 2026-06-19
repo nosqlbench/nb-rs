@@ -3,8 +3,8 @@
 # The third member of the optimizer family. optimizer_saturation and
 # optimizer_metricsql search `concurrency` by RE-RUNNING the phase once per
 # coordinate (Coordinate actuation). This workload searches the SAME axis, the
-# SAME backend, the SAME objective — but names the axis in `steer:`,
-# so the optimizer becomes a STEERING DAEMON: it runs ONE continuous phase and
+# SAME backend, the SAME objective — but names the axis in `servo:`,
+# so the optimizer becomes a SERVOING DAEMON: it runs ONE continuous phase and
 # live-retargets the `concurrency` control (SRD-23, no restart) between settings,
 # settling the windowed objective at each before stepping. No phase reruns.
 #
@@ -28,7 +28,7 @@
 #       --session-path /tmp/opt-control
 
 description: |
-  SRD-86 Control-class actuation: the optimizer steers a live `concurrency`
+  SRD-86 Control-class actuation: the optimizer servos a live `concurrency`
   control (SRD-23 retarget, no restart) across ONE continuous phase, settling a
   windowed MetricsQL objective per setting — finding the concurrency that
   eliminates backend overloads without ever rerunning the phase.
@@ -39,7 +39,7 @@ phases:
     # per setting) finishes and stops it early; if it runs out first, the daemon
     # uses the best setting found so far.
     cycles: 60000
-    # The phase starts here (warmup setting); the steerer retargets the live
+    # The phase starts here (warmup setting); the servo retargets the live
     # concurrency control from this point. The `{conc}` reference also tells the
     # classifier that the `conc` axis drives the `concurrency` control.
     concurrency: "{conc}"
@@ -48,17 +48,17 @@ phases:
     # stop on the error rate (see the header note on `error_rate_max: 1.0`).
     errors: warn
     error_rate_max: 1.0
-    # The search axis. `steer: conc` opts it into live-retarget actuation
-    # (SRD-86 §4) — the daemon steers it instead of rerunning the phase.
+    # The search axis. `servo: conc` opts it into live-retarget actuation
+    # (SRD-86 §4) — the daemon servos it instead of rerunning the phase.
     for_each: "conc in 32, 2"
     optimize:
       objective: score
       max_evals: 10
-      # Steer `conc` as a live control (retarget without restarting the phase).
+      # Servo `conc` as a live control (retarget without restarting the phase).
       # Every other axis steps through by re-running; naming it here opts into
-      # steering. Validated: `conc` must sink into a control AND the objective must
+      # servoing. Validated: `conc` must sink into a control AND the objective must
       # be windowed (it is, below).
-      steer: conc
+      servo: conc
     bindings: |
       input cycle: u64
       # The windowed Overload error RATE, read through the MetricsQL engine over

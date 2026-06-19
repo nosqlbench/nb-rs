@@ -51,9 +51,9 @@ phases:
     optimize:
       objective: score
       max_evals: 10
-      # No `steer:` → `conc` steps through by re-running the phase (coordinate, the
+      # No `servo:` → `conc` steps through by re-running the phase (coordinate, the
       # default) — demonstrating the phase-RERUN actuation with a settled
-      # run-produced objective. The live-steer form (`steer: conc`) is
+      # run-produced objective. The live-servo form (`servo: conc`) is
       # optimizer_control.yaml.
     bindings: |
       input cycle: u64

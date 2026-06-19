@@ -1,0 +1,68 @@
+# optimizer_multiservo.yaml — SRD-86 §4: servoing MULTIPLE controls in one phase
+#
+# optimizer_control servos ONE control (concurrency). This workload servos TWO —
+# `concurrency` AND `rate` — across ONE continuous phase. The search space is the
+# 2-D grid (concurrency × rate); at each point the daemon retargets BOTH live
+# controls (SRD-23, no restart), settles the windowed objective, then steps.
+# Both axes use the DIRECT form (the axis name IS the control) — which is also
+# the only way to servo `rate`, whose f64 field can't carry a `{var}`.
+#
+# Backend: 2 servers, queue depth 4. Concurrency caps in-flight ops, so dropping
+# concurrency to 2 (≤ depth 4) eliminates overloads on its own — the daemon lands
+# on a concurrency-2 corner (score = 0). Both controls are still retargeted at
+# every one of the 4 grid points; the point here is the multi-control servo
+# mechanism (two live controls moved together), not a rate/concurrency trade-off.
+#
+# Runs standalone:
+#   nbrs run workload=examples/workloads/optimizer_multiservo.yaml \
+#       --session-path /tmp/opt-multiservo
+
+description: |
+  SRD-86 multi-control servoing: one continuous phase, the daemon live-retargets
+  BOTH `concurrency` and `rate` across the 2-D search grid, settling a windowed
+  MetricsQL objective at each point — finding the (concurrency, rate) corner that
+  eliminates backend overloads without ever rerunning the phase.
+
+phases:
+  saturate:
+    # ONE continuous phase, sized so the daemon (≈ one settle window per grid
+    # point) finishes and stops it early; if it runs out first, it uses the best
+    # setting found so far.
+    cycles: 120000
+    # Warmup settings — the daemon retargets both live controls from here.
+    # `rate:` also DECLARES the rate control (it exists only when the field is
+    # set), so naming `rate` in `servo:` has a control to drive.
+    concurrency: 8
+    rate: 2000
+    # Overloads are the objective SIGNAL, not failures — warn, and never stop on
+    # the error rate (a Control-class phase deliberately dwells at saturating
+    # settings while the daemon explores).
+    errors: warn
+    error_rate_max: 1.0
+    # 2-D control search: concurrency × rate, both named directly after their
+    # live controls.
+    for_each: "concurrency in 32, 2, rate in 4000, 1000"
+    optimize:
+      objective: score
+      max_evals: 10
+      # Servo BOTH controls live (list form) — each is retargeted per setting.
+      servo: [concurrency, rate]
+    bindings: |
+      input cycle: u64
+      # Windowed Overload error rate over this run's live metrics; rate(...[3s])
+      # is the per-setting rate (the cumulative baseline cancels in the
+      # difference, and the settle gate holds until the window clears the prior
+      # setting).
+      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      # Maximize -err_rate: the (concurrency, rate) corner with fewest overloads.
+      score := 0 - err_rate
+    ops:
+      insert:
+        adapter: testkit
+        stmt: "INSERT INTO demo.events (id) VALUES ({cycle});"
+        # Fixed saturating backend: 2 servers, 5ms each, queue depth 4. Past ~4
+        # in-flight it returns Overload — so high concurrency AND high rate both
+        # push it over.
+        result-latency: "5ms"
+        result-capacity: 2
+        result-overload: 4

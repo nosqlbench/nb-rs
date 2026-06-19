@@ -283,11 +283,11 @@ pub struct ExecCtx {
     pub optimize_objective_value: Option<f64>,
     /// SRD-86 Control-class actuation — when set (by `dispatch_optimization`'s
     /// Control branch), `run_phase` runs ONE continuous phase and `tokio::join!`s
-    /// the [`steer`](crate::optimize::steer::steer) daemon alongside the activity
+    /// the [`servo`](crate::optimize::servo::servo) daemon alongside the activity
     /// loop: the daemon live-retargets the phase's controls per setting instead
     /// of rerunning. `None` for the Coordinate path (and `optimize_objective`
-    /// stays `None` here — the steerer owns settling, not `run_phase`).
-    pub optimize_steer: Option<crate::optimize::steer::SteerSpec>,
+    /// stays `None` here — the servo owns settling, not `run_phase`).
+    pub optimize_servo: Option<crate::optimize::servo::ServoSpec>,
 }
 
 /// Workload YAML source kept alongside the parsed model so
@@ -1612,17 +1612,17 @@ fn dispatch_optimization<'a>(
         }
 
         // SRD-86 §4 Control-class actuation. An axis declared `changeover:
-        // control` is STEERED (live retarget); the rest are coordinate axes
+        // control` is SERVOED (live retarget); the rest are coordinate axes
         // (rerun). Three shapes:
-        //  - all-control  → ONE continuous phase, daemon steers everything.
-        //  - mixed        → hybrid: iterate the coordinate axes (rerun) and steer
+        //  - all-control  → ONE continuous phase, daemon servos everything.
+        //  - mixed        → hybrid: iterate the coordinate axes (rerun) and servo
         //                   the control axes interior to each cell.
         //  - none         → fall through to the Coordinate adaptive loop below.
         let phase_concurrency = ctx.phases.get(phase_name).and_then(|p| p.concurrency.clone());
         let phase_has_rate = ctx.phases.get(phase_name).is_some_and(|p| p.rate.is_some());
         let control_axes = classify_control_axes(
             &space,
-            &block.steer,
+            &block.servo,
             phase_concurrency.as_deref(),
             phase_has_rate,
         )?;
@@ -1653,8 +1653,10 @@ fn dispatch_optimization<'a>(
         let mut src = optimizer.coordinate_source(&space, &budget, lex);
 
         // Ask `run_phase` to read this objective wire off each iteration's single
-        // live kernel (SRD-86 — a fully-qualified-on-node objective).
-        ctx.optimize_objective = Some(block.objective.clone());
+        // live kernel (SRD-86 — a fully-qualified-on-node objective). An inline
+        // objective expression resolves to the synthesized `__objective` wire;
+        // a bare name is read directly (`crate::scope::objective_wire`).
+        ctx.optimize_objective = Some(crate::scope::objective_wire(&block.objective).to_string());
 
         let mut best_value = f64::NEG_INFINITY;
         let mut best_coord: Option<crate::optimize::Coord> = None;
@@ -1705,50 +1707,50 @@ fn dispatch_optimization<'a>(
     })
 }
 
-/// SRD-86 §4 — resolve the **explicitly steered** axes (`optimize.steer`). Every
+/// SRD-86 §4 — resolve the **explicitly servoed** axes (`optimize.servo`). Every
 /// axis is a **coordinate** (stepped through by re-running the phase) by default;
-/// a var named in `steer` is actuated as a live **control** instead. Each steered
+/// a var named in `servo` is actuated as a live **control** instead. Each servoed
 /// var is *validated*: it must be a search axis, and it resolves to a control
-/// either **directly** (its name IS a live control — `steer: concurrency`,
-/// `steer: rate`) or **indirectly** (it sinks into a control via a `{var}`-bind,
+/// either **directly** (its name IS a live control — `servo: concurrency`,
+/// `servo: rate`) or **indirectly** (it sinks into a control via a `{var}`-bind,
 /// `concurrency: "{conc}"` → the `concurrency` control). Neither → a clear error,
-/// not a silent downgrade. (The other half of "steering is meaningful" — that the
-/// objective is a windowed metric the steerer can settle — is checked downstream
+/// not a silent downgrade. (The other half of "servoing is meaningful" — that the
+/// objective is a windowed metric the servo can settle — is checked downstream
 /// by [`require_windowed_objective`].) Returns the control axes (`axis_idx` into
 /// `space`); the rest are coordinate axes — a node may mix the two (the hybrid
-/// path). The direct form is the only way to steer `rate`, whose `f64` field
+/// path). The direct form is the only way to servo `rate`, whose `f64` field
 /// can't carry a `{var}`.
 fn classify_control_axes(
     space: &crate::optimize::SearchSpace,
-    steer: &[String],
+    servo: &[String],
     phase_concurrency: Option<&str>,
     phase_has_rate: bool,
-) -> Result<Vec<crate::optimize::steer::ControlAxis>, String> {
-    use crate::optimize::steer::ControlAxis;
-    // The live controls a phase declares (SRD-23). A steered var resolves to one
-    // either DIRECTLY (its name IS a control — `steer: concurrency`) or
-    // INDIRECTLY (it feeds a control via `concurrency: "{var}"` — `steer: conc`).
+) -> Result<Vec<crate::optimize::servo::ControlAxis>, String> {
+    use crate::optimize::servo::ControlAxis;
+    // The live controls a phase declares (SRD-23). A servoed var resolves to one
+    // either DIRECTLY (its name IS a control — `servo: concurrency`) or
+    // INDIRECTLY (it feeds a control via `concurrency: "{var}"` — `servo: conc`).
     const KNOWN_CONTROLS: &[&str] = &["concurrency", "rate"];
     let mut controls = Vec::new();
-    for var in steer {
-        // The steered var must be a search axis (gathered from the `for_each`).
+    for var in servo {
+        // The servoed var must be a search axis (gathered from the `for_each`).
         let Some(i) = space.axes.iter().position(|ax| &ax.name == var) else {
             return Err(format!(
-                "optimize `steer: {var}` is not a search axis — name a var that appears in the \
+                "optimize `servo: {var}` is not a search axis — name a var that appears in the \
                  phase's `for_each`"
             ));
         };
         let control = if KNOWN_CONTROLS.contains(&var.as_str()) {
-            // Direct: the axis var IS a live control — steer it by name, no
-            // `{var}`-bind wire needed. (This is how `rate` is steerable at all,
+            // Direct: the axis var IS a live control — servo it by name, no
+            // `{var}`-bind wire needed. (This is how `rate` is servo at all,
             // since `rate:` can't carry a `{var}`.) The `concurrency` control is
             // always declared; the `rate` control only when the phase sets `rate:`,
-            // so steering `rate` requires that field — caught here, not at runtime.
+            // so servoing `rate` requires that field — caught here, not at runtime.
             if var == "rate" && !phase_has_rate {
                 return Err(
-                    "optimize `steer: rate` but the phase declares no `rate:` field, so there is no \
-                     rate control to steer — add a `rate:` to the phase (its value is the warmup the \
-                     steerer retargets from)"
+                    "optimize `servo: rate` but the phase declares no `rate:` field, so there is no \
+                     rate control to servo — add a `rate:` to the phase (its value is the warmup the \
+                     servo retargets from)"
                         .to_string(),
                 );
             }
@@ -1760,9 +1762,9 @@ fn classify_control_axes(
             "concurrency".to_string()
         } else {
             return Err(format!(
-                "optimize `steer: {var}` but '{var}' is neither a live control nor wired to one — \
-                 name a control directly (`steer: concurrency`) or wire the var \
-                 (`concurrency: \"{{{var}}}\"`); or drop it from `steer:` to step through its \
+                "optimize `servo: {var}` but '{var}' is neither a live control nor wired to one — \
+                 name a control directly (`servo: concurrency`) or wire the var \
+                 (`concurrency: \"{{{var}}}\"`); or drop it from `servo:` to step through its \
                  values by re-running the phase"
             ));
         };
@@ -1795,53 +1797,55 @@ fn require_windowed_objective(
 }
 
 /// Run the Control daemon for ONE phase activation (one continuous phase bound at
-/// `step`): set up the [`SteerSpec`](crate::optimize::steer::SteerSpec) over
+/// `step`): set up the [`ServoSpec`](crate::optimize::servo::ServoSpec) over
 /// `space`/`controls`, run the phase with the daemon `tokio::join!`'d in
 /// `run_phase`, and return what it found. Shared by the pure-control path (one
 /// cell at the centre) and the hybrid path (one cell per coordinate combination).
 #[allow(clippy::too_many_arguments)] // mirrors `dispatch_optimization`'s shape
-async fn run_steer_cell(
+async fn run_servo_cell(
     ctx: &mut ExecCtx,
     step: &IterationStep,
     space: crate::optimize::SearchSpace,
-    controls: Vec<crate::optimize::steer::ControlAxis>,
+    controls: Vec<crate::optimize::servo::ControlAxis>,
     block: &nbrs_workload::model::OptimizeBlock,
     phase_name: &str,
     depth: usize,
     phase_meta: &Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
-) -> Result<crate::optimize::steer::SteerOutcome, String> {
+) -> Result<crate::optimize::servo::ServoOutcome, String> {
     let result = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
-        crate::optimize::steer::SteerOutcome::default(),
+        crate::optimize::servo::ServoOutcome::default(),
     ));
-    let spec = crate::optimize::steer::SteerSpec {
+    let spec = crate::optimize::servo::ServoSpec {
         method: block.method.clone(),
         params: block.params.iter().map(|(k, v)| (k.clone(), *v)).collect(),
-        objective: block.objective.clone(),
+        // Inline objective expr → synthesized `__objective` wire; bare name read
+        // directly. The servo daemon settles this wire off the phase kernel.
+        objective: crate::scope::objective_wire(&block.objective).to_string(),
         max_evals: block.max_evals,
         seed: block.seed,
         space,
         controls,
         result: result.clone(),
     };
-    // The steerer owns settling; leave `optimize_objective` None so `run_phase`'s
+    // The servo owns settling; leave `optimize_objective` None so `run_phase`'s
     // own per-phase settle does NOT fire.
     ctx.optimize_objective = None;
-    ctx.optimize_steer = Some(spec);
+    ctx.optimize_servo = Some(spec);
     run_one_eval(ctx, step, phase_name, depth, phase_meta).await?;
-    ctx.optimize_steer = None;
+    ctx.optimize_servo = None;
     Ok((**result.load()).clone())
 }
 
 /// SRD-86 §4–§6 — drive an **all-control** search: run ONE continuous phase and
-/// `tokio::join!` the [`steer`](crate::optimize::steer::steer) daemon to
+/// `tokio::join!` the [`servo`](crate::optimize::servo::servo) daemon to
 /// live-retarget its controls per setting. The phase starts at the space centre
-/// (a neutral warmup binding); the steerer retargets from there.
+/// (a neutral warmup binding); the servo retargets from there.
 #[allow(clippy::too_many_arguments)] // mirrors `dispatch_optimization`'s shape
 fn run_control_search<'a>(
     ctx: &'a mut ExecCtx,
     mut space: crate::optimize::SearchSpace,
     coord_eval: CoordEval,
-    control_axes: Vec<crate::optimize::steer::ControlAxis>,
+    control_axes: Vec<crate::optimize::servo::ControlAxis>,
     block: nbrs_workload::model::OptimizeBlock,
     phase_name: &'a str,
     depth: usize,
@@ -1849,17 +1853,17 @@ fn run_control_search<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
         require_windowed_objective(ctx, phase_name, &block.objective)?;
-        // Stamp Control on the steered axes so any describe/dryrun renders truthfully.
+        // Stamp Control on the servoed axes so any describe/dryrun renders truthfully.
         for ca in &control_axes {
             space.axes[ca.axis_idx].changeover = crate::optimize::Changeover::Control;
         }
-        // The continuous phase starts at the space centre; the steerer retargets
+        // The continuous phase starts at the space centre; the servo retargets
         // each control immediately, so this is only the warmup setting.
         let center = coord_eval.representative(&space).ok_or_else(|| {
             format!("phase '{phase_name}': control optimize has no representative coordinate")
         })?;
         let outcome =
-            run_steer_cell(ctx, &center, space, control_axes, &block, phase_name, depth, &phase_meta)
+            run_servo_cell(ctx, &center, space, control_axes, &block, phase_name, depth, &phase_meta)
                 .await?;
         let (best_disp, best_value) = match &outcome.best {
             Some(b) => (
@@ -1877,9 +1881,9 @@ fn run_control_search<'a>(
 }
 
 /// SRD-86 §4 hybrid actuation — a single optimize node mixing coordinate axes
-/// (rerun) and control axes (steer). The coordinate axes form the OUTER rerun
+/// (rerun) and control axes (servo). The coordinate axes form the OUTER rerun
 /// grid; for each distinct coordinate cell the phase is re-run bound at that
-/// cell, and the Control daemon steers the control subspace INTERIOR to it. The
+/// cell, and the Control daemon servos the control subspace INTERIOR to it. The
 /// node's `method`/`budget` drive the inner control search per cell; the
 /// coordinate cells are enumerated (a continuous coordinate axis alongside a
 /// control axis — the `IndexFn::Hybrid` shape — is a follow-up). The reported
@@ -1889,7 +1893,7 @@ fn run_hybrid_search<'a>(
     ctx: &'a mut ExecCtx,
     space: crate::optimize::SearchSpace,
     coord_eval: CoordEval,
-    control_axes: Vec<crate::optimize::steer::ControlAxis>,
+    control_axes: Vec<crate::optimize::servo::ControlAxis>,
     block: nbrs_workload::model::OptimizeBlock,
     phase_name: &'a str,
     depth: usize,
@@ -1898,7 +1902,7 @@ fn run_hybrid_search<'a>(
     Box::pin(async move {
         require_windowed_objective(ctx, phase_name, &block.objective)?;
 
-        // Partition axes: control indices (K, inner/steered) vs the rest
+        // Partition axes: control indices (K, inner/servoed) vs the rest
         // (C, outer/rerun).
         let control_idx: std::collections::HashSet<usize> =
             control_axes.iter().map(|c| c.axis_idx).collect();
@@ -1916,10 +1920,10 @@ fn run_hybrid_search<'a>(
             })
             .collect();
         let k_space = crate::optimize::SearchSpace::new(k_axes);
-        let k_controls: Vec<crate::optimize::steer::ControlAxis> = control_axes
+        let k_controls: Vec<crate::optimize::servo::ControlAxis> = control_axes
             .iter()
             .enumerate()
-            .map(|(k_pos, ca)| crate::optimize::steer::ControlAxis {
+            .map(|(k_pos, ca)| crate::optimize::servo::ControlAxis {
                 axis_idx: k_pos,
                 control: ca.control.clone(),
             })
@@ -1949,13 +1953,13 @@ fn run_hybrid_search<'a>(
             }
         }
 
-        // Per coordinate cell: re-run the phase bound at the cell and steer the
+        // Per coordinate cell: re-run the phase bound at the cell and servo the
         // control subspace within it. Best is tracked across cells.
         let mut best_value = f64::NEG_INFINITY;
         let mut best_disp = "<none>".to_string();
         let mut total_evals = 0usize;
         for cell in &cells {
-            let outcome = run_steer_cell(
+            let outcome = run_servo_cell(
                 ctx, cell, k_space.clone(), k_controls.clone(), &block, phase_name, depth,
                 &phase_meta,
             )
@@ -4238,18 +4242,18 @@ async fn run_phase(
     });
 
     // SRD-86 §4 Control-class actuation — when `dispatch_optimization`'s Control
-    // branch set `ctx.optimize_steer`, run ONE continuous phase and drive the
-    // steering daemon concurrently (it live-retargets the phase's controls per
+    // branch set `ctx.optimize_servo`, run ONE continuous phase and drive the
+    // servoing daemon concurrently (it live-retargets the phase's controls per
     // setting). The daemon ends the phase (`stop_flag`) once its budget is spent;
     // `phase_done` lets it bail if the phase ends first. `optimize_objective` is
-    // None here, so the per-phase settle above did not fire — the steerer owns
+    // None here, so the per-phase settle above did not fire — the servo owns
     // settling.
-    // `steer_completed` — true when the steering daemon ran its search to
+    // `servo_completed` — true when the servoing daemon ran its search to
     // completion and ended the phase itself (a CLEAN early stop, like
-    // `settle_succeeded`, NOT an error-handler stop). A steering error leaves it
+    // `settle_succeeded`, NOT an error-handler stop). A servoing error leaves it
     // false so the phase fails.
-    let mut steer_completed = false;
-    let stopped = if let Some(steer_spec) = ctx.optimize_steer.take() {
+    let mut servo_completed = false;
+    let stopped = if let Some(servo_spec) = ctx.optimize_servo.take() {
         let parent = ctx.current_parent_kernel.clone();
         let phase_kernel = ctx
             .scope_tree
@@ -4270,14 +4274,14 @@ async fn run_phase(
                     pd.store(true, std::sync::atomic::Ordering::Relaxed);
                     s
                 };
-                let steered = crate::optimize::steer::steer(
-                    steer_spec, stop_flag, reporter, parent, phase_kernel, pc, phase_done,
+                let servoed = crate::optimize::servo::servo(
+                    servo_spec, stop_flag, reporter, parent, phase_kernel, pc, phase_done,
                 );
-                let (stopped, steer_res) = tokio::join!(act, steered);
-                match steer_res {
-                    Ok(()) => steer_completed = true,
+                let (stopped, servo_res) = tokio::join!(act, servoed);
+                match servo_res {
+                    Ok(()) => servo_completed = true,
                     Err(e) => crate::diag!(crate::observer::LogLevel::Warn,
-                        "phase '{phase_name}': optimizer steering error: {e}"),
+                        "phase '{phase_name}': optimizer servoing error: {e}"),
                 }
                 stopped
             }
@@ -4505,7 +4509,7 @@ async fn run_phase(
     // is ops dispatched; `errors_total` is the counted op errors.
     let phase_op_count = progress_metrics.cycles_completed();
     let phase_error_count = progress_metrics.errors_total.get();
-    if stopped && !settle_succeeded && !steer_completed {
+    if stopped && !settle_succeeded && !servo_completed {
         // Pull the first triggering error captured by the
         // activity's stop_flag setter (activity.rs per-cycle
         // dispatch). Fall back to a bare reason when the stop
