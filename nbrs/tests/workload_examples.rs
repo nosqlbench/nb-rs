@@ -564,13 +564,14 @@ fn deterministic_output() {
 
 // ─── Scenario-tree `set:` (workload-param shadowing) ──────────
 //
-// Six scenarios in `scenario_param_overrides.yaml` exercise the
-// canonical surfaces of `set:`: bare-token shadow, multi-key
-// shadow, expression-with-interpolation value, set-wrapping-
-// for_each composition, and nested-set composition. All resolve
-// through the Polydat scope-chain (no HashMap merges, no synthesizer
-// side-channels). Failures surface as the wrong shadow being
-// applied or the shadow being silently dropped.
+// The canonical surfaces of `set:` — bare-token shadow, multi-key
+// shadow, expression-with-interpolation value, set-wrapping-for_each
+// composition, and nested-set composition — each live as a single-
+// scenario demo under `examples/workloads/scenario_param_overrides/`
+// (and the iter-var variants under `scenario_set_iter_var/`), verified
+// by the example-walker test against their `#@ expect` directives. All
+// resolve through the Polydat scope-chain (no HashMap merges, no
+// synthesizer side-channels).
 
 #[test]
 fn empty_bindings_and_set_blocks_emit_no_op_warning() {
@@ -654,7 +655,7 @@ phases:
 fn synthetic_metrics_workload_populates_metric_family() {
     let session = SessionDir::new();
     let mut cmd = nbrs(&session);
-    cmd.arg("workload=examples/workloads/synthetic_metrics.yaml");
+    cmd.arg("workload=examples/workloads/metrics/synthetic_metrics.yaml");
     cmd.arg("cycle_count=12");
     let output = cmd.output().expect("failed to run nbrs");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -723,7 +724,7 @@ fn synthetic_metrics_workload_populates_metric_family() {
 /// `cycle_count * stanza_len` total cycles (one per op per
 /// stanza). With cycle_count=6 and 4 ops, total cycles = 24.
 /// Per-cycle formulas (from
-/// `examples/workloads/synthetic_metrics.yaml`):
+/// `examples/workloads/metrics/synthetic_metrics.yaml`):
 ///   load           = cycle + 1
 ///   latency_curve  = load * 2             (per phase)
 ///   forecast_low   = latency_curve * 0.9  (synth_op_list)
@@ -740,7 +741,7 @@ fn synthetic_metrics_workload_populates_metric_family() {
 fn synthetic_metrics_workload_records_correct_values() {
     let session = SessionDir::new();
     let mut cmd = nbrs(&session);
-    cmd.arg("workload=examples/workloads/synthetic_metrics.yaml");
+    cmd.arg("workload=examples/workloads/metrics/synthetic_metrics.yaml");
     cmd.arg("cycle_count=6");
     let output = cmd.output().expect("failed to run nbrs");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();

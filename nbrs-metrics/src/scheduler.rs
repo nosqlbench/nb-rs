@@ -437,7 +437,7 @@ impl SchedulerHandle {
             running: self.running,
             cadence_reporter: cadence_reporter_for_stop,
             root: root_for_stop,
-            thread: Some(handle),
+            thread: Mutex::new(Some(handle)),
             frame_tx,
             stop_tx,
         }
@@ -459,7 +459,12 @@ pub struct StopHandle {
     cadence_reporter: Option<Arc<CadenceReporter>>,
     #[allow(dead_code)] // retained for future direct-flush access
     root: Arc<Mutex<ScheduleNode>>,
-    thread: Option<thread::JoinHandle<()>>,
+    /// Interior-mutable so the session host can stop the scheduler
+    /// through a shared `Arc<StopHandle>` (SRD-88 — host owns the
+    /// session-tier scheduler; executions only `report_frame`).
+    /// `take`n by whichever of `stop` / `drop` runs first; the other
+    /// sees `None` and is a no-op (idempotent).
+    thread: Mutex<Option<thread::JoinHandle<()>>>,
     /// Channel for async frame delivery — the executor sends frames
     /// here instead of writing to reporters inline. The scheduler
     /// thread drains this channel on each tick.
@@ -470,11 +475,16 @@ pub struct StopHandle {
 }
 
 impl StopHandle {
-    /// Stop the scheduler and join the capture thread.
-    pub fn stop(&mut self) {
+    /// Stop the scheduler and join the capture thread. `&self` +
+    /// interior-mutable `thread` so a session host holding a shared
+    /// `Arc<StopHandle>` can stop it without sole ownership.
+    /// Idempotent — a second call (or `drop` after) sees `thread`
+    /// already taken and no-ops.
+    pub fn stop(&self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
         let _ = self.stop_tx.send(()); // wake the inter-tick wait
-        if let Some(handle) = self.thread.take() {
+        let handle = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(handle) = handle {
             let _ = handle.join();
         }
     }
@@ -500,7 +510,8 @@ impl Drop for StopHandle {
     fn drop(&mut self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
         let _ = self.stop_tx.send(()); // wake the inter-tick wait
-        if let Some(handle) = self.thread.take() {
+        let handle = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(handle) = handle {
             let _ = handle.join();
         }
     }

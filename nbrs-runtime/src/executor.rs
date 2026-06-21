@@ -352,6 +352,29 @@ impl ExecCtx {
         labels
     }
 
+    /// The labels OWNED at this scope depth — the live label
+    /// stack only (`for_each` iteration labels + `phase`), WITHOUT
+    /// the `{session, exec_id, workload}` prefix that
+    /// [`Self::labels`] seeds.
+    ///
+    /// Use this for a component's *own* labels: `session` is owned
+    /// by the session component and `{exec_id, workload}` by the
+    /// execution component (SRD-88 §2), so a phase/activity
+    /// component below them must NOT redeclare those names — the
+    /// label-ownership invariant is that each name is set on
+    /// exactly one tier and inherited downward. The full effective
+    /// set is recomposed by [`component::attach`] from the
+    /// ancestor chain; [`Self::labels`] remains the right call
+    /// when a caller needs that full set directly (e.g. matching
+    /// metric instances for a resume purge).
+    pub fn incremental_labels(&self) -> Labels {
+        let mut labels = Labels::empty();
+        for (k, v) in &self.label_stack {
+            labels = labels.with(k, v);
+        }
+        labels
+    }
+
     /// Push a label onto the stack.
     pub fn push_label(&mut self, key: &str, value: &str) {
         self.label_stack.push((key.to_string(), value.to_string()));
@@ -565,13 +588,17 @@ async fn run_siblings_concurrently(
         }
         let node = node.clone();
         let mut task_ctx = ctx.clone();
-        set.spawn(async move {
+        // SRD-88: carry the per-execution context across the spawn boundary so
+        // this fiber resolves to ITS execution's observer / scene tree / stop
+        // flag (a `tokio` task doesn't inherit the parent's task-locals).
+        // No-op for the single-run path (no context scoped — A1).
+        set.spawn(crate::execution_context::propagate(async move {
             // Permit moves into the task; dropped when the
             // task body returns, freeing a slot for the next
             // dispatch iteration above.
             let _permit = permit;
             execute_node(&mut task_ctx, &node, node_scope_idx, depth).await
-        });
+        }));
     }
     // Drain any still-running tasks (those spawned before the
     // first error was observed).
@@ -1584,11 +1611,13 @@ fn dispatch_comprehension<'a>(
             // descent — but set parent anyway for consistency.
             task_ctx.scene_tree_parent_id = per_iter_scene_id;
             let owned_terminal = owned_terminal.clone();
-            set.spawn(async move {
+            // SRD-88: propagate the per-execution context into the spawned
+            // comprehension-iteration fiber (A1 no-op for single-run).
+            set.spawn(crate::execution_context::propagate(async move {
                 let _permit = permit;
                 let terminal = owned_terminal.borrow();
                 run_one_iteration(&mut task_ctx, &step, &terminal, depth, kind).await
-            });
+            }));
         }
 
         let mut first_err: Option<String> = None;
@@ -4011,14 +4040,22 @@ async fn run_phase(
         attach_guards.push(guard);
     }
 
-    // Build labels from component tree: session + for_each levels + phase
+    // Build labels from the component tree. `labels` is the full
+    // effective set ({session, exec_id, workload} + for_each + phase)
+    // — used below to seed the activity. `phase_own_labels` is the
+    // subset OWNED at this tier (for_each + phase only): the phase
+    // component must not redeclare `{session, exec_id, workload}`,
+    // which the session + execution ancestors already own (SRD-88 §2
+    // label-ownership invariant). `attach` recomposes the full
+    // effective set from the ancestor chain.
     ctx.push_label("phase", phase_name);
     let labels = ctx.labels();
+    let phase_own_labels = ctx.incremental_labels();
     ctx.pop_label();
 
-    // Create phase component and attach to session
+    // Create phase component and attach under the execution component.
     let phase_component = Arc::new(RwLock::new(
-        Component::new(labels.clone(), HashMap::new()),
+        Component::new(phase_own_labels, HashMap::new()),
     ));
     component::attach(&ctx.session_component, &phase_component);
 

@@ -1,11 +1,11 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! SRD-13d Phase 3 — workload-init scope-flattening pre-walk.
+//! SRD-13d Phase 3 — workload-init scope-elision pre-walk.
 //!
 //! Pulls together the AST-side classification
 //! ([`nbrs_workload::polydat_matter::HasPolydatMatter`]) and the scope-
-//! tree marking ([`crate::scope_tree::ScopeTree::mark_scope_flattening`])
+//! tree marking ([`crate::scope_tree::ScopeTree::mark_scope_elision`])
 //! to produce a fully-marked scope tree before any kernel
 //! instances exist.
 //!
@@ -17,7 +17,7 @@
 //! - Every node has a non-empty `logical_name` per SRD-13d §5.3.
 //! - Premap and runtime can call
 //!   [`crate::scope_tree::ScopeTree::nearest_materialised`]
-//!   to walk past flattened tiers safely.
+//!   to walk past elided tiers safely.
 //!
 //! Today's predicate is **conservative**: any AST node that
 //! classifies as `PolydatMatter::Definitions` materialises. The
@@ -28,7 +28,7 @@
 //! yet exist at workload-load time.
 //!
 //! Even with the conservative predicate, the cheap path
-//! (`None` / `Readonly` → flatten) covers the bulk of real
+//! (`None` / `Readonly` → elide) covers the bulk of real
 //! workloads — most op templates have no Polydat content beyond
 //! parent-scope reads.
 
@@ -56,10 +56,10 @@ pub struct ClassifyInputs<'a> {
     pub phases: &'a HashMap<String, WorkloadPhase>,
 }
 
-/// Run the SRD-13d Phase 3 scope-flattening pre-walk on a
+/// Run the SRD-13d Phase 3 scope-elision pre-walk on a
 /// freshly-built scope tree. Reads the workload AST to
 /// classify each scope-tree node; calls
-/// [`ScopeTree::mark_scope_flattening`] with the resulting
+/// [`ScopeTree::mark_scope_elision`] with the resulting
 /// predicate.
 ///
 /// Conservative today (Definitions ⇒ materialise without
@@ -90,7 +90,7 @@ pub fn classify_and_mark(tree: &mut ScopeTree, inputs: &ClassifyInputs<'_>) {
         }
     }
 
-    tree.mark_scope_flattening(|kind, idx| {
+    tree.mark_scope_elision(|kind, idx| {
         let matter = scope_kind_polydat_matter(kind, idx, inputs, &owning_phase);
         matches!(matter, PolydatMatter::Definitions)
     });
@@ -120,6 +120,9 @@ fn scope_kind_polydat_matter(
     owning_phase: &std::collections::HashMap<ScopeNodeIdx, String>,
 ) -> PolydatMatter {
     match kind {
+        // SRD-88 — the session root owns the session polydat scope
+        // (process/session args); no per-execution matter of its own.
+        ScopeKind::Session => PolydatMatter::None,
         ScopeKind::Workload => {
             // Mirrors `Workload::polydat_matter` without requiring
             // the whole struct.
@@ -164,7 +167,7 @@ fn scope_kind_polydat_matter(
 /// (when SRD-13d phases 7 / 8 fully wire those surfaces).
 /// Returns `(idx, depth, materialised, logical_name,
 /// kind_label)` quintuples in DFS order.
-pub fn flattening_summary(tree: &ScopeTree) -> Vec<(ScopeNodeIdx, usize, Option<bool>, String, String)> {
+pub fn elision_summary(tree: &ScopeTree) -> Vec<(ScopeNodeIdx, usize, Option<bool>, String, String)> {
     tree.iter_dfs()
         .map(|(idx, node)| (
             idx,
@@ -207,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_workload_flattens_everything_below_root() {
+    fn empty_workload_elides_everything_below_root() {
         let mut phases = HashMap::new();
         phases.insert("p".into(), empty_phase());
         let mut tree = ScopeTree::build("default",
@@ -215,11 +218,11 @@ mod tests {
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
         // Root materialises (always, per SRD-13d §5.1).
         assert_eq!(tree.nodes[0].materialised, Some(true));
-        let scenario_idx = tree.nodes[0].children[0];
+        let scenario_idx = tree.nodes[tree.nodes[0].children[0]].children[0];
         let phase_idx = tree.nodes[scenario_idx].children[0];
         assert_eq!(tree.nodes[scenario_idx].materialised, Some(false));
         assert_eq!(tree.nodes[phase_idx].materialised, Some(false));
-        assert_eq!(tree.nodes[0].logical_name, "workload");
+        assert_eq!(tree.nodes[0].logical_name, "");
         assert_eq!(tree.nodes[scenario_idx].logical_name,
             "workload.scenario.default");
         assert_eq!(tree.nodes[phase_idx].logical_name,
@@ -238,7 +241,7 @@ mod tests {
             ScenarioNode::Phase("p2".into()),
         ]);
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
-        let scenario_idx = tree.nodes[0].children[0];
+        let scenario_idx = tree.nodes[tree.nodes[0].children[0]].children[0];
         let p1_idx = tree.nodes[scenario_idx].children[0];
         let p2_idx = tree.nodes[scenario_idx].children[1];
         assert_eq!(tree.nodes[p1_idx].materialised, Some(true));
@@ -289,7 +292,7 @@ mod tests {
             },
         ]);
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
-        let scenario_idx = tree.nodes[0].children[0];
+        let scenario_idx = tree.nodes[tree.nodes[0].children[0]].children[0];
         let comp_idx = tree.nodes[scenario_idx].children[0];
         assert_eq!(tree.nodes[comp_idx].materialised, Some(true));
     }
@@ -299,7 +302,7 @@ mod tests {
         // SRD-13d Phase 6 + 40b — an op declaring `metrics:`
         // with a non-bare-name value contributes Definitions
         // and materialises. Bare-name `value:` references
-        // resolve to parent bindings (Readonly) and flatten.
+        // resolve to parent bindings (Readonly) and elide.
         use nbrs_workload::model::{MetricSpec, ParsedOp};
         let mut phases = HashMap::new();
         let mut p = empty_phase();
@@ -358,7 +361,7 @@ mod tests {
     fn same_op_name_in_different_phases_classifies_per_phase() {
         // Two phases each declare an op named `select_ann`. One
         // version has metrics (→ Definitions → materialise); the
-        // other doesn't (→ None → flatten). The classifier MUST
+        // other doesn't (→ None → elide). The classifier MUST
         // resolve each scope-tree OpTemplate node against its
         // OWNING phase, not the first match by name across the
         // phases map.
@@ -409,18 +412,20 @@ mod tests {
     }
 
     #[test]
-    fn flattening_summary_dumps_dfs_order() {
+    fn elision_summary_dumps_dfs_order() {
         let mut phases = HashMap::new();
         phases.insert("p".into(), empty_phase());
         let mut tree = ScopeTree::build("default",
             &[ScenarioNode::Phase("p".into())]);
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
-        let summary = flattening_summary(&tree);
-        // DFS pre-order: root → scenario → phase.
-        assert_eq!(summary.len(), 3);
-        assert_eq!(summary[0].3, "workload");
-        assert_eq!(summary[1].3, "workload.scenario.default");
-        assert_eq!(summary[2].3, "workload.scenario.default.phase.p");
+        let summary = elision_summary(&tree);
+        // DFS pre-order: session → workload → scenario → phase. The
+        // session root contributes no logical-path segment (SRD-88).
+        assert_eq!(summary.len(), 4);
+        assert_eq!(summary[0].3, "");
+        assert_eq!(summary[1].3, "workload");
+        assert_eq!(summary[2].3, "workload.scenario.default");
+        assert_eq!(summary[3].3, "workload.scenario.default.phase.p");
         for (_, _, mat, _, _) in &summary {
             assert!(mat.is_some());
         }

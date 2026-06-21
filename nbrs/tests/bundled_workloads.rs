@@ -166,7 +166,7 @@ fn describe_workloads_tiers() {
     // `examples` subtopic: examples only.
     let (stdout, _, ok) = nbrs_in(&sb, &["describe", "workloads", "examples"]);
     assert!(ok);
-    assert!(stdout.contains("examples/timeboxed_partition_sweep"));
+    assert!(stdout.contains("examples/cursors/timeboxed_partition_sweep"));
     assert!(!stdout.contains("selfcheck"),
         "examples listing must not carry curated entries:\n{stdout}");
 }

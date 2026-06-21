@@ -32,7 +32,7 @@ matter: metrics, poll, scope, stop conditions).
 ## Why this exists
 
 The only matter form is `BodyFragment::PolydatSource(String)`. Every
-synthesizer — phase metrics, SRD-75 poll, scope flattening, and SRD-83
+synthesizer — phase metrics, SRD-75 poll, scope elision, and SRD-83
 stop conditions — builds polydat **source strings** by concatenation,
 then re-parses them at compile. Three problems:
 

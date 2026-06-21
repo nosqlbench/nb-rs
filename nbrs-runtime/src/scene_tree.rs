@@ -55,41 +55,46 @@ static GLOBAL_TREE: Mutex<Option<Arc<RwLock<SceneTree>>>> = Mutex::new(None);
 /// behaviour is unchanged.
 pub fn install_global(tree: SceneTree) -> Arc<RwLock<SceneTree>> {
     let arc = Arc::new(RwLock::new(tree));
-    *GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner()) = Some(arc.clone());
+    // SRD-88: inside an execution scope, install into THAT execution's tree
+    // (so its lifecycle mutations stay isolated); outside any scope, the
+    // process-global default (single-run / CLI / tests — A1).
+    if !crate::execution_context::install_scene_tree(arc.clone()) {
+        *GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner()) = Some(arc.clone());
+    }
     arc
 }
 
-/// Snapshot the current global scene tree, if installed. Returns
-/// `None` outside an active session — e.g. standalone `nbrs web`.
-pub fn current() -> Option<SceneTree> {
-    let guard = GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner());
-    guard.as_ref().and_then(|t| t.read().ok().map(|g| g.clone()))
+/// The active scene-tree handle: the current execution's (task-local) if
+/// scoped + installed, else the process-global. SRD-88 A1: outside any
+/// execution scope this is exactly `GLOBAL_TREE`.
+fn active_handle() -> Option<Arc<RwLock<SceneTree>>> {
+    crate::execution_context::current_scene_tree().or_else(|| {
+        GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    })
 }
 
-/// Apply a mutation to the global tree, if installed. No-op when
+/// Snapshot the active scene tree, if installed. Returns
+/// `None` outside an active session — e.g. standalone `nbrs web`.
+pub fn current() -> Option<SceneTree> {
+    active_handle().and_then(|t| t.read().ok().map(|g| g.clone()))
+}
+
+/// Apply a mutation to the active tree, if installed. No-op when
 /// no session has published one. Used by the runner's lifecycle
-/// emit sites so the global tree mirrors the observer's view.
+/// emit sites so the tree mirrors the observer's view.
 pub fn with_global_mut<F: FnOnce(&mut SceneTree)>(f: F) {
-    let arc = {
-        let guard = GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner());
-        guard.clone()
-    };
-    if let Some(arc) = arc
+    if let Some(arc) = active_handle()
         && let Ok(mut g) = arc.write() {
             f(&mut g);
         }
 }
 
-/// Read-only access to the global scene tree, if installed.
+/// Read-only access to the active scene tree, if installed.
 /// Returns `None` when no session has published one. Mirrors
 /// [`with_global_mut`] for callers that just need to inspect
 /// (e.g. SRD-77 execution-end disposition computation).
 pub fn with_global<R, F: FnOnce(&SceneTree) -> R>(f: F) -> Option<R> {
-    let arc = {
-        let guard = GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner());
-        guard.clone()
-    };
-    arc.and_then(|a| a.read().ok().map(|g| f(&g)))
+    active_handle().and_then(|a| a.read().ok().map(|g| f(&g)))
 }
 
 /// Stable index into [`SceneTree::nodes`]. Indices never change for

@@ -336,9 +336,9 @@ impl std::error::Error for LookupError {}
 /// sequence of `.eq(key, value)` calls:
 ///
 /// ```ignore
-/// let s = selector!(type = "phase", name = "ann_query");
+/// let s = selector!(phase = "ann_query", k = "100");
 /// // expands to:
-/// let s = Selector::new().eq("type", "phase").eq("name", "ann_query");
+/// let s = Selector::new().eq("phase", "ann_query").eq("k", "100");
 /// ```
 ///
 /// Only `=` is supported — callers needing `!=`, `~=`, `?`, or
@@ -509,17 +509,17 @@ mod tests {
 
     #[test]
     fn multi_clause_conjunction() {
-        let l = lbls(&[("type", "phase"), ("name", "rampup"), ("profile", "label_00")]);
+        let l = lbls(&[("phase", "rampup"), ("k", "10"), ("profile", "label_00")]);
         let sel = Selector::new()
-            .eq("type", "phase")
-            .eq("name", "rampup")
+            .eq("phase", "rampup")
+            .eq("k", "10")
             .glob("profile", "label_*");
         assert!(sel.matches(&l));
 
         // Any single clause failing breaks the AND.
         let miss = Selector::new()
-            .eq("type", "phase")
-            .eq("name", "teardown");
+            .eq("phase", "rampup")
+            .eq("k", "999");
         assert!(!miss.matches(&l));
     }
 
@@ -543,11 +543,11 @@ mod tests {
 
     #[test]
     fn parse_multi_clause() {
-        let s = Selector::parse("type=phase,name=rampup,profile~=label_*").unwrap();
+        let s = Selector::parse("phase=rampup,k=10,profile~=label_*").unwrap();
         assert_eq!(s.len(), 3);
         assert!(s.matches(&lbls(&[
-            ("type", "phase"),
-            ("name", "rampup"),
+            ("phase", "rampup"),
+            ("k", "10"),
             ("profile", "label_07"),
         ])));
     }
@@ -648,10 +648,10 @@ mod tests {
 
     #[test]
     fn macro_basic_eq_chain() {
-        let sel: Selector = crate::selector!(type = "phase", name = "ann_query");
+        let sel: Selector = crate::selector!(phase = "ann_query", k = "10");
         assert_eq!(sel.len(), 2);
         assert!(sel.matches(&lbls(&[
-            ("type", "phase"), ("name", "ann_query"),
+            ("phase", "ann_query"), ("k", "10"),
         ])));
     }
 

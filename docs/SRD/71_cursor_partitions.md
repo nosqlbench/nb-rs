@@ -18,10 +18,10 @@ phase-scoped CLI overrides with globs
 (`until_*(...) over p` with the partition end as a hard cap),
 `subdivide(outer, n)` as a nested comprehension source, and the
 `partition i/n [lo..hi)` status banner. Behavioral coverage
-lives in `examples/workloads/cursor_partitions_coverage.yaml` +
+lives in `examples/workloads/cursors/cursor_partitions_coverage.yaml` +
 `nbrs/tests/cursor_partitions.rs`; the operator/author guide is
 `docs/guide/cursor_partitions.md`; the showcase example is
-`examples/workloads/timeboxed_partition_sweep.yaml`.
+`examples/workloads/cursors/timeboxed_partition_sweep.yaml`.
 
 ## Motivation
 
@@ -1019,7 +1019,7 @@ chunks inside the active partition, terminating when either
 10 seconds elapse or the partition is fully consumed — small
 partitions finish early (no wrap-around, no idling), oversized
 ones stop on time. The runnable showcase is
-`examples/workloads/timeboxed_partition_sweep.yaml`.
+`examples/workloads/cursors/timeboxed_partition_sweep.yaml`.
 
 **No extent, no spec strings.** An open-extent cursor's declared
 size is just its per-pass base chunk — there is nothing to

@@ -1,0 +1,31 @@
+# cargo-nextest configuration — https://nexte.st/book/configuration
+#
+# Two jobs here, both about the shadow-terminal PTY tests that otherwise make
+# the suite slow and fragile (see SRD-87 / the test-timing investigation):
+#
+#  1. A global hang ceiling. A single hung test (a PTY render loop stalling
+#     under load) once held the whole suite hostage for >20 minutes before its
+#     own timeout fired. `slow-timeout` is the backstop: mark a test slow at
+#     60s, and after one more period (120s total) nextest TERMINATES it. No
+#     test legitimately runs that long (the example walker is the slowest at
+#     ~48s), so this only ever fires on a genuine hang.
+#
+#  2. Serialize the PTY tests. `shadow-terminal` tests each allocate a
+#     pseudo-terminal plus an `nbrs` child. Under nextest's default fan-out
+#     (~one process per core — 128 on this box) the concurrent PTY allocations
+#     starve each other and the emulator's render loop stalls. Pinning those
+#     binaries to a single-slot test-group runs them one-at-a-time (still
+#     overlapped with the rest of the suite), which is reliable. They pass
+#     fine under plain `cargo test` (one process, in-binary threads); this is
+#     purely about nextest's heavy parallel process model.
+
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[test-groups]
+pty = { max-threads = 1 }
+
+[[profile.default.overrides]]
+# The shadow-terminal PTY test binaries.
+filter = 'binary(output_channel_harness) | binary(tui_display_harness) | binary(plotter_alignment)'
+test-group = 'pty'

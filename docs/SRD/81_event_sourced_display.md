@@ -7,6 +7,24 @@
 > exists (`StringSink` + `TuiReadoutSink`); the canonical durable
 > record already exists (the per-phase session store); the core work
 > is the de-conflation + typing the events ring (push 1).
+>
+> **As-built (2026-06-20):**
+> - The §8 de-conflation LANDED: the old
+>   `diag!(Info, phase_outcome.render())` is GONE; the phase-end
+>   outcome now flows through
+>   `observer::log_categorized(LogLevel::Info, LogCategory::PhaseOutcome, &rendered)`
+>   (`nbrs-runtime/src/activity.rs` ~line 2560), so the TUI log panel
+>   filters it and re-projects natively via `TuiReadoutSink`.
+> - The durable canonical record is BUILT: checkpoint JSONL
+>   (`CheckpointData` with `event_type() -> Option<EventType>`) +
+>   sqlite (`phase_outcomes`, `phase_errors`, `readout_snapshots`);
+>   `nbrs replay` and `nbrs checkpoint show|fold` re-project from it.
+> - REMAINING (§7): the in-memory ring `RunState.log_messages` is still
+>   `Vec<LogEntry{ severity, message: String, category: LogCategory }>`
+>   — i.e. category-tagged RENDERED STRINGS, NOT the fully-typed
+>   `PhaseEnd{summary}` payload §7 calls for. So today's de-conflation
+>   is by the CATEGORY tag; the typed-payload events ring is the open
+>   work.
 
 ## 1. Ownership & relationships
 

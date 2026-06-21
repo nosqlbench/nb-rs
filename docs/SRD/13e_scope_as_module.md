@@ -260,8 +260,8 @@ pass around. `from_program` + manual `bind_outer_scope` + manual
 
 ### 1.4 The traversal exposes the contract, not the kernel
 
-The scope-tree flattening traversal (already specified in SRD-13d
-§3.3 as `mark_scope_flattening` plus the per-node walk that
+The scope-tree elision traversal (already specified in SRD-13d
+§3.3 as `mark_scope_elision` plus the per-node walk that
 populates `scope_tree.nodes[idx].cached_kernel`) becomes the
 *only* surface that hands out `ScopeKernel` references. Consumers
 can't fabricate a kernel from a program they happen to hold; they

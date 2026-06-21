@@ -26,6 +26,17 @@ the TUI panel, and clobbers a console-owning adapter's output.
 | Fatal error just before `process::exit` | **stderr, directly** — terminal reporting must be unconditional, not buffered behind the async sink |
 | Every other nbrs system signal | **the observer/sink** — `diag!` / `observer::log` / the readout binder |
 
+**SRD-87 update:** the *transport* of adapter output is now owned by
+[SRD-87](87_output_channel.md). Adapter output no longer writes
+"stdout, directly" — it submits the **op-output bucket** of the single
+`OutputChannel`, which owns the fd. The intent here ("the console
+belongs to the adapter") is preserved as "the adapter's
+op-output/raster bucket owns the terminal surface." The interim
+`op_output()` half-measure (`nbrs-runtime/src/observer.rs`) that routed
+op output through the diagnostic channel — and produced the
+stdout-prints-nothing-on-an-interactive-TTY defect — is superseded by
+SRD-87.
+
 `diag!(level, …)` → `observer::log_categorized` is the only legal
 in-run output channel for system signals. It writes the line to
 `session.log` (always, at the retain level) **and** to the active
@@ -89,6 +100,27 @@ stderr as usual and CI/tests capture them. `DisplayPreference` is
 params-aware: the stdout adapter is `Off` writing to the console
 (default / `filename=stdout`) and `Auto` when `filename=` redirects to
 a file (the console is free).
+
+The console-owning adapter is detected from the run's **resolved**
+adapter, not just the CLI: `run.rs` peeks the workload's declared
+`params:` (extends-merged, the same `peek_declared_params` the display
+setup uses) so a workload that says `params: { adapter: plotter }` is
+recognized as console-owning and quiets the dashboard on a TTY — without
+needing `adapter=` repeated on the command line. The workload's own
+shaping params (e.g. stdout's `filename`) ride along, so an
+adapter-writes-to-a-file workload correctly keeps its dashboard.
+
+### Log-level resolution
+
+The display (stderr) and retain (`session.log`) floors resolve with
+**closest-wins precedence: CLI > workload `params:` > `NBRS_LOG_*` env >
+built-in default** (display `Info`, retain `Debug`). So a visual or
+quiet-by-default workload can declare `params: { loglevel: warn }` and a
+CLI `loglevel=info` still overrides it. Knobs: `loglevel=` /
+`loglevel-display=` / `NBRS_LOG_DISPLAY_LEVEL` (display) and
+`loglevel-retain=` / `NBRS_LOG_RETAIN_LEVEL` (file). All are accepted
+workload/CLI params (in `KNOWN_PARAMS`), so they pass the closed-vocabulary
+guard.
 
 ### Conventions
 

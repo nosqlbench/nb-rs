@@ -24,7 +24,7 @@
 //!
 //! ## Registry
 //! [`by_name`] resolves an optimizer by its registered name (default
-//! `"null"`). See [`registry`] for the full set.
+//! `"sweep"`). See [`registry`] for the full set.
 
 pub mod algos;
 pub mod docs;

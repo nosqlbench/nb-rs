@@ -1,6 +1,18 @@
-# 63: Readouts  *(DRAFT — for refinement)*
+# 63: Readouts  *(SHIPPED — Explanation overlay pending)*
 
-> **Status: proposal.** Iterating before any code lands.
+> **Status: SHIPPED.** The readout engine is built: the `Readout`
+> trait, `ReadoutContext` (30+ accessors), the `Lod` / `ContentMode`
+> models, 14 built-in readouts in the registry (`phase_outcome`,
+> `phase_status`, `scope_header`, `metric`, …), the `ReadoutSink` seam
+> with both `StringSink` and `TuiReadoutSink`, both the stateless
+> `DefaultBinder` and the stateful `TuiReadoutBinder` (focus / LOD /
+> overlay), the baked-step compiler, and the `readout_snapshots` sqlite
+> retention table. Code lives in `nbrs-runtime/src/readouts/`
+> (`readout.rs`, `context.rs`, `binder.rs`, `registry.rs`,
+> `snapshot.rs`, `parse.rs`) and `nbrs-tui/src/readout_sink.rs` +
+> `readout_panel.rs`. The ONE piece still stubbed is the **Explanation
+> overlay** (§3.2): `ContentMode::Explanation` currently renders zero
+> bytes for all readouts, pending its push.
 
 A **readout** is a small named unit that renders one piece of
 runtime information — throughput, ok-rate, errors, recall,
@@ -1098,17 +1110,21 @@ pub trait ReadoutBinder: Send {
 /// `line_break` between groups so the sink composes the
 /// final text per the rules in §7.4.
 pub trait ReadoutSink {
+    fn literal(&mut self, s: &str);
     fn render(
         &mut self,
-        readout: &dyn Readout,
+        readout: ReadoutHandle,        // Arc<dyn Readout>, not &dyn Readout
         ctx: &dyn ReadoutContext,
         lod: Lod,
         mode: ContentMode,
-        opts: &ReadoutOptions,
+        options: &ReadoutOptions,
         layout: LayoutHint,
     );
     fn line_break(&mut self);
 }
+
+// As built in `nbrs-runtime/src/readouts/binder.rs` — `literal()` for
+// raw passthrough, `render()` takes an owned `ReadoutHandle`.
 
 pub enum LayoutHint {
     /// Ok to share a line with adjacent compact readouts.
@@ -1372,6 +1388,10 @@ The same compiled readout drives:
 ---
 
 ## 11. Phasing
+
+*As-built (2026-06-20): Pushes 1–3 plus the stateful binder
+(originally slated "Push 5") have LANDED. The remaining open work is
+Push 4 — explanation overlays.*
 
 **Push 1 — `on_phase` only.** Readout trait, registry,
 `ReadoutContext` facade, baked-step renderer. Built-ins:

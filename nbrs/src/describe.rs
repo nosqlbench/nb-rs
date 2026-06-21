@@ -333,7 +333,7 @@ fn first_prose_line(md: &str) -> &str {
 }
 
 /// `nbrs describe optimizers` — list the optimizers registered in this binary
-/// (the built-in `null` + the `nbrs-optimizers` plugins discovered via
+/// (the built-in `sweep` + the `nbrs-optimizers` plugins discovered via
 /// inventory against the core contract), each with its one-line summary
 /// (SRD-86 §6).
 fn describe_optimizers_list() {
@@ -1407,7 +1407,7 @@ fn describe_wiring_dag(args: &[String]) {
             eprintln!("  --format=svg         Self-contained SVG (pure Rust, no external tools)");
             eprintln!("  --output=file        Write to file instead of stdout");
             eprintln!("  --with-flattening    Treat <file> as a workload YAML; print");
-            eprintln!("                       the SRD-13d scope-flattening summary");
+            eprintln!("                       the SRD-13d scope-elision summary");
             eprintln!("                       (materialised bit, logical_name, bind_outer)");
             return;
         }
@@ -1415,14 +1415,14 @@ fn describe_wiring_dag(args: &[String]) {
 
     // SRD-13d Phase 8: --with-flattening switches the surface from
     // "render a Polydat source string" to "parse a workload YAML, build
-    // its scope tree, run mark_scope_flattening with the
+    // its scope tree, run mark_scope_elision with the
     // 'materialise everything' stub predicate, and print the
     // per-node summary." When SRD-13d Phase 3 lands and supplies
     // the real predicate, swap it in here — the rest of the pipe
     // stays.
     if with_flattening {
         let path = file.map(|s| s.as_str()).unwrap_or("<missing>");
-        let summary = render_flattening_summary(&source, path);
+        let summary = render_elision_summary(&source, path);
         match summary {
             Ok(content) => {
                 if let Some(p) = output {
@@ -1466,7 +1466,7 @@ fn describe_wiring_dag(args: &[String]) {
 
 /// SRD-13d Phase 8 entry point: parse `yaml_source` as a
 /// workload, build its [`ScopeTree`], run
-/// [`ScopeTree::mark_scope_flattening`] with a stub
+/// [`ScopeTree::mark_scope_elision`] with a stub
 /// "materialise everything" predicate, and produce a textual
 /// summary listing each node's logical_name, materialised
 /// bit, and the nearest_materialised ancestor it would bind
@@ -1480,7 +1480,7 @@ fn describe_wiring_dag(args: &[String]) {
 /// `path` is the file path the user supplied; it's surfaced
 /// in the header line so the caller can confirm which file
 /// was read.
-fn render_flattening_summary(yaml_source: &str, path: &str) -> Result<String, String> {
+fn render_elision_summary(yaml_source: &str, path: &str) -> Result<String, String> {
     use nbrs_runtime::scope_tree::{ScopeTree, ScopeKind};
     use nbrs_workload::parse::{parse_workload, parse_workload_from_path};
     use std::collections::HashMap;
@@ -1520,10 +1520,10 @@ fn render_flattening_summary(yaml_source: &str, path: &str) -> Result<String, St
     // SRD-13d Phase 3 stub: every node materialises. Swap in
     // the real predicate (HasPolydatMatter classification +
     // program-hash equivalence) when Phase 3 lands.
-    tree.mark_scope_flattening(|_kind, _idx| true);
+    tree.mark_scope_elision(|_kind, _idx| true);
 
     let mut out = String::new();
-    out.push_str(&format!("# scope flattening summary: {path}\n"));
+    out.push_str(&format!("# scope elision summary: {path}\n"));
     out.push_str(&format!("# scenario: {scenario_name}\n"));
     out.push_str("# predicate: stub (materialise everything) — SRD-13d Phase 3 pending\n");
     out.push('\n');
@@ -2126,7 +2126,7 @@ mod describe_wiring_dag_flattening_tests {
     //! summary) and asserts the produced text contains the
     //! per-node fields the SRD calls out: logical_name,
     //! materialised, and the bind_outer reference.
-    use super::render_flattening_summary;
+    use super::render_elision_summary;
 
     /// Minimal flat workload — one phase under the implicit
     /// scenario. Exercises the simplest path: workload, scenario,
@@ -2141,10 +2141,10 @@ phases:
     ops:
       - op: noop
 "#;
-        let out = render_flattening_summary(yaml, "test.yaml")
+        let out = render_elision_summary(yaml, "test.yaml")
             .expect("flat workload should parse and render");
         // Header sanity.
-        assert!(out.contains("# scope flattening summary: test.yaml"));
+        assert!(out.contains("# scope elision summary: test.yaml"));
         assert!(out.contains("# scenario: default"));
         // Logical names per SRD-13d §5.3.
         assert!(out.contains("workload"),
@@ -2180,7 +2180,7 @@ phases:
     ops:
       - op: noop
 "#;
-        let out = render_flattening_summary(yaml, "two.yaml")
+        let out = render_elision_summary(yaml, "two.yaml")
             .expect("two-phase workload should render");
         assert!(out.contains("phase.setup"), "setup phase row missing:\n{out}");
         assert!(out.contains("phase.run"), "run phase row missing:\n{out}");
@@ -2193,7 +2193,7 @@ phases:
     #[test]
     fn malformed_workload_returns_path_tagged_error() {
         let bad = "not: valid: yaml: workload";
-        let err = render_flattening_summary(bad, "bad.yaml").unwrap_err();
+        let err = render_elision_summary(bad, "bad.yaml").unwrap_err();
         assert!(err.contains("bad.yaml"),
             "error should embed the offending path: {err}");
     }
@@ -2212,7 +2212,7 @@ phases:
     ops:
       - op: noop
 "#;
-        let out = render_flattening_summary(yaml, "x.yaml").unwrap();
+        let out = render_elision_summary(yaml, "x.yaml").unwrap();
         // The phase row should mention its own name twice — once
         // in the logical_name column, once in bind_outer.
         let phase_lines: Vec<&str> = out.lines()

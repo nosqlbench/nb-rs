@@ -2774,12 +2774,13 @@ dependencies = [
 name = "nbrs-adapter-plotter"
 version = "0.1.2"
 dependencies = [
+ "crossterm",
  "inventory",
- "libc",
  "nbrs-runtime",
  "nbrs-workload",
  "polydat",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

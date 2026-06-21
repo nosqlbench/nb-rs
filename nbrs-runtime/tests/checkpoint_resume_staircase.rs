@@ -19,7 +19,7 @@
 //!     metric rows purged (no double-counting),
 //!   - the session id is preserved across all four invocations.
 //!
-//! Workload at `examples/workloads/resume_test.yaml`. The
+//! Workload at `examples/workloads/diagnostics/resume_test.yaml`. The
 //! workload's hardcoded `/tmp/nbrs_resume_test.seq` path is
 //! rewritten per-test to a unique tempdir-keyed path so parallel
 //! cargo-test threads don't collide.
@@ -44,7 +44,7 @@ fn staircase_failures_resume_correctly() {
     // to a per-test value so parallel test threads don't share
     // state.
     let canonical = std::fs::read_to_string(
-        workspace_path("examples/workloads/resume_test.yaml"),
+        workspace_path("examples/workloads/diagnostics/resume_test.yaml"),
     ).expect("read canonical workload");
     let body = canonical.replace(
         "/tmp/nbrs_resume_test.seq",

@@ -55,7 +55,6 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 fn build_session_with_concurrency(initial: u32) -> Arc<std::sync::RwLock<Component>> {
     let root = Component::root(
         Labels::empty()
-            .with("type", "session")
             .with("session", "integ"),
         HashMap::new(),
     );
@@ -232,7 +231,7 @@ async fn branch_scoped_control_resolves_from_descendant_fiber() {
     // Session declares hdr_sigdigs = 4 with BranchScope::Subtree;
     // the fiber reads it via walk-up without declaring it locally.
     let root = Component::root(
-        Labels::empty().with("type", "session").with("session", "integ_bs"),
+        Labels::empty().with("session", "integ_bs"),
         HashMap::new(),
     );
     root.read().unwrap().controls().declare(

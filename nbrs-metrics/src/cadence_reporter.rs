@@ -253,6 +253,16 @@ struct SubscriptionState {
     last_delivered: Mutex<Instant>,
     consecutive_drops: AtomicU64,
     timeout_fired: AtomicBool,
+    /// Snapshots successfully queued to this subscriber's channel by
+    /// the owner (incremented on each `try_send` success). Paired with
+    /// [`Self::delivered`] so [`CadenceReporter::quiesce`] can wait for
+    /// the dispatch worker to drain everything the owner queued —
+    /// without tearing the subscriber down (SRD-88: per-execution
+    /// flush-to-store, non-terminal).
+    sent: AtomicU64,
+    /// Snapshots the dispatch worker has `report()`ed (committed to the
+    /// sink). Converges to [`Self::sent`] once the channel drains.
+    delivered: AtomicU64,
 }
 
 impl SubscriptionState {
@@ -261,6 +271,8 @@ impl SubscriptionState {
             last_delivered: Mutex::new(Instant::now()),
             consecutive_drops: AtomicU64::new(0),
             timeout_fired: AtomicBool::new(false),
+            sent: AtomicU64::new(0),
+            delivered: AtomicU64::new(0),
         }
     }
 
@@ -270,6 +282,12 @@ impl SubscriptionState {
         }
         self.consecutive_drops.store(0, Ordering::Relaxed);
         self.timeout_fired.store(false, Ordering::Relaxed);
+    }
+
+    /// Snapshots queued but not yet committed by the dispatch worker.
+    fn pending(&self) -> u64 {
+        self.sent.load(Ordering::Relaxed)
+            .saturating_sub(self.delivered.load(Ordering::Relaxed))
     }
 }
 
@@ -554,6 +572,9 @@ impl CadenceReporter {
                 while let Ok(snapshot) = receiver.recv() {
                     reporter.report(&snapshot);
                     state_for_worker.mark_delivered();
+                    // Committed to the sink — advance the drain counter
+                    // so `quiesce` can observe this snapshot landed.
+                    state_for_worker.delivered.fetch_add(1, Ordering::Relaxed);
                     // A one-shot subscriber (e.g. a settle/stop
                     // evaluator that just set a terminal phase
                     // disposition) unregisters itself by signalling
@@ -701,6 +722,42 @@ impl CadenceReporter {
         let (ack_tx, ack_rx) = crossbeam_channel::bounded::<()>(1);
         let _ = self.cmd_tx.send(Cmd::ShutdownFlushAll { ack: ack_tx });
         let _ = ack_rx.recv();
+    }
+
+    /// SRD-88 — **non-terminal** flush-to-store. Force-close every
+    /// window through the cascade, fan the trailing partials out to
+    /// every subscriber, and **wait until each subscriber's dispatch
+    /// worker has committed them to its sink** — but leave every
+    /// subscriber alive and subscribed.
+    ///
+    /// This is the per-execution analogue of [`Self::shutdown`]: an
+    /// execution sharing a session's reporter calls this at its end so
+    /// a report can run against the complete metrics store for its
+    /// workload, WITHOUT tearing the reporter down for the concurrent
+    /// siblings. The session-tier [`Self::shutdown`] (drain + join
+    /// subscribers) still runs once, at session end.
+    ///
+    /// Blocks the calling thread. Intended to be called at an
+    /// execution boundary from the runtime's main task, not the hot
+    /// path. Bounded by `max_wait` so a stalled sink can't hang the
+    /// run — on timeout it returns with whatever has been committed
+    /// (same lossy-under-backpressure contract as the `try_send`
+    /// cascade).
+    pub fn quiesce(&self, max_wait: Duration) {
+        // 1. Force-close all paths + fan out (owner-synchronous).
+        self.shutdown_flush();
+        // 2. Wait for every subscriber worker to drain what was queued.
+        let start = Instant::now();
+        loop {
+            let pending: u64 = {
+                let map = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+                map.values().map(|s| s.state.pending()).sum()
+            };
+            if pending == 0 || start.elapsed() >= max_wait {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Latest closed snapshot for `(labels, cadence)`, if any.
@@ -958,7 +1015,7 @@ fn fanout_owner(
         for sub in map.values() {
             if sub.cadence != *cadence { continue; }
             match sub.sender.try_send(snapshot.clone()) {
-                Ok(()) => {}
+                Ok(()) => { sub.state.sent.fetch_add(1, Ordering::Relaxed); }
                 Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
                     let drops = sub.state.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
                     if let Some(timeout) = sub.opts.timeout {
@@ -1156,6 +1213,42 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(count.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn quiesce_synchronously_drains_subscriber_and_is_non_terminal() {
+        // SRD-88 — `quiesce` is the per-execution flush-to-store: after
+        // it returns, the subscriber (the sink, e.g. SQLite) has
+        // committed every closed window, WITHOUT the subscriber being
+        // torn down (so concurrent siblings keep flowing).
+        let cadences = Cadences::new(&[Duration::from_millis(100)]).unwrap();
+        let reporter = Arc::new(CadenceReporter::new(CadenceTree::plan_default(cadences)));
+        let labels = Labels::of("phase", "q");
+        let count = Arc::new(AtomicU64::new(0));
+        let _id = reporter.subscribe(
+            Duration::from_millis(100),
+            Box::new(CountingReporter { count: count.clone() }),
+            SubscriptionOpts::default(),
+        ).unwrap();
+
+        // A few partials — the 100ms window hasn't elapsed, so nothing
+        // has closed by cadence yet.
+        for _ in 0..3 {
+            reporter.ingest(&labels, counter_set(Duration::from_millis(100), 1));
+        }
+        // quiesce force-closes the open window, fans it out, and waits
+        // for the worker to commit it — so the assertion needs NO drain
+        // loop, unlike `subscribe_receives_snapshots_on_dispatch_thread`.
+        reporter.quiesce(Duration::from_secs(2));
+        let after_first = count.load(Ordering::Relaxed);
+        assert!(after_first >= 1,
+            "quiesce must synchronously deliver the force-closed window; got {after_first}");
+
+        // Non-terminal: the subscriber is still registered — more data flows.
+        reporter.ingest(&labels, counter_set(Duration::from_millis(100), 1));
+        reporter.quiesce(Duration::from_secs(2));
+        assert!(count.load(Ordering::Relaxed) > after_first,
+            "subscriber must remain alive + receiving after quiesce");
     }
 
     #[test]

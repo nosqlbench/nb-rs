@@ -101,7 +101,7 @@ Cartesian product, in lex order). An optimizer is **a stateless functor that
 transforms that default stream** — given the param space + the default lex
 stream, it produces the (possibly adaptive) stream of coordinates the executor
 will actually run, and is told each coordinate's objective so it can choose
-the next. Its **default is `null`: the identity functor** — it returns the lex
+the next. Its **default is `sweep`: the identity functor** — it returns the lex
 stream unchanged, reproducing today's Cartesian sweep. Every real optimizer is
 a drop-in at this one functor.
 
@@ -147,7 +147,7 @@ pub trait FeedbackSource {
     fn step(&mut self, evaluated: &[(Coord, f64)]) -> Option<Vec<Coord>>;
 }
 
-/// The optimizer = a stateless functor producing a source. `null` returns
+/// The optimizer = a stateless functor producing a source. `sweep` returns
 /// `lex` unchanged (identity).
 pub trait Optimizer {
     fn name(&self) -> &str;
@@ -161,7 +161,7 @@ pub trait Optimizer {
 }
 
 /// The default lexicographic stream over the space (mixed-radix Cartesian of
-/// the detents / continuous corners). `null` is `PullOnly(LexSource)`.
+/// the detents / continuous corners). `sweep` is `PullOnly(LexSource)`.
 pub struct LexSource { /* … */ }
 pub struct PullOnly(pub Box<dyn PullSource>);   // wrap a PullSource as a CoordinateSource
 ```
@@ -201,7 +201,7 @@ yield a coordinate — so the user-visible loop reads `metric=cosine`, never
 
 | Tier | Methods | Sees | Cast |
 |---|---|---|---|
-| **Value-native** | `null`, `cost_greedy_traversal`, screening, bandits | the `AxisValue`s / labels directly (reorders, samples) | none |
+| **Value-native** | `sweep`, `cost_greedy_traversal`, screening, bandits | the `AxisValue`s / labels directly (reorders, samples) | none |
 | **Numeric** | `nelder_mead`, `hooke_jeeves`, `bobyqa`, `cmaes`, `bayes_opt` | f64 via a stub `AxisValue ↔ f64` projector (ordinal→number, categorical→index/one-hot, continuous→itself), keyed by `AxisKind` | solver-internal |
 
 A numeric solver **rejects categorical axes in its own purview** (a nominal
@@ -236,10 +236,10 @@ this seam; the executor only ever sees a clean `FeedbackSource`.
 
 ## Axioms (load-bearing — a proposal may not contradict these)
 
-- **A1 — One functor seam, `null` = identity.** There is exactly one optimizer
+- **A1 — One functor seam, `sweep` = identity.** There is exactly one optimizer
   in the phase-execution driver, expressed as a functor over the coordinate
-  stream. Its default is the identity `null` (returns the lex stream
-  unchanged). Installing it is a behavioural no-op until a non-null method is
+  stream. Its default is the identity `sweep` (returns the lex stream
+  unchanged). Installing it is a behavioural no-op until a non-`sweep` method is
   named. No optimizer adds a second walk modality (SRD-18b One Walker).
 - **A2 — The algorithm library is runtime-free + loop-form.** `nbrs-optimizers`
   depends on no nbrs runtime crate, no polydat, no metrics; its algorithms keep
@@ -279,7 +279,7 @@ this seam; the executor only ever sees a clean `FeedbackSource`.
   `optimizer:` declared at any scope-tree node governs the axes at that node
   and its interior **only**; everything outside sequences as plain lex (before
   and after). Nested nodes carry independent functors that **compose** (the
-  outer sees the inner's transformed stream). Default everywhere is `null`.
+  outer sees the inner's transformed stream). Default everywhere is `sweep`.
 - **A10 — The objective is a wire on the phase scope's single kernel.** Kernels
   are **one (max) per scope-tree node**, aligned to the graph — a phase scope has
   one phase kernel; op templates are proper subscopes of it (occasionally shared/
@@ -333,7 +333,7 @@ while let Some(coords) = next(&mut src, &evaluated) {   // step(...) or pull()
 }
 ```
 
-`null` → `PullOnly(lex)` (identity). An adaptive method → a `FeedbackSource`
+`sweep` → `PullOnly(lex)` (identity). An adaptive method → a `FeedbackSource`
 whose `step` consumes the just-evaluated values. Batch methods buffer their
 batch inside the source and advance on `step`.
 
@@ -350,7 +350,7 @@ already owns.
 ### 3. The node-level `optimizer:` property (A9)
 
 `optimizer:` is a property on any scope-tree node (scenario / phase / `for_each`
-scope), default `null`. The executor:
+scope), default `sweep`. The executor:
 
 1. **Auto-gathers** the `SearchSpace` from the node's subtree comprehensions
    (each comprehension axis contributes its name, detents/range, kind, and
@@ -408,12 +408,12 @@ becomes the `IterationStep` to run depends on whether the axis is enumerable:
   owns. No hull, no holes, no skipping: every proposal is feasible by
   construction. (V8's continuous-requires-order check is a *validation* concern;
   the executor reads `metadata()` directly and never enumerates, so it never
-  applies here.) Reference: `examples/workloads/optimizer_continuous.yaml`.
+  applies here.) Reference: `examples/workloads/optimizer/continuous.yaml`.
 
 *Status:* The **continuous** path is fully operational at **single OR multiple**
 axes — a multi-clause `for_each` of float ranges (`x in 0.0 .. 6.0, y in 0.0 ..
 8.0`) is sampled jointly by a metric-space solver (see
-`examples/workloads/optimizer_multiaxis.yaml`). **Refinement still open** on the
+`examples/workloads/optimizer/multiaxis.yaml`). **Refinement still open** on the
 **discrete** path: `search_space_from_steps` derives a flat per-axis hull from
 the enumerated grid — it visits the feasible set *correctly* (off-grid proposals
 are skipped) but presents the **hull** to the optimizer, so an adaptive method
@@ -502,8 +502,8 @@ axis is therefore realized **only** by iterating its scope (never set
 ineffectually); the control varies live within each fixed-coordinate phase. The
 best is reported as `(coordinate-cell ; control-setting)`. `conc` written last is
 innermost by lex order, but the partition is order-independent within a node.
-References: `examples/workloads/optimizer_control.yaml` (all-control),
-`examples/workloads/optimizer_hybrid.yaml` (mixed).
+References: `examples/workloads/optimizer/control.yaml` (all-control),
+`examples/workloads/optimizer/hybrid.yaml` (mixed).
 
 **Deferred:** the `Control`-daemon's `Pulse-event` trigger and configurable
 feedback cadence (§5) beyond the reused settle; `Fixture` re-install/re-stack
@@ -746,11 +746,11 @@ rather than *reconstructing* a value the read cannot otherwise see.
 ### 11. The optimizer registry
 
 Inventory-discovered, selected by `optimizer: { method: <name> }`, default
-`null`.
+`sweep`.
 
 | name | space | tier | cost-aware | parallel | role |
 |---|---|---|---|---|---|
-| `null` *(default)* | any | value-native | — | yes | identity — current Cartesian sweep |
+| `sweep` *(default)* | any | value-native | — | yes | identity — current Cartesian sweep |
 | `cost_greedy_traversal` | discrete | value-native | yes (learned) | yes | minimize changeover, fixed points |
 | `centroid_variant` | mixed | value-native | partial | yes | screening — rank axis impact |
 | `nelder_mead` | continuous | numeric | via economy | no | simplex, robust local |
@@ -846,7 +846,7 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
 1. SRD-83 step 4 (`effect: Outcome`) — A8.
 2. The functor + source contract (`coordinate_source`,
    `CoordinateSource`/`PullSource`/`FeedbackSource`, `LexSource`/`PullOnly`,
-   the capability-favoring driver, `null` = identity).
+   the capability-favoring driver, `sweep` = identity).
 3. The 9 loop-form algorithms + the `ThreadBridge` loop→source adapter +
    inventory registration + `describe optimizers`; manifold + bridge tests.
 4. The phase-level `optimize:` parse surface (`OptimizeBlock`).
@@ -855,7 +855,7 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
    `bridge.rs`; `PolydatObjective` materializes each value to its real
    `polydat::Value`. Verified: numeric manifolds drive through the projector,
    the categorical index↔label round-trip, and value-native label enumeration
-   (`null` visiting labels directly).
+   (`sweep` visiting labels directly).
 
 **Landed + verified (continued):**
 6. **Node-level search wiring — ✓ LANDED (discrete / categorical / continuous,
@@ -865,7 +865,7 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
    the adaptive sequential loop). Axes auto-gathered from the phase's multi-clause
    `for_each` grid (`CoordEval::Enumerated`) or, for float ranges, sampled
    (`CoordEval::Synthesized`); the objective read off each iteration's kernel.
-   Validated end-to-end — `null` (pull), `nelder_mead`/`cmaes` (feedback via
+   Validated end-to-end — `sweep` (pull), `nelder_mead`/`cmaes` (feedback via
    `ThreadBridge`) converge in a real `nbrs run` across discrete, continuous,
    multi-axis, and categorical axes (`examples/workloads/optimizer_*.yaml` +
    `workload_examples.rs`). *Follow-ups:* (a) a pre-existing synthesis gap means a
@@ -919,7 +919,7 @@ The optimizer follows the **adapter/plugin pattern** — inverted from a naive
     (parse-once at construction, evaluate per-eval; all `Purity::Nondeterministic` so they
     are never const-folded — [SRD 40c](40c_metric_query_api.md) MQ4); (d) coverage tests +
     `NotYetImplemented` surfacing. **(e) SHIPPED 2026-06-18** —
-    `examples/workloads/optimizer_metricsql.yaml` + the
+    `examples/workloads/optimizer/metricsql.yaml` + the
     `optimizer_metricsql_objective_settles` test: a `metricsql_scalar("sum(errors_total)")`
     objective, settled across the run by item 8's cadence-fed detector, picks the
     concurrency that eliminates overloads (best [2]) — the same causal oracle as

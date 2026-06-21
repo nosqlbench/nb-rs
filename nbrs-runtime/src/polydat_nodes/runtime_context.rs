@@ -742,7 +742,7 @@ mod tests {
         initial: u32,
     ) -> Arc<RwLock<Component>> {
         let root = Component::root(
-            Labels::empty().with("type", "session").with("session", "t"),
+            Labels::empty().with("session", "t"),
             HashMap::new(),
         );
         root.read().unwrap().controls().declare(
@@ -874,7 +874,7 @@ mod tests {
         // Install a root with a concurrency control that accepts
         // f64 writes via an explicit from_f64 converter.
         let root = Component::root(
-            Labels::empty().with("type", "session").with("session", "s_cs"),
+            Labels::empty().with("session", "s_cs"),
             std::collections::HashMap::new(),
         );
         let c: nbrs_metrics::controls::Control<u32> = nbrs_metrics::controls::
@@ -989,7 +989,7 @@ mod tests {
         // Build a control that accepts f64 writes and install
         // the session root.
         let root = Component::root(
-            Labels::empty().with("type", "session").with("session", "attr"),
+            Labels::empty().with("session", "attr"),
             std::collections::HashMap::new(),
         );
         let c: nbrs_metrics::controls::Control<f64> = nbrs_metrics::controls::

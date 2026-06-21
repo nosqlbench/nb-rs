@@ -13,8 +13,10 @@ use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
 pub fn spec() -> Command {
     Command {
         name: "check",
-        help: "Run a workload (or directory) and verify its output against the\n\
-               `#@` / `verify:` rules it declares. Non-zero exit on failure.",
+        help: "Run a workload and verify its output against the `#@` / `verify:`\n\
+               rules it declares. Accepts a file, a directory (checks every\n\
+               workload under it), or a bundled catalog name — the same\n\
+               reference `nbrs run` takes. Non-zero exit on failure.",
         category: Category::Workloads,
         level: Level::Workload,
         flags: Vec::new(),
@@ -22,7 +24,8 @@ pub fn spec() -> Command {
         dynamic_options: None,
         positionals: vec![crate::cli_spec::Positional {
             name: "workload",
-            help: "Workload file or directory to verify (or `workload=<path>`).",
+            help: "Workload file, directory, or bundled catalog name to verify \
+                   (or `workload=<ref>`).",
             kind: crate::cli_spec::PositionalKind::ZeroOrOne,
             value: crate::cli_spec::ValueProvider::Custom(
                 crate::completion::workload_positional_provider,
@@ -40,24 +43,20 @@ fn handle(p: ParsedCommand) -> Result<(), String> {
 }
 
 fn check_command(args: &[String]) -> Result<(), String> {
-    // Path from `workload=<path>` or the first bare positional.
-    let raw_path = args
+    // Target from `workload=<ref>` or the first bare positional — a file, a
+    // directory, or a bundled catalog name, resolved by the verifier exactly
+    // the way `nbrs run` resolves `workload=…`.
+    let target = args
         .iter()
         .find_map(|a| a.strip_prefix("workload=").map(String::from))
         .or_else(|| args.iter().find(|a| !a.contains('=')).cloned())
-        .ok_or("usage: nbrs check workload=<file|dir>  (or: nbrs check <file|dir>)")?;
-
-    // Canonicalise — the verifier runs each workload from a sandbox cwd, so the
-    // path it hands to `nbrs run` must be absolute.
-    let path = std::path::Path::new(&raw_path)
-        .canonicalize()
-        .map_err(|e| format!("no such workload path '{raw_path}': {e}"))?;
+        .ok_or("usage: nbrs check workload=<file|dir|name>  (or: nbrs check <file|dir|name>)")?;
 
     let binary = std::env::current_exe()
         .map_err(|e| format!("cannot locate the nbrs binary: {e}"))?;
     let sandbox = std::env::temp_dir().join(format!("nbrs-check-{}", std::process::id()));
 
-    let sum = nbrs_workload::verify::verify_path(&binary, &path, &sandbox);
+    let sum = nbrs_workload::verify::verify_target(&binary, &target, &sandbox);
 
     for s in &sum.skipped {
         println!("  ⃠  skip  {s}");

@@ -348,7 +348,11 @@ impl OpDispenser for ModelDispenser {
             if let Some(threshold) = self.model_params.overload
                 && current > threshold {
                 if self.diagnose {
-                    eprintln!("  testkit: OVERLOAD cycle={cycle} in_flight={current} threshold={threshold}");
+                    // SRD-87 A1: diagnostics route through the log channel.
+                    nbrs_runtime::diag!(
+                        nbrs_runtime::observer::LogLevel::Info,
+                        "testkit: OVERLOAD cycle={cycle} in_flight={current} threshold={threshold}"
+                    );
                 }
                 return Err(ExecutionError::Op(AdapterError {
                     error_name: "Overload".into(),
@@ -382,7 +386,10 @@ impl OpDispenser for ModelDispenser {
                 && cycle == threshold
             {
                 if self.diagnose {
-                    eprintln!("  testkit: ThrowAt cycle={cycle} threshold={threshold}");
+                    nbrs_runtime::diag!(
+                        nbrs_runtime::observer::LogLevel::Info,
+                        "testkit: ThrowAt cycle={cycle} threshold={threshold}"
+                    );
                 }
                 return Err(ExecutionError::Op(AdapterError {
                     error_name: self.model_params.throw_name.clone(),
@@ -399,8 +406,11 @@ impl OpDispenser for ModelDispenser {
                 let p = h as f64 / u64::MAX as f64;
                 if p < self.model_params.error_rate {
                     if self.diagnose {
-                        eprintln!("  model: ERROR injected (cycle={}, rate={:.2}%)",
-                            cycle, self.model_params.error_rate * 100.0);
+                        nbrs_runtime::diag!(
+                            nbrs_runtime::observer::LogLevel::Info,
+                            "model: ERROR injected (cycle={}, rate={:.2}%)",
+                            cycle, self.model_params.error_rate * 100.0
+                        );
                     }
                     return Err(ExecutionError::Op(AdapterError {
                         error_name: self.model_params.error_name.clone(),

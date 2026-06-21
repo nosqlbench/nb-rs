@@ -175,11 +175,11 @@ mod tests {
         let mut root_props = std::collections::HashMap::new();
         root_props.insert(HDR_SIGDIGS_PROP.to_string(), "5".to_string());
         let root = crate::component::Component::root(
-            crate::labels::Labels::empty().with("type", "session"),
+            crate::labels::Labels::of("session", "hdr_test"),
             root_props,
         );
         let phase = Arc::new(RwLock::new(crate::component::Component::new(
-            crate::labels::Labels::empty().with("type", "phase"),
+            crate::labels::Labels::of("phase", "p"),
             std::collections::HashMap::new(),
         )));
         crate::component::attach(&root, &phase);

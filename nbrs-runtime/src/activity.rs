@@ -1961,9 +1961,10 @@ impl Activity {
                     // multi-line "staggering" pattern, and the
                     // sink-managed surface is the documented
                     // architectural fix.
-                    if let Some(obs) = crate::observer::global_observer() {
-                        obs.set_status_line(Some(rendered));
-                    }
+                    // SRD-87 §5: submit the live status line to the channel's
+                    // status bucket (forwards to the display today; folds into
+                    // the channel impl later) rather than the observer directly.
+                    crate::output_channel::status(Some(rendered));
                     let _ = cursor_name; // retained for log-file detail; status line stays compact
                 }
             });
@@ -2364,13 +2365,11 @@ impl Activity {
             // sequences.
             let inline_was_rendering = is_stderr_tty && !suppress_progress;
             if inline_was_rendering {
-                // Clear the status slot on the actor; the sink
-                // wipes its bottom region on the next tick. No
-                // direct terminal writes from the activity
-                // layer — the sink owns the surface.
-                if let Some(obs) = crate::observer::global_observer() {
-                    obs.set_status_line(None);
-                }
+                // Clear the status slot via the channel's status bucket; the
+                // sink wipes its bottom region on the next tick. No direct
+                // terminal writes from the activity layer — the sink owns the
+                // surface. (SRD-87 §5.)
+                crate::output_channel::status(None);
             }
             // Render the ✓ DONE line via the readout engine.
             // SRD-63 / Push 1: the previous inline `format!()`

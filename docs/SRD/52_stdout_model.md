@@ -17,19 +17,28 @@ pub struct StdoutConfig {
     pub newline: bool,
     pub format: StdoutFormat,
     pub fields_filter: Vec<String>,  // empty = all fields
+    pub separator: String,      // for `raw` format (custom `separator=`)
+    pub header: bool,           // emit a header row (csv/tsv)
+    pub color: bool,            // colorize output
 }
 ```
 
 ### Formats
 
+As built in `adapters/stdout/src/lib.rs`, there are 7 formats:
+
 | Format | Output |
 |--------|--------|
-| `Assignments` | `field1=value1, field2=value2` |
-| `Json` | `{"field1":"value1","field2":"value2"}` |
-| `Csv` | `value1,value2,value3` |
-| `Statement` | All fields, newline-separated |
+| `stmt` | The `stmt` field (Statement). **DEFAULT for `nbrs run`.** |
+| `readout` | Aligned `name = value`, one per line |
+| `assignments` | Compact `name=value` on one line |
+| `json` | Typed values; `jsonl` is an alias |
+| `csv` | Comma-separated values |
+| `tsv` | Tab-separated values |
+| `raw` | Values only, joined by the custom `separator=` |
 
-Select via `format=json` on CLI or in workload params.
+`stmt` is the default. Select another via `format=json` on CLI or in
+workload params.
 
 ### Field Rendering
 
@@ -57,6 +66,26 @@ treats it as a filesystem path and:
 
 Bare filenames in the cwd skip the directory step (they have no
 parent component).
+
+### Channel routing (per-op `stdout:`)
+
+Per [SRD-40b §9](40b_synthetic_metrics_from_polydat.md), an op selects
+where its rendered output is routed with a `stdout:` channel keyword:
+
+- `stdout: terminal` — **default.** The rendered op is written to the
+  console (or the configured file).
+- `stdout: eventlog` — route through the event log (`diag!` Info),
+  suppressing terminal/file output.
+- `stdout: silent` — drop the output. The op still executes and any
+  synthetic metrics still record.
+
+### Output transport
+
+Where the rendered op-output line actually GOES on the terminal is
+owned by **[SRD-87](87_output_channel.md)** (the op-output bucket of
+the single `OutputChannel`), not raw stdout. The stdout adapter is the
+canonical op-output *producer*; routing its output through the channel
+is what fixes the "stdout prints nothing on an interactive TTY" defect.
 
 ---
 

@@ -6,9 +6,9 @@
 //! their order: enumerate the Cartesian product but loop the most
 //! *expensive*-to-change axis outermost (so it changes least often) and
 //! the cheapest innermost, minimizing cumulative changeover cost. Reports
-//! the best point found — the cost-aware realization of the `null` sweep.
+//! the best point found — the cost-aware realization of the identity `sweep`.
 
-use crate::algos::null::axis_value_lists;
+use crate::algos::sweep::axis_value_lists;
 use crate::optimizer::{Budget, Eval, Objective, Optimizer, Report, StopReason};
 use crate::space::SearchSpace;
 

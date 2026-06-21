@@ -749,5 +749,5 @@ have the continuous variants. Reference: polydat spec §3.1
   expansions reuse.
 - `polydat/docs/design/comprehension_forms.md`: the
   migration plan that built the polydat `Comprehension` model.
-- `examples/workloads/for_each_forms.yaml`: every shipped form
-  with side-by-side YAML + Polydat text + iteration shape.
+- `examples/workloads/iteration/comprehension_coverage.yaml`: every
+  shipped form, one scenario per form, asserted by `nbrs/tests/comprehension.rs`.

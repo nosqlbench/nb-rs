@@ -18,11 +18,11 @@ with the op-template scope layer. It specifies:
 
 - That an op template *is* a Polydat scope, distinct from its enclosing
   phase scope.
-- **Scope flattening** — the optimisation by which the compiler
+- **Scope elision** — the optimisation by which the compiler
   detects that an op-template scope is materially equivalent to
-  its parent and **flattens** the layer away, so descendants bind
+  its parent and **elides** the layer away, so descendants bind
   directly to the parent without an intervening kernel.
-- How the flattening decision propagates through scope-tree
+- How the elision decision propagates through scope-tree
   pre-walk so the runtime never instantiates an unnecessary
   kernel, and how it's proven correct via a dedicated test
   suite (§4 below).
@@ -121,22 +121,25 @@ adapter execution cost.
 
 ---
 
-## 3. Scope flattening
+## 3. Scope elision
 
 Compiling a per-template kernel for every op is wasteful when the
 template adds nothing to its parent's Polydat content. The compiler
-detects this case and **flattens** the per-template scope into
-its parent — descendants `bind_outer_scope` directly to the
-phase kernel, the op-template kernel layer simply doesn't exist
-at runtime.
+detects this case and **elides** the per-template scope's kernel —
+descendants `bind_outer_scope` directly to the phase kernel, the
+op-template kernel layer simply doesn't exist at runtime.
 
-"Flattening" rather than "eliding" or "skipping" because the
-operation is structural: two adjacent scope tiers collapse into
-one when their content is materially identical. It's a property
-of the scope tree, computed once at workload load, applied
-uniformly thereafter.
+"Elision" (the kernel is **omitted**), **not** structural collapse:
+the scope-tree node itself stays — it keeps its place in the tree
+for labels, the scene tree, and diagnostics (`dryrun=phase`, the
+elision summary). What's elided is purely the *Polydat kernel* that
+the tier would otherwise materialise; resolution passes *through*
+the elided tier to the nearest materialised ancestor. It pairs with
+**materialised**: a tier either materialises a kernel or is elided.
+The decision is a property of the scope tree, computed once at
+workload load, applied uniformly thereafter.
 
-The flattening decision proceeds in two stages: the **trait
+The elision decision proceeds in two stages: the **trait
 classification** (§3.1) is the cheap, declarative path that
 answers most cases; the **program-hash check** (§3.2) is the
 refinement that catches definitions which happen to be identical
@@ -177,7 +180,7 @@ pub enum GkMatter {
     /// Declares new bindings, wire expressions, or constants
     /// that the parent doesn't supply. Walker materialises a
     /// kernel for this node — possibly subject to hash-check
-    /// flattening (§3.2) if the new content turns out to be
+    /// elision (§3.2) if the new content turns out to be
     /// equivalent to the parent's.
     Definitions,
 }
@@ -216,7 +219,7 @@ reserved for nodes that genuinely declare new Polydat content.
 ### 3.2 The hash check (refinement for `Definitions` nodes)
 
 When a node classifies as `Definitions`, it might still be
-flattenable if its content happens to be identical to the
+elidable if its content happens to be identical to the
 parent's. The hash check answers that question without forcing
 materialisation.
 
@@ -239,7 +242,7 @@ impl GkProgram {
     /// Hash-compare a program against its potential parent.
     /// True when the inner program adds no bindings, no
     /// constants, and no graph nodes the parent doesn't already
-    /// supply. This is the "can flatten?" predicate for nodes
+    /// supply. This is the "can elide?" predicate for nodes
     /// that classified as `GkMatter::Definitions`.
     pub fn is_subset_of(&self, parent: &GkProgram) -> bool;
 }
@@ -254,13 +257,13 @@ The scope-tree pre-walk visits every node bottom-up. At each
 node:
 
 1. Ask `node.polydat_matter()`.
-2. **If `None` or `Readonly`** — mark as **flattened**. No
+2. **If `None` or `Readonly`** — mark as **elided**. No
    kernel will be compiled for this scope. Done; no further
    work.
 3. **If `Definitions`** — compile the candidate kernel program
    (validation pass, §2.1).
    1. Check `op_program.is_subset_of(parent_program)`.
-   2. If yes, mark as **flattened** (rare — the node's
+   2. If yes, mark as **elided** (rare — the node's
       definitions duplicated the parent's; usually a refactor
       tell, but not an error).
    3. If no, mark as **materialised**. The dispenser owns its
@@ -277,27 +280,27 @@ real Polydat content compile a candidate program.
 
 The mechanism generalises beyond op templates: any scope-tree
 node whose `polydat_matter()` is `None`/`Readonly` (or whose
-`Definitions` content collapses by hash) can be flattened by the
+`Definitions` content collapses by hash) can be elided by the
 same pre-walk. SRD-40b's op-template surface is the first
 concrete consumer; future for_each / do-loop optimisations may
 piggyback on the same mechanism.
 
 ### 3.4 Determinism
 
-The flattening decision is **deterministic over the workload
-AST**. A workload that compiles with op X flattened will compile
+The elision decision is **deterministic over the workload
+AST**. A workload that compiles with op X elided will compile
 that way on every run; adding a single binding to op X may flip
 its `polydat_matter()` from `Readonly` to `Definitions` (and the bit
 to materialised), but the result is stable for any fixed
 workload text. Diagnostics (`dryrun=op` with verbose) print the
-per-node `polydat_matter()` value and the resulting flatten/
+per-node `polydat_matter()` value and the resulting elide/
 materialise mark.
 
 ---
 
 ## 4. Realisation lifecycle phases
 
-Scope flattening, the canonical-kernel cache, and the
+Scope elision, the canonical-kernel cache, and the
 materialise-or-reuse decision all depend on a staged
 compilation pipeline. This section names the stages
 explicitly so each subsystem (parser, Polydat compiler, scope-tree
@@ -305,7 +308,7 @@ walker, premap, runtime) has a clear input/output contract
 with the next.
 
 The principle: **don't instance a kernel until you've ruled
-out every cheaper alternative** (cached reuse, scope flatten,
+out every cheaper alternative** (cached reuse, scope elide,
 trait classification). Each stage filters; only nodes that
 survive all filters reach the materialisation step.
 
@@ -382,7 +385,7 @@ program, not 50.
 ### 4.5 Stage E — Hash check (subset / equivalence)
 
 **Input:** `PolydatProgram` + parent `PolydatProgram`.
-**Output:** "flatten" / "materialise" decision.
+**Output:** "elide" / "materialise" decision.
 **Cost:** Hash compare (cheap) plus, if hashes differ, an
 optional `is_subset_of` walk (still cheap — it's a structural
 comparison, not state instancing).
@@ -391,7 +394,7 @@ comparison, not state instancing).
 are persistent for the workload-load lifetime.
 
 When the program is a subset of its parent (the §3.2
-predicate), the scope flattens: no kernel will be instanced
+predicate), the scope elides: no kernel will be instanced
 for this node. The decision is recorded on the scope-tree
 node (§3.3 mark) and frozen for the workload load.
 
@@ -413,7 +416,7 @@ parent-bound values match a prior iteration share the kernel.
 
 This is where actual kernel objects come into existence. By
 the time we reach this stage, the trait check, compile-cache
-hit, and hash flatten check have all said "yes, you really
+hit, and hash elide check have all said "yes, you really
 do need a new instance here."
 
 ### 4.7 Stage G — Per-cycle execution
@@ -433,12 +436,12 @@ own per-fiber state.
        |
    Stage B: AST + params → resolvable AST
        |
-   Stage C: polydat_matter()? ──┬── None / Readonly → flatten, done
+   Stage C: polydat_matter()? ──┬── None / Readonly → elide, done
        |                   └── Definitions
        v
    Stage D: compile → GkProgram   [cached by (ast_hash, parent_ast_hash)]
        |
-   Stage E: is_subset_of(parent)? ──┬── yes → flatten, done
+   Stage E: is_subset_of(parent)? ──┬── yes → elide, done
        |                            └── no
        v
    Stage F: instance               [cached by (program_hash, parent_instance_hash)]
@@ -449,7 +452,7 @@ own per-fiber state.
 Two cache layers (compile cache, instance cache) and three
 short-circuits (`None`, `Readonly`, hash subset). The
 per-cycle layer never sees these decisions — by the time
-execution starts, every flatten/materialise call has been
+execution starts, every elide/materialise call has been
 made and recorded.
 
 ### 4.9 Diagnostic surface
@@ -460,7 +463,7 @@ and prints, per node:
 - The `polydat_matter()` classification.
 - The compile-cache hit/miss and the program_hash.
 - The hash-check decision (when applicable).
-- The materialise-or-flatten mark.
+- The materialise-or-elide mark.
 - The instance-cache hit/miss at premap.
 
 This makes the staged pipeline auditable per op without
@@ -471,11 +474,11 @@ diagnostic stream.
 
 ## 5. Walking parent-kernel reference and logical kernel names
 
-When a scope is flattened, descendants that need a parent
+When a scope is elided, descendants that need a parent
 kernel (for `bind_outer_scope`, for hash-keyed cache lookups,
 for diagnostics) can't just point at "my immediate parent" —
 the immediate parent didn't materialise. They need a reference
-that walks past flattened tiers to the **last materialised
+that walks past elided tiers to the **last materialised
 ancestor**. The Polydat subcontextual API exposes this directly so
 no caller has to walk the scope tree by hand.
 
@@ -487,9 +490,9 @@ A new accessor on the scope-tree node:
 impl ScopeNode {
     /// The nearest ancestor (or self) whose `materialised` mark
     /// is true. For materialised nodes, returns self. For
-    /// flattened nodes, walks parent links until a materialised
+    /// elided nodes, walks parent links until a materialised
     /// node is reached. Workload-root is always materialised
-    /// (it's the workload-params kernel — never flattened) so
+    /// (it's the workload-params kernel — never elided) so
     /// this terminates.
     pub fn nearest_materialised(&self) -> &ScopeNode;
 }
@@ -497,23 +500,23 @@ impl ScopeNode {
 
 Every consumer of "give me the parent kernel for binding /
 caching / diagnostics" routes through this accessor. It's the
-single point that knows about flattening; nothing else does.
+single point that knows about elision; nothing else does.
 
 ### 5.2 What this fixes
 
 - **Cache invariants.** The canonical-kernel cache key
   `(program_hash, parent_instance_hash)` (SRD-13c §"Per-Scope
   Canonical Kernel Cache") now uses the *materialised* parent's
-  instance hash, not the flattened immediate parent's
+  instance hash, not the elided immediate parent's
   (which has no instance). Cache lookups stay coherent under
-  flattening — no special case at every call site.
+  elision — no special case at every call site.
 - **Bind-outer-scope.** Materialising a kernel calls
   `bind_outer_scope(node.nearest_materialised().kernel())`
-  uniformly. Whether the immediate parent flattened or not is
+  uniformly. Whether the immediate parent elided or not is
   invisible to the call site.
 - **Diagnostics.** When `dryrun=op` reports an op as
   materialised, it can name the *actual* outer scope it bound
-  to — not "phase X" if the phase flattened, but "workload" or
+  to — not "phase X" if the phase elided, but "workload" or
   whatever the closest materialised ancestor is. Walking is
   cheap and produces a structurally honest diagnostic.
 
@@ -531,30 +534,30 @@ construction. Names follow a stable convention:
 | `for_each` / `do` scope        | `phase.<phase_name>.for_each.<var>` etc.     |
 | Op template                    | `phase.<phase_name>.op.<op_name>`             |
 
-Flattened scopes don't get their own name in the runtime — they
+Elided scopes don't get their own name in the runtime — they
 *inherit* the nearest-materialised ancestor's name in
 diagnostics, since they don't exist as kernels. `dryrun=op`
 output reads:
 
 ```
-op pvs_query.predict   polydat_matter=Definitions  flatten=false
+op pvs_query.predict   polydat_matter=Definitions  elide=false
    logical_name=phase.pvs_query.op.predict
    binds_outer=phase.pvs_query
    program_hash=…  cache=miss
    instance=new
 
-op pvs_query.bare      polydat_matter=None         flatten=true
+op pvs_query.bare      polydat_matter=None         elide=true
    logical_name=phase.pvs_query        ← inherited; no own kernel
 ```
 
 Logical names are also the right surface for `nbrs describe
 polydat` (resolves Q2 in §7) — when the user inspects the workload's
 GK structure, every kernel has a stable, human-readable name
-independent of compile-cache hits or flattening decisions.
+independent of compile-cache hits or elision decisions.
 
 ### 5.4 Pre-walk integration
 
-The pre-walk (§3.3) sets the materialise/flatten mark and the
+The pre-walk (§3.3) sets the materialise/elide mark and the
 logical name on every scope-tree node. By the time premap or
 runtime walks the tree, both are queryable in O(1). The
 walking reference (§5.1) is a thin accessor over those marks.
@@ -563,22 +566,22 @@ walking reference (§5.1) is a thin accessor over those marks.
 
 ## 6. Proving-out test suite
 
-Scope flattening is an optimisation that changes runtime
+Scope elision is an optimisation that changes runtime
 structure (kernel instance count, parent-binding chains) without
 changing observable behaviour. That delta has to be tested
-explicitly — without proofs, "flattened == materialised in every
+explicitly — without proofs, "elided == materialised in every
 observable way" is a hope, not an invariant.
 
-The test suite lives in `polydat/tests/scope_flattening.rs`
-and / or `nbrs-runtime/tests/scope_flattening.rs` and proves:
+The test suite lives in `polydat/tests/scope_elision.rs`
+and / or `nbrs-runtime/tests/scope_elision.rs` and proves:
 
-### 6.1 Equivalence under flattening
+### 6.1 Equivalence under elision
 
 For each fixture workload, run twice:
 
 1. **Baseline:** force-materialise every op-template scope
-   (flatten disabled; one kernel per op).
-2. **Flattened:** standard pre-walk (flatten where eligible).
+   (elide disabled; one kernel per op).
+2. **Elided:** standard pre-walk (elide where eligible).
 
 Assert that for both runs:
 
@@ -589,26 +592,26 @@ Assert that for both runs:
 - Side-effect logs (op execution order, throttle delays,
   emit-dispenser output) are identical.
 
-If the two runs disagree on any of these, flattening has
+If the two runs disagree on any of these, elision has
 introduced a semantic delta — fail the test loudly with the
 first divergence.
 
-### 6.2 Flatten-eligibility cases (positive)
+### 6.2 Elide-eligibility cases (positive)
 
-Workloads where flattening must succeed (and be observable in
+Workloads where elision must succeed (and be observable in
 diagnostics):
 
 - Op template with no `bindings:`, no `metrics:`, no inline
   `{{...}}`. (The trivial case.)
 - Op template whose only `metrics:` declarations use bare-name
   `value:` references that resolve to phase bindings. (No new
-  Polydat content; flatten safe.)
+  Polydat content; elide safe.)
 - Op template whose `bindings:` block is byte-identical to the
   phase's `bindings:` block. (Exact program-hash equality.)
 
 ### 6.3 Materialise-required cases (negative)
 
-Workloads where flattening must NOT happen:
+Workloads where elision must NOT happen:
 
 - Op template with a non-empty `bindings:` declaring new names.
 - Op template with a `metrics:` wire-expression list entry
@@ -616,7 +619,7 @@ Workloads where flattening must NOT happen:
 - Op template with an inline `{{<expr>}}` rewrite.
 
 For each, assert that `dryrun=op` reports the op as
-materialised, not flattened. A flattened op here would be a
+materialised, not elided. A elided op here would be a
 correctness bug.
 
 ### 6.4 Hash-API contract tests
@@ -636,12 +639,12 @@ Direct unit tests on `GkProgram::is_equivalent_to` and
 ### 6.5 Performance smoke test
 
 Compare the canonical-kernel cache hit rate and total compile
-time between baseline and flattened modes for a workload with
+time between baseline and elided modes for a workload with
 many trivial op templates (e.g. 50+ ops with no Polydat matter). Flat
 mode should reduce kernel instances by approximately the
 trivial-op count and reduce compile time proportionally. Not
 strict thresholds; the test is a regression guard against future
-changes that accidentally disable flattening.
+changes that accidentally disable elision.
 
 ---
 
@@ -679,23 +682,23 @@ else flows from SRD-13c.
    when first needed. §6.4's hash-API contract tests pin the
    refusal at the API level.
 
-2. **`nbrs describe polydat` flatten/materialise display.** Yes —
+2. **`nbrs describe polydat` elide/materialise display.** Yes —
    the diagnostic surface in `nbrs describe polydat` (when details
    are turned on) shows, for every scope-tree node:
-   - The materialise/flatten bit.
+   - The materialise/elide bit.
    - The logical kernel name (§5.3).
-   - The walking-parent reference (§5.1) when flattened.
+   - The walking-parent reference (§5.1) when elided.
 
    Implementation lands alongside the `dryrun=op` diagnostics
    work (§9 phase 5).
 
-3. **Cache invariants under flattening.** Resolved by §5.1's
+3. **Cache invariants under elision.** Resolved by §5.1's
    walking parent-kernel reference. The canonical-kernel cache
    key uses the *materialised* parent's instance hash (via
-   `nearest_materialised()`), not the flattened immediate
+   `nearest_materialised()`), not the elided immediate
    parent's. No special-case logic at any call site; the
    walking accessor encapsulates the rule. §6.1's equivalence-
-   under-flattening test still guards against regressions.
+   under-elision test still guards against regressions.
 
 ### 8.2 Decided defaults
 
@@ -709,14 +712,14 @@ SRD freezes them as decisions, not pending.
    identifier ordering. Two programs whose source differs
    only in formatting hash to **different** values and produce
    different scope-tree marks. The decision optimises for
-   compiler simplicity and predictability over flattening
+   compiler simplicity and predictability over elision
    coverage; the cost is that a hand-edited workload that
    reformats one op without changing semantics may flip its
-   flatten/materialise mark.
+   elide/materialise mark.
 
    **Revisit only if** benchmarking shows a workload-class
    where reformatting churn dominates compile cost; current
-   flattening already short-circuits the trivial case via the
+   elision already short-circuits the trivial case via the
    `HasGkMatter::None`/`Readonly` trait check (§3.1), so the
    verbatim hash mostly matters for the `Definitions` minority
    path.
@@ -748,7 +751,7 @@ SRD freezes them as decisions, not pending.
 | 5     | `nearest_materialised()` walking accessor (§5.1)                              | `nbrs-runtime/src/scope_tree.rs`          |
 | 6     | Premap descends to op level when `materialised`                               | `nbrs-runtime/src/scope_tree.rs`          |
 | 7     | `dryrun=op` depth + per-stage diagnostics (§4.9, §5.3)                        | `nbrs-runtime/src/runner.rs`              |
-| 8     | `nbrs describe polydat` flatten/materialise/logical-name display                   | `nbrs/src/describe.rs`                     |
+| 8     | `nbrs describe polydat` elide/materialise/logical-name display                   | `nbrs/src/describe.rs`                     |
 | 9     | Op-dispenser holds (or doesn't hold) its own kernel handle                    | `nbrs-runtime/src/activity.rs`            |
 
 Phases 1–2 are independently testable in isolation. Phases 3–5

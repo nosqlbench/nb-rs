@@ -1,17 +1,17 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! `null` — the identity optimizer (SRD-86 A1). Enumerates the full
+//! `sweep` — the identity optimizer (SRD-86 A1). Enumerates the full
 //! Cartesian product of the discrete axes (and the `{lo, hi}` corners of
 //! continuous axes) in lex order and evaluates each. This is the default
 //! seam behaviour: installing the optimizer seam is a no-op until a
-//! non-null method is named.
+//! non-`sweep` method is named.
 
 use crate::optimizer::{Budget, Eval, Objective, Optimizer, Report, StopReason};
 use crate::space::{AxisKind, SearchSpace};
 
 #[derive(Clone)]
-pub struct Null;
+pub struct Sweep;
 
 /// Per-axis enumeration value lists: discrete → detents; continuous →
 /// the two box corners `{lo, hi}`.
@@ -26,9 +26,9 @@ pub(crate) fn axis_value_lists(space: &SearchSpace) -> Vec<Vec<f64>> {
         .collect()
 }
 
-impl Optimizer for Null {
+impl Optimizer for Sweep {
     fn name(&self) -> &str {
-        "null"
+        "sweep"
     }
 
     fn optimize(&mut self, space: &SearchSpace, obj: &mut dyn Objective, budget: &Budget) -> Report {

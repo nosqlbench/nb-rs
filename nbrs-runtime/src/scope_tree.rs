@@ -45,13 +45,20 @@ pub type ScopeNodeIdx = usize;
 /// traversal".
 #[derive(Debug, Clone)]
 pub enum ScopeKind {
-    /// The workload root. Always the single tree root. Owns the
-    /// outer Polydat Kernel that's currently compiled in
-    /// `runner::run_with_observer` once at session start.
+    /// The session root — **one per process** (SRD-88). The shared
+    /// common root every execution derives from: it owns the session
+    /// polydat scope (the process/session-level args) and the
+    /// `session=<id>` identity. Each [`ScopeKind::Workload`] hangs
+    /// under it as one execution. For a single-execution run there is
+    /// exactly one workload child.
+    Session,
+    /// A workload root — **one per execution** (SRD-88). Owns the
+    /// outer Polydat Kernel for its workload, compiled at execution
+    /// start, binding the session scope as its outer.
     Workload,
     /// A named scenario. Wraps the scenario's children so that
     /// "phase P in scenario default" survives as a path query
-    /// rather than a flattened label.
+    /// rather than a elided label.
     Scenario { name: String },
     /// Iteration scope — `for_each` (single or multi-clause) or
     /// `for_each_union`. The `Comprehension` AST captures the
@@ -84,9 +91,9 @@ pub enum ScopeKind {
     /// SRD-13d Phase 6 — an op template's scope, child of its
     /// declaring phase. Per-template Polydat content (`bindings:`,
     /// `metrics:` wire-injections, inline `{{<expr>}}` rewrites)
-    /// hangs off this node; the scope-flattening pre-walk
+    /// hangs off this node; the scope-elision pre-walk
     /// (§3.3) decides whether it materialises its own kernel
-    /// or flattens into the parent phase. Op-template scopes
+    /// or elides into the parent phase. Op-template scopes
     /// also own per-op `Component` instances at runtime so
     /// SRD-40b's duplicate-family check (via
     /// `Component::register_instrument`) surfaces per-op
@@ -112,12 +119,13 @@ impl ScopeKind {
     /// iteration of a parent — that decision lives in the
     /// compiler step, not this static descriptor.
     pub fn opens_kernel(&self) -> bool {
-        !matches!(self, ScopeKind::Workload)
+        !matches!(self, ScopeKind::Workload | ScopeKind::Session)
     }
 
     /// Short label for diagnostic output (`dryrun=phase`, TUI).
     pub fn label(&self) -> String {
         match self {
+            ScopeKind::Session => "session".into(),
             ScopeKind::Workload => "workload".into(),
             ScopeKind::Scenario { name } => format!("scenario '{name}'"),
             ScopeKind::Comprehension { comprehension } => {
@@ -264,13 +272,13 @@ pub struct ScopeNode {
     /// [`ScopeTree::lookup_name`] and never touch this slot
     /// directly.
     pub cached_kernel: std::sync::OnceLock<std::sync::Arc<polydat::kernel::PolydatKernel>>,
-    /// SRD-13d §3 scope-flattening mark — set once at
-    /// pre-walk by [`ScopeTree::mark_scope_flattening`] and
+    /// SRD-13d §3 scope-elision mark — set once at
+    /// pre-walk by [`ScopeTree::mark_scope_elision`] and
     /// read by every consumer (premap, runtime, diagnostics).
     /// `None` means "not yet computed"; the pre-walk
     /// guarantees every node has `Some` after it finishes.
     /// `true` ⇒ this scope materialises its own kernel;
-    /// `false` ⇒ flattened into the nearest materialised
+    /// `false` ⇒ elided into the nearest materialised
     /// ancestor.
     pub materialised: Option<bool>,
     /// SRD-13d §5.3 logical kernel name. Stable, fully-
@@ -326,9 +334,10 @@ impl ScopeTree {
             root: 0,
         };
 
-        // Root: the implicit workload. Always at index 0.
+        // Root: the session — one per process (SRD-88), the shared
+        // common root. Always at index 0.
         tree.nodes.push(ScopeNode {
-            kind: ScopeKind::Workload,
+            kind: ScopeKind::Session,
             parent: None,
             children: Vec::new(),
             depth: 0,
@@ -338,11 +347,10 @@ impl ScopeTree {
             logical_name: String::new(),
         });
 
-        // Scenario layer wraps the user's children. This is the
-        // "lost grouping" the user called out — a real scope
-        // ancestor named after the scenario.
-        let scenario_idx = tree.add_node(ScopeNode {
-            kind: ScopeKind::Scenario { name: scenario_name.into() },
+        // The workload root — one per execution (SRD-88), under the
+        // session. Owns the outer workload Polydat Kernel.
+        let workload_idx = tree.add_node(ScopeNode {
+            kind: ScopeKind::Workload,
             parent: Some(0),
             children: Vec::new(),
             depth: 1,
@@ -351,7 +359,22 @@ impl ScopeTree {
             materialised: None,
             logical_name: String::new(),
         });
-        tree.nodes[0].children.push(scenario_idx);
+        tree.nodes[0].children.push(workload_idx);
+
+        // Scenario layer wraps the user's children. This is the
+        // "lost grouping" the user called out — a real scope
+        // ancestor named after the scenario.
+        let scenario_idx = tree.add_node(ScopeNode {
+            kind: ScopeKind::Scenario { name: scenario_name.into() },
+            parent: Some(workload_idx),
+            children: Vec::new(),
+            depth: 2,
+            pragmas: PragmaSet::default(),
+            cached_kernel: std::sync::OnceLock::new(),
+            materialised: None,
+            logical_name: String::new(),
+        });
+        tree.nodes[workload_idx].children.push(scenario_idx);
 
         // Walk the user's children recursively under the scenario.
         for child in nodes {
@@ -361,6 +384,14 @@ impl ScopeTree {
         tree
     }
 
+    /// The workload-root node — the single child of the session root
+    /// (node 0). One per execution; owns the outer workload kernel.
+    /// Falls back to the root if (degenerately) there is no workload
+    /// layer.
+    pub fn workload_root_idx(&self) -> ScopeNodeIdx {
+        self.nodes[0].children.first().copied().unwrap_or(0)
+    }
+
     /// The scenario-layer node — the single child of the workload root
     /// (node 0). The walker seeds its scope cursor here so the top-level
     /// scenario nodes resolve **positionally** against this node's children
@@ -368,7 +399,9 @@ impl ScopeTree {
     /// [`Self::append_subtree`]). Falls back to the root if (degenerately)
     /// there is no scenario layer.
     pub fn scenario_root_idx(&self) -> ScopeNodeIdx {
-        self.nodes[0].children.first().copied().unwrap_or(0)
+        // Session(0) → Workload → Scenario. Walk two layers down.
+        let workload = self.workload_root_idx();
+        self.nodes[workload].children.first().copied().unwrap_or(workload)
     }
 
     /// Append the subtree rooted at `node` as a child of `parent_idx`.
@@ -501,8 +534,8 @@ impl ScopeTree {
     /// Idempotent: a phase whose `OpTemplate` children are
     /// already present is left alone (the post-build pre-walk
     /// can run before or after this without double-adding).
-    /// Run before `mark_scope_flattening` so the per-op
-    /// classification gets the chance to flatten / materialise
+    /// Run before `mark_scope_elision` so the per-op
+    /// classification gets the chance to elide / materialise
     /// each op-template tier.
     pub fn extend_with_op_templates(
         &mut self,
@@ -548,7 +581,7 @@ impl ScopeTree {
     }
 
     /// SRD-13d §3.3 — pre-walk every scope-tree node and mark
-    /// it `materialised` (own kernel) or flattened (descendants
+    /// it `materialised` (own kernel) or elided (descendants
     /// bind through parent). Also assigns the SRD-13d §5.3
     /// logical kernel name, which is the fully-qualified
     /// scope-tree path. Run once at workload-load; premap and
@@ -557,7 +590,7 @@ impl ScopeTree {
     /// `is_materialising` is the predicate the pre-walk
     /// applies per node — typically a closure that consults
     /// the AST node's `HasPolydatMatter` classification (None /
-    /// Readonly ⇒ flatten; Definitions ⇒ check program-hash
+    /// Readonly ⇒ elide; Definitions ⇒ check program-hash
     /// equivalence with the parent and decide). The walker is
     /// agnostic to the exact predicate; SRD-13d §3.3 fixes
     /// the order.
@@ -565,8 +598,8 @@ impl ScopeTree {
     /// The workload root is **always** materialised (see
     /// SRD-13d §5.1) so the walk terminates at a materialised
     /// ancestor regardless of how aggressively descendants
-    /// flatten.
-    pub fn mark_scope_flattening<F>(&mut self, mut is_materialising: F)
+    /// elide.
+    pub fn mark_scope_elision<F>(&mut self, mut is_materialising: F)
     where F: FnMut(&ScopeKind, ScopeNodeIdx) -> bool,
     {
         // Walk in DFS order; logical names depend on parent
@@ -574,14 +607,22 @@ impl ScopeTree {
         // guarantees (root → scenario → … → leaf).
         let order: Vec<ScopeNodeIdx> = self.iter_dfs().map(|(idx, _)| idx).collect();
         for idx in order {
-            // Root: always materialised, named "workload".
+            // Root: the session — always materialised, contributes NO
+            // logical-path segment (SRD-88; the workload child below
+            // owns the `workload` segment, keeping paths
+            // `workload.scenario.…`).
             if idx == self.root {
                 self.nodes[idx].materialised = Some(true);
-                self.nodes[idx].logical_name = "workload".to_string();
+                self.nodes[idx].logical_name = String::new();
                 continue;
             }
             let kind = self.nodes[idx].kind.clone();
-            let materialise = is_materialising(&kind, idx);
+            // The workload node always materialises — it owns the
+            // installed workload kernel (SRD-88: it's the per-execution
+            // root beneath the session, the old always-materialised
+            // root's role). Descendants elide INTO it as before.
+            let materialise = matches!(kind, ScopeKind::Workload)
+                || is_materialising(&kind, idx);
             self.nodes[idx].materialised = Some(materialise);
 
             // Logical name = parent's logical name + "."
@@ -592,6 +633,12 @@ impl ScopeTree {
                 .map(|p| self.nodes[p].logical_name.clone())
                 .unwrap_or_default();
             let segment = match &kind {
+                // SRD-88 — the session is the always-present implicit root;
+                // it contributes NO logical-path segment, so addressable
+                // paths stay `workload.scenario.…` (the workload/execution
+                // is what varies and addresses the path). The session tier
+                // is still visible structurally via `kind.label()`.
+                ScopeKind::Session => String::new(),
                 ScopeKind::Workload => "workload".to_string(),
                 ScopeKind::Scenario { name } => format!("scenario.{name}"),
                 ScopeKind::Phase { name } => format!("phase.{name}"),
@@ -635,17 +682,17 @@ impl ScopeTree {
         }
     }
 
-    /// SRD-13d §5.1 — walk past flattened scope tiers to the
+    /// SRD-13d §5.1 — walk past elided scope tiers to the
     /// nearest materialised ancestor (or self, when this
     /// node is itself materialised). Every consumer that
     /// needs a kernel handle (cache lookups, bind-outer-
     /// scope, diagnostics) routes through this — it's the
-    /// single point that knows about flattening; nothing
+    /// single point that knows about elision; nothing
     /// else does.
     ///
     /// The workload root is always materialised, so this
     /// always terminates with `Some(idx)`. Returns `None`
-    /// only if [`mark_scope_flattening`] hasn't been run.
+    /// only if [`mark_scope_elision`] hasn't been run.
     pub fn nearest_materialised(&self, idx: ScopeNodeIdx) -> Option<ScopeNodeIdx> {
         let mut cur = idx;
         loop {
@@ -1189,25 +1236,26 @@ mod tests {
     #[test]
     fn workload_and_scenario_always_present() {
         let tree = ScopeTree::build("default", &[]);
-        // Even with no children, root + scenario layer survive
-        // so observer code doesn't have to special-case empty
-        // scenarios.
-        assert_eq!(tree.nodes.len(), 2);
-        assert!(matches!(tree.nodes[0].kind, ScopeKind::Workload));
-        assert!(matches!(&tree.nodes[1].kind, ScopeKind::Scenario { name } if name == "default"));
+        // Even with no children, session + workload + scenario layers
+        // survive so observer code doesn't special-case empty scenarios.
+        assert_eq!(tree.nodes.len(), 3);
+        assert!(matches!(tree.nodes[0].kind, ScopeKind::Session));
+        assert!(matches!(tree.nodes[1].kind, ScopeKind::Workload));
+        assert!(matches!(&tree.nodes[2].kind, ScopeKind::Scenario { name } if name == "default"));
         assert_eq!(tree.nodes[1].depth, 1);
+        assert_eq!(tree.nodes[2].depth, 2);
     }
 
     #[test]
     fn flat_phases_under_scenario() {
         let tree = ScopeTree::build("default", &[phase("setup"), phase("run")]);
-        assert_eq!(tree.nodes.len(), 4);
-        let scenario = &tree.nodes[1];
+        assert_eq!(tree.nodes.len(), 5);
+        let scenario = &tree.nodes[2];
         assert_eq!(scenario.children.len(), 2);
         for &c in &scenario.children {
             assert!(matches!(tree.nodes[c].kind, ScopeKind::Phase { .. }));
-            assert_eq!(tree.nodes[c].depth, 2);
-            assert_eq!(tree.nodes[c].parent, Some(1));
+            assert_eq!(tree.nodes[c].depth, 3);
+            assert_eq!(tree.nodes[c].parent, Some(2));
         }
     }
 
@@ -1219,18 +1267,18 @@ mod tests {
                 for_each("y in ys", vec![phase("P")]),
             ]),
         ]);
-        // workload(0) → scenario(1) → for_each_x(2) → for_each_y(3) → phase_P(4)
-        assert_eq!(tree.nodes.len(), 5);
-        assert_eq!(tree.nodes[2].depth, 2);
+        // session(0) → workload(1) → scenario(2) → for_each_x(3) → for_each_y(4) → phase_P(5)
+        assert_eq!(tree.nodes.len(), 6);
         assert_eq!(tree.nodes[3].depth, 3);
         assert_eq!(tree.nodes[4].depth, 4);
+        assert_eq!(tree.nodes[5].depth, 5);
         assert!(matches!(
-            &tree.nodes[2].kind,
+            &tree.nodes[3].kind,
             ScopeKind::Comprehension { comprehension }
                 if comprehension.coordinate_names() == vec!["x"]
         ));
         assert!(matches!(
-            &tree.nodes[3].kind,
+            &tree.nodes[4].kind,
             ScopeKind::Comprehension { comprehension }
                 if comprehension.coordinate_names() == vec!["y"]
         ));
@@ -1247,7 +1295,8 @@ mod tests {
             .map(|(_, n)| n.kind.label())
             .collect();
         assert_eq!(names, vec![
-            "workload".to_string(),
+            "session".to_string(),
+            "workload".into(),
             "scenario 'default'".into(),
             "each x".into(),
             "phase 'a'".into(),
@@ -1270,6 +1319,7 @@ mod tests {
             "each x".into(),
             "scenario 'default'".into(),
             "workload".into(),
+            "session".into(),
         ]);
     }
 
@@ -1525,18 +1575,21 @@ mod tests {
             "limit typed u64 via recursive probe k=1 → k_1_limits → \"1, 2, 4, 8\"");
     }
 
-    // ── SRD-13d Phase 4 + 5: scope flattening marks ──
+    // ── SRD-13d Phase 4 + 5: scope elision marks ──
 
     #[test]
-    fn mark_scope_flattening_assigns_logical_names() {
+    fn mark_scope_elision_assigns_logical_names() {
         let mut tree = ScopeTree::build("default", &[phase("p")]);
         // All-materialise predicate so every node gets a name.
-        tree.mark_scope_flattening(|_kind, _idx| true);
-        // Root is "workload" by SRD-13d §5.3 convention.
-        assert_eq!(tree.nodes[0].logical_name, "workload");
+        tree.mark_scope_elision(|_kind, _idx| true);
+        // Session root contributes no path segment (SRD-88).
+        assert_eq!(tree.nodes[0].logical_name, "");
         assert_eq!(tree.nodes[0].materialised, Some(true));
+        // Workload child owns the "workload" segment.
+        let workload_idx = tree.nodes[0].children[0];
+        assert_eq!(tree.nodes[workload_idx].logical_name, "workload");
         // Scenario is named after its scenario tag.
-        let scenario_idx = tree.nodes[0].children[0];
+        let scenario_idx = tree.nodes[workload_idx].children[0];
         assert_eq!(tree.nodes[scenario_idx].logical_name,
             "workload.scenario.default");
         // Phase descends from scenario.
@@ -1546,37 +1599,40 @@ mod tests {
     }
 
     #[test]
-    fn mark_scope_flattening_records_predicate_decisions() {
+    fn mark_scope_elision_records_predicate_decisions() {
         let mut tree = ScopeTree::build("default", &[phase("p")]);
         // Predicate: only Phase scopes materialise.
-        tree.mark_scope_flattening(|kind, _idx| {
+        tree.mark_scope_elision(|kind, _idx| {
             matches!(kind, ScopeKind::Phase { .. })
         });
-        let scenario_idx = tree.nodes[0].children[0];
+        let workload_idx = tree.nodes[0].children[0];
+        let scenario_idx = tree.nodes[workload_idx].children[0];
         let phase_idx = tree.nodes[scenario_idx].children[0];
         assert_eq!(tree.nodes[scenario_idx].materialised, Some(false));
         assert_eq!(tree.nodes[phase_idx].materialised, Some(true));
     }
 
     #[test]
-    fn nearest_materialised_walks_past_flattened_layers() {
+    fn nearest_materialised_walks_past_elided_layers() {
         let mut tree = ScopeTree::build("default", &[phase("p")]);
-        // Predicate: only the workload root materialises.
-        tree.mark_scope_flattening(|kind, _idx| {
+        // Predicate: only the workload tier materialises.
+        tree.mark_scope_elision(|kind, _idx| {
             matches!(kind, ScopeKind::Workload)
         });
-        let scenario_idx = tree.nodes[0].children[0];
+        let workload_idx = tree.nodes[0].children[0];
+        let scenario_idx = tree.nodes[workload_idx].children[0];
         let phase_idx = tree.nodes[scenario_idx].children[0];
-        // Phase's nearest materialised ancestor is the root.
-        assert_eq!(tree.nearest_materialised(phase_idx), Some(0));
-        assert_eq!(tree.nearest_materialised(scenario_idx), Some(0));
+        // Phase's nearest materialised ancestor is the workload node.
+        assert_eq!(tree.nearest_materialised(phase_idx), Some(workload_idx));
+        assert_eq!(tree.nearest_materialised(scenario_idx), Some(workload_idx));
+        // The session root always self-materialises.
         assert_eq!(tree.nearest_materialised(0), Some(0));
     }
 
     #[test]
     fn nearest_materialised_returns_self_when_node_materialises() {
         let mut tree = ScopeTree::build("default", &[phase("p")]);
-        tree.mark_scope_flattening(|_kind, _idx| true);
+        tree.mark_scope_elision(|_kind, _idx| true);
         let phase_idx = tree.nodes[tree.nodes[0].children[0]].children[0];
         assert_eq!(tree.nearest_materialised(phase_idx), Some(phase_idx));
     }
@@ -1591,11 +1647,11 @@ mod tests {
 
     #[test]
     fn workload_root_always_materialises_regardless_of_predicate() {
-        // Even an "always flatten" predicate can't flatten the
+        // Even an "always elide" predicate can't elide the
         // root — SRD-13d §5.1 mandates the root is the
         // termination point of nearest_materialised walks.
         let mut tree = ScopeTree::build("default", &[phase("p")]);
-        tree.mark_scope_flattening(|_kind, _idx| false);
+        tree.mark_scope_elision(|_kind, _idx| false);
         assert_eq!(tree.nodes[0].materialised, Some(true));
     }
 
@@ -1621,7 +1677,8 @@ mod tests {
             optimize: None,
                     });
         tree.extend_with_op_templates(&phases);
-        let scenario_idx = tree.nodes[0].children[0];
+        let workload_idx = tree.nodes[0].children[0];
+        let scenario_idx = tree.nodes[workload_idx].children[0];
         let phase_idx = tree.nodes[scenario_idx].children[0];
         // Phase now has 2 op-template children.
         assert_eq!(tree.nodes[phase_idx].children.len(), 2);
@@ -1675,7 +1732,7 @@ mod tests {
             optimize: None,
                     });
         tree.extend_with_op_templates(&phases);
-        tree.mark_scope_flattening(|_kind, _idx| true);
+        tree.mark_scope_elision(|_kind, _idx| true);
         // Find the op node and check its logical name.
         let op_idx = tree.iter_dfs()
             .find(|(_, n)| matches!(&n.kind, ScopeKind::OpTemplate { name } if name == "foo"))
@@ -1752,14 +1809,15 @@ mod tests {
             ]),
         ]);
         // Tree layout (DFS):
-        //   0 workload
-        //   1 scenario
-        //   2 for_each(a)
-        //   3   for_each(x) #1
-        //   4     phase(P)
-        //   5 for_each(b)
-        //   6   for_each(x) #2
-        //   7     phase(P)
+        //   0 session
+        //   1 workload
+        //   2 scenario
+        //   3 for_each(a)
+        //   4   for_each(x) #1
+        //   5     phase(P)
+        //   6 for_each(b)
+        //   7   for_each(x) #2
+        //   8     phase(P)
         //
         // Build the x-comprehension AST that both inner scopes
         // share, then verify the path-aware lookup picks the
@@ -1772,22 +1830,22 @@ mod tests {
 
         // Sanity: the legacy global lookup picks #1 (first DFS
         // match) for both — this is the buggy behavior.
-        assert_eq!(tree.find_comprehension_scope(&x_comp), Some(3),
+        assert_eq!(tree.find_comprehension_scope(&x_comp), Some(4),
             "legacy lookup returns FIRST match — documented bug");
 
-        // The fix: searching under the A outer (idx 2) returns
-        // #1 (idx 3); searching under the B outer (idx 5)
-        // returns #2 (idx 6). The same x AST resolves to
+        // The fix: searching under the A outer (idx 3) returns
+        // #1 (idx 4); searching under the B outer (idx 6)
+        // returns #2 (idx 7). The same x AST resolves to
         // different scope idx based on the parent context.
-        assert_eq!(tree.find_comprehension_scope_under(2, &x_comp), Some(3),
-            "under A outer, x-comprehension is the descendant at idx 3");
-        assert_eq!(tree.find_comprehension_scope_under(5, &x_comp), Some(6),
-            "under B outer, x-comprehension is the descendant at idx 6");
+        assert_eq!(tree.find_comprehension_scope_under(3, &x_comp), Some(4),
+            "under A outer, x-comprehension is the descendant at idx 4");
+        assert_eq!(tree.find_comprehension_scope_under(6, &x_comp), Some(7),
+            "under B outer, x-comprehension is the descendant at idx 7");
 
         // Cross-search: looking for x under the OTHER side's
         // sub-tree should return None (the comprehension isn't
         // a descendant).
-        assert_eq!(tree.find_comprehension_scope_under(3, &x_comp), None,
+        assert_eq!(tree.find_comprehension_scope_under(4, &x_comp), None,
             "x-comp is not a descendant of itself");
     }
 
@@ -1809,20 +1867,21 @@ mod tests {
             for_each("b in [2]", vec![bindings_node()]),
         ]);
         // Layout:
-        //   0 workload
-        //   1 scenario
-        //   2 for_each(a)
-        //   3   bindings #1
-        //   4     phase(P)
-        //   5 for_each(b)
-        //   6   bindings #2
-        //   7     phase(P)
+        //   0 session
+        //   1 workload
+        //   2 scenario
+        //   3 for_each(a)
+        //   4   bindings #1
+        //   5     phase(P)
+        //   6 for_each(b)
+        //   7   bindings #2
+        //   8     phase(P)
 
         // Legacy: FIRST match (bug).
-        assert_eq!(tree.find_bindings_scope(&bindings_source), Some(3));
+        assert_eq!(tree.find_bindings_scope(&bindings_source), Some(4));
 
         // Fix: scoped lookup picks the right descendant.
-        assert_eq!(tree.find_bindings_scope_under(2, &bindings_source), Some(3));
-        assert_eq!(tree.find_bindings_scope_under(5, &bindings_source), Some(6));
+        assert_eq!(tree.find_bindings_scope_under(3, &bindings_source), Some(4));
+        assert_eq!(tree.find_bindings_scope_under(6, &bindings_source), Some(7));
     }
 }

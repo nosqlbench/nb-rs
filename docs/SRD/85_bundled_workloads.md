@@ -77,7 +77,7 @@ source location:
 | `examples/…` | `examples/workloads/` | **examples** — bundled, runnable, unlisted by default |
 
 `workload=cql/keyvalue` and
-`workload=examples/timeboxed_partition_sweep` run a bundled
+`workload=examples/cursors/timeboxed_partition_sweep` run a bundled
 workload by name. Bare curated names (`workload=keyvalue_smoke`)
 resolve at the top level of the catalog.
 
@@ -155,7 +155,7 @@ itself anywhere: every bundled example is standalone-runnable
 standalone" convention), so
 
 ```
-nbrs run workload=examples/lfsr
+nbrs run workload=examples/signals/lfsr
 ```
 
 works on a machine with nothing but the binary. CI and proof

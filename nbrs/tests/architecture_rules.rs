@@ -330,7 +330,7 @@ fn d5_public_surface() {
         (
             "nbrs-runtime",
             &[
-                "adapters", "params", "scope_flattening", "phase_filter",
+                "adapters", "params", "scope_elision", "phase_filter",
                 "phase_params", "scheduler", "profiler", "trace_router", "executor", "error_policy",
                 "stop_conditions", "workload_shell", "describe", "wrapper_registrations", "relevancy",
                 "fiber_pool", "daemon_pool", "readout_context",
@@ -381,6 +381,91 @@ fn d7_polydat_self_contained() {
         "D7: polydat must not reference the nbrs `docs/SRD/` layer (keep it extractable):\n  {}",
         hits.join("\n  ")
     );
+}
+
+/// SRD-87 A1 — **no fd bypass**. The op-output / raster / readout *producer*
+/// paths submit through `OutputChannel`; they must never write an fd
+/// directly. This gate asserts those specific paths contain zero raw
+/// terminal-write macros (`println!` / `eprintln!` / `print!` / `eprint!`),
+/// locking in SRD-87 pushes 1–3. A new raw write in a producer path fails
+/// here — route it through the right bucket
+/// (`output_channel::{op_output,raster,status,log_to_surface}` /
+/// `nbrs_runtime::diag!`) instead.
+///
+/// Scope is deliberately the *producers that race the live display*, NOT
+/// every `eprintln!` in the tree: the documented carve-outs — the channel
+/// itself (`output_channel.rs`, which owns the fds), bootstrap / session
+/// errors, the post-run summary (printed after the sink tears down), and CLI
+/// subcommands (`describe` / `metrics` / `report` / `replay` / `openapi`,
+/// one-shot tools) — are out of scope per SRD-87 §6/§11.
+#[test]
+fn a1_output_channel_no_fd_bypass() {
+    // Raw terminal-write macros. `write!`/`writeln!` are excluded: they target
+    // an explicit writer (a file `OutputTarget`, a `String` buffer), not an
+    // implicit fd. Bare `io::stdout()` is excluded too — the producers use it
+    // for TTY detection and for constructing the file-mode `BufWriter` target,
+    // neither of which is a console write.
+    const FORBIDDEN: &[&str] = &["println!", "eprintln!", "print!", "eprint!"];
+    let root = workspace_root();
+    // The producer paths (files + dirs) relative to the workspace root.
+    let producers: &[&str] = &[
+        "adapters/stdout/src/lib.rs",
+        "adapters/plotter/src/lib.rs",
+        "adapters/testkit/src/lib.rs",
+        "nbrs-runtime/src/readouts",
+    ];
+    let mut hits = Vec::new();
+    for rel in producers {
+        let path = root.join(rel);
+        if path.is_dir() {
+            scan_no_fd_writes_dir(&path, FORBIDDEN, &mut hits);
+        } else {
+            scan_no_fd_writes_file(&path, FORBIDDEN, &mut hits);
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "SRD-87 A1: op-output/raster/readout producers must not write an fd \
+         directly — route through the OutputChannel bucket instead:\n  {}",
+        hits.join("\n  ")
+    );
+}
+
+fn scan_no_fd_writes_dir(dir: &Path, needles: &[&str], hits: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            scan_no_fd_writes_dir(&p, needles, hits);
+        } else if p.extension().and_then(|s| s.to_str()) == Some("rs") {
+            scan_no_fd_writes_file(&p, needles, hits);
+        }
+    }
+}
+
+/// Scan one `.rs` file for `needles`, skipping comment text and the trailing
+/// `#[cfg(test)]` test module (tests legitimately print for assertions).
+fn scan_no_fd_writes_file(path: &Path, needles: &[&str], hits: &mut Vec<String>) {
+    let Ok(txt) = fs::read_to_string(path) else { return };
+    for (i, raw) in txt.lines().enumerate() {
+        // A test module (conventionally at the file tail) ends production
+        // code: stop scanning the file at its start.
+        let trimmed = raw.trim_start();
+        if trimmed.starts_with("#[cfg(test)]") || trimmed == "mod tests {" {
+            break;
+        }
+        // Strip line/doc comments so a macro name *mentioned* in a comment
+        // isn't a hit; only real code counts.
+        let code = match raw.find("//") {
+            Some(idx) => &raw[..idx],
+            None => raw,
+        };
+        for n in needles {
+            if code.contains(n) {
+                hits.push(format!("{}:{}: {}", path.display(), i + 1, raw.trim()));
+            }
+        }
+    }
 }
 
 /// Recursively scan `.md` / `.rs` files under `dir` for `needle`.

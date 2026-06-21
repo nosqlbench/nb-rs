@@ -6,8 +6,14 @@ failure, so it drops straight into CI — and it's the same verifier the bundled
 examples are tested with, so checking your own workload works exactly the way
 the project checks its examples.
 
+The target is resolved exactly the way `nbrs run` resolves `workload=…`: a
+file, a directory, or a **bundled catalog name** (`nbrs describe workloads` /
+`--all` lists them). So whatever tab-completion offers for `nbrs check <TAB>` —
+local files *and* catalog names — you can check.
+
 ```sh
 nbrs check workload=my_workload.yaml      # one file
+nbrs check examples/cursors/all_cursor/enumerate   # a bundled catalog name (runs by name)
 nbrs check examples/workloads/            # a whole directory (run concurrently)
 ```
 

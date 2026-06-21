@@ -742,9 +742,22 @@ fn count_walk(
 
 /// Attach a child component to a parent.
 ///
-/// Computes the child's effective labels by extending the parent's
+/// Computes the child's effective labels by composing the parent's
 /// effective labels with the child's own labels. Adds the child to
 /// the parent's children list and sets the child's parent reference.
+///
+/// **Label-ownership invariant.** A dimensional label name is owned
+/// by exactly one component in any ancestor chain: once a name is
+/// set on a component at initialization, no descendant may redeclare
+/// it — neither with a differing value (which would silently corrupt
+/// the dimensional cell) nor with the same value (which makes
+/// ownership ambiguous). The session tier owns `session`, the
+/// execution tier owns `{exec_id, workload}`, the phase tier owns
+/// `{phase, …for_each}`, and so on down — each component declares
+/// ONLY the labels it introduces. This check enforces that at
+/// attach time (init, not per-cycle): a collision is a construction
+/// bug and panics with both label sets named, rather than letting
+/// the composition silently pick a winner.
 pub fn attach(
     parent: &Arc<RwLock<Component>>,
     child: &Arc<RwLock<Component>>,
@@ -754,6 +767,15 @@ pub fn attach(
         p.effective_labels.clone()
     };
     let mut c = child.write().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, _)) = c.labels.iter().find(|(k, _)| parent_effective.get(k).is_some()) {
+        panic!(
+            "component label-ownership violation: child re-declares label `{k}` \
+             already owned by an ancestor. Each label name must be set on exactly \
+             one tier and inherited downward (child {}, ancestors {}).",
+            c.labels.to_prometheus(),
+            parent_effective.to_prometheus(),
+        );
+    }
     c.effective_labels = parent_effective.extend(&c.labels);
     c.parent = Some(Arc::downgrade(parent));
     drop(c);
@@ -1114,28 +1136,32 @@ mod tests {
 
     /// Fixture: a small session tree with two activity subtrees,
     /// each holding a handful of phases with distinct label shapes.
+    ///
+    /// Models the production label convention: each label is a
+    /// condensed `(semantic, instance)` pair, so the KEY is the
+    /// tier's kind (`session` / `activity` / `phase`) and the VALUE
+    /// is its instance. No tier redeclares a name an ancestor owns
+    /// (the label-ownership invariant `attach` enforces).
     fn sample_tree() -> Arc<RwLock<Component>> {
         let root = Component::root(
-            Labels::empty()
-                .with("type", "session")
-                .with("session", "test-session"),
+            Labels::empty().with("session", "test-session"),
             HashMap::new(),
         );
         // Activity A: rampup + two ann_query phases at different k.
         let activity_a = Arc::new(RwLock::new(Component::new(
-            Labels::empty().with("type", "activity").with("name", "a"),
+            Labels::empty().with("activity", "a"),
             HashMap::new(),
         )));
         attach(&root, &activity_a);
         let rampup = Arc::new(RwLock::new(Component::new(
-            Labels::empty().with("type", "phase").with("name", "rampup")
+            Labels::empty().with("phase", "rampup")
                 .with("profile", "label_00"),
             HashMap::new(),
         )));
         attach(&activity_a, &rampup);
         for k in ["10", "100"] {
             let aq = Arc::new(RwLock::new(Component::new(
-                Labels::empty().with("type", "phase").with("name", "ann_query")
+                Labels::empty().with("phase", "ann_query")
                     .with("profile", "label_00").with("k", k),
                 HashMap::new(),
             )));
@@ -1143,12 +1169,12 @@ mod tests {
         }
         // Activity B: one phase with a different profile shape.
         let activity_b = Arc::new(RwLock::new(Component::new(
-            Labels::empty().with("type", "activity").with("name", "b"),
+            Labels::empty().with("activity", "b"),
             HashMap::new(),
         )));
         attach(&root, &activity_b);
         let teardown = Arc::new(RwLock::new(Component::new(
-            Labels::empty().with("type", "phase").with("name", "teardown")
+            Labels::empty().with("phase", "teardown")
                 .with("profile", "label_99"),
             HashMap::new(),
         )));
@@ -1159,12 +1185,12 @@ mod tests {
     #[test]
     fn find_returns_every_match_in_preorder() {
         let root = sample_tree();
-        let sel = crate::selector::Selector::new().eq("type", "phase");
+        let sel = crate::selector::Selector::new().present("phase");
         let hits = find(&root, &sel);
         assert_eq!(hits.len(), 4);
         let names: Vec<String> = hits.iter()
             .filter_map(|c| c.read().ok().and_then(|g|
-                g.effective_labels().get("name").map(|s| s.to_string())
+                g.effective_labels().get("phase").map(|s| s.to_string())
             ))
             .collect();
         assert_eq!(
@@ -1185,13 +1211,12 @@ mod tests {
     fn find_with_glob_and_eq_conjunction() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new()
-            .eq("type", "phase")
-            .glob("name", "ann_*");
+            .glob("phase", "ann_*");
         let hits = find(&root, &sel);
         assert_eq!(hits.len(), 2);
         for h in &hits {
             let g = h.read().unwrap();
-            assert_eq!(g.effective_labels().get("name"), Some("ann_query"));
+            assert_eq!(g.effective_labels().get("phase"), Some("ann_query"));
         }
     }
 
@@ -1199,11 +1224,11 @@ mod tests {
     fn find_with_present_and_absent_clauses() {
         let root = sample_tree();
         let with_k = find(&root, &crate::selector::Selector::new()
-            .eq("type", "phase").present("k"));
+            .present("phase").present("k"));
         assert_eq!(with_k.len(), 2);
 
         let without_k = find(&root, &crate::selector::Selector::new()
-            .eq("type", "phase").absent("k"));
+            .present("phase").absent("k"));
         assert_eq!(without_k.len(), 2);
     }
 
@@ -1211,10 +1236,10 @@ mod tests {
     fn find_one_exact_match() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new()
-            .eq("type", "phase").eq("name", "rampup");
+            .eq("phase", "rampup");
         let c = find_one(&root, &sel).unwrap();
         assert_eq!(
-            c.read().unwrap().effective_labels().get("name"),
+            c.read().unwrap().effective_labels().get("phase"),
             Some("rampup"),
         );
     }
@@ -1222,7 +1247,7 @@ mod tests {
     #[test]
     fn find_one_not_found() {
         let root = sample_tree();
-        let sel = crate::selector::Selector::new().eq("name", "nowhere");
+        let sel = crate::selector::Selector::new().eq("phase", "nowhere");
         match find_one(&root, &sel) {
             Err(crate::selector::LookupError::NotFound) => {}
             Err(other) => panic!("expected NotFound, got {other:?}"),
@@ -1234,7 +1259,7 @@ mod tests {
     fn find_one_ambiguous_reports_count() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new()
-            .eq("type", "phase").eq("name", "ann_query");
+            .eq("phase", "ann_query");
         match find_one(&root, &sel) {
             Err(crate::selector::LookupError::Ambiguous { count }) => {
                 assert_eq!(count, 2);
@@ -1247,14 +1272,14 @@ mod tests {
     #[test]
     fn any_short_circuits_on_first_hit() {
         let root = sample_tree();
-        assert!(any(&root, &crate::selector::Selector::new().eq("name", "rampup")));
-        assert!(!any(&root, &crate::selector::Selector::new().eq("name", "zzz")));
+        assert!(any(&root, &crate::selector::Selector::new().eq("phase", "rampup")));
+        assert!(!any(&root, &crate::selector::Selector::new().eq("phase", "zzz")));
     }
 
     #[test]
     fn count_matches_len_of_find() {
         let root = sample_tree();
-        let sel = crate::selector::Selector::new().eq("type", "phase");
+        let sel = crate::selector::Selector::new().present("phase");
         assert_eq!(count(&root, &sel), find(&root, &sel).len());
     }
 
@@ -1263,7 +1288,7 @@ mod tests {
         let root = sample_tree();
         let activity_a = root.read().unwrap().children.first().unwrap().clone();
         let hits = find(&activity_a,
-            &crate::selector::Selector::new().eq("type", "phase"));
+            &crate::selector::Selector::new().present("phase"));
         assert_eq!(hits.len(), 3);
     }
 
@@ -1272,14 +1297,14 @@ mod tests {
         let root = sample_tree();
         let sel = crate::selector::Selector::new()
             .eq("session", "test-session")
-            .eq("type", "phase");
+            .present("phase");
         assert_eq!(count(&root, &sel), 4);
     }
 
     #[test]
     fn selector_macro_drives_find() {
         let root = sample_tree();
-        let hits = find(&root, &crate::selector!(type = "phase", name = "teardown"));
+        let hits = find(&root, &crate::selector!(phase = "teardown"));
         assert_eq!(hits.len(), 1);
     }
 
@@ -1311,11 +1336,11 @@ mod tests {
     #[tokio::test]
     async fn reified_control_gauges_flow_through_capture_tree() {
         let root = Component::root(
-            Labels::empty().with("type", "session").with("session", "s1"),
+            Labels::empty().with("session", "s1"),
             HashMap::new(),
         );
         let phase = Arc::new(RwLock::new(Component::new(
-            Labels::empty().with("type", "phase").with("name", "rampup"),
+            Labels::empty().with("phase", "rampup"),
             HashMap::new(),
         )));
         attach(&root, &phase);
@@ -1336,14 +1361,14 @@ mod tests {
         let captured = capture_tree(&root, Duration::from_secs(1));
         let mut found_value: Option<f64> = None;
         for (labels, set) in &captured {
-            if labels.get("name") != Some("rampup") { continue; }
+            if labels.get("phase") != Some("rampup") { continue; }
             if let Some(fam) = set.family("control_concurrency")
                 && let Some(m) = fam.metrics().next() {
                     if let Some(p) = m.point()
                         && let crate::snapshot::MetricValue::Gauge(g) = p.value() {
                             found_value = Some(g.value);
                         }
-                    assert_eq!(m.labels().get("name"), Some("rampup"));
+                    assert_eq!(m.labels().get("phase"), Some("rampup"));
                     assert_eq!(m.labels().get("control"), Some("concurrency"));
                 }
         }
@@ -1363,7 +1388,7 @@ mod tests {
     fn dryrun_controls_enumeration_over_tree() {
         let root = sample_tree();
         let phase_hits = find(&root,
-            &crate::selector::Selector::new().eq("type", "phase"));
+            &crate::selector::Selector::new().present("phase"));
         for (idx, phase) in phase_hits.iter().enumerate() {
             let guard = phase.read().unwrap();
             guard.controls().declare(
@@ -1382,7 +1407,7 @@ mod tests {
                 entries.push((
                     format!(
                         "{}/{}",
-                        labels.get("name").unwrap_or("-"),
+                        labels.get("phase").unwrap_or("-"),
                         ctl.name(),
                     ),
                     ctl.value_string(),
@@ -1403,11 +1428,11 @@ mod tests {
     fn branch_scope_subtree_resolves_from_descendant() {
         use crate::controls::{BranchScope, ControlBuilder};
         let root = Component::root(
-            Labels::empty().with("type", "session").with("session", "s1"),
+            Labels::empty().with("session", "s1"),
             HashMap::new(),
         );
         let phase = Arc::new(RwLock::new(Component::new(
-            Labels::empty().with("type", "phase").with("name", "rampup"),
+            Labels::empty().with("phase", "rampup"),
             HashMap::new(),
         )));
         attach(&root, &phase);
@@ -1428,11 +1453,11 @@ mod tests {
     fn branch_scope_local_does_not_leak_to_descendants() {
         use crate::controls::{BranchScope, ControlBuilder};
         let root = Component::root(
-            Labels::empty().with("type", "session").with("session", "s1"),
+            Labels::empty().with("session", "s1"),
             HashMap::new(),
         );
         let phase = Arc::new(RwLock::new(Component::new(
-            Labels::empty().with("type", "phase").with("name", "rampup"),
+            Labels::empty().with("phase", "rampup"),
             HashMap::new(),
         )));
         attach(&root, &phase);
@@ -1453,11 +1478,11 @@ mod tests {
     fn nearest_declaration_wins_during_walk_up() {
         use crate::controls::{BranchScope, ControlBuilder};
         let root = Component::root(
-            Labels::empty().with("type", "session").with("session", "s1"),
+            Labels::empty().with("session", "s1"),
             HashMap::new(),
         );
         let phase = Arc::new(RwLock::new(Component::new(
-            Labels::empty().with("type", "phase").with("name", "rampup"),
+            Labels::empty().with("phase", "rampup"),
             HashMap::new(),
         )));
         attach(&root, &phase);

@@ -32,13 +32,24 @@ fn flag() -> &'static Arc<AtomicBool> {
     SESSION_STOP.get_or_init(|| Arc::new(AtomicBool::new(false)))
 }
 
-/// Returns `true` once a session-wide stop has been requested.
+/// Returns `true` once a stop has been requested for the current execution.
 /// Cheap relaxed atomic load — safe to call from a hot fiber loop.
+///
+/// SRD-88: a fiber running inside an [`ExecutionContext`](crate::execution_context)
+/// stops when EITHER the process-global session stop (Ctrl-C, which halts
+/// *every* execution) OR its own per-execution stop flag is set — so a stop
+/// scoped to one execution isolates to that execution while Ctrl-C still stops
+/// all. Outside any execution scope (single-run / CLI / tests) only the global
+/// flag applies — behavior is identical to before the seam (axiom A1).
 #[inline]
 pub fn stop_requested() -> bool {
-    SESSION_STOP.get()
+    let global = SESSION_STOP.get()
         .map(|f| f.load(Ordering::Relaxed))
-        .unwrap_or(false)
+        .unwrap_or(false);
+    let local = crate::execution_context::current_stop()
+        .map(|f| f.load(Ordering::Relaxed))
+        .unwrap_or(false);
+    global || local
 }
 
 /// Programmatically request a session-wide stop. Used by the

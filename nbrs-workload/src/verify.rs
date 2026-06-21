@@ -6,6 +6,13 @@
 //! example-walker test, so "how CI checks the examples" and "how a user checks
 //! their own workload" are the same code.
 //!
+//! A verification target is resolved the same way `nbrs run` resolves
+//! `workload=…`: a directory (walk every workload under it), an existing
+//! `.yaml`/`.yml` file (run it by path), or a **bundled catalog name** such as
+//! `examples/cursors/all_cursor/enumerate` (run it by name, read its rules from the embedded
+//! source). So whatever tab-completion offers for `nbrs check <TAB>` — local
+//! files *and* catalog names — checks the same way it runs.
+//!
 //! Two **equivalent** rule surfaces (a file may use either, or both — their
 //! cases combine):
 //!
@@ -232,14 +239,17 @@ pub enum Outcome {
 
 /// Run one case via `<binary> run workload=… <args> --session-path …` (wrapped
 /// in `timeout`) from `sandbox`, capture combined output, and check the rules.
-pub fn run_case(binary: &Path, workload: &Path, sandbox: &Path, label: &str, case: &VerifyCase) -> Result<(), String> {
+/// `workload_ref` is whatever goes after `workload=` — an absolute file path
+/// or a bundled catalog name; the subprocess resolves it exactly as a normal
+/// `nbrs run` would.
+pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, case: &VerifyCase) -> Result<(), String> {
     let session = sandbox.join(format!("session-{}", label.replace(['/', ' ', ':'], "_")));
     let _ = std::fs::remove_dir_all(&session);
     let output = Command::new("timeout")
         .arg(case.timeout.to_string())
         .arg(binary)
         .arg("run")
-        .arg(format!("workload={}", workload.display()))
+        .arg(format!("workload={workload_ref}"))
         .args(&case.run_args)
         .arg("--session-path")
         .arg(&session)
@@ -283,14 +293,18 @@ pub fn run_case(binary: &Path, workload: &Path, sandbox: &Path, label: &str, cas
     Ok(())
 }
 
-/// Verify one workload file: parse its rules, run every case, return one
-/// `(label, Outcome)` per case (or a single Skip / Fail for the whole file).
-pub fn verify_file(binary: &Path, label_root: &str, workload: &Path, sandbox: &Path) -> Vec<(String, Outcome)> {
-    let src = match std::fs::read_to_string(workload) {
-        Ok(s) => s,
-        Err(e) => return vec![(label_root.to_string(), Outcome::Fail(format!("read error: {e}")))],
-    };
-    let plan = match VerifyPlan::parse(&src) {
+/// Verify a workload from its rule text + run reference: parse the rules, run
+/// every case, return one `(label, Outcome)` per case (or a single Skip / Fail
+/// for the whole workload). `run_ref` is what to pass as `workload=` — an
+/// absolute file path or a catalog name.
+pub fn verify_source(
+    binary: &Path,
+    label_root: &str,
+    run_ref: &str,
+    rule_text: &str,
+    sandbox: &Path,
+) -> Vec<(String, Outcome)> {
+    let plan = match VerifyPlan::parse(rule_text) {
         Ok(p) => p,
         Err(e) => return vec![(label_root.to_string(), Outcome::Fail(e))],
     };
@@ -309,13 +323,88 @@ pub fn verify_file(binary: &Path, label_root: &str, workload: &Path, sandbox: &P
         .iter()
         .map(|c| {
             let label = format!("{label_root}::{}", c.name);
-            let outcome = match run_case(binary, workload, sandbox, &label, c) {
+            let outcome = match run_case(binary, run_ref, sandbox, &label, c) {
                 Ok(()) => Outcome::Pass,
                 Err(e) => Outcome::Fail(format!("{label}: {e}")),
             };
             (label, outcome)
         })
         .collect()
+}
+
+/// Verify one workload file: read it, then run it by its absolute path. The
+/// file is read relative to *this* process's cwd, but the run reference is made
+/// absolute because each case is launched from a sandbox cwd.
+pub fn verify_file(binary: &Path, label_root: &str, workload: &Path, sandbox: &Path) -> Vec<(String, Outcome)> {
+    let src = match std::fs::read_to_string(workload) {
+        Ok(s) => s,
+        Err(e) => return vec![(label_root.to_string(), Outcome::Fail(format!("read error: {e}")))],
+    };
+    let abs = workload.canonicalize().unwrap_or_else(|_| workload.to_path_buf());
+    verify_source(binary, label_root, &abs.to_string_lossy(), &src, sandbox)
+}
+
+/// Where a verification target's rule text and run reference come from. Mirrors
+/// `nbrs run`'s `workload=…` resolution.
+pub enum WorkloadSource {
+    /// A workload file on disk: run by (absolute) path, rules from the file.
+    File(PathBuf),
+    /// A bundled catalog workload: run by name, rules from the embedded source.
+    Catalog { name: String, source: String },
+}
+
+/// Resolve a single workload reference the way `nbrs run` does: an existing
+/// `.yaml`/`.yml` file path first, then a bundled catalog name. `None` if it is
+/// neither. Directories are not a single workload — callers handle those
+/// separately (via [`verify_path`]).
+pub fn resolve_ref(reference: &str) -> Option<WorkloadSource> {
+    let p = Path::new(reference);
+    if p.is_file() {
+        // Absolute so the sandbox-cwd subprocess can still find it.
+        return Some(WorkloadSource::File(
+            p.canonicalize().unwrap_or_else(|_| p.to_path_buf()),
+        ));
+    }
+    crate::catalog::lookup(reference).map(|w| WorkloadSource::Catalog {
+        name: w.name.to_string(),
+        source: w.source.to_string(),
+    })
+}
+
+/// Peek a workload reference's **declared top-level `params:`** (string
+/// scalars), following its `extends:` chain — the way `nbrs run` resolves
+/// `workload=…`. Returns `None` if the reference resolves to nothing or has
+/// no `params:` block.
+///
+/// Used by `run.rs` to recognize a **console-owning adapter declared in the
+/// workload** (e.g. `params: { adapter: plotter }`) rather than only on the
+/// CLI, so the dashboard yields to the adapter on a TTY (SRD-41/87
+/// console-ownership). The returned params also carry the adapter's
+/// display-shaping keys (e.g. stdout's `filename`) so the preference is
+/// decided correctly, not just by the adapter name.
+pub fn peek_declared_params(reference: &str) -> Option<std::collections::HashMap<String, String>> {
+    let merged = match resolve_ref(reference)? {
+        WorkloadSource::File(path) => crate::extends::load_and_merge(&path).ok()?,
+        WorkloadSource::Catalog { name, .. } => {
+            crate::extends::load_and_merge_bundled(crate::catalog::lookup(&name)?).ok()?
+        }
+    };
+    let doc: serde_yaml::Value = serde_yaml::from_str(&merged).ok()?;
+    let params = doc.get("params")?.as_mapping()?;
+    let mut out = std::collections::HashMap::new();
+    for (k, v) in params {
+        let Some(key) = k.as_str() else { continue };
+        // Only scalar params shape the display decision; skip nested
+        // structures. Numbers / bools render to their lexical form.
+        let val = match v {
+            serde_yaml::Value::String(s) => s.clone(),
+            serde_yaml::Value::Number(n) => n.to_string(),
+            serde_yaml::Value::Bool(b) => b.to_string(),
+            _ => continue,
+        };
+        out.insert(key.to_string(), val);
+    }
+    Some(out)
 }
 
 /// Aggregate verification result across one or more files.
@@ -339,26 +428,36 @@ pub fn verify_path(binary: &Path, path: &Path, sandbox: &Path) -> VerifySummary 
     }
 
     let acc: std::sync::Mutex<VerifySummary> = std::sync::Mutex::new(VerifySummary::default());
-    let par = std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(1).clamp(1, 8))
-        .unwrap_or(4);
-    let chunks: Vec<&[PathBuf]> = if files.is_empty() {
-        Vec::new()
-    } else {
-        files.chunks(files.len().div_ceil(par)).collect()
-    };
+    // Work-stealing over `files`: a shared atomic cursor each worker pulls from
+    // when it frees up. Static chunking serialized the slow demos (settle /
+    // servo workloads that dwell on real-time metric windows) behind one chunk
+    // while other chunks idled; a shared queue runs them concurrently, so the
+    // wall-clock floor is the single slowest file, not a chunk-sum. Workers
+    // spend almost all their time blocked on the child `nbrs` process, so we
+    // oversubscribe past core count (2× cores, capped) to overlap the waits.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = files.len().min(
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .saturating_mul(2)
+            .clamp(1, 16),
+    );
     std::thread::scope(|s| {
-        for chunk in &chunks {
-            s.spawn(|| {
-                for f in *chunk {
-                    let label = f.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
-                    for (lbl, outcome) in verify_file(binary, &label, f, sandbox) {
-                        let mut g = acc.lock().unwrap();
-                        match outcome {
-                            Outcome::Pass => g.passed += 1,
-                            Outcome::Skip(r) => g.skipped.push(format!("{lbl}: {r}")),
-                            Outcome::Fail(m) => g.failures.push(m),
-                        }
+        for _ in 0..workers {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(f) = files.get(i) else { break };
+                let label = f.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
+                // Run the file (a sequence of cases) outside the lock, then
+                // fold its outcomes under a single lock acquisition.
+                let outcomes = verify_file(binary, &label, f, sandbox);
+                let mut g = acc.lock().unwrap();
+                for (lbl, outcome) in outcomes {
+                    match outcome {
+                        Outcome::Pass => g.passed += 1,
+                        Outcome::Skip(r) => g.skipped.push(format!("{lbl}: {r}")),
+                        Outcome::Fail(m) => g.failures.push(m),
                     }
                 }
             });
@@ -367,6 +466,47 @@ pub fn verify_path(binary: &Path, path: &Path, sandbox: &Path) -> VerifySummary 
     let mut sum = acc.into_inner().unwrap();
     sum.skipped.sort();
     sum.failures.sort();
+    sum
+}
+
+/// Verify a target named the way `nbrs run` names workloads: a directory (walk
+/// every workload under it), an existing workload file, or a bundled catalog
+/// name (`examples/cursors/all_cursor/enumerate`, …). This is the `nbrs check` entry point — so
+/// anything the binary can `run` by name, it can `check` by the same name.
+pub fn verify_target(binary: &Path, target: &str, sandbox: &Path) -> VerifySummary {
+    let p = Path::new(target);
+    if p.is_dir() {
+        return verify_path(binary, p, sandbox);
+    }
+    let _ = std::fs::create_dir_all(sandbox);
+    let cases: Vec<(String, Outcome)> = match resolve_ref(target) {
+        Some(WorkloadSource::File(path)) => {
+            let label = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(target)
+                .to_string();
+            verify_file(binary, &label, &path, sandbox)
+        }
+        Some(WorkloadSource::Catalog { name, source }) => {
+            verify_source(binary, &name, &name, &source, sandbox)
+        }
+        None => vec![(
+            target.to_string(),
+            Outcome::Fail(format!(
+                "no such workload '{target}': not a local file, not a directory, and \
+                 no bundled workload by that name (try `nbrs describe workloads --all`)"
+            )),
+        )],
+    };
+    let mut sum = VerifySummary::default();
+    for (lbl, outcome) in cases {
+        match outcome {
+            Outcome::Pass => sum.passed += 1,
+            Outcome::Skip(r) => sum.skipped.push(format!("{lbl}: {r}")),
+            Outcome::Fail(m) => sum.failures.push(m),
+        }
+    }
     sum
 }
 
@@ -423,5 +563,22 @@ mod tests {
         let p = VerifyPlan::parse(src).unwrap();
         let names: Vec<&str> = p.cases.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"fromcomment") && names.contains(&"fromblock"), "{names:?}");
+    }
+
+    #[test]
+    fn resolve_ref_finds_files_and_rejects_unknown_names() {
+        // An on-disk file resolves to an absolute `File` source.
+        let dir = std::env::temp_dir().join(format!("nbrs-verify-resolve-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("w.yaml");
+        std::fs::write(&file, "ops: { a: { raw: x } }\n").unwrap();
+        match resolve_ref(file.to_str().unwrap()) {
+            Some(WorkloadSource::File(p)) => assert!(p.is_absolute(), "absolute: {p:?}"),
+            other => panic!("expected File, got {}", matches!(other, Some(WorkloadSource::Catalog { .. })) as i32),
+        }
+        // A name that is neither a file nor (in this test process) a bundled
+        // workload resolves to nothing — the CLI reports it as not found.
+        assert!(resolve_ref("definitely/not/a/workload").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

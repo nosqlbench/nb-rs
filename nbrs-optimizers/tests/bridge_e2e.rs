@@ -3,7 +3,7 @@
 
 //! SRD-86 — drive the core optimizer contract from an external crate. This
 //! exercises the public core driver (`Optimizer::optimize` default) + the
-//! pull-only decorator path through the built-in `null` (identity on the lex
+//! pull-only decorator path through the built-in `sweep` (identity on the lex
 //! stream). The loop→pull-through `ThreadBridge` itself is covered by a
 //! registry-free unit test in `bridge.rs` (an external integration test does
 //! not force-link the inventory `submit!`s, so the plugin registry is empty
@@ -29,8 +29,8 @@ impl core::Objective for ShiftedSphere {
 }
 
 #[test]
-fn null_through_core_driver_sweeps_the_grid() {
-    // The core built-in `null` (identity on the lex stream) — the pull-only
+fn sweep_through_core_driver_visits_the_grid() {
+    // The core built-in `sweep` (identity on the lex stream) — the pull-only
     // decorator path through the public driver, from outside the crate.
     let space = core::SearchSpace::new(vec![
         core::Axis {
@@ -48,10 +48,10 @@ fn null_through_core_driver_sweeps_the_grid() {
             changeover: core::Changeover::Coordinate,
         },
     ]);
-    let opt = core::by_name("null", &core::OptimizerParams::new()).expect("null is built in");
+    let opt = core::by_name("sweep", &core::OptimizerParams::new()).expect("sweep is built in");
     let mut obj = ShiftedSphere { target: vec![0.0, 0.0] };
     let report = opt.optimize(&space, &mut obj, &core::Budget::seeded(100, 0));
-    assert_eq!(report.evals, 9, "null should sweep the full 3x3 grid");
+    assert_eq!(report.evals, 9, "sweep should visit the full 3x3 grid");
     assert_eq!(report.best, vec![core::AxisValue::Num(0.0), core::AxisValue::Num(0.0)]);
     assert_eq!(report.stop, core::StopReason::Converged);
 }

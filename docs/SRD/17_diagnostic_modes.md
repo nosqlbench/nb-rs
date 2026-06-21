@@ -145,7 +145,7 @@ boundary (after kernel compilation, before cycle dispatch):
 - If `depth == Phase`: skip activity creation and cycle
   dispatch. Continue to next phase/iteration.
 - If `depth == Op`: run op-template kernel synthesis +
-  `map_op` + metric registration; dump scope-flattening
+  `map_op` + metric registration; dump scope-elision
   summary; exit before cycles.
 - If `depth == Cycle`: create activity with dry-run adapter.
 - If `depth == Full`: create activity with real adapter.

@@ -12,7 +12,7 @@ pub mod cmaes;
 pub mod hooke_jeeves;
 pub mod hyperband;
 pub mod nelder_mead;
-pub mod null;
+pub mod sweep;
 pub mod traversal;
 
 pub(crate) mod linalg;

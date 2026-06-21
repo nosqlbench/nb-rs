@@ -63,6 +63,16 @@ pub const KNOWN_PARAMS: &[&str] = &[
     // accepted so the unrecognized-param guard doesn't reject
     // it before run.rs's handler fires.
     "watch",
+    // Log-level knobs (SRD-41). Read by `nbrs/src/run.rs` to set the
+    // display (stderr) and retain (session.log) severity floors; the
+    // validator must accept them as params so a workload can declare
+    // `params: { loglevel: warn }` and the CLI can override. Both the
+    // `-` and `_` spellings, plus the `loglevel-display` alias.
+    "loglevel",
+    "loglevel-display",
+    "loglevel_display",
+    "loglevel-retain",
+    "loglevel_retain",
     // SRD-77 — `scope=missing|changed|all` refine policy.
     // Only meaningful when `--refine` is also set (the verb's
     // own dispatch enforces this). `missing` (default) skips
@@ -319,30 +329,30 @@ pub fn render_controls_tree(
 }
 
 
-/// Render the SRD-13d scope-flattening summary for `dryrun=op`.
+/// Render the SRD-13d scope-elision summary for `dryrun=op`.
 /// One line per scope-tree node (DFS pre-order), showing the
-/// logical name and the materialised/flattens-to mark.
+/// logical name and the materialised/elides-to mark.
 ///
 /// Format follows SRD-13d §5.3:
 /// ```text
-/// scope flattening summary
+/// scope elision summary
 /// ------------------------
 /// workload                                           materialised=true
-/// workload.scenario.default                          materialised=false  flattens-to=workload
+/// workload.scenario.default                          materialised=false  elides-to=workload
 /// workload.scenario.default.phase.predict            materialised=true
 /// ```
 ///
 /// `materialised=true` means the node owns a kernel; `false`
-/// means it flattens into its nearest materialised ancestor
-/// (shown as `flattens-to=<logical_name>`). Nodes whose mark
+/// means it elides into its nearest materialised ancestor
+/// (shown as `elides-to=<logical_name>`). Nodes whose mark
 /// is still `None` (predicate hasn't fired — should not
 /// happen post-`classify_and_mark`) are surfaced as `unknown`
 /// rather than silently skipped.
-pub fn render_scope_flattening_summary(
+pub fn render_scope_elision_summary(
     tree: &crate::scope_tree::ScopeTree,
     out: &mut dyn std::io::Write,
 ) -> std::io::Result<()> {
-    let summary = crate::scope_flattening::flattening_summary(tree);
+    let summary = crate::scope_elision::elision_summary(tree);
     // Width of the logical-name column — 4-space gutter past
     // the longest name (or 48ch min) so the materialised marks
     // line up cleanly even with deeply-nested phase trees.
@@ -352,7 +362,7 @@ pub fn render_scope_flattening_summary(
         .unwrap_or(0)
         .max(48);
 
-    writeln!(out, "scope flattening summary")?;
+    writeln!(out, "scope elision summary")?;
     writeln!(out, "------------------------")?;
     for (idx, _depth, materialised, logical_name, _kind) in &summary {
         match materialised {
@@ -361,11 +371,11 @@ pub fn render_scope_flattening_summary(
                     logical_name, width = name_width)?;
             }
             Some(false) => {
-                let flattens_to = tree.nearest_materialised(*idx)
+                let elides_to = tree.nearest_materialised(*idx)
                     .map(|p| tree.nodes[p].logical_name.clone())
                     .unwrap_or_else(|| "<unknown>".to_string());
-                writeln!(out, "{:<width$}    materialised=false  flattens-to={}",
-                    logical_name, flattens_to, width = name_width)?;
+                writeln!(out, "{:<width$}    materialised=false  elides-to={}",
+                    logical_name, elides_to, width = name_width)?;
             }
             None => {
                 writeln!(out, "{:<width$}    materialised=unknown",
@@ -441,7 +451,252 @@ pub async fn run_with_observer(
 }
 
 /// Core runner. Diagnostic mode is controlled by `dryrun=` param.
-async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserver>) -> Result<(), String> {
+/// SRD-88 — build the session-level metrics services: the cadence
+/// tree + reporter, the shared `MetricsQuery`, and the metrics
+/// scheduler (whose `StopHandle` is returned). One set per session;
+/// every execution sharing the session routes through these. Reads
+/// the session component (capture root), the sqlite reporter (cadence
+/// subscription), and the observer (cadence prefs + live reporters).
+fn build_session_metrics(
+    session: &crate::session::Session,
+    sqlite_reporter: &std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
+    observer: &Arc<dyn crate::observer::RunObserver>,
+    merged_params: &HashMap<String, String>,
+    openmetrics_url: &Option<String>,
+    args: &[String],
+    params: &HashMap<String, String>,
+) -> Result<(
+    std::sync::Arc<nbrs_metrics::cadence_reporter::CadenceReporter>,
+    nbrs_metrics::cadence::CadenceTree,
+    std::sync::Arc<nbrs_metrics::metrics_query::MetricsQuery>,
+    std::sync::Arc<nbrs_metrics::scheduler::StopHandle>,
+), String> {
+    let base_interval = std::time::Duration::from_secs(1);
+    let cadences = observer.cadences()
+        .unwrap_or_else(nbrs_metrics::cadence::Cadences::defaults);
+    let cadence_tree = nbrs_metrics::cadence::CadenceTree::plan_validated(
+        cadences,
+        nbrs_metrics::cadence::DEFAULT_MAX_FAN_IN,
+        base_interval,
+    ).map_err(|e| format!("cadence tree: {e}"))?;
+    let cadence_reporter = Arc::new(
+        nbrs_metrics::cadence_reporter::CadenceReporter::new(cadence_tree.clone()),
+    );
+    let metrics_query = Arc::new(nbrs_metrics::metrics_query::MetricsQuery::new(
+        cadence_reporter.clone(),
+        session.component.clone(),
+    ));
+    session.set_metrics_query(metrics_query.clone());
+    nbrs_metrics::polydat_nodes::set_global_query(metrics_query.clone());
+    // SRD-86 §"The metric-reader surface" — install the live in-process
+    // metrics-access service so the `metricsql_*` nodes can locate it
+    // (`queryapi::live_access()`) and evaluate queries against this run.
+    nbrs_metrics::queryapi::install_live_access(std::sync::Arc::new(
+        nbrs_metrics::queryapi::MetricsQueryAccess::new(metrics_query.clone()),
+    ));
+    observer.on_metrics_query(metrics_query.clone());
+
+    let session_for_capture = session.component.clone();
+    let mut sched_builder = nbrs_metrics::scheduler::SchedulerBuilder::new()
+        .base_interval(std::time::Duration::from_secs(1))
+        .with_cadence_reporter(cadence_reporter.clone())
+        .with_cadence_tree(cadence_tree.clone());
+
+    // SRD-42 §"SQLite — near-time persistence": subscribe the
+    // SQLite reporter via the CadenceReporter push path so slow
+    // disk can't stall the cascade. The subscription runs on its
+    // own dispatch thread with a per-subscription timeout.
+    //
+    // Preferred write cadence is 30 s — coarse enough to keep
+    // write volume low for long runs, fine enough for post-run
+    // analysis. Aligns to the nearest declared cadence ≥ 30 s
+    // (default declared set includes 30 s so this resolves exactly).
+    // Journal mode is WAL (set in SqliteReporter::new via
+    // `PRAGMA journal_mode=WAL`), so readers never block writers.
+    //
+    // Always-on: this subscription fires whenever the SQLite
+    // reporter was constructed successfully. Operators don't need
+    // to opt in with any extra param — every run produces a
+    // `metrics.db` in its session directory by default.
+    let sqlite_cadence = cadence_tree.align_to_declared(
+        std::time::Duration::from_secs(30),
+    );
+    if let (Some(cadence), Ok(guard)) = (sqlite_cadence, sqlite_reporter.lock())
+        && guard.is_some() {
+            drop(guard);
+            let sqlite_for_sub = sqlite_reporter.clone();
+            match cadence_reporter.subscribe(
+                cadence,
+                Box::new(MutexReporter(sqlite_for_sub)),
+                nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
+            ) {
+                Ok(_) => {
+                    crate::diag!(crate::observer::LogLevel::Info,
+                        "metrics: SQLite writes every {:?} (WAL mode)", cadence);
+                }
+                Err(e) => {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "metrics: SQLite subscription failed: {e}");
+                }
+            }
+        }
+
+    // Per-instance JSONL snapshot reporter — opt-in. Writes
+    // one file per (metric, label-tuple) in `<session>/metrics/`,
+    // one JSON record appended per snapshot tick. Useful when
+    // you want a per-instance trace to tail / awk / import
+    // into a notebook without opening the SQLite db, but most
+    // sessions never read these files and the SQLite db
+    // already carries the same data. Enable via any of:
+    //   * `--per-instance-metrics` flag on the CLI
+    //   * `per-instance-metrics=true` in workload params
+    //   * `NBRS_PER_INSTANCE_METRICS=1` env var
+    let per_instance_enabled =
+        args.iter().any(|a| a == "--per-instance-metrics")
+            || params.get("per-instance-metrics")
+                .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false)
+            || std::env::var("NBRS_PER_INSTANCE_METRICS").ok()
+                .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false);
+    if per_instance_enabled {
+        let per_instance_dir = session.output_dir.join("metrics");
+        match nbrs_metrics::reporters::per_instance::PerInstanceReporter::new(&per_instance_dir) {
+            Ok(reporter) => {
+                if let Some(cadence) = cadence_tree.align_to_declared(
+                    std::time::Duration::from_secs(30),
+                ) {
+                    match cadence_reporter.subscribe(
+                        cadence,
+                        Box::new(reporter),
+                        nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
+                    ) {
+                        Ok(_) => {
+                            crate::diag!(crate::observer::LogLevel::Info,
+                                "metrics: per-instance JSONL writes every {:?} into {}",
+                                cadence, per_instance_dir.display());
+                        }
+                        Err(e) => {
+                            crate::diag!(crate::observer::LogLevel::Warn,
+                                "metrics: per-instance subscription failed: {e}");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                crate::diag!(crate::observer::LogLevel::Warn,
+                    "metrics: per-instance reporter disabled ({}): {e}",
+                    per_instance_dir.display());
+            }
+        }
+    }
+
+    // Same routing for the VictoriaMetrics / Prometheus push reporter
+    // when `--report-to` (or equivalent param) was provided.
+    // `jobname` / `instance` params match the nosqlbench-java
+    // `PromPushReporterComponent` convention; they're substituted
+    // into any `JOBNAME` / `INSTANCE` placeholders in the URL.
+    if let Some(url) = openmetrics_url.as_ref()
+        && let Some(cadence) = cadence_tree.align_to_declared(
+            std::time::Duration::from_secs(10),
+        ) {
+            let jobname = merged_params.get("jobname").cloned()
+                .unwrap_or_else(|| "default".to_string());
+            let instance = merged_params.get("instance").cloned()
+                .unwrap_or_else(|| "default".to_string());
+            let mut vm = match nbrs_metrics::reporters::victoriametrics
+                ::VictoriaMetricsReporter::from_spec(url)
+            {
+                Ok(r) => r,
+                Err(_) => nbrs_metrics::reporters::victoriametrics
+                    ::VictoriaMetricsReporter::new(url),
+            };
+            vm = vm.with_jobname(jobname).with_instance(instance);
+            if let Some(token_path) = merged_params.get("prompush_apikeyfile") {
+                match vm.with_bearer_token_file(token_path) {
+                    Ok(r) => vm = r,
+                    Err(e) => {
+                        crate::diag!(crate::observer::LogLevel::Warn,
+                            "prompush_apikeyfile '{token_path}': {e}");
+                        vm = nbrs_metrics::reporters::victoriametrics
+                            ::VictoriaMetricsReporter::from_spec(url)
+                            .unwrap_or_else(|_| nbrs_metrics::reporters::victoriametrics
+                                ::VictoriaMetricsReporter::new(url))
+                            .with_jobname(
+                                merged_params.get("jobname").cloned()
+                                    .unwrap_or_else(|| "default".to_string()),
+                            )
+                            .with_instance(
+                                merged_params.get("instance").cloned()
+                                    .unwrap_or_else(|| "default".to_string()),
+                            );
+                    }
+                }
+            }
+            let _ = cadence_reporter.subscribe(
+                cadence,
+                Box::new(vm),
+                nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
+            );
+        }
+
+    // Register the observer's reporters at their requested cadences
+    // on the scheduler tree (base-interval live-frame forwarding for
+    // sparklines / live histogram).
+    for (interval, reporter) in observer.reporters() {
+        sched_builder = sched_builder.add_reporter(
+            interval,
+            BoxedReporter(reporter),
+        );
+    }
+
+    let scheduler = sched_builder.build(Box::new(move || {
+        nbrs_metrics::component::capture_tree(
+            &session_for_capture,
+            std::time::Duration::from_secs(1),
+        )
+    }));
+    let stop_handle = Arc::new(scheduler.start());
+
+    // Install the session-wide Ctrl-C handler. First SIGINT
+    // requests cooperative shutdown (fibers exit at cycle
+    // boundary, profiler + cadence reporter flush in normal
+    // teardown order); second SIGINT force-exits. Idempotent —
+    // safe to call again on retry / reentry paths.
+    crate::session_signals::install_signal_handler();
+
+    Ok((cadence_reporter, cadence_tree, metrics_query, stop_handle))
+}
+
+
+/// SRD-88 — the shared, session-tier context, created ONCE per session
+/// (`SessionHost::setup`); every execution sharing the session runs
+/// against it. Holds the session (dir / id / `session` component), the
+/// durable sqlite store + shutdown guard, the session-aligned metrics
+/// services and the session-tier profiler. Per-execution work +
+/// workload load happens in `run_execution`.
+struct SessionHost {
+    session: crate::session::Session,
+    sqlite_reporter: std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
+    cadence_reporter: std::sync::Arc<nbrs_metrics::cadence_reporter::CadenceReporter>,
+    #[allow(dead_code)]
+    cadence_tree: nbrs_metrics::cadence::CadenceTree,
+    #[allow(dead_code)]
+    metrics_query: std::sync::Arc<nbrs_metrics::metrics_query::MetricsQuery>,
+    stop_handle: std::sync::Arc<nbrs_metrics::scheduler::StopHandle>,
+    refine_plan: Option<Arc<crate::refine_plan::RefinePlan>>,
+    resume_target: Option<std::path::PathBuf>,
+    refine_requested: bool,
+    refine_scope: Option<String>,
+    profiler: Option<crate::profiler::ProfileGuard>,
+    sqlite_guard: nbrs_metrics::reporters::sqlite::SqliteShutdownGuard,
+}
+
+impl SessionHost {
+    /// Build the shared session-tier context. Workload-INDEPENDENT:
+    /// session identity = `scenario=` param; metrics services +
+    /// profiler read CLI `params`, not workload-merged params.
+    fn setup(args: &[String], observer: Arc<dyn crate::observer::RunObserver>) -> Result<SessionHost, String> {
     // Set global observer so all code can log through it
     crate::observer::set_global_observer(observer.clone());
 
@@ -491,6 +746,345 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // (well after the install), so they don't reach
     // stderr.
 
+
+    let args = normalize_args(args);
+    let params = parse_params(&args);
+    // `scenario_for_session` is recomputed below from the refine block's
+    // params (the session-dir name); `openmetrics_url` feeds the
+    // session metrics services.
+    let openmetrics_url: Option<String> = args.iter()
+        .find_map(|a| a.strip_prefix("--report-openmetrics-to=")
+            .or_else(|| a.strip_prefix("report-openmetrics-to=")))
+        .map(|s| s.to_string());
+    let resume_target: Option<std::path::PathBuf> = {
+        let explicit = params.get("resume")
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let p = std::path::PathBuf::from(s);
+                if p.is_file() { p }
+                else if p.is_dir() { p.join("checkpoint.jsonl") }
+                else { crate::session::default_sessions_root().join(s).join("checkpoint.jsonl") }
+            });
+        let resume_latest = params.get("resume_latest")
+            .map(|s| s != "false" && s != "0")
+            .unwrap_or(false)
+            || args.iter().any(|a| a == "--resume-latest");
+        if resume_latest {
+            // Resolve the symlink to a concrete session dir
+            // *now* — once `Session::new` runs the symlink will
+            // be repointed at the new session.
+            let latest = crate::session::default_sessions_root().join("latest");
+            let resolved = std::fs::read_link(&latest).ok()
+                .map(|target| {
+                    if target.is_absolute() { target }
+                    else { crate::session::default_sessions_root().join(target) }
+                })
+                .map(|d| d.join("checkpoint.jsonl"));
+            explicit.or(resolved)
+        } else {
+            explicit
+        }
+    };
+
+    // SRD-77 refine: the `nbrs refine` verb injects `--refine`
+    // into argv before delegating to the runner. Detected here
+    // so we can load the session's prior `phase_outcomes` and
+    // build a skip plan + bump `exec_id` before the session is
+    // re-attached. Implies `--resume-latest` semantics for
+    // session dir resolution (the resolver at line 950+ already
+    // produces the right `resume_target` when `--resume-latest`
+    // was passed alongside `--refine` by `refine_command`).
+    let refine_requested = args.iter().any(|a| a == "--refine");
+
+    // Session: root context for this run. Creates logs/{scenario}_{timestamp}/
+    // for fresh runs; reuses the prior session dir when resuming
+    // so the metrics.db is appended-to in-place per SRD-44
+    // §"Wholesale metrics-purge".
+    let scenario_for_session = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
+    // SRD-77 — refine_plan is populated only when:
+    //   1. `--refine` was passed (refine verb is in flight)
+    //   2. The resume_target resolves to an existing session dir
+    // Computed BEFORE Session construction so the plan's
+    // `next_exec_id` can flow into `Session::refine`.
+    // SRD-77 refine scope. Default `missing` (skip phases with
+    // a prior completed outcome) when `--refine` is set without
+    // an explicit `scope=`. `scope=all` builds the plan for
+    // exec_id bumping + session re-attach but leaves the skip
+    // set empty, so every phase runs and new outcomes overwrite
+    // the prior ones (the cardinal history stays — prior rows
+    // keep their old exec_id, new rows land under the bumped
+    // exec_id). `scope=changed` requires `phase_hash` storage
+    // on PhaseOutcome (follow-up push) and is rejected here
+    // with a "not yet implemented" diag so the operator isn't
+    // silently dropped to `missing` semantics.
+    let refine_scope: Option<&str> = params.get("scope")
+        .map(|s| s.as_str())
+        .filter(|_| refine_requested);
+    let refine_plan: Option<Arc<crate::refine_plan::RefinePlan>> = if refine_requested {
+        resume_target.as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .and_then(|prior_dir| {
+                if !prior_dir.exists() {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "refine: prior session dir not found ({}); \
+                         running every phase as if this were a fresh `nbrs run`",
+                        prior_dir.display());
+                    return None;
+                }
+                let mut plan = crate::refine_plan::RefinePlan::load_from_session_dir(&prior_dir);
+                if plan.is_none() {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "refine: no readable phase_outcomes in {}; \
+                         running every phase as if this were a fresh `nbrs run`",
+                        prior_dir.display());
+                }
+                if let Some(p) = plan.as_mut() {
+                    p.scope = match refine_scope {
+                        Some("all") => {
+                            crate::diag!(crate::observer::LogLevel::Info,
+                                "refine: scope=all — every phase will run \
+                                 under exec_id={}", p.next_exec_id);
+                            crate::refine_plan::RefineScope::All
+                        }
+                        Some("changed") => {
+                            crate::diag!(crate::observer::LogLevel::Info,
+                                "refine: scope=changed — comparing each \
+                                 phase's program hash against the prior \
+                                 outcome; unchanged phases skip, changed \
+                                 phases re-run under exec_id={}",
+                                p.next_exec_id);
+                            crate::refine_plan::RefineScope::Changed
+                        }
+                        _ => crate::refine_plan::RefineScope::Missing,
+                    };
+                }
+                plan.map(Arc::new)
+            })
+    } else {
+        None
+    };
+    // SRD-77 — `--on-removed=` policy. When refine attaches to
+    // a session whose prior outcomes name phases the current
+    // workload no longer declares, the default behavior is
+    // ERROR (refuse to proceed) — silently keeping orphan
+    // outcomes hides intent, silently dropping them loses
+    // data. `--on-removed=keep` retains them (no work);
+    // `--on-removed=drop` is reserved for a future push that
+    // wires the deletion + interactive confirm.
+    //
+    // The check compares the prior `phase_name` set against
+    // the current workload's `phases:` map keys. Sweep-cell
+    // variants (same name, different labels) are aggregated by
+    // name here — a missing name covers every prior cell of
+    // it. Tighter (name+labels) granularity is a follow-up
+    // when label-set comparison becomes load-bearing.
+    // (`on_removed_policy` is consulted per-execution, in `run_execution`.)
+    // Build the session (the shared, session-tier container). SRD-88:
+    // the session carries only `session=<id>`; the execution's
+    // identity (`exec_id`, `workload`) is declared one tier down, on
+    // its own component (below). [[HOST:session]]
+    let session = match (refine_plan.as_ref(), resume_target.as_ref()) {
+        (Some(plan), Some(p)) if p.exists() => {
+            let prior_dir = p.parent()
+                .map(|d| d.to_path_buf())
+                .unwrap_or_else(crate::session::latest_session_dir);
+            crate::diag!(crate::observer::LogLevel::Info,
+                "refine: attached to session {}; \
+                 prior outcomes={}, completed phases to skip={}, \
+                 next exec_id={}",
+                prior_dir.display(),
+                plan.prior_outcomes_seen,
+                plan.completed.len(),
+                plan.next_exec_id);
+            crate::session::Session::reattach(prior_dir, scenario_for_session)
+        }
+        (_, Some(p)) if p.exists() => {
+            let prior_dir = p.parent()
+                .map(|d| d.to_path_buf())
+                .unwrap_or_else(crate::session::latest_session_dir);
+            crate::session::Session::reattach(prior_dir, scenario_for_session)
+        }
+        _ => crate::session::Session::new_with_args(scenario_for_session, &args),
+    };
+    let session_log_path = session.output_dir.join("session.log");
+    if let Err(e) = crate::observer::set_log_file(&session_log_path) {
+        crate::diag!(crate::observer::LogLevel::Warn,
+            "warning: failed to open session log {}: {e}",
+            session_log_path.display());
+    }
+
+    // `--trace=<spec>` (repeatable). Collected from raw `args`
+    // because parse_params is HashMap-keyed and would collapse
+    // repeated flags. See trace_router for spec grammar.
+    let trace_specs = collect_repeated_flag(&args, "trace");
+    match crate::trace_router::init(&trace_specs, &session.output_dir) {
+        Ok(0) => {} // no --trace specified, router stays empty
+        Ok(n) => crate::diag!(crate::observer::LogLevel::Info,
+            "trace router: {n} route(s) configured"),
+        Err(e) => crate::diag!(crate::observer::LogLevel::Warn,
+            "trace router init failed: {e}"),
+    }
+
+    crate::diag!(crate::observer::LogLevel::Info, "session: {} ({})",
+        session.id, session.output_dir.display());
+
+    // Polydat library audit channel: route polydat's
+    // `audit::log/info/warn/...` calls through this
+    // process's observer so they land in `session.log`
+    // alongside every other diagnostic line, with a
+    // `[lib]` subsystem tag so the operator can filter them
+    // out if they're noisy. Replaces the standalone
+    // `<session>/audit.log` file — same content, one fewer
+    // place to look.
+    polydat::audit::set_log_fn(|level, msg| {
+        use polydat::audit::LogLevel as AuditLevel;
+        let mapped = match level {
+            AuditLevel::Trace | AuditLevel::Debug => crate::observer::LogLevel::Debug,
+            AuditLevel::Info  => crate::observer::LogLevel::Info,
+            AuditLevel::Warn  => crate::observer::LogLevel::Warn,
+            AuditLevel::Error => crate::observer::LogLevel::Error,
+        };
+        crate::observer::log(mapped, &format!("[lib] {msg}"));
+    });
+
+    // SQLite metrics in session directory. SRD-88: creating the
+    // reporter (connection + schema + the session-INVARIANT
+    // `session` metadata key) is session-tier — one per session,
+    // shared by every execution. The per-execution metadata
+    // (workload / scenario / params / the SRD-77 `executions` row)
+    // is written separately below, per execution, so N concurrent
+    // executions each record their own without clobbering.
+    let sqlite_path = session.metrics_path();
+    let sqlite_reporter = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&sqlite_path)
+        .map(|mut r| {
+            r.set_metadata("session", &session.id);
+            crate::diag!(crate::observer::LogLevel::Info, "metrics: {}",
+                sqlite_path.display());
+            r
+        })
+        .map_err(|e| crate::diag!(crate::observer::LogLevel::Warn,
+            "warning: SQLite metrics disabled: {e}"))
+        .ok();
+    let sqlite_reporter = std::sync::Arc::new(std::sync::Mutex::new(sqlite_reporter));
+
+    // RAII shutdown guard — runs `consolidate_wal` at session
+    // end via Drop. Reliable across every Rust unwind path:
+    // normal completion, error `?` propagation, first-Ctrl-C
+    // → stop flag → runner unwind. The only path that skips
+    // it is `std::process::exit` (second Ctrl-C force-exit),
+    // which is the operator's declared "I don't want to
+    // wait" escape hatch. The guard MUST live until after
+    // every reporter has finished writing — bind it here at
+    // the top of the run-impl block so it drops in
+    // last-created / first-dropped order relative to local
+    // variables; the explicit `_` binding pins its lifetime
+    // to the function scope (otherwise the temporary would
+    // drop immediately).
+    let _sqlite_shutdown_guard =
+        nbrs_metrics::reporters::sqlite::SqliteShutdownGuard::new(
+            sqlite_reporter.clone(),
+        );
+
+    // Periodic WAL checkpoint so concurrent read-only
+    // tooling (`nbrs report` against a live session,
+    // ad-hoc `sqlite3 metrics.db` inspection, the realtime
+    // metricsql preview) sees committed writes without
+    // waiting for session end. SQLite's WAL holds frames
+    // until either:
+    //   1. `wal_autocheckpoint` (page-count threshold,
+    //      default 1000 pages) fires on a writer, OR
+    //   2. an explicit `PRAGMA wal_checkpoint(...)` runs.
+    //
+    // Under bursty workloads (a tight rampup followed by a
+    // long synchronous wait — exactly the SRD-75
+    // ensure_compacted shape) writers can stall under the
+    // autocheckpoint threshold for many minutes, during
+    // which readers see stale data. A 60-second background
+    // task running `PRAGMA wal_checkpoint(PASSIVE)` bounds
+    // the staleness without blocking writers.
+    //
+    // PASSIVE mode is the cheap variant: it merges all
+    // currently-committed WAL frames into the main `.db`
+    // without truncating the WAL file or pausing writers.
+    // The tokio task runs for the runtime's lifetime and is
+    // cancelled on shutdown; the final `consolidate_wal`
+    // (TRUNCATE flavour) at session end produces the
+    // archival "no -wal sidecar" form.
+    {
+        let reporter = sqlite_reporter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(60),
+            );
+            // First tick is immediate; skip it so the
+            // post-session-start state has a chance to
+            // settle before the first checkpoint fires.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if let Ok(g) = reporter.lock()
+                    && let Some(r) = g.as_ref() {
+                        r.passive_checkpoint();
+                    }
+            }
+        });
+    }
+
+
+    // SRD-88 — session-tier metrics services, configured from CLI params.
+    let (cadence_reporter, cadence_tree, metrics_query, stop_handle) =
+        build_session_metrics(&session, &sqlite_reporter, &observer,
+            &params, &openmetrics_url, &args, &params)?;
+    crate::session_signals::install_signal_handler();
+    let _profiler = crate::profiler::ProfileGuard::maybe_start(
+        &params, Some(&session.output_dir));
+
+    Ok(SessionHost {
+        session,
+        sqlite_reporter,
+        cadence_reporter,
+        cadence_tree,
+        metrics_query,
+        stop_handle,
+        refine_plan,
+        resume_target,
+        refine_requested,
+        refine_scope: refine_scope.map(|s| s.to_string()),
+        profiler: _profiler,
+        sqlite_guard: _sqlite_shutdown_guard,
+    })
+    }
+
+    /// Session teardown — once, after every execution (SRD-88).
+    fn shutdown(self) {
+        if let Some(mut profiler) = self.profiler {
+            profiler.finish();
+        }
+        self.stop_handle.stop();
+        let _teardown_t = std::time::Instant::now();
+        self.cadence_reporter.shutdown();
+        crate::diag!(crate::observer::LogLevel::Debug,
+            "shutdown: cadence reporter flush+join {:?}", _teardown_t.elapsed());
+        crate::diag!(crate::observer::LogLevel::Info,
+            "shutting down — consolidating metrics.db WAL");
+        self.sqlite_guard.consume();
+        crate::diag!(crate::observer::LogLevel::Info,
+            "shutdown complete");
+    }
+}
+
+/// SRD-88 — run ONE execution against a shared [`SessionHost`]. Does
+/// NOT tear the session down (that is `SessionHost::shutdown`).
+async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn crate::observer::RunObserver>) -> Result<(), String> {
+    let session = &host.session;
+    let session_id = host.session.id.clone();
+    let sqlite_reporter = host.sqlite_reporter.clone();
+    let cadence_reporter = host.cadence_reporter.clone();
+    let stop_handle = host.stop_handle.clone();
+    let resume_target = host.resume_target.clone();
+    let refine_plan = host.refine_plan.clone();
+    let refine_requested = host.refine_requested;
+    let refine_scope = host.refine_scope.as_deref();
     let mut diag = DiagnosticConfig::normal();
 
     // Detect scenario shorthand: `workload.yaml <scenario_name>` → `scenario=<name>`
@@ -1027,11 +1621,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         diag.depth = ExecDepth::Cycle;
     }
 
-    // OpenMetrics push URL
-    let openmetrics_url: Option<String> = args.iter()
-        .find_map(|a| a.strip_prefix("--report-openmetrics-to=")
-            .or_else(|| a.strip_prefix("report-openmetrics-to=")))
-        .map(|s| s.to_string());
+    // (OpenMetrics push URL is resolved in `SessionHost::setup` — the
+    // metrics push reporter is a session-tier service.)
 
     // Resolve the resume source BEFORE creating the new session
     // — `Session::new` eagerly remaps `logs/latest` at the new
@@ -1039,128 +1630,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // `latest` target has to happen first. Stored as
     // `resume_target` and consulted later when constructing the
     // checkpoint writer + plan. SRD-44 §"Resume CLI surface".
-    let resume_target: Option<std::path::PathBuf> = {
-        let explicit = params.get("resume")
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                let p = std::path::PathBuf::from(s);
-                if p.is_file() { p }
-                else if p.is_dir() { p.join("checkpoint.jsonl") }
-                else { crate::session::default_sessions_root().join(s).join("checkpoint.jsonl") }
-            });
-        let resume_latest = params.get("resume_latest")
-            .map(|s| s != "false" && s != "0")
-            .unwrap_or(false)
-            || args.iter().any(|a| a == "--resume-latest");
-        if resume_latest {
-            // Resolve the symlink to a concrete session dir
-            // *now* — once `Session::new` runs the symlink will
-            // be repointed at the new session.
-            let latest = crate::session::default_sessions_root().join("latest");
-            let resolved = std::fs::read_link(&latest).ok()
-                .map(|target| {
-                    if target.is_absolute() { target }
-                    else { crate::session::default_sessions_root().join(target) }
-                })
-                .map(|d| d.join("checkpoint.jsonl"));
-            explicit.or(resolved)
-        } else {
-            explicit
-        }
-    };
-
-    // SRD-77 refine: the `nbrs refine` verb injects `--refine`
-    // into argv before delegating to the runner. Detected here
-    // so we can load the session's prior `phase_outcomes` and
-    // build a skip plan + bump `exec_id` before the session is
-    // re-attached. Implies `--resume-latest` semantics for
-    // session dir resolution (the resolver at line 950+ already
-    // produces the right `resume_target` when `--resume-latest`
-    // was passed alongside `--refine` by `refine_command`).
-    let refine_requested = args.iter().any(|a| a == "--refine");
-
-    // Session: root context for this run. Creates logs/{scenario}_{timestamp}/
-    // for fresh runs; reuses the prior session dir when resuming
-    // so the metrics.db is appended-to in-place per SRD-44
-    // §"Wholesale metrics-purge".
-    let scenario_for_session = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
-    // SRD-77 — refine_plan is populated only when:
-    //   1. `--refine` was passed (refine verb is in flight)
-    //   2. The resume_target resolves to an existing session dir
-    // Computed BEFORE Session construction so the plan's
-    // `next_exec_id` can flow into `Session::refine`.
-    // SRD-77 refine scope. Default `missing` (skip phases with
-    // a prior completed outcome) when `--refine` is set without
-    // an explicit `scope=`. `scope=all` builds the plan for
-    // exec_id bumping + session re-attach but leaves the skip
-    // set empty, so every phase runs and new outcomes overwrite
-    // the prior ones (the cardinal history stays — prior rows
-    // keep their old exec_id, new rows land under the bumped
-    // exec_id). `scope=changed` requires `phase_hash` storage
-    // on PhaseOutcome (follow-up push) and is rejected here
-    // with a "not yet implemented" diag so the operator isn't
-    // silently dropped to `missing` semantics.
-    let refine_scope: Option<&str> = params.get("scope")
-        .map(|s| s.as_str())
-        .filter(|_| refine_requested);
-    let refine_plan: Option<Arc<crate::refine_plan::RefinePlan>> = if refine_requested {
-        resume_target.as_ref()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .and_then(|prior_dir| {
-                if !prior_dir.exists() {
-                    crate::diag!(crate::observer::LogLevel::Warn,
-                        "refine: prior session dir not found ({}); \
-                         running every phase as if this were a fresh `nbrs run`",
-                        prior_dir.display());
-                    return None;
-                }
-                let mut plan = crate::refine_plan::RefinePlan::load_from_session_dir(&prior_dir);
-                if plan.is_none() {
-                    crate::diag!(crate::observer::LogLevel::Warn,
-                        "refine: no readable phase_outcomes in {}; \
-                         running every phase as if this were a fresh `nbrs run`",
-                        prior_dir.display());
-                }
-                if let Some(p) = plan.as_mut() {
-                    p.scope = match refine_scope {
-                        Some("all") => {
-                            crate::diag!(crate::observer::LogLevel::Info,
-                                "refine: scope=all — every phase will run \
-                                 under exec_id={}", p.next_exec_id);
-                            crate::refine_plan::RefineScope::All
-                        }
-                        Some("changed") => {
-                            crate::diag!(crate::observer::LogLevel::Info,
-                                "refine: scope=changed — comparing each \
-                                 phase's program hash against the prior \
-                                 outcome; unchanged phases skip, changed \
-                                 phases re-run under exec_id={}",
-                                p.next_exec_id);
-                            crate::refine_plan::RefineScope::Changed
-                        }
-                        _ => crate::refine_plan::RefineScope::Missing,
-                    };
-                }
-                plan.map(Arc::new)
-            })
-    } else {
-        None
-    };
-    // SRD-77 — `--on-removed=` policy. When refine attaches to
-    // a session whose prior outcomes name phases the current
-    // workload no longer declares, the default behavior is
-    // ERROR (refuse to proceed) — silently keeping orphan
-    // outcomes hides intent, silently dropping them loses
-    // data. `--on-removed=keep` retains them (no work);
-    // `--on-removed=drop` is reserved for a future push that
-    // wires the deletion + interactive confirm.
     //
-    // The check compares the prior `phase_name` set against
-    // the current workload's `phases:` map keys. Sweep-cell
-    // variants (same name, different labels) are aggregated by
-    // name here — a missing name covers every prior cell of
-    // it. Tighter (name+labels) granularity is a follow-up
-    // when label-set comparison becomes load-bearing.
+    // SRD-88 — per-execution: the session name (host already used the
+    // same value to name the session dir) + the refine on-removed
+    // policy, recomputed here from this execution's params.
+    let scenario_for_session = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
     let on_removed_policy: &str = params.get("on_removed")
         .map(|s| s.as_str())
         .unwrap_or("error");
@@ -1214,48 +1688,25 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         }
     }
 
-    let session = match (refine_plan.as_ref(), resume_target.as_ref()) {
-        (Some(plan), Some(p)) if p.exists() => {
-            let prior_dir = p.parent()
-                .map(|d| d.to_path_buf())
-                .unwrap_or_else(crate::session::latest_session_dir);
-            crate::diag!(crate::observer::LogLevel::Info,
-                "refine: attached to session {}; \
-                 prior outcomes={}, completed phases to skip={}, \
-                 next exec_id={}",
-                prior_dir.display(),
-                plan.prior_outcomes_seen,
-                plan.completed.len(),
-                plan.next_exec_id);
-            crate::session::Session::refine(
-                prior_dir,
-                workload_file.as_deref().unwrap_or("inline"),
-                scenario_for_session,
-                plan.next_exec_id,
-            )
-        }
-        (_, Some(p)) if p.exists() => {
-            let prior_dir = p.parent()
-                .map(|d| d.to_path_buf())
-                .unwrap_or_else(crate::session::latest_session_dir);
-            crate::session::Session::resume(
-                prior_dir,
-                workload_file.as_deref().unwrap_or("inline"),
-                scenario_for_session,
-            )
-        }
-        _ => crate::session::Session::new_with_args(
-            workload_file.as_deref().unwrap_or("inline"),
-            scenario_for_session,
-            &args,
-        ),
-    };
-    let session_id = session.id.clone();
-    // SRD-77 — exec_id is the active execution's identity
-    // within the session. `Session::refine` populates this from
-    // the prior outcomes' max+1; `Session::resume` /
-    // `Session::new_with_args` set it to `1`.
-    let exec_id = session.execution.exec_id;
+    let (exec_verb, exec_id_seed): (&'static str, u64) =
+        match (refine_plan.as_ref(), resume_target.as_ref()) {
+            (Some(plan), Some(p)) if p.exists() => ("refine", plan.next_exec_id),
+            (_, Some(p)) if p.exists() => ("resume", 1),
+            _ => ("run", 1),
+        };
+    // SRD-88 §2 — start this execution under the session: derive
+    // its component (carrying `exec_id` + `workload`) as a child
+    // of the session component. Phase components attach under
+    // `execution.component`, so every metric inherits this
+    // execution's identity without any tier redeclaring a label.
+    let execution = crate::session::Execution::start(
+        &session,
+        workload_file.as_deref().unwrap_or("inline"),
+        scenario_for_session,
+        exec_verb,
+        exec_id_seed,
+    );
+    let exec_id = execution.exec_id;
 
     // dryrun=controls: defer the tree walk until after phase
     // construction. `list_controls` implies depth=Phase, which
@@ -1267,186 +1718,52 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
     // Direct the diagnostic log sink at <session_dir>/session.log so every
     // observer::log() call is captured durably, even under the TUI.
-    let session_log_path = session.output_dir.join("session.log");
-    if let Err(e) = crate::observer::set_log_file(&session_log_path) {
-        crate::diag!(crate::observer::LogLevel::Warn,
-            "warning: failed to open session log {}: {e}",
-            session_log_path.display());
-    }
-
-    // `--trace=<spec>` (repeatable). Collected from raw `args`
-    // because parse_params is HashMap-keyed and would collapse
-    // repeated flags. See trace_router for spec grammar.
-    let trace_specs = collect_repeated_flag(&args, "trace");
-    match crate::trace_router::init(&trace_specs, &session.output_dir) {
-        Ok(0) => {} // no --trace specified, router stays empty
-        Ok(n) => crate::diag!(crate::observer::LogLevel::Info,
-            "trace router: {n} route(s) configured"),
-        Err(e) => crate::diag!(crate::observer::LogLevel::Warn,
-            "trace router init failed: {e}"),
-    }
-
-    crate::diag!(crate::observer::LogLevel::Info, "session: {} ({})",
-        session.id, session.output_dir.display());
-
-    // Polydat library audit channel: route polydat's
-    // `audit::log/info/warn/...` calls through this
-    // process's observer so they land in `session.log`
-    // alongside every other diagnostic line, with a
-    // `[lib]` subsystem tag so the operator can filter them
-    // out if they're noisy. Replaces the standalone
-    // `<session>/audit.log` file — same content, one fewer
-    // place to look.
-    polydat::audit::set_log_fn(|level, msg| {
-        use polydat::audit::LogLevel as AuditLevel;
-        let mapped = match level {
-            AuditLevel::Trace | AuditLevel::Debug => crate::observer::LogLevel::Debug,
-            AuditLevel::Info  => crate::observer::LogLevel::Info,
-            AuditLevel::Warn  => crate::observer::LogLevel::Warn,
-            AuditLevel::Error => crate::observer::LogLevel::Error,
+    // SRD-77 / SRD-88 — per-execution metadata + the in-flight
+    // `executions` row. Written through the shared session reporter
+    // but scoped to THIS execution's `exec_id`, so concurrent
+    // executions sharing the session each record their own workload
+    // / scenario / params without clobbering. `ended_at_nanos` /
+    // `disposition` stay NULL until the shutdown-flush guard updates
+    // them. `scope` is non-NULL only under refine.
+    {
+        let mut cli_keys: Vec<&String> = params.keys().collect();
+        cli_keys.sort();
+        let cli_text: String = cli_keys.iter()
+            .filter_map(|k| params.get(*k).map(|v| format!("{k}={v}")))
+            .collect::<Vec<_>>().join("\n");
+        let scope_for_row: Option<&str> = if refine_requested {
+            Some(refine_scope.unwrap_or("missing"))
+        } else {
+            None
         };
-        crate::observer::log(mapped, &format!("[lib] {msg}"));
-    });
-
-    // SQLite metrics in session directory
-    let sqlite_path = session.metrics_path();
-    let sqlite_reporter = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&sqlite_path)
-        .map(|mut r| {
-            // `session` is the one session-INVARIANT key; everything
-            // else varies per execution and goes to
-            // execution_metadata so a refine doesn't clobber a prior
-            // execution's values.
-            let exec_id = session.execution.exec_id;
+        if let Ok(mut guard) = sqlite_reporter.lock()
+            && let Some(r) = guard.as_mut() {
+            let exec_id = execution.exec_id;
             let sid = session.id.clone();
-            r.set_metadata("session", &session.id);
-            r.set_execution_metadata(&sid, exec_id, "workload", &session.workload);
-            r.set_execution_metadata(&sid, exec_id, "scenario", &session.scenario);
+            r.set_execution_metadata(&sid, exec_id, "workload", &execution.workload);
+            r.set_execution_metadata(&sid, exec_id, "scenario", &execution.scenario);
             r.set_execution_metadata(&sid, exec_id, "start_time", &format!("{}",
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
             for (k, v) in &merged_params {
                 r.set_execution_metadata(&sid, exec_id, &format!("param.{k}"), v);
             }
-            // Reproducibility: stash the raw workload YAML and the
-            // CLI params verbatim so the metrics db alone is enough
-            // to re-create the run. An operator pulling just
-            // `metrics.db` off a CI machine can recover the exact
-            // workload via:
-            //   sqlite3 metrics.db "SELECT value FROM session_metadata \
-            //     WHERE key='workload_yaml';" > workload.yaml
-            //   sqlite3 metrics.db "SELECT value FROM session_metadata \
-            //     WHERE key='cli_params';"  (one key=value per line)
-            // No file-tree dependency, no inferred reconstruction.
+            // Reproducibility: the metrics db alone re-creates the run
+            // (raw workload YAML + verbatim CLI params).
             if let Some(yaml) = workload_source_text.as_deref() {
                 r.set_execution_metadata(&sid, exec_id, "workload_yaml", yaml);
             }
-            // CLI params (the raw `params` HashMap before merge with
-            // workload defaults) — these are the operator's actual
-            // command-line overrides. One per line as `key=value`.
-            // Sorted for deterministic output across runs.
-            let mut cli_keys: Vec<&String> = params.keys().collect();
-            cli_keys.sort();
-            let cli_text: String = cli_keys.iter()
-                .filter_map(|k| params.get(*k).map(|v| format!("{k}={v}")))
-                .collect::<Vec<_>>().join("\n");
             r.set_execution_metadata(&sid, exec_id, "cli_params", &cli_text);
-            crate::diag!(crate::observer::LogLevel::Info, "metrics: {}",
-                sqlite_path.display());
-
-            // SRD-77 — insert the in-flight execution row.
-            // Carries the same workload-yaml + cli-params
-            // snapshot the metadata table already stores, so
-            // an operator looking at `executions` alone (the
-            // cardinal-history surface) has the full audit
-            // payload without joining session_metadata.
-            // `ended_at_nanos` / `disposition` stay NULL until
-            // the shutdown-flush guard updates them.
-            // SRD-77 — `scope` reflects the actual --scope=
-            // (or `scope=`) param when refine is active. Only
-            // refine writes a non-NULL scope; run/resume leave
-            // it NULL.
-            let scope_for_row: Option<&str> = if refine_requested {
-                Some(refine_scope.unwrap_or("missing"))
-            } else {
-                None
-            };
             r.insert_execution_start(
                 &session.id,
-                session.execution.exec_id,
-                session.execution.verb,
+                execution.exec_id,
+                execution.verb,
                 scope_for_row,
-                session.execution.started_at_nanos,
+                execution.started_at_nanos,
                 workload_source_text.as_deref().unwrap_or(""),
                 &cli_text,
             );
-            r
-        })
-        .map_err(|e| crate::diag!(crate::observer::LogLevel::Warn,
-            "warning: SQLite metrics disabled: {e}"))
-        .ok();
-    let sqlite_reporter = std::sync::Arc::new(std::sync::Mutex::new(sqlite_reporter));
-
-    // RAII shutdown guard — runs `consolidate_wal` at session
-    // end via Drop. Reliable across every Rust unwind path:
-    // normal completion, error `?` propagation, first-Ctrl-C
-    // → stop flag → runner unwind. The only path that skips
-    // it is `std::process::exit` (second Ctrl-C force-exit),
-    // which is the operator's declared "I don't want to
-    // wait" escape hatch. The guard MUST live until after
-    // every reporter has finished writing — bind it here at
-    // the top of the run-impl block so it drops in
-    // last-created / first-dropped order relative to local
-    // variables; the explicit `_` binding pins its lifetime
-    // to the function scope (otherwise the temporary would
-    // drop immediately).
-    let _sqlite_shutdown_guard =
-        nbrs_metrics::reporters::sqlite::SqliteShutdownGuard::new(
-            sqlite_reporter.clone(),
-        );
-
-    // Periodic WAL checkpoint so concurrent read-only
-    // tooling (`nbrs report` against a live session,
-    // ad-hoc `sqlite3 metrics.db` inspection, the realtime
-    // metricsql preview) sees committed writes without
-    // waiting for session end. SQLite's WAL holds frames
-    // until either:
-    //   1. `wal_autocheckpoint` (page-count threshold,
-    //      default 1000 pages) fires on a writer, OR
-    //   2. an explicit `PRAGMA wal_checkpoint(...)` runs.
-    //
-    // Under bursty workloads (a tight rampup followed by a
-    // long synchronous wait — exactly the SRD-75
-    // ensure_compacted shape) writers can stall under the
-    // autocheckpoint threshold for many minutes, during
-    // which readers see stale data. A 60-second background
-    // task running `PRAGMA wal_checkpoint(PASSIVE)` bounds
-    // the staleness without blocking writers.
-    //
-    // PASSIVE mode is the cheap variant: it merges all
-    // currently-committed WAL frames into the main `.db`
-    // without truncating the WAL file or pausing writers.
-    // The tokio task runs for the runtime's lifetime and is
-    // cancelled on shutdown; the final `consolidate_wal`
-    // (TRUNCATE flavour) at session end produces the
-    // archival "no -wal sidecar" form.
-    {
-        let reporter = sqlite_reporter.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                std::time::Duration::from_secs(60),
-            );
-            // First tick is immediate; skip it so the
-            // post-session-start state has a chance to
-            // settle before the first checkpoint fires.
-            interval.tick().await;
-            loop {
-                interval.tick().await;
-                if let Ok(g) = reporter.lock()
-                    && let Some(r) = g.as_ref() {
-                        r.passive_checkpoint();
-                    }
-            }
-        });
+        }
     }
 
     // SRD-63 Push 9a: fire `EventType::SessionStart` once at the
@@ -1712,220 +2029,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let builder = Arc::new(OpBuilder::new(kernel));
     let program = builder.program();
 
-    // === Execution ===
-    //
-    // Metrics infrastructure is shared across both the phased and
-    // single-activity paths — both route through the session-level
-    // `CadenceReporter` + `MetricsQuery`. The legacy per-activity
-    // capture thread with inline VM/SQLite reporter calls is gone.
-
-    // Plan the cadence tree from the observer's cadence preferences
-    // (or defaults), validated against the scheduler base interval,
-    // build the CadenceReporter, and wire it through the session +
-    // Polydat metric nodes as the single query source.
-    let base_interval = std::time::Duration::from_secs(1);
-    let cadences = observer.cadences()
-        .unwrap_or_else(nbrs_metrics::cadence::Cadences::defaults);
-    let cadence_tree = nbrs_metrics::cadence::CadenceTree::plan_validated(
-        cadences,
-        nbrs_metrics::cadence::DEFAULT_MAX_FAN_IN,
-        base_interval,
-    ).map_err(|e| format!("cadence tree: {e}"))?;
-    let cadence_reporter = Arc::new(
-        nbrs_metrics::cadence_reporter::CadenceReporter::new(cadence_tree.clone()),
-    );
-    let metrics_query = Arc::new(nbrs_metrics::metrics_query::MetricsQuery::new(
-        cadence_reporter.clone(),
-        session.component.clone(),
-    ));
-    session.set_metrics_query(metrics_query.clone());
-    nbrs_metrics::polydat_nodes::set_global_query(metrics_query.clone());
-    // SRD-86 §"The metric-reader surface" — install the live in-process
-    // metrics-access service so the `metricsql_*` nodes can locate it
-    // (`queryapi::live_access()`) and evaluate queries against this run.
-    nbrs_metrics::queryapi::install_live_access(std::sync::Arc::new(
-        nbrs_metrics::queryapi::MetricsQueryAccess::new(metrics_query.clone()),
-    ));
-    observer.on_metrics_query(metrics_query.clone());
-
-    let session_for_capture = session.component.clone();
-    let mut sched_builder = nbrs_metrics::scheduler::SchedulerBuilder::new()
-        .base_interval(std::time::Duration::from_secs(1))
-        .with_cadence_reporter(cadence_reporter.clone())
-        .with_cadence_tree(cadence_tree.clone());
-
-    // SRD-42 §"SQLite — near-time persistence": subscribe the
-    // SQLite reporter via the CadenceReporter push path so slow
-    // disk can't stall the cascade. The subscription runs on its
-    // own dispatch thread with a per-subscription timeout.
-    //
-    // Preferred write cadence is 30 s — coarse enough to keep
-    // write volume low for long runs, fine enough for post-run
-    // analysis. Aligns to the nearest declared cadence ≥ 30 s
-    // (default declared set includes 30 s so this resolves exactly).
-    // Journal mode is WAL (set in SqliteReporter::new via
-    // `PRAGMA journal_mode=WAL`), so readers never block writers.
-    //
-    // Always-on: this subscription fires whenever the SQLite
-    // reporter was constructed successfully. Operators don't need
-    // to opt in with any extra param — every run produces a
-    // `metrics.db` in its session directory by default.
-    let sqlite_cadence = cadence_tree.align_to_declared(
-        std::time::Duration::from_secs(30),
-    );
-    if let (Some(cadence), Ok(guard)) = (sqlite_cadence, sqlite_reporter.lock())
-        && guard.is_some() {
-            drop(guard);
-            let sqlite_for_sub = sqlite_reporter.clone();
-            match cadence_reporter.subscribe(
-                cadence,
-                Box::new(MutexReporter(sqlite_for_sub)),
-                nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
-            ) {
-                Ok(_) => {
-                    crate::diag!(crate::observer::LogLevel::Info,
-                        "metrics: SQLite writes every {:?} (WAL mode)", cadence);
-                }
-                Err(e) => {
-                    crate::diag!(crate::observer::LogLevel::Warn,
-                        "metrics: SQLite subscription failed: {e}");
-                }
-            }
-        }
-
-    // Per-instance JSONL snapshot reporter — opt-in. Writes
-    // one file per (metric, label-tuple) in `<session>/metrics/`,
-    // one JSON record appended per snapshot tick. Useful when
-    // you want a per-instance trace to tail / awk / import
-    // into a notebook without opening the SQLite db, but most
-    // sessions never read these files and the SQLite db
-    // already carries the same data. Enable via any of:
-    //   * `--per-instance-metrics` flag on the CLI
-    //   * `per-instance-metrics=true` in workload params
-    //   * `NBRS_PER_INSTANCE_METRICS=1` env var
-    let per_instance_enabled =
-        args.iter().any(|a| a == "--per-instance-metrics")
-            || params.get("per-instance-metrics")
-                .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
-                .unwrap_or(false)
-            || std::env::var("NBRS_PER_INSTANCE_METRICS").ok()
-                .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
-                .unwrap_or(false);
-    if per_instance_enabled {
-        let per_instance_dir = session.output_dir.join("metrics");
-        match nbrs_metrics::reporters::per_instance::PerInstanceReporter::new(&per_instance_dir) {
-            Ok(reporter) => {
-                if let Some(cadence) = cadence_tree.align_to_declared(
-                    std::time::Duration::from_secs(30),
-                ) {
-                    match cadence_reporter.subscribe(
-                        cadence,
-                        Box::new(reporter),
-                        nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
-                    ) {
-                        Ok(_) => {
-                            crate::diag!(crate::observer::LogLevel::Info,
-                                "metrics: per-instance JSONL writes every {:?} into {}",
-                                cadence, per_instance_dir.display());
-                        }
-                        Err(e) => {
-                            crate::diag!(crate::observer::LogLevel::Warn,
-                                "metrics: per-instance subscription failed: {e}");
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Warn,
-                    "metrics: per-instance reporter disabled ({}): {e}",
-                    per_instance_dir.display());
-            }
-        }
-    }
-
-    // Same routing for the VictoriaMetrics / Prometheus push reporter
-    // when `--report-to` (or equivalent param) was provided.
-    // `jobname` / `instance` params match the nosqlbench-java
-    // `PromPushReporterComponent` convention; they're substituted
-    // into any `JOBNAME` / `INSTANCE` placeholders in the URL.
-    if let Some(url) = openmetrics_url.as_ref()
-        && let Some(cadence) = cadence_tree.align_to_declared(
-            std::time::Duration::from_secs(10),
-        ) {
-            let jobname = merged_params.get("jobname").cloned()
-                .unwrap_or_else(|| "default".to_string());
-            let instance = merged_params.get("instance").cloned()
-                .unwrap_or_else(|| "default".to_string());
-            let mut vm = match nbrs_metrics::reporters::victoriametrics
-                ::VictoriaMetricsReporter::from_spec(url)
-            {
-                Ok(r) => r,
-                Err(_) => nbrs_metrics::reporters::victoriametrics
-                    ::VictoriaMetricsReporter::new(url),
-            };
-            vm = vm.with_jobname(jobname).with_instance(instance);
-            if let Some(token_path) = merged_params.get("prompush_apikeyfile") {
-                match vm.with_bearer_token_file(token_path) {
-                    Ok(r) => vm = r,
-                    Err(e) => {
-                        crate::diag!(crate::observer::LogLevel::Warn,
-                            "prompush_apikeyfile '{token_path}': {e}");
-                        vm = nbrs_metrics::reporters::victoriametrics
-                            ::VictoriaMetricsReporter::from_spec(url)
-                            .unwrap_or_else(|_| nbrs_metrics::reporters::victoriametrics
-                                ::VictoriaMetricsReporter::new(url))
-                            .with_jobname(
-                                merged_params.get("jobname").cloned()
-                                    .unwrap_or_else(|| "default".to_string()),
-                            )
-                            .with_instance(
-                                merged_params.get("instance").cloned()
-                                    .unwrap_or_else(|| "default".to_string()),
-                            );
-                    }
-                }
-            }
-            let _ = cadence_reporter.subscribe(
-                cadence,
-                Box::new(vm),
-                nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
-            );
-        }
-
-    // Register the observer's reporters at their requested cadences
-    // on the scheduler tree (base-interval live-frame forwarding for
-    // sparklines / live histogram).
-    for (interval, reporter) in observer.reporters() {
-        sched_builder = sched_builder.add_reporter(
-            interval,
-            BoxedReporter(reporter),
-        );
-    }
-
-    let scheduler = sched_builder.build(Box::new(move || {
-        nbrs_metrics::component::capture_tree(
-            &session_for_capture,
-            std::time::Duration::from_secs(1),
-        )
-    }));
-    let stop_handle = Arc::new(scheduler.start());
-
-    // Install the session-wide Ctrl-C handler. First SIGINT
-    // requests cooperative shutdown (fibers exit at cycle
-    // boundary, profiler + cadence reporter flush in normal
-    // teardown order); second SIGINT force-exits. Idempotent —
-    // safe to call again on retry / reentry paths.
-    crate::session_signals::install_signal_handler();
-
-    // Start profiler if requested (profiler=flamegraph or profiler=perf).
-    // Shared across both phased and single-activity paths. The
-    // guard's Drop impl flushes the flamegraph SVG on early
-    // returns (panic, ?-propagation, SIGINT-driven shutdown), so
-    // the explicit `finish()` below is the happy-path fast lane,
-    // not the only flush site.
-    let mut _profiler = crate::profiler::ProfileGuard::maybe_start(
-        &merged_params, Some(&session.output_dir));
-
     // Unification — the scenario-tree executor is the sole
     // execution path. `Workload::synthesize_default_phase` (called
     // at load time) guarantees `phases` is non-empty for any
@@ -1973,13 +2076,13 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             t.validate_iter_var_uniqueness(&wp_names)?;
             // SRD-13d Phase 6 — extend the scope tree with
             // op-template children of every Phase node so the
-            // op tier is visible to the flattening classifier
+            // op tier is visible to the elision classifier
             // and downstream diagnostics.
             t.extend_with_op_templates(&phases);
-            // SRD-13d Phase 3 — workload-init scope-flattening
+            // SRD-13d Phase 3 — workload-init scope-elision
             // pre-walk. Reads `HasGkMatter` on each AST node
             // and marks the corresponding scope-tree node
-            // `materialised` (own kernel) or flattened (binds
+            // `materialised` (own kernel) or elided (binds
             // through parent). Conservative predicate today
             // (Definitions ⇒ materialise without hash-subset
             // refinement); Phase 6 tightens it.
@@ -1988,12 +2091,12 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             // `workload.ops` was moved earlier in this fn —
             // the classifier reads only bindings + params +
             // phases anyway.
-            let classify_inputs = crate::scope_flattening::ClassifyInputs {
+            let classify_inputs = crate::scope_elision::ClassifyInputs {
                 bindings: &workload.bindings,
                 params: &workload.params,
                 phases: &phases,
             };
-            crate::scope_flattening::classify_and_mark(&mut t, &classify_inputs);
+            crate::scope_elision::classify_and_mark(&mut t, &classify_inputs);
             std::sync::Arc::new(t)
         };
 
@@ -2018,7 +2121,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // own kernels in DFS pre-order below — each one's
         // synthesis reads its parent's manifest via the standard
         // Polydat API on the parent's installed kernel.
-        scope_tree.install_kernel(scope_tree.root, workload_canonical_kernel);
+        scope_tree.install_kernel(scope_tree.workload_root_idx(), workload_canonical_kernel);
 
         // M3.2: install per-scope kernels for for_each /
         // for_combinations nodes. Each kernel re-exports its
@@ -2276,7 +2379,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 crate::scope_tree::ScopeKind::OpTemplate { name } => {
                     // SRD-13d Phase 9: install a per-op kernel
                     // ONLY for materialised op-templates. The
-                    // scope-flattening pre-walk already set the
+                    // scope-elision pre-walk already set the
                     // mark; we just gate on it here.
                     if node.materialised != Some(true) {
                         return None;
@@ -2577,7 +2680,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     ),
                 })
                 .collect();
-            let set = match scope_tree.nodes[scope_tree.root].cached_kernel.get() {
+            let set = match scope_tree.nodes[scope_tree.workload_root_idx()].cached_kernel.get() {
                 Some(root_kernel) if !declared.is_empty() => {
                     crate::stop_conditions::StopConditionSet::build_for_phase(
                         root_kernel, None, &declared,
@@ -2649,15 +2752,19 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             error_policy: root_error_policy,
             session_id: session_id.clone(),
             exec_id,
-            workload_name: session.workload.clone(),
+            workload_name: execution.workload.clone(),
             label_stack: Vec::new(),
-            session_component: session.component.clone(),
+            // SRD-88 §2 — phase/activity components attach under the
+            // EXECUTION component (which declares `exec_id` +
+            // `workload`), not the session root. The session root
+            // is the shared `session=<id>` ancestor above it.
+            session_component: execution.component.clone(),
             cadence_reporter: cadence_reporter.clone(),
             stop_handle: stop_handle.clone(),
             observer: observer.clone(),
             scope_tree: scope_tree.clone(),
             schedule_spec: schedule_spec.clone(),
-            current_parent_kernel: scope_tree.nodes[scope_tree.root]
+            current_parent_kernel: scope_tree.nodes[scope_tree.workload_root_idx()]
                 .cached_kernel.get().cloned(),
             workload_source: workload_file.as_ref().and_then(|path| {
                 workload_source_text.as_ref().map(|text| {
@@ -2912,7 +3019,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // so we close at the session root.
         cadence_reporter.close_path(&Labels::of("session", &session.id));
 
-        // SRD-13d Phase 7 — `dryrun=dispenser` scope-flattening
+        // SRD-13d Phase 7 — `dryrun=dispenser` scope-elision
         // summary. Phase walk has just completed; scope tree
         // carries final `materialised` / `logical_name` marks
         // (set by the workload-load classifier). Dump now so the
@@ -2920,14 +3027,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // metrics, adapter map_op calls) in the same run. Used
         // to fire for `Op` depth; since the auto-bump now lifts
         // `dryrun=op` to `Cycle` (full cycle execution with
-        // wrapper short-circuit), the scope-flattening surface
+        // wrapper short-circuit), the scope-elision surface
         // moved to `dryrun=dispenser` — the explicit "build
         // every dispenser but don't run cycles" mode.
         if diag.depth == ExecDepth::Dispenser {
             let mut out = std::io::stdout();
-            if let Err(e) = render_scope_flattening_summary(&scope_tree, &mut out) {
+            if let Err(e) = render_scope_elision_summary(&scope_tree, &mut out) {
                 crate::diag!(crate::observer::LogLevel::Warn,
-                    "warning: rendering scope-flattening summary: {e}");
+                    "warning: rendering scope-elision summary: {e}");
             }
         }
 
@@ -2941,26 +3048,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // teardown logic had already started).
     cadence_reporter.close_path(&Labels::of("session", &session.id));
 
-    // Stop profiler and scheduler now that execution (phased or
-    // single-activity) is done. `finish()` is idempotent — Drop
-    // will also call it on early returns / SIGINT-driven
-    // shutdowns, so the flamegraph SVG lands regardless.
-    if let Some(ref mut profiler) = _profiler {
-        profiler.finish();
-    }
-    if let Ok(mut sh) = Arc::try_unwrap(stop_handle) {
-        sh.stop();
-    }
 
-    // Shutdown the cadence reporter: flush trailing partials through
-    // every cascade layer AND drain every subscriber's channel. This
-    // MUST happen before reading any sink for the summary — otherwise
-    // short phases (e.g. ann_query under a 30s cadence) contribute no
-    // rows because their data is still sitting in an unclosed window.
-    let _teardown_t = std::time::Instant::now();
-    cadence_reporter.shutdown();
-    crate::diag!(crate::observer::LogLevel::Debug,
-        "shutdown: cadence reporter flush+join {:?}", _teardown_t.elapsed());
+    // SRD-88 — flush THIS execution's windows into the store so the
+    // summaries below see complete data, without tearing down the
+    // session-shared cadence reporter.
+    cadence_reporter.quiesce(std::time::Duration::from_secs(30));
 
     // SRD-63 Push 9a: fire `EventType::SessionEnd` once after
     // the cadence shutdown but before `run_finished()`.
@@ -2983,20 +3075,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         );
     }
 
-    // Clean shutdown WAL consolidation: route the "shutting
-    // down" / "shutdown complete" notice through the observer
-    // so it lands in the proper log-row stream (with the
-    // session-elapsed margin) instead of as raw `eprintln!`
-    // that punches through whatever the active sink is
-    // currently rendering. Consume the guard so its drop-time
-    // fallback is a no-op for the clean path — the drop-time
-    // `eprintln!` only fires now on unclean exits (panic, …)
-    // where the observer log channel isn't trustworthy.
-    crate::diag!(crate::observer::LogLevel::Info,
-        "shutting down — consolidating metrics.db WAL");
-    _sqlite_shutdown_guard.consume();
-    crate::diag!(crate::observer::LogLevel::Info,
-        "shutdown complete");
 
     observer.run_finished();
 
@@ -3041,7 +3119,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs())
             .unwrap_or(0);
         let sid = session.id.clone();
-        let exec_id = session.execution.exec_id;
+        let exec_id = execution.exec_id;
         reporter.set_execution_metadata(&sid, exec_id, "end_time", &end_time.to_string());
         reporter.set_execution_metadata(&sid, exec_id, "phase_count", &phases.len().to_string());
         reporter.set_execution_metadata(&sid, exec_id, "scenario_count", &scenarios.len().to_string());
@@ -3066,7 +3144,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 // `nbrs report` round-trips through the same
                 // parser the workload uses.
                 let sid = session.id.clone();
-                let exec_id = session.execution.exec_id;
+                let exec_id = execution.exec_id;
                 for item in workload_report.items() {
                     // Single emission point: the workload-side
                     // serializer. The db-fallback path in
@@ -3176,6 +3254,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // `session_signals`.
 
     Ok(())
+}
+
+/// Core runner: set up the shared session host, run one execution, tear down.
+async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserver>) -> Result<(), String> {
+    let host = SessionHost::setup(args, observer.clone())?;
+    let result = run_execution(&host, args, observer).await;
+    host.shutdown();
+    result
 }
 
 /// Point per-file symlinks under `logs/` at the latest session's
@@ -4237,7 +4323,7 @@ fn scan_polydat_binding_lhs(
 /// - `(a: u64, b: f64, ...)`        → inserts each declared name
 ///
 /// Mirrors `parse_input_decl` in the Polydat parser; this is a
-/// lightweight scanner used by scope-flattening to register
+/// lightweight scanner used by scope-elision to register
 /// locally-bound names without re-running the full lexer/parser.
 fn scan_input_decl_names(out: &mut std::collections::HashSet<String>, body: &str) {
     let body = body.trim();
@@ -5199,7 +5285,7 @@ mod tests {
     }
 
     #[test]
-    fn render_scope_flattening_summary_shows_materialised_and_flattens_to() {
+    fn render_scope_elision_summary_shows_materialised_and_elides_to() {
         use nbrs_workload::model::{BindingsDef, ScenarioNode, WorkloadPhase};
         use std::collections::HashMap;
 
@@ -5220,26 +5306,26 @@ mod tests {
             &[ScenarioNode::Phase("predict".into())],
         );
         // Conservative classifier: empty workload + empty
-        // phase ⇒ scenario and phase flatten into root.
-        let inputs = crate::scope_flattening::ClassifyInputs {
+        // phase ⇒ scenario and phase elide into root.
+        let inputs = crate::scope_elision::ClassifyInputs {
             bindings: &BindingsDef::default(),
             params: &HashMap::new(),
             phases: &phases,
         };
-        crate::scope_flattening::classify_and_mark(&mut tree, &inputs);
+        crate::scope_elision::classify_and_mark(&mut tree, &inputs);
 
         let mut buf: Vec<u8> = Vec::new();
-        render_scope_flattening_summary(&tree, &mut buf).unwrap();
+        render_scope_elision_summary(&tree, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
 
-        assert!(s.contains("scope flattening summary"),
+        assert!(s.contains("scope elision summary"),
             "missing header: {s}");
         // Workload root materialises always (SRD-13d §5.1).
         assert!(s.contains("workload") && s.contains("materialised=true"),
             "expected materialised=true line for workload root: {s}");
-        // Scenario + phase flatten into the workload root.
-        assert!(s.contains("flattens-to=workload"),
-            "expected flattens-to=workload for empty phase: {s}");
+        // Scenario + phase elide into the workload root.
+        assert!(s.contains("elides-to=workload"),
+            "expected elides-to=workload for empty phase: {s}");
         assert!(s.contains("workload.scenario.default"),
             "expected scenario logical name: {s}");
         assert!(s.contains("workload.scenario.default.phase.predict"),

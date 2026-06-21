@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
-use nbrs_metrics::component::Component;
+use nbrs_metrics::component::{attach, Component, ComponentState};
 use nbrs_metrics::labels::Labels;
 use nbrs_metrics::metrics_query::MetricsQuery;
 
@@ -37,42 +37,71 @@ use nbrs_metrics::metrics_query::MetricsQuery;
 /// and the component tree's root labels (`session`,
 /// `exec_id`) honour the eventual SRD-77 contract from day
 /// one — no later schema migration is required.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Execution {
     /// Monotonic per-session sequence (`1, 2, 3, ...`).
-    /// Today always `1`; SRD-77's `refine` verb introduces
-    /// the registry that bumps it.
+    /// SRD-77's `refine` verb bumps it; SRD-88's concurrent
+    /// harness allocates a distinct id per in-flight execution.
     pub exec_id: u64,
     /// Which verb launched this execution: `"run"` /
-    /// `"resume"` / future `"refine"`. Operator-visible via
-    /// the SRD-77 `executions` table and replay header.
+    /// `"resume"` / `"refine"`. Operator-visible via the SRD-77
+    /// `executions` table and replay header.
     pub verb: &'static str,
     /// Wall-clock nanos-since-epoch at execution start.
     pub started_at_nanos: i64,
+    /// The workload's bare stem (the `workload=` dimensional
+    /// label and the `executions.workload` column for THIS
+    /// execution). Per SRD-88 this is execution-tier identity,
+    /// not session-tier: N executions sharing one session each
+    /// carry their own.
+    pub workload: String,
+    /// Scenario name for this execution (metadata, not a
+    /// dimensional label).
+    pub scenario: String,
+    /// This execution's component — a child of the session
+    /// component (SRD-88 §2). Carries the `exec_id` + `workload`
+    /// labels; phase/activity components attach under it so
+    /// every metric inherits this execution's identity. The
+    /// session component above it carries only `session=<id>`
+    /// and is shared by every concurrent execution.
+    pub component: Arc<RwLock<Component>>,
 }
 
 impl Execution {
-    /// Construct the implicit first execution of a session.
-    /// `verb` is `"run"` for fresh sessions and `"resume"`
-    /// for `nbrs resume`. Future SRD-77 callers building
-    /// follow-up executions read the prior count and bump.
-    pub fn first(verb: &'static str) -> Self {
-        Self {
-            exec_id: 1,
-            verb,
-            started_at_nanos: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as i64)
-                .unwrap_or(0),
-        }
-    }
-
-    /// SRD-77 — construct a follow-up execution with an
-    /// explicit `exec_id`. Used by `nbrs refine`, which reads
-    /// the prior `phase_outcomes` to compute `next_exec_id`
-    /// and passes it here so the resumed session's component
-    /// tree carries the right `exec_id` label from the start.
-    pub fn with_exec_id(verb: &'static str, exec_id: u64) -> Self {
+    /// Start an execution under `session`: derive its
+    /// [`Execution::component`] as a child of the session
+    /// component, labelled with this execution's `exec_id` +
+    /// `workload` stem (SRD-88 §2 — the session is the shared
+    /// common root, each execution derives from it). `exec_id`
+    /// is `1` for a fresh `run`/`resume`, the refine plan's
+    /// `next_exec_id` for `refine`, or a distinct allocated id
+    /// for a concurrent execution.
+    pub fn start(
+        session: &Session,
+        workload: &str,
+        scenario: &str,
+        verb: &'static str,
+        exec_id: u64,
+    ) -> Self {
+        let workload_stem = Path::new(workload)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("workload");
+        // Execution-tier labels: `exec_id` + `workload`. The
+        // parent session component already carries `session`;
+        // `attach` composes the two so descendant metrics see
+        // the full `{session, exec_id, workload}` set, exactly
+        // as the pre-SRD-88 single-tier root did.
+        let component = Arc::new(RwLock::new(Component::new(
+            Labels::of("exec_id", exec_id.to_string())
+                .with("workload", workload_stem),
+            std::collections::HashMap::new(),
+        )));
+        attach(&session.component, &component);
+        component
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_state(ComponentState::Running);
         Self {
             exec_id,
             verb,
@@ -80,7 +109,24 @@ impl Execution {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as i64)
                 .unwrap_or(0),
+            workload: workload_stem.to_string(),
+            scenario: scenario.to_string(),
+            component,
         }
+    }
+}
+
+impl std::fmt::Debug for Execution {
+    /// Identity fields only — the component is an `Arc<RwLock<…>>`
+    /// into the live tree and not meaningfully `Debug`-printable.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Execution")
+            .field("exec_id", &self.exec_id)
+            .field("verb", &self.verb)
+            .field("started_at_nanos", &self.started_at_nanos)
+            .field("workload", &self.workload)
+            .field("scenario", &self.scenario)
+            .finish_non_exhaustive()
     }
 }
 
@@ -104,17 +150,12 @@ pub struct Session {
     /// Output directory for diagnostic artifacts (metrics, logs, flamegraphs).
     /// Located at `logs/{id}/`. Not the working directory.
     pub output_dir: PathBuf,
-    /// Workload file path (for metadata).
-    pub workload: String,
-    /// Scenario name.
-    pub scenario: String,
-    /// SRD-77 — the active execution. Every per-phase /
-    /// per-metric row this session produces is tagged with
-    /// `execution.exec_id` so SRD-77's `refine` verb can
-    /// layer follow-up executions onto the same session
-    /// without collision.
-    pub execution: Execution,
-    /// Session root component (owns the component tree for metrics labeling).
+    /// Session root component — **one per process** (SRD-88 §2).
+    /// Owns the `session=<id>` dimensional label and nothing
+    /// else; per-execution identity (`exec_id`, `workload`)
+    /// lives on the [`Execution::component`] children that hang
+    /// under it. Each label name is owned by exactly one tier
+    /// and never redeclared below it.
     pub component: Arc<RwLock<Component>>,
     /// Shared `MetricsQuery` handle — installed by the runner once the
     /// cadence reporter is built. `None` before the runner wires it.
@@ -1135,22 +1176,22 @@ impl Session {
     /// 1. `--session-dir <path>` CLI flag (or
     ///    `SESSION_DIRECTORY` env var, equivalent). `SESSION`
     ///    token in the path is replaced with the auto-generated
-    ///    `{scenario}_{timestamp}` name. The basename becomes
+    ///    `{session_name}_{timestamp}` name. The basename becomes
     ///    the session id.
     /// 2. `--logs-dir <parent>` and/or `--session <name>` CLI
     ///    flags. Compose into `<parent>/<name>` (defaulting to
     ///    `logs/<auto-id>` for any unspecified component).
-    /// 3. Default — `logs/{scenario}_{timestamp}/`.
+    /// 3. Default — `logs/{session_name}_{timestamp}/`.
     ///
-    /// `args` is the raw CLI args slice. Pass an empty slice to
-    /// get env-only resolution.
-    pub fn new_with_args(workload: &str, scenario: &str, args: &[String]) -> Self {
+    /// `session_name` is the auto-id stem (the single-run caller
+    /// passes the scenario name; a concurrent SRD-88 host passes
+    /// a session-level name). `args` is the raw CLI args slice —
+    /// pass an empty slice to get env-only resolution. The
+    /// session carries only `session=<id>` identity; per-execution
+    /// workload/scenario live on the [`Execution`] tier.
+    pub fn new_with_args(session_name: &str, args: &[String]) -> Self {
         let timestamp = format_timestamp();
-        let workload_stem = Path::new(workload)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("workload");
-        let auto_id = format!("{scenario}_{timestamp}");
+        let auto_id = format!("{session_name}_{timestamp}");
 
         let spec = resolve_session_dir(args);
         let (output_dir, id) = spec.resolve(&auto_id)
@@ -1264,21 +1305,17 @@ impl Session {
             }
         }
 
-        // Root labels carry the session identity (`session`),
-        // the active-execution identity (`exec_id`), and the
-        // workload's bare stem. Every metric and component
-        // descendant inherits these via the component tree, so
-        // cross-session queries can group by
-        // `workload="full_cql_vector"` regardless of where the
-        // operator launched the workload from, and SRD-77's
-        // multi-execution shape is honoured from day one (every
-        // metric row already carries its owning `exec_id` even
-        // while the executions registry is single-entry).
-        let execution = Execution::first("run");
+        // The session component owns exactly one dimensional
+        // label: `session=<id>`. Per SRD-88 §2 this is the shared
+        // common root — one per process — and per the label-
+        // ownership invariant it never carries `exec_id` /
+        // `workload`; those are declared once, on each
+        // [`Execution::component`] child, and composed in by the
+        // component tree. Descendant metrics still see the full
+        // `{session, exec_id, workload}` set, but every name is
+        // owned by exactly one tier.
         let component = Component::root(
-            Labels::of("session", &id)
-                .with("exec_id", execution.exec_id.to_string())
-                .with("workload", workload_stem),
+            Labels::of("session", &id),
             std::collections::HashMap::new(),
         );
         // Install the session root as the resolver backing for
@@ -1290,9 +1327,6 @@ impl Session {
         Self {
             id,
             output_dir,
-            workload: workload_stem.to_string(),
-            scenario: scenario.to_string(),
-            execution,
             component,
             metrics_query: Mutex::new(None),
         }
@@ -1300,49 +1334,50 @@ impl Session {
 
     /// Backward-compat shim for callers that don't have CLI
     /// args handy. Equivalent to
-    /// `Session::new_with_args(workload, scenario, &[])` —
-    /// resolves session-dir from `SESSION_DIRECTORY` env only.
-    pub fn new(workload: &str, scenario: &str) -> Self {
-        Self::new_with_args(workload, scenario, &[])
+    /// `Session::new_with_args(session_name, &[])` — resolves
+    /// session-dir from `SESSION_DIRECTORY` env only.
+    pub fn new(session_name: &str) -> Self {
+        Self::new_with_args(session_name, &[])
     }
 
-    /// Resume an existing session — reuse its directory, id,
-    /// and (consequently) its `metrics.db` so the resumed
+    /// Re-attach to a prior session — reuse its directory, id,
+    /// and (consequently) its `metrics.db` so the attaching
     /// invocation appends to the same metrics history rather
     /// than starting fresh in a new dir. Per SRD-44 §"Wholesale
-    /// metrics-purge", phases that re-run on resume need their
-    /// prior sample rows purged in-place; that requires writing
-    /// to the same db, which requires reusing the same session
-    /// dir. The id is read from the directory's basename, so it
-    /// preserves the original timestamp suffix.
-    pub fn resume(
+    /// metrics-purge", phases that re-run need their prior sample
+    /// rows purged in-place; that requires writing to the same
+    /// db, which requires reusing the same session dir. The id is
+    /// read from the directory's basename, so it preserves the
+    /// original timestamp suffix.
+    ///
+    /// Backs both `nbrs resume` and `nbrs refine`: the two differ
+    /// only in the [`Execution`] the caller starts under this
+    /// session (its `verb` and `exec_id`), which is now an
+    /// execution-tier concern (SRD-88) — not a session-tier one.
+    /// `session_name` is the fallback id stem used only when the
+    /// directory basename can't be read.
+    pub fn reattach(
         prior_session_dir: PathBuf,
-        workload: &str,
-        scenario: &str,
+        session_name: &str,
     ) -> Self {
-        let workload_stem = Path::new(workload)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("workload");
         let id = prior_session_dir.file_name()
             .and_then(|s| s.to_str())
             .map(String::from)
             .unwrap_or_else(|| {
-                // Fallback: synthesize a fresh id from scenario
-                // + timestamp. Shouldn't fire in practice (we
-                // resolved the dir to a real session before
-                // calling here).
-                format!("{scenario}_{}", format_timestamp())
+                // Fallback: synthesize a fresh id from the
+                // session name + timestamp. Shouldn't fire in
+                // practice (we resolved the dir to a real session
+                // before calling here).
+                format!("{session_name}_{}", format_timestamp())
             });
 
         // Re-establish the convenience symlinks under `logs/` so
         // `tail -f logs/session.log` and `sqlite3 logs/metrics.db`
-        // resolve to this resumed session's artifacts. Same
-        // shape as Session::new — a no-op when the symlinks
-        // already point here from a prior run. Skipped when the
-        // session lives outside `logs/` (see Session::new for
-        // rationale: one-off external session dirs shouldn't
-        // hijack the user's `logs/latest`).
+        // resolve to this session's artifacts. Same shape as
+        // Session::new — a no-op when the symlinks already point
+        // here from a prior run. Skipped when the session lives
+        // outside `logs/` (see Session::new for rationale: one-off
+        // external session dirs shouldn't hijack `logs/latest`).
         let logs = default_sessions_root();
         if target_is_under(&logs, &prior_session_dir) {
             let latest = logs.join("latest");
@@ -1356,20 +1391,12 @@ impl Session {
             }
         }
 
-        // Root labels carry session + exec_id + workload stem
-        // (see `Session::new_with_args` for rationale). Resume
-        // re-uses the same workload stem so the resumed
-        // metrics keep the same `workload=...` label and
-        // continue to match cross-session queries that grouped
-        // on it. `verb="resume"` distinguishes this execution
-        // from the original `run`; SRD-77's `executions` table
-        // will eventually link the two as separate `exec_id`s
-        // within the same session.
-        let execution = Execution::first("resume");
+        // Session component carries `session=<id>` only — the
+        // re-attached execution(s) declare `exec_id` / `workload`
+        // on their own [`Execution::component`] children, exactly
+        // as a fresh session does (see `new_with_args`).
         let component = Component::root(
-            Labels::of("session", &id)
-                .with("exec_id", execution.exec_id.to_string())
-                .with("workload", workload_stem),
+            Labels::of("session", &id),
             std::collections::HashMap::new(),
         );
         crate::polydat_nodes::runtime_context::set_session_root(component.clone());
@@ -1377,67 +1404,6 @@ impl Session {
         Self {
             id,
             output_dir: prior_session_dir,
-            workload: workload_stem.to_string(),
-            scenario: scenario.to_string(),
-            execution,
-            component,
-            metrics_query: Mutex::new(None),
-        }
-    }
-
-    /// SRD-77 — re-attach to a prior session for a `refine`
-    /// execution. Differs from [`Self::resume`] in two ways:
-    /// the execution is constructed with `verb = "refine"` and
-    /// the caller-supplied `next_exec_id` (one greater than the
-    /// max prior `exec_id` observed in `phase_outcomes`); the
-    /// rest of the session-attach plumbing (symlinks, root
-    /// labels, output-dir reuse) is identical to `resume` so
-    /// the `metrics.db` is appended to in-place.
-    pub fn refine(
-        prior_session_dir: PathBuf,
-        workload: &str,
-        scenario: &str,
-        next_exec_id: u64,
-    ) -> Self {
-        let workload_stem = Path::new(workload)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("workload");
-        let id = prior_session_dir.file_name()
-            .and_then(|s| s.to_str())
-            .map(String::from)
-            .unwrap_or_else(|| {
-                format!("{scenario}_{}", format_timestamp())
-            });
-
-        let logs = default_sessions_root();
-        if target_is_under(&logs, &prior_session_dir) {
-            let latest = logs.join("latest");
-            let _ = std::fs::remove_file(&latest);
-            let _ = std::os::unix::fs::symlink(&id, &latest);
-            for artifact in ["session.log", "metrics.db"] {
-                let link = logs.join(artifact);
-                let _ = std::fs::remove_file(&link);
-                let target = PathBuf::from("latest").join(artifact);
-                let _ = std::os::unix::fs::symlink(&target, &link);
-            }
-        }
-
-        let execution = Execution::with_exec_id("refine", next_exec_id);
-        let component = Component::root(
-            Labels::of("session", &id)
-                .with("exec_id", execution.exec_id.to_string())
-                .with("workload", workload_stem),
-            std::collections::HashMap::new(),
-        );
-        crate::polydat_nodes::runtime_context::set_session_root(component.clone());
-
-        Self {
-            id,
-            output_dir: prior_session_dir,
-            workload: workload_stem.to_string(),
-            scenario: scenario.to_string(),
-            execution,
             component,
             metrics_query: Mutex::new(None),
         }
@@ -1607,7 +1573,7 @@ mod tests {
     fn session_id_format() {
         let _g = env_test_lock();
         unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
-        let session = Session::new("full_cql_vector.yaml", "fknn_rampup");
+        let session = Session::new("fknn_rampup");
         assert!(session.id.starts_with("fknn_rampup_"), "id: {}", session.id);
         let expected_root = default_sessions_root();
         assert!(session.output_dir.starts_with(&expected_root),
@@ -1619,7 +1585,7 @@ mod tests {
     fn session_paths() {
         let _g = env_test_lock();
         unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
-        let session = Session::new("test.yaml", "smoke");
+        let session = Session::new("smoke");
         assert!(session.metrics_path().ends_with("metrics.db"));
         assert!(session.profiler_path("").ends_with("flamegraph.svg"));
         assert!(session.profiler_path("-perf").ends_with("flamegraph-perf.svg"));

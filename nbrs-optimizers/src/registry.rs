@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Optimizer registry (SRD-86 §9). Resolves an [`Optimizer`] by its
-//! registered name; the default is `"null"` (the identity Cartesian
+//! registered name; the default is `"sweep"` (the identity Cartesian
 //! sweep). Optimizer-specific knobs ride on [`OptimizerParams`].
 
 use crate::optimizer::Optimizer;
@@ -41,7 +41,7 @@ impl OptimizerParams {
 pub fn by_name(name: &str, params: &OptimizerParams) -> Option<Box<dyn Optimizer>> {
     use crate::algos;
     match name {
-        "null" => Some(Box::new(algos::null::Null)),
+        "sweep" => Some(Box::new(algos::sweep::Sweep)),
         "cost_greedy_traversal" => Some(Box::new(algos::traversal::CostGreedyTraversal)),
         "centroid_variant" => Some(Box::new(algos::centroid::CentroidVariant::from_params(params))),
         "nelder_mead" => Some(Box::new(algos::nelder_mead::NelderMead::from_params(params))),
@@ -57,7 +57,7 @@ pub fn by_name(name: &str, params: &OptimizerParams) -> Option<Box<dyn Optimizer
 /// Every registered optimizer name.
 pub fn registered_names() -> Vec<&'static str> {
     vec![
-        "null",
+        "sweep",
         "cost_greedy_traversal",
         "centroid_variant",
         "nelder_mead",

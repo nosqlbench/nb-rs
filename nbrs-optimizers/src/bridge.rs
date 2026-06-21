@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(project_to_coord(&space, &[-3.0]), vec![core::AxisValue::Label("cosine".into())]);
     }
 
-    /// Value-native path: the built-in `null` enumerates the categorical
+    /// Value-native path: the built-in `sweep` enumerates the categorical
     /// options as labels directly (no numeric cast); the objective reads the
     /// label, and the reported best carries it (SRD-86 A4).
     #[test]

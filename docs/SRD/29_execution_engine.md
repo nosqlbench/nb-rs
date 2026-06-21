@@ -40,7 +40,7 @@ instruments, controls), `nbrs-rate` (`RateLimiter`), `nbrs-errorhandler` (`Error
 
 These 18 dispatch/synthesis modules are `pub(crate)`; no foreign crate can reach them:
 
-`adapters` (inventory glue), `params`, `scope_flattening`, `phase_filter`,
+`adapters` (inventory glue), `params`, `scope_elision`, `phase_filter`,
 `phase_params`, `scheduler`, `profiler`, `trace_router`, `executor`, `error_policy`,
 `stop_conditions`, `workload_shell`, `describe`, `wrapper_registrations`, `relevancy`,
 `fiber_pool`, `daemon_pool`, `readout_context`.

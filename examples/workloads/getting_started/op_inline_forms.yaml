@@ -96,7 +96,7 @@
 #
 # ======================================================================
 # Runnable body: the explicit YAML equivalent of FORM 1. Run it with:
-#   nbrs run workload=examples/workloads/op_inline_forms.yaml cycles=8 adapter=stdout
+#   nbrs run workload=examples/workloads/getting_started/op_inline_forms.yaml cycles=8 adapter=stdout
 # and compare to the one-liner:
 #   nbrs run op='t := to_f64(cycle)*0.06; x := cos(t); y := sin(t)' cycles=8
 # Both produce the same per-cycle x / y fields.

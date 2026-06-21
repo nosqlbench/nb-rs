@@ -277,7 +277,7 @@ the YAML type of the `metrics:` value:
 
 Op templates compile to their own Polydat kernel scope, binding outer
 to the phase kernel. The mechanism — including the
-**scope-flattening** optimisation that collapses trivial op
+**scope-elision** optimisation that collapses trivial op
 scopes into their parent — is specified by
 [**SRD-13d — Op-template Polydat scope layer**](13d_op_template_scope.md).
 Read that SRD for the full rules; the summary here is just enough
@@ -289,7 +289,7 @@ Key contracts SRD-40b depends on:
   `bind_outer_scope(phase_kernel)`, auto-extern resolution up the
   chain.
 - The compiler decides per workload load whether each op's scope
-  is **flattened** (collapsed into the phase scope; no separate
+  is **elided** (collapsed into the phase scope; no separate
   kernel) or **materialised** (own kernel, instanced at premap).
   The decision uses program-hash equivalence — see SRD-13d §3.
 - Validation of every op template's Polydat source happens at
@@ -304,11 +304,11 @@ expression, etc.). Per SRD-13d, that pushes the op into the
 **materialised** category — the metric's wires need a kernel to
 live in. Op templates with only bare-name `value:` references
 that resolve to phase bindings do *not* push into materialised;
-SRD-13d's flattening pre-walk handles that case correctly.
+SRD-13d's elision pre-walk handles that case correctly.
 
 When SRD-13d's machinery lands, SRD-40b's wrapper (§6) just
 asks the dispenser for its kernel handle (which may be the
-op-template's own kernel or, after flattening, the phase
+op-template's own kernel or, after elision, the phase
 kernel) and pulls each metric wire through the standard GK
 state API.
 
@@ -430,9 +430,9 @@ two clarifications:
 - Metrics that need result-body data go through a single GK
   evaluation surface, not a separate "result tap" path.
 - The op-template scope (SRD-13d) is the only home for these
-  wires; flattening rules apply uniformly (an op with `result:`
+  wires; elision rules apply uniformly (an op with `result:`
   declarations contributes `Definitions` to its `polydat_matter()`,
-  preventing flatten — which is correct: result wires are
+  preventing elide — which is correct: result wires are
   per-op, not per-phase).
 - Workloads that use captures + metrics together don't have
   to learn two surfaces; `result:` is just sugar over wiring
@@ -464,7 +464,7 @@ has already paid its time.
 
 1. Resolve `family` (default = key) and compile `value:` against
    the op's bound Polydat scope (or the parent scope when SRD-13d
-   flattens the op tier).
+   elides the op tier).
 2. Look up the dispenser's `Component` (§7 — when the op
    materialises its own scope, the dispenser becomes its own
    component).
@@ -541,10 +541,10 @@ op-template name plus whatever other label keys the op
 iteration produces; its `effective_labels` is the standard
 `parent.effective.extend(&own)`.
 
-When the op template's scope is flattened (SRD-13d §3),
+When the op template's scope is elided (SRD-13d §3),
 declared metrics still need a component — the dispenser still
 becomes a component for the duration of the cycle's metric
-recording. (Flattening is about the Polydat kernel layer, not the
+recording. (Elision is about the Polydat kernel layer, not the
 metric component layer; the two decisions are independent.)
 
 ### 7.2 Duplicate-family check uses the component's registry
@@ -831,7 +831,7 @@ referenced from it.
 ## 13. Implementation phases (cross-cutting)
 
 **Prerequisite:** SRD-13d (op-template scope layer + scope
-flattening + `dryrun=op`) must land before SRD-40b's dispenser
+elision + `dryrun=op`) must land before SRD-40b's dispenser
 work can run cleanly. SRD-40b's wrapper consumes SRD-13d's
 op-template kernel handle.
 

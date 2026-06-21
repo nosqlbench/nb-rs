@@ -1,30 +1,39 @@
-# inline_ops.yaml — Demonstrates inline op= expressions
+# inline_ops.yaml — a basic stdout workload and the op= command line it equals.
 #
-# Inline expressions can use {{expr}} double-brace syntax,
-# {:=expr} explicit const form, or auto-detected {expr} when
-# the expression contains function calls or operators.
+# Both of these print the SAME lines (run either — both use the default
+# `stdout` adapter, which echoes each op's rendered `stmt`):
 #
-# Usage:
-#   nbrs run op='key={{hash(cycle)}} val={{mod(cycle,100)}}' cycles=5
-#   nbrs run op='3:read {{cycle}};1:write {{mod(hash(cycle),1000)}}' cycles=8
-#   nbrs run op='wave={{sin(to_f64(cycle) * 0.1)}}' cycles=10
+#   nbrs run workload=examples/workloads/getting_started/inline_ops.yaml cycles=8
+#   nbrs run op='3:read id={{mod(hash(cycle),1000000)}};1:write id={{mod(hash(cycle),1000000)}}' cycles=8
+#
+# The one-liner de-sugars to exactly the two ops below: a top-level `;`
+# separates ops, an `N:` prefix sets the ratio, and `{{expr}}` is evaluated
+# per cycle into the rendered line. (See op_inline_forms.yaml for every
+# de-sugaring rule, and `dryrun=wiring` to print the expansion.)
+#
+# Example output (3 reads per write, ids are mod(hash(cycle), 1e6)):
+#   read id=527897
+#   read id=564547
+#   read id=960189
+#   write id=460078
 
-# This file documents the syntax — run the commands above directly.
-# The examples below use YAML workload syntax with equivalent features.
+params:
+  adapter: stdout
 
 bindings: |
   input cycle: u64
-  hashed := hash(cycle)
-  user_id := mod(hashed, 1000000)
+  user_id := mod(hash(cycle), 1000000)
 
 ops:
-  # Ratio-weighted ops: 3 reads per 1 write
+  # 3 reads per 1 write — the `ratio:` weights match the `N:` prefixes above.
   read:
     ratio: 3
-    stmt: "SELECT * FROM users WHERE id={user_id}"
+    stmt: "read id={user_id}"
   write:
     ratio: 1
-    stmt: "INSERT INTO users (id, hash) VALUES ({user_id}, {hashed})"
+    stmt: "write id={user_id}"
 
 # ─── example-walker test directives (nbrs/tests/workloads.rs) ───
-#@ expect completed, 0 failed
+#@ expect read id=[0-9]
+#@ expect write id=[0-9]
+#@ expect 0 failed

@@ -107,13 +107,14 @@ pub trait RunObserver: Send + Sync {
     /// `SetStatusLine` mutation; the
     /// [`StderrObserver`] fallback ignores it.
     ///
-    /// Producers (the activity's inline-status refresh thread)
-    /// call this once per tick with `Some(rendered)` and once
-    /// at phase end with `None`. The owning sink coordinates
-    /// the surface — clearing and redrawing the status line in
-    /// lockstep with its log-line stream. Calling
-    /// [`Self::log`] never blocks on this and is never
-    /// interleaved with it on the same byte stream.
+    /// SRD-87 §5: this is the **status bucket's forwarding target**, not the
+    /// producer-facing API. Producers (the activity's inline-status refresh
+    /// thread) submit via [`crate::output_channel::status`], which delivers
+    /// `Some(rendered)` per tick and `None` at phase end through this method
+    /// until the display sink folds into the channel impl (push 3+). The
+    /// owning sink coordinates the surface — clearing and redrawing the status
+    /// line in lockstep with its log-line stream. Calling [`Self::log`] never
+    /// blocks on this and is never interleaved with it on the same byte stream.
     fn set_status_line(&self, _rendered: Option<String>) {}
 
     /// Whether to suppress the inline stderr progress line
@@ -226,12 +227,20 @@ pub fn set_global_observer(observer: Arc<dyn RunObserver>) {
     let _ = GLOBAL_OBSERVER.set(observer);
 }
 
-/// Borrow the installed global observer, if set. Used by code
-/// that needs the actor channel without threading an explicit
-/// observer reference through every call site (e.g. the
+/// The observer the current code should route through. Used by code that
+/// needs the observer without threading it through every call site (e.g. the
 /// activity's inline-status refresh thread publishing into
 /// [`RunObserver::set_status_line`]).
+///
+/// SRD-88: a fiber running inside an [`ExecutionContext`](crate::execution_context)
+/// resolves to ITS execution's observer (so concurrent executions route
+/// lifecycle/log independently); outside any execution scope — or when the
+/// scoped context set no observer — it falls back to the process-global
+/// `GLOBAL_OBSERVER` (the single-run / CLI / test default; axiom A1).
 pub fn global_observer() -> Option<Arc<dyn RunObserver>> {
+    if let Some(obs) = crate::execution_context::current_observer() {
+        return Some(obs);
+    }
     GLOBAL_OBSERVER.get().cloned()
 }
 
@@ -436,34 +445,41 @@ pub fn log_categorized(level: LogLevel, category: LogCategory, message: &str) {
                 crate::readouts::snapshot::strip_ansi(message)).into_bytes();
             let _ = sink.try_send(line);
         }
-    if let Some(obs) = GLOBAL_OBSERVER.get() {
+    // SRD-88: route through the current execution's observer (task-local) or
+    // the process-global default; `global_observer()` resolves both.
+    if let Some(obs) = global_observer() {
         obs.log_categorized(level, category, message);
     } else {
-        eprintln!("{}", colorize_log_line(level, message));
+        // No observer yet (bootstrap): project straight to the log bucket —
+        // the channel owns the fd (SRD-87 §5), falling back to stderr when no
+        // channel is installed either.
+        crate::output_channel::log_to_surface(level, message);
     }
 }
 
-/// Emit a line of adapter **op output** through the display subsystem (SRD-41 /
-/// "console belongs to the adapter"). Captures it to the durable session.log at
-/// INFO (ANSI-stripped, timestamped — the same projection as [`log_categorized`])
-/// and then dispatches the display to the global observer's [`RunObserver::op_output`]
-/// (stdout when no observer / non-TUI; the live display under a TUI). A bare
-/// `writeln!(io::stdout())` from an adapter staircases when a TUI holds the
-/// terminal in raw mode; this is the channel that avoids that.
+/// Emit a line of adapter **op output** (SRD-41 / "console belongs to the
+/// adapter"). Delegates to the installed [`crate::output_channel::OutputChannel`]
+/// (SRD-87): the **op-output bucket**'s impl decides where the bytes land —
+/// raw to the owned stdout (a console-owning adapter or a pipe, via
+/// [`op_output_raw`]) or routed through the live display (an interactive
+/// dashboard, avoiding the raw-mode staircase). Before any channel is installed
+/// (bootstrap / unit tests with no run), falls back to the raw path so early
+/// output is never lost.
 pub fn op_output(line: &str) {
-    use std::io::IsTerminal;
-    if std::io::stdout().is_terminal() {
-        // Interactive terminal: route through the log channel at INFO so the line
-        // is coordinated with the live status display (avoiding the raw-mode
-        // staircase) and captured in session.log — the same path every other
-        // user-visible signal takes. The op renders on the display (stderr /
-        // scrollback), not raw stdout.
-        log(LogLevel::Info, line);
+    if let Some(channel) = crate::output_channel::installed() {
+        channel.op_output(line);
         return;
     }
-    // stdout is a pipe/file: write op output to stdout (so `nbrs run | grep` and
-    // `> file` keep working) and capture it to session.log at INFO (the same
-    // durable projection `log_categorized` writes).
+    op_output_raw(line);
+}
+
+/// Write an op-output line RAW to the stdout the producer owns (so
+/// `nbrs run | grep`, `> file`, AND a console-owning adapter's interactive
+/// screen all show it) and capture it to `session.log` at INFO (the same
+/// durable projection [`log_categorized`] writes). The SRD-87
+/// [`crate::output_channel::RawStdoutChannel`] op-output bucket and the
+/// no-channel bootstrap fallback both route through here.
+pub(crate) fn op_output_raw(line: &str) {
     if LogLevel::Info >= retain_level()
         && let Some(sink) = crate::log_sink::global()
     {
@@ -628,7 +644,9 @@ impl RunObserver for StderrObserver {
             {
                 eprintln!();
             }
-            eprintln!("{}", colorize_log_line(level, message));
+            // SRD-87 §5: the live-surface write goes through the log bucket
+            // (the channel owns the fd); the `min_level` gate above stays here.
+            crate::output_channel::log_to_surface(level, message);
         }
     }
 }

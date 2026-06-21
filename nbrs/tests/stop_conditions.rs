@@ -4,7 +4,7 @@
 //! SRD-83 stop-condition coverage across execution shell levels.
 //!
 //! Each test runs one scenario from
-//! `examples/workloads/stop_conditions_coverage.yaml` and asserts that
+//! `examples/workloads/controls/stop_conditions_coverage.yaml` and asserts that
 //! a stop condition trips when a time-evolving runtime-state wire
 //! crosses its threshold:
 //!
@@ -29,7 +29,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const WORKLOAD: &str = "examples/workloads/stop_conditions_coverage.yaml";
+const WORKLOAD: &str = "examples/workloads/controls/stop_conditions_coverage.yaml";
 
 /// A throwaway session sandbox under the project tmpdir
 /// (`target/test-tmp` via `.cargo/config.toml`), removed on drop.

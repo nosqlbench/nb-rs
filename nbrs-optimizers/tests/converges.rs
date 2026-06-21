@@ -127,13 +127,13 @@ fn bayes_opt_and_cmaes_find_branin_minimum() {
     }
 }
 
-// ── Discrete sweep optimizers: null + cost-greedy traversal ───────────
+// ── Discrete sweep optimizers: sweep + cost-greedy traversal ───────────
 
 #[test]
-fn null_and_traversal_enumerate_and_find_grid_optimum() {
+fn sweep_and_traversal_enumerate_and_find_grid_optimum() {
     // Optimum (0,0) is a grid point; both must evaluate every cell and
     // return it exactly, in the same number of evals.
-    for name in ["null", "cost_greedy_traversal"] {
+    for name in ["sweep", "cost_greedy_traversal"] {
         let space = SearchSpace::new(vec![
             Axis::discrete("x", vec![-2.0, -1.0, 0.0, 1.0, 2.0]),
             Axis::discrete("y", vec![-2.0, -1.0, 0.0, 1.0, 2.0]),

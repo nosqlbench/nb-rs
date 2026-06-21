@@ -654,9 +654,9 @@ migrated to the new shape.
 **What's left:**
 
 - Migrate the back-compat workloads — `examples/workloads/
-  summary.yaml`, `examples/workloads/summary_polydat_context.yaml`,
-  `examples/workloads/summary_aggregates.yaml`,
-  `examples/workloads/report_text_file_demo.yaml`,
+  summary.yaml`, `examples/workloads/metrics/summary/gk_context.yaml`,
+  `examples/workloads/metrics/summary/aggregates.yaml`,
+  `examples/workloads/metrics/report_text_file_demo.yaml`,
   `adapters/cql/workloads/backup.yaml` — off the legacy DSL.
   These workloads are example/test scaffolding rather than
   shipping configurations; they're the last live consumers

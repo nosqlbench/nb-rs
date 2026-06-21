@@ -350,10 +350,10 @@ Change:
   established correctness on the per-op kernel itself.
 - `FiberBuilder::cycle_kernels_mut` deleted (no callers).
   Replaced by `FiberBuilder::main_kernel_mut` for the
-  flattened-path case where no canonical kernel is attached.
+  elided-path case where no canonical kernel is attached.
 - Activity cycle dispatch calls `CycleWires::new(per_op)` for
   the standard case and `CycleWires::new(main)` for the
-  flattened fallback path. One kernel handle either way; no
+  elided fallback path. One kernel handle either way; no
   chain composition outside the Polydat API.
 
 ### Push B.2 — Cell-on-outputs in polydat *(shipped)*

@@ -14,6 +14,7 @@
 //! | `mode=` | Shape |
 //! |---------|-------|
 //! | `plot` (default) | Line plot per numeric field, scrolling left-to-right |
+//! | `histogram` (`hist`) | Per field, bin the accumulated values across the width and draw counts as bar height — a distribution view (value × frequency) |
 //! | `parametric` | Scatter: first numeric field on X, second on Y |
 //! | `polar` | Polar plot: first field as radius, second as theta |
 //!
@@ -37,8 +38,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use nbrs_runtime::adapter::{
     DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields,
@@ -66,11 +65,11 @@ pub struct PlotterConfig {
     /// `lanes=x,y;z` → `[["x","y"], ["z"]]`.
     /// Empty means auto (one lane per field).
     pub lanes: Vec<Vec<String>>,
-    /// How to drive the canvas. `auto` (default) decides from the
-    /// terminal: a TTY animates live, a non-TTY (pipe/file) renders one
-    /// static snapshot. `single` always snapshots; `live` animates at
-    /// the default rate; `<n>`/`<n>hz` animates at `n` Hz.
-    /// `nbrs wiring visualize` is sugar for `render=single`.
+    /// How to drive the canvas. `auto` (default) and `single` both draw the
+    /// final plot to the screen exactly once, at the end of the run — the
+    /// data is accumulated throughout and rendered in one pass. `live`
+    /// animates in place at the default rate (opt-in); `<n>`/`<n>hz` animates
+    /// at `n` Hz. Live degrades to a single snapshot off a TTY.
     pub render: RenderRequest,
 }
 
@@ -78,8 +77,10 @@ pub struct PlotterConfig {
 /// adapter has always used, and the practical ceiling for a terminal.
 const DEFAULT_HZ: f32 = 10.0;
 
-/// What the caller asked for via `render=`, before the TTY is known.
-/// Resolved into a [`RenderMode`] at construction by [`resolve_render`].
+/// What the caller asked for via `render=`. Parsed and validated for
+/// backward compatibility; the plotter now always draws its canvas once at
+/// shutdown (SRD-87 push 1's single-writer rewrite), so the live-animation
+/// mode no longer resolves to a separate render loop.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum RenderRequest {
     /// Decide from the terminal: TTY → live, non-TTY → single.
@@ -113,8 +114,13 @@ impl RenderRequest {
                          (no terminal can redraw that fast)"));
                 }
                 if hz > 10.0 {
-                    eprintln!("warning: render={other}: refresh above ~10hz exceeds \
-                               most terminals' usable redraw rate");
+                    // SRD-87 A1: diagnostics go through the log channel (→ the
+                    // channel's log bucket + session.log), never raw stderr.
+                    nbrs_runtime::diag!(
+                        nbrs_runtime::observer::LogLevel::Warn,
+                        "render={other}: refresh above ~10hz exceeds most \
+                         terminals' usable redraw rate"
+                    );
                 }
                 Ok(RenderRequest::Live(hz))
             }
@@ -122,30 +128,10 @@ impl RenderRequest {
     }
 }
 
-/// Render mode resolved against the terminal: a fixed snapshot, or a
-/// live animation at a given Hz.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum RenderMode { Single, Live(f32) }
-
-/// Resolve the request against whether stdout is a TTY. A non-TTY can't
-/// animate, so any live/rate request degrades to a single snapshot —
-/// with a warning when the caller asked for live explicitly.
-fn resolve_render(req: RenderRequest, is_tty: bool) -> RenderMode {
-    match req {
-        RenderRequest::Single => RenderMode::Single,
-        RenderRequest::Auto =>
-            if is_tty { RenderMode::Live(DEFAULT_HZ) } else { RenderMode::Single },
-        RenderRequest::Live(hz) => {
-            if is_tty {
-                RenderMode::Live(hz)
-            } else {
-                eprintln!("warning: render=live requested but stdout is not a \
-                           terminal — falling back to render=single");
-                RenderMode::Single
-            }
-        }
-    }
-}
+// The plotter always draws the final plot exactly once, at shutdown — there
+// is no animation loop and so no render-mode to resolve. `render=` values are
+// still accepted (and validated) for compatibility but no longer change
+// behaviour: a single, deadlock-free final paint is the only mode.
 
 impl Default for PlotterConfig {
     fn default() -> Self {
@@ -212,39 +198,23 @@ impl Cell {
         if self.bright < 0.01 { ' ' } else { char::from_u32(0x2800 + self.dots as u32).unwrap_or(' ') }
     }
 
-    fn decay(&mut self, factor: f32) {
-        self.bright *= factor;
-        if self.bright < 0.01 { self.bright = 0.0; self.dots = 0; }
-    }
-
-    fn color_esc(&self) -> String {
-        let r = (self.r as f32 * self.bright) as u8;
-        let g = (self.g as f32 * self.bright) as u8;
-        let b = (self.b as f32 * self.bright) as u8;
-        format!("\x1b[38;2;{r};{g};{b}m")
-    }
 }
 
 struct FrameBuffer {
     cells: Vec<Vec<Cell>>,
     width: usize,
     height: usize,
-    dirty: std::collections::BTreeSet<(usize, usize)>,
-    first_frame: bool,
 }
 
 impl FrameBuffer {
     fn new(w: usize, h: usize) -> Self {
-        Self { cells: vec![vec![Cell::empty(); w]; h], width: w, height: h,
-               dirty: std::collections::BTreeSet::new(), first_frame: true }
+        Self { cells: vec![vec![Cell::empty(); w]; h], width: w, height: h }
     }
 
     fn set_dot(&mut self, px: usize, py: usize, r: u8, g: u8, b: u8) {
         let (cx, cy) = (px / 2, py / 4);
         if cx < self.width && cy < self.height {
-            let old = self.cells[cy][cx];
             self.cells[cy][cx].set_dot(px % 2, py % 4, r, g, b);
-            if self.cells[cy][cx] != old { self.dirty.insert((cy, cx)); }
         }
     }
 
@@ -253,63 +223,105 @@ impl FrameBuffer {
         self.set_dot(px, py, r, g, b);
     }
 
-    fn clear(&mut self) {
-        for row in &mut self.cells { for c in row.iter_mut() { *c = Cell::empty(); } }
-        self.first_frame = true;
-        self.dirty.clear();
-    }
-
-    fn decay_all(&mut self, factor: f32) {
-        for y in 0..self.height { for x in 0..self.width {
-            let old = self.cells[y][x];
-            if old.bright > 0.01 {
-                self.cells[y][x].decay(factor);
-                if self.cells[y][x] != old { self.dirty.insert((y, x)); }
-            }
-        }}
-    }
-
-    fn flush(&mut self, use_color: bool, row_offset: usize) {
-        use std::io::Write;
-        let reset = if use_color { "\x1b[0m" } else { "" };
-
-        if self.first_frame {
-            // First frame: draw every cell with absolute positioning
-            for y in 0..self.height {
-                let row = row_offset + y + 1;
-                let mut line = String::new();
-                for c in &self.cells[y] {
-                    if use_color && c.bright > 0.01 { line.push_str(&c.color_esc()); }
-                    line.push(c.to_char());
-                    if use_color { line.push_str(reset); }
+    /// Render one row to a string, trimmed to its last non-blank cell.
+    /// Trailing blank cells are dropped so a row never pads out to the
+    /// full framebuffer width: a line of exactly the terminal width plus
+    /// a newline triggers the last-column auto-wrap on many terminals,
+    /// inserting a phantom blank line — the "stagger". A fully blank row
+    /// renders as the empty string.
+    fn render_row(&self, y: usize, use_color: bool) -> String {
+        let cells = &self.cells[y];
+        let Some(last) = cells.iter().rposition(|c| c.bright > 0.01) else {
+            return String::new();
+        };
+        let mut line = String::new();
+        // Emit a colour escape only when the colour CHANGES, not per cell.
+        // A per-cell `<colour><glyph><reset>` blows the row up ~10× (≈26 B per
+        // cell), and a full plot of that overruns the terminal's PTY write
+        // buffer — the write blocks under flow control and can deadlock the
+        // run's teardown against a slow/strict reader. Runs of same-coloured
+        // braille (a histogram lane) collapse to one escape; blanks are bare
+        // spaces (an invisible glyph needs no colour).
+        let mut cur: Option<(u8, u8, u8)> = None;
+        let mut colored = false;
+        for c in &cells[..=last] {
+            if c.bright > 0.01 {
+                if use_color {
+                    let rgb = (
+                        (c.r as f32 * c.bright) as u8,
+                        (c.g as f32 * c.bright) as u8,
+                        (c.b as f32 * c.bright) as u8,
+                    );
+                    if cur != Some(rgb) {
+                        line.push_str(&format!("\x1b[38;2;{};{};{}m", rgb.0, rgb.1, rgb.2));
+                        cur = Some(rgb);
+                        colored = true;
+                    }
                 }
-                print!("\x1b[{row};1H{line}");
-            }
-            let bottom = row_offset + self.height + 1;
-            print!("\x1b[{bottom};1H");
-            let _ = std::io::stdout().flush();
-            self.first_frame = false;
-            self.dirty.clear();
-            return;
-        }
-        if self.dirty.is_empty() { return; }
-
-        let dv: Vec<(usize,usize)> = self.dirty.iter().copied().collect();
-        for &(y, x) in &dv {
-            let row = row_offset + y + 1;
-            let col = x + 1;
-            let c = &self.cells[y][x];
-            if use_color && c.bright > 0.01 {
-                print!("\x1b[{row};{col}H{}{}{reset}", c.color_esc(), c.to_char());
+                line.push(c.to_char());
             } else {
-                print!("\x1b[{row};{col}H{}", c.to_char());
+                line.push(' ');
             }
         }
-        let bottom = row_offset + self.height + 1;
-        print!("\x1b[{bottom};1H");
-        let _ = std::io::stdout().flush();
-        self.dirty.clear();
+        if colored {
+            line.push_str("\x1b[0m");
+        }
+        line
     }
+
+}
+
+/// Paint the framebuffer to the terminal once, where the cursor sits — the
+/// plot is then simply left in the scrollback. On a TTY the lines use explicit
+/// CR + erase-line + CR/LF, so they align at column 0 even in raw mode (where
+/// a bare '\n' is line-feed only and would stair-step the rows). Piped output
+/// (`!is_tty`) is plain text — no escapes to pollute a captured stream. The
+/// colour-on-change `render_row` keeps the whole write small enough to clear
+/// the terminal's PTY buffer in one go.
+fn paint(fb: &FrameBuffer, title: &str, is_tty: bool, use_color: bool) {
+    let (cr, clear, eol): (&str, &str, &str) =
+        if is_tty { ("\r", "\x1b[2K", "\r\n") } else { ("", "", "\n") };
+    let mut buf = format!("{cr}{clear}─── {title} ───{eol}");
+    for y in 0..fb.height {
+        buf.push_str(clear);
+        buf.push_str(&fb.render_row(y, use_color));
+        buf.push_str(eol);
+    }
+    // SRD-87 §5: submit the rendered canvas to the channel's raster bucket
+    // (the channel owns the fd) rather than writing stdout directly. The
+    // plotter is console-owning, so this lands on the console it owns.
+    nbrs_runtime::output_channel::raster(&buf);
+}
+
+/// Paint a stacked, multi-lane plot with a per-lane heading + divider rule.
+/// `title` becomes a top banner (the mode word only — the per-lane headings
+/// carry the field names); each `(label, start, height)` section emits a
+/// `── <label> ──` rule followed by that lane's rows sliced from `fb`. One
+/// write, through the raster bucket (SRD-87 §5).
+fn paint_lanes(
+    fb: &FrameBuffer,
+    title: &str,
+    sections: &[(String, usize, usize)],
+    is_tty: bool,
+    use_color: bool,
+) {
+    let (cr, clear, eol): (&str, &str, &str) =
+        if is_tty { ("\r", "\x1b[2K", "\r\n") } else { ("", "", "\n") };
+    // The banner is the mode word (`plot: a, b` → `plot`); the lanes name the
+    // fields, so repeating the full field list up top would be redundant.
+    let banner = title.split(':').next().unwrap_or(title).trim();
+    let mut buf = format!("{cr}{clear}─── {banner} ───{eol}");
+    for (label, start, height) in sections {
+        buf.push_str(clear);
+        buf.push_str(&format!("── {label} {}{eol}", "─".repeat(6)));
+        let end = (start + height).min(fb.height);
+        for y in *start..end {
+            buf.push_str(clear);
+            buf.push_str(&fb.render_row(y, use_color));
+            buf.push_str(eol);
+        }
+    }
+    nbrs_runtime::output_channel::raster(&buf);
 }
 
 // ─── Data collector ────────────────────────────────────────────
@@ -339,10 +351,23 @@ impl PlotData {
 
 pub struct PlotterAdapter {
     data: Arc<Mutex<PlotData>>,
-    #[allow(dead_code)]
-    config: PlotterConfig,
-    running: Arc<AtomicBool>,
-    render_thread: Option<std::thread::JoinHandle<()>>,
+    cfg: RenderCfg,
+}
+
+/// Everything the single final paint needs, captured once at construction.
+/// There is no background render thread and no shared render state — the only
+/// mutable state is `data`, which the run's dispensers fill and the one final
+/// paint reads. So the plotter is single-writer by construction: no second
+/// writer to interleave with, no thread to join, no flag to poll, nothing to
+/// race or deadlock against a slow/strict terminal.
+#[derive(Clone)]
+struct RenderCfg {
+    term_w: usize,
+    plot_h: usize,
+    mode: String,
+    lanes: Vec<Vec<String>>,
+    use_color: bool,
+    is_tty: bool,
 }
 
 impl Default for PlotterAdapter {
@@ -356,98 +381,69 @@ impl PlotterAdapter {
 
     pub fn with_config(config: PlotterConfig) -> Self {
         let data = Arc::new(Mutex::new(PlotData::new()));
-        let running = Arc::new(AtomicBool::new(true));
-        let term_w = if config.width > 0 { config.width } else { terminal_width().unwrap_or(120) };
-        let term_h = if config.height > 0 { config.height } else { terminal_height().unwrap_or(30) };
-        let plot_h = term_h.saturating_sub(4);
-        let is_tty = atty_stdout();
-        let use_color = !config.no_color && is_tty;
-        let mode = config.mode.clone();
-        let fade = config.fade;
-        let lanes = config.lanes.clone();
-        // Resolve `render=` against the terminal: non-TTY can't animate,
-        // so it falls back to a single snapshot (warning if `live` was
-        // asked for explicitly).
-        let render = resolve_render(config.render, is_tty);
-        let live = matches!(render, RenderMode::Live(_));
-        let interval = match render {
-            RenderMode::Live(hz) => Duration::from_secs_f32(1.0 / hz),
-            RenderMode::Single => Duration::from_millis(100),
+        // Reserve the last column when auto-sizing: a row exactly the
+        // terminal width plus a newline can trip the last-column auto-wrap on
+        // some terminals. An explicit `width=` is honoured verbatim.
+        let term_w = if config.width > 0 {
+            config.width
+        } else {
+            terminal_width().map(|w| w.saturating_sub(1)).unwrap_or(120).max(1)
         };
+        let term_h = if config.height > 0 { config.height } else { terminal_height().unwrap_or(30) };
+        let is_tty = atty_stdout();
+        let cfg = RenderCfg {
+            term_w,
+            plot_h: term_h.saturating_sub(4),
+            mode: config.mode.clone(),
+            lanes: config.lanes.clone(),
+            use_color: !config.no_color && is_tty,
+            is_tty,
+        };
+        Self { data, cfg }
+    }
+}
 
-        // Live mode draws on the alternate screen; single mode never
-        // touches it — it accumulates silently and prints one final
-        // image to the scrollback below.
-        let alt_screen = use_color && live;
-        if alt_screen {
-            print!("\x1b[?1049h"); // alt screen
-            print!("\x1b[?25l");   // hide cursor
-            print!("\x1b[2J");     // clear screen
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
-        }
-
-        let rd = data.clone();
-        let rr = running.clone();
-        let render_thread = std::thread::spawn(move || {
-            let mut fb = FrameBuffer::new(term_w, plot_h);
-            let mut last_len = 0usize;
-
-            while rr.load(Ordering::Relaxed) {
-                std::thread::sleep(interval);
-                // Single mode renders only once, at the end.
-                if !live { continue; }
-                if fade > 0.0 { fb.decay_all(1.0 - fade); }
-
-                let data = rd.lock().unwrap();
-                if !data.new_since_render && fade == 0.0 { drop(data); continue; }
-
-                let ordered: Vec<String> = data.field_order.iter()
-                    .filter(|n| data.numeric.contains_key(*n)).cloned().collect();
-                if ordered.is_empty() { drop(data); continue; }
-
-                if fade == 0.0 { fb.clear(); last_len = 0; }
-
-                draw_frame(&mut fb, &ordered, &data.numeric, &mode, &lanes, last_len);
-                if let Some(f) = ordered.first() { last_len = data.numeric[f].len(); }
-                drop(data);
-                fb.flush(use_color, 1);
+/// Render the accumulated data into a fresh framebuffer and paint it to the
+/// terminal ONCE. Runs on a `spawn_blocking` task from `shutdown()`. This is
+/// the sole place the plotter writes the plot, so it is the only writer —
+/// the lock on `data` is released before the (possibly flow-controlled) write,
+/// and there is no other thread to rendezvous with.
+fn draw_final_plot(data: &Mutex<PlotData>, cfg: &RenderCfg) {
+    let d = data.lock().unwrap();
+    let ordered: Vec<String> = d.field_order.iter()
+        .filter(|n| d.numeric.contains_key(*n)).cloned().collect();
+    let title = frame_title(&cfg.mode, &ordered);
+    let mut fb = FrameBuffer::new(cfg.term_w, cfg.plot_h);
+    if !ordered.is_empty() {
+        draw_frame(&mut fb, &ordered, &d.numeric, &cfg.mode, &cfg.lanes, 0);
+    }
+    // Per-lane headings + dividers: when the plot stacks multiple lanes
+    // (plot / scatter / histogram), give each lane its own labelled rule so
+    // the distributions read as separate, identifiable bands without relying
+    // on colour. The lane row-spans mirror `draw_frame`'s `li * bh` layout
+    // (same `resolve_lane_groups`, same `bh` formula) so headings land exactly
+    // on the lane boundaries.
+    let sections: Vec<(String, usize, usize)> =
+        if !ordered.is_empty() && renders_as_lanes(&cfg.mode, &ordered) {
+            let groups = resolve_lane_groups(&ordered, &d.numeric, &cfg.lanes);
+            if groups.len() > 1 {
+                let bh = (fb.height / groups.len().max(1)).max(3);
+                groups
+                    .iter()
+                    .enumerate()
+                    .map(|(li, g)| (g.join(", "), li * bh, bh))
+                    .collect()
+            } else {
+                Vec::new()
             }
-
-            // Final frame: full redraw (both modes).
-            fb.clear();
-            let data = rd.lock().unwrap();
-            let ordered: Vec<String> = data.field_order.iter()
-                .filter(|n| data.numeric.contains_key(*n)).cloned().collect();
-            let title = frame_title(&mode, &ordered);
-            if !ordered.is_empty() {
-                draw_frame(&mut fb, &ordered, &data.numeric, &mode, &lanes, 0);
-            }
-            drop(data);
-
-            if alt_screen {
-                fb.flush(use_color, 1);
-                print!("\x1b[?25h");   // show cursor
-                print!("\x1b[?1049l"); // leave alt screen
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-            }
-
-            // Print the final frame to normal scrollback so it persists.
-            let reset = if use_color { "\x1b[0m" } else { "" };
-            println!("─── {title} ───");
-            for y in 0..fb.height {
-                let mut line = String::new();
-                for c in &fb.cells[y] {
-                    if use_color && c.bright > 0.01 { line.push_str(&c.color_esc()); }
-                    line.push(c.to_char());
-                    if use_color { line.push_str(reset); }
-                }
-                println!("{line}");
-            }
-        });
-
-        Self { data, config, running, render_thread: Some(render_thread) }
+        } else {
+            Vec::new()
+        };
+    drop(d); // release the lock before the blocking write — no lock held over I/O
+    if sections.is_empty() {
+        paint(&fb, &title, cfg.is_tty, cfg.use_color);
+    } else {
+        paint_lanes(&fb, &title, &sections, cfg.is_tty, cfg.use_color);
     }
 }
 
@@ -475,12 +471,24 @@ impl DriverAdapter for PlotterAdapter {
     fn display_preference(&self) -> nbrs_runtime::adapter::DisplayPreference {
         nbrs_runtime::adapter::DisplayPreference::Off
     }
-}
 
-impl Drop for PlotterAdapter {
-    fn drop(&mut self) {
-        self.running.store(false, Ordering::Relaxed);
-        if let Some(h) = self.render_thread.take() { let _ = h.join(); }
+    /// Draw the final plot to the terminal exactly once, HERE, before the run
+    /// emits its shutdown diagnostics — this hook runs inside
+    /// `resource_pool.shutdown()`, ahead of teardown logging, so the plot
+    /// lands as one uninterrupted block. The draw is the only thing this
+    /// adapter ever writes, and it happens on a single `spawn_blocking` task
+    /// awaited right here: one writer, one write, no background thread, no
+    /// shared render state. A flow-controlled (slow/strict) terminal can only
+    /// make the awaited write take longer — it cannot deadlock, because no
+    /// other thread is waiting on it.
+    fn shutdown<'a>(
+        &'a self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        let data = self.data.clone();
+        let cfg = self.cfg.clone();
+        Box::pin(async move {
+            let _ = tokio::task::spawn_blocking(move || draw_final_plot(&data, &cfg)).await;
+        })
     }
 }
 
@@ -518,6 +526,41 @@ impl OpDispenser for PlotterDispenser {
 
 // ─── Plot helpers ──────────────────────────────────────────────
 
+/// The lane grouping for the stacked plot / scatter / histogram modes: one
+/// lane per field by default, or the explicit `lanes=` groups (empties
+/// dropped). Shared by the frame drawer and the per-lane heading layout so the
+/// two never disagree on lane membership or order.
+fn resolve_lane_groups<'a>(
+    ordered: &'a [String],
+    numeric: &HashMap<String, Vec<f64>>,
+    lanes: &'a [Vec<String>],
+) -> Vec<Vec<&'a str>> {
+    if lanes.is_empty() {
+        ordered.iter().map(|n| vec![n.as_str()]).collect()
+    } else {
+        lanes
+            .iter()
+            .map(|lane| {
+                lane.iter()
+                    .filter(|n| numeric.contains_key(*n))
+                    .map(|n| n.as_str())
+                    .collect()
+            })
+            .filter(|g: &Vec<&str>| !g.is_empty())
+            .collect()
+    }
+}
+
+/// Whether the mode renders as stacked lanes (plot / scatter / histogram, one
+/// labelled lane per field group) vs. a single shared canvas (parametric /
+/// polar / xy). Mirrors [`draw_frame`]'s mode branching so the per-lane
+/// heading layout matches exactly what was drawn.
+fn renders_as_lanes(mode: &str, ordered: &[String]) -> bool {
+    let m = resolve_mode(mode, ordered);
+    let two = ordered.len() >= 2;
+    !((matches!(m, "parametric" | "xy") && two) || (m == "polar" && two))
+}
+
 /// Draw one frame of `ordered` fields into `fb` using the resolved
 /// mode. `from` is the first sample index to draw (incremental in
 /// live mode, `0` for a full redraw). Parametric/polar select their
@@ -548,22 +591,22 @@ fn draw_frame(
                 plot_polar(fb, r, t, from, 0);
             }
         }
-        _ => {
-            let lane_groups: Vec<Vec<&str>> = if lanes.is_empty() {
-                ordered.iter().map(|n| vec![n.as_str()]).collect()
-            } else {
-                lanes.iter().map(|lane| {
-                    lane.iter()
-                        .filter(|n| numeric.contains_key(*n))
-                        .map(|n| n.as_str())
-                        .collect()
-                }).filter(|g: &Vec<&str>| !g.is_empty()).collect()
-            };
+        other => {
+            // Line/scatter (`plot`, the default) and `histogram` share the
+            // lane layout — one lane per field by default, or the explicit
+            // `lanes=` groups (so a histogram can stack one-per-field or
+            // overlay several in a lane).
+            let is_hist = matches!(other, "histogram" | "hist");
+            let lane_groups = resolve_lane_groups(ordered, numeric, lanes);
             let bh = (fb.height / lane_groups.len().max(1)).max(3);
             for (li, group) in lane_groups.iter().enumerate() {
                 for (fi, &name) in group.iter().enumerate() {
                     if let Some(vals) = numeric.get(name) {
-                        plot_line(fb, vals, li * bh, bh, fi, from);
+                        if is_hist {
+                            plot_histogram(fb, vals, li * bh, bh, fi);
+                        } else {
+                            plot_line(fb, vals, li * bh, bh, fi, from);
+                        }
                     }
                 }
             }
@@ -583,6 +626,7 @@ fn frame_title(mode: &str, ordered: &[String]) -> String {
         }
         "polar" if ordered.len() >= 2 => "polar (r, θ)".to_string(),
         _ if ordered.is_empty() => "plot (no numeric fields)".to_string(),
+        "histogram" | "hist" => format!("histogram: {}", ordered.join(", ")),
         _ => format!("plot: {}", ordered.join(", ")),
     }
 }
@@ -637,6 +681,35 @@ fn plot_line(fb: &mut FrameBuffer, vals: &[f64], y_off: usize, bh: usize, ci: us
     }
 }
 
+/// Histogram mode: bin the accumulated values across the lane width and draw
+/// each bin's count as a vertical bar rising from the lane baseline — value on
+/// the x-axis, frequency as height. The natural distribution view: a normal
+/// field shows a bell, an exponential a decaying ramp, a uniform a flat top.
+/// Re-bins the full series each call (not incremental), so it wants a full
+/// redraw per frame (the default `fade=0` path clears first).
+fn plot_histogram(fb: &mut FrameBuffer, vals: &[f64], y_off: usize, bh: usize, ci: usize) {
+    if vals.is_empty() { return; }
+    let (mn, mx) = minmax(vals);
+    let range = safe_range(mn, mx);
+    let pw = fb.width * 2;
+    let ph = bh * 4;
+    if pw == 0 || ph == 0 { return; }
+    let mut bins = vec![0u32; pw];
+    for &v in vals {
+        let b = ((v - mn) / range * (pw - 1) as f64) as usize;
+        bins[b.min(pw - 1)] += 1;
+    }
+    let maxc = bins.iter().copied().max().unwrap_or(1).max(1);
+    let base = y_off * 4 + (ph - 1); // bottom pixel-row of this lane
+    for (x, &c) in bins.iter().enumerate() {
+        if c == 0 { continue; }
+        let h = (c as f64 / maxc as f64 * (ph - 1) as f64).round() as usize;
+        for dy in 0..=h {
+            fb.set_dot_idx(x, base - dy, ci);
+        }
+    }
+}
+
 fn minmax(v: &[f64]) -> (f64, f64) {
     let mn = v.iter().cloned().fold(f64::MAX, f64::min);
     let mx = v.iter().cloned().fold(f64::MIN, f64::max);
@@ -653,21 +726,28 @@ fn truecolor_fg(idx: usize) -> String {
     format!("\x1b[38;2;{r};{g};{b}m")
 }
 
+/// Terminal size via crossterm — portable (Unix ioctl + Windows console
+/// API behind one call) and consistent with how the rest of the terminal
+/// stack (and the shadow-terminal test harness) reports dimensions.
+fn terminal_size() -> Option<(usize, usize)> {
+    crossterm::terminal::size()
+        .ok()
+        .filter(|&(c, r)| c > 0 && r > 0)
+        .map(|(c, r)| (c as usize, r as usize))
+}
+
 fn terminal_width() -> Option<usize> {
-    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
-    if unsafe { libc::ioctl(1, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 {
-        Some(ws.ws_col as usize)
-    } else { None }
+    terminal_size().map(|(c, _)| c)
 }
 
 fn terminal_height() -> Option<usize> {
-    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
-    if unsafe { libc::ioctl(1, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_row > 0 {
-        Some(ws.ws_row as usize)
-    } else { None }
+    terminal_size().map(|(_, r)| r)
 }
 
-fn atty_stdout() -> bool { unsafe { libc::isatty(1) != 0 } }
+fn atty_stdout() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal()
+}
 
 // =========================================================================
 // Adapter Registration (inventory-based, link-time)
@@ -764,24 +844,6 @@ mod tests {
         assert!(RenderRequest::parse("fast").is_err());
         assert!(RenderRequest::parse("0").is_err());
         assert!(RenderRequest::parse("-5").is_err());
-    }
-
-    #[test]
-    fn resolve_auto_follows_tty() {
-        assert_eq!(resolve_render(RenderRequest::Auto, true), RenderMode::Live(DEFAULT_HZ));
-        assert_eq!(resolve_render(RenderRequest::Auto, false), RenderMode::Single);
-    }
-
-    #[test]
-    fn resolve_live_without_tty_degrades_to_single() {
-        assert_eq!(resolve_render(RenderRequest::Live(5.0), false), RenderMode::Single);
-        assert_eq!(resolve_render(RenderRequest::Live(5.0), true), RenderMode::Live(5.0));
-    }
-
-    #[test]
-    fn resolve_single_is_single_on_or_off_tty() {
-        assert_eq!(resolve_render(RenderRequest::Single, true), RenderMode::Single);
-        assert_eq!(resolve_render(RenderRequest::Single, false), RenderMode::Single);
     }
 
     #[test]

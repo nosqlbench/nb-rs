@@ -50,6 +50,26 @@ use nbrs_tui::observer::{print_post_run_summary, unreached_phase_exit_code, TuiO
 use nbrs_tui::run_state_actor::{spawn_run_state_actor, RunStateCmd};
 use nbrs_tui::state::RunState;
 
+/// Resolve a log-level floor (SRD-41) from the effective params (workload
+/// defaults overlaid by the CLI) under the given key aliases, falling back to
+/// an environment variable, then to the caller's default. Precedence:
+/// CLI > workload `params:` > env > default. Returns `None` when nothing is
+/// set so the caller supplies the built-in default.
+fn resolve_log_level(
+    params: &std::collections::HashMap<String, String>,
+    keys: &[&str],
+    env_var: &str,
+) -> Option<nbrs_runtime::observer::LogLevel> {
+    keys.iter()
+        .find_map(|k| params.get(*k))
+        .and_then(|s| nbrs_runtime::runner::parse_log_level(s))
+        .or_else(|| {
+            std::env::var(env_var)
+                .ok()
+                .and_then(|s| nbrs_runtime::runner::parse_log_level(&s))
+        })
+}
+
 pub async fn run_command(args: &[String]) {
     // Parse only `key=value` and workload-file args for mode
     // detection. Skip the `run` subcommand token itself.
@@ -92,25 +112,47 @@ pub async fn run_command(args: &[String]) {
     // Adapters that need raw terminal output (e.g. plotter)
     // override TUI detection — checked at startup before any
     // adapter is constructed.
-    let explicit_adapter = params.get("adapter").or(params.get("driver"))
-        .map(|s| s.as_str());
     let has_workload = params.contains_key("workload")
         || param_args.iter().any(|a|
             (a.ends_with(".yaml") || a.ends_with(".yml")) && !a.contains('='));
-    let adapter_name = explicit_adapter.unwrap_or("stdout");
-    // Console-ownership (the adapter writes its own output to the
-    // terminal, so the dashboard must yield) is a property of an
-    // EXPLICIT console-owning adapter (stdout-to-terminal, plotter), or
-    // the implicit `stdout` default of an inline-op run. A workload
-    // supplies its adapters per-phase (typically cql / http), so a
-    // workload run with no top-level `adapter=` override is NOT
-    // console-owning — it gets the normal dashboard. Without this guard
-    // a `workload=…` run with no `adapter=` would default to `stdout`,
-    // reserve the console, and suppress the ENTIRE run display.
-    let adapter_pref = match explicit_adapter {
-        Some(a) => nbrs_runtime::adapter::adapter_display_preference(a, &params),
+    // SRD-41/87 console-ownership: a console-owning adapter (plotter,
+    // stdout-to-terminal) may be declared in the WORKLOAD's `params:` block,
+    // not just on the CLI. Peek the workload's declared params (extends-merged)
+    // so that adapter is recognized and the dashboard yields to it on a TTY.
+    // `effective_params` = workload defaults overlaid by CLI (closest-wins),
+    // so the display preference also sees the adapter's shaping keys (e.g.
+    // stdout's `filename`, which keeps the dashboard when output goes to a
+    // file). A full parse still happens in the runner; this is a cheap peek.
+    let workload_ref = params.get("workload").cloned().or_else(|| {
+        param_args.iter()
+            .find(|a| (a.ends_with(".yaml") || a.ends_with(".yml")) && !a.contains('='))
+            .cloned()
+    });
+    let workload_params = workload_ref.as_deref()
+        .and_then(nbrs_workload::verify::peek_declared_params)
+        .unwrap_or_default();
+    let mut effective_params = workload_params;
+    for (k, v) in &params {
+        effective_params.insert(k.clone(), v.clone());
+    }
+    // CLI adapter wins; else the workload's declared adapter.
+    let resolved_adapter: Option<String> = params.get("adapter")
+        .or(params.get("driver"))
+        .or_else(|| effective_params.get("adapter").or(effective_params.get("driver")))
+        .cloned();
+    let adapter_name = resolved_adapter.clone().unwrap_or_else(|| "stdout".to_string());
+    // Console-ownership (the adapter writes its own output to the terminal, so
+    // the dashboard must yield) is a property of a console-owning adapter
+    // (stdout-to-terminal, plotter) declared on the CLI *or* in the workload,
+    // or the implicit `stdout` default of an inline-op run. A workload run
+    // with NO declared adapter is NOT console-owning — it gets the normal
+    // dashboard (the `None if has_workload` arm); without that a bare
+    // `workload=…` would default to `stdout`, reserve the console, and
+    // suppress the ENTIRE run display.
+    let adapter_pref = match resolved_adapter.as_deref() {
+        Some(a) => nbrs_runtime::adapter::adapter_display_preference(a, &effective_params),
         None if has_workload => nbrs_runtime::adapter::DisplayPreference::Auto,
-        None => nbrs_runtime::adapter::adapter_display_preference("stdout", &params),
+        None => nbrs_runtime::adapter::adapter_display_preference("stdout", &effective_params),
     };
 
     // A console-owning adapter (stdout-to-terminal, plotter) on an
@@ -124,6 +166,15 @@ pub async fn run_command(args: &[String]) {
     let silent_console = adapter_pref == nbrs_runtime::adapter::DisplayPreference::Off
         && is_tty
         && !params.contains_key("dryrun");
+    // SRD-87: install the op-output channel for this run's context. A
+    // console-owning adapter (`silent_console`) and a piped run both own a raw
+    // stdout surface; an interactive dashboard routes op output through the
+    // live display so it composites without the raw-mode staircase. Replaces
+    // the prior `console_reserved_for_adapter` global flag that `op_output`
+    // consulted inline — the selected impl now *is* the routing decision.
+    nbrs_runtime::output_channel::install(
+        nbrs_runtime::output_channel::select(silent_console, is_tty),
+    );
 
     // Three-mode lattice. Default is `terminal` for interactive
     // sessions: line-mode rendering driven by the snapshot stream
@@ -199,7 +250,7 @@ pub async fn run_command(args: &[String]) {
         params.get("workload").map(|s| s.as_str()).unwrap_or("?"),
         params.get("scenario").map(|s| s.as_str()).unwrap_or("default"),
         params.get("adapter").or(params.get("driver"))
-            .map(|s| s.as_str()).unwrap_or(adapter_name),
+            .map(|s| s.as_str()).unwrap_or(&adapter_name),
     ));
     run_state.send(RunStateCmd::SetMeta {
         profiler: Some(params.get("profiler").cloned().unwrap_or_else(|| "off".into())),
@@ -289,15 +340,24 @@ pub async fn run_command(args: &[String]) {
         // Aliases: `loglevel-display=` is accepted for
         // symmetry with `loglevel-retain=`; both map to the
         // stderr threshold.
-        let stderr_min_level = cli_params.get("loglevel")
-            .or_else(|| cli_params.get("loglevel-display"))
-            .or_else(|| cli_params.get("loglevel_display"))
-            .and_then(|s| nbrs_runtime::runner::parse_log_level(s))
-            .unwrap_or(default_min_level);
-        let retain_min_level = cli_params.get("loglevel-retain")
-            .or_else(|| cli_params.get("loglevel_retain"))
-            .and_then(|s| nbrs_runtime::runner::parse_log_level(s))
-            .unwrap_or(nbrs_runtime::observer::LogLevel::Debug);
+        //
+        // Resolution precedence (closest wins): CLI > workload `params:` >
+        // `NBRS_LOG_*` env > built-in default. `effective_params` already
+        // carries the workload's declared params overlaid by the CLI (see the
+        // adapter-detection peek above), so a `params: { loglevel: warn }`
+        // workload runs quiet by default while a CLI `loglevel=info` overrides.
+        let stderr_min_level = resolve_log_level(
+            &effective_params,
+            &["loglevel", "loglevel-display", "loglevel_display"],
+            "NBRS_LOG_DISPLAY_LEVEL",
+        )
+        .unwrap_or(default_min_level);
+        let retain_min_level = resolve_log_level(
+            &effective_params,
+            &["loglevel-retain", "loglevel_retain"],
+            "NBRS_LOG_RETAIN_LEVEL",
+        )
+        .unwrap_or(nbrs_runtime::observer::LogLevel::Debug);
         nbrs_runtime::observer::set_retain_level(retain_min_level);
         nbrs_runtime::observer::set_display_level(stderr_min_level);
         // Same cadence parsing the `tui=on` path uses, so the
@@ -451,18 +511,21 @@ pub async fn run_command(args: &[String]) {
     // (own LOD knobs); this only controls what reaches stderr
     // before the TUI claims the terminal and after it tears
     // down (`q` mid-run).
-    // Display + retain levels: same dual-knob shape as the
-    // tui=off / log-only path above. `loglevel=` →
-    // display; `loglevel-retain=` → file sink.
-    let stderr_min_level = params.get("loglevel")
-        .or_else(|| params.get("loglevel-display"))
-        .or_else(|| params.get("loglevel_display"))
-        .and_then(|s| nbrs_runtime::runner::parse_log_level(s))
-        .unwrap_or(nbrs_runtime::observer::LogLevel::Info);
-    let retain_min_level = params.get("loglevel-retain")
-        .or_else(|| params.get("loglevel_retain"))
-        .and_then(|s| nbrs_runtime::runner::parse_log_level(s))
-        .unwrap_or(nbrs_runtime::observer::LogLevel::Debug);
+    // Display + retain levels: same dual-knob shape and precedence as the
+    // tui=off / log-only path above (CLI > workload `params:` > `NBRS_LOG_*`
+    // env > default). `loglevel=` → display; `loglevel-retain=` → file sink.
+    let stderr_min_level = resolve_log_level(
+        &effective_params,
+        &["loglevel", "loglevel-display", "loglevel_display"],
+        "NBRS_LOG_DISPLAY_LEVEL",
+    )
+    .unwrap_or(nbrs_runtime::observer::LogLevel::Info);
+    let retain_min_level = resolve_log_level(
+        &effective_params,
+        &["loglevel-retain", "loglevel_retain"],
+        "NBRS_LOG_RETAIN_LEVEL",
+    )
+    .unwrap_or(nbrs_runtime::observer::LogLevel::Debug);
     nbrs_runtime::observer::set_retain_level(retain_min_level);
     nbrs_runtime::observer::set_display_level(stderr_min_level);
     let observer = Arc::new(

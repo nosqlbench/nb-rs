@@ -481,12 +481,11 @@ impl RunObserver for LogOnlyObserver {
             {
                 eprintln!();
             }
-            // Color-code by severity so DBG / INF / WRN /
-            // ERR are visually distinct on the console.
-            // `colorize_log_line` is a no-op on
-            // non-tty / NO_COLOR.
-            eprintln!("{}",
-                nbrs_runtime::observer::colorize_log_line(level, message));
+            // SRD-87 §5: the live-surface write goes through the log bucket
+            // (the channel owns the fd, color-coding by severity); the
+            // `!sink_active`/`min_level` gate above stays here as the spine's
+            // handoff coordination.
+            nbrs_runtime::output_channel::log_to_surface(level, message);
         }
     }
 

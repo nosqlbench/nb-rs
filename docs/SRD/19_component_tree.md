@@ -92,6 +92,57 @@ label set. This is implicit — no declaration needed.
 
 ---
 
+## Label Ownership Invariant
+
+**Each dimensional label is a condensed `(semantic, instance)`
+pair: the KEY names the kind, the VALUE names the instance.**
+`session="20260415_abc"` reads as "this is a *session*, and its
+id is `20260415_abc`"; `exec_id="2"` as "an *execution*, id 2";
+`phase="search"` as "a *phase* named search". The key already
+carries the type — so a separate `type=` label would be
+redundant, and there is none.
+
+From this follows the **label-ownership invariant**:
+
+> A label name is owned by exactly one component in any ancestor
+> chain. Once a name is set on a component at initialization, no
+> descendant may redeclare it — neither with a differing value
+> (which would silently corrupt the dimensional cell) nor with
+> the same value (which makes ownership ambiguous). Each
+> component declares ONLY the labels it introduces; ancestors'
+> labels are inherited, never restated.
+
+Each tier therefore owns a disjoint slice of the label set:
+
+| Tier | Owns | Cardinality |
+|---|---|---|
+| **Session** | `session` | one per process (SRD-45) |
+| **Execution** | `exec_id`, `workload` | 1..N per session (SRD-77 / SRD-88) |
+| **Scenario / for_each / phase** | `phase`, iteration vars (`profile`, `k`, …), explicit `label:` | per scope node |
+| **Op / dispenser** | `op` | per op template |
+
+```
+Session     session="20260415_abc"
+  └─ Execution  exec_id="1", workload="cql_vector"
+        └─ ForEach  profile="label_01"
+              └─ Phase  phase="search", stage="post", k="100"
+                    └─ Op  op="ann_query"
+```
+
+A metric created at the Op node still carries the *full*
+composed set `{session, exec_id, workload, profile, phase,
+stage, k, op}` — the tree recomposes it from the ancestor chain
+— but every name appears exactly once and is contributed by its
+owning tier. [`component::attach`](../../nbrs-metrics/src/component.rs)
+**enforces** this at attach time: a child whose own labels
+collide with an ancestor's is a construction bug and panics,
+rather than letting the composition silently pick a winner. See
+[SRD-88](88_concurrent_executions.md) for why the Session and
+Execution tiers are split (concurrent executions share one
+session component and each own their `exec_id` child).
+
+---
+
 ## Metric Lifecycle
 
 Metrics are scoped to the component that creates them. When
@@ -135,21 +186,29 @@ ScenarioNode::ForEach { spec, children, .. } => {
 }
 ```
 
-### Labels → Activity
+### Labels → phase component
 
-When `run_phase` creates an Activity, it builds the Labels
-from the full label stack:
+When `run_phase` creates a phase component, it declares ONLY the
+labels owned at that tier — the live label stack (`for_each`
+levels + `phase`), via `ctx.incremental_labels()`. It does NOT
+restate `{session, exec_id, workload}`; those are owned by the
+session + execution ancestors and composed in by `attach`:
 
 ```rust
-let mut labels = Labels::of("session", &ctx.session_id);
-for (k, v) in &ctx.label_stack {
-    labels = labels.with(k, v);
-}
-labels = labels.with("phase", phase_name);
+ctx.push_label("phase", phase_name);
+let phase_own_labels = ctx.incremental_labels(); // for_each + phase only
+ctx.pop_label();
+let phase_component = Component::new(phase_own_labels, …);
+component::attach(&ctx.session_component, &phase_component);
+// phase_component.effective_labels() now == {session, exec_id,
+// workload} (inherited) + {…for_each, phase} (own)
 ```
 
-This replaces the current `Labels::of("session", "cli")`
-hardcode.
+`ctx.labels()` still returns the *full* composed set for callers
+that need it directly (e.g. matching metric instances for a
+resume purge), but a component's OWN labels are always the
+incremental slice — never the full set (label-ownership
+invariant, above).
 
 ### Labels → Metrics
 
