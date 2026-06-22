@@ -14,8 +14,8 @@
 //!   Each engine maps to its driver's native consistency type.
 //! - [`OpMode`] and [`STMT_FIELD_NAMES`] — the op-field naming
 //!   convention that selects raw vs prepared vs batch dispatch.
-//! - The [`cql_timeuuid`](nodes::CqlTimeuuid) Polydat node, registered
-//!   once via inventory and available wherever this adapter is
+//! - The `cql_timeuuid` Polydat node (macro-authored in [`nodes`]),
+//!   registered once via inventory and available wherever this adapter is
 //!   linked.
 //! - [`default_status_metrics`] — the `rows_inserted` rate metric
 //!   surfaced in the TUI status line.

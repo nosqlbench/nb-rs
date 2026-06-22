@@ -1184,17 +1184,6 @@ impl PolydatProgram {
         self.nodes.len()
     }
 
-    /// The widest temporal lookback window (ms) declared by any node in
-    /// this program — the max of [`crate::ast::PolydatNode::temporal_window_ms`]
-    /// across all nodes, or `None` if no node is temporally windowed.
-    ///
-    /// The SRD-86 optimizer settle gate reads this to size warmup so a
-    /// windowed reader's range clears the prior coordinate before the
-    /// objective is trusted.
-    pub fn max_temporal_window_ms(&self) -> Option<i64> {
-        self.nodes.iter().filter_map(|n| n.temporal_window_ms()).max()
-    }
-
     /// Total wire count (sum of all node input edges).
     pub fn wire_count(&self) -> usize {
         self.wiring.iter().map(|w| w.len()).sum()

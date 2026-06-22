@@ -15,15 +15,18 @@
 //! | `metricsql_vector` | instant vector | `Value::VecF64` |
 //! | `metricsql_window` | range vector (single series) | `Value::VecF64` |
 //!
-//! Registered through `polydat::register_nodes!` (inventory), like the
-//! `metric()` stat-readers — polydat discovers them at link time.
+//! Authored via `#[polydat::polydat_node]` (SRD-80b) — each fn's FuncSig +
+//! builder are macro-generated and registered through the macro's own
+//! `inventory::submit!`; polydat discovers them at link time. The query is
+//! parsed once at construction via `#[poly_const(parse_query, from = query)]`.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use polydat::ast::{NodeMeta, PolydatNode, Port, PortType, Purity, SliceArc, Value};
-use polydat::dsl::registry::{Arity, FuncCategory as C, FuncSig, OutputType, ParamSpec};
-use polydat::ast::{Commutativity, SlotType};
+// Node metadata + registration are emitted by `#[polydat::polydat_node]`
+// (fully-qualified `polydat::…` paths, incl. the `Const<…>` marker), so the
+// only polydat types named here are the value carriers the bodies build.
+use polydat::ast::{SliceArc, Value};
 
 use nbrs_metrics::queryapi::{Vector, live_access};
 
@@ -36,31 +39,31 @@ use crate::eval::{EvalContext, evaluate};
 /// rollups (`rate(m[5m])`) carry their own window.
 const INSTANT_LOOKBACK_MS: i64 = 300_000;
 
-/// A `metricsql_*` node: a parsed query + the result shape it projects.
-struct MetricsqlNode {
-    meta: NodeMeta,
-    /// Node name, for diagnostics.
-    label: &'static str,
-    expr: Expr,
-    shape: Shape,
+/// Parse a MetricsQL query once, at node construction — `#[poly_const]`
+/// caches the result and the per-eval body borrows it, so the string is
+/// parsed exactly once per node instance, not on every pull. The `Err`
+/// is carried (not surfaced at build): a malformed query warns + returns
+/// the type-appropriate empty value on first eval, matching the node's
+/// long-standing warn-not-poison contract for read failures.
+fn parse_query(query: &str) -> Result<Expr, String> {
+    crate::parse(query).map_err(|e| format!("parse error: {e}"))
 }
 
-impl MetricsqlNode {
-    fn new(label: &'static str, expr: Expr, shape: Shape, out: PortType) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: label.into(),
-                outs: vec![Port::new("output", out)],
-                ins: Vec::new(),
-            },
-            label,
-            expr,
-            shape,
-        }
+/// Type-appropriate empty value for a failed/empty read.
+fn empty_value(shape: Shape) -> Value {
+    match shape {
+        Shape::Scalar => Value::F64(0.0),
+        Shape::Vector | Shape::Window => Value::VecF64(SliceArc::from_vec(Vec::new())),
+        Shape::General => Value::Json(Arc::new(serde_json::Value::Array(Vec::new()))),
     }
+}
 
-    /// Locate a service, evaluate the query at "now", project the result.
-    fn try_read(&self) -> Result<Value, String> {
+/// Evaluate the pre-parsed query against the live metrics service at "now"
+/// and project to `shape`. Warns + returns [`empty_value`] on any failure
+/// (parse error, no service, shape mismatch) — warned, not poisoned.
+fn read_value(parsed: &Result<Expr, String>, label: &str, shape: Shape) -> Value {
+    let attempt = || -> Result<Value, String> {
+        let expr = parsed.as_ref().map_err(|e| e.clone())?;
         let service = live_access().ok_or("no live metrics service installed")?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -75,167 +78,148 @@ impl MetricsqlNode {
             query_start_ms: None,
             query_end_ms: None,
         };
-        let series = evaluate(&ctx, &self.expr).map_err(|e| e.to_string())?;
-        project(&Vector::new(series), self.shape).map_err(|e| e.message)
-    }
-
-    /// Type-appropriate empty value for a failed/empty read (no service,
-    /// unsupported expression, or shape mismatch) — warned, not poisoned.
-    fn default_value(&self) -> Value {
-        match self.shape {
-            Shape::Scalar => Value::F64(0.0),
-            Shape::Vector | Shape::Window => Value::VecF64(SliceArc::from_vec(Vec::new())),
-            Shape::General => Value::Json(Arc::new(serde_json::Value::Array(Vec::new()))),
+        let series = evaluate(&ctx, expr).map_err(|e| e.to_string())?;
+        if series.is_empty() {
+            // SRD-89 — an empty windowed result is NO DATA, not a real 0. The
+            // common cause is a `rate(metric[W])` whose lookback window holds
+            // fewer than two samples (early in a phase, or under concurrent
+            // execution where the shared cadence ring fills unevenly), so the
+            // whole query yields zero series. Returning the shape's no-data
+            // sentinel (NaN for scalar) lets a consumer distinguish "the window
+            // has no samples yet" from "the value settled at 0" (a flat counter,
+            // which projects a genuine 0). The optimizer settle holds on NaN
+            // instead of settling on a fabricated zero — without this, windowed
+            // servo objectives mis-converge under concurrency (the early empty
+            // reads look like a stable 0). A non-empty-but-mis-shaped result
+            // (e.g. a scalar query that returns a 2-sample series) is a query
+            // error, not no-data — it falls through to the `project` error and
+            // the `empty_value` default below.
+            return Ok(no_data_value(shape));
         }
-    }
-}
-
-impl PolydatNode for MetricsqlNode {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
-    /// Intrinsically volatile: the typed return is not a function of
-    /// declared inputs — it reads the live metrics the cadence pipeline
-    /// frames, which change over the run. Per polydat R1.v this marks the
-    /// node `Dynamic` so it is never const-folded and re-evaluates on every
-    /// pull (a metrics reader must never cache a stale snapshot).
-    fn purity(&self) -> Purity {
-        Purity::Nondeterministic {
-            reason: "reads live metrics framed by the cadence pipeline; value changes over the run",
-        }
-    }
-
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = self.try_read().unwrap_or_else(|e| {
-            polydat::audit::warn(&format!("{}: {e}", self.label));
-            self.default_value()
-        });
-    }
-
-    /// The widest rollup window this query reads over (e.g. `[3s]` in
-    /// `rate(errors_total[3s])`). The SRD-86 optimizer settle gate sizes
-    /// its warmup to this so the window clears the prior coordinate
-    /// before the objective is trusted. A 1 s step resolves any
-    /// unit-less `[N]` window. `None` for a pure instant query.
-    fn temporal_window_ms(&self) -> Option<i64> {
-        crate::eval::max_rollup_window_ms(&self.expr, 1_000)
-    }
-}
-
-const QUERY_PARAM: &[ParamSpec] = &[ParamSpec {
-    name: "query",
-    slot_type: SlotType::ConstStr,
-    required: true,
-    example: "\"sum(rate(errors_total[1m]))\"",
-    constraint: None,
-}];
-
-const fn sig(name: &'static str, description: &'static str, output_port: PortType) -> FuncSig {
-    FuncSig {
-        name,
-        category: C::Context,
-        outputs: 1,
-        description,
-        help: "Evaluate a MetricsQL expression against the live in-process \
-               metrics and project the result.\n\
-               Parameter:\n  query — a MetricsQL expression string.\n\
-               Non-deterministic: reads live metrics that change over the run.",
-        identity: None,
-        variadic_ctor: None,
-        params: QUERY_PARAM,
-        arity: Arity::Fixed,
-        commutativity: Commutativity::Positional,
-        default_resolver: None,
-        output_type: OutputType::Fixed,
-        output_port: Some(output_port),
-    }
-}
-
-static SIGS: [FuncSig; 4] = [
-    sig("metricsql", "evaluate a MetricsQL query → JSON (full labeled result)", PortType::Json),
-    sig("metricsql_scalar", "evaluate a MetricsQL query → f64 (single value)", PortType::F64),
-    sig("metricsql_vector", "evaluate a MetricsQL query → VecF64 (instant vector)", PortType::VecF64),
-    sig("metricsql_window", "evaluate a MetricsQL query → VecF64 (windowed series)", PortType::VecF64),
-];
-
-/// Function signatures for the registry.
-pub fn signatures() -> &'static [FuncSig] {
-    &SIGS
-}
-
-/// Build a `metricsql_*` node from its name + the query const arg.
-pub fn build_node(
-    name: &str,
-    _wires: &[polydat::compile::assembly::WireRef],
-    _wire_types: &[PortType],
-    consts: &[polydat::dsl::ConstArg],
-) -> Option<Result<Box<dyn PolydatNode>, String>> {
-    let (label, shape, out): (&'static str, Shape, PortType) = match name {
-        "metricsql" => ("metricsql", Shape::General, PortType::Json),
-        "metricsql_scalar" => ("metricsql_scalar", Shape::Scalar, PortType::F64),
-        "metricsql_vector" => ("metricsql_vector", Shape::Vector, PortType::VecF64),
-        "metricsql_window" => ("metricsql_window", Shape::Window, PortType::VecF64),
-        _ => return None,
+        project(&Vector::new(series), shape).map_err(|e| e.message)
     };
-    let query = consts.first().map(|c| c.as_str()).unwrap_or("");
-    let expr = match crate::parse(query) {
-        Ok(e) => e,
-        Err(e) => return Some(Err(format!("{label}: parse error: {e}"))),
-    };
-    Some(Ok(Box::new(MetricsqlNode::new(label, expr, shape, out))))
+    attempt().unwrap_or_else(|e| {
+        polydat::audit::warn(&format!("{label}: {e}"));
+        empty_value(shape)
+    })
 }
 
-polydat::register_nodes!(signatures, build_node);
+/// Shape-typed **no-data** sentinel — what a syntactically-valid query that
+/// matched zero data should read as (distinct from a query/parse error, which
+/// uses [`empty_value`]). Scalar is `NaN` so a consumer (the optimizer settle)
+/// can tell "no samples yet" from a real 0; vector/window/general reuse the
+/// natural empty value (an empty result already reads as "no data" there).
+fn no_data_value(shape: Shape) -> Value {
+    match shape {
+        Shape::Scalar => Value::F64(f64::NAN),
+        Shape::Vector | Shape::Window | Shape::General => empty_value(shape),
+    }
+}
+
+/// Evaluate a MetricsQL query → JSON (full labeled result).
+///
+/// Signature: `metricsql(query: const str) -> json`. Authored via
+/// `#[polydat::polydat_node]` (SRD-80b). Intrinsically `Nondeterministic` —
+/// reads the live metrics the cadence pipeline frames, so it is never
+/// const-folded and re-evaluates on every pull.
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads live metrics framed by the cadence pipeline; value changes over the run"),
+)]
+fn metricsql(
+    query: Const<&str>,
+    #[poly_const(parse_query, from = query)] parsed: &Result<Expr, String>,
+) -> Arc<serde_json::Value> {
+    read_value(parsed, "metricsql", Shape::General).as_json_arc().clone()
+}
+
+/// Evaluate a MetricsQL query → f64 (single value). Intrinsically
+/// `Nondeterministic` — see [`metricsql`].
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads live metrics framed by the cadence pipeline; value changes over the run"),
+)]
+fn metricsql_scalar(
+    query: Const<&str>,
+    #[poly_const(parse_query, from = query)] parsed: &Result<Expr, String>,
+) -> f64 {
+    read_value(parsed, "metricsql_scalar", Shape::Scalar).as_f64()
+}
+
+/// Evaluate a MetricsQL query → VecF64 (instant vector). Intrinsically
+/// `Nondeterministic` — see [`metricsql`].
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads live metrics framed by the cadence pipeline; value changes over the run"),
+)]
+fn metricsql_vector(
+    query: Const<&str>,
+    #[poly_const(parse_query, from = query)] parsed: &Result<Expr, String>,
+) -> Vec<f64> {
+    read_value(parsed, "metricsql_vector", Shape::Vector).as_vec_f64().to_vec()
+}
+
+/// Evaluate a MetricsQL query → VecF64 (windowed series). Intrinsically
+/// `Nondeterministic` — see [`metricsql`].
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads live metrics framed by the cadence pipeline; value changes over the run"),
+)]
+fn metricsql_window(
+    query: Const<&str>,
+    #[poly_const(parse_query, from = query)] parsed: &Result<Expr, String>,
+) -> Vec<f64> {
+    read_value(parsed, "metricsql_window", Shape::Window).as_vec_f64().to_vec()
+}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use polydat::ast::PortType;
+    use polydat::dsl::compile::compile_polydat;
 
     #[test]
-    fn build_dispatches_each_name_to_its_shape() {
-        for (name, port) in [
-            ("metricsql", PortType::Json),
-            ("metricsql_scalar", PortType::F64),
-            ("metricsql_vector", PortType::VecF64),
-            ("metricsql_window", PortType::VecF64),
+    fn each_name_compiles_to_its_shape() {
+        // Each macro-authored name registers with its declared output port,
+        // discoverable by the polydat compiler.
+        for (decl, port) in [
+            ("j := metricsql(\"up\")", PortType::Json),
+            ("s := metricsql_scalar(\"up\")", PortType::F64),
+            ("v := metricsql_vector(\"up\")", PortType::VecF64),
+            ("w := metricsql_window(\"up\")", PortType::VecF64),
         ] {
-            let consts = [polydat::dsl::ConstArg::Str("up".into())];
-            let node = build_node(name, &[], &[], &consts).unwrap().unwrap();
-            assert_eq!(node.meta().outs[0].typ, port, "wrong output port for {name}");
+            let wire = decl.split_once(" :=").unwrap().0;
+            let k = compile_polydat(decl).unwrap_or_else(|e| panic!("compile {decl}: {e:?}"));
+            assert_eq!(
+                k.program().output_port_type(wire),
+                Some(port),
+                "wrong output port for {decl}",
+            );
         }
-    }
-
-    #[test]
-    fn unknown_name_is_none() {
-        assert!(build_node("metricsql_nope", &[], &[], &[]).is_none());
     }
 
     #[test]
     fn registered_and_discoverable_through_the_polydat_compiler() {
-        // The `register_nodes!`/inventory wiring makes the node findable
-        // by name when polydat compiles a program that uses it.
-        let k = polydat::dsl::compile::compile_polydat("score := metricsql_scalar(\"up\")");
+        // The macro's inventory registration makes the node findable by name
+        // when polydat compiles a program that uses it.
+        let k = compile_polydat("score := metricsql_scalar(\"up\")");
         assert!(k.is_ok(), "metricsql_scalar should be a registered node: {k:?}");
     }
 
     #[test]
-    fn parse_error_surfaces() {
-        let consts = [polydat::dsl::ConstArg::Str("((((".into())];
-        assert!(build_node("metricsql_scalar", &[], &[], &consts).unwrap().is_err());
+    fn malformed_query_warns_and_defaults_at_eval() {
+        // The query is parsed once at construction; an `Err` is carried, not
+        // surfaced at build, so a malformed query compiles fine and (with no
+        // live service either) warns + reads the F64 default on pull.
+        let mut k = compile_polydat("score := metricsql_scalar(\"((((\")")
+            .expect("malformed query still compiles (parse error carried, not a build error)");
+        assert_eq!(k.pull("score").as_f64(), 0.0);
     }
 
     #[test]
     fn eval_without_a_service_warns_and_defaults() {
         // No live service installed in this unit test → type-appropriate
         // empty value, no panic.
-        let consts = [polydat::dsl::ConstArg::Str("up".into())];
-        let node = build_node("metricsql_scalar", &[], &[], &consts).unwrap().unwrap();
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        match &out[0] {
-            Value::F64(f) => assert_eq!(*f, 0.0),
-            other => panic!("expected F64 default, got {other:?}"),
-        }
+        let mut k = compile_polydat("score := metricsql_scalar(\"up\")").expect("compile");
+        assert_eq!(k.pull("score").as_f64(), 0.0);
     }
 }

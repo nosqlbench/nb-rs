@@ -36,8 +36,9 @@
 
 use std::sync::{Arc, LazyLock, Mutex};
 
-use polydat::dsl::registry::{FuncSig, FuncCategory as C, ParamSpec, Arity};
-use polydat::ast::{PolydatNode, NodeMeta, Port, PortType, Purity, SlotType, Value};
+// Node metadata + registration are emitted by `#[polydat::polydat_node]`
+// (fully-qualified `polydat::…` paths, including the `Const<…>` marker), so
+// no `polydat::ast` / `polydat::dsl::registry` imports are needed here.
 use crate::metrics_query::{MetricsQuery, Selection};
 use crate::snapshot::{MetricSet, MetricValue};
 
@@ -73,117 +74,53 @@ fn selection_from_pattern(pattern: &str) -> Selection {
 
 /// Read a stat from the canonical session-lifetime view.
 ///
-/// Signature: `metric(label_pattern: str, stat: str) -> f64`
-pub struct MetricCumulative {
-    meta: NodeMeta,
-    label_pattern: String,
-    stat: String,
-    query: Option<Arc<MetricsQuery>>,
-}
-
-impl MetricCumulative {
-    pub fn new(label_pattern: &str, stat: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "metric".into(),
-                outs: vec![Port::new("output", PortType::F64)],
-                ins: Vec::new(),
-            },
-            label_pattern: label_pattern.to_string(),
-            stat: stat.to_string(),
-            query: get_query(),
-        }
-    }
-}
-
-impl PolydatNode for MetricCumulative {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    /// Intrinsically volatile: reads the live session-lifetime view the
-    /// cadence pipeline frames. Per polydat R1.v this marks the node
-    /// `Dynamic` — never const-folded, re-evaluated on every pull — so a
-    /// metrics reader can never cache a stale (e.g. compile-time-empty) value.
-    fn purity(&self) -> Purity {
-        Purity::Nondeterministic {
-            reason: "reads live session-lifetime metrics; value changes over the run",
-        }
-    }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let sel = selection_from_pattern(&self.label_pattern);
-        let value = self.query.as_ref()
-            .map(|q| q.session_lifetime(&sel))
-            .and_then(|snap| extract_stat(&snap, &self.stat))
-            .unwrap_or(0.0);
-        outputs[0] = Value::F64(value);
-    }
-
-    /// `None`, intentionally: this reader has **no bounded lookback** —
-    /// it reads [`MetricsQuery::session_lifetime`], a running total
-    /// across ALL coordinates. The SRD-86 settle viability gate sizes
-    /// warmup to a window so it clears the prior coordinate, but a
-    /// session-cumulative value never clears the prior coordinate, so no
-    /// gate can scope it. The settle instead *warns* when an optimizer
-    /// objective reads this node, steering authors to `metric_window` or
-    /// `metricsql_scalar(rate(...[W]))` for a per-coordinate objective.
-    fn temporal_window_ms(&self) -> Option<i64> {
-        None
-    }
+/// Signature: `metric(label_pattern: const str, stat: const str) -> f64`.
+/// Reads [`MetricsQuery::session_lifetime`] — session running totals
+/// (`cycles`/`errors`) and the session-average `rate`. Authored via
+/// `#[polydat::polydat_node]` (SRD-80b).
+///
+/// Intrinsically `Nondeterministic`: reads the live session-lifetime view
+/// the cadence pipeline frames, so the node is never const-folded and is
+/// re-evaluated on every pull — a metrics reader can never cache a stale
+/// (e.g. compile-time-empty) value.
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads live session-lifetime metrics; value changes over the run"),
+)]
+fn metric(label_pattern: Const<&str>, stat: Const<&str>) -> f64 {
+    let sel = selection_from_pattern(label_pattern.0);
+    get_query()
+        .map(|q| q.session_lifetime(&sel))
+        .and_then(|snap| extract_stat(&snap, stat.0))
+        .unwrap_or(0.0)
 }
 
 /// Read a stat from the latest closed smallest-cadence window.
 ///
-/// Signature: `metric_window(label_pattern: str, stat: str) -> f64`
-pub struct MetricWindow {
-    meta: NodeMeta,
-    label_pattern: String,
-    stat: String,
-    query: Option<Arc<MetricsQuery>>,
-}
-
-impl MetricWindow {
-    pub fn new(label_pattern: &str, stat: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "metric_window".into(),
-                outs: vec![Port::new("output", PortType::F64)],
-                ins: Vec::new(),
-            },
-            label_pattern: label_pattern.to_string(),
-            stat: stat.to_string(),
-            query: get_query(),
-        }
-    }
-}
-
-impl PolydatNode for MetricWindow {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    /// Intrinsically volatile: reads the latest closed cadence window the
-    /// pipeline frames. Per polydat R1.v this marks the node `Dynamic` —
-    /// never const-folded, re-evaluated on every pull.
-    fn purity(&self) -> Purity {
-        Purity::Nondeterministic {
-            reason: "reads the latest framed cadence window; value changes over the run",
-        }
-    }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let sel = selection_from_pattern(&self.label_pattern);
-        let value = self.query.as_ref()
-            .and_then(|q| {
-                let smallest = q.reporter().declared_cadences().smallest();
-                if smallest.is_zero() { return None; }
-                // Per-window derivations off the finest ring: counter stats read
-                // the span INCREASE (`cycles`/`errors`, and `rate` = increase ÷
-                // interval); the latency quantiles read the merged window
-                // DISTRIBUTION. Contrast `metric(...)`, which reads
-                // `session_lifetime` running totals.
-                let snap = match self.stat.as_str() {
-                    "p50" | "p99" | "mean" => q.distribution_over(smallest, &sel),
-                    _ => q.increase_over(smallest, &sel),
-                };
-                extract_stat(&snap, &self.stat)
-            })
-            .unwrap_or(0.0);
-        outputs[0] = Value::F64(value);
-    }
+/// Signature: `metric_window(label_pattern: const str, stat: const str) ->
+/// f64`. Counter stats read the per-window INCREASE (`cycles`/`errors`, and
+/// `rate` = increase ÷ interval); latency quantiles (`p50`/`p99`/`mean`)
+/// read the merged window DISTRIBUTION. Contrast [`metric`], which reads
+/// session-lifetime running totals.
+///
+/// Intrinsically `Nondeterministic` — see [`metric`].
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads the latest framed cadence window; value changes over the run"),
+)]
+fn metric_window(label_pattern: Const<&str>, stat: Const<&str>) -> f64 {
+    let sel = selection_from_pattern(label_pattern.0);
+    get_query()
+        .and_then(|q| {
+            let smallest = q.reporter().declared_cadences().smallest();
+            if smallest.is_zero() { return None; }
+            let snap = match stat.0 {
+                "p50" | "p99" | "mean" => q.distribution_over(smallest, &sel),
+                _ => q.increase_over(smallest, &sel),
+            };
+            extract_stat(&snap, stat.0)
+        })
+        .unwrap_or(0.0)
 }
 
 /// Extract a named stat from a [`MetricSet`].
@@ -222,75 +159,7 @@ fn extract_stat(snapshot: &MetricSet, stat: &str) -> Option<f64> {
     }
 }
 
-/// Function signatures for the registry.
-pub fn signatures() -> &'static [FuncSig] {
-    &[
-        FuncSig {
-            name: "metric", category: C::Context, outputs: 1,
-            description: "read cumulative metric value from in-process store",
-            help: "Read a stat from the cumulative metrics view.\n\
-                   Parameters:\n  label_pattern — comma-separated key=value or key~substring filters\n  \
-                   stat — one of: cycles, errors, rate, p50, p99, mean\n\
-                   Example: metric(\"phase=rampup\", \"p99\")\n\
-                   Non-deterministic: value changes as metrics accumulate.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "label_pattern", slot_type: SlotType::ConstStr, required: true, example: "\"phase=rampup\"", constraint: None },
-                ParamSpec { name: "stat", slot_type: SlotType::ConstStr, required: true, example: "\"p99\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-            // Both metric readers emit PortType::F64 (see the
-            // NodeMeta above) — declared here so DSL infix typing
-            // flows from the registry (FuncSig::output_port).
-            output_port: Some(polydat::ast::PortType::F64),
-        },
-        FuncSig {
-            name: "metric_window", category: C::Context, outputs: 1,
-            description: "read last-window metric value from in-process store",
-            help: "Read a stat from the most recent capture window.\n\
-                   Parameters:\n  label_pattern — comma-separated key=value or key~substring filters\n  \
-                   stat — one of: cycles, errors, rate, p50, p99, mean\n\
-                   Example: metric_window(\"phase=search\", \"rate\")\n\
-                   Non-deterministic: value changes each capture interval.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "label_pattern", slot_type: SlotType::ConstStr, required: true, example: "\"phase=search\"", constraint: None },
-                ParamSpec { name: "stat", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-            // Both metric readers emit PortType::F64 (see the
-            // NodeMeta above) — declared here so DSL infix typing
-            // flows from the registry (FuncSig::output_port).
-            output_port: Some(polydat::ast::PortType::F64),
-        },
-    ]
-}
-
-/// Build a metric node from function name and const args.
-fn build_node(
-    name: &str,
-    _wires: &[polydat::compile::assembly::WireRef], _wire_types: &[polydat::ast::PortType],
-    consts: &[polydat::dsl::ConstArg],
-) -> Option<Result<Box<dyn PolydatNode>, String>> {
-    match name {
-        "metric" => {
-            let pattern = consts.first().map(|c| c.as_str()).unwrap_or("");
-            let stat = consts.get(1).map(|c| c.as_str()).unwrap_or("cycles");
-            Some(Ok(Box::new(MetricCumulative::new(pattern, stat))))
-        }
-        "metric_window" => {
-            let pattern = consts.first().map(|c| c.as_str()).unwrap_or("");
-            let stat = consts.get(1).map(|c| c.as_str()).unwrap_or("cycles");
-            Some(Ok(Box::new(MetricWindow::new(pattern, stat))))
-        }
-        _ => None,
-    }
-}
-
-polydat::register_nodes!(signatures, build_node);
+// `metric` / `metric_window` are authored via `#[polydat::polydat_node]`
+// above — their FuncSig + builder are macro-generated and registered through
+// the macro's own `inventory::submit!`, so no hand-written `signatures()` /
+// `build_node()` / `register_nodes!` is needed here.
