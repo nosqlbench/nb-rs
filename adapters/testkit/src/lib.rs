@@ -4,13 +4,15 @@
 //! Model adapter: simulates operation execution for workload prototyping.
 //!
 //! Extends the stdout adapter with:
-//! - Simulated results via the `result` op field (static map or Polydat Kernel)
+//! - Synthetic structured results via the `result-body` op field (any
+//!   JSON shape — map, array, scalar), emitted as a [`JsonBody`] so
+//!   captures and `verify:` address it like a real backend response
 //! - Latency simulation via `result-latency`
 //! - Deterministic error injection via `result-error-rate`
 //! - Backend saturation simulation via `result-capacity` / `result-overload`
 //! - Diagnostic output via `--diagnose`
 //!
-//! When no `result` field is present, behaves identically to stdout.
+//! When no `result-body` field is present, behaves identically to stdout.
 //! See SRD 29 for the full design.
 //!
 //! ## Oversaturation modeling
@@ -46,7 +48,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Semaphore;
 
 use nbrs_runtime::adapter::{
-    AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, TextBody,
+    AdapterError, DriverAdapter, ExecutionError, JsonBody, OpDispenser, OpResult, TextBody,
 };
 use nbrs_workload::model::ParsedOp;
 use nbrs_adapter_stdout::{StdoutFormat, StdoutConfig};
@@ -64,13 +66,20 @@ pub struct ModelConfig {
 
 /// Simulated result definition for a single op.
 ///
-/// Attached to ops via the `result` field in the workload YAML.
-/// When present, the model adapter populates OpResult.body with
-/// the rendered result and returns the result map for capture.
+/// Attached to ops via the `result-body` field in the workload YAML.
+/// When present, the model adapter wraps it in a [`JsonBody`] so
+/// capture path-expressions (`capture: { x: "/0/value" }`) and
+/// `verify:` field assertions address it exactly as they would a
+/// real backend's structured response — letting a workload satisfy
+/// a phase-poll `until:` predicate from synthetic state, no live
+/// service required.
 #[derive(Debug, Clone)]
 pub enum ResultDef {
-    /// Static key-value pairs: `result: { user_id: 42, balance: 1234.56 }`
-    Static(HashMap<String, String>),
+    /// A literal synthetic result body of any JSON shape — a map
+    /// (`result-body: { user_id: 42 }`), an array
+    /// (`result-body: [ { value: 1 }, { value: 0 } ]`), or a scalar.
+    /// Emitted verbatim as the op's [`JsonBody`].
+    Json(serde_json::Value),
 }
 
 /// Per-op model parameters extracted from `result-*` op fields.
@@ -331,32 +340,53 @@ impl OpDispenser for ModelDispenser {
             }
 
             // Track occupancy (waiting + serving) BEFORE taking a
-            // permit so `overload` can measure the real pressure on
-            // the simulated backend — including ops currently stuck
-            // in the queue, not just the ones being serviced.
+            // permit so the measured-overload model can see the real
+            // pressure on the simulated backend — including ops queued,
+            // not just being serviced.
             let current = self.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
             let _guard = InFlightGuard(self.in_flight.clone());
 
-            // Overload rejection: models a backend that accepts a
-            // bounded queue and rejects anything beyond it. The
-            // check runs before acquiring a permit so overloaded
-            // requests never consume service capacity — they fail
-            // fast, which matches what real backends do when their
-            // inbound buffer fills. Marked retryable so error
-            // handlers can back off instead of surfacing every
-            // rejection.
-            if let Some(threshold) = self.model_params.overload
-                && current > threshold {
+            // Overload rejection. Two models, picked per op:
+            //
+            //  - SYNTHETIC (preferred for reproducible objectives): when
+            //    the op declares `result-load` (a *logical* load level —
+            //    typically the searched `{conc}` or a predicted in-flight),
+            //    overload is decided from THAT value, not the measured
+            //    in-flight count. The signal is then a deterministic
+            //    function of the setting: a saturating setting overloads on
+            //    EVERY op regardless of host throughput, so an optimizer's
+            //    `rate(errors_total[…])` is reliably > 0 there and 0 at a
+            //    safe setting — identical serial or under concurrent
+            //    pressure (no actual host saturation required).
+            //  - MEASURED (default): overload when the real in-flight count
+            //    exceeds the threshold — for throughput/saturation probing
+            //    (e.g. capacity_probe) where the measured pressure IS the
+            //    point.
+            //
+            // Either way the rejection is retryable, fails fast (before a
+            // permit), and never consumes service capacity.
+            let synthetic_load = resolved_field_f64(&resolved, "result-load");
+            let overload_hit = match (synthetic_load, self.model_params.overload) {
+                (Some(load), Some(threshold)) => load > threshold as f64,
+                (None, Some(threshold)) => current > threshold,
+                _ => false,
+            };
+            if overload_hit {
+                let threshold = self.model_params.overload.unwrap_or(0);
+                let detail = match synthetic_load {
+                    Some(load) => format!("load={load}"),
+                    None => format!("in_flight={current}"),
+                };
                 if self.diagnose {
                     // SRD-87 A1: diagnostics route through the log channel.
                     nbrs_runtime::diag!(
                         nbrs_runtime::observer::LogLevel::Info,
-                        "testkit: OVERLOAD cycle={cycle} in_flight={current} threshold={threshold}"
+                        "testkit: OVERLOAD cycle={cycle} {detail} threshold={threshold}"
                     );
                 }
                 return Err(ExecutionError::Op(AdapterError {
                     error_name: "Overload".into(),
-                    message: format!("simulated overload: in_flight={current} > {threshold}"),
+                    message: format!("simulated overload: {detail} > {threshold}"),
                     retryable: true,
                 }));
             }
@@ -429,28 +459,53 @@ impl OpDispenser for ModelDispenser {
                     tokio::time::sleep(duration).await;
                 }
 
-            Ok(OpResult {
-                body: Some(Box::new(TextBody(text))),
-                skipped: false,
-            })
+            // A declared `result:` becomes the op's structured body
+            // (so captures / `verify:` can address it); otherwise the
+            // body is the rendered op text, exactly like stdout.
+            let body: Box<dyn nbrs_runtime::adapter::ResultBody> = match &self.model_params.result {
+                Some(ResultDef::Json(v)) => Box::new(JsonBody(v.clone())),
+                None => Box::new(TextBody(text)),
+            };
+            Ok(OpResult { body: Some(body), skipped: false })
         })
+    }
+}
+
+/// A per-cycle resolved op field as f64, or `None` if absent / non-numeric.
+/// Used to read the synthetic `result-load` (resolved through the wires each
+/// cycle, so it tracks the live searched coordinate, e.g. `{conc}`).
+fn resolved_field_f64(
+    resolved: &nbrs_runtime::adapter::ResolvedFields,
+    name: &str,
+) -> Option<f64> {
+    let idx = resolved.names.iter().position(|n| n == name)?;
+    match resolved.values.get(idx)? {
+        polydat::ast::Value::F64(f) => Some(*f),
+        polydat::ast::Value::U64(u) => Some(*u as f64),
+        polydat::ast::Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        polydat::ast::Value::Str(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
     }
 }
 
 /// Extract model parameters from an op's params/fields.
 ///
-/// Looks for `result`, `result-latency`, `result-error-rate`,
+/// Looks for `result-body`, `result-latency`, `result-error-rate`,
 /// `result-error-name`, `result-error-message` in the op's params.
 pub fn extract_model_params(params: &HashMap<String, serde_json::Value>) -> ModelParams {
     let mut mp = ModelParams::default();
 
-    if let Some(val) = params.get("result")
-        && let Some(obj) = val.as_object() {
-            let map: HashMap<String, String> = obj.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string())))
-                .collect();
-            mp.result = Some(ResultDef::Static(map));
-        }
+    // `result-body:` — any JSON shape (map / array / scalar), emitted
+    // verbatim as the op's structured body so captures and `verify:`
+    // can address it. (Not `result:` — that key is the reserved
+    // SRD-66 result-bindings block, consumed by the workload model
+    // before adapter params are read.) `null` means "no synthetic
+    // body" (behave like stdout), distinct from absent.
+    if let Some(val) = params.get("result-body")
+        && !val.is_null()
+    {
+        mp.result = Some(ResultDef::Json(val.clone()));
+    }
 
     if let Some(val) = params.get("result-latency") {
         if let Some(s) = val.as_str() {
@@ -561,19 +616,40 @@ mod tests {
     }
 
     #[test]
-    fn extract_static_result() {
+    fn extract_json_object_result() {
         let mut params = HashMap::new();
         let mut result_map = serde_json::Map::new();
         result_map.insert("user_id".into(), serde_json::Value::from(42));
         result_map.insert("name".into(), serde_json::Value::from("alice"));
-        params.insert("result".into(), serde_json::Value::Object(result_map));
+        params.insert("result-body".into(), serde_json::Value::Object(result_map));
 
         let mp = extract_model_params(&params);
-        assert!(mp.result.is_some());
-        if let Some(ResultDef::Static(map)) = &mp.result {
-            assert_eq!(map["user_id"], "42");
-            assert_eq!(map["name"], "alice");
-        }
+        let Some(ResultDef::Json(v)) = &mp.result else { panic!("expected Json result") };
+        assert_eq!(v["user_id"], serde_json::Value::from(42));
+        assert_eq!(v["name"], serde_json::Value::from("alice"));
+    }
+
+    #[test]
+    fn extract_json_array_result_for_indexed_captures() {
+        // The shape a phase-poll `until:` predicate reads via
+        // `/0/value`, `/1/value:count`, … — author-controlled state
+        // that satisfies the predicate with no live backend.
+        let mut params = HashMap::new();
+        params.insert(
+            "result-body".into(),
+            serde_json::json!([{ "value": 1 }, { "value": [] }, { "value": 0 }]),
+        );
+        let mp = extract_model_params(&params);
+        let Some(ResultDef::Json(v)) = &mp.result else { panic!("expected Json result") };
+        assert_eq!(v.pointer("/0/value"), Some(&serde_json::Value::from(1)));
+        assert_eq!(v.pointer("/2/value"), Some(&serde_json::Value::from(0)));
+    }
+
+    #[test]
+    fn explicit_null_result_is_no_body() {
+        let mut params = HashMap::new();
+        params.insert("result-body".into(), serde_json::Value::Null);
+        assert!(extract_model_params(&params).result.is_none());
     }
 
     #[test]
@@ -734,7 +810,7 @@ inventory::submit! {
     nbrs_runtime::adapter::AdapterRegistration {
         names: || &["testkit"],
         known_params: || &[
-            "result", "result-latency",
+            "result-body", "result-load", "result-latency",
             "result-error-rate", "result-error-name", "result-error-message",
             "result-capacity", "result-overload",
             "result-throw-at", "result-throw-name",
@@ -765,7 +841,7 @@ inventory::submit! {
         share_capability: nbrs_runtime::resource_pool::ShareCapability::Shared,
         resource_key: |params| {
             let identity_fields = [
-                "result", "result-latency",
+                "result-body", "result-load", "result-latency",
                 "result-error-rate", "result-error-name", "result-error-message",
                 "result-capacity", "result-overload",
                 "result-throw-at", "result-throw-name",
