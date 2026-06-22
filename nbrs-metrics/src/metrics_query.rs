@@ -613,8 +613,8 @@ mod tests {
         (root, reporter, query)
     }
 
-    #[test]
-    fn now_reads_smallest_cadence_window() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn now_reads_smallest_cadence_window() {
         // `now` no longer walks the live tree — it reads
         // `cadence_window(smallest_declared)`. So we must ingest a
         // closed window first; before any close, `now` is empty.
@@ -637,8 +637,8 @@ mod tests {
         assert_eq!(total, 42);
     }
 
-    #[test]
-    fn cadence_window_returns_latest_closed_snapshot() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cadence_window_returns_latest_closed_snapshot() {
         let (_root, reporter, query) = build_one_component_query();
         let labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
         // Inject a closed window via the reporter.
@@ -655,8 +655,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn session_lifetime_does_not_overcount_a_single_counter() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_lifetime_does_not_overcount_a_single_counter() {
         // session_lifetime walks the cascade down (every layer's prebuffer
         // + the largest's latest) and combines. With ONE ingested counter
         // the canonical value is its cumulative — not a multiple from the
@@ -677,8 +677,8 @@ mod tests {
         assert_eq!(cumulative, 42, "session_lifetime cumulative overcounted (got {cumulative})");
     }
 
-    #[test]
-    fn increase_over_gives_the_span_increment() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn increase_over_gives_the_span_increment() {
         // Two windows of a counter — cumulative 10 then 20, no prior data.
         // The recent-span value is the increment over the span (cum[end] −
         // cum[before span] = 20 − 0 = 20), derived from the running totals.
@@ -704,8 +704,8 @@ mod tests {
         assert_eq!(value, 20, "span increment over the recent window (got {value})");
     }
 
-    #[test]
-    fn increase_over_subtracts_prior_cumulative() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn increase_over_subtracts_prior_cumulative() {
         // A counter climbing 100→110→120 over three windows. The recent
         // window's value is the INCREASE over the span — the running total
         // BEFORE the span is subtracted — not the latest cumulative.
@@ -727,8 +727,8 @@ mod tests {
         assert_eq!(read(Duration::from_millis(200)), 20, "last two windows increase = 120−100");
     }
 
-    #[test]
-    fn distribution_over_merges_histogram_windows() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn distribution_over_merges_histogram_windows() {
         use hdrhistogram::Histogram as HdrHistogram;
         // Two windows of a 2-sample histogram; the recent distribution over a
         // span covering both is the MERGED reservoir (4 samples).
@@ -753,8 +753,8 @@ mod tests {
         assert_eq!(count, 4, "two windows of 2 samples merge to 4");
     }
 
-    #[test]
-    fn selection_filter_excludes_non_matching_labels() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn selection_filter_excludes_non_matching_labels() {
         let (_root, reporter, query) = build_one_component_query();
         let labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
         let mut s = MetricSet::new(Duration::from_millis(100));
@@ -775,8 +775,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn select_one_errors_on_zero_matches() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn select_one_errors_on_zero_matches() {
         let (_root, _reporter, query) = build_one_component_query();
         let result = query.select_one(|q| q.cadence_window(
             Duration::from_millis(100),
@@ -785,8 +785,8 @@ mod tests {
         assert_eq!(result.unwrap_err(), SelectError::NoMatch);
     }
 
-    #[test]
-    fn select_one_succeeds_on_exact_match() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn select_one_succeeds_on_exact_match() {
         let (_root, reporter, query) = build_one_component_query();
         let labels = Labels::of("session", "s1").extend(&Labels::of("phase", "load"));
         let mut s = MetricSet::new(Duration::from_millis(100));

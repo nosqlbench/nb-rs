@@ -526,6 +526,47 @@ impl Component {
         None
     }
 
+    /// SRD-89 — flatten the up-walk control resolution starting at `start`
+    /// into a name → erased-handle map, computed **without nested locks**.
+    ///
+    /// This has the same visibility as calling
+    /// [`Self::find_control_erased_up`] for every name — the start
+    /// component's own controls plus any `BranchScope::Subtree` control on an
+    /// ancestor, nearest-wins — but it acquires and releases **one** tier's
+    /// lock at a time (never holding a child's guard while reading a parent),
+    /// so it is immune to the writer-preferring `RwLock` starvation that a
+    /// nested up-walk hits under concurrent in-process execution (a hot-path
+    /// per-cycle `find_control_erased_up` deadlocks against the cadence
+    /// path's instrument-registration writes; this is built once per phase
+    /// and read lock-free thereafter — see SRD-89 §3c-i).
+    pub fn control_snapshot(
+        start: &std::sync::Arc<std::sync::RwLock<Component>>,
+    ) -> std::collections::HashMap<String, std::sync::Arc<dyn crate::controls::ErasedControl>> {
+        let mut map: std::collections::HashMap<String, std::sync::Arc<dyn crate::controls::ErasedControl>> =
+            std::collections::HashMap::new();
+        let mut next = Some(start.clone());
+        let mut is_start = true;
+        while let Some(arc) = next {
+            let parent_next;
+            {
+                let g = arc.read().unwrap_or_else(|e| e.into_inner());
+                for handle in g.controls.list() {
+                    // The start component's own controls are always visible;
+                    // an ancestor's only if subtree-scoped. Nearest wins.
+                    if is_start
+                        || handle.branch_scope() == crate::controls::BranchScope::Subtree
+                    {
+                        map.entry(handle.name().to_string()).or_insert(handle);
+                    }
+                }
+                parent_next = g.parent.as_ref().and_then(|w| w.upgrade());
+            }
+            next = parent_next;
+            is_start = false;
+        }
+        map
+    }
+
     /// Count of `Running`-state descendants (this component's
     /// children, grandchildren, …). Used by callers that want a
     /// structural "how many phases are in flight?" query against
@@ -899,8 +940,8 @@ mod tests {
 
     // ── SRD-40b §7.2: register_instrument duplicate detection ──
 
-    #[test]
-    fn register_instrument_first_time_succeeds() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_instrument_first_time_succeeds() {
         let mut c = Component::new(Labels::empty(), HashMap::new());
         assert!(c.register_instrument(
             "recall_at_10",
@@ -909,8 +950,8 @@ mod tests {
         assert!(c.find_instrument("recall_at_10").is_some());
     }
 
-    #[test]
-    fn register_instrument_duplicate_errors() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_instrument_duplicate_errors() {
         let mut c = Component::new(Labels::empty(), HashMap::new());
         c.register_instrument(
             "recall_at_10",
@@ -926,8 +967,8 @@ mod tests {
             "family name not in error: {err}");
     }
 
-    #[test]
-    fn register_instrument_distinct_names_succeed() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_instrument_distinct_names_succeed() {
         let mut c = Component::new(Labels::empty(), HashMap::new());
         c.register_instrument("a", InstrumentRef::Counter(new_counter("a"))).unwrap();
         c.register_instrument("b", InstrumentRef::Counter(new_counter("b"))).unwrap();
@@ -935,8 +976,8 @@ mod tests {
         assert_eq!(c.instruments().len(), 3);
     }
 
-    #[test]
-    fn register_instrument_error_carries_label_context() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_instrument_error_carries_label_context() {
         // SRD-40b §7's contract: the error message names the
         // dimensional cell so the workload author can see WHICH
         // op-template's label set produced the collision.
@@ -956,8 +997,8 @@ mod tests {
         assert!(err.contains("op"), "missing op label: {err}");
     }
 
-    #[test]
-    fn register_instrument_isolated_per_component() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_instrument_isolated_per_component() {
         // Two components — registering the same family on each
         // is OK; dimensional uniqueness comes from the
         // component-tree structure, not a global registry.
@@ -996,8 +1037,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dynamic_capture_runs_after_registry() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dynamic_capture_runs_after_registry() {
         let mut c = Component::new(Labels::empty(), HashMap::new());
         install_counter(&mut c, "static_counter", 5);
         c.set_dynamic_capture(Arc::new(DynamicCounter {
@@ -1008,8 +1049,8 @@ mod tests {
         assert!(snap.family("dynamic_counter").is_some());
     }
 
-    #[test]
-    fn component_attach_computes_effective_labels() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn component_attach_computes_effective_labels() {
         let root = Component::root(
             Labels::of("session", "s1"),
             HashMap::new(),
@@ -1025,8 +1066,8 @@ mod tests {
         assert_eq!(eff.get("phase"), Some("rampup"));
     }
 
-    #[test]
-    fn prop_walk_up_inheritance() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prop_walk_up_inheritance() {
         let mut root_props = HashMap::new();
         root_props.insert("hdr_digits".to_string(), "4".to_string());
         let root = Component::root(Labels::of("session", "s1"), root_props);
@@ -1041,8 +1082,8 @@ mod tests {
         assert_eq!(c.get_prop("nonexistent").as_deref(), None);
     }
 
-    #[test]
-    fn prop_child_overrides_parent() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prop_child_overrides_parent() {
         let mut root_props = HashMap::new();
         root_props.insert("hdr_digits".to_string(), "3".to_string());
         let root = Component::root(Labels::of("session", "s1"), root_props);
@@ -1058,8 +1099,8 @@ mod tests {
         assert_eq!(c.get_prop("hdr_digits").as_deref(), Some("4"));
     }
 
-    #[test]
-    fn detach_removes_child() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn detach_removes_child() {
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
         let child = Arc::new(RwLock::new(
             Component::new(Labels::of("phase", "rampup"), HashMap::new()),
@@ -1071,8 +1112,8 @@ mod tests {
         assert_eq!(root.read().unwrap().child_count(), 0);
     }
 
-    #[test]
-    fn capture_tree_collects_running_components() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capture_tree_collects_running_components() {
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
 
         // Running child with a registered counter.
@@ -1102,8 +1143,8 @@ mod tests {
         assert_eq!(captured[0].0.get("phase"), Some("load"));
     }
 
-    #[test]
-    fn capture_tree_walks_nested_children() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capture_tree_walks_nested_children() {
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
 
         let scenario = Arc::new(RwLock::new(
@@ -1182,8 +1223,8 @@ mod tests {
         root
     }
 
-    #[test]
-    fn find_returns_every_match_in_preorder() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn find_returns_every_match_in_preorder() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new().present("phase");
         let hits = find(&root, &sel);
@@ -1199,16 +1240,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn find_with_empty_selector_returns_everything() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn find_with_empty_selector_returns_everything() {
         let root = sample_tree();
         let all = find(&root, &crate::selector::Selector::new());
         // session root + 2 activities + (rampup + 2 ann_query + teardown) = 7
         assert_eq!(all.len(), 7);
     }
 
-    #[test]
-    fn find_with_glob_and_eq_conjunction() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn find_with_glob_and_eq_conjunction() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new()
             .glob("phase", "ann_*");
@@ -1220,8 +1261,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn find_with_present_and_absent_clauses() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn find_with_present_and_absent_clauses() {
         let root = sample_tree();
         let with_k = find(&root, &crate::selector::Selector::new()
             .present("phase").present("k"));
@@ -1232,8 +1273,8 @@ mod tests {
         assert_eq!(without_k.len(), 2);
     }
 
-    #[test]
-    fn find_one_exact_match() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn find_one_exact_match() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new()
             .eq("phase", "rampup");
@@ -1244,8 +1285,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn find_one_not_found() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn find_one_not_found() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new().eq("phase", "nowhere");
         match find_one(&root, &sel) {
@@ -1255,8 +1296,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn find_one_ambiguous_reports_count() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn find_one_ambiguous_reports_count() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new()
             .eq("phase", "ann_query");
@@ -1269,22 +1310,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn any_short_circuits_on_first_hit() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn any_short_circuits_on_first_hit() {
         let root = sample_tree();
         assert!(any(&root, &crate::selector::Selector::new().eq("phase", "rampup")));
         assert!(!any(&root, &crate::selector::Selector::new().eq("phase", "zzz")));
     }
 
-    #[test]
-    fn count_matches_len_of_find() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn count_matches_len_of_find() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new().present("phase");
         assert_eq!(count(&root, &sel), find(&root, &sel).len());
     }
 
-    #[test]
-    fn query_from_subtree_is_scoped() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn query_from_subtree_is_scoped() {
         let root = sample_tree();
         let activity_a = root.read().unwrap().children.first().unwrap().clone();
         let hits = find(&activity_a,
@@ -1292,8 +1333,8 @@ mod tests {
         assert_eq!(hits.len(), 3);
     }
 
-    #[test]
-    fn effective_labels_include_inherited_session_label() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn effective_labels_include_inherited_session_label() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new()
             .eq("session", "test-session")
@@ -1301,8 +1342,8 @@ mod tests {
         assert_eq!(count(&root, &sel), 4);
     }
 
-    #[test]
-    fn selector_macro_drives_find() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn selector_macro_drives_find() {
         let root = sample_tree();
         let hits = find(&root, &crate::selector!(phase = "teardown"));
         assert_eq!(hits.len(), 1);
@@ -1384,8 +1425,8 @@ mod tests {
         assert!(saw_via_current);
     }
 
-    #[test]
-    fn dryrun_controls_enumeration_over_tree() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dryrun_controls_enumeration_over_tree() {
         let root = sample_tree();
         let phase_hits = find(&root,
             &crate::selector::Selector::new().present("phase"));
@@ -1424,8 +1465,8 @@ mod tests {
 
     // ---- Branch-scoped control walk-up (SRD 23) ------------------
 
-    #[test]
-    fn branch_scope_subtree_resolves_from_descendant() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn branch_scope_subtree_resolves_from_descendant() {
         use crate::controls::{BranchScope, ControlBuilder};
         let root = Component::root(
             Labels::empty().with("session", "s1"),
@@ -1449,8 +1490,8 @@ mod tests {
         assert_eq!(resolved.unwrap().value(), 3u32);
     }
 
-    #[test]
-    fn branch_scope_local_does_not_leak_to_descendants() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn branch_scope_local_does_not_leak_to_descendants() {
         use crate::controls::{BranchScope, ControlBuilder};
         let root = Component::root(
             Labels::empty().with("session", "s1"),
@@ -1474,8 +1515,8 @@ mod tests {
             "Local-scoped control must not be visible to descendants");
     }
 
-    #[test]
-    fn nearest_declaration_wins_during_walk_up() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nearest_declaration_wins_during_walk_up() {
         use crate::controls::{BranchScope, ControlBuilder};
         let root = Component::root(
             Labels::empty().with("session", "s1"),
@@ -1507,8 +1548,8 @@ mod tests {
     // SRD-40b §11 / SRD-42 §"Component lifecycle: scope_close flush"
     // =====================================================================
 
-    #[test]
-    fn component_scope_close_flushes_running_component_marks_partial_and_stops() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn component_scope_close_flushes_running_component_marks_partial_and_stops() {
         use crate::cadence::{Cadences, CadenceTree};
         use crate::cadence_reporter::CadenceReporter;
 
@@ -1549,8 +1590,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn component_scope_close_skips_non_running_states() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn component_scope_close_skips_non_running_states() {
         use crate::cadence::{Cadences, CadenceTree};
         use crate::cadence_reporter::CadenceReporter;
 
@@ -1581,8 +1622,8 @@ mod tests {
 
     // ── capture_delta_auto: real-elapsed interval ────────────
 
-    #[test]
-    fn capture_delta_auto_uses_fallback_on_first_call() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capture_delta_auto_uses_fallback_on_first_call() {
         // No prior capture → fallback is the recorded interval.
         // Same shape the executor's phase-end flush sees on the
         // edge case where a phase ends before any scheduler tick.
@@ -1591,8 +1632,8 @@ mod tests {
         assert_eq!(s.interval(), Duration::from_millis(500));
     }
 
-    #[test]
-    fn capture_delta_auto_measures_real_elapsed_after_prior_capture() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capture_delta_auto_measures_real_elapsed_after_prior_capture() {
         // After a `capture_delta` records the watermark,
         // `capture_delta_auto` reports the actual wall-clock
         // delta between the two — NOT the prior `interval`
@@ -1615,8 +1656,8 @@ mod tests {
             s.interval());
     }
 
-    #[test]
-    fn capture_delta_auto_chained_uses_inter_capture_elapsed() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capture_delta_auto_chained_uses_inter_capture_elapsed() {
         // Two consecutive auto-captures: the second sees the
         // elapsed between auto calls, not the cumulative
         // since component creation.
