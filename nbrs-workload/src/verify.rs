@@ -48,6 +48,7 @@
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 /// Default per-case run timeout, in seconds.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 90;
@@ -262,11 +263,26 @@ pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, 
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    if output.status.code() == Some(124) {
+    let timed_out = output.status.code() == Some(124);
+    check_case_output(case, &combined, output.status.success(), timed_out)
+}
+
+/// Check one case's RUN RESULT against its expectations — the run-mechanism-
+/// agnostic half of [`run_case`]. `combined` is the merged stdout+stderr the
+/// run produced; `succeeded` is its exit success; `timed_out` is the timeout
+/// signal. Used both by the subprocess [`run_case`] and by `nbrs`'s in-process
+/// `run_executions`-backed verification (so the SAME `expect` / `expect-fail`
+/// rules apply whether examples run as subprocesses or as concurrent in-process
+/// executions sharing one session).
+pub fn check_case_output(
+    case: &VerifyCase,
+    combined: &str,
+    succeeded: bool,
+    timed_out: bool,
+) -> Result<(), String> {
+    if timed_out {
         return Err(format!("timed out after {}s", case.timeout));
     }
-    let succeeded = output.status.success();
-
     if case.expect_fails.is_empty() {
         if !succeeded {
             let err = combined
@@ -280,13 +296,13 @@ pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, 
             return Err("expected a failure (`expect-fail`) but the run succeeded".to_string());
         }
         for re in &case.expect_fails {
-            if !re.is_match(&combined) {
+            if !re.is_match(combined) {
                 return Err(format!("expect-fail /{re}/ did not match the failure output"));
             }
         }
     }
     for re in &case.expects {
-        if !re.is_match(&combined) {
+        if !re.is_match(combined) {
             return Err(format!("expect /{re}/ did not match the output"));
         }
     }
@@ -371,18 +387,20 @@ pub fn resolve_ref(reference: &str) -> Option<WorkloadSource> {
     })
 }
 
-/// Peek a workload reference's **declared top-level `params:`** (string
-/// scalars), following its `extends:` chain — the way `nbrs run` resolves
+/// A workload reference's **declared top-level `params:`** (string scalars),
+/// following its `extends:` chain — resolved the way `nbrs run` resolves
 /// `workload=…`. Returns `None` if the reference resolves to nothing or has
 /// no `params:` block.
 ///
-/// Used by `run.rs` to recognize a **console-owning adapter declared in the
-/// workload** (e.g. `params: { adapter: plotter }`) rather than only on the
-/// CLI, so the dashboard yields to the adapter on a TTY (SRD-41/87
-/// console-ownership). The returned params also carry the adapter's
-/// display-shaping keys (e.g. stdout's `filename`) so the preference is
-/// decided correctly, not just by the adapter name.
-pub fn peek_declared_params(reference: &str) -> Option<std::collections::HashMap<String, String>> {
+/// The canonical "what params did the workload declare" accessor. The
+/// runner folds these under the CLI params (CLI wins) to form the run's
+/// effective params, so a setting works identically whether declared in the
+/// workload or passed on the command line. Also used to recognize a
+/// **console-owning adapter declared in the workload** (e.g.
+/// `params: { adapter: plotter }`) so the dashboard yields to the adapter on
+/// a TTY (SRD-41/87); the returned params carry the adapter's display-shaping
+/// keys (e.g. stdout's `filename`) so the preference is decided correctly.
+pub fn declared_params(reference: &str) -> Option<std::collections::HashMap<String, String>> {
     let merged = match resolve_ref(reference)? {
         WorkloadSource::File(path) => crate::extends::load_and_merge(&path).ok()?,
         WorkloadSource::Catalog { name, .. } => {
@@ -413,11 +431,78 @@ pub struct VerifySummary {
     pub passed: usize,
     pub skipped: Vec<String>,
     pub failures: Vec<String>,
+    /// One entry per workload checked, in completion order — the
+    /// raw material for an end-of-run "slowest workloads" report.
+    pub timings: Vec<WorkloadTiming>,
+}
+
+/// A single workload's aggregate outcome, for live progress and the
+/// timing report. Coarser than [`Outcome`] (which is per *case*): a
+/// workload with any failing case is [`CheckStatus::Fail`]; one with no
+/// failures and at least one skip (and no pass) is [`CheckStatus::Skip`];
+/// otherwise [`CheckStatus::Pass`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckStatus {
+    Pass,
+    Skip,
+    Fail,
+}
+
+/// Wall-clock spent checking one workload, with its aggregate status.
+#[derive(Debug, Clone)]
+pub struct WorkloadTiming {
+    pub label: String,
+    pub elapsed: Duration,
+    pub status: CheckStatus,
+}
+
+/// Live verification progress, emitted as workloads start and finish so a
+/// caller (e.g. `nbrs check`) can render an active/pending/done/errors
+/// status line. Invoked from worker threads — handlers must be `Sync`.
+#[derive(Debug, Clone)]
+pub enum CheckProgress {
+    /// Discovery finished — `total` workloads will be checked.
+    Begin { total: usize },
+    /// A workload began running.
+    Started { label: String },
+    /// A workload finished, with its wall-clock and aggregate status.
+    Finished { label: String, elapsed: Duration, status: CheckStatus },
+}
+
+/// A progress handler. `&`-shared across verification worker threads.
+pub type ProgressFn<'a> = dyn Fn(CheckProgress) + Sync + 'a;
+
+/// No-op progress handler, for callers that only want the summary.
+pub fn no_progress(_: CheckProgress) {}
+
+/// Fold a file's per-case outcomes into one [`CheckStatus`].
+fn aggregate_status(outcomes: &[(String, Outcome)]) -> CheckStatus {
+    let mut saw_pass = false;
+    let mut saw_skip = false;
+    for (_, o) in outcomes {
+        match o {
+            Outcome::Fail(_) => return CheckStatus::Fail,
+            Outcome::Pass => saw_pass = true,
+            Outcome::Skip(_) => saw_skip = true,
+        }
+    }
+    if saw_skip && !saw_pass {
+        CheckStatus::Skip
+    } else {
+        CheckStatus::Pass
+    }
 }
 
 /// Verify a workload file or every `*.yaml` under a directory (recursively).
-/// Files run concurrently (cases within a file are sequential).
-pub fn verify_path(binary: &Path, path: &Path, sandbox: &Path) -> VerifySummary {
+/// Files run concurrently (cases within a file are sequential). `progress`
+/// is invoked from worker threads as each workload starts and finishes —
+/// pass [`no_progress`] for a quiet run.
+pub fn verify_path(
+    binary: &Path,
+    path: &Path,
+    sandbox: &Path,
+    progress: &ProgressFn,
+) -> VerifySummary {
     let _ = std::fs::create_dir_all(sandbox);
     let mut files: Vec<PathBuf> = Vec::new();
     if path.is_dir() {
@@ -426,6 +511,7 @@ pub fn verify_path(binary: &Path, path: &Path, sandbox: &Path) -> VerifySummary 
     } else {
         files.push(path.to_path_buf());
     }
+    progress(CheckProgress::Begin { total: files.len() });
 
     let acc: std::sync::Mutex<VerifySummary> = std::sync::Mutex::new(VerifySummary::default());
     // Work-stealing over `files`: a shared atomic cursor each worker pulls from
@@ -451,7 +537,11 @@ pub fn verify_path(binary: &Path, path: &Path, sandbox: &Path) -> VerifySummary 
                 let label = f.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
                 // Run the file (a sequence of cases) outside the lock, then
                 // fold its outcomes under a single lock acquisition.
+                progress(CheckProgress::Started { label: label.clone() });
+                let start = Instant::now();
                 let outcomes = verify_file(binary, &label, f, sandbox);
+                let elapsed = start.elapsed();
+                let status = aggregate_status(&outcomes);
                 let mut g = acc.lock().unwrap();
                 for (lbl, outcome) in outcomes {
                     match outcome {
@@ -460,6 +550,9 @@ pub fn verify_path(binary: &Path, path: &Path, sandbox: &Path) -> VerifySummary 
                         Outcome::Fail(m) => g.failures.push(m),
                     }
                 }
+                g.timings.push(WorkloadTiming { label: label.clone(), elapsed, status });
+                drop(g);
+                progress(CheckProgress::Finished { label, elapsed, status });
             });
         }
     });
@@ -473,21 +566,33 @@ pub fn verify_path(binary: &Path, path: &Path, sandbox: &Path) -> VerifySummary 
 /// every workload under it), an existing workload file, or a bundled catalog
 /// name (`examples/cursors/all_cursor/enumerate`, …). This is the `nbrs check` entry point — so
 /// anything the binary can `run` by name, it can `check` by the same name.
-pub fn verify_target(binary: &Path, target: &str, sandbox: &Path) -> VerifySummary {
+pub fn verify_target(
+    binary: &Path,
+    target: &str,
+    sandbox: &Path,
+    progress: &ProgressFn,
+) -> VerifySummary {
     let p = Path::new(target);
     if p.is_dir() {
-        return verify_path(binary, p, sandbox);
+        return verify_path(binary, p, sandbox, progress);
     }
     let _ = std::fs::create_dir_all(sandbox);
+    // A single named target is one workload; emit the same Begin/Started/
+    // Finished lifecycle a directory walk does so progress rendering is
+    // uniform, and record its timing for the report.
+    progress(CheckProgress::Begin { total: 1 });
+    let label = match &resolve_ref(target) {
+        Some(WorkloadSource::File(path)) => path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(target)
+            .to_string(),
+        _ => target.to_string(),
+    };
+    progress(CheckProgress::Started { label: label.clone() });
+    let start = Instant::now();
     let cases: Vec<(String, Outcome)> = match resolve_ref(target) {
-        Some(WorkloadSource::File(path)) => {
-            let label = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(target)
-                .to_string();
-            verify_file(binary, &label, &path, sandbox)
-        }
+        Some(WorkloadSource::File(path)) => verify_file(binary, &label, &path, sandbox),
         Some(WorkloadSource::Catalog { name, source }) => {
             verify_source(binary, &name, &name, &source, sandbox)
         }
@@ -495,10 +600,13 @@ pub fn verify_target(binary: &Path, target: &str, sandbox: &Path) -> VerifySumma
             target.to_string(),
             Outcome::Fail(format!(
                 "no such workload '{target}': not a local file, not a directory, and \
-                 no bundled workload by that name (try `nbrs describe workloads --all`)"
+                 no bundled workload by that name (try `nbrs describe workloads --all`).{}",
+                crate::suggest::did_you_mean(&crate::suggest::suggest_workloads(target))
             )),
         )],
     };
+    let elapsed = start.elapsed();
+    let status = aggregate_status(&cases);
     let mut sum = VerifySummary::default();
     for (lbl, outcome) in cases {
         match outcome {
@@ -507,7 +615,20 @@ pub fn verify_target(binary: &Path, target: &str, sandbox: &Path) -> VerifySumma
             Outcome::Fail(m) => sum.failures.push(m),
         }
     }
+    sum.timings.push(WorkloadTiming { label: label.clone(), elapsed, status });
+    progress(CheckProgress::Finished { label, elapsed, status });
     sum
+}
+
+/// Every `*.yaml` / `*.yml` workload file under `dir` (recursive),
+/// sorted. The discovery half of [`verify_path`], exposed so the
+/// in-process example walker (`nbrs_runtime::verify_in_process`) finds
+/// the same files the subprocess walker does.
+pub fn collect_workload_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_yaml(dir, &mut files);
+    files.sort();
+    files
 }
 
 fn collect_yaml(dir: &Path, out: &mut Vec<PathBuf>) {

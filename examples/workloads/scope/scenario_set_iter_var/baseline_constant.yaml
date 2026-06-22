@@ -29,6 +29,6 @@ phases:
       msg:
         stmt: "mode={mode}"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ expect mode=verbose
 #@ expect 0 failed

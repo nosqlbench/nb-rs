@@ -27,7 +27,10 @@ pub fn copy_command(args: &[String]) -> Result<(), String> {
     let bundled = nbrs_workload::catalog::lookup(name).ok_or_else(|| {
         format!(
             "no bundled workload named `{name}` — `nbrs describe workloads` \
-             (or `--all` for the examples tier) lists the catalog"
+             (or `--all` for the examples tier) lists the catalog.{}",
+            // Copy runs bundled names only, so suggest from the catalog
+            // alone — a local file would name something copy cannot act on.
+            nbrs_workload::suggest::did_you_mean(&nbrs_workload::suggest::suggest_bundled(name))
         )
     })?;
 

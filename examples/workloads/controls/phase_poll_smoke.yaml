@@ -1,13 +1,16 @@
 # SRD-75 phase-poll smoke test.
 #
-# A minimal workload exercising the phase-poll surface end-
-# to-end without external dependencies (no dataset, no HTTP).
-# The stdout adapter prints each op's resolved fields; the
-# poll predicate references a synthesized shared capture
-# that's never written, so the loop runs until `timeout_ms`
-# expires. This verifies the parse + synthesis + runtime
-# loop are wired correctly; the predicate-satisfied path is
-# covered by separate integration tests.
+# Exercises the phase-poll surface end-to-end — parse, scope
+# synthesis, per-iteration capture, predicate re-evaluation, and
+# predicate-satisfied loop exit — with NO external dependency.
+#
+# The testkit adapter returns a synthetic structured result
+# (`result:`), so the op's `capture:` path-expressions read
+# author-controlled state instead of a live backend's. The state
+# is chosen to satisfy the `until:` predicate, so the loop exits by
+# predicate-satisfaction rather than timeout. (`on_timeout` defaults
+# to Error, so a timeout would fail the phase — `#@ expect 0 failed`
+# below therefore proves the predicate actually fired.)
 
 scenarios:
   default:
@@ -15,7 +18,7 @@ scenarios:
 
 phases:
   ensure:
-    adapter: stdout
+    adapter: testkit
     cycles: 1
     concurrency: 1
     poll:
@@ -25,23 +28,26 @@ phases:
       # above `==`). SRD-75 documents this in the workload-
       # author guide.
       until: "(sstables == 1) & (active_for_cf == 0) & (pending_for_cf == 0)"
-      interval_ms: 200
-      # Short timeout so the smoke test completes quickly even
-      # when the predicate never fires (the captures here are
-      # never written; the loop ends via timeout).
-      timeout_ms: 1000
+      interval_ms: 50
+      # Generous bound: the synthetic state satisfies the predicate
+      # on the first poll, so the loop never reaches this. A timeout
+      # would fail the phase (on_timeout defaults to Error).
+      timeout_ms: 2000
       max_error_retries: 0
       metric_name: ensure_smoke_wait_s
     ops:
       read_state:
-        format: assignments
-        # No real capture writes happen here — the stdout
-        # adapter just renders the op's fields each cycle.
-        # The phase-poll loop's purpose in this smoke test
-        # is to exercise the predicate-driven wall-clock loop
-        # mechanic; predicate-satisfaction is covered in
-        # integration tests with a fake-state-injection
-        # adapter.
+        # Synthetic "compaction state" the predicate inspects:
+        #   /0/value        → sstables       = 1   (compacted to one)
+        #   /1/value:count  → active_for_cf  = 0   (no active compactions)
+        #   /2/value        → pending_for_cf = 0   (none pending)
+        # These values satisfy the `until:` predicate above.
+        # (`result-body`, not `result:` — the latter is the reserved
+        # SRD-66 result-bindings block.)
+        result-body:
+          - value: 1
+          - value: []
+          - value: 0
         capture:
           sstables:       "/0/value"
           active_for_cf:  "/1/value:count"
@@ -50,5 +56,8 @@ phases:
           before: "polling state"
           after:  "compacted"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
-#@ requires backend (phase-poll needs a live service to satisfy the `until:` predicate)
+# ─── verification (nbrs check / example-walker) ───
+# Runs standalone — the predicate is satisfied from synthetic state,
+# so the phase completes cleanly with no failures.
+#@ run cycles=1
+#@ expect 0 failed

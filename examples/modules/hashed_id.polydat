@@ -6,7 +6,8 @@
 // Generates a bounded hashed ID from an input value.
 //
 // Inputs (inferred): input, bound
-// Output: id
+// Output: hashed_id (a bare module's export is the binding named after
+// the module — i.e. the file/function name, here `hashed_id`).
 
 h := hash(input)
-id := mod(h, bound)
+hashed_id := mod(h, bound)

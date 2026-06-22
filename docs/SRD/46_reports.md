@@ -160,6 +160,13 @@ same grammar:
 Op-template activation rides on the per-dispenser metrics that
 already track counts per (phase, op-template). No new state.
 
+A report declared in a workload is **workload-scoped**: its data
+query is narrowed to the declaring execution's `exec_id`, so it
+reads only that execution's rows even when the session holds
+several executions (a refine sequence, or SRD-88 concurrent
+executions). Session-level rollups (`session_summary`) stay
+session-scoped. See SRD-88 §5b for the mechanism.
+
 ---
 
 ## Style and metadata directives

@@ -69,5 +69,5 @@ phases:
       search:
         stmt: "PROBE algorithm={algorithm} dataset={dataset} k={k} query={query_id} rank={result_rank} result={result_id}"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

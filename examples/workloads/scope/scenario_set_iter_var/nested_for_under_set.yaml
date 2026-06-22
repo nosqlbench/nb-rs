@@ -45,7 +45,7 @@ phases:
       msg:
         stmt: "table={table} mode={mode}"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ expect table=fknn_alpha mode=alpha
 #@ expect table=fknn_beta mode=beta
 #@ expect 0 failed

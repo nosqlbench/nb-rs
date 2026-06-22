@@ -56,6 +56,12 @@ fn main() {
     // `workload=`) all read it. Cheap: a Vec of &'static refs.
     bundled::install_catalog();
 
+    // Install the run-style param vocabulary into the runner so its
+    // workload/CLI param validation references the CLI command-spec
+    // (`completion::RUN_KV_PARAMS`) directly — one source of truth, no
+    // hand-synced copy. Done before any run dispatch.
+    nbrs_runtime::runner::install_known_params(completion::known_param_keys());
+
     // Shell-completion callback. Reads `_NBRS_COMPLETE=bash`,
     // emits candidates, exits. Must run BEFORE any
     // arg-consuming logic so tab presses never touch adapters,

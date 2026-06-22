@@ -117,24 +117,12 @@ pub async fn run_command(args: &[String]) {
             (a.ends_with(".yaml") || a.ends_with(".yml")) && !a.contains('='));
     // SRD-41/87 console-ownership: a console-owning adapter (plotter,
     // stdout-to-terminal) may be declared in the WORKLOAD's `params:` block,
-    // not just on the CLI. Peek the workload's declared params (extends-merged)
-    // so that adapter is recognized and the dashboard yields to it on a TTY.
-    // `effective_params` = workload defaults overlaid by CLI (closest-wins),
-    // so the display preference also sees the adapter's shaping keys (e.g.
-    // stdout's `filename`, which keeps the dashboard when output goes to a
-    // file). A full parse still happens in the runner; this is a cheap peek.
-    let workload_ref = params.get("workload").cloned().or_else(|| {
-        param_args.iter()
-            .find(|a| (a.ends_with(".yaml") || a.ends_with(".yml")) && !a.contains('='))
-            .cloned()
-    });
-    let workload_params = workload_ref.as_deref()
-        .and_then(nbrs_workload::verify::peek_declared_params)
-        .unwrap_or_default();
-    let mut effective_params = workload_params;
-    for (k, v) in &params {
-        effective_params.insert(k.clone(), v.clone());
-    }
+    // not just on the CLI. The run's EFFECTIVE params — the workload's
+    // declared `params:` (extends-merged) overlaid by CLI args (CLI wins) —
+    // are the single consolidated set the runner also uses for session
+    // services; computing them here lets the display preference see the
+    // adapter and its shaping keys (e.g. stdout's `filename`) up front.
+    let effective_params = nbrs_runtime::runner::effective_params(&param_args);
     // CLI adapter wins; else the workload's declared adapter.
     let resolved_adapter: Option<String> = params.get("adapter")
         .or(params.get("driver"))
@@ -658,9 +646,13 @@ fn auto_render_plots(session_dir: &std::path::Path) {
         Err(_) => return,
     };
     // Latest execution's report defs (per-execution metadata), with a
-    // legacy session_metadata fallback.
-    let entries =
-        nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(&conn, "report.%");
+    // legacy session_metadata fallback. `def_exec_id` is the execution
+    // that DECLARED these reports — a workload's report is workload-
+    // scoped, so each plot is narrowed to that execution's data below
+    // (the table path already passes `Some(exec_id)`). `None` ⇒ legacy
+    // pre-split db (one execution, no scoping needed).
+    let (def_exec_id, entries) =
+        nbrs_metrics::reporters::sqlite::latest_execution_with_metadata_like(&conn, "report.%");
     let mut idx: usize = 0;
     let mut total: usize = 0;
     for (_key, value) in &entries {
@@ -689,7 +681,24 @@ fn auto_render_plots(session_dir: &std::path::Path) {
             }
         }
         let _ = kind;
-        let body = body_lines.join("\n");
+        let mut body = body_lines.join("\n");
+        // A workload-declared report is workload-scoped: narrow the
+        // plot's data to the execution that declared it, unless the
+        // author already pinned an `executions:` selection themselves
+        // (an explicit cross-execution `all`/`latest`/`<id>` choice is
+        // honored — never overridden). Without this a workload's plot
+        // would span every execution sharing the session (a refine
+        // sequence, or SRD-88 concurrent executions).
+        let has_exec_sel = body_lines
+            .iter()
+            .any(|l| l.trim_start().starts_with("executions:"));
+        if let Some(eid) = def_exec_id
+            && !has_exec_sel {
+                if !body.is_empty() {
+                    body.push('\n');
+                }
+                body.push_str(&format!("executions: {eid}"));
+            }
         // Forward to plot_metrics_command exactly the way
         // `nbrs report plot <name>` would.
         let mut args: Vec<String> = vec![

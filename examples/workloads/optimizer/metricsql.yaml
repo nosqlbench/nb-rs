@@ -5,7 +5,7 @@
 # query over this run's live metrics) instead of the `metric(...)` stat-reader.
 #
 # It exercises the whole metric-reader + settle surface end to end:
-#   - metricsql_scalar evaluates `sum(rate(errors_total[3s]))` against this
+#   - metricsql_scalar evaluates `sum(rate(errors_total[400ms]))` against this
 #     run's live in-process metrics (SRD-40c queryapi → MetricsQueryAccess);
 #   - the value is VOLATILE (re-read every pull) and run-produced, so the
 #     one-shot post-completion read cannot capture it;
@@ -13,9 +13,9 @@
 #     holds it as the objective.
 #
 # `errors_total` is a CUMULATIVE counter (Prometheus/VM-schematic), session-
-# monotonic across coordinates. MetricsQL `rate(...[3s])` is the correct way to
+# monotonic across coordinates. MetricsQL `rate(...[400ms])` is the correct way to
 # read its per-coordinate rate: rate()'s `last − first` difference cancels the
-# cumulative baseline carried over from the prior coordinate, and the 3s window
+# cumulative baseline carried over from the prior coordinate, and the 400ms window
 # sits within the coordinate by the time the detector settles. (This is the
 # range-rollup path the cumulative-counter model makes PromQL-correct.)
 #
@@ -31,19 +31,28 @@
 
 description: |
   SRD-86 causal optimizer search whose objective is a MetricsQL query
-  (`sum(rate(errors_total[3s]))`) read through the metricsql_scalar reader node
+  (`sum(rate(errors_total[400ms]))`) read through the metricsql_scalar reader node
   and settled across the run by the cadence-fed detector — exercising the
   metric-reader + cumulative-counter rate() surface as a live optimizer objective.
+
+# Sub-second metrics cadence: the SRD-86 settle detector samples the windowed
+# objective on the finest cadence pulse, so a 50ms cadence (vs the 1s default)
+# settles each coordinate in a fraction of the wall-clock. Paired with the short
+# rate() window below — both scale down together, leaving the SIGNAL unchanged.
+# A CLI `metrics_cadence=…` overrides; the workload value is the default.
+params:
+  metrics_cadence: 50ms
 
 phases:
   saturate:
     cycles: 9000
     concurrency: "{conc}"
-    # Paced so each coordinate spans several 1s metrics-cadence pulses — the
-    # settle detector reads the windowed objective per pulse. The rate exceeds
-    # the backend's 2-server / 5ms capacity (~400/s), so high concurrency still
-    # saturates the queue and rejects with Overload.
-    rate: 2000
+    # Paced so each coordinate spans several sub-second cadence pulses — the
+    # settle detector reads the windowed objective per pulse. `rate` × backend
+    # `result-latency` (below) fixes the saturating in-flight depth: 4× lower
+    # rate + 4× higher latency holds the SIGNAL (high conc saturates, conc=2
+    # doesn't) at 4× lower op throughput — less load-sensitive under a swarm.
+    rate: 500
     # Overload errors are load feedback, not run failures — don't stop on them.
     errors: warn
     error_rate_max: 1.0
@@ -63,7 +72,7 @@ phases:
       # true per-second increase; the cumulative baseline carried over from
       # the prior coordinate cancels in rate()'s difference, so the value is
       # per-coordinate.
-      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      err_rate := metricsql_scalar("sum(rate(errors_total[400ms]))")
       # Maximize -err_rate: the concurrency with fewest overloads wins.
       score := 0 - err_rate
     ops:
@@ -72,9 +81,9 @@ phases:
         stmt: "INSERT INTO demo.events (id) VALUES ({cycle});"
         # A fixed saturating backend: 2 servers, 5ms each, queue depth 4. Past
         # ~4 in-flight ops it returns Overload — so high concurrency saturates.
-        result-latency: "5ms"
+        result-latency: "20ms"
         result-capacity: 2
         result-overload: 4
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ expect best \[

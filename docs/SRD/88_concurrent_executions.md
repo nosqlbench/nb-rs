@@ -137,6 +137,120 @@ log sink, checkpoint writer, and sqlite reporter are *session*-scoped
 the writing execution's `exec_id` (read from the task-local context).
 They are NOT per-execution.
 
+## 3c. Encapsulation & lock-freedom (invariant)
+
+Two executions sharing a session **must not synchronize on each other**,
+and **no shared mutable state in the session layer may be mutated by a
+workload layer**. Concretely:
+
+- **Per-execution mutable state lives in the `ExecutionContext`** (task-
+  local), never a process-global: `exec_id`, stop flag, observer, scene
+  tree, output channel. A workload mutates only *its own* context — a
+  neighbour's is a different `Arc`. The process-globals remain only as
+  the A1 single-run fallback (no scoped context ⇒ no concurrency).
+- **Session services are lock-free on the workload hot path.** Metrics
+  flow through the `CadenceReporter` (actor + `ArcSwap` + lock-free
+  channel — [[feedback_lock_free_metrics]]); op output / log / status
+  through the `ArcSwapOption` channel; `exec_id` allocation and stop are
+  atomics. Phase-end trigger dispatch (`phase_end_triggers::fire`) takes
+  a lock-free atomic-guarded fast path (`TRIGGER_COUNT`) so the common
+  no-trigger case — every concurrent-workload session today — never
+  contends on the global registry lock.
+- **Live metric reads are `exec_id`-scoped (encapsulation).** The
+  in-process metric store (`queryapi::live_access`) is shared and holds
+  every execution's series; a workload reading it (an optimizer's
+  `metricsql_scalar("sum(rate(errors_total[…]))")`) must see only *its
+  own* series, else a concurrent neighbour writing the same metric name
+  skews the result — the optimizer converges to the wrong coordinate.
+  The series already carry the writer's `exec_id` (component scope tag);
+  `MetricsQueryAccess::select_range` now drops any series whose `exec_id`
+  isn't the reading execution's. The reader learns *which* execution is
+  asking via `queryapi::install_read_exec_id_hook` — `exec_id` lives in
+  nbrs-runtime's task-local `ExecutionContext`, a layer above
+  nbrs-metrics, so the runtime installs a one-line resolver hook rather
+  than the lower crate reaching up. `None` outside any scope ⇒ unscoped
+  (single-run, A1). This was a real concurrency defect: `control.yaml`'s
+  optimizer intermittently converged to the wrong control value when
+  other `errors_total`-emitting optimizer examples ran alongside it.
+  **Superseded by SRD-89:** this post-filter becomes a by-default
+  **matcher injection** (`session` + `exec_id`) at the query boundary,
+  sourced from the execution component, so aggregations compute over only
+  the scoped series and single-run is qualified identically (not a `None`
+  special case).
+- **The durable sqlite store is serialized, not contended.** It is the
+  one place writes must serialize (sqlite is single-writer). The metric
+  hot path is already non-blocking (cadence subscription); the remaining
+  direct `sqlite_reporter.lock()` sites are per-*phase-end* / per-
+  *execution-end* (report summaries, metadata, the executions-row close)
+  — infrequent, brief, `exec_id`-tagged. **Open follow-up:** route these
+  through the same non-blocking writer the metric path uses so an
+  execution never *blocks* on a neighbour's flush, only the writer
+  serializes — strict lock-freedom for the store. Design-first before
+  implementing.
+- **`runtime_context::SESSION_ROOT`** (the component root `control(...)`
+  reads resolve against) is *session*-set once at `Session::new`, then
+  workload-*read* only — it is not workload-mutated. Control resolution
+  across concurrent executions with **same-named** controls would
+  resolve against the shared root; isolating it (per-execution root in
+  the context) is deferred — the up-walk + subtree-scope semantics make
+  it a design-first change, not a mechanical one. **Specified in SRD-89:**
+  control resolution roots at the execution component (the same
+  "execution component is the dimensional root" rule as the metric
+  queries above), so concurrent same-named controls — a servo retargeting
+  `concurrency`/`rate` — become per-execution. This is the deterministic
+  cross-talk behind the SRD-89 servo-example failures.
+- **The metrics subsystem holds *zero dedicated threads* — it runs on
+  the shared runtime.** `nbrs-metrics` carries the tokio `rt` feature.
+  The cadence reporter's single-writer **owner** (the lock-free actor
+  draining the command stream) and the **scheduler** (the cadence-tick
+  capture loop) are both `tokio::spawn`ed tasks, not `std::thread`s; the
+  scheduler ticks on `tokio::time::interval` and stops via a `Notify`,
+  signalling a `done` channel after its final flush so the `stop()` path
+  can still guarantee the trailing window committed. The session-end
+  lifecycle synchronizations **`quiesce` and `shutdown_flush` are `async`
+  and `.await` the owner** (via an `Async`-variant `FlushAck` oneshot) —
+  so they work on a **current-thread** runtime, where `block_in_place`
+  would panic and a blocking wait would deadlock against the very owner
+  task they await (2026-06-22). The remaining sync waits — the test-only
+  `flush_for_tests` barrier and the scheduler's `Drop`-time `wait_for_done`
+  — use `block_compensated` / a runtime-flavor-gated wait (multi-thread
+  `block_in_place`; current-thread best-effort `try_recv`; no-runtime
+  blocking `recv`).
+- **Workload computations driven by a session service run *in the
+  workload's context*, not on a bare service thread.** The signaling
+  layer is **threadless**: no parked worker thread per subscriber. When a
+  window closes, the owner task spawns an **ephemeral delivery fiber**
+  per subscriber on the ambient runtime. Each fiber is wrapped in the
+  subscription's `context_wrap` — a `Fn(Future) -> Future` supplied at
+  subscribe time that applies `execution_context::scope` — so an
+  optimizer's settle subscriber (`PhaseStopEvaluator`) pulls its
+  `metricsql_*` objective as the **owning execution** (the read scopes to
+  its own `exec_id`). Session-level subscribers (sqlite, per-instance)
+  carry no wrap and run bare. Delivery is **serialized, lossless**
+  (`reporter.lock().await`) so a durable sink never drops a window;
+  backpressure is bounded at the fanout (`pending() >= channel_capacity`
+  ⇒ drop + stall timeout). Likewise any fire-and-forget workload task
+  (`control_set`'s async write, the per-cycle fibers) is `propagate`d so
+  it carries the context. The invariant: **no workload task is ever
+  spawned/driven attached to a context that isn't its own** — and the
+  signaling that wakes it costs an ephemeral fiber, not a parked thread.
+
+### Load-sensitive examples (testkit tuning)
+
+A *causal* optimizer example (`optimizer/{control,saturation,hybrid,
+metricsql,multiservo}.yaml`) settles a windowed objective read from the
+live cadence feed — its convergence depends on wall-clock timing. Run
+ten-at-once, CPU contention perturbs that timing. With reads now
+correctly `exec_id`-scoped (each sees only its own backend's overloads),
+the examples are made robust by **lowering their simulated intensity
+without changing the signal**: the testkit overload threshold is set by
+`rate × result-latency` (≈ in-flight depth), so quartering `rate` and
+quadrupling `result-latency` holds the saturating depth — high
+concurrency still overloads, `conc=2` still doesn't — at 4× lower op
+throughput. Less CPU per example ⇒ less contention ⇒ the settle window
+stays representative. (`rate`-as-search-axis examples scale the searched
+rates too, preserving every `rate×latency` product.)
+
 ## 4. Headless-first (decision)
 
 Phase 1 ships concurrent executions with **no live display**: each runs
@@ -168,6 +282,36 @@ the checkpoint flock + the log-sink channel already serialize writes;
 the work is stamping `exec_id` (from the task-local) onto each record
 and confirming the single-process multi-writer path is race-free.
 
+## 5b. Report scope — workload-declared reports are `exec_id`-scoped
+
+A `report:` (or `summary:`) section declared **in a workload** belongs
+to the execution that declared it: its data query is narrowed to that
+execution's `exec_id`, never spanning every execution that shares the
+session. This is the report-layer corollary of "one store, `exec_id`-
+tagged" — a session-level rollup (e.g. `session_summary`) reads
+session-scope totals across all executions, but a workload's own report
+reads only its execution's rows.
+
+This matters the moment a session holds more than one execution — a
+refine sequence (run → refine) or SRD-88 concurrent executions — where
+an un-scoped query would aggregate unrelated runs.
+
+- **Tables / summaries** already honor this: the in-run summary passes
+  `Some(exec_id)` to its `ReportConfig` (`runner::report_config_from_summary`).
+- **Plots** honor it via the persisted def: each `report.<name>` row is
+  written under its declaring `exec_id` (`set_execution_metadata`), and
+  the post-run plot renderer (`run::auto_render_plots`) injects
+  `executions: <exec_id>` into each plot's spec —
+  `latest_execution_with_metadata_like` surfaces that id. An author who
+  pins an explicit `executions:` selection (`all` / `latest` / `<id>`)
+  is honored, never overridden (`Never Ignore Silently`).
+
+Open follow-up: the concurrent path (`run_executions`) renders no plots
+yet — plot rendering lives cross-crate in `nbrs` (post-run,
+single-execution). Per-execution concurrent plot rendering needs a
+registered render hook the workload-end report block can invoke with the
+`exec_id`, the way tables already render in-runtime.
+
 ## 6. Pushes (sequenced)
 
 1. **Task-local `ExecutionContext` + accessor override + `exec_id`
@@ -184,8 +328,34 @@ and confirming the single-process multi-writer path is race-free.
    surfaces) for N concurrent executions — the SRD-87 channel +
    run-state actor go multi-execution. The hard UX part; deferred.
 4. **Consumers.** Re-point the example walker (`verify_path`) and any
-   batch path at `run_executions_concurrent` for in-process concurrency
-   instead of subprocess fan-out where it pays.
+   batch path at `run_executions` for in-process concurrency instead of
+   subprocess fan-out where it pays. **SHIPPED** for the example walker:
+   `nbrs/tests/example_workloads_in_process.rs` checks the whole
+   `examples/workloads` tree as concurrent in-process executions sharing
+   one session (≤10), with the **same** `#@`/`verify:` rules and
+   `check_case_output` checker the `nbrs check` CLI uses. Each case
+   captures op stdout via its own `CaptureChannel`. This **retired** the
+   subprocess-per-case walker (`nbrs/tests/workloads.rs`); the `nbrs
+   check` CLI still drives the subprocess `verify_target`/`run_case` path
+   (`nbrs/tests/check_cli.rs` is its smoke test).
+
+   **Load-bearing finding — the rule-matched phase count must come from
+   the `RunState`, not the observer callbacks.** A dynamic loop
+   (`do_until`/`do_while`) re-invokes one phase node, so the executor
+   fires `phase_completed` once per *iteration* (a `do_until` body that
+   runs 3× → 3 callbacks), the runtime scene tree keeps the *structural*
+   node (1), and `phase_outcomes` records the last outcome (1) — three
+   different counts. The post-run `session_summary` the example rules
+   were written against (`#@ expect 2 completed`) counts a fourth thing:
+   `RunState.phases` (`kind==Phase`, by status), which the TUI
+   `run_state_actor` builds with find-pending-or-append semantics. The
+   in-process walker therefore feeds each execution's lifecycle through a
+   real `run_state_actor` (via `scenario_pre_mapped`→`InstallTree` +
+   phase events) and synthesises its `phases:  C completed, F failed …`
+   rollup from that RunState tally — so counts agree with the subprocess
+   summary by construction. The shared `labeled_phase_rollup`
+   (`readouts::builtins::session_summary`) is the one formatter for that
+   line.
 
 ## 7. The de-globalization inventory (Push 1 surface)
 

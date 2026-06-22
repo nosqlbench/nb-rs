@@ -23,70 +23,36 @@ use nbrs_metrics::labels::Labels;
 use nbrs_metrics::scheduler::Reporter;
 use nbrs_workload::tags::TagFilter;
 
-/// Known `key=value` params accepted by the shared runner.
-/// Adapter-specific params are discovered from inventory registrations.
-pub const KNOWN_PARAMS: &[&str] = &[
-    // Activity-level
-    "adapter", "driver", "workload", "op", "cycles", "concurrency",
-    "rate", "errors", "error_rate_max", "seq", "tags", "format",
-    "filename", "separator", "header", "color",
-    "stanza_concurrency", "sc", "scenario", "dryrun", "summary", "metrics", "limit",
-    "profiler", "profiler_callgraph", "tui", "inspector",
-    "latency-cadences", "latency_cadences",
-    "jobname", "instance", "prompush_apikeyfile",
-    "resume", "resume_latest", "force_retry_failed",
-    // SRD-N concurrent scheduler — `schedule=*` (unbounded
-    // sibling overlap) or `schedule=N` (bounded). Consumed at
-    // line 1439 below; without it on this allow-list the
-    // workload-param validator rejects the CLI form.
-    "schedule",
-    // `phases=<pattern>` — phase-name filter (bareword / glob /
-    // regex). Scenario-tree walker skips non-matching phases and
-    // elides scope subtrees with no matching descendant.
-    "phases",
-    // `--trace=<spec>` — trace-router routing/filter spec.
-    // Multiple occurrences supported (collected by
-    // `collect_repeated_flag`); parse_params keeps only the
-    // last value, but the allow-list still needs the key so
-    // the unrecognized-param guard doesn't reject the flag.
-    "trace",
-    // SRD-68 follow-up — `kernel_opt=release|diagnostic`.
-    // Force-allocates magic-extern + result-binding-LHS slots
-    // under `diagnostic` so step-debug / cycle-replay can see
-    // values the workload doesn't otherwise consume.
-    "kernel_opt",
-    // `watch=<spec>[,<spec>...]` — register phase-end triggers
-    // that re-render plots / reports as subprocesses after
-    // every phase boundary. Consumed in nbrs/src/run.rs
-    // (calls `crate::watch_trigger::register_watch_triggers`);
-    // the runner validator only needs to know the key is
-    // accepted so the unrecognized-param guard doesn't reject
-    // it before run.rs's handler fires.
-    "watch",
-    // Log-level knobs (SRD-41). Read by `nbrs/src/run.rs` to set the
-    // display (stderr) and retain (session.log) severity floors; the
-    // validator must accept them as params so a workload can declare
-    // `params: { loglevel: warn }` and the CLI can override. Both the
-    // `-` and `_` spellings, plus the `loglevel-display` alias.
-    "loglevel",
-    "loglevel-display",
-    "loglevel_display",
-    "loglevel-retain",
-    "loglevel_retain",
-    // SRD-77 — `scope=missing|changed|all` refine policy.
-    // Only meaningful when `--refine` is also set (the verb's
-    // own dispatch enforces this). `missing` (default) skips
-    // prior-completed phases; `all` runs every phase under
-    // the bumped exec_id; `changed` is reserved (see runner
-    // refine-scope handling).
-    "scope",
-    // SRD-77 — `on_removed=error|keep|drop` policy for
-    // phases that have prior outcomes but are no longer in
-    // the current workload. Default `error` refuses to
-    // proceed; `keep` retains prior outcomes (no work);
-    // `drop` is reserved.
-    "on_removed",
-];
+/// The run-style `key=value` param vocabulary, injected by the CLI layer
+/// from its own command-spec (`nbrs::completion::RUN_KV_PARAMS`) so there is
+/// ONE source of truth and zero hand-synced copies. `None` until installed
+/// (library/test consumers that drive the runner directly without the CLI):
+/// in that case the param-vocabulary validations below are skipped — those
+/// are a CLI-surface concern, and the binary always installs the list before
+/// any run. See [`install_known_params`] / [`known_params`].
+static KNOWN_PARAMS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+
+/// Install the run-style param vocabulary (the keys the CLI command-spec
+/// accepts, sans the trailing `=`). Called once at binary startup from the
+/// CLI layer, which owns the canonical list. Idempotent — first wins.
+pub fn install_known_params(keys: Vec<&'static str>) {
+    let _ = KNOWN_PARAMS.set(keys);
+}
+
+/// The installed param vocabulary, or `None` when no CLI layer registered
+/// one. Validators treat `None` as "skip the closed-vocabulary check" so a
+/// direct library/test driver isn't held to the CLI's param surface.
+/// Adapter-specific params are still discovered from inventory regardless.
+fn known_params() -> Option<&'static [&'static str]> {
+    KNOWN_PARAMS.get().map(|v| v.as_slice())
+}
+
+/// Whether `name` is an installed CLI param key. When no vocabulary is
+/// installed (library/test driver), every name is treated as known so the
+/// closed-vocabulary validations no-op rather than false-reject a workload.
+pub(crate) fn is_cli_param(name: &str) -> bool {
+    known_params().map(|p| p.contains(&name)).unwrap_or(true)
+}
 
 /// Convert the workload-model `SummaryConfig` (parsed from the
 /// `summary:` workload field or the `--summary` CLI flag) into
@@ -471,9 +437,12 @@ fn build_session_metrics(
     std::sync::Arc<nbrs_metrics::metrics_query::MetricsQuery>,
     std::sync::Arc<nbrs_metrics::scheduler::StopHandle>,
 ), String> {
-    let base_interval = std::time::Duration::from_secs(1);
-    let cadences = observer.cadences()
-        .unwrap_or_else(nbrs_metrics::cadence::Cadences::defaults);
+    // `metrics_cadence` (effective param) may set a sub-second finest
+    // cadence + base interval; otherwise the default 1 s base + declared
+    // cadences. The base interval drives both the cadence tree and the
+    // scheduler tick below, so the finest cadence the settle detector
+    // samples and the capture pulse stay in lockstep.
+    let (base_interval, cadences) = resolve_cadence_config(merged_params, observer)?;
     let cadence_tree = nbrs_metrics::cadence::CadenceTree::plan_validated(
         cadences,
         nbrs_metrics::cadence::DEFAULT_MAX_FAN_IN,
@@ -488,17 +457,65 @@ fn build_session_metrics(
     ));
     session.set_metrics_query(metrics_query.clone());
     nbrs_metrics::polydat_nodes::set_global_query(metrics_query.clone());
-    // SRD-86 §"The metric-reader surface" — install the live in-process
-    // metrics-access service so the `metricsql_*` nodes can locate it
-    // (`queryapi::live_access()`) and evaluate queries against this run.
-    nbrs_metrics::queryapi::install_live_access(std::sync::Arc::new(
+    // SRD-86 §"The metric-reader surface" / SRD-90 §M5 — install the live
+    // in-process metrics-access service the `metricsql_*` nodes locate via
+    // `queryapi::live_access()`. It is a HYBRID (SRD-90): the in-memory cadence
+    // tier (fine, recent, retention-bounded) over the session's durable sqlite
+    // store (coarse, the older tail), composed by union-minus-overlap — a recent
+    // windowed read is served entirely from memory (the common case never opens
+    // sqlite), and a query older than the in-memory horizon spills to the
+    // durable tail. Both tiers scope to the reading execution (mem via the
+    // read-exec hook; cold via `CurrentReadExec`), so a concurrent spill never
+    // leaks a neighbour's series. Best-effort: if the sqlite tail can't be
+    // opened (sqlite disabled, db absent), the live service is the mem tier
+    // alone — byte-identical to before this seam.
+    let mem_access = std::sync::Arc::new(
         nbrs_metrics::queryapi::MetricsQueryAccess::new(metrics_query.clone()),
+    );
+    // The composed read store: the in-memory cadence tier over the durable
+    // sqlite tail (union-minus-overlap). The cold tier reads `All` executions
+    // at the SQL level — per-execution scoping is the injected `exec_id`
+    // dimensional label (below), uniform across both tiers.
+    let composed: std::sync::Arc<dyn nbrs_metrics::queryapi::MetricAccess> = {
+        let db = session.output_dir.join("metrics.db");
+        match nbrs_metrics::queryapi::sqlite::SqliteDataSource::open(&db) {
+            Ok(cold) => {
+                let cold = cold.with_execution_selection(
+                    nbrs_metrics::queryapi::sqlite::ExecutionSelection::All,
+                );
+                let mem_for_horizon = mem_access.clone();
+                std::sync::Arc::new(nbrs_metrics::queryapi::HybridStore::new(vec![
+                    nbrs_metrics::queryapi::Tier::new(
+                        mem_access.clone(),
+                        std::sync::Arc::new(move || mem_for_horizon.earliest_ms()),
+                    ),
+                    nbrs_metrics::queryapi::Tier::unbounded(std::sync::Arc::new(cold)),
+                ]))
+            }
+            Err(e) => {
+                crate::diag!(crate::observer::LogLevel::Debug,
+                    "metrics: hybrid sqlite tail unavailable ({e}); live reads are in-memory only");
+                mem_access.clone()
+            }
+        }
+    };
+    // SRD-89 §3b / SRD-90 §M6 — scope every live read to its execution via the
+    // `exec_id` dimensional-label matcher, applied uniformly to both tiers.
+    nbrs_metrics::queryapi::install_live_access(std::sync::Arc::new(
+        nbrs_metrics::queryapi::ExecScopedAccess::new(composed),
     ));
+    // SRD-88 — teach the live-metric reader which execution is asking, so
+    // its reads scope to that execution's own series (the store is shared
+    // across concurrent executions). The hook reads nbrs-runtime's
+    // task-local execution context; `None` outside any scope (single-run).
+    nbrs_metrics::queryapi::install_read_exec_id_hook(|| {
+        crate::execution_context::try_current().map(|c| c.exec_id)
+    });
     observer.on_metrics_query(metrics_query.clone());
 
     let session_for_capture = session.component.clone();
     let mut sched_builder = nbrs_metrics::scheduler::SchedulerBuilder::new()
-        .base_interval(std::time::Duration::from_secs(1))
+        .base_interval(base_interval)
         .with_cadence_reporter(cadence_reporter.clone())
         .with_cadence_tree(cadence_tree.clone());
 
@@ -653,7 +670,7 @@ fn build_session_metrics(
     let scheduler = sched_builder.build(Box::new(move || {
         nbrs_metrics::component::capture_tree(
             &session_for_capture,
-            std::time::Duration::from_secs(1),
+            base_interval,
         )
     }));
     let stop_handle = Arc::new(scheduler.start());
@@ -690,6 +707,14 @@ struct SessionHost {
     refine_scope: Option<String>,
     profiler: Option<crate::profiler::ProfileGuard>,
     sqlite_guard: nbrs_metrics::reporters::sqlite::SqliteShutdownGuard,
+    /// SRD-88 — the checkpoint writer is SESSION-tier: one per session
+    /// (`<session>/checkpoint.jsonl` + its single resume lock), shared
+    /// by every execution. Per-execution resume *plans* are still
+    /// derived per execution in `run_execution` from `saved_doc` + that
+    /// execution's pre-map; only the writer/lock is shared (so N
+    /// concurrent in-process executions don't fight over the lock).
+    checkpoint_writer: std::sync::Arc<crate::checkpoint::CheckpointWriter>,
+    saved_doc: Option<crate::checkpoint::Checkpoint>,
 }
 
 impl SessionHost {
@@ -749,6 +774,13 @@ impl SessionHost {
 
     let args = normalize_args(args);
     let params = parse_params(&args);
+    // The run's effective params (workload `params:` overlaid by CLI, CLI
+    // wins) — the consolidated set the session-tier services read, so a
+    // setting like `metrics_cadence` / `jobname` / `per-instance-metrics`
+    // works whether declared in the workload or passed on the command line.
+    // Operational reads below (resume, session identity) stay on the raw CLI
+    // `params` — they are not workload-declarable.
+    let eff_params = effective_params(&args);
     // `scenario_for_session` is recomputed below from the refine block's
     // params (the session-dir name); `openmetrics_url` feeds the
     // session metrics services.
@@ -1034,10 +1066,40 @@ impl SessionHost {
     // SRD-88 — session-tier metrics services, configured from CLI params.
     let (cadence_reporter, cadence_tree, metrics_query, stop_handle) =
         build_session_metrics(&session, &sqlite_reporter, &observer,
-            &params, &openmetrics_url, &args, &params)?;
+            &eff_params, &openmetrics_url, &args, &eff_params)?;
     crate::session_signals::install_signal_handler();
     let _profiler = crate::profiler::ProfileGuard::maybe_start(
         &params, Some(&session.output_dir));
+
+    // SRD-88 — the SESSION-tier checkpoint writer (one per session;
+    // holds the single resume lock) + the resume doc. Executions share
+    // the writer and each derives its own resume plan from `saved_doc`.
+    let checkpoint_path = session.output_dir.join("checkpoint.jsonl");
+    let saved_doc = match resume_target.as_ref() {
+        Some(p) => match crate::checkpoint::storage::read(p) {
+            Ok(Some(doc)) => Some(doc),
+            Ok(None) => {
+                crate::diag!(crate::observer::LogLevel::Warn,
+                    "resume: no checkpoint found at {} — fresh session", p.display());
+                None
+            }
+            Err(e) => return Err(format!("resume: {e}")),
+        },
+        None => None,
+    };
+    let invocation = saved_doc.as_ref().map(|d| d.invocation + 1).unwrap_or(1);
+    let started_at = saved_doc.as_ref()
+        .map(|d| d.started_at.clone())
+        .unwrap_or_else(crate::checkpoint::storage::now_rfc3339);
+    let checkpoint_writer = std::sync::Arc::new(match saved_doc.as_ref() {
+        Some(_doc) => crate::checkpoint::CheckpointWriter::from_existing(
+            checkpoint_path.clone(), saved_doc.clone().unwrap(),
+            crate::checkpoint::storage::now_rfc3339(), invocation,
+        ),
+        None => crate::checkpoint::CheckpointWriter::new(
+            checkpoint_path.clone(), session.id.clone(), started_at, invocation,
+        ),
+    });
 
     Ok(SessionHost {
         session,
@@ -1052,17 +1114,19 @@ impl SessionHost {
         refine_scope: refine_scope.map(|s| s.to_string()),
         profiler: _profiler,
         sqlite_guard: _sqlite_shutdown_guard,
+        checkpoint_writer,
+        saved_doc,
     })
     }
 
     /// Session teardown — once, after every execution (SRD-88).
-    fn shutdown(self) {
+    async fn shutdown(self) {
         if let Some(mut profiler) = self.profiler {
             profiler.finish();
         }
         self.stop_handle.stop();
         let _teardown_t = std::time::Instant::now();
-        self.cadence_reporter.shutdown();
+        self.cadence_reporter.shutdown().await;
         crate::diag!(crate::observer::LogLevel::Debug,
             "shutdown: cadence reporter flush+join {:?}", _teardown_t.elapsed());
         crate::diag!(crate::observer::LogLevel::Info,
@@ -1158,15 +1222,13 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         }
     };
 
-    // Merge CLI params over workload params FIRST so synthesis
-    // (next) can read the operator's `cycles=N` / `concurrency=N`
-    // overrides and promote them onto the synthetic phase. The
-    // parse path already merges CLI params at parse time for
-    // file-loaded workloads; this also covers the inline
-    // (`op=`) path that loaded a Workload with empty params.
-    for (k, v) in &params {
-        workload.params.insert(k.clone(), v.clone());
-    }
+    // Overlay CLI params on the workload's declared params (CLI wins) so
+    // synthesis (next) can read the operator's `cycles=N` / `concurrency=N`
+    // overrides and promote them onto the synthetic phase. Same precedence
+    // rule the session-tier services use via [`effective_params`], so a key
+    // means the same thing whether declared in the workload or on the CLI.
+    // Also covers the inline (`op=`) path that loaded empty params.
+    workload.params = overlay_cli_params(std::mem::take(&mut workload.params), &params);
 
     // Unification: the scenario-tree executor is the sole
     // execution path. Workloads that arrive without an
@@ -1236,7 +1298,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
 
     // Validate CLI parameters (runner-known + adapter-registered + workload-declared).
     //
-    // Allow-list = `KNOWN_PARAMS` ∪ adapter-registered ∪
+    // Allow-list = installed param vocabulary ∪ adapter-registered ∪
     // `workload.declared_params` (the original YAML keys from
     // the workload's `params:` block). We do **not** consult
     // `workload.params` here — `parse.rs` merges every CLI arg
@@ -1245,10 +1307,11 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // and silently drop typos like `profile=perf` (vs.
     // `profiler=perf`). `declared_params` preserves the user's
     // declared surface independent of CLI overlays, which is
-    // what the closed-vocabulary check needs.
-    {
+    // what the closed-vocabulary check needs. Skipped entirely
+    // when no CLI vocabulary is installed (library/test driver).
+    if let Some(cli_params) = known_params() {
         let adapter_params = registered_adapter_params();
-        let all_known: Vec<&str> = KNOWN_PARAMS.iter().copied()
+        let all_known: Vec<&str> = cli_params.iter().copied()
             .chain(adapter_params.iter().copied())
             .chain(workload.declared_params.iter().map(|s| s.as_str()))
             .collect();
@@ -1325,7 +1388,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // with a default in `describe workloads` without a
         // textual `{name}` reference.
         for name in &workload.declared_params {
-            if KNOWN_PARAMS.contains(&name.as_str())
+            if is_cli_param(name)
                 || adapter_params.contains(name.as_str())
             {
                 continue;
@@ -1343,7 +1406,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // must resolve. The legitimate-name set spans every
         // declaration site the runtime can satisfy:
         //   - workload.declared_params (the `params:` block)
-        //   - KNOWN_PARAMS (built-ins like `cycles`, `concurrency`)
+        //   - the installed CLI param vocabulary (`cycles`, `concurrency`, …)
         //   - adapter-registered params (driver-specific config)
         //   - iter-vars from Comprehensions in the scenario tree
         //     (`k`, `limit`, `profile` from `for_each: "k in …"`)
@@ -1352,7 +1415,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         let mut undeclared: Vec<&str> = referenced.placeholders.iter()
             .map(|s| s.as_str())
             .filter(|name| !declared_set.contains(*name))
-            .filter(|name| !KNOWN_PARAMS.contains(name))
+            .filter(|name| !is_cli_param(name))
             .filter(|name| !adapter_params.contains(name))
             .filter(|name| !iter_var_names.contains(*name))
             .filter(|name| !wire_names.contains(*name))
@@ -1688,11 +1751,21 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         }
     }
 
+    // SRD-88 — a CONCURRENT execution runs inside a scoped
+    // `ExecutionContext` whose `exec_id` was allocated distinctly per
+    // sibling; use it so each concurrent execution's metric rows /
+    // metadata / `executions` row are separable. Outside a scoped
+    // context (single-run), fall back to the SRD-77 verb/exec_id:
+    // `refine` numbers from the prior outcomes' max+1, `run`/`resume`
+    // start at 1 — byte-identical to before.
     let (exec_verb, exec_id_seed): (&'static str, u64) =
-        match (refine_plan.as_ref(), resume_target.as_ref()) {
-            (Some(plan), Some(p)) if p.exists() => ("refine", plan.next_exec_id),
-            (_, Some(p)) if p.exists() => ("resume", 1),
-            _ => ("run", 1),
+        match crate::execution_context::try_current() {
+            Some(ctx) => ("run", ctx.exec_id),
+            None => match (refine_plan.as_ref(), resume_target.as_ref()) {
+                (Some(plan), Some(p)) if p.exists() => ("refine", plan.next_exec_id),
+                (_, Some(p)) if p.exists() => ("resume", 1),
+                _ => ("run", 1),
+            },
         };
     // SRD-88 §2 — start this execution under the session: derive
     // its component (carrying `exec_id` + `workload`) as a child
@@ -2837,45 +2910,13 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // `--resume <session>` / `--resume-latest` CLI surface
         // (see runner CLI parsing); for a fresh session the writer
         // starts empty and the plan reruns everything.
-        let checkpoint_path = session.output_dir.join("checkpoint.jsonl");
-        // `resume_target` was resolved at the top of run(),
-        // before Session::new repointed `logs/latest` at the new
-        // session id. SRD-44 §"Resume CLI surface".
-        let saved_doc = match resume_target.as_ref() {
-            Some(p) => match crate::checkpoint::storage::read(p) {
-                Ok(Some(doc)) => Some(doc),
-                Ok(None) => {
-                    crate::diag!(crate::observer::LogLevel::Warn,
-                        "resume: no checkpoint found at {} — fresh session",
-                        p.display());
-                    None
-                }
-                Err(e) => {
-                    return Err(format!("resume: {e}"));
-                }
-            },
-            None => None,
-        };
+        // SRD-88 — the writer + resume doc are SESSION-tier (created
+        // once in `SessionHost::setup`, holding the single resume lock).
+        // This execution shares them; it derives its own resume plan
+        // below from `saved_doc` + its pre-map.
+        let checkpoint_writer = host.checkpoint_writer.clone();
+        let saved_doc = host.saved_doc.clone();
         let invocation = saved_doc.as_ref().map(|d| d.invocation + 1).unwrap_or(1);
-        let started_at = saved_doc.as_ref()
-            .map(|d| d.started_at.clone())
-            .unwrap_or_else(crate::checkpoint::storage::now_rfc3339);
-        let checkpoint_writer = std::sync::Arc::new(match saved_doc.as_ref() {
-            Some(_doc) => {
-                // Restore from saved.
-                let doc = saved_doc.clone().unwrap();
-                crate::checkpoint::CheckpointWriter::from_existing(
-                    checkpoint_path.clone(), doc,
-                    crate::checkpoint::storage::now_rfc3339(), invocation,
-                )
-            }
-            None => crate::checkpoint::CheckpointWriter::new(
-                checkpoint_path.clone(),
-                session.id.clone(),
-                started_at,
-                invocation,
-            ),
-        });
 
         // End-of-run notices: drops on success OR error path.
         //
@@ -3052,7 +3093,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // SRD-88 — flush THIS execution's windows into the store so the
     // summaries below see complete data, without tearing down the
     // session-shared cadence reporter.
-    cadence_reporter.quiesce(std::time::Duration::from_secs(30));
+    cadence_reporter.quiesce(std::time::Duration::from_secs(30)).await;
 
     // SRD-63 Push 9a: fire `EventType::SessionEnd` once after
     // the cadence shutdown but before `run_finished()`.
@@ -3260,8 +3301,76 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
 async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserver>) -> Result<(), String> {
     let host = SessionHost::setup(args, observer.clone())?;
     let result = run_execution(&host, args, observer).await;
-    host.shutdown();
+    host.shutdown().await;
     result
+}
+
+/// SRD-88 — one execution's spec for [`run_executions`]: the workload
+/// CLI args, the observer that captures its lifecycle/log, and an optional
+/// per-execution output channel (SRD-87 buckets). `channel = None` falls back
+/// to the process-global channel; in-process example verification passes a
+/// `CaptureChannel` so each execution's op stdout is captured separately.
+pub struct ExecutionSpec {
+    pub args: Vec<String>,
+    pub observer: Arc<dyn crate::observer::RunObserver>,
+    pub channel: Option<Arc<dyn crate::output_channel::OutputChannel>>,
+}
+
+/// SRD-88 — run N executions CONCURRENTLY in one process, all sharing
+/// ONE session, at most `max_concurrent` in flight. The session
+/// (`SessionHost`: dir / stores / cadence + scheduler services) is set
+/// up ONCE and torn down ONCE, after every execution. Each execution
+/// loads + runs its own workload, derives its own `Execution`
+/// (distinct allocated `exec_id`) under the shared session component,
+/// flushes its metrics into the shared store via
+/// [`CadenceReporter::quiesce`](nbrs_metrics::cadence_reporter::CadenceReporter::quiesce)
+/// without tearing the reporter down, and routes its lifecycle/log
+/// through its own observer (a scoped [`ExecutionContext`]). Results
+/// come back in input order.
+///
+/// `max_concurrent == 1` is the sequential case — the SAME harness, no
+/// separate path (SRD-02 "One Concurrency Path").
+pub async fn run_executions(
+    session_args: &[String],
+    session_observer: Arc<dyn crate::observer::RunObserver>,
+    specs: Vec<ExecutionSpec>,
+    max_concurrent: usize,
+) -> Result<Vec<Result<(), String>>, String> {
+    let host = std::sync::Arc::new(SessionHost::setup(session_args, session_observer)?);
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
+    let futs = specs.into_iter().map(|spec| {
+        let host = host.clone();
+        let sem = sem.clone();
+        async move {
+            // Bound in-flight executions; permit held for the whole run.
+            let _permit = sem.acquire().await.expect("semaphore not closed");
+            // Scope this execution's context — a distinct allocated
+            // `exec_id` + its own observer (+ optional output channel) — so
+            // deeply-nested fibers, op-output routing, and `run_execution`'s
+            // exec-identity all resolve to THIS execution.
+            let ctx = match spec.channel.clone() {
+                Some(ch) => crate::execution_context::ExecutionContext::with_observer_and_channel(
+                    spec.observer.clone(), ch),
+                None => crate::execution_context::ExecutionContext::with_observer(
+                    spec.observer.clone()),
+            };
+            crate::execution_context::scope(
+                ctx,
+                run_execution(&host, &spec.args, spec.observer),
+            )
+            .await
+        }
+    });
+    let results = futures::future::join_all(futs).await;
+    // Session teardown — once, after every execution completed (so the
+    // host is now the sole owner).
+    match std::sync::Arc::try_unwrap(host) {
+        Ok(h) => h.shutdown().await,
+        Err(_) => crate::diag!(crate::observer::LogLevel::Warn,
+            "run_executions: session host still referenced at teardown; \
+             scheduler/WAL will close on drop"),
+    }
+    Ok(results)
 }
 
 /// Point per-file symlinks under `logs/` at the latest session's
@@ -4657,7 +4766,12 @@ pub fn resolve_workload(name: &str) -> Result<ResolvedWorkload, String> {
         (Some(local_path), None) => Ok(ResolvedWorkload::Path(local_path)),
         (None, Some(b)) => Ok(ResolvedWorkload::Bundled(b)),
         (None, None) => Err(format!(
-            "workload not found: '{name}'. Not a local file, and no bundled              workload by that name — `nbrs describe workloads` lists what              this binary carries."
+            "workload not found: '{name}'. Not a local file, and no bundled \
+             workload by that name — `nbrs describe workloads` lists what \
+             this binary carries.{}",
+            nbrs_workload::suggest::did_you_mean(
+                &nbrs_workload::suggest::suggest_workloads(name),
+            )
         )),
     }
 }
@@ -4851,6 +4965,109 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
         }
     }
     params
+}
+
+/// Overlay CLI `key=value` params onto a base set, CLI winning on
+/// conflict. The single precedence rule for the whole run — applied to
+/// the session-tier effective params ([`effective_params`]) and to the
+/// execution's workload params identically, so "CLI overrides the
+/// workload" means the same thing everywhere.
+fn overlay_cli_params(
+    mut base: HashMap<String, String>,
+    cli: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    for (k, v) in cli {
+        base.insert(k.clone(), v.clone());
+    }
+    base
+}
+
+/// The run's **effective parameters**: the workload's declared top-level
+/// `params:` (extends-merged) as the base, with CLI `key=value` args
+/// overlaid on top (CLI wins). This is the single consolidated param set —
+/// the same one whether a setting is declared in the workload or passed on
+/// the command line — used for session-tier services (metrics cadence,
+/// push reporters, per-instance metrics) and console-ownership detection
+/// alike. The per-execution path reaches the same result by overlaying CLI
+/// onto the fully-parsed `workload.params` (see `run_execution`).
+///
+/// The workload reference is taken from `workload=` or a bare `.yaml`/`.yml`
+/// positional; an unresolvable/absent workload contributes no base params
+/// (the real load error, if any, surfaces later in the execution).
+pub fn effective_params(args: &[String]) -> HashMap<String, String> {
+    let cli = parse_params(args);
+    let workload_ref = cli.get("workload").cloned().or_else(|| {
+        args.iter()
+            .find(|a| (a.ends_with(".yaml") || a.ends_with(".yml")) && !a.contains('='))
+            .cloned()
+    });
+    let base = workload_ref
+        .as_deref()
+        .and_then(nbrs_workload::verify::declared_params)
+        .unwrap_or_default();
+    overlay_cli_params(base, &cli)
+}
+
+/// Param keys that configure the **session-tier** services — one value per
+/// session, shared by every execution under it. Executions that declare
+/// different values for any of these cannot share a session; a multi-
+/// execution harness must group by them and set up one session per group
+/// (see [`session_param_signature`]). `metrics_cadence` is the load-bearing
+/// case: it fixes the cadence the optimizer settle detector samples, so
+/// workloads wanting a sub-second cadence must run in their own session.
+pub const SESSION_PARAMS: &[&str] = &["metrics_cadence"];
+
+/// The session-grouping signature for a workload reference: its declared
+/// values (following `extends:`) for the [`SESSION_PARAMS`], sorted.
+/// Workloads with equal signatures can share one session; differing ones
+/// must not. Empty signature = "the default session is fine".
+pub fn session_param_signature(reference: &str) -> Vec<(String, String)> {
+    let declared = nbrs_workload::verify::declared_params(reference).unwrap_or_default();
+    let mut sig: Vec<(String, String)> = SESSION_PARAMS
+        .iter()
+        .filter_map(|k| declared.get(*k).map(|v| ((*k).to_string(), v.clone())))
+        .collect();
+    sig.sort();
+    sig
+}
+
+/// Resolve the metrics base interval + cadence ladder from the run's
+/// effective params. A `metrics_cadence` param (workload or CLI, e.g.
+/// `100ms` / `200ms`) sets the FINEST cadence — the pulse the SRD-86
+/// optimizer settle detector samples — and the scheduler base interval, so
+/// a windowed objective settles in a fraction of the default 1 s-cadence
+/// wall-clock. A standard coarse ladder (1s/10s/30s/1m/5m) is layered above
+/// it (keeping a 1 s rung bounds the fan-in from a sub-second floor). Absent
+/// the param, this is the unchanged default: a 1 s base with the observer's
+/// declared cadences (or [`Cadences::defaults`]).
+fn resolve_cadence_config(
+    params: &HashMap<String, String>,
+    observer: &Arc<dyn crate::observer::RunObserver>,
+) -> Result<(std::time::Duration, nbrs_metrics::cadence::Cadences), String> {
+    use std::time::Duration;
+    let Some(raw) = params.get("metrics_cadence") else {
+        let cadences = observer
+            .cadences()
+            .unwrap_or_else(nbrs_metrics::cadence::Cadences::defaults);
+        return Ok((Duration::from_secs(1), cadences));
+    };
+    let floor = nbrs_metrics::cadence::parse_duration(raw).map_err(|_| {
+        format!("metrics_cadence: invalid duration `{raw}` (use e.g. `100ms`, `200ms`, `1s`)")
+    })?;
+    if floor.is_zero() {
+        return Err("metrics_cadence: must be greater than zero".to_string());
+    }
+    let mut layers = vec![floor];
+    for secs in [1u64, 10, 30, 60, 300] {
+        let d = Duration::from_secs(secs);
+        if d > floor {
+            layers.push(d);
+        }
+    }
+    let cadences = nbrs_metrics::cadence::Cadences::new(&layers).map_err(|e| {
+        format!("metrics_cadence `{raw}`: cannot build a cadence ladder: {e:?}")
+    })?;
+    Ok((floor, cadences))
 }
 
 /// Collect every occurrence of a repeatable flag (e.g.

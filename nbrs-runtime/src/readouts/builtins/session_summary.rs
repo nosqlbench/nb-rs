@@ -76,32 +76,54 @@ fn render_labeled(
     ctx: &dyn ReadoutContext,
     out: &mut dyn ReadoutBuf,
 ) -> usize {
-    // Per docs/guide/color_style.md: `phases:` is HEADER
-    // (bold), counts colored per status (OK/ERROR/MUTED),
-    // total in MUTED, `of N total` parenthetical dim.
-    let color = ctx.use_color();
+    let tmp = labeled_phase_rollup(
+        ctx.session_phases_completed(),
+        ctx.session_phases_failed(),
+        ctx.session_phases_pending(),
+        ctx.session_phases_total(),
+        ctx.use_color(),
+    );
+    let len = tmp.len();
+    let _ = out.write_str(&tmp);
+    len
+}
+
+/// The canonical labeled phase-rollup line —
+/// `phases:  C completed, F failed, P not run (of T total)` — built
+/// from raw counts. Shared by the `session_summary` readout (which
+/// pulls the counts from session-scope totals) and any caller that
+/// needs the identical text from its own tallies, e.g. the in-process
+/// example walker synthesising a **per-execution** rollup for rule
+/// matching (its session-scope summary spans every concurrent
+/// execution, so it counts its own [`PhaseRecord`](crate::concurrent)s
+/// instead). One formatter ⇒ no drift between the two.
+///
+/// Per `docs/guide/color_style.md`: `phases:` is HEADER (bold), counts
+/// colored per status (OK/ERROR/MUTED), total MUTED, `of N total`
+/// parenthetical dim. `color=false` yields plain text.
+pub fn labeled_phase_rollup(
+    completed: usize,
+    failed: usize,
+    pending: usize,
+    total: usize,
+    color: bool,
+) -> String {
     let bold   = if color { "\x1b[1m"    } else { "" };
     let dim    = if color { "\x1b[2m"    } else { "" };
     let green  = if color { "\x1b[32m"   } else { "" };
     let red    = if color { "\x1b[1;31m" } else { "" };
     let reset  = if color { "\x1b[0m"    } else { "" };
-    let f = ctx.session_phases_failed();
-    let fail_color = if f > 0 { red } else { dim };
+    let fail_color = if failed > 0 { red } else { dim };
     let mut tmp = String::with_capacity(128);
     let _ = write!(
         &mut tmp,
         "{bold}phases:{reset}  \
-         {green}{c}{reset} completed, \
-         {fail_color}{f}{reset} failed, \
-         {dim}{p}{reset} not run \
-         {dim}(of {t} total){reset}",
-        c = ctx.session_phases_completed(),
-        p = ctx.session_phases_pending(),
-        t = ctx.session_phases_total(),
+         {green}{completed}{reset} completed, \
+         {fail_color}{failed}{reset} failed, \
+         {dim}{pending}{reset} not run \
+         {dim}(of {total} total){reset}",
     );
-    let len = tmp.len();
-    let _ = out.write_str(&tmp);
-    len
+    tmp
 }
 
 /// Expanded: per-line breakdown — same data, friendlier

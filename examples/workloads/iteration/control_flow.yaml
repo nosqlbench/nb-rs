@@ -151,7 +151,7 @@ phases:
       step:
         stmt: "loop step (do_while/do_until runtime eval pending)"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ case for_each
 #@   run scenario=test_for_each
 #@   expect 3 completed, 0 failed

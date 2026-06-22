@@ -28,6 +28,6 @@ blocks:
         ratio: 1
         stmt: "SELECT * FROM users WHERE id={user_id};"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ run cycles=3
 #@ expect completed, 0 failed

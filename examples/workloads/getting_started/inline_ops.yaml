@@ -33,7 +33,7 @@ ops:
     ratio: 1
     stmt: "write id={user_id}"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ expect read id=[0-9]
 #@ expect write id=[0-9]
 #@ expect 0 failed

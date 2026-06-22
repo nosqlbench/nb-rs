@@ -81,6 +81,10 @@ pub mod extends;
 /// SRD-85 bundled-workload catalog (embedded workloads,
 /// tiers, exact-name lookup).
 pub mod catalog;
+/// SRD-85 deep workload suggestions — the shared "did you mean"
+/// set over the local file hierarchy and the bundled catalog,
+/// used by completion and the resolver not-found paths.
+pub mod suggest;
 pub mod inline;
 pub mod bindpoints;
 pub mod tags;

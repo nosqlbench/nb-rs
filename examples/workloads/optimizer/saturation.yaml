@@ -27,17 +27,27 @@ description: |
   phase. The optimizer searches the concurrency (a dynamic control) and finds
   the value that eliminates backend overloads.
 
+# Sub-second metrics cadence: the SRD-86 settle detector samples the objective
+# on the finest cadence pulse, so a 50ms cadence (vs the 1s default) settles
+# each coordinate's run-produced error rate in a fraction of the wall-clock.
+# (This objective is the cumulative `metric("errors","rate")` — no rate() window
+# to shrink, so the cadence alone does the work.)
+params:
+  metrics_cadence: 50ms
+
 phases:
   saturate:
     cycles: 12000
     # The search axis: concurrency, a dynamic control (SRD-23). Each evaluation
     # re-runs the phase at this concurrency (coordinate / step-through).
     concurrency: "{conc}"
-    # Paced so each coordinate spans several 1s metrics-cadence pulses — the
-    # SRD-86 settle detector reads the windowed overload rate per pulse. The
-    # rate exceeds the backend's 2-server / 5ms capacity (~400/s), so high
-    # concurrency still saturates the queue and rejects with Overload.
-    rate: 2000
+    # Paced so each coordinate spans several sub-second cadence pulses — the
+    # SRD-86 settle detector reads the windowed overload rate per pulse.
+    # `rate` × backend `result-latency` (below) fixes the saturating in-flight
+    # depth: 4× lower rate + 4× higher latency holds the SIGNAL (high conc
+    # saturates, conc=2 doesn't) at 4× lower op throughput — so a swarm of these
+    # contends far less for CPU and the settle window stays representative.
+    rate: 500
     # Overload errors are load feedback, not run failures — don't stop on them.
     errors: warn
     error_rate_max: 1.0
@@ -61,9 +71,9 @@ phases:
         stmt: "INSERT INTO demo.events (id) VALUES ({cycle});"
         # A fixed saturating backend: 2 servers, 5ms each, queue depth 4. Past
         # ~4 in-flight ops it returns Overload — so high concurrency saturates.
-        result-latency: "5ms"
+        result-latency: "20ms"
         result-capacity: 2
         result-overload: 4
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ expect best \[

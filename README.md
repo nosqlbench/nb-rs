@@ -168,18 +168,22 @@ nbrs-web          Web dashboard with Axum + HTMX
 
 ## Functional Areas
 
-Each of these areas has a distinctive design which has evolved from its nosqlbench form. This represents a capsule-form view of the user-facing elements which compose together to make a whole system.
+Each of these areas has a distinctive design which has evolved from its 
+nosqlbench form. This represents a capsule-form view of the user-facing 
+elements which compose together to make a whole system. Each of these should 
+be considered a separate, modular subsystem.
 
-These are areas which are due for some documentation.
+They are due for some documentation.
 
-- user interface
-- test data / variates
-- custom op behaviors
-- workload description
-- dynamic controls
-- status views
-- reports / plots / tables
-- metrics db / metricsql
+- user interface (readout, output channels, TUI)
+  - TUI status views (readout)
+  - CLI dynamic completion help
+- test data / variates (polydat, data access libraries)
+- custom op behaviors (op wrapping facility and yaml alignment)
+- workload description (session/workload/scenario/phase)
+- dynamic controls (realtime hooks, api, usage examples)
+- reports / plots / tables (per-session, per-workload, ...)
+- metrics db / metricsql (stores, query interface, uniformity)
 - portability / local-only sufficiency
 - safety checks
 

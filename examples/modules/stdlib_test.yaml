@@ -23,3 +23,11 @@ blocks:
     ops:
       insert:
         stmt: "INSERT INTO t (id, score, ts) VALUES ({user_id}, {score}, {ts});"
+
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# Proves embedded-stdlib module resolution renders: hash_range → bounded id,
+# normal_sample → float score, monotonic_ts → epoch base + cycle*interval.
+#@ run cycles=5
+#@ expect INSERT INTO t \(id, score, ts\) VALUES \([0-9]
+#@ expect 1710000000000
+#@ expect 0 failed

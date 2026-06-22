@@ -26,6 +26,34 @@ mod inner {
         conn: &Connection,
         key_like: &str,
     ) -> Vec<(String, String)> {
+        latest_execution_with_metadata_like(conn, key_like).1
+    }
+
+    /// Like [`latest_execution_metadata_like`], but also surfaces the
+    /// `exec_id` the rows came from. `Some(id)` when the rows were read
+    /// from `execution_metadata` (the per-execution split); `None` when
+    /// they fell back to legacy `session_metadata` (pre-split dbs, which
+    /// carry no `exec_id`) or when nothing matched.
+    ///
+    /// The exec_id is what makes a **workload-declared report
+    /// workload-scoped**: a `report:` section belongs to the execution
+    /// that declared it, so its data query must be narrowed to that
+    /// execution's `exec_id` rather than spanning every execution that
+    /// shares the session (a refine sequence, or SRD-88 concurrent
+    /// executions). Tables already pass `Some(exec_id)` to their
+    /// `ReportConfig`; this lets the plot path do the same.
+    pub fn latest_execution_with_metadata_like(
+        conn: &Connection,
+        key_like: &str,
+    ) -> (Option<i64>, Vec<(String, String)>) {
+        let exec_id: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(exec_id) FROM execution_metadata WHERE key LIKE ?1",
+                [key_like],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten();
         let rows: Vec<(String, String)> = conn
             .prepare(
                 "SELECT key, value FROM execution_metadata \
@@ -39,14 +67,16 @@ mod inner {
             })
             .unwrap_or_default();
         if !rows.is_empty() {
-            return rows;
+            return (exec_id, rows);
         }
-        conn.prepare("SELECT key, value FROM session_metadata WHERE key LIKE ?1 ORDER BY key")
+        let legacy: Vec<(String, String)> = conn
+            .prepare("SELECT key, value FROM session_metadata WHERE key LIKE ?1 ORDER BY key")
             .and_then(|mut s| {
                 s.query_map([key_like], |r| Ok((r.get(0)?, r.get(1)?)))
                     .map(|it| it.filter_map(Result::ok).collect())
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        (None, legacy)
     }
 
     /// Latest-execution single value for an exact `key`. Same
@@ -2647,6 +2677,45 @@ mod inner {
         }
 
         #[test]
+        fn workload_report_defs_surface_their_declaring_exec_id() {
+            // SRD-88 — a workload's `report:` belongs to the execution
+            // that declared it. `latest_execution_with_metadata_like`
+            // must surface that execution's id so the report's data
+            // query can be narrowed to it (workload-scoped) rather than
+            // spanning every execution that shares the session.
+            let mut r = super::SqliteReporter::in_memory().unwrap();
+            // Two executions share one session; each declares a report.
+            r.set_execution_metadata("s", 1, "report.early", "plot early");
+            r.set_execution_metadata("s", 2, "report.late", "plot late");
+
+            let (exec_id, rows) =
+                latest_execution_with_metadata_like(&r.conn, "report.%");
+            // The most recent execution's id, and ONLY its rows.
+            assert_eq!(exec_id, Some(2));
+            assert_eq!(
+                rows,
+                vec![("report.late".to_string(), "plot late".to_string())],
+            );
+        }
+
+        #[test]
+        fn legacy_session_metadata_reports_carry_no_exec_id() {
+            // Pre-split dbs stored report defs in `session_metadata`
+            // with no `exec_id`; the reader falls back and reports
+            // `None` (a single-execution db — no scoping possible or
+            // needed).
+            let mut r = super::SqliteReporter::in_memory().unwrap();
+            r.set_metadata("report.legacy", "plot legacy");
+            let (exec_id, rows) =
+                latest_execution_with_metadata_like(&r.conn, "report.%");
+            assert_eq!(exec_id, None);
+            assert_eq!(
+                rows,
+                vec![("report.legacy".to_string(), "plot legacy".to_string())],
+            );
+        }
+
+        #[test]
         fn readout_snapshot_upsert_keeps_latest_per_pk() {
             let mut r = super::SqliteReporter::in_memory().unwrap();
             // Two upserts with the same primary key — second
@@ -3760,7 +3829,8 @@ pub use inner::SqliteShutdownGuard;
 pub use inner::{
     ReportConfig, ReportAggregate, NativeSample, ExemplarRow,
     PhaseOutcomeRow, PhaseErrorRow,
-    latest_execution_metadata_like, latest_execution_metadata_value,
+    latest_execution_metadata_like, latest_execution_with_metadata_like,
+    latest_execution_metadata_value,
 };
 
 /// Split a summary name into `(basename, format)`.

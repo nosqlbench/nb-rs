@@ -60,5 +60,5 @@ blocks:
         ratio: 1
         stmt: "INSERT INTO points (id, x, y, z, density, temp, cat) VALUES ({point_id}, {x}, {y}, {z}, {density}, {temperature}, {category});"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ expect completed, 0 failed

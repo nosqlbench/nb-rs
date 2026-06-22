@@ -15,7 +15,6 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::thread;
 
 use crate::cadence_reporter::CadenceReporter;
 use crate::labels::Labels;
@@ -269,16 +268,23 @@ impl SchedulerHandle {
         let cadence_reporter_for_stop = self.cadence_reporter.clone();
 
         let (frame_tx, frame_rx) = std::sync::mpsc::channel::<MetricSet>();
-        // Stop signal: lets the scheduler thread wake immediately out
-        // of its inter-tick wait instead of blocking shutdown for up to
-        // one full base interval (a 1s default → a visible end-of-run
-        // pause). `StopHandle::stop`/`drop` send `()` before joining.
-        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        // Stop signal: wakes the task immediately out of its inter-tick
+        // wait instead of dwelling up to a full base interval.
+        // `StopHandle::stop`/`drop` notify it before waiting on `done`.
+        let stop_notify = Arc::new(tokio::sync::Notify::new());
+        let stop_notify_task = stop_notify.clone();
+        // The task fires `done` AFTER its final flush, so the sync
+        // `stop()` can wait for the trailing window to land (summary
+        // reports read complete data) without a thread to join.
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
 
         *running.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
         let stop_running = running.clone();
-        let handle = thread::spawn(move || {
+        // The scheduler runs as a tokio task on the shared runtime — no
+        // dedicated thread. Requires a runtime at `start()` (always true
+        // in production; tests use `#[tokio::test(multi_thread)]`).
+        let handle = tokio::spawn(async move {
             // Drift surveillance: real wall-clock elapsed between
             // successive tick captures should match `interval` to
             // within 5%. If it doesn't, the scheduler thread is
@@ -303,12 +309,11 @@ impl SchedulerHandle {
                 let now = Instant::now();
                 if now < next_tick {
                     // Interruptible wait: wake immediately when stop is
-                    // signalled, otherwise time out at the next tick. A
-                    // bare `thread::sleep` here blocked shutdown for up
-                    // to one full base interval.
-                    match stop_rx.recv_timeout(next_tick - now) {
-                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    // notified, otherwise yield until the next tick. Both
+                    // arms run on the shared runtime — no thread parked.
+                    tokio::select! {
+                        _ = tokio::time::sleep(next_tick - now) => {}
+                        _ = stop_notify_task.notified() => break,
                     }
                 }
                 next_tick += interval;
@@ -416,7 +421,7 @@ impl SchedulerHandle {
                 // Force-close any unpromoted partials so the
                 // trailing window is not lost.
                 if let Some(ref cr) = cadence_reporter {
-                    cr.shutdown_flush();
+                    cr.shutdown_flush().await;
                 }
             }
             // Drain any remaining async snapshots before final flush
@@ -431,15 +436,18 @@ impl SchedulerHandle {
             }
             // Flush all reporters on shutdown
             flush_tree(&mut root.lock().unwrap_or_else(|e| e.into_inner()));
+            // Trailing window has landed — release a waiting `stop()`.
+            let _ = done_tx.send(());
         });
 
         StopHandle {
             running: self.running,
             cadence_reporter: cadence_reporter_for_stop,
             root: root_for_stop,
-            thread: Mutex::new(Some(handle)),
+            task: Mutex::new(Some(handle)),
             frame_tx,
-            stop_tx,
+            stop_notify,
+            done_rx: Mutex::new(Some(done_rx)),
         }
     }
 }
@@ -459,19 +467,23 @@ pub struct StopHandle {
     cadence_reporter: Option<Arc<CadenceReporter>>,
     #[allow(dead_code)] // retained for future direct-flush access
     root: Arc<Mutex<ScheduleNode>>,
-    /// Interior-mutable so the session host can stop the scheduler
-    /// through a shared `Arc<StopHandle>` (SRD-88 — host owns the
-    /// session-tier scheduler; executions only `report_frame`).
+    /// The scheduler **task** handle (runs on the shared runtime — no
+    /// dedicated thread). Interior-mutable so the session host can stop
+    /// the scheduler through a shared `Arc<StopHandle>` (SRD-88 — host
+    /// owns the session-tier scheduler; executions only `report_frame`).
     /// `take`n by whichever of `stop` / `drop` runs first; the other
     /// sees `None` and is a no-op (idempotent).
-    thread: Mutex<Option<thread::JoinHandle<()>>>,
-    /// Channel for async frame delivery — the executor sends frames
-    /// here instead of writing to reporters inline. The scheduler
-    /// thread drains this channel on each tick.
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Channel for async frame delivery — the executor sends frames here
+    /// instead of writing to reporters inline. The scheduler task drains
+    /// this channel on each tick.
     frame_tx: std::sync::mpsc::Sender<MetricSet>,
-    /// Wakes the scheduler thread out of its inter-tick wait so
-    /// shutdown joins promptly instead of waiting out a base interval.
-    stop_tx: std::sync::mpsc::Sender<()>,
+    /// Wakes the scheduler task out of its inter-tick wait so shutdown is
+    /// prompt instead of waiting out a base interval.
+    stop_notify: Arc<tokio::sync::Notify>,
+    /// Signalled by the task after its final flush; `stop()` waits on it
+    /// so the trailing window is committed before it returns.
+    done_rx: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl StopHandle {
@@ -482,11 +494,14 @@ impl StopHandle {
     /// already taken and no-ops.
     pub fn stop(&self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        let _ = self.stop_tx.send(()); // wake the inter-tick wait
-        let handle = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(handle) = handle {
-            let _ = handle.join();
+        self.stop_notify.notify_one(); // wake the inter-tick wait
+        // Wait for the task's final flush to land (the trailing window).
+        let done = self.done_rx.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(done) = done {
+            wait_for_done(done);
         }
+        // The task has finished; drop its handle (no abort needed).
+        let _ = self.task.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
     /// Reference to the cadence reporter, if any.
@@ -509,11 +524,39 @@ impl StopHandle {
 impl Drop for StopHandle {
     fn drop(&mut self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        let _ = self.stop_tx.send(()); // wake the inter-tick wait
-        let handle = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(handle) = handle {
-            let _ = handle.join();
+        self.stop_notify.notify_one(); // wake the inter-tick wait
+        let done = self.done_rx.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(done) = done {
+            wait_for_done(done);
         }
+        if let Some(task) = self.task.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            task.abort();
+        }
+    }
+}
+
+/// Wait (best-effort) for the scheduler task to signal its final flush is
+/// done, from the `StopHandle`'s `Drop` (a sync context — can't `.await`).
+///
+/// - **Multi-threaded runtime**: `block_in_place` so tokio spins a
+///   replacement worker and this brief session-end wait can't starve the
+///   task that fires the signal (or a neighbour under test parallelism).
+/// - **Current-thread runtime**: we're on the only worker, so a blocking
+///   wait can neither `block_in_place` (it panics) nor make progress (the
+///   scheduler task needs this thread). The graceful shutdown path already
+///   `.await`ed the scheduler's drain before this `Drop`, so a non-blocking
+///   `try_recv` is enough; the caller's `task.abort()` reaps the rest.
+/// - **Outside a runtime**: a plain blocking `recv`.
+///
+/// A disconnected channel (task panicked/aborted) returns immediately.
+fn wait_for_done(done: std::sync::mpsc::Receiver<()>) {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| { let _ = done.recv(); });
+        }
+        Ok(_) => { let _ = done.try_recv(); }
+        Err(_) => { let _ = done.recv(); }
     }
 }
 
@@ -543,8 +586,8 @@ mod tests {
         MetricSet::new(interval)
     }
 
-    #[test]
-    fn scheduler_builds_and_reports() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scheduler_builds_and_reports() {
         let count = Arc::new(AtomicU64::new(0));
         let c = count.clone();
         let handle = SchedulerBuilder::new()
@@ -553,15 +596,15 @@ mod tests {
             .build(Box::new(mock_capture));
 
         let mut stop = handle.start();
-        thread::sleep(Duration::from_millis(350));
+        tokio::time::sleep(Duration::from_millis(350)).await;
         stop.stop();
 
         let c = count.load(Ordering::Relaxed);
         assert!((2..=5).contains(&c), "expected ~3 reports, got {c}");
     }
 
-    #[test]
-    fn scheduler_feeds_cadence_reporter() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scheduler_feeds_cadence_reporter() {
         use crate::cadence::{Cadences, CadenceTree};
 
         let tree = CadenceTree::plan_default(Cadences::new(&[
@@ -574,7 +617,7 @@ mod tests {
             .build(Box::new(mock_capture));
 
         let mut stop = handle.start();
-        thread::sleep(Duration::from_millis(350));
+        tokio::time::sleep(Duration::from_millis(350)).await;
         stop.stop();
 
         // Reporter received ingests — has the component tracked.
@@ -592,8 +635,8 @@ mod tests {
         assert_eq!(ops_total, 10, "one tick = 10");
     }
 
-    #[test]
-    fn scheduler_coalesces_for_slow_reporter() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scheduler_coalesces_for_slow_reporter() {
         let fast_count = Arc::new(AtomicU64::new(0));
         let slow_count = Arc::new(AtomicU64::new(0));
         let fc = fast_count.clone();
@@ -609,7 +652,7 @@ mod tests {
             )]));
 
         let mut stop = handle.start();
-        thread::sleep(Duration::from_millis(450));
+        tokio::time::sleep(Duration::from_millis(450)).await;
         stop.stop();
 
         let fast = fast_count.load(Ordering::Relaxed);
@@ -625,8 +668,8 @@ mod tests {
     /// same coalesced data — but internally the largest layer's
     /// accumulation is bounded by the next-smaller cadence, not by
     /// every base frame.
-    #[test]
-    fn scheduler_chained_tree_delivers_to_largest_cadence() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scheduler_chained_tree_delivers_to_largest_cadence() {
         use crate::cadence::{Cadences, CadenceTree};
 
         let small_count = Arc::new(AtomicU64::new(0));
@@ -654,7 +697,7 @@ mod tests {
             )]));
 
         let mut stop = handle.start();
-        thread::sleep(Duration::from_millis(900));
+        tokio::time::sleep(Duration::from_millis(900)).await;
         stop.stop();
 
         let small = small_count.load(Ordering::Relaxed);
@@ -670,8 +713,8 @@ mod tests {
     /// Verify that a reporter only at the *largest* declared cadence
     /// still gets its expected report count even when a hidden
     /// layer sits between it and the smallest cadence.
-    #[test]
-    fn scheduler_hidden_layers_pass_through_to_visible_reporters() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scheduler_hidden_layers_pass_through_to_visible_reporters() {
         use crate::cadence::{Cadences, CadenceTree};
 
         let large_count = Arc::new(AtomicU64::new(0));
@@ -700,15 +743,15 @@ mod tests {
             )]));
 
         let mut stop = handle.start();
-        thread::sleep(Duration::from_millis(3300));
+        tokio::time::sleep(Duration::from_millis(3300)).await;
         stop.stop();
 
         let large = large_count.load(Ordering::Relaxed);
         assert!(large >= 1, "largest reporter saw 0 frames — chain broken");
     }
 
-    #[test]
-    fn flush_component_routes_to_cadence_reporter() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn flush_component_routes_to_cadence_reporter() {
         use crate::cadence::{Cadences, CadenceTree};
 
         let tree = CadenceTree::plan_default(Cadences::new(&[

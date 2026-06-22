@@ -280,6 +280,6 @@ phases:
       info:
         stmt: "cmp/xval xval={xval}"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ run scenario=form_single_var
 #@ expect completed, 0 failed

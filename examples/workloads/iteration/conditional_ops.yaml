@@ -23,6 +23,6 @@ ops:
     if: is_third
     stmt: "cycle={cycle} (third: mod!=0)"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ run cycles=18
 #@ expect completed, 0 failed

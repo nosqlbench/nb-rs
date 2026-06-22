@@ -124,9 +124,12 @@ pub fn build_tree() -> CommandTree {
 }
 
 /// Every `key=value` param the run-style grammar (`run`,
-/// `refine`) accepts — the same closed vocabulary as the
-/// runner's `KNOWN_PARAMS` allow-list — with a completion
-/// provider per key. veks-completion 1.3.1 removed tree-global
+/// `refine`) accepts — the single source of truth for that
+/// vocabulary. The runner's param validation derives its
+/// allow-list from this list at startup (via [`known_param_keys`]
+/// → `nbrs_runtime::runner::install_known_params`), so there is no
+/// hand-synced copy to drift. Each key carries a completion
+/// provider. veks-completion 1.3.1 removed tree-global
 /// providers — value completion is per-node — so these are
 /// declared on the commands that accept them via
 /// [`crate::cli_spec::Command::kv_params`]. Keys whose value
@@ -176,7 +179,34 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
     crate::cli_spec::KvParam { key: "instance=", provider: free_form },
     crate::cli_spec::KvParam { key: "prompush_apikeyfile=", provider: free_form },
     crate::cli_spec::KvParam { key: "trace=", provider: free_form },
+    // Log-level floors (SRD-41) — accepted in both `-` and `_`
+    // spellings; `loglevel`/`loglevel-display` set the display
+    // (stderr) floor, `loglevel-retain` the session.log floor.
+    crate::cli_spec::KvParam { key: "loglevel=", provider: free_form },
+    crate::cli_spec::KvParam { key: "loglevel-display=", provider: free_form },
+    crate::cli_spec::KvParam { key: "loglevel_display=", provider: free_form },
+    crate::cli_spec::KvParam { key: "loglevel-retain=", provider: free_form },
+    crate::cli_spec::KvParam { key: "loglevel_retain=", provider: free_form },
+    // `latency-cadences=` dash spelling (the `_` form is above).
+    crate::cli_spec::KvParam { key: "latency-cadences=", provider: free_form },
+    // `scenarios=` — multi-scenario selector.
+    crate::cli_spec::KvParam { key: "scenarios=", provider: scenario_provider },
+    // SRD-86 — finest metrics cadence + scheduler base interval
+    // (e.g. `100ms`/`200ms`), so a windowed optimizer objective
+    // settles in a fraction of the default 1s-cadence wall-clock.
+    crate::cli_spec::KvParam { key: "metrics_cadence=", provider: free_form },
 ];
+
+/// The run-style `key=value` param vocabulary (each key sans its trailing
+/// `=`), derived from [`RUN_KV_PARAMS`] — the single source of truth for
+/// "what params does a run accept". Installed into the runner at startup
+/// (`nbrs_runtime::runner::install_known_params`) so workload/CLI param
+/// validation references this same CLI command-spec instead of a
+/// hand-synced copy. Adding a param to `RUN_KV_PARAMS` makes it complete
+/// AND validate with no second edit.
+pub fn known_param_keys() -> Vec<&'static str> {
+    RUN_KV_PARAMS.iter().map(|kv| kv.key.trim_end_matches('=')).collect()
+}
 
 // ── Closed-set / dynamic value providers (audit 2026-06-11) ──
 
@@ -892,11 +922,12 @@ fn completions_node() -> StrictNode<true, true> {
 // ---------------------------------------------------------------------------
 
 fn workload_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    // Tier 1 — the obvious candidates: local files and catalog
+    // names whose full reference begins with what's typed. SRD-85:
+    // bundled workloads run by catalog name from any directory, so
+    // they complete alongside local files (examples are hidden from
+    // the default *listing*, not from use).
     let mut out = workload_file_candidates(partial);
-    // SRD-85: bundled workloads run by catalog name from any
-    // directory — offer them alongside local files. Both tiers
-    // complete (examples are hidden from the default *listing*,
-    // not from use).
     out.extend(
         nbrs_workload::catalog::iter()
             .map(|w| w.name.to_string())
@@ -904,7 +935,15 @@ fn workload_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     );
     out.sort();
     out.dedup();
-    out
+    if !out.is_empty() {
+        return out;
+    }
+    // Tier 2 — nothing obvious near the cursor: fall back to the
+    // shared deep leaf-segment search across the local hierarchy
+    // (down to 3 levels) and the bundled catalog, offering every
+    // match however deep. This is what lets a bare `phase_poll`
+    // surface a buried `examples/controls/phase_poll_smoke`.
+    nbrs_workload::suggest::suggest_workloads(partial)
 }
 
 fn scenario_provider(partial: &str, ctx: &[&str]) -> Vec<String> {

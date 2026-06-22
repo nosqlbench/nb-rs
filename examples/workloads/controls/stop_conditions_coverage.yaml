@@ -118,6 +118,6 @@ phases:
       mark:
         stmt: "STEP_C"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ run scenario=phase_op_count
 #@ expect-fail stop condition tripped

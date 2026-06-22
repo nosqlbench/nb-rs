@@ -60,6 +60,6 @@ ops:
     tags: { type: read, table: analytics }
     stmt: "SELECT count(*), avg(price) FROM {keyspace}.orders WHERE user_id={user_id}"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ run cycles=22
 #@ expect completed, 0 failed

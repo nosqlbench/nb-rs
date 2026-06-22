@@ -17,3 +17,10 @@ blocks:
     ops:
       insert:
         stmt: "INSERT INTO data (user, device) VALUES ({user_id}, {device_id});"
+
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
+# Proves adjacent-file Polydat module resolution: `hashed_id(input, bound)`
+# resolves from hashed_id.polydat in this directory and renders two bounded ids.
+#@ run cycles=5
+#@ expect INSERT INTO data \(user, device\) VALUES \([0-9]+, [0-9]+\);
+#@ expect 0 failed

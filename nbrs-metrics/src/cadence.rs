@@ -161,7 +161,7 @@ impl Cadences {
 
 /// Parse a human-duration string like `10s`, `500ms`, `1m`, `2h`.
 /// Plain integers without a unit are interpreted as seconds.
-fn parse_duration(s: &str) -> Result<Duration, ()> {
+pub fn parse_duration(s: &str) -> Result<Duration, ()> {
     let s = s.trim();
     if let Some(n) = s.strip_suffix("ms") {
         return n.trim().parse::<u64>().map(Duration::from_millis).map_err(|_| ());
@@ -466,7 +466,10 @@ fn nicest_duration(secs: f64) -> Duration {
 pub fn format_duration_short(d: Duration) -> String {
     let total = d.as_secs();
     if total == 0 {
-        return "0s".into();
+        // Sub-second cadences (e.g. a 100ms optimizer finest layer)
+        // render in milliseconds rather than collapsing to "0s".
+        let ms = d.subsec_millis();
+        return if ms == 0 { "0s".into() } else { format!("{ms}ms") };
     }
     let h = total / 3600;
     let m = (total % 3600) / 60;

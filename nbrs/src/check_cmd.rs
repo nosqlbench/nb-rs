@@ -7,8 +7,17 @@
 //! verification logic lives in [`nbrs_workload::verify`], shared with the
 //! example-walker test, so users check their own workloads exactly the way CI
 //! checks the bundled examples.
+//!
+//! On a terminal it renders a live `active · pending · done · errors` status
+//! line as the (concurrent) checks run, then prints a summary and the slowest
+//! workloads by wall-clock.
 
 use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+use nbrs_workload::verify::{CheckProgress, CheckStatus, WorkloadTiming};
+use std::io::{IsTerminal, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 
 pub fn spec() -> Command {
     Command {
@@ -56,13 +65,18 @@ fn check_command(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("cannot locate the nbrs binary: {e}"))?;
     let sandbox = std::env::temp_dir().join(format!("nbrs-check-{}", std::process::id()));
 
-    let sum = nbrs_workload::verify::verify_target(&binary, &target, &sandbox);
+    // Live progress: a TTY-only status line redrawn as each workload starts
+    // and finishes. Worker threads in `verify_path` drive it concurrently, so
+    // the view is atomic + write-serialized.
+    let view = ProgressView::new();
+    let sum = nbrs_workload::verify::verify_target(&binary, &target, &sandbox, &|ev| view.handle(ev));
+    view.clear();
 
     for s in &sum.skipped {
         println!("  ⃠  skip  {s}");
     }
     let total = sum.passed + sum.failures.len();
-    if sum.failures.is_empty() {
+    let result = if sum.failures.is_empty() {
         let skip = if sum.skipped.is_empty() {
             String::new()
         } else {
@@ -75,5 +89,116 @@ fn check_command(args: &[String]) -> Result<(), String> {
             eprintln!("  ✗  {f}");
         }
         Err(format!("{} of {total} checks failed", sum.failures.len()))
+    };
+
+    print_timing_report(&sum.timings);
+    result
+}
+
+/// Print the slowest workloads by wall-clock. Skipped for a single workload —
+/// the one timing carries no comparison and the summary line says enough.
+fn print_timing_report(timings: &[WorkloadTiming]) {
+    if timings.len() < 2 {
+        return;
+    }
+    let mut ranked: Vec<&WorkloadTiming> = timings.iter().collect();
+    ranked.sort_by(|a, b| b.elapsed.cmp(&a.elapsed));
+    let shown = ranked.len().min(10);
+    let wall: Duration = timings.iter().map(|t| t.elapsed).sum();
+    println!(
+        "\ntop {shown} by time taken ({} workloads, {} total):",
+        timings.len(),
+        fmt_dur(wall),
+    );
+    for t in ranked.into_iter().take(10) {
+        println!("  {:>9}  {} {}", fmt_dur(t.elapsed), status_mark(t.status), t.label);
+    }
+}
+
+fn status_mark(s: CheckStatus) -> char {
+    match s {
+        CheckStatus::Pass => '✓',
+        CheckStatus::Skip => '⃠',
+        CheckStatus::Fail => '✗',
+    }
+}
+
+fn fmt_dur(d: Duration) -> String {
+    let secs = d.as_secs_f64();
+    if secs >= 1.0 {
+        format!("{secs:.2}s")
+    } else {
+        format!("{}ms", d.as_millis())
+    }
+}
+
+/// Atomic, write-serialized backing for the live `nbrs check` status line.
+struct ProgressView {
+    total: AtomicUsize,
+    started: AtomicUsize,
+    finished: AtomicUsize,
+    errors: AtomicUsize,
+    tty: bool,
+    write: Mutex<()>,
+}
+
+impl ProgressView {
+    fn new() -> Self {
+        Self {
+            total: AtomicUsize::new(0),
+            started: AtomicUsize::new(0),
+            finished: AtomicUsize::new(0),
+            errors: AtomicUsize::new(0),
+            tty: std::io::stderr().is_terminal(),
+            write: Mutex::new(()),
+        }
+    }
+
+    fn handle(&self, ev: CheckProgress) {
+        match ev {
+            CheckProgress::Begin { total } => {
+                self.total.store(total, Ordering::Relaxed);
+            }
+            CheckProgress::Started { .. } => {
+                self.started.fetch_add(1, Ordering::Relaxed);
+            }
+            CheckProgress::Finished { status, .. } => {
+                self.finished.fetch_add(1, Ordering::Relaxed);
+                if status == CheckStatus::Fail {
+                    self.errors.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        self.render();
+    }
+
+    fn render(&self) {
+        if !self.tty {
+            return;
+        }
+        let _g = self.write.lock().unwrap_or_else(|e| e.into_inner());
+        let total = self.total.load(Ordering::Relaxed);
+        let started = self.started.load(Ordering::Relaxed);
+        let finished = self.finished.load(Ordering::Relaxed);
+        let errors = self.errors.load(Ordering::Relaxed);
+        let active = started.saturating_sub(finished);
+        let pending = total.saturating_sub(started);
+        let mut err = std::io::stderr();
+        let _ = write!(
+            err,
+            "\r\x1b[K⏳ {active} active · {pending} pending · {finished} done · {errors} errors",
+        );
+        let _ = err.flush();
+    }
+
+    /// Erase the status line so the summary starts on a clean row.
+    fn clear(&self) {
+        if !self.tty {
+            return;
+        }
+        let _g = self.write.lock().unwrap_or_else(|e| e.into_inner());
+        let mut err = std::io::stderr();
+        let _ = write!(err, "\r\x1b[K");
+        let _ = err.flush();
     }
 }

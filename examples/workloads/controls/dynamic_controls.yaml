@@ -88,12 +88,18 @@ blocks:
       // attributed to the `rate_adjust` binding in the committed
       // Versioned<RateSpec>::origin.
       throttle_factor := select_f64(err_rate > 0.05, 0.5, 1.05)
-      rate_adjust := control_set("rate",
-                                 to_f64(control_u64("rate")) *
-                                 throttle_factor)
+      // Read the LIVE rate as f64 and FLOOR the adjusted value at 100 ops/s.
+      // The error signal is a *measured* (host-dependent) rate — under
+      // concurrent execution it can read persistently high, and an un-floored
+      // halving would collapse the limiter toward zero (and `control_u64` would
+      // truncate a sub-1 rate to 0, which `control_set` then rejects, freezing
+      // it). The floor keeps the loop a stable demonstration: it backs the rate
+      // off under overload without driving the backend to a standstill.
+      adjusted := control("rate") * throttle_factor
+      rate_adjust := control_set("rate", select_f64(adjusted < 100.0, 100.0, adjusted))
     ops:
       tick: "SELECT now();"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ run cycles=300
 #@ expect completed, 0 failed

@@ -47,6 +47,6 @@ blocks:
         ratio: 1
         stmt: "INSERT INTO telemetry (device, ts, temp, humid) VALUES ({device_id}, {timestamp}, {temperature}, {humidity});"
 
-# ─── example-walker test directives (nbrs/tests/workloads.rs) ───
+# ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ run cycles=3
 #@ expect completed, 0 failed

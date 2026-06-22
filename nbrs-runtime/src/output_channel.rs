@@ -227,8 +227,15 @@ pub fn clear() {
     CHANNEL.store(None);
 }
 
-/// The installed channel, if any.
+/// The installed channel, if any. SRD-88 — **task-local-first**: a
+/// concurrent in-process execution that scoped its own channel
+/// (`ExecutionContext.channel`) resolves to it; everything else (single-run,
+/// bootstrap, tests) falls back to the process-global `CHANNEL` (axiom A1, a
+/// true no-op until a context scopes one).
 pub fn installed() -> Option<Arc<dyn OutputChannel>> {
+    if let Some(ch) = crate::execution_context::current_channel() {
+        return Some(ch);
+    }
     CHANNEL.load_full().map(|h| h.0.clone())
 }
 

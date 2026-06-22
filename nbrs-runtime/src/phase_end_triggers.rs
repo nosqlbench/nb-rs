@@ -42,6 +42,7 @@
 
 use std::any::Any;
 use std::panic;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -98,6 +99,15 @@ struct Registry {
 
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 
+/// Lock-free mirror of `Registry::triggers.len()`, kept in sync under the
+/// registry lock by [`register`] / [`unregister`]. [`fire`] reads this
+/// FIRST so the common case — no triggers registered, which is every
+/// concurrent-workload session today — is a single relaxed atomic load
+/// with **no lock**: concurrent executions never synchronize on the
+/// global registry when firing phase-end events (SRD-88 "session
+/// services are lock-free for concurrent workloads").
+static TRIGGER_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 fn registry() -> &'static Mutex<Registry> {
     REGISTRY.get_or_init(|| {
         Mutex::new(Registry {
@@ -121,6 +131,7 @@ pub fn register(trigger: Arc<dyn PhaseEndTrigger>) -> TriggerId {
     let id = TriggerId(reg.next_id);
     reg.next_id += 1;
     reg.triggers.push(Entry { id, trigger });
+    TRIGGER_COUNT.store(reg.triggers.len(), Ordering::Release);
     // Lazy worker startup — only when there's at least one
     // trigger. The thread reads events forever; it shuts down
     // when the channel sender is dropped (process exit).
@@ -141,6 +152,7 @@ pub fn register(trigger: Arc<dyn PhaseEndTrigger>) -> TriggerId {
 pub fn unregister(id: TriggerId) {
     let mut reg = registry().lock().expect("phase-end-triggers registry poisoned");
     reg.triggers.retain(|e| e.id != id);
+    TRIGGER_COUNT.store(reg.triggers.len(), Ordering::Release);
 }
 
 /// Drain the registry — used by integration tests that need
@@ -150,6 +162,7 @@ pub fn unregister(id: TriggerId) {
 pub fn reset_for_tests() {
     let mut reg = registry().lock().expect("phase-end-triggers registry poisoned");
     reg.triggers.clear();
+    TRIGGER_COUNT.store(0, Ordering::Release);
     reg.next_id = 1;
     // We deliberately leave the dispatch channel alive — the
     // worker thread is fine sitting idle on an empty channel.
@@ -178,6 +191,12 @@ pub fn fire_phase_failed(name: &str, labels: &str, error: &str) {
 }
 
 fn fire(event: PhaseEndEvent) {
+    // Lock-free fast path: no triggers registered ⇒ a relaxed atomic
+    // load and return. Concurrent executions firing phase-end events
+    // never contend on the global registry lock in the common case.
+    if TRIGGER_COUNT.load(Ordering::Acquire) == 0 {
+        return;
+    }
     let reg = registry().lock().expect("phase-end-triggers registry poisoned");
     if reg.triggers.is_empty() { return; }
     if let Some(tx) = reg.dispatch.as_ref() {

@@ -83,6 +83,10 @@ impl Reporter for PhaseStopEvaluator {
         if self.done {
             return;
         }
+        // The delivery fiber already runs inside this subscription's
+        // execution context (SRD-88 — set as the cadence subscription's
+        // `context_wrap` at subscribe time), so the objective read here
+        // scopes to the owning execution without any per-call rebinding.
         if let Some(outcome) = self.eval.evaluate(window) {
             self.outcome.store(Arc::new(Some(outcome)));
             // Cooperative stop: the activity loop reads the flag at its

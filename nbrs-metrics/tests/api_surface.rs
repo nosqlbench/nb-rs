@@ -42,8 +42,8 @@ use nbrs_metrics::snapshot::{
 // labels
 // =========================================================================
 
-#[test]
-fn labels_compose_without_mutation() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn labels_compose_without_mutation() {
     let base = Labels::of("session", "s1");
     let child = base.with("phase", "load");
     assert_eq!(base.get("phase"), None);
@@ -52,8 +52,8 @@ fn labels_compose_without_mutation() {
     assert_eq!(child.len(), 2);
 }
 
-#[test]
-fn labels_extend_child_overrides_parent() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn labels_extend_child_overrides_parent() {
     let parent = Labels::of("activity", "a").with("phase", "load");
     let child = Labels::of("phase", "verify");
     let merged = parent.extend(&child);
@@ -61,8 +61,8 @@ fn labels_extend_child_overrides_parent() {
     assert_eq!(merged.get("phase"), Some("verify"));
 }
 
-#[test]
-fn labels_identity_hash_is_order_sensitive_but_value_stable() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn labels_identity_hash_is_order_sensitive_but_value_stable() {
     let a = Labels::of("k1", "v1").with("k2", "v2");
     let b = Labels::of("k1", "v1").with("k2", "v2");
     assert_eq!(a.identity_hash(), b.identity_hash());
@@ -74,24 +74,24 @@ fn labels_identity_hash_is_order_sensitive_but_value_stable() {
 // instruments
 // =========================================================================
 
-#[test]
-fn counter_inc_by_accumulates() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn counter_inc_by_accumulates() {
     let c = Counter::new(Labels::of("name", "ops"));
     c.inc();
     c.inc_by(9);
     assert_eq!(c.get(), 10);
 }
 
-#[test]
-fn gauge_set_replaces_value() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gauge_set_replaces_value() {
     let g = ValueGauge::new(Labels::of("name", "depth"));
     g.set(1.5);
     g.set(3.25);
     assert_eq!(g.get(), 3.25);
 }
 
-#[test]
-fn histogram_record_and_peek_snapshot_preserve_samples() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn histogram_record_and_peek_snapshot_preserve_samples() {
     let h = Histogram::new(Labels::of("name", "rt"));
     for v in [1_000, 2_000, 3_000] {
         h.record(v);
@@ -108,8 +108,8 @@ fn histogram_record_and_peek_snapshot_preserve_samples() {
     assert_eq!(after.len(), 0);
 }
 
-#[test]
-fn timer_record_snapshot_has_count_and_histogram() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn timer_record_snapshot_has_count_and_histogram() {
     let t = Timer::new(Labels::of("name", "servicetime"));
     t.record(10_000_000);
     t.record(50_000_000);
@@ -122,16 +122,16 @@ fn timer_record_snapshot_has_count_and_histogram() {
 // snapshot — data model
 // =========================================================================
 
-#[test]
-fn metric_set_tracks_capture_metadata() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metric_set_tracks_capture_metadata() {
     let interval = Duration::from_secs(5);
     let s = MetricSet::new(interval);
     assert_eq!(s.interval(), interval);
     assert!(s.captured_at().elapsed() < Duration::from_secs(1));
 }
 
-#[test]
-fn insert_counter_gauge_histogram_build_families_by_name() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insert_counter_gauge_histogram_build_families_by_name() {
     let now = Instant::now();
     let mut s = MetricSet::at(now, Duration::from_secs(1));
     s.insert_counter("ops", Labels::of("phase", "load"), 17, now);
@@ -146,8 +146,8 @@ fn insert_counter_gauge_histogram_build_families_by_name() {
     assert_eq!(s.family("latency").unwrap().r#type(), MetricType::Histogram);
 }
 
-#[test]
-fn metric_point_carries_timestamp_or_not() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metric_point_carries_timestamp_or_not() {
     let now = Instant::now();
     let timed = MetricPoint::new(MetricValue::Gauge(GaugeValue::new(1.0)), now);
     assert_eq!(timed.timestamp(), Some(now));
@@ -155,8 +155,8 @@ fn metric_point_carries_timestamp_or_not() {
     assert_eq!(untimed.timestamp(), None);
 }
 
-#[test]
-fn histogram_value_projects_to_open_metrics_buckets_with_inf_terminal() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn histogram_value_projects_to_open_metrics_buckets_with_inf_terminal() {
     let mut h = HdrHistogram::<u64>::new_with_bounds(1, 1_000_000, 3).unwrap();
     for v in [50_u64, 500, 5_000, 50_000] {
         h.record(v).unwrap();
@@ -172,15 +172,15 @@ fn histogram_value_projects_to_open_metrics_buckets_with_inf_terminal() {
     }
 }
 
-#[test]
-fn exemplar_attaches_to_counter_value() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exemplar_attaches_to_counter_value() {
     let trace = Exemplar::new(Labels::of("trace_id", "abc"), 1.0);
     let cv = CounterValue::new(5).with_exemplar(trace);
     assert!(cv.exemplar.as_ref().is_some());
 }
 
-#[test]
-fn combine_counter_aggregate_sums_keeps_earlier_created() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn combine_counter_aggregate_sums_keeps_earlier_created() {
     let t1 = Instant::now();
     let t0 = t1 - Duration::from_secs(60);
     let mut a = MetricPoint::new(
@@ -201,8 +201,8 @@ fn combine_counter_aggregate_sums_keeps_earlier_created() {
     }
 }
 
-#[test]
-fn combine_histogram_merges_reservoirs() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn combine_histogram_merges_reservoirs() {
     let mut h1 = HdrHistogram::<u64>::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
     h1.record(1_000_000).unwrap();
     let mut h2 = HdrHistogram::<u64>::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
@@ -211,8 +211,8 @@ fn combine_histogram_merges_reservoirs() {
     assert_eq!(merged.len(), 2);
 }
 
-#[test]
-fn metric_set_coalesce_keeps_latest_counter_sum_intervals() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metric_set_coalesce_keeps_latest_counter_sum_intervals() {
     // Time-coalesce keeps the latest (window-end) cumulative — never a
     // sum — and sums the intervals.
     let mut a = MetricSet::new(Duration::from_secs(1));
@@ -230,8 +230,8 @@ fn metric_set_coalesce_keeps_latest_counter_sum_intervals() {
     assert_eq!(cumulative, 7, "latest cumulative, not the sum");
 }
 
-#[test]
-fn split_name_label_extracts_family_name() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn split_name_label_extracts_family_name() {
     let labels = Labels::of("name", "cycles_total").with("activity", "write");
     let (name, rest) = split_name_label(&labels);
     assert_eq!(name, "cycles_total");
@@ -239,8 +239,8 @@ fn split_name_label_extracts_family_name() {
     assert_eq!(rest.get("activity"), Some("write"));
 }
 
-#[test]
-fn convenience_constructors_build_single_point_families() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn convenience_constructors_build_single_point_families() {
     let ts = Instant::now();
     let cf = counter_family("ops", Labels::default(), 1, ts);
     assert_eq!(cf.r#type(), MetricType::Counter);
@@ -259,8 +259,8 @@ fn convenience_constructors_build_single_point_families() {
 // cadence — Cadences + CadenceTree
 // =========================================================================
 
-#[test]
-fn cadences_parse_and_order_are_preserved() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cadences_parse_and_order_are_preserved() {
     let c = Cadences::parse("1m,10s,5m").unwrap();
     let got: Vec<Duration> = c.iter().collect();
     assert_eq!(got, vec![
@@ -272,8 +272,8 @@ fn cadences_parse_and_order_are_preserved() {
     assert_eq!(c.largest(), Duration::from_secs(300));
 }
 
-#[test]
-fn cadence_tree_plan_validated_enforces_base_interval() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cadence_tree_plan_validated_enforces_base_interval() {
     let c = Cadences::new(&[Duration::from_millis(500), Duration::from_secs(1)]).unwrap();
     let err = CadenceTree::plan_validated(c, DEFAULT_MAX_FAN_IN, Duration::from_secs(1))
         .unwrap_err();
@@ -285,8 +285,8 @@ fn cadence_tree_plan_validated_enforces_base_interval() {
     assert!(matches!(err2, CadenceTreeError::NotMultiple { .. }));
 }
 
-#[test]
-fn cadence_tree_inserts_hidden_intermediates_for_large_ratios() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cadence_tree_inserts_hidden_intermediates_for_large_ratios() {
     let c = Cadences::parse("10s,10h").unwrap();
     let tree = CadenceTree::plan(c, DEFAULT_MAX_FAN_IN);
     assert!(tree.hidden().count() >= 1);
@@ -297,8 +297,8 @@ fn cadence_tree_inserts_hidden_intermediates_for_large_ratios() {
     }
 }
 
-#[test]
-fn format_duration_short_reads_as_expected() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn format_duration_short_reads_as_expected() {
     assert_eq!(format_duration_short(Duration::from_secs(10)), "10s");
     assert_eq!(format_duration_short(Duration::from_secs(90)), "1m30s");
     assert_eq!(format_duration_short(Duration::from_secs(3600)), "1h");
@@ -314,8 +314,8 @@ fn ts_counter_set(interval: Duration, v: u64) -> MetricSet {
     s
 }
 
-#[test]
-fn cadence_reporter_promotes_on_interval_boundary() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cadence_reporter_promotes_on_interval_boundary() {
     let cadences = Cadences::new(&[
         Duration::from_millis(100),
         Duration::from_millis(400),
@@ -343,15 +343,15 @@ fn cadence_reporter_promotes_on_interval_boundary() {
     assert_eq!(cumulative, 20, "promoted window holds the latest cumulative");
 }
 
-#[test]
-fn cadence_reporter_force_close_publishes_trailing_partial() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cadence_reporter_force_close_publishes_trailing_partial() {
     let cadences = Cadences::new(&[Duration::from_millis(1000)]).unwrap();
     let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
     let labels = Labels::of("phase", "tail");
     reporter.ingest(&labels, ts_counter_set(Duration::from_millis(200), 3));
     assert!(reporter.latest(&labels, Duration::from_millis(1000)).is_none());
 
-    reporter.shutdown_flush();
+    reporter.shutdown_flush().await;
     let partial = reporter.latest(&labels, Duration::from_millis(1000)).unwrap();
     assert!(partial.interval() < Duration::from_millis(1000));
     let total = match partial.family("ops").unwrap()
@@ -362,8 +362,8 @@ fn cadence_reporter_force_close_publishes_trailing_partial() {
     assert_eq!(total, 3);
 }
 
-#[test]
-fn cadence_reporter_ring_is_capped() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cadence_reporter_ring_is_capped() {
     let cadences = Cadences::new(&[Duration::from_millis(50)]).unwrap();
     let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
     let labels = Labels::of("phase", "ring");
@@ -406,8 +406,8 @@ fn build_query_fixture(
     (root, reporter, query)
 }
 
-#[test]
-fn metrics_query_now_reads_smallest_cadence_window() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_query_now_reads_smallest_cadence_window() {
     // Per SRD-42, `now` reads the smallest declared cadence's last
     // closed window, not the live tree. Before any window closes,
     // `now` is empty. After an ingest of data at that cadence,
@@ -434,8 +434,8 @@ fn metrics_query_now_reads_smallest_cadence_window() {
     assert_eq!(total, 42);
 }
 
-#[test]
-fn metrics_query_cadence_window_returns_latest_closed_snapshot() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_query_cadence_window_returns_latest_closed_snapshot() {
     let (_root, reporter, q) = build_query_fixture(
         Cadences::new(&[Duration::from_millis(100)]).unwrap(),
     );
@@ -456,8 +456,8 @@ fn metrics_query_cadence_window_returns_latest_closed_snapshot() {
     assert_eq!(total, 99);
 }
 
-#[test]
-fn metrics_query_selection_filters_by_labels() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_query_selection_filters_by_labels() {
     let (_root, reporter, q) = build_query_fixture(
         Cadences::new(&[Duration::from_millis(100)]).unwrap(),
     );
@@ -481,8 +481,8 @@ fn metrics_query_selection_filters_by_labels() {
     assert_eq!(total, 5);
 }
 
-#[test]
-fn metrics_query_select_one_hard_errors_on_zero_or_many() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_query_select_one_hard_errors_on_zero_or_many() {
     let (_root, reporter, q) = build_query_fixture(
         Cadences::new(&[Duration::from_millis(100)]).unwrap(),
     );
@@ -515,8 +515,8 @@ fn metrics_query_select_one_hard_errors_on_zero_or_many() {
     assert!(ok.is_ok());
 }
 
-#[test]
-fn metrics_query_session_lifetime_includes_in_flight_partial() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_query_session_lifetime_includes_in_flight_partial() {
     let (_root, reporter, q) = build_query_fixture(
         Cadences::new(&[Duration::from_secs(1)]).unwrap(),
     );
@@ -544,8 +544,8 @@ fn metrics_query_session_lifetime_includes_in_flight_partial() {
 // component tree + capture_tree
 // =========================================================================
 
-#[test]
-fn capture_tree_visits_only_running_components() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capture_tree_visits_only_running_components() {
     let root = Component::root(Labels::of("session", "s1"), HashMap::new());
     let phase = Arc::new(RwLock::new(
         Component::new(Labels::of("phase", "load"), HashMap::new()),
@@ -582,8 +582,8 @@ impl Reporter for CountingReporter {
     }
 }
 
-#[test]
-fn scheduler_feeds_cadence_reporter_and_delivers_to_external_reporter() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scheduler_feeds_cadence_reporter_and_delivers_to_external_reporter() {
     let tree = CadenceTree::plan_default(Cadences::new(&[
         Duration::from_millis(100),
     ]).unwrap());
