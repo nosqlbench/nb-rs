@@ -227,8 +227,11 @@ impl<'a> WireSource for CycleWires<'a> {
         // scope-init constants. No external chain composition —
         // construction-time wiring set up every visible wire
         // (SRD-13f).
-        if k.program().resolve_output(name).is_some() {
-            let v = k.pull(name).clone();
+        // Resolve the name to an output INDEX ONCE, then pull by index — the
+        // old `resolve_output(name).is_some()` + `pull(name)` hashed the name
+        // twice per read (pull re-resolves internally). One hash now.
+        if let Some(output_idx) = k.program().output_index(name) {
+            let v = k.pull_by_index(output_idx).clone();
             if nbrs_dirty_debug_enabled() && name == "query" {
                 let s = v.to_display_string();
                 let head: String = s.chars().take(64).collect();

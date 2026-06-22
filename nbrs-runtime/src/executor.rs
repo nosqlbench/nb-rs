@@ -4109,6 +4109,16 @@ async fn run_phase(
     // a no-op.
     crate::activity::declare_adapter_controls(&adapters, &phase_component);
 
+    // SRD-89 — cycle-time `control(...)` reads resolve THIS execution's
+    // phase-tier controls (`concurrency`, `rate`, adapter controls — declared
+    // just above on `phase_component`) by walking up from the fiber's **current
+    // component**: each fiber carries a once-per-phase snapshot of this very
+    // `phase_component` (taken in `Activity::run_with_adapters` via
+    // `runtime_context::snapshot_controls`, read lock-free). So a same-named
+    // control resolves to this execution's OWN instance — uniformly in single-run
+    // and concurrent runs, with no shared session-root walk and no cross-talk.
+    // Nothing to install here; the snapshot is the resolution path.
+
     // `dryrun=phase` early-exit. Phase depth is already
     // filtered upstream at the structural gate (the scenario
     // walker only calls `run_phase` for depth >= Dispenser),

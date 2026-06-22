@@ -171,12 +171,13 @@ pub struct SettleEvaluator {
     poke: Option<usize>,
     interp: SettleInterpreter,
     timeout: Duration,
-    /// Time-based viability gate (SRD-86 §6 step 2): the `stable`
-    /// verdict is withheld until the phase has run at least this long,
-    /// sized to the objective's widest rollup window so a `rate(...[W])`
-    /// read's window clears the prior coordinate before the objective is
-    /// trusted. `ZERO` for a non-windowed objective.
-    min_elapsed: Duration,
+    /// SRD-86 viability gate — minimum WALL-CLOCK a coordinate must run before a
+    /// stable verdict is trusted, so the windowed objective's rollup has cleared
+    /// the prior coordinate (and the leading transient). Wall-clock, not pulse
+    /// count: under concurrent scheduling cadence pulses are delivered in
+    /// bursts (many per cadence interval), so a pulse gate collapses to far less
+    /// than the window — the gate must measure real time.
+    min_viable: Duration,
     started: Option<Instant>,
     pulses: u64,
 }
@@ -193,7 +194,7 @@ impl SettleEvaluator {
         poke_input: &str,
         interp: SettleInterpreter,
         timeout: Duration,
-        min_elapsed: Duration,
+        min_viable: Duration,
     ) -> Self {
         let poke = objective.program().find_input(poke_input);
         Self {
@@ -202,7 +203,7 @@ impl SettleEvaluator {
             poke,
             interp,
             timeout,
-            min_elapsed,
+            min_viable,
             started: None,
             pulses: 0,
         }
@@ -224,12 +225,36 @@ impl PulseEvaluator for SettleEvaluator {
             self.objective.state().set_input(idx, Value::U64(self.pulses));
         }
         let obj = objective_to_f64(self.objective.pull(&self.objective_wire));
+        // SRD-89 — a NaN objective is a windowed metric reading **no data** (an
+        // empty `rate(...[W])` lookback — see `nodes::no_data_value`), distinct
+        // from a real 0. HOLD on it: do not feed the stability detector (a
+        // fabricated 0 would let `is_stable` settle on the empty leading reads,
+        // mis-converging the optimizer under concurrency where early windows are
+        // routinely empty) and do not advance the register. The timeout still
+        // bounds the wait, so a window that never produces data fails rather
+        // than hanging.
+        if obj.is_nan() {
+            if start.elapsed() >= self.timeout {
+                return Some(Outcome::failed());
+            }
+            return None;
+        }
         let reading = self.interp.pulse(obj);
-        // Viability gate (SRD-86 §6 step 2): a `stable` verdict only
-        // counts once the phase has run long enough for the objective's
-        // rollup window to clear the prior coordinate's data. Until then,
-        // a stable-looking but boundary-straddling reading is held.
-        if reading.stable && start.elapsed() >= self.min_elapsed {
+        // SRD-86 viability gate — do NOT trust a stable verdict until the
+        // coordinate has run for `min_viable` of WALL-CLOCK, so the windowed
+        // objective's rollup has cleared the prior coordinate (and its own
+        // leading transient). At a coordinate's START the windowed objective is
+        // a stable run of stale data — `rate(errors_total[W])` reads ~0 before
+        // the first error registers at warmup, and at a transition it reads the
+        // PRIOR coordinate's value drifting out of the window. `is_stable`
+        // (which fires on `SETTLE_MIN_SAMPLES`, and whose relative margin admits
+        // a slow drift as "stable") would latch that stale value, mis-converging
+        // the optimizer (it keeps a saturating `concurrency` because it "saw no
+        // errors", or accepts a half-cleared transition value). The gate is
+        // wall-clock, not pulse count: under concurrent scheduling cadence
+        // pulses arrive in bursts, so a pulse gate collapses to far less than
+        // the window — only real elapsed time guarantees the window has cleared.
+        if reading.stable && start.elapsed() >= self.min_viable {
             return Some(Outcome::interrupted());
         }
         if start.elapsed() >= self.timeout {
@@ -300,11 +325,15 @@ fn warn_once_session_cumulative(objective: &str) -> bool {
 // timeout means a phase that completes first simply uses its smoothed
 // value — only a genuinely non-settling long phase trips `failed`.
 //
-// The *time-based* viability gate (`min_elapsed`, SRD-86 §6 step 2) is
-// NOT a constant here: it is derived per phase from the objective's
-// widest rollup window (`PolydatProgram::max_temporal_window_ms`), so a
-// `rate(...[W])` objective can't settle until its window has cleared the
-// prior coordinate. A non-windowed objective leaves it at zero.
+// The settle is gated by a viability horizon (see `SettleEvaluator::evaluate`):
+// a stable verdict is only honored once `SETTLE_HORIZON` pulses have been
+// delivered, so the verdict is always taken over a full horizon of
+// in-coordinate samples (≈ `SETTLE_HORIZON × cadence` of wall-clock, the rollup
+// window by the usual `window = horizon × cadence` sizing). Without it, a
+// windowed objective's leading transient — `rate(...[W])` reading ~0 before the
+// coordinate's first data lands — is itself momentarily "stable", and
+// `is_stable` (firing on `SETTLE_MIN_SAMPLES`) latches that phantom value; under
+// concurrent scheduling a sub-window eval did exactly that.
 const SETTLE_MARGIN: f64 = 0.05;
 const SETTLE_MIN_SAMPLES: u64 = 4;
 const SETTLE_HORIZON: u64 = 8;
@@ -368,23 +397,31 @@ pub fn start_settle(
     ))
     .ok()?;
     let interp = SettleInterpreter::new(is_stable_kernel, "source", "stable_value", "stable");
-    // Size the viability gate to the objective's widest rollup window so a
-    // `rate(...[W])` read's window clears the prior coordinate before the
-    // objective is trusted (SRD-86 §6 step 2). `None` (no windowed reader)
-    // leaves the gate at zero — the sample-count warmup alone applies.
-    let min_elapsed = program
-        .max_temporal_window_ms()
-        .map(|ms| Duration::from_millis(ms.max(0) as u64))
-        .unwrap_or(Duration::ZERO);
+    // Viability gate = the stability horizon's worth of cadence intervals, in
+    // WALL-CLOCK. With the usual `window = SETTLE_HORIZON × cadence` sizing this
+    // is the rollup window — long enough for the objective's window to clear the
+    // prior coordinate before a stable verdict is honored.
+    let min_viable = cadence.saturating_mul(SETTLE_HORIZON as u32);
     let eval = SettleEvaluator::new(
-        obj_kernel, objective, "cycle", interp, SETTLE_TIMEOUT, min_elapsed,
+        obj_kernel, objective, "cycle", interp, SETTLE_TIMEOUT, min_viable,
     );
     let register = eval.register();
 
     let pse = PhaseStopEvaluator::new(Box::new(eval), stop_flag);
     let outcome = pse.outcome_cell();
+    // SRD-88 — bind this subscription to THIS execution's context so its
+    // delivery fiber pulls the objective as the owning execution (the
+    // metric read scopes to its own `exec_id`). Captured in the
+    // execution's scope here; `None` in single-run (A1).
+    let mut opts = nbrs_metrics::cadence_reporter::SubscriptionOpts::default();
+    if let Some(ctx) = crate::execution_context::try_current() {
+        opts.context_wrap = Some(std::sync::Arc::new(move |fut| {
+            Box::pin(crate::execution_context::scope(ctx.clone(), fut))
+                as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        }));
+    }
     let subscriber = reporter
-        .subscribe(cadence, Box::new(pse), Default::default())
+        .subscribe(cadence, Box::new(pse), opts)
         .ok()?;
     Some(SettleHandle { subscriber, register, outcome })
 }
@@ -471,28 +508,30 @@ mod tests {
     }
 
     #[test]
-    fn viability_gate_withholds_settle_until_min_elapsed() {
-        // A steady objective settles on sample-count alone, but the
-        // min_elapsed gate (sized to the rollup window) withholds the
-        // verdict until the phase has run long enough for the window to
-        // clear the prior coordinate. With a 100ms gate, a burst of
-        // stable pulses yields nothing; once the gate elapses, the next
-        // pulse settles.
+    fn viability_gate_withholds_settle_until_min_viable_elapses() {
+        // A steady objective is "stable" almost immediately, but the gate
+        // withholds the settle until `min_viable` of WALL-CLOCK has elapsed —
+        // so a windowed objective's rollup has cleared the prior coordinate /
+        // warmup transient before its value is trusted (the bug that let a
+        // sub-window concurrent eval latch a phantom score).
         let mut ev = SettleEvaluator::new(
             obj_kernel(STEADY_OBJ),
             "obj",
             "cycle",
             settle_interp(),
             Duration::from_secs(60),
-            Duration::from_millis(100),
+            Duration::from_millis(60),
         );
-        // Well past the 8-sample warmup, but inside the time gate (these
-        // pulls take microseconds): the steady objective is held.
-        for _ in 0..12 {
-            assert!(ev.evaluate(&window()).is_none(), "gate holds the verdict before min_elapsed");
+        // Many pulses arrive in a burst (as under concurrent scheduling): the
+        // objective is stable, but the gate holds because no real time passed.
+        for _ in 0..32 {
+            assert!(
+                ev.evaluate(&window()).is_none(),
+                "stable-but-gated: a burst of pulses must not settle before min_viable wall-clock"
+            );
         }
-        std::thread::sleep(Duration::from_millis(120));
-        let o = ev.evaluate(&window()).expect("settles once min_elapsed has passed");
+        std::thread::sleep(Duration::from_millis(70));
+        let o = ev.evaluate(&window()).expect("settles once min_viable has elapsed");
         assert_eq!(o.disposition, Disposition::Interrupted);
         assert_eq!(o.validity, Validity::Succeeded);
     }

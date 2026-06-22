@@ -531,6 +531,14 @@ impl PolydatKernel {
         self.state.pull(&self.program, output_name)
     }
 
+    /// Pull a program output by its output-list **index**, skipping the
+    /// name→index resolution `pull` does. Pair with
+    /// [`PolydatProgram::output_index`] resolved ONCE (at bind time) so a
+    /// per-cycle reader pays no name hash on the hot path.
+    pub fn pull_by_index(&mut self, output_idx: usize) -> &Value {
+        self.state.pull_by_index(&self.program, output_idx)
+    }
+
     /// Copy `self`'s currently-set input-slot values into `child`'s
     /// input slots by name.
     ///

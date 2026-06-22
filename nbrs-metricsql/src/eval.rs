@@ -1020,7 +1020,23 @@ impl RollupFn {
     fn needs_window(self) -> bool {
         matches!(self, Self::Rate)
     }
+
+    /// Whether the reducer is a **cumulative-counter difference** over the
+    /// window (`rate`/`increase`) and so wants the pre-window *bracketing*
+    /// sample — the counter's value at the window start — fetched via a widened
+    /// lookback. See [`bracket_rate`].
+    fn brackets(self) -> bool {
+        matches!(self, Self::Rate | Self::Increase)
+    }
 }
+
+/// How far before a `rate`/`increase` window to look for the **bracketing**
+/// sample (the cumulative value at the window start). Generous on purpose: a
+/// window narrower than the sample cadence (the servo's `[400ms]` against a
+/// 1 s cadence) has the prior cumulative point up to one cadence before the
+/// window, and tick jitter can stretch that — `max(window, this)` catches it
+/// without an unbounded scan (the in-memory horizon bounds the fetch anyway).
+const BRACKET_LOOKBACK_FLOOR_MS: i64 = 2_000;
 
 /// Evaluate a rollup function over a range-vector argument.
 /// The evaluator only accepts an explicit `[w]` window today;
@@ -1044,14 +1060,39 @@ fn evaluate_rollup_fn(
         return Err(EvalError::BadValue(format!(
             "rollup function {:?} needs an explicit `[window]` argument", f.name)));
     }
-    // For rate/increase the [w] window pins both the
-    // reduction span AND the extrapolation reference frame.
-    // The selector's anchor for a rollup is `ctx.end_ms` after
-    // any `offset` has been applied upstream — see
-    // `evaluate_rollup` for that bookkeeping.
+    // For rate/increase the [w] window pins the reduction span. The selector's
+    // anchor for a rollup is `ctx.end_ms` after any `offset` has been applied
+    // upstream — see `evaluate_rollup` for that bookkeeping.
     let range_end_ms = ctx.end_ms;
     let range_start_ms = range_end_ms - window_ms.unwrap_or(0);
-    let input = evaluate(ctx, arg)?;
+    let input = if op.brackets() {
+        // Bracket-rate (cumulative-native): widen the fetch to `[range_start −
+        // lookback, range_end]` so a sample at/before the window start anchors
+        // the left edge. `bracket_rate` then differences `cum[range_end] −
+        // cum[range_start]` from the bracketing samples — no ≥2-in-window
+        // requirement, so a window narrower than the cadence (or thinned by
+        // tick jitter) still yields a stable value instead of NaN. The inner
+        // *selector* is fetched directly (not the `[w]` rollup) over the widened
+        // range; `range_start_ms` still marks the true window edge for the
+        // reduction.
+        let bracket_lookback = window_ms.unwrap_or(0).max(BRACKET_LOOKBACK_FLOOR_MS);
+        let inner: &Expr = match arg {
+            Expr::Rollup(re) => re.expr.as_ref(),
+            other => other,
+        };
+        let bracket_ctx = EvalContext {
+            data: ctx.data,
+            start_ms: range_start_ms - bracket_lookback,
+            end_ms: range_end_ms,
+            step_ms: ctx.step_ms,
+            lookback_ms: ctx.lookback_ms,
+            query_start_ms: ctx.query_start_ms,
+            query_end_ms: ctx.query_end_ms,
+        };
+        evaluate(&bracket_ctx, inner)?
+    } else {
+        evaluate(ctx, arg)?
+    };
     let mut out: Vec<Series> = Vec::with_capacity(input.len());
     for s in input {
         let value = reduce_rollup(op, &s.samples, window_ms.unwrap_or(0),
@@ -1077,48 +1118,6 @@ fn window_of_arg(arg: &Expr, step_ms: i64) -> Result<Option<i64>, EvalError> {
     Ok(None)
 }
 
-/// The widest range-selector window (ms) anywhere in `expr` — the max
-/// over every `m[window]` rollup, recursively (function args, binary
-/// operands, parenthesised groups, nested subqueries). `None` for a
-/// pure instant query with no range selector. Step-relative durations
-/// (`[5]`) resolve against `step_ms`; unit-qualified ones (`[5s]`)
-/// ignore it. Unparseable windows are skipped (best-effort).
-///
-/// The SRD-86 optimizer's settle viability gate reads this (via the
-/// metricsql reader node's [`MetricAccess`]-free
-/// `temporal_window_ms`) to size warmup so a `rate(...[W])` /
-/// `*_over_time(...[W])` window clears the prior coordinate before the
-/// objective is trusted.
-pub fn max_rollup_window_ms(expr: &Expr, step_ms: i64) -> Option<i64> {
-    fn walk(e: &Expr, step_ms: i64, acc: &mut Option<i64>) {
-        match e {
-            Expr::Rollup(re) => {
-                if let Some(w) = &re.window
-                    && let Ok(ms) = parse_duration_ms(&w.value, step_ms)
-                {
-                    *acc = Some(acc.map_or(ms, |a| a.max(ms)));
-                }
-                walk(&re.expr, step_ms, acc);
-                if let Some(at) = &re.at {
-                    walk(at, step_ms, acc);
-                }
-            }
-            Expr::Func(f) => f.args.iter().for_each(|a| walk(a, step_ms, acc)),
-            Expr::Binary(b) => {
-                walk(&b.left, step_ms, acc);
-                walk(&b.right, step_ms, acc);
-            }
-            Expr::Paren(p) => p.exprs.iter().for_each(|a| walk(a, step_ms, acc)),
-            Expr::With(w) => walk(&w.body, step_ms, acc),
-            // Number / String / Duration / Metric carry no nested rollup.
-            _ => {}
-        }
-    }
-    let mut acc = None;
-    walk(expr, step_ms, &mut acc);
-    acc
-}
-
 /// Apply the rollup reducer to one series's windowed samples.
 /// NaN samples are dropped before reducing, per upstream;
 /// empty inputs produce NaN.
@@ -1140,21 +1139,14 @@ fn reduce_rollup(
     if xs.is_empty() { return f64::NAN; }
     match op {
         RollupFn::Rate => {
-            // PromQL rate: counter-reset-adjusted delta over
-            // the window, extrapolated to fill window edges,
-            // divided by window seconds.
-            if window_ms == 0 || xs.len() < 2 { return f64::NAN; }
-            extrapolated_rate(&xs, window_ms, range_start_ms, range_end_ms,
-                              true, true)
+            // Cumulative-native: reset-adjusted counter increase across the
+            // window via the bracketing samples, divided by window seconds.
+            if window_ms == 0 { return f64::NAN; }
+            bracket_rate(&xs, window_ms, range_start_ms, range_end_ms, true)
         }
         RollupFn::Increase => {
-            // Same pipeline as rate but without dividing by
-            // seconds — emits the absolute delta over the
-            // window. Counter-reset adjustment + extrapolation
-            // both still apply.
-            if window_ms == 0 || xs.len() < 2 { return f64::NAN; }
-            extrapolated_rate(&xs, window_ms, range_start_ms, range_end_ms,
-                              true, false)
+            // Same, without dividing by seconds — the absolute increase.
+            bracket_rate(&xs, window_ms, range_start_ms, range_end_ms, false)
         }
         RollupFn::Delta => {
             // Gauge delta: no counter-reset adjustment, no
@@ -1188,83 +1180,57 @@ fn reduce_rollup(
     }
 }
 
-/// PromQL rate / increase computation: reset-adjusted delta
-/// across `xs`, extrapolated to fill the `[range_start_ms,
-/// range_end_ms]` window where appropriate, optionally divided
-/// by window seconds (for `rate`).
+/// Cumulative-counter–native rate / increase: the reset-adjusted increase of a
+/// monotonic counter across the window `[range_start_ms, range_end_ms]`,
+/// computed by differencing the counter's value at the window edges using the
+/// samples that **bracket** them.
 ///
-/// Mirrors upstream Prometheus `extrapolatedRate`:
-///   - **Counter resets:** any `xs[i].v < xs[i-1].v` is treated
-///     as a wrap; we add `xs[i-1].v` back to the running delta
-///     so the result reflects the underlying monotonic counter.
-///   - **Extrapolation to edges:** if the first/last samples
-///     sit close to the window edges (within ~1.1 ×
-///     average sample interval), extrapolate the rate to cover
-///     the gap. Otherwise extrapolate by half the average
-///     sample interval — to avoid pretending we have data we
-///     don't.
-///   - **Zero-floor for fresh counters:** if extrapolating
-///     backwards would imply a negative original counter
-///     value, clamp the extrapolation so the implied counter
-///     starts at zero.
-fn extrapolated_rate(
+/// - **Left edge** = the counter value at the window start = the last sample at
+///   or before `range_start_ms` (the bracketing sample fetched via the widened
+///   lookback in `evaluate_rollup_fn`). If none precedes the window, fall back
+///   to the first available sample (the counter "begins" inside the window).
+/// - **Right edge** = the last sample at or before `range_end_ms`.
+/// - **Counter resets:** any `xs[i] < xs[i-1]` between the edges is a wrap; add
+///   `xs[i-1]` back so the result reflects the underlying monotonic counter.
+///
+/// Unlike Prometheus extrapolation this needs no ≥2 *in-window* samples — one
+/// bracketing sample on each side suffices — so a window narrower than the
+/// sample cadence, or one thinned by tick jitter under concurrency, yields a
+/// **stable, deterministic** value instead of NaN. When the two edges resolve
+/// to the same sample (no change observed across the window) the increase is
+/// `0`, which is the correct reading for a counter that didn't advance.
+/// `is_rate` divides by the window's seconds.
+fn bracket_rate(
     xs: &[&Sample],
     window_ms: i64,
     range_start_ms: i64,
     range_end_ms: i64,
-    is_counter: bool,
     is_rate: bool,
 ) -> f64 {
-    debug_assert!(xs.len() >= 2);
-    let first = xs.first().unwrap();
-    let last = xs.last().unwrap();
-    let mut delta = last.value - first.value;
-    if is_counter {
-        for i in 1..xs.len() {
-            if xs[i].value < xs[i - 1].value {
-                delta += xs[i - 1].value;
-            }
+    // `xs` is ascending by timestamp (the fetch returns sorted samples).
+    let Some(right_idx) = xs.iter().rposition(|s| s.timestamp_ms <= range_end_ms) else {
+        return f64::NAN; // nothing in or before the window
+    };
+    // The bracketing left edge: last sample at/before the window start, else
+    // the earliest sample (counter started inside the window).
+    let left_idx = xs.iter()
+        .rposition(|s| s.timestamp_ms <= range_start_ms)
+        .unwrap_or(0);
+    if left_idx >= right_idx {
+        // One effective sample across the window → no observed change.
+        return 0.0;
+    }
+    let mut increase = xs[right_idx].value - xs[left_idx].value;
+    for i in (left_idx + 1)..=right_idx {
+        if xs[i].value < xs[i - 1].value {
+            increase += xs[i - 1].value; // counter reset / wrap
         }
     }
-    let dur_to_start_s = (first.timestamp_ms - range_start_ms) as f64 / 1000.0;
-    let dur_to_end_s   = (range_end_ms - last.timestamp_ms) as f64 / 1000.0;
-    let sampled_span_s = (last.timestamp_ms - first.timestamp_ms) as f64 / 1000.0;
-    if sampled_span_s <= 0.0 { return f64::NAN; }
-    let avg_interval_s = sampled_span_s / (xs.len() as f64 - 1.0);
-    let threshold = avg_interval_s * 1.1;
-
-    // Zero-floor for fresh counters: don't extrapolate so far
-    // back that the counter would have been negative at the
-    // window's start.
-    let mut dur_to_start_s = dur_to_start_s;
-    if is_counter && delta > 0.0 && first.value >= 0.0 {
-        let dur_to_zero = sampled_span_s.max(0.0)
-            * (first.value / delta);
-        // Take the tighter of "actual gap to window edge" and
-        // "linear back-projection to value=0".
-        if dur_to_zero < dur_to_start_s {
-            dur_to_start_s = dur_to_zero;
-        }
-    }
-
-    let mut extrapolate_to_s = sampled_span_s;
-    extrapolate_to_s += if dur_to_start_s < threshold {
-        dur_to_start_s
-    } else {
-        avg_interval_s / 2.0
-    };
-    extrapolate_to_s += if dur_to_end_s < threshold {
-        dur_to_end_s
-    } else {
-        avg_interval_s / 2.0
-    };
-
-    let factor = extrapolate_to_s / sampled_span_s;
-    let mut value = delta * factor;
     if is_rate {
-        value /= window_ms as f64 / 1000.0;
+        increase / (window_ms as f64 / 1000.0)
+    } else {
+        increase
     }
-    value
 }
 
 /// Aggregate function kinds the evaluator implements today.
@@ -2931,19 +2897,15 @@ mod tests {
     }
 
     #[test]
-    fn rate_extrapolates_partial_window() {
-        // Samples cover only the back half of the window —
-        // first/last sit at midpoint and end. PromQL's
-        // extrapolation extends by avg-interval/2 on each
-        // side because both gaps exceed the threshold.
-        // raw delta = 30 over sampled_span 30s → raw rate 1/s
-        // factor = (30 + 5 + 5) / 30 = 40/30 ≈ 1.333
-        // BUT the zero-floor for fresh counters caps the
-        // back-extrapolation: dur_to_zero = 30 * (30/30) = 30,
-        // dur_to_start = 30. That's >= threshold (=11s) so
-        // we use avg_interval/2 = 5s. End-side same.
-        // Final extrapolated total ≈ 30 * 40/30 = 40,
-        // rate ≈ 40 / 60 ≈ 0.667/s.
+    fn rate_over_partial_window_is_observed_increase_no_extrapolation() {
+        // Samples cover only the back half of the window `[0, 60s]`: the counter
+        // is first seen at 30s (value 30) and reaches 60 at 60s. Bracket-rate is
+        // cumulative-native (VM-aligned) — it does NOT extrapolate to fabricate
+        // the unseen first half. With no sample at/before the window start it
+        // takes the earliest sample as the left edge, so the increase is the
+        // observed `60 − 30 = 30` over the full 60s window → 0.5/s. (Prometheus
+        // would extrapolate to ~0.667/s; we deliberately report only what was
+        // measured.)
         let ds = MemoryDataSource {
             series: vec![
                 series(&[("__name__", "ctr"), ("host", "a")],
@@ -2953,12 +2915,44 @@ mod tests {
         let ctx = EvalContext { data: &ds, start_ms: 60_000, end_ms: 60_000,
                                 step_ms: 1, lookback_ms: None, query_start_ms: None, query_end_ms: None };
         let got = evaluate(&ctx, &parse("rate(ctr[60s])").expect("parse")).expect("eval");
-        // Expect extrapolated rate strictly between raw rate
-        // (~1.0/s on the sampled span) and the
-        // un-extrapolated naive (delta/window=0.5/s).
         let v = got[0].samples[0].value;
-        assert!(v > 0.5 && v < 1.0,
-            "expected partial-window-extrapolated rate, got {v}");
+        assert!((v - 0.5).abs() < 1e-9,
+            "expected observed-increase/window = 0.5/s, got {v}");
+    }
+
+    #[test]
+    fn rate_brackets_pre_window_sample_when_window_narrower_than_cadence() {
+        // The servo case: a `[400ms]` window against a 1s sample cadence catches
+        // <2 samples strictly inside, which under the old `xs.len() < 2 → NaN`
+        // rule produced no value. The bracketing sample at/before the window
+        // start anchors the left edge, so rate is stable. Counter 100 at T−1s,
+        // 140 at T. Window `[T−400ms, T]` → increase 40 over 0.4s → 100/s.
+        let t = 10_000_000;
+        let ds = MemoryDataSource {
+            series: vec![ series(&[("__name__", "errs")], &[(t - 1000, 100.0), (t, 140.0)]) ],
+        };
+        let ctx = EvalContext { data: &ds, start_ms: t, end_ms: t, step_ms: 1,
+                                lookback_ms: None, query_start_ms: None, query_end_ms: None };
+        let got = evaluate(&ctx, &parse("rate(errs[400ms])").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 1, "rate is defined despite <2 in-window samples");
+        let v = got[0].samples[0].value;
+        assert!((v - 100.0).abs() < 1e-9, "expected bracketed 100/s, got {v}");
+    }
+
+    #[test]
+    fn rate_of_flat_counter_is_zero_not_nan() {
+        // The conc=2 servo case: the counter doesn't advance over the window.
+        // The bracketing edges resolve to the same value → 0/s, a real and
+        // stable reading, never NaN.
+        let t = 10_000_000;
+        let ds = MemoryDataSource {
+            series: vec![ series(&[("__name__", "errs")], &[(t - 1000, 7.0), (t, 7.0)]) ],
+        };
+        let ctx = EvalContext { data: &ds, start_ms: t, end_ms: t, step_ms: 1,
+                                lookback_ms: None, query_start_ms: None, query_end_ms: None };
+        let got = evaluate(&ctx, &parse("rate(errs[400ms])").expect("parse")).expect("eval");
+        let v = got[0].samples[0].value;
+        assert!((v - 0.0).abs() < 1e-9, "flat counter → 0/s, got {v}");
     }
 
     #[test]
@@ -2990,18 +2984,4 @@ mod tests {
         assert!(got.is_empty());
     }
 
-    #[test]
-    fn max_rollup_window_ms_finds_widest_window() {
-        // The SRD-86 settle gate sizes warmup to the widest rollup window
-        // anywhere in the objective expression.
-        let w = |q: &str| max_rollup_window_ms(&parse(q).expect("parse"), 1_000);
-        assert_eq!(w("rate(errors_total[3s])"), Some(3_000));
-        assert_eq!(w("sum(rate(errors_total[3s]))"), Some(3_000), "through an aggregate");
-        assert_eq!(
-            w("rate(a[3s]) + max_over_time(b[10s])"),
-            Some(10_000),
-            "max across binary operands"
-        );
-        assert_eq!(w("up"), None, "a pure instant query has no rollup window");
-    }
 }

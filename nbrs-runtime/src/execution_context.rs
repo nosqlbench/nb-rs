@@ -51,6 +51,13 @@ pub struct ExecutionContext {
     /// root (SRD-88) — each execution's tree derives from the shared session
     /// scope; this slot holds the per-execution derived structure.
     pub scene_tree: ArcSwapOption<RwLock<SceneTree>>,
+    /// This execution's output channel (SRD-87 op-output / log / status /
+    /// raster buckets). `None` falls back to the process-global `CHANNEL`
+    /// (axiom A1). A concurrent in-process execution scopes its own (e.g. a
+    /// `CaptureChannel`) so its op stdout is captured per-execution instead of
+    /// colliding on the one process fd — what in-process example verification
+    /// needs to check `expect` regexes against each execution's output.
+    pub channel: Option<Arc<dyn crate::output_channel::OutputChannel>>,
 }
 
 impl ExecutionContext {
@@ -62,6 +69,7 @@ impl ExecutionContext {
             stop: Arc::new(AtomicBool::new(false)),
             observer: None,
             scene_tree: ArcSwapOption::const_empty(),
+            channel: None,
         })
     }
 
@@ -74,6 +82,24 @@ impl ExecutionContext {
             stop: Arc::new(AtomicBool::new(false)),
             observer: Some(observer),
             scene_tree: ArcSwapOption::const_empty(),
+            channel: None,
+        })
+    }
+
+    /// A fresh context routing both lifecycle/log (`observer`) AND the SRD-87
+    /// output buckets (`channel`) through its own per-execution sinks. Used by
+    /// in-process example verification so each concurrent execution's op stdout
+    /// is captured separately.
+    pub fn with_observer_and_channel(
+        observer: Arc<dyn crate::observer::RunObserver>,
+        channel: Arc<dyn crate::output_channel::OutputChannel>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            exec_id: alloc_exec_id(),
+            stop: Arc::new(AtomicBool::new(false)),
+            observer: Some(observer),
+            scene_tree: ArcSwapOption::const_empty(),
+            channel: Some(channel),
         })
     }
 }
@@ -81,6 +107,7 @@ impl ExecutionContext {
 tokio::task_local! {
     static EXEC_CTX: Arc<ExecutionContext>;
 }
+
 
 /// The `exec_id` allocator — SRD-88 axiom A2, the one unavoidable global.
 /// Monotonic per process; the first allocated id is `1`, matching the legacy
@@ -114,6 +141,13 @@ pub fn current_stop() -> Option<Arc<AtomicBool>> {
 /// falls back to the process-global `GLOBAL_OBSERVER` (A1).
 pub fn current_observer() -> Option<Arc<dyn crate::observer::RunObserver>> {
     EXEC_CTX.try_with(|c| c.observer.clone()).ok().flatten()
+}
+
+/// The current execution's output channel, if a scoped context set one.
+/// `None` outside a scope OR when the scoped context has no channel — the
+/// caller falls back to the process-global `CHANNEL` (A1).
+pub fn current_channel() -> Option<Arc<dyn crate::output_channel::OutputChannel>> {
+    EXEC_CTX.try_with(|c| c.channel.clone()).ok().flatten()
 }
 
 /// The current execution's scene tree, if scoped AND installed (`None`

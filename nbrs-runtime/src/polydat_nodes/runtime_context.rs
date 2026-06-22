@@ -22,8 +22,9 @@ use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use polydat::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use polydat::ast::{PolydatNode, NodeMeta, Port, PortType, Slot, SlotType, Value};
+// All nodes here are authored via `#[polydat::polydat_node]` (fully-qualified
+// `polydat::…` paths), so no `polydat::ast` imports are needed in module
+// code (the in-module tests import what they need locally).
 
 use nbrs_metrics::component::Component;
 
@@ -74,6 +75,40 @@ pub struct FiberContext {
     /// the context is `Sync` — tokio requires task-local values
     /// to be `Send + Sync`.
     pub cycle: AtomicU64,
+    /// SRD-89 — the **current component's** control resolution, for this
+    /// fiber's execution: control name → live erased handle, walked up **once**
+    /// from the fiber's own phase component
+    /// ([`nbrs_metrics::component::Component::control_snapshot`], first-match /
+    /// nearest-wins) and read lock-free thereafter. It holds live handles, not
+    /// values, so a servo retarget on the shared control is observed through it.
+    /// Because each execution's fibers carry **their own** phase component's
+    /// snapshot, a same-named control (`concurrency` / `rate`) resolves to that
+    /// execution's instance — uniformly in single-run and concurrent runs, with
+    /// no session-root walk and no cross-talk. Empty for fibers spawned without
+    /// a component (a control read then falls back to the session-root walk).
+    pub controls: ControlMap,
+}
+
+/// A lock-free, shareable snapshot of resolved control handles (see
+/// [`FiberContext::controls`]).
+pub type ControlMap =
+    Arc<std::collections::HashMap<String, Arc<dyn nbrs_metrics::controls::ErasedControl>>>;
+
+/// Snapshot the controls visible from `component` (its own controls plus any
+/// `Subtree`-scoped ancestor control, nearest-wins) into a lock-free
+/// [`ControlMap`]. Deadlock-safe: [`Component::control_snapshot`] acquires one
+/// tier's lock at a time, never nested — so it is safe on the cadence-contended
+/// component tree. Computed once per phase, shared across the phase's fibers.
+pub fn snapshot_controls(
+    component: &Arc<RwLock<Component>>,
+) -> ControlMap {
+    Arc::new(nbrs_metrics::component::Component::control_snapshot(component))
+}
+
+/// An empty [`ControlMap`] for fibers / call sites that have no component (the
+/// read then falls back to the session-root walk).
+pub fn empty_controls() -> ControlMap {
+    Arc::new(std::collections::HashMap::new())
 }
 
 tokio::task_local! {
@@ -90,14 +125,23 @@ tokio::task_local! {
 ///
 /// Cycle starts at 0 and is updated via [`set_task_cycle`] on
 /// every iteration of the fiber's loop.
-pub async fn with_fiber_context<F>(phase: Arc<str>, fut: F) -> F::Output
+pub async fn with_fiber_context<F>(phase: Arc<str>, controls: ControlMap, fut: F) -> F::Output
 where
     F: Future,
 {
     FIBER_CTX.scope(
-        FiberContext { phase, cycle: AtomicU64::new(0) },
+        FiberContext { phase, cycle: AtomicU64::new(0), controls },
         fut,
     ).await
+}
+
+/// Resolve a control from the running fiber's **current component** snapshot
+/// (lock-free). `None` outside a fiber scope, or when the snapshot doesn't carry
+/// `name` — the caller then falls back to the session-root walk.
+fn current_phase_control(name: &str)
+    -> Option<Arc<dyn nbrs_metrics::controls::ErasedControl>>
+{
+    FIBER_CTX.try_with(|ctx| ctx.controls.get(name).cloned()).ok().flatten()
 }
 
 /// Update the cycle counter in the enclosing [`FiberContext`].
@@ -120,95 +164,70 @@ fn task_cycle() -> u64 {
 // control_set(name, value) — GK-driven write into a control
 // =========================================================================
 
-/// Polydat write node. Submits an f64 write against the named
-/// control via the enclosing session root's walk-up lookup.
-/// Returns `1` if the write was dispatched, `0` if the session
-/// root isn't installed (i.e. outside a running scenario).
+/// Capture the enclosing DSL binding name at node construction, for write
+/// attribution (`ControlOrigin::Polydat { binding }` — surfaces in control
+/// logs so operators attribute a change to a specific binding, not just
+/// "from GK"). The DSL compiler installs the current binding into the
+/// compile context before each builder runs; falls back to the control name
+/// when no binding scope is active (e.g. a library test).
+fn capture_binding(name: &str) -> String {
+    polydat::dsl::factory::compile_ctx::current_binding()
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// Polydat write node: submit an f64 write against the named control via the
+/// session root's walk-up. Returns `1` if dispatched, `0` if no session root
+/// is installed (outside a running scenario / pure-kernel test).
 ///
-/// Writes are **non-blocking** — the node spawns a tokio task
-/// that calls [`nbrs_metrics::controls::ErasedControl::set_f64`]
-/// and does not await it. The confirmed-apply contract of the
-/// control layer still runs in the background; failures are
-/// logged but do not stall the fiber that issued the write.
-/// See SRD 23 §"Mutation entry points →
+/// Signature: `control_set(name: const str, value: f64) -> u64`. Authored
+/// via `#[polydat::polydat_node]` (SRD-80b).
+///
+/// Writes are **non-blocking** — the node spawns a tokio task that calls
+/// [`nbrs_metrics::controls::ErasedControl::set_f64`] and does not await it
+/// (awaiting would deadlock the single-threaded runtime). The control
+/// layer's confirmed-apply still runs in the background; failures log but do
+/// not stall the issuing fiber. SRD 23 §"Mutation entry points →
 /// GK-driven feedback loops".
 ///
-/// `binding` is the name of the Polydat binding that issued the
-/// write — surfaces in control logs so operators can attribute
-/// a change to a specific DSL expression rather than just
-/// "from GK".
-pub struct ControlSet {
-    meta: NodeMeta,
-    name: String,
-    binding: String,
-    root: Option<Arc<RwLock<Component>>>,
-}
+/// Purity is `SideChannel(Other)`: the write is an observable side effect on
+/// runtime control state, so the node is never const-folded or deduped — it
+/// dispatches on every evaluation.
+#[polydat::polydat_node(
+    category = Context,
+    purity = SideChannel(Other),
+)]
+fn control_set(
+    name: Const<&str>,
+    #[poly_const(capture_binding, from = name)] binding: &String,
+    value: f64,
+) -> u64 {
+    // SRD-89 — a workload's `control_set(...)` must write to ITS OWN phase-tier
+    // control (`concurrency` / `rate`), not a neighbour's. Resolve through the
+    // SAME path as the read nodes ([`resolve_control`]: the running fiber's
+    // current-component snapshot, else the session-root walk-up) so the write
+    // targets exactly the control a subsequent read sees. Resolution happens
+    // HERE, inside the fiber's `FIBER_CTX` scope — the background write task
+    // below does NOT inherit `FIBER_CTX`, so it cannot re-resolve; we capture
+    // the live handle and hand it over. If nothing resolves (pre-bootstrap /
+    // pure-kernel test) report "not dispatched" (the no-root → 0 contract)
+    // without spawning.
+    let Some(erased) = resolve_control(name.0) else {
+        return 0;
+    };
+    let name = name.0.to_string();
+    let binding = binding.clone();
 
-impl ControlSet {
-    pub fn new(name: &str, binding: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "control_set".into(),
-                outs: vec![Port::u64("submitted")],
-                ins: vec![
-                    Slot::const_str("name", name),
-                    Slot::Wire(Port::new("value", PortType::F64)),
-                ],
-            },
-            name: name.to_string(),
-            binding: binding.to_string(),
-            root: session_root(),
+    // Dispatch the write on a background task — the fiber cannot await an
+    // async `set` without blocking the runtime. The handle is already resolved,
+    // so the task needs no execution context.
+    tokio::spawn(async move {
+        let origin = nbrs_metrics::controls::ControlOrigin::Polydat { binding };
+        if let Err(e) = erased.set_f64(value, origin).await {
+            polydat::audit::warn(&format!("control_set({name}, {value}) failed: {e}"));
         }
-    }
-}
+    });
 
-impl PolydatNode for ControlSet {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        let value = match inputs.first() {
-            Some(v) => v.as_f64(),
-            None => {
-                outputs[0] = Value::U64(0);
-                return;
-            }
-        };
-        let Some(ref root) = self.root else {
-            // No session root installed (e.g. pre-bootstrap or
-            // a pure-kernel test). Silently drop — the test or
-            // pre-bootstrap path can't resolve a control anyway.
-            outputs[0] = Value::U64(0);
-            return;
-        };
-        let name = self.name.clone();
-        let binding = self.binding.clone();
-        let root = root.clone();
-
-        // Dispatch the write on a background task. The fiber
-        // returning from this eval cannot await an async `set`
-        // without blocking the runtime (which would deadlock on
-        // the single-threaded variant), so the write fans out
-        // asynchronously. Failures log; the next eval reflects
-        // the new committed value if any.
-        tokio::spawn(async move {
-            let erased = {
-                let Ok(guard) = root.read() else { return; };
-                match guard.find_control_erased_up(&name) {
-                    Some(e) => e,
-                    None => {
-                        polydat::audit::warn(&format!(
-                            "control_set({name}, {value}): no control found via walk-up"));
-                        return;
-                    }
-                }
-            };
-            let origin = nbrs_metrics::controls::ControlOrigin::Polydat { binding };
-            if let Err(e) = erased.set_f64(value, origin).await {
-                polydat::audit::warn(&format!("control_set({name}, {value}) failed: {e}"));
-            }
-        });
-
-        outputs[0] = Value::U64(1);
-    }
+    1
 }
 
 // =========================================================================
@@ -242,39 +261,73 @@ impl PolydatNode for ControlSet {
 /// (`control_bool`), which have explicit defaults for the same
 /// missing-control cases. Operators verify controls exist via
 /// `dryrun=controls` before running.
-pub struct ControlValue {
-    meta: NodeMeta,
-    name: String,
-    root: Option<Arc<RwLock<Component>>>,
+
+/// Resolve a control's erased handle for a cycle-time read or write (SRD-89).
+///
+/// **Per-execution first, lock-free:** consults the current execution's
+/// per-phase control map (`execution_context::current_control`) — an `ArcSwap`
+/// load + `HashMap` get, touching no component lock and walking no tree. Under
+/// concurrent in-process executions (SRD-88) this is what makes a same-named
+/// control (`concurrency` / `rate`) resolve to THIS execution's own instance,
+/// so a neighbour's servo can't drive this phase (the SRD-89 §2b cross-talk).
+///
+/// **Fallback — the global `SESSION_ROOT` walk:** when there is no scoped
+/// execution (single-run / dryrun / TUI control-edit), no map yet, or a
+/// session-tier control not in the per-exec map, resolve by walking up from the
+/// installed session root via [`Component::find_control_erased_up`]. This is the
+/// pre-SRD-89 path, so single-run output is byte-identical (axiom A1). The walk
+/// holds a single, non-nested read guard on the session root (which has no
+/// parent), released before the caller projects the value.
+fn resolve_control(name: &str)
+    -> Option<Arc<dyn nbrs_metrics::controls::ErasedControl>>
+{
+    // Resolve from the running fiber's **current component** — its phase-tier
+    // control snapshot (walk-up from its own phase component, first match), read
+    // lock-free. Uniform for single-run and concurrent: each execution's fibers
+    // carry their own snapshot, so a same-named control resolves to that
+    // execution's instance. No session-root start.
+    if let Some(handle) = current_phase_control(name) {
+        return Some(handle);
+    }
+    // Fallback: no fiber scope (a control edit from OUTSIDE a running phase —
+    // the TUI `e` prompt, the web control endpoint, `dryrun=controls`). Walk up
+    // from the session root for session-tier controls.
+    let root = session_root()?;
+    let guard = root.read().ok()?;
+    guard.find_control_erased_up(name)
 }
 
-impl ControlValue {
-    pub fn new(name: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "control".into(),
-                outs: vec![Port::new("output", PortType::F64)],
-                ins: vec![Slot::const_str("name", name)],
-            },
-            name: name.to_string(),
-            root: session_root(),
-        }
-    }
-
-    pub(crate) fn read_f64(&self) -> f64 {
-        let Some(ref root) = self.root else { return 0.0; };
-        let Ok(guard) = root.read() else { return 0.0; };
-        guard.find_control_erased_up(&self.name)
-            .and_then(|c| c.gauge_f64())
-            .unwrap_or(0.0)
-    }
+/// Read a dynamic control's current reified-gauge value as `f64`. `0.0` when
+/// the control can't be resolved (no session / per-exec context, absent) or has
+/// no reified gauge. The single read path for every control-reader node
+/// (`control` / `control_u64` / `control_bool` / `rate` / `concurrency`).
+fn control_gauge_f64(name: &str) -> f64 {
+    resolve_control(name).and_then(|c| c.gauge_f64()).unwrap_or(0.0)
 }
 
-impl PolydatNode for ControlValue {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::F64(self.read_f64());
-    }
+/// Read a dynamic control's current value as its human-readable string
+/// rendering (the erased-control `value_string()`), or `""` when absent.
+fn control_value_string(name: &str) -> String {
+    resolve_control(name).map(|c| c.value_string()).unwrap_or_default()
+}
+
+/// Read a dynamic control's current reified-gauge value as `f64`, by
+/// walk-up from the live session root. `0.0` when there is no session root,
+/// the control is absent, or it has no reified gauge.
+///
+/// Signature: `control(name: const str) -> f64`. Intrinsically
+/// `Nondeterministic`: the control value changes over the run (operator
+/// edits, SRD-86 servo retargets, per-coordinate reruns), so the node is
+/// never const-folded, re-evaluated on every pull, and the compiler
+/// propagates that volatility to every downstream wire — `load :=
+/// control("concurrency")` (and anything reading `load`) tracks the live
+/// value without the author flagging `volatile`.
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads a live dynamic control value; changes over the run"),
+)]
+fn control(name: Const<&str>) -> f64 {
+    control_gauge_f64(name.0)
 }
 
 // =========================================================================
@@ -283,434 +336,126 @@ impl PolydatNode for ControlValue {
 
 /// Read a dynamic control's current value and cast to `u64`.
 ///
-/// Signature: `control_u64(name: String) -> u64`
+/// Signature: `control_u64(name: const str) -> u64`. Resolves the control by
+/// walk-up from the session root, reads its reified-gauge f64 projection and
+/// casts to u64 (saturating at 0 for negatives). Missing / gauge-less
+/// controls return 0. For integer-valued controls (`concurrency`,
+/// `max_retries`) read as a cycle-time parameter — no need to pipe
+/// `control("…")` through `f64_to_u64`.
 ///
-/// Resolves the control via walk-up from the session root;
-/// reads the reified-gauge f64 projection and casts to u64
-/// (saturating at 0 for negative values). Missing controls /
-/// controls without a reified gauge return 0.
+/// Authored via `#[polydat::polydat_node]` (SRD-80b) — purity is the
+/// hygienic attribute below. `Nondeterministic` because the control value
+/// changes over the run (operator edits, SRD-86 servo retargets,
+/// per-coordinate reruns): the node is never const-folded, re-evaluated on
+/// every pull, and the compiler propagates that volatility to every
+/// downstream wire, so `load := control_u64("concurrency")` tracks the live
+/// value without the author flagging `volatile`.
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads a live dynamic control value; changes over the run"),
+)]
+fn control_u64(name: Const<&str>) -> u64 {
+    let v = control_gauge_f64(name.0);
+    if v < 0.0 { 0 } else { v as u64 }
+}
+
+/// Read a dynamic control's current value as a boolean — `true` iff its
+/// reified-gauge value is non-zero. Missing / unreified controls → `false`.
 ///
-/// Intended for integer-valued controls — `concurrency`,
-/// `max_retries` — that are conceptually u64 but carry an f64
-/// reified gauge. Workloads reading one of these as a cycle-
-/// time parameter get a `u64` wire directly, without having
-/// to pipe `control("…")` through `f64_to_u64`.
-pub struct ControlU64 {
-    meta: NodeMeta,
-    inner: ControlValue,
+/// Signature: `control_bool(name: const str) -> bool`. Intrinsically
+/// `Nondeterministic` (live control read) — see [`control_u64`].
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads a live dynamic control value; changes over the run"),
+)]
+fn control_bool(name: Const<&str>) -> bool {
+    control_gauge_f64(name.0) != 0.0
 }
 
-impl ControlU64 {
-    pub fn new(name: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "control_u64".into(),
-                outs: vec![Port::u64("output")],
-                ins: vec![Slot::const_str("name", name)],
-            },
-            inner: ControlValue::new(name),
-        }
-    }
-}
-
-impl PolydatNode for ControlU64 {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let v = self.inner.read_f64();
-        let out = if v < 0.0 { 0 } else { v as u64 };
-        outputs[0] = Value::U64(out);
-    }
-}
-
-/// Read a dynamic control's current value as a boolean.
+/// Read a dynamic control's current value as its human-readable string
+/// (the erased-control `value_string()` rendering). Missing controls → `""`.
 ///
-/// Signature: `control_bool(name: String) -> bool`
-///
-/// Resolves the control via walk-up and interprets the
-/// reified-gauge projection as `true` iff the gauge value is
-/// non-zero. Missing controls / unreified controls return
-/// `false`.
-pub struct ControlBool {
-    meta: NodeMeta,
-    inner: ControlValue,
-}
-
-impl ControlBool {
-    pub fn new(name: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "control_bool".into(),
-                outs: vec![Port::bool("output")],
-                ins: vec![Slot::const_str("name", name)],
-            },
-            inner: ControlValue::new(name),
-        }
-    }
-}
-
-impl PolydatNode for ControlBool {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let v = self.inner.read_f64();
-        outputs[0] = Value::Bool(v != 0.0);
-    }
-}
-
-/// Read a dynamic control's current value as a human-readable
-/// string.
-///
-/// Signature: `control_str(name: String) -> String`
-///
-/// Resolves the control via walk-up and renders via the
-/// erased-control `value_string()` hook. For controls whose
-/// `T` derives a sensible `Debug` (u32, bool, enum, a wrapper
-/// struct) this returns what an operator would type. Missing
-/// controls return the empty string.
-pub struct ControlStr {
-    meta: NodeMeta,
-    name: String,
-    root: Option<Arc<RwLock<Component>>>,
-}
-
-impl ControlStr {
-    pub fn new(name: &str) -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "control_str".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: vec![Slot::const_str("name", name)],
-            },
-            name: name.to_string(),
-            root: session_root(),
-        }
-    }
-}
-
-impl PolydatNode for ControlStr {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let s = self.root.as_ref()
-            .and_then(|r| r.read().ok()
-                .and_then(|g| g.find_control_erased_up(&self.name))
-                .map(|c| c.value_string()))
-            .unwrap_or_default();
-        outputs[0] = Value::Str(s.into());
-    }
+/// Signature: `control_str(name: const str) -> str`. Intrinsically
+/// `Nondeterministic` (live control read) — see [`control_u64`].
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads a live dynamic control value; changes over the run"),
+)]
+fn control_str(name: Const<&str>) -> String {
+    control_value_string(name.0)
 }
 
 // =========================================================================
 // rate() / concurrency() — thin aliases over control(...)
 // =========================================================================
 
-/// Sugar for `control("rate")` — read the current rate-limiter
-/// target as ops/sec.
-pub struct RateNow {
-    meta: NodeMeta,
-    inner: ControlValue,
+/// Sugar for `control("rate")` — the current rate-limiter target (ops/sec).
+/// Intrinsically `Nondeterministic` (live control read) — see [`control`].
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads the live rate control; changes over the run"),
+)]
+fn rate() -> f64 {
+    control_gauge_f64("rate")
 }
 
-impl Default for RateNow {
-    fn default() -> Self { Self::new() }
-}
-
-impl RateNow {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "rate".into(),
-                outs: vec![Port::new("output", PortType::F64)],
-                ins: Vec::new(),
-            },
-            inner: ControlValue::new("rate"),
-        }
-    }
-}
-
-impl PolydatNode for RateNow {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::F64(self.inner.read_f64());
-    }
-}
-
-/// Sugar for `control("concurrency")` — read the current fiber
-/// count for the nearest phase.
-pub struct ConcurrencyNow {
-    meta: NodeMeta,
-    inner: ControlValue,
-}
-
-impl Default for ConcurrencyNow {
-    fn default() -> Self { Self::new() }
-}
-
-impl ConcurrencyNow {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "concurrency".into(),
-                outs: vec![Port::new("output", PortType::F64)],
-                ins: Vec::new(),
-            },
-            inner: ControlValue::new("concurrency"),
-        }
-    }
-}
-
-impl PolydatNode for ConcurrencyNow {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::F64(self.inner.read_f64());
-    }
+/// Sugar for `control("concurrency")` — the current fiber count for the
+/// nearest phase. Intrinsically `Nondeterministic` — see [`control`].
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads the live concurrency control; changes over the run"),
+)]
+fn concurrency() -> f64 {
+    control_gauge_f64("concurrency")
 }
 
 // =========================================================================
 // phase() — current phase name (thread-local)
 // =========================================================================
 
-/// Current phase name. Reads a thread-local set by the phase
-/// executor; returns an empty string when unset (e.g. outside
-/// of a cycle, in tests that don't install a phase).
-pub struct PhaseName {
-    meta: NodeMeta,
-}
-
-impl Default for PhaseName {
-    fn default() -> Self { Self::new() }
-}
-
-impl PhaseName {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "phase".into(),
-                outs: vec![Port::new("output", PortType::Str)],
-                ins: Vec::new(),
-            },
-        }
-    }
-}
-
-impl PolydatNode for PhaseName {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let name = task_phase()
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        outputs[0] = Value::Str(name.into());
-    }
+/// Current phase name. Reads a thread-local set by the phase executor;
+/// `""` when unset (outside a cycle, or in tests that install no phase).
+///
+/// Intrinsically `Nondeterministic`: the per-fiber phase name varies across
+/// fibers and over the run, so the node is never const-folded.
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads the per-fiber phase name; varies across fibers and over the run"),
+)]
+fn phase() -> String {
+    task_phase().map(|s| s.to_string()).unwrap_or_default()
 }
 
 // =========================================================================
 // cycle() — current cycle ordinal (thread-local)
 // =========================================================================
 
-/// Current cycle ordinal. Reads a thread-local set by the phase
-/// executor. For bindings that already declare `cycle` as a
-/// named input this is redundant; it exists so bindings which
-/// never named `cycle` explicitly can still reach it (SRD 10's
-/// "cycle is not magic" rule — the node is context, not a
-/// privileged input).
-pub struct CycleNow {
-    meta: NodeMeta,
-}
-
-impl Default for CycleNow {
-    fn default() -> Self { Self::new() }
-}
-
-impl CycleNow {
-    pub fn new() -> Self {
-        Self {
-            meta: NodeMeta {
-                name: "cycle".into(),
-                outs: vec![Port::u64("output")],
-                ins: Vec::new(),
-            },
-        }
-    }
-}
-
-impl PolydatNode for CycleNow {
-    fn meta(&self) -> &NodeMeta { &self.meta }
-    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::U64(task_cycle());
-    }
+/// Current cycle ordinal. Reads a thread-local set by the phase executor.
+/// For bindings that already declare `cycle` as a named input this is
+/// redundant; it exists so bindings which never named `cycle` explicitly can
+/// still reach it (SRD 10's "cycle is not magic" rule — the node is context,
+/// not a privileged input).
+///
+/// Intrinsically `Nondeterministic`: the cycle ordinal changes every cycle,
+/// so the node is never const-folded.
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads the per-fiber cycle ordinal; changes every cycle"),
+)]
+fn cycle() -> u64 {
+    task_cycle()
 }
 
 // =========================================================================
 // Registration
 // =========================================================================
-
-pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "control", category: C::Context, outputs: 1,
-            output_port: Some(polydat::ast::PortType::F64),
-            description: "read a dynamic control's current value as f64",
-            help: "Projects a [dynamic control](SRD 23) into the Polydat graph. Walks\nup the component tree from the session root, honors branch\nscope, and returns the control's reified gauge projection\n(f64). Missing controls and un-projected values return 0.0.\nParameters:\n  name — control name to resolve",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "control_u64", category: C::Context, outputs: 1,
-            output_port: Some(polydat::ast::PortType::U64),
-            description: "read a dynamic control's current value as u64",
-            help: "Sugar for casting control(name) from f64 to u64. Negative\ngauge values saturate at 0; missing controls return 0.\nPrefer over `f64_to_u64(control(name))` for clarity.\nParameters:\n  name — control name to resolve",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"concurrency\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "control_bool", category: C::Context, outputs: 1,
-            output_port: Some(polydat::ast::PortType::Bool),
-            description: "read a dynamic control's current value as bool",
-            help: "Reads the control's reified-gauge projection and returns\ntrue iff the value is non-zero. Missing controls / unreified\ncontrols return false.\nParameters:\n  name — control name to resolve",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"enabled\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "control_str", category: C::Context, outputs: 1,
-            output_port: Some(polydat::ast::PortType::Str),
-            description: "read a dynamic control's current value as String",
-            help: "Reads the erased-control value_string() rendering. Useful\nfor enum-valued or string-valued controls (error policy,\nlog level). Missing controls return \"\".\nParameters:\n  name — control name to resolve",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"log_level\"", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "control_set", category: C::Context, outputs: 1,
-            output_port: Some(polydat::ast::PortType::U64),
-            description: "write a dynamic control value from Polydat (non-blocking)",
-            help: "Submits an f64 write against a named dynamic control. The\nwrite dispatches on a background tokio task; the fiber does\nnot block. The target control must declare a from_f64\nconverter (see ControlBuilder::from_f64) or the write is\nrejected with a ValidationFailed message in the log.\nReturns 1 if dispatched, 0 if no session root is installed.\nParameters:\n  name  — control name to resolve (walk-up from session root)\n  value — f64 wire; the control's converter maps this to its\n          native type (e.g. f64 → u32 for concurrency)",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
-                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "rate", category: C::Context, outputs: 1,
-            output_port: Some(polydat::ast::PortType::F64),
-            description: "current rate-limiter target (f64 ops/sec)",
-            help: "Sugar for control(\"rate\"). Returns 0.0 if no rate control\nis declared.",
-            identity: None, variadic_ctor: None,
-            params: &[],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "concurrency", category: C::Context, outputs: 1,
-            output_port: Some(polydat::ast::PortType::F64),
-            description: "current fiber count (f64)",
-            help: "Sugar for control(\"concurrency\"). Returns 0.0 if no\nconcurrency control is declared.",
-            identity: None, variadic_ctor: None,
-            params: &[],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "phase", category: C::Context, outputs: 1,
-            output_port: Some(polydat::ast::PortType::Str),
-            description: "current phase name (String)",
-            help: "Returns the name of the phase the current fiber is running\nunder. Thread-local — outside a phase this reads as empty.",
-            identity: None, variadic_ctor: None,
-            params: &[],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-        },
-        FuncSig {
-            name: "cycle", category: C::Context, outputs: 1,
-            output_port: Some(polydat::ast::PortType::U64),
-            description: "current cycle ordinal (u64)",
-            help: "Returns the cycle ordinal of the current fiber. Sugar for\nreaching the cycle value without naming it as an explicit\ninput declaration.",
-            identity: None, variadic_ctor: None,
-            params: &[],
-            arity: Arity::Fixed,
-            commutativity: polydat::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: polydat::dsl::registry::OutputType::Fixed,
-        },
-    ]
-}
-
-pub(crate) fn build_node(
-    name: &str,
-    _wires: &[polydat::compile::assembly::WireRef], _wire_types: &[polydat::ast::PortType],
-    consts: &[polydat::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn polydat::ast::PolydatNode>, String>> {
-    match name {
-        "control" => {
-            let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();
-            Some(Ok(Box::new(ControlValue::new(&n))))
-        }
-        "control_u64" => {
-            let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();
-            Some(Ok(Box::new(ControlU64::new(&n))))
-        }
-        "control_bool" => {
-            let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();
-            Some(Ok(Box::new(ControlBool::new(&n))))
-        }
-        "control_str" => {
-            let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();
-            Some(Ok(Box::new(ControlStr::new(&n))))
-        }
-        "control_set" => {
-            let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();
-            // The DSL compiler installs the enclosing binding's
-            // name via `factory::compile_ctx::scoped_binding`
-            // before each `build_node` call. That binding is
-            // what appears in `ControlOrigin::Polydat { binding }`
-            // for attribution. If no scope is active (library
-            // tests that call build_node directly) we fall back
-            // to the control name.
-            let binding = polydat::dsl::factory::compile_ctx::current_binding()
-                .unwrap_or_else(|| n.clone());
-            Some(Ok(Box::new(ControlSet::new(&n, &binding))))
-        }
-        "rate" => Some(Ok(Box::new(RateNow::new()))),
-        "concurrency" => Some(Ok(Box::new(ConcurrencyNow::new()))),
-        "phase" => Some(Ok(Box::new(PhaseName::new()))),
-        "cycle" => Some(Ok(Box::new(CycleNow::new()))),
-        _ => None,
-    }
-}
-
-polydat::register_nodes!(signatures, build_node);
+//
+// Every node in this module is authored via `#[polydat::polydat_node]`
+// (SRD-80b) — the control readers (`control` / `control_u64` /
+// `control_bool` / `control_str` / `rate` / `concurrency`), the fiber-context
+// readers (`phase` / `cycle`), and the `control_set` writer. Each macro
+// emits its own FuncSig + builder + `inventory::submit!`, so there is no
+// hand-written `signatures()` / `build_node()` / `register_nodes!` here.
 
 #[cfg(test)]
 mod tests {
@@ -719,6 +464,7 @@ mod tests {
     // awaited code never locks it, so there's no deadlock.
     #![allow(clippy::await_holding_lock)]
     use super::*;
+    use polydat::ast::Value;
     use nbrs_metrics::controls::{BranchScope, ControlBuilder};
     use nbrs_metrics::labels::Labels;
     use std::collections::HashMap;
@@ -759,111 +505,74 @@ mod tests {
     fn control_reads_current_value() {
         let _g = serial_test();
         install_session_with_control("rate", 500);
-        let node = ControlValue::new("rate");
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert_eq!(out[0].as_f64(), 500.0);
+        let mut k = polydat::dsl::compile_polydat("x := control(\"rate\")").expect("compile");
+        assert_eq!(k.pull("x").as_f64(), 500.0);
     }
 
     #[test]
     fn control_missing_name_returns_zero() {
         let _g = serial_test();
         install_session_with_control("rate", 500);
-        let node = ControlValue::new("not_declared");
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert_eq!(out[0].as_f64(), 0.0);
+        let mut k = polydat::dsl::compile_polydat("x := control(\"not_declared\")").expect("compile");
+        assert_eq!(k.pull("x").as_f64(), 0.0);
     }
 
-    #[tokio::test]
-    async fn control_tracks_live_writes() {
-        let _g = serial_test();
-        let root = install_session_with_control("rate", 100);
-        let node = ControlValue::new("rate");
-
-        // Read initial.
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert_eq!(out[0].as_f64(), 100.0);
-
-        // Mutate via the control API; the node sees the new value
-        // on the next eval.
-        let c: nbrs_metrics::controls::Control<u32> = root.read().unwrap()
-            .controls().get("rate").unwrap();
-        c.set(4242, nbrs_metrics::controls::ControlOrigin::Test)
-            .await
-            .unwrap();
-
-        node.eval(&[], &mut out);
-        assert_eq!(out[0].as_f64(), 4242.0);
-    }
+    // Live re-read after a write is covered end-to-end by
+    // `fiber_writes_control_via_control_set_and_reads_back` (the integration
+    // test, which yields for the async commit then re-pulls `control(...)`);
+    // `control_u64_is_volatile_not_const_folded` covers the const-fold
+    // property here. A unit test that pulls immediately after an async write
+    // would race the background commit, so it lives at the integration tier.
 
     #[test]
     fn rate_node_is_alias_of_control_rate() {
         let _g = serial_test();
         install_session_with_control("rate", 750);
-        let node = RateNow::new();
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert_eq!(out[0].as_f64(), 750.0);
+        let mut k = polydat::dsl::compile_polydat("x := rate()").expect("compile");
+        assert_eq!(k.pull("x").as_f64(), 750.0);
     }
 
     #[test]
     fn concurrency_node_reads_concurrency_control() {
         let _g = serial_test();
         install_session_with_control("concurrency", 32);
-        let node = ConcurrencyNow::new();
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert_eq!(out[0].as_f64(), 32.0);
+        let mut k = polydat::dsl::compile_polydat("x := concurrency()").expect("compile");
+        assert_eq!(k.pull("x").as_f64(), 32.0);
     }
 
     #[tokio::test]
     async fn phase_and_cycle_read_from_task_locals() {
         let phase_arc: Arc<str> = Arc::from("rampup");
-        with_fiber_context(phase_arc.clone(), async {
+        with_fiber_context(phase_arc.clone(), empty_controls(), async {
             set_task_cycle(4242);
-
-            let p = PhaseName::new();
-            let mut out = [Value::None];
-            p.eval(&[], &mut out);
-            assert_eq!(out[0].as_str(), "rampup");
-
-            let c = CycleNow::new();
-            let mut cycle_out = [Value::None];
-            c.eval(&[], &mut cycle_out);
-            assert_eq!(cycle_out[0].as_u64(), 4242);
+            let mut k = polydat::dsl::compile_polydat("p := phase()\nc := cycle()")
+                .expect("compile phase/cycle");
+            assert_eq!(k.pull("p").as_str(), "rampup");
+            assert_eq!(k.pull("c").as_u64(), 4242);
         }).await;
     }
 
     #[test]
     fn phase_is_empty_outside_fiber_scope() {
-        // Reading outside a fiber context — e.g. from a unit test
-        // or a non-fiber call site — silently returns the empty
-        // string rather than panicking. The task_local's `try_with`
-        // returns Err, which we map to the default.
-        let p = PhaseName::new();
-        let mut out = [Value::None];
-        p.eval(&[], &mut out);
-        assert_eq!(out[0].as_str(), "");
+        // Reading outside a fiber context — e.g. from a unit test or a
+        // non-fiber call site — silently returns the empty string rather
+        // than panicking (the task_local's `try_with` Err maps to default).
+        let mut k = polydat::dsl::compile_polydat("p := phase()").expect("compile");
+        assert_eq!(k.pull("p").as_str(), "");
     }
 
     #[test]
     fn cycle_is_zero_outside_fiber_scope() {
-        let c = CycleNow::new();
-        let mut out = [Value::None];
-        c.eval(&[], &mut out);
-        assert_eq!(out[0].as_u64(), 0);
+        let mut k = polydat::dsl::compile_polydat("c := cycle()").expect("compile");
+        assert_eq!(k.pull("c").as_u64(), 0);
     }
 
     #[tokio::test]
     async fn set_task_cycle_is_noop_outside_scope() {
         // A stray call with no active scope must not panic.
         set_task_cycle(99);
-        let c = CycleNow::new();
-        let mut out = [Value::None];
-        c.eval(&[], &mut out);
-        assert_eq!(out[0].as_u64(), 0);
+        let mut k = polydat::dsl::compile_polydat("c := cycle()").expect("compile");
+        assert_eq!(k.pull("c").as_u64(), 0);
     }
 
     // ---- control_set ------------------------------------------
@@ -892,8 +601,12 @@ mod tests {
         root.read().unwrap().controls().declare(c.clone());
         set_session_root(root);
 
-        // Issue the write through the Polydat node.
-        let node = ControlSet::new("concurrency", "feedback_loop");
+        // Issue the write through the macro-authored node, built via the same
+        // factory route the compiler uses (under a binding scope).
+        let _scope = polydat::dsl::factory::compile_ctx::scoped_binding("feedback_loop");
+        let consts = [polydat::dsl::factory::ConstArg::Str("concurrency".into())];
+        let node = polydat::dsl::factory::build_node("control_set", &[], &[], &consts)
+            .expect("control_set should build");
         let mut out = [Value::None];
         node.eval(&[Value::F64(64.0)], &mut out);
         assert_eq!(out[0].as_u64(), 1, "write should report submitted");
@@ -916,71 +629,77 @@ mod tests {
     fn control_u64_casts_gauge_to_integer() {
         let _g = serial_test();
         install_session_with_control("concurrency", 64);
-        let node = ControlU64::new("concurrency");
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert_eq!(out[0].as_u64(), 64);
+        // `control_u64` is macro-authored — compile + pull it end to end.
+        let mut k = polydat::dsl::compile_polydat("x := control_u64(\"concurrency\")")
+            .expect("compile control_u64");
+        assert_eq!(k.pull("x").as_u64(), 64);
     }
 
     #[test]
     fn control_u64_missing_name_returns_zero() {
         let _g = serial_test();
         install_session_with_control("concurrency", 5);
-        let node = ControlU64::new("not_there");
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert_eq!(out[0].as_u64(), 0);
+        let mut k = polydat::dsl::compile_polydat("x := control_u64(\"not_there\")")
+            .expect("compile control_u64");
+        assert_eq!(k.pull("x").as_u64(), 0);
+    }
+
+    #[test]
+    fn control_u64_is_volatile_not_const_folded() {
+        let _g = serial_test();
+        install_session_with_control("concurrency", 32);
+        // Intrinsic volatility (the bug this fixes): a `Nondeterministic`
+        // node is never const-folded, so the wire stays a live dynamic
+        // output re-read on every pull. A Pure reader would fold `x` to a
+        // compile-time constant — which is exactly how the old hand-written
+        // node (no purity override) cached a stale first value.
+        let k = polydat::dsl::compile_polydat("x := control_u64(\"concurrency\")")
+            .expect("compile control_u64");
+        assert!(
+            k.get_constant("x").is_none(),
+            "control_u64 must be volatile — its wire must NOT be const-folded",
+        );
     }
 
     #[test]
     fn control_bool_projects_gauge_to_boolean() {
         let _g = serial_test();
         install_session_with_control("enabled", 1);
-        let node = ControlBool::new("enabled");
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert!(out[0].as_bool());
+        let mut k = polydat::dsl::compile_polydat("x := control_bool(\"enabled\")").expect("compile");
+        assert!(k.pull("x").as_bool());
     }
 
     #[test]
     fn control_bool_zero_is_false() {
         let _g = serial_test();
         install_session_with_control("enabled", 0);
-        let node = ControlBool::new("enabled");
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert!(!out[0].as_bool());
+        let mut k = polydat::dsl::compile_polydat("x := control_bool(\"enabled\")").expect("compile");
+        assert!(!k.pull("x").as_bool());
     }
 
     #[test]
     fn control_bool_missing_name_is_false() {
         let _g = serial_test();
         install_session_with_control("enabled", 1);
-        let node = ControlBool::new("absent");
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert!(!out[0].as_bool());
+        let mut k = polydat::dsl::compile_polydat("x := control_bool(\"absent\")").expect("compile");
+        assert!(!k.pull("x").as_bool());
     }
 
     #[test]
     fn control_str_renders_value_string() {
         let _g = serial_test();
         install_session_with_control("concurrency", 42);
-        let node = ControlStr::new("concurrency");
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
+        let mut k = polydat::dsl::compile_polydat("x := control_str(\"concurrency\")").expect("compile");
         // u32's Debug rendering is its decimal representation.
-        assert_eq!(out[0].as_str(), "42");
+        assert_eq!(k.pull("x").as_str(), "42");
     }
 
     #[test]
     fn control_str_missing_name_returns_empty() {
         let _g = serial_test();
         install_session_with_control("concurrency", 42);
-        let node = ControlStr::new("log_level");
-        let mut out = [Value::None];
-        node.eval(&[], &mut out);
-        assert_eq!(out[0].as_str(), "");
+        let mut k = polydat::dsl::compile_polydat("x := control_str(\"log_level\")").expect("compile");
+        assert_eq!(k.pull("x").as_str(), "");
     }
 
     #[tokio::test]
@@ -1037,9 +756,78 @@ mod tests {
         // resolve anything.
         *SESSION_ROOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
-        let node = ControlSet::new("anything", "b");
+        let consts = [polydat::dsl::factory::ConstArg::Str("anything".into())];
+        let node = polydat::dsl::factory::build_node("control_set", &[], &[], &consts)
+            .expect("control_set should build");
         let mut out = [Value::None];
         node.eval(&[Value::F64(1.0)], &mut out);
         assert_eq!(out[0].as_u64(), 0);
+    }
+
+    // ---- SRD-89: per-execution control isolation -------------------
+
+    /// Build a one-entry control map carrying a `concurrency` control fixed at
+    /// `val`, as `install_controls` expects (name → erased handle).
+    /// A standalone phase-tier component declaring a `concurrency` control at
+    /// `val` — the per-execution phase component a fiber resolves against.
+    fn component_with_concurrency(val: u32) -> Arc<RwLock<Component>> {
+        let comp = Component::root(Labels::empty().with("phase", "p"), HashMap::new());
+        comp.read().unwrap_or_else(|e| e.into_inner()).controls().declare(
+            ControlBuilder::new("concurrency", val)
+                .reify_as_gauge(|v| Some(*v as f64))
+                .branch_scope(BranchScope::Subtree)
+                .build(),
+        );
+        comp
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn per_execution_control_map_isolates_concurrent_reads() {
+        // SRD-89 §2b — two executions sharing one session each declare a
+        // `concurrency` control with a DISTINCT value on their own phase
+        // component. Under the pre-SRD-89 shared-`SESSION_ROOT` model both
+        // resolve to one instance (deterministic cross-talk — a servo
+        // retargeting one drives the other). The per-execution control map
+        // isolates them: each execution reads its OWN setting. This is the unit
+        // encoding of the walker's `control`/`multiservo` failure.
+        let _g = serial_test();
+        // Clear the global root so resolution can ONLY come from each fiber's
+        // own current-component snapshot (a leftover sibling root must not mask
+        // a miss).
+        *SESSION_ROOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+
+        // Two executions, each with its OWN phase component declaring
+        // `concurrency` at a distinct value.
+        let comp_a = component_with_concurrency(2);
+        let comp_b = component_with_concurrency(32);
+        let phase: Arc<str> = Arc::from("p");
+
+        // Each fiber resolves through its own component snapshot (FIBER_CTX).
+        let a_val = with_fiber_context(phase.clone(), snapshot_controls(&comp_a), async {
+            control_gauge_f64("concurrency")
+        })
+        .await;
+        let b_val = with_fiber_context(phase.clone(), snapshot_controls(&comp_b), async {
+            control_gauge_f64("concurrency")
+        })
+        .await;
+
+        assert_eq!(a_val, 2.0, "execution A must read its OWN concurrency (2)");
+        assert_eq!(
+            b_val, 32.0,
+            "execution B must read its OWN concurrency (32), not A's",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn control_read_falls_back_to_session_root_without_exec_context() {
+        // A1 — outside any scoped execution (single-run / dryrun / TUI), the
+        // read path is byte-identical to before SRD-89: it resolves via the
+        // global SESSION_ROOT walk. No per-exec map exists, so the fallback is
+        // the only path.
+        let _g = serial_test();
+        install_session_with_control("concurrency", 7);
+        // No execution_context::scope here — current_control() returns None.
+        assert_eq!(control_gauge_f64("concurrency"), 7.0);
     }
 }

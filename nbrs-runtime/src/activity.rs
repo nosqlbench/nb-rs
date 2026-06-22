@@ -191,9 +191,26 @@ pub struct ActivityMetrics {
     /// Distribution shape reveals incremental saturation.
     pub tries_histogram: Arc<Histogram>,
     pub cycles_total: Arc<Counter>,
+    /// Per-OP **terminal** dispositions — one increment per op instance,
+    /// mutually exclusive: `successes_total` if the op's FINAL attempt
+    /// succeeded, `errors_total` if it terminally failed (after exhausting
+    /// retries). So `errors_total ≤ cycles_total` always, and the error rate
+    /// over final ops (`errors_total / cycles_total`) is in [0,1] by
+    /// construction — non-terminal retries never inflate it. (Per-attempt
+    /// outcomes — which DO include retries — are `attempt_success` /
+    /// `attempt_failure` below.)
     pub successes_total: Arc<Counter>,
     pub skips_total: Arc<Counter>,
     pub errors_total: Arc<Counter>,
+    /// Per-ATTEMPT outcomes — one increment per `dispenser.execute`,
+    /// including every non-terminal retry. `attempt_success` counts the
+    /// (single) succeeding attempt; `attempt_failure` counts every failing
+    /// attempt. The error rate over attempts
+    /// (`attempt_failure / (attempt_success + attempt_failure)`) is the load
+    /// signal that reflects retry pressure; the per-op rate above is the
+    /// disposition signal. Both are naturally in [0,1].
+    pub attempt_success: Arc<Counter>,
+    pub attempt_failure: Arc<Counter>,
     pub stanzas_total: Arc<Counter>,
     /// Daemon ops that exited cleanly via stop-signal cancellation
     /// at phase shutdown (the trigger-and-observe happy path).
@@ -253,6 +270,8 @@ impl ActivityMetrics {
             successes_total: Arc::new(Counter::new(labels.with("name", "successes_total"))),
             skips_total: Arc::new(Counter::new(labels.with("name", "skips_total"))),
             errors_total: Arc::new(Counter::new(labels.with("name", "errors_total"))),
+            attempt_success: Arc::new(Counter::new(labels.with("name", "attempt_success"))),
+            attempt_failure: Arc::new(Counter::new(labels.with("name", "attempt_failure"))),
             stanzas_total: Arc::new(Counter::new(labels.with("name", "stanzas_total"))),
             daemon_cancelled_total: Arc::new(Counter::new(labels.with("name", "daemon_cancelled_total"))),
             daemon_errors_total: Arc::new(Counter::new(labels.with("name", "daemon_errors_total"))),
@@ -314,6 +333,14 @@ impl ActivityMetrics {
         component.register_instrument(
             "errors_total",
             InstrumentRef::Counter(self.errors_total.clone()),
+        )?;
+        component.register_instrument(
+            "attempt_success",
+            InstrumentRef::Counter(self.attempt_success.clone()),
+        )?;
+        component.register_instrument(
+            "attempt_failure",
+            InstrumentRef::Counter(self.attempt_failure.clone()),
         )?;
         component.register_instrument(
             "stanzas_total",
@@ -1200,7 +1227,7 @@ impl Activity {
                 let unknown_params: Vec<&String> = template.params.keys()
                     .filter(|k| {
                         !crate::validation::CORE_OP_PARAMS.contains(&k.as_str())
-                            && !crate::runner::KNOWN_PARAMS.contains(&k.as_str())
+                            && !crate::runner::is_cli_param(k)
                             && !allowed_extras.contains(&k.as_str())
                             && !workload_keys.contains_key(k.as_str())
                     })
@@ -1998,6 +2025,12 @@ impl Activity {
             let rate_limiter_outer = rate_limiter.clone();
             let phase_arc_outer = phase_name_arc.clone();
             let daemon_pool_outer = daemon_pool.clone();
+            // SRD-89 — snapshot this phase's controls ONCE (walk-up from the
+            // phase component), shared lock-free across all of the phase's
+            // fibers. Carries live handles, so servo retargets are observed.
+            let phase_controls_outer = activity.component.as_ref()
+                .map(crate::polydat_nodes::runtime_context::snapshot_controls)
+                .unwrap_or_else(crate::polydat_nodes::runtime_context::empty_controls);
             Box::new(move |stop: crate::fiber_pool::StopFlag| {
                 let activity = activity.clone();
                 let dispensers = dispensers_outer.clone();
@@ -2006,7 +2039,13 @@ impl Activity {
                 let rate_limiter = rate_limiter_outer.clone();
                 let phase_arc = phase_arc_outer.clone();
                 let daemon_pool = daemon_pool_outer.clone();
-                tokio::spawn(async move {
+                let phase_controls = phase_controls_outer.clone();
+                // SRD-88 — carry the per-execution context into the per-cycle
+                // fiber: the adapter's op-output, log, stop, and exec-identity
+                // resolve to THIS execution (so concurrent executions sharing a
+                // session capture their own output / route their own log). A
+                // no-op on the single-run path (no context scoped — A1).
+                tokio::spawn(crate::execution_context::propagate(async move {
                     // Catch panics inside the fiber so they surface
                     // in diagnostics rather than silently terminating
                     // the task. Without this, a panic in any cycle's
@@ -2022,6 +2061,7 @@ impl Activity {
                     let phase_arc_for_exec = phase_arc.clone();
                     let body = crate::polydat_nodes::runtime_context::with_fiber_context(
                         phase_arc,
+                        phase_controls,
                         async move {
                             executor_task(
                                 activity, dispensers, pull_plans,
@@ -2061,7 +2101,7 @@ impl Activity {
                             activity_for_panic.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
-                })
+                }))
             })
         };
         let fiber_pool = Arc::new(crate::fiber_pool::FiberPool::new(pool_spawner));
@@ -2148,9 +2188,22 @@ impl Activity {
             // Failed. (The per-condition `effect` → two-axis Outcome
             // mapping lands with SRD-82 Part 1; for now a trip is Failed.)
             if !policy_tripped && !stop_conditions.is_empty() {
+                // Read `error_count` BEFORE `op_count`, then take a FRESH
+                // `op_count`: every terminal error also increments
+                // `cycles_completed`, so a cycles read taken at-or-after the
+                // errors read is always ≥ it — guaranteeing `error_count ≤
+                // op_count` and thus `error_rate ≤ 1.0`. The reverse order (the
+                // stuck-timer's earlier `cycles` snapshot for `op_count`, then a
+                // later `errors_total` read) let an erroring op completing
+                // between the two reads push `error_count` past the stale
+                // `op_count`, momentarily yielding `error_rate > 1.0` and
+                // SPURIOUSLY tripping the `error_rate > 1.0` guard under
+                // saturation (where the true rate sits exactly at 1.0).
+                let error_count = activity.metrics.errors_total.get();
+                let op_count = activity.metrics.cycles_completed();
                 let state = crate::stop_conditions::RuntimeState {
-                    op_count: cycles,
-                    error_count: activity.metrics.errors_total.get(),
+                    op_count,
+                    error_count,
                     elapsed_ms: phase_start.elapsed().as_millis() as u64,
                     ..Default::default()
                 };
@@ -3134,8 +3187,12 @@ async fn executor_task(
                         let op_name = op_name_d;
                         async move {
                             use futures::FutureExt as _;
+                            let phase_controls = activity.component.as_ref()
+                                .map(crate::polydat_nodes::runtime_context::snapshot_controls)
+                                .unwrap_or_else(crate::polydat_nodes::runtime_context::empty_controls);
                             let body = crate::polydat_nodes::runtime_context::with_fiber_context(
                                 phase_arc,
+                                phase_controls,
                                 daemon_dispatch(
                                     activity.clone(),
                                     dispensers,
@@ -3247,9 +3304,19 @@ async fn executor_task(
             let exec_ctx = crate::fixture::ExecCtx::with_wires(&fields, &pulls, &cycle_wires);
             let service_start = Instant::now();
             let mut tries = 1u32;
+            // The op's FINAL-attempt error name, if it terminally fails. Set in
+            // the terminal branch below but the `errors_total` tally is DEFERRED
+            // until after `cycles_total` increments, so the snapshot invariant
+            // `errors_total ≤ cycles_total` holds at the source (error_rate is a
+            // proportion in [0,1] by construction — no consumer read-order care).
+            let mut terminal_error_name: Option<String> = None;
             let (success, skipped) = loop {
                 match dispenser.execute(cycle, &exec_ctx).await {
                     Ok(result) => {
+                        // Per-attempt success (this succeeding attempt). The
+                        // per-OP terminal success is recorded once after the
+                        // loop (`successes_total`).
+                        activity.metrics.attempt_success.inc();
                         // OpResult.captures is vestigial — captures
                         // land on the per-op kernel directly via
                         // ctx.wires.write inside the dispenser stack.
@@ -3262,8 +3329,12 @@ async fn executor_task(
                         let detail = activity.error_policy.router.handle_error(
                             &inner.error_name, &inner.message, cycle, duration_nanos,
                         );
-                        activity.metrics.errors_total.inc();
-                        activity.metrics.count_error_type(&inner.error_name);
+                        // Per-ATTEMPT failure (counts this attempt, retried
+                        // or not). The per-OP terminal failure tally
+                        // (`errors_total` + the per-type breakdown) is
+                        // recorded once below, only when this attempt is the
+                        // op's last — so retries never inflate the error rate.
+                        activity.metrics.attempt_failure.inc();
 
                         // Capture every per-cycle error into the
                         // phase's structured error buffer so the
@@ -3339,14 +3410,30 @@ async fn executor_task(
                             continue;
                         }
 
+                        // Terminal failure for this op (this attempt is the
+                        // last). DEFER the per-op `errors_total` tally until
+                        // after `cycles_total` increments below — so a reader
+                        // never observes `errors_total > cycles_total`. Keyed by
+                        // the FINAL attempt's error, so the per-type breakdown
+                        // sums to `errors_total`.
+                        terminal_error_name = Some(inner.error_name.clone());
                         break (false, false);
                     }
                 }
             };
             let service_nanos = service_start.elapsed().as_nanos() as u64;
 
-            // Record metrics
+            // Record metrics. `cycles_total` (the per-op total — every op,
+            // succeeded or failed) increments FIRST; the deferred terminal
+            // `errors_total` tally then increments AFTER it, so at every instant
+            // `errors_total ≤ cycles_total` and the error rate is a proportion
+            // in [0,1] by construction. (errors_total is per-OP terminal: retries
+            // already went to `attempt_failure`, never here.)
             activity.metrics.cycles_total.inc();
+            if let Some(ref name) = terminal_error_name {
+                activity.metrics.errors_total.inc();
+                activity.metrics.count_error_type(name);
+            }
             if !skipped {
                 activity.metrics.service_time.record(service_nanos);
                 activity.metrics.wait_time.record(wait_nanos);

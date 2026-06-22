@@ -41,9 +41,7 @@ use polydat::library::param_helpers::{
     InRange, IsPositive, Required, ThisOr,
 };
 use nbrs_runtime::polydat_nodes::runtime_context::{
-    set_session_root, set_task_cycle, with_fiber_context,
-    ControlSet, ControlStr, ControlU64, ControlValue,
-    CycleNow, PhaseName,
+    empty_controls, set_session_root, set_task_cycle, snapshot_controls, with_fiber_context,
 };
 
 /// Lock serializing every test that touches the process-global
@@ -80,21 +78,17 @@ async fn fiber_reads_phase_and_cycle_from_task_context() {
     let _g = TEST_LOCK.lock().unwrap();
     let phase: Arc<str> = Arc::from("rampup");
 
-    with_fiber_context(phase.clone(), async {
-        // The fiber body advances the cycle a few times, asserting
-        // each read reflects the most-recent update.
+    with_fiber_context(phase.clone(), empty_controls(), async {
+        // The fiber body advances the cycle a few times, asserting each
+        // read reflects the most-recent update. `phase`/`cycle` are
+        // macro-authored — compile a fresh kernel per iteration so each
+        // first-pull reads the current thread-local.
         for cycle in [0u64, 1, 17, 999] {
             set_task_cycle(cycle);
-
-            let p = PhaseName::new();
-            let mut out = [Value::None];
-            p.eval(&[], &mut out);
-            assert_eq!(out[0].as_str(), "rampup");
-
-            let c = CycleNow::new();
-            let mut cycle_out = [Value::None];
-            c.eval(&[], &mut cycle_out);
-            assert_eq!(cycle_out[0].as_u64(), cycle);
+            let mut k = polydat::dsl::compile_polydat("p := phase()\nc := cycle()")
+                .expect("compile phase/cycle");
+            assert_eq!(k.pull("p").as_str(), "rampup");
+            assert_eq!(k.pull("c").as_u64(), cycle);
         }
     }).await;
 }
@@ -136,25 +130,20 @@ async fn fiber_reads_control_through_context() {
     let root = build_session_with_concurrency(8);
 
     let phase: Arc<str> = Arc::from("rampup");
-    with_fiber_context(phase, async {
+    with_fiber_context(phase, snapshot_controls(&root), async {
         set_task_cycle(0);
 
-        let c = ControlValue::new("concurrency");
-        let mut out = [Value::None];
-        c.eval(&[], &mut out);
-        assert_eq!(out[0].as_f64(), 8.0);
-
-        // The u64 and string projections work through the same
-        // walk-up.
-        let u = ControlU64::new("concurrency");
-        let mut u_out = [Value::None];
-        u.eval(&[], &mut u_out);
-        assert_eq!(u_out[0].as_u64(), 8);
-
-        let s = ControlStr::new("concurrency");
-        let mut s_out = [Value::None];
-        s.eval(&[], &mut s_out);
-        assert_eq!(s_out[0].as_str(), "8");
+        // The control readers (`control` / `control_u64` / `control_str`)
+        // are macro-authored — compile + pull them through the live session
+        // root. All three project the same walk-up.
+        let mut k = polydat::dsl::compile_polydat(
+            "c := control(\"concurrency\")\n\
+             u := control_u64(\"concurrency\")\n\
+             s := control_str(\"concurrency\")",
+        ).expect("compile control readers");
+        assert_eq!(k.pull("c").as_f64(), 8.0);
+        assert_eq!(k.pull("u").as_u64(), 8);
+        assert_eq!(k.pull("s").as_str(), "8");
     }).await;
 
     let _ = root;
@@ -166,22 +155,26 @@ async fn fiber_writes_control_via_control_set_and_reads_back() {
     let root = build_session_with_concurrency(8);
 
     let phase: Arc<str> = Arc::from("rampup");
-    with_fiber_context(phase, async {
-        // Issue a write from inside the fiber.
-        let writer = ControlSet::new("concurrency", "integration_feedback_loop");
+    with_fiber_context(phase, snapshot_controls(&root), async {
+        // Issue a write from inside the fiber, via the same factory route
+        // the compiler uses, under a binding scope (for attribution).
+        let _scope = polydat::dsl::factory::compile_ctx::scoped_binding("integration_feedback_loop");
+        let consts = [polydat::dsl::factory::ConstArg::Str("concurrency".into())];
+        let writer = polydat::dsl::factory::build_node("control_set", &[], &[], &consts)
+            .expect("build control_set");
         let mut write_out = [Value::None];
         writer.eval(&[Value::F64(42.0)], &mut write_out);
         assert_eq!(write_out[0].as_u64(), 1, "write should report submitted");
 
         // Write is async — give the spawned task a few cycles
-        // to validate → fanout → commit.
+        // to validate → fanout → commit. The macro `control` reader is
+        // volatile, so re-pulling the same kernel re-reads the live value.
+        let mut k = polydat::dsl::compile_polydat("r := control(\"concurrency\")")
+            .expect("compile");
         let mut observed = 0.0;
         for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(5)).await;
-            let r = ControlValue::new("concurrency");
-            let mut out = [Value::None];
-            r.eval(&[], &mut out);
-            observed = out[0].as_f64();
+            observed = k.pull("r").as_f64();
             if observed == 42.0 {
                 break;
             }
@@ -210,8 +203,10 @@ async fn control_set_out_of_range_leaves_value_unchanged() {
         .controls().get("concurrency").unwrap();
 
     let phase: Arc<str> = Arc::from("rampup");
-    with_fiber_context(phase, async {
-        let writer = ControlSet::new("concurrency", "bad_writer");
+    with_fiber_context(phase, snapshot_controls(&root), async {
+        let consts = [polydat::dsl::factory::ConstArg::Str("concurrency".into())];
+        let writer = polydat::dsl::factory::build_node("control_set", &[], &[], &consts)
+            .expect("build control_set");
         let mut write_out = [Value::None];
         // The f64_setter rejects values outside [0, 10_000].
         writer.eval(&[Value::F64(99_999.0)], &mut write_out);
@@ -243,10 +238,9 @@ async fn branch_scoped_control_resolves_from_descendant_fiber() {
     set_session_root(root.clone());
 
     let phase: Arc<str> = Arc::from("any_phase");
-    with_fiber_context(phase, async {
-        let r = ControlValue::new("hdr_sigdigs");
-        let mut out = [Value::None];
-        r.eval(&[], &mut out);
-        assert_eq!(out[0].as_f64(), 4.0);
+    with_fiber_context(phase, snapshot_controls(&root), async {
+        let mut k = polydat::dsl::compile_polydat("r := control(\"hdr_sigdigs\")")
+            .expect("compile");
+        assert_eq!(k.pull("r").as_f64(), 4.0);
     }).await;
 }

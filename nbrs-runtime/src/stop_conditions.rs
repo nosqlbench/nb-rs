@@ -66,8 +66,18 @@ pub struct RuntimeState {
 }
 
 impl RuntimeState {
-    /// Errored fraction of ops; `0.0` before any op completes (so a
+    /// Errored fraction of ops; `0.0` before any op completes (so an
     /// `error_rate > X` predicate never trips on an empty phase).
+    ///
+    /// This is a faithful `error_count / op_count` — no clamp. The result
+    /// is in `[0,1]` because `error_count` is the count of ops that
+    /// **terminally** failed (one per op, mutually exclusive with success),
+    /// NOT the count of error *attempts*: non-terminal retries are tallied
+    /// separately (`attempt_failure` / `attempt_success`) and never inflate
+    /// the per-op disposition. The numerator can therefore never exceed the
+    /// denominator. (Before that upstream split, `error_count` came from a
+    /// per-attempt counter and could exceed `op_count` under retries —
+    /// fixed at the source rather than masked here.)
     pub fn error_rate(&self) -> f64 {
         if self.op_count == 0 {
             0.0
@@ -220,6 +230,12 @@ impl StopConditionSet {
     ) -> Result<Self, String> {
         let mut conditions = Vec::new();
         let mut idx = 0;
+        // `error_rate` is a PROPORTION in [0,1] (terminal errors over ops, kept
+        // ≤ 1.0 by the read-order at the snapshot site), so a bound of 1.0
+        // simply never fires — a Control-class phase that deliberately dwells at
+        // a saturating setting uses `error_rate_max: 1.0` to opt out, and it
+        // "just won't trigger" with no special-casing. A real guard uses a
+        // fraction < 1.0 (e.g. `0.5` = "fail past 50% errored ops").
         if let Some(max) = error_rate_max {
             // Preserve the interim `AggregateGuard`'s 50-op floor: don't
             // judge the error rate until enough ops have run for it to be
@@ -282,6 +298,29 @@ mod tests {
         assert_eq!(s.error_rate(), 0.1);
         let s = RuntimeState { op_count: 50, error_count: 50, ..Default::default() };
         assert_eq!(s.error_rate(), 1.0);
+    }
+
+    #[test]
+    fn error_rate_is_faithful_and_in_range_for_terminal_failures() {
+        // `error_count` is the count of ops that TERMINALLY failed (≤
+        // `op_count`), so the faithful `error_count / op_count` is in [0,1]
+        // by construction — even a fully-failing phase reads exactly 1.0,
+        // never above. The default `error_rate_max: 1.0` guard
+        // (`op_count >= 50 && error_rate > 1.0`) therefore never trips, as
+        // documented ("allow 100% — never trip") — without clamping.
+        let all_fail = RuntimeState { op_count: 100, error_count: 100, ..Default::default() };
+        assert_eq!(all_fail.error_rate(), 1.0);
+        let phase_kernel = polydat::dsl::compile_polydat("input cycle: u64\nx := 5")
+            .expect("phase kernel");
+        let mut cond = compile_stop_condition(
+            &phase_kernel, 0, "op_count >= 50 && error_rate > 1.0")
+            .expect("compile scoped stop condition");
+        assert!(!all_fail.trips(&mut cond), "error_rate_max:1.0 must never trip");
+        // A 0.5 guard still trips at >50% terminal failures.
+        let mut half = compile_stop_condition(
+            &phase_kernel, 0, "op_count >= 50 && error_rate > 0.5").unwrap();
+        assert!(RuntimeState { op_count: 100, error_count: 60, ..Default::default() }
+            .trips(&mut half));
     }
 
     #[test]
