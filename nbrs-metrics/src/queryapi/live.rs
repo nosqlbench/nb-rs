@@ -44,6 +44,43 @@ impl MetricsQueryAccess {
     pub fn new(query: Arc<MetricsQuery>) -> Self {
         Self { query }
     }
+
+    /// SRD-90 §M5 — the oldest sample-time this in-memory tier can answer
+    /// (Unix-ms), for the [`super::HybridStore`] coverage walk: the minimum
+    /// `captured_at` across every component's smallest-cadence retention ring,
+    /// converted on the same clock as [`Self::select_range`]. `None` when
+    /// nothing is retained yet (empty store / no cadence) — the hybrid then
+    /// never short-circuits the colder tail.
+    pub fn earliest_ms(&self) -> Option<i64> {
+        let reporter = self.query.reporter();
+        let cadence = reporter.declared_cadences().smallest();
+        if cadence.is_zero() {
+            return None;
+        }
+        let now_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let mut earliest: Option<i64> = None;
+        for component in reporter.component_labels() {
+            // The ring is oldest-first; its first entry is the oldest retained.
+            // One window-view lookup, then read `ring.first()` directly — no
+            // cloning the whole ring just to peek the head.
+            if let Some(oldest) = reporter.window_view(&component, cadence)
+                .and_then(|v| v.ring.first().cloned())
+            {
+                let ms = now_ms - oldest.captured_at().elapsed().as_millis() as i64;
+                earliest = Some(earliest.map_or(ms, |e: i64| e.min(ms)));
+            }
+        }
+        earliest
+    }
+}
+
+impl super::HorizonAware for MetricsQueryAccess {
+    fn earliest_ms(&self) -> Option<i64> {
+        MetricsQueryAccess::earliest_ms(self)
+    }
 }
 
 impl MetricAccess for MetricsQueryAccess {
@@ -63,16 +100,32 @@ impl MetricAccess for MetricsQueryAccess {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
+        // SRD-89 §3b / SRD-90 §M6 — execution scoping is a **uniform dimensional
+        // label**: `exec_id` arrives as a matcher (injected by
+        // `ExecScopedAccess` for the reading execution) and is applied by the
+        // matcher check below against each series' `exec_id` scope tag — there
+        // is no separate post-filter. A `None`-scope read (single-run) injects
+        // nothing, so it sees the sole execution's series (A1). Each series here
+        // carries `exec_id` merged in from the component scope tags, which is
+        // what the matcher matches against.
         let mut out: Vec<Series> = Vec::new();
         for component in reporter.component_labels() {
             // Closed-window history + freshest closed window + in-flight
-            // partial, deduped by capture instant.
-            let mut windows = reporter.ring(&component, cadence);
-            if let Some(l) = reporter.latest(&component, cadence) {
-                windows.push(l);
+            // partial, deduped by capture instant. ONE window-view lookup per
+            // component (was three: ring + latest + prebuffer each rebuilt the
+            // component-path string and re-hashed it); the partial is an `Arc`
+            // clone off the view, not a deep `MetricSet` copy.
+            let Some(view) = reporter.window_view(&component, cadence) else {
+                continue;
+            };
+            let mut windows: Vec<Arc<crate::snapshot::MetricSet>> =
+                Vec::with_capacity(view.ring.len() + 2);
+            windows.extend(view.ring.iter().cloned());
+            if let Some(l) = &view.latest {
+                windows.push(l.clone());
             }
-            if let Some(p) = reporter.prebuffer(&component, cadence) {
-                windows.push(Arc::new(p));
+            if let Some(p) = &view.prebuffer {
+                windows.push(p.clone());
             }
             windows.sort_by_key(|w| w.captured_at());
             windows.dedup_by_key(|w| w.captured_at());
@@ -158,8 +211,8 @@ fn push_sample(out: &mut Vec<Series>, labels: Vec<(String, String)>, sample: Sam
 mod tests {
     use super::*;
 
-    #[test]
-    fn value_projection_per_variant() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn value_projection_per_variant() {
         use crate::snapshot::{CounterValue, GaugeValue, HistogramValue};
         use hdrhistogram::Histogram as HdrHistogram;
         assert_eq!(value_to_f64(&MetricValue::Counter(CounterValue::new(7))), Some(7.0));
@@ -174,8 +227,8 @@ mod tests {
         assert_eq!(value_to_f64(&MetricValue::Histogram(hv)), Some(42.0));
     }
 
-    #[test]
-    fn series_labels_promote_name_and_merge_scope() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn series_labels_promote_name_and_merge_scope() {
         let component = crate::labels::Labels::empty().with("phase", "saturate");
         let metric = crate::labels::Labels::empty().with("__name__", "stale");
         let out = series_labels("errors_total", &component, &metric);
@@ -184,8 +237,8 @@ mod tests {
         assert!(out.iter().any(|(k, v)| k == "phase" && v == "saturate"));
     }
 
-    #[test]
-    fn select_instant_returns_a_live_counter() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn select_instant_returns_a_live_counter() {
         use crate::cadence::{CadenceTree, Cadences};
         use crate::cadence_reporter::CadenceReporter;
         use crate::labels::Labels;

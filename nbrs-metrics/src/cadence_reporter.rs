@@ -26,10 +26,10 @@
 //! all reads go through [`crate::metrics_query::MetricsQuery`].
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -39,11 +39,32 @@ use crate::labels::Labels;
 use crate::scheduler::Reporter;
 use crate::snapshot::MetricSet;
 
-/// Maximum number of historical closed snapshots retained per
-/// `(component_path, cadence)` ring. Bounds memory regardless of
-/// run length. See SRD-42 §"Open Questions → Histogram retention
-/// for past() queries".
+/// Distribution (HDR-reservoir) retention, expressed as a count of
+/// closed windows per `(component_path, cadence)` ring. The heavy part
+/// of a snapshot is the histogram reservoir, so it is held to this many
+/// windows (SRD-90: "histograms are a different matter"). `≥ max fan-in`
+/// so the cascade always has its inputs. Counter/gauge sub-interval
+/// history is kept *longer* and far more cheaply — see
+/// [`CadenceWindow::retain`].
 pub const HISTORY_RING_CAP: usize = 32;
+
+/// SRD-90 §M1 — counter/gauge sub-interval retention floor. Cumulative
+/// counters/gauges cost ~nothing to retain (a point is `(timestamp,
+/// value)`), so the smallest cadence keeps at least this much wall-clock
+/// of distinct sub-window points, well past the distribution bound, so a
+/// short-timeframe `rate()`/`increase()`/trend read is fully qualified
+/// from the running totals even when the scheduler tick drifts. Stage 4
+/// will demand-derive this from the workload's declared query windows;
+/// for now it is a fixed floor (raised per-window to never fall below the
+/// distribution bound). The effective horizon is
+/// `max(this, cadence × HISTORY_RING_CAP)`.
+pub const COUNTER_RETAIN_FLOOR: Duration = Duration::from_secs(60);
+
+/// Hard backstop on ring length, independent of the time horizons — guards
+/// against a pathological dense-capture × large-horizon combination. The
+/// time-based eviction is the primary bound; this only ever trips for a
+/// degenerate configuration.
+pub const HARD_RING_CAP: usize = 200_000;
 
 /// Default bounded-channel capacity for subscription dispatch. A
 /// subscriber that can't drain this many snapshots in
@@ -74,18 +95,71 @@ struct CadenceWindow {
     prebuffer: Option<MetricSet>,
     /// Latest closed (immutable) snapshot.
     latest: Option<Arc<MetricSet>>,
-    /// Bounded ring of past closed snapshots, newest at the back.
+    /// Time-bounded ring of past closed snapshots, newest at the back
+    /// (SRD-90 §M1). Counter/gauge points are kept up to [`Self::retain`];
+    /// the heavy distribution families are stripped (via
+    /// [`MetricSet::without_distributions`]) once a window ages past
+    /// [`Self::hist_retain`], so distribution memory matches the old
+    /// `HISTORY_RING_CAP` bound while cheap cumulative history runs longer.
     ring: VecDeque<Arc<MetricSet>>,
+    /// Counter/gauge retention horizon (relative to the newest closed
+    /// window's `captured_at`).
+    retain: Duration,
+    /// Distribution (HDR-reservoir) retention horizon — `≤ retain`.
+    hist_retain: Duration,
 }
 
 impl CadenceWindow {
     fn new(cadence: Duration) -> Self {
+        // Distributions: keep the historical `HISTORY_RING_CAP` windows'
+        // worth of wall-clock (no regression, no balloon). Counters/gauges:
+        // at least the floor, never below the distribution bound. `saturating`
+        // so a lifetime-scale cadence (interval ≥ session) doesn't overflow —
+        // its ring stays empty anyway (it accumulates in the prebuffer).
+        let hist_retain = cadence.saturating_mul(HISTORY_RING_CAP as u32);
+        let retain = COUNTER_RETAIN_FLOOR.max(hist_retain);
         Self {
             cadence,
             accumulated: Duration::ZERO,
             prebuffer: None,
             latest: None,
             ring: VecDeque::new(),
+            retain,
+            hist_retain,
+        }
+    }
+
+    /// Evict and compact the ring after a new window was pushed at the back
+    /// (SRD-90 §M1). Time-bounded relative to the newest window's
+    /// `captured_at` (monotonic `Instant`, so independent of wall-clock and
+    /// of idle gaps): drop whole windows past `retain`, and strip the heavy
+    /// distribution families from windows past `hist_retain` (keeping their
+    /// cheap counter/gauge points). A hard count cap is the final backstop.
+    fn evict_and_compact(&mut self) {
+        let Some(newest) = self.ring.back().map(|w| w.captured_at()) else { return; };
+        // 1. Drop whole windows older than the counter/gauge horizon.
+        if let Some(cutoff) = newest.checked_sub(self.retain) {
+            while self.ring.front().is_some_and(|w| w.captured_at() < cutoff) {
+                self.ring.pop_front();
+            }
+        }
+        // 2. Compact: past the distribution horizon, keep only counter/gauge
+        //    points. Already-stripped windows have no distributions, so this is
+        //    amortized to the few windows that newly cross the boundary.
+        if self.retain > self.hist_retain
+            && let Some(hist_cutoff) = newest.checked_sub(self.hist_retain) {
+            for slot in self.ring.iter_mut() {
+                if slot.captured_at() >= hist_cutoff {
+                    break; // ring is time-ordered; nothing newer needs stripping
+                }
+                if slot.has_distributions() {
+                    *slot = Arc::new(slot.without_distributions());
+                }
+            }
+        }
+        // 3. Backstop.
+        while self.ring.len() > HARD_RING_CAP {
+            self.ring.pop_front();
         }
     }
 
@@ -110,9 +184,7 @@ impl CadenceWindow {
             let arc = Arc::new(closed);
             self.latest = Some(arc.clone());
             self.ring.push_back(arc.clone());
-            while self.ring.len() > HISTORY_RING_CAP {
-                self.ring.pop_front();
-            }
+            self.evict_and_compact();
             self.accumulated = Duration::ZERO;
             Some(arc)
         } else {
@@ -141,9 +213,7 @@ impl CadenceWindow {
         let arc = Arc::new(buf);
         self.latest = Some(arc.clone());
         self.ring.push_back(arc.clone());
-        while self.ring.len() > HISTORY_RING_CAP {
-            self.ring.pop_front();
-        }
+        self.evict_and_compact();
         self.accumulated = Duration::ZERO;
         Some(arc)
     }
@@ -197,6 +267,17 @@ impl std::fmt::Display for SubscribeError {
 
 impl std::error::Error for SubscribeError {}
 
+/// Wraps a delivery fiber's future so it runs inside a caller-supplied
+/// context (e.g. nbrs-runtime's per-execution `ExecutionContext` scope),
+/// since that context is a layer above this crate. Identity when a
+/// subscriber has no context to apply (session-level reporters). Applied
+/// to every ephemeral per-notification delivery fiber.
+pub type ContextWrap = Arc<
+    dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Per-subscription configuration.
 #[derive(Clone)]
 pub struct SubscriptionOpts {
@@ -216,6 +297,11 @@ pub struct SubscriptionOpts {
     /// consecutive-drop count so the cadence manager can decide
     /// whether to log, escalate, or unsubscribe.
     pub on_timeout: Option<TimeoutCallback>,
+    /// Wraps each delivery fiber so it runs in the subscriber's context
+    /// (SRD-88 — the optimizer settle subscriber carries its execution
+    /// context so its objective read scopes to its own `exec_id`).
+    /// `None` ⇒ session-level subscriber, delivered in the bare runtime.
+    pub context_wrap: Option<ContextWrap>,
 }
 
 impl Default for SubscriptionOpts {
@@ -224,6 +310,7 @@ impl Default for SubscriptionOpts {
             channel_capacity: DEFAULT_SUBSCRIPTION_CHANNEL_CAPACITY,
             timeout: None,
             on_timeout: None,
+            context_wrap: None,
         }
     }
 }
@@ -260,9 +347,14 @@ struct SubscriptionState {
     /// without tearing the subscriber down (SRD-88: per-execution
     /// flush-to-store, non-terminal).
     sent: AtomicU64,
-    /// Snapshots the dispatch worker has `report()`ed (committed to the
-    /// sink). Converges to [`Self::sent`] once the channel drains.
+    /// Snapshots a delivery fiber has `report()`ed (committed to the
+    /// sink). Converges to [`Self::sent`] once all in-flight fibers run.
     delivered: AtomicU64,
+    /// Set by a delivery fiber once `Reporter::finished()` returns true
+    /// (a one-shot subscriber — e.g. a settle evaluator that reached a
+    /// terminal disposition). The owner stops spawning delivery fibers
+    /// for a finished subscription; it's reaped by `unsubscribe`.
+    finished: AtomicBool,
 }
 
 impl SubscriptionState {
@@ -273,6 +365,7 @@ impl SubscriptionState {
             timeout_fired: AtomicBool::new(false),
             sent: AtomicU64::new(0),
             delivered: AtomicU64::new(0),
+            finished: AtomicBool::new(false),
         }
     }
 
@@ -296,12 +389,35 @@ impl SubscriptionState {
 struct Subscription {
     id: SubscriberId,
     cadence: Duration,
-    sender: SyncSender<Arc<MetricSet>>,
+    /// The sink, shared with the ephemeral delivery fibers. Each delivery
+    /// `lock().await`s it, so windows are delivered **serialized and in
+    /// order, losslessly** (a durable sink — e.g. SQLite — must not drop
+    /// windows). Backpressure is bounded at the fanout: while
+    /// `pending()` (in-flight deliveries) is at `channel_capacity`, new
+    /// windows are dropped + the stall timeout escalates — the same
+    /// bounded-then-lossy contract the channel had. `flush` runs once, at
+    /// unsubscribe/shutdown (after `quiesce`, so the lock is uncontended).
+    reporter: Arc<tokio::sync::Mutex<Box<dyn Reporter>>>,
+    /// Wraps each delivery fiber in the subscriber's context (`None` for
+    /// session-level subscribers).
+    context_wrap: Option<ContextWrap>,
     state: Arc<SubscriptionState>,
     opts: SubscriptionOpts,
-    /// Handle to the dispatch thread. `Some` until unsubscribe or
-    /// drop, when we take it to join.
-    worker: Option<JoinHandle<()>>,
+}
+
+/// Run a brief blocking wait without starving the runtime: inside a
+/// multi-threaded runtime, `block_in_place` lets tokio spawn a
+/// replacement worker so the tasks/fibers this wait depends on (the
+/// owner task, delivery fibers) still get scheduled. Outside a runtime,
+/// runs `f` directly. The lifecycle waits (`quiesce`, `flush_for_tests`,
+/// the scheduler's done-signal) are session-end / test-only, not the
+/// hot path.
+pub(crate) fn block_compensated<R>(f: impl FnOnce() -> R) -> R {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
 }
 
 /// Component path key — derived from a `Labels` value by joining
@@ -337,12 +453,15 @@ pub fn component_path_of(labels: &Labels) -> String {
 // write request.
 
 /// Snapshot of one window's externally-observable state, published
-/// atomically by the owner thread for read paths.
+/// atomically by the owner thread for read paths. Exposed `pub(crate)` so a
+/// multi-field reader (e.g. `MetricsQueryAccess::select_range`) can fetch the
+/// whole view with ONE lookup ([`CadenceReporter::window_view`]) instead of
+/// paying a component-path build + siphash per field.
 #[derive(Clone)]
-struct WindowReaderView {
-    latest: Option<Arc<MetricSet>>,
-    prebuffer: Option<Arc<MetricSet>>,
-    ring: Arc<Vec<Arc<MetricSet>>>,
+pub(crate) struct WindowReaderView {
+    pub(crate) latest: Option<Arc<MetricSet>>,
+    pub(crate) prebuffer: Option<Arc<MetricSet>>,
+    pub(crate) ring: Arc<Vec<Arc<MetricSet>>>,
 }
 
 impl Default for WindowReaderView {
@@ -385,9 +504,11 @@ enum Cmd {
         ack: Option<crossbeam_channel::Sender<()>>,
     },
     /// Force-close every prebuffer and fan out to every subscriber.
-    /// Used by `shutdown_flush`; sender waits on `ack`.
+    /// Used by `shutdown_flush` (sync) and `quiesce` (async); the sender
+    /// waits on `ack`, which may be a blocking (sync) or awaitable (async)
+    /// channel so the same command serves both runtime flavors.
     ShutdownFlushAll {
-        ack: crossbeam_channel::Sender<()>,
+        ack: FlushAck,
     },
     /// No-op barrier used by tests / explicit synchronization
     /// callers. The owner thread acks after publishing the
@@ -396,6 +517,29 @@ enum Cmd {
     Barrier {
         ack: crossbeam_channel::Sender<()>,
     },
+}
+
+/// An acknowledgement sink the owner signals after publishing reader state.
+///
+/// `Sync` is a `crossbeam_channel` the caller blocks on (multi-threaded /
+/// out-of-runtime callers, via [`block_compensated`]); `Async` is a
+/// `tokio::sync::oneshot` the caller `.await`s — required on a current-thread
+/// runtime, where a blocking wait would either panic (`block_in_place`) or
+/// deadlock the single thread against the owner task it's waiting for.
+enum FlushAck {
+    Sync(crossbeam_channel::Sender<()>),
+    Async(tokio::sync::oneshot::Sender<()>),
+}
+
+impl FlushAck {
+    /// Signal completion. Send errors (receiver dropped — caller gave up /
+    /// timed out) are ignored: the ack is best-effort.
+    fn signal(self) {
+        match self {
+            FlushAck::Sync(s) => { let _ = s.send(()); }
+            FlushAck::Async(s) => { let _ = s.send(()); }
+        }
+    }
 }
 
 /// The cadence reporter: per-component + per-cadence accumulator,
@@ -412,7 +556,7 @@ pub struct CadenceReporter {
     /// perspective (unbounded; allocations bounded by the ingest
     /// rate, which is one message per phase boundary in practice —
     /// not the cycle hot path).
-    cmd_tx: crossbeam_channel::Sender<Cmd>,
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<Cmd>,
     /// Atomically-published reader state. Owner publishes; readers
     /// `load_full`.
     state: Arc<ArcSwap<ReaderState>>,
@@ -430,8 +574,11 @@ pub struct CadenceReporter {
     /// Run start instant — used by `session_lifetime` queries to
     /// build the result's `interval`.
     started_at: Instant,
-    /// Owner thread join handle. Taken in `Drop`.
-    owner_thread: Mutex<Option<JoinHandle<()>>>,
+    /// Owner **task** join handle (the single-writer actor runs as a
+    /// tokio task on the shared runtime — no dedicated thread). Aborted
+    /// in `Drop`; it also self-terminates when `cmd_tx` is dropped and
+    /// its `recv()` returns `None`.
+    owner_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl CadenceReporter {
@@ -453,17 +600,20 @@ impl CadenceReporter {
         // (if needed) is the user's responsibility — but with the
         // typical "one ingest per phase boundary" pattern the
         // queue depth stays trivially bounded.
-        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<Cmd>();
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
 
         let owner_layers = layers.clone();
         let owner_state = state.clone();
         let owner_subs = subscriptions.clone();
-        let handle = thread::Builder::new()
-            .name("nbrs-cadence-consolidator".into())
-            .spawn(move || {
-                run_owner(cmd_rx, owner_layers, owner_state, owner_subs)
-            })
-            .expect("spawn cadence consolidator thread");
+        // The single-writer actor runs as a tokio task on the shared
+        // runtime — no dedicated thread. Requires a runtime to be active
+        // at construction (always true in production; tests run under
+        // `#[tokio::test(multi_thread)]`). Delivery fibers it spawns use
+        // the ambient runtime (it runs on it), so no handle to thread
+        // through.
+        let owner_task = tokio::spawn(run_owner(
+            cmd_rx, owner_layers, owner_state, owner_subs,
+        ));
 
         Self {
             layers,
@@ -473,7 +623,7 @@ impl CadenceReporter {
             subscriptions,
             next_subscriber_id: AtomicU64::new(1),
             started_at: Instant::now(),
-            owner_thread: Mutex::new(Some(handle)),
+            owner_task: Mutex::new(Some(owner_task)),
         }
     }
 
@@ -537,20 +687,22 @@ impl CadenceReporter {
     pub fn flush_for_tests(&self) {
         let (ack_tx, ack_rx) = crossbeam_channel::bounded::<()>(1);
         let _ = self.cmd_tx.send(Cmd::Barrier { ack: ack_tx });
-        let _ = ack_rx.recv();
+        // The owner is a runtime task; block_in_place so it gets a worker
+        // to process the barrier while this call waits.
+        block_compensated(|| { let _ = ack_rx.recv(); });
     }
 
-    /// Register a push subscriber for the given cadence. The
-    /// subscriber runs on a dedicated dispatch thread so slow
-    /// receivers can never stall the cascade. Returns a
-    /// [`SubscriberId`] for later [`Self::unsubscribe`].
+    /// Register a push subscriber for the given cadence. Each closed
+    /// window is delivered to it on an **ephemeral fiber** spawned by the
+    /// owner — no dedicated dispatch thread sits parked per subscriber.
+    /// Returns a [`SubscriberId`] for later [`Self::unsubscribe`].
     ///
     /// `cadence` MUST match one of this reporter's declared or
     /// hidden layer intervals — unknown cadences return an error.
     pub fn subscribe(
         self: &Arc<Self>,
         cadence: Duration,
-        mut reporter: Box<dyn Reporter>,
+        reporter: Box<dyn Reporter>,
         mut opts: SubscriptionOpts,
     ) -> Result<SubscriberId, SubscribeError> {
         if !self.layers.iter().any(|l| l.interval == cadence) {
@@ -561,99 +713,53 @@ impl CadenceReporter {
         }
 
         let id = SubscriberId(self.next_subscriber_id.fetch_add(1, Ordering::Relaxed));
-        let (sender, receiver) =
-            std::sync::mpsc::sync_channel::<Arc<MetricSet>>(opts.channel_capacity);
-        let state = Arc::new(SubscriptionState::new());
-        let state_for_worker = state.clone();
-
-        let worker = thread::Builder::new()
-            .name(format!("nbrs-metrics-subscriber-{}", id.0))
-            .spawn(move || {
-                while let Ok(snapshot) = receiver.recv() {
-                    reporter.report(&snapshot);
-                    state_for_worker.mark_delivered();
-                    // Committed to the sink — advance the drain counter
-                    // so `quiesce` can observe this snapshot landed.
-                    state_for_worker.delivered.fetch_add(1, Ordering::Relaxed);
-                    // A one-shot subscriber (e.g. a settle/stop
-                    // evaluator that just set a terminal phase
-                    // disposition) unregisters itself by signalling
-                    // `finished` — the worker exits its own loop, so no
-                    // self-join deadlock. The map entry is reaped by the
-                    // owner's `unsubscribe` at phase completion (joining
-                    // an already-exited worker is immediate).
-                    if reporter.finished() {
-                        break;
-                    }
-                }
-                reporter.flush();
-            })
-            .map_err(|e| SubscribeError::SpawnFailed(e.to_string()))?;
-
+        let context_wrap = opts.context_wrap.clone();
         let sub = Subscription {
             id,
             cadence,
-            sender,
-            state,
+            reporter: Arc::new(tokio::sync::Mutex::new(reporter)),
+            context_wrap,
+            state: Arc::new(SubscriptionState::new()),
             opts,
-            worker: Some(worker),
         };
         self.subscriptions.lock().unwrap_or_else(|e| e.into_inner()).insert(id, sub);
         Ok(id)
     }
 
-    /// Drop a subscription. The dispatch thread drains any pending
-    /// snapshots, calls `Reporter::flush`, and exits.
+    /// Drop a subscription, flushing its sink on the way out. No worker
+    /// thread to join — delivery is via ephemeral fibers, which at a
+    /// lifecycle boundary (after this execution's `quiesce` drained the
+    /// in-flight fibers) are no longer running, so the `flush` lock is
+    /// uncontended.
     pub fn unsubscribe(&self, id: SubscriberId) {
-        let mut sub = {
+        let sub = {
             let mut map = self.subscriptions.lock()
                 .unwrap_or_else(|e| e.into_inner());
             map.remove(&id)
         };
-        if let Some(sub) = sub.as_mut() {
-            let worker = sub.worker.take();
-            drop(std::mem::replace(
-                &mut sub.sender,
-                std::sync::mpsc::sync_channel::<Arc<MetricSet>>(1).0,
-            ));
-            if let Some(handle) = worker {
-                let _ = handle.join();
-            }
+        if let Some(sub) = sub {
+            if let Ok(mut g) = sub.reporter.try_lock() { g.flush(); }
         }
     }
 
-    /// Full shutdown: flush trailing partials through the cascade,
-    /// fan them out to every subscriber, then drop + join every
-    /// subscriber worker so channels drain and sinks call their
-    /// `Reporter::flush` on the way out. Callers that read from a
-    /// reporter sink (e.g. SQLite for a summary report) MUST call
-    /// this before reading — otherwise the last window of data is
-    /// still in transit.
-    pub fn shutdown(&self) {
-        // Wait for the owner to flush, then drop the cmd channel
-        // so the owner exits.
-        self.shutdown_flush();
-        // Closing the cmd_tx side terminates the owner loop.
-        // We can't move out of `&self`, so instead send a sentinel
-        // by dropping the last cloned sender. Since we hold one
-        // sender here, simply joining the thread relies on Drop.
-        // Instead, have the owner observe channel closure: we
-        // close by dropping all senders in the public Drop impl.
-        // Here we just join the worker channels.
-        let mut subs = {
+    /// Full shutdown: flush trailing partials through the cascade, fan
+    /// them out, then flush every subscriber sink. Callers that read
+    /// from a reporter sink (e.g. SQLite for a summary report) MUST call
+    /// this before reading — otherwise the last window of data is still
+    /// in transit.
+    pub async fn shutdown(&self) {
+        // Force-close + fan out trailing partials, then let any in-flight
+        // delivery fibers land (bounded so a stuck sink can't hang teardown).
+        // `quiesce` both flushes and drains, awaiting the owner/fibers — so
+        // this works on a current-thread runtime too.
+        self.quiesce(Duration::from_secs(5)).await;
+        let subs = {
             let mut map = self.subscriptions.lock()
                 .unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *map)
         };
-        for (_id, mut sub) in subs.drain() {
-            let worker = sub.worker.take();
-            drop(std::mem::replace(
-                &mut sub.sender,
-                std::sync::mpsc::sync_channel::<Arc<MetricSet>>(1).0,
-            ));
-            if let Some(handle) = worker {
-                let _ = handle.join();
-            }
+        for (_id, sub) in subs {
+            if let Ok(mut g) = sub.reporter.try_lock() { g.flush(); }
         }
     }
 
@@ -718,10 +824,15 @@ impl CadenceReporter {
     /// from the tokio runtime's main task, AFTER all other tokio
     /// tasks have completed — so blocking the OS thread for the
     /// duration of the flush is safe.
-    pub fn shutdown_flush(&self) {
-        let (ack_tx, ack_rx) = crossbeam_channel::bounded::<()>(1);
-        let _ = self.cmd_tx.send(Cmd::ShutdownFlushAll { ack: ack_tx });
-        let _ = ack_rx.recv();
+    pub async fn shutdown_flush(&self) {
+        // AWAIT the owner's ack rather than blocking — the owner is a tokio
+        // task sharing the runtime, so on a current-thread runtime a blocking
+        // wait would deadlock against (or `block_in_place`-panic before) the
+        // very task that produces the ack. Awaiting yields the thread so the
+        // owner runs. Callers (the scheduler's final flush) are async.
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let _ = self.cmd_tx.send(Cmd::ShutdownFlushAll { ack: FlushAck::Async(ack_tx) });
+        let _ = ack_rx.await;
     }
 
     /// SRD-88 — **non-terminal** flush-to-store. Force-close every
@@ -743,10 +854,17 @@ impl CadenceReporter {
     /// run — on timeout it returns with whatever has been committed
     /// (same lossy-under-backpressure contract as the `try_send`
     /// cascade).
-    pub fn quiesce(&self, max_wait: Duration) {
-        // 1. Force-close all paths + fan out (owner-synchronous).
-        self.shutdown_flush();
-        // 2. Wait for every subscriber worker to drain what was queued.
+    pub async fn quiesce(&self, max_wait: Duration) {
+        // 1. Force-close all paths + fan out, then AWAIT the owner's ack.
+        //    Awaiting (not blocking) is what makes this work on a
+        //    current-thread runtime: the owner task and delivery fibers
+        //    share the thread, so a blocking wait would deadlock / panic.
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let _ = self.cmd_tx.send(Cmd::ShutdownFlushAll { ack: FlushAck::Async(ack_tx) });
+        let _ = ack_rx.await;
+        // 2. Wait for every in-flight delivery fiber to land what was
+        //    queued, yielding between polls so the fibers get scheduled.
+        //    Bounded by `max_wait` so a stalled sink can't hang the run.
         let start = Instant::now();
         loop {
             let pending: u64 = {
@@ -756,7 +874,7 @@ impl CadenceReporter {
             if pending == 0 || start.elapsed() >= max_wait {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(1));
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
 
@@ -794,6 +912,20 @@ impl CadenceReporter {
             .unwrap_or_default()
     }
 
+    /// The whole published window view for `(labels, cadence)` in ONE lock-free
+    /// lookup. A reader that needs more than one of latest/prebuffer/ring should
+    /// use this and read the fields off the returned view, rather than calling
+    /// `latest` + `prebuffer` + `ring` separately — each of those rebuilds the
+    /// component-path string and re-hashes it, so three calls pay that cost
+    /// three times for the same key.
+    pub(crate) fn window_view(&self, labels: &Labels, cadence: Duration)
+        -> Option<Arc<WindowReaderView>>
+    {
+        let path = component_path_of(labels);
+        let idx = self.layer_index(cadence)?;
+        self.state.load_full().windows.get(&(path, idx)).cloned()
+    }
+
     /// All `(component_labels)` keys currently tracked.
     pub fn component_labels(&self) -> Vec<Labels> {
         let state = self.state.load_full();
@@ -805,44 +937,90 @@ impl CadenceReporter {
     }
 }
 
+// =========================================================================
+// MetricSink — the write-side dual of MetricAccess (SRD-90 §M7 / A7)
+// =========================================================================
+
+/// The write-side dual of [`crate::queryapi::MetricAccess`]: accept a labeled,
+/// timestamped snapshot for storage. One trait, used at every submit point.
+///
+/// SRD-90 §A7/M7. The [`CadenceReporter`] implements it at its **inlet**
+/// (`submit` = [`CadenceReporter::ingest`]) — that is where the scheduler hands
+/// snapshots in. The **durable / coarse fan-out sink** role (sqlite, console,
+/// csv, VM) is the existing [`Reporter`](crate::scheduler::Reporter) trait, fed
+/// *coalesced cadence windows* by the subscription dispatch — so sqlite stays
+/// downstream and coarse, never fed raw sub-interval ticks (A7-i). `submit` is
+/// **non-blocking** (A7-ii): the cadence inlet is a lock-free actor enqueue, and
+/// any durable serialization is a sink's own implementation detail, never
+/// imposed on the contract.
+pub trait MetricSink: Send + Sync {
+    /// Submit a snapshot for the component identified by `labels`. Non-blocking.
+    fn submit(&self, labels: &Labels, snapshot: MetricSet);
+    /// Flush any buffered state at a lifecycle boundary. Default no-op — the
+    /// cadence inlet's durability is the session lifecycle
+    /// (`shutdown_flush`/`quiesce`); a durable sink overrides to checkpoint.
+    fn flush(&self) {}
+}
+
+impl MetricSink for CadenceReporter {
+    fn submit(&self, labels: &Labels, snapshot: MetricSet) {
+        self.ingest(labels, snapshot);
+    }
+}
+
+/// Compose writes: submit one snapshot to **every** interior sink — the
+/// write-side dual of `HybridStore` composing reads. A producer fans a snapshot
+/// to, e.g., the cadence inlet plus a future direct durable sink, with one call.
+pub struct FanOutSink {
+    sinks: Vec<Arc<dyn MetricSink>>,
+}
+
+impl FanOutSink {
+    pub fn new(sinks: Vec<Arc<dyn MetricSink>>) -> Self {
+        Self { sinks }
+    }
+}
+
+impl MetricSink for FanOutSink {
+    fn submit(&self, labels: &Labels, snapshot: MetricSet) {
+        // Each sink may retain the snapshot, so hand each its own clone.
+        for sink in &self.sinks {
+            sink.submit(labels, snapshot.clone());
+        }
+    }
+    fn flush(&self) {
+        for sink in &self.sinks {
+            sink.flush();
+        }
+    }
+}
+
 impl Drop for CadenceReporter {
     fn drop(&mut self) {
-        // Closing the cmd channel by dropping the sender (we can't
-        // explicitly close it here since we're still holding a
-        // clone via `self.cmd_tx`). The owner thread observes
-        // the channel closure when its `recv()` returns Err.
-        //
-        // We replace `cmd_tx` with a freshly-disconnected channel's
-        // sender (cheap, no remaining receivers) so the original
-        // sender is dropped, dropping the channel's strong-sender
-        // count to zero and waking the owner's blocking recv.
-        let (dummy_tx, _dummy_rx) = crossbeam_channel::bounded::<Cmd>(1);
+        // Disconnect the command channel so the owner task's `recv()`
+        // returns `None` and it exits. We can't drop `self.cmd_tx`
+        // directly (it's a field), so swap in a fresh sender whose
+        // receiver is immediately dropped; the original `cmd_tx` drops
+        // here, dropping the last sender of the owner's receiver.
+        let (dummy_tx, dummy_rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
+        drop(dummy_rx);
         let _ = std::mem::replace(&mut self.cmd_tx, dummy_tx);
-        // _dummy_rx is dropped here, so the dummy_tx's recv side is
-        // gone too — but this scope's `cmd_tx` is now disconnected,
-        // which is fine: nothing else will send.
 
-        // Join the owner thread.
-        if let Ok(mut guard) = self.owner_thread.lock()
-            && let Some(handle) = guard.take() {
-                let _ = handle.join();
+        // Abort the owner task (it's exiting on its own now too). We're
+        // in a sync `drop`, so we can't await it; abort is immediate.
+        if let Ok(mut guard) = self.owner_task.lock()
+            && let Some(task) = guard.take() {
+                task.abort();
             }
 
-        // Drain subscriptions — dropping each sender closes the
-        // channel so the dispatch thread exits cleanly and flushes
-        // the reporter.
-        let mut subs = self.subscriptions.lock()
+        // Drain subscriptions, flushing each sink. Delivery fibers are
+        // ephemeral and the owner is stopped, so the `flush` lock is
+        // uncontended.
+        let subs = self.subscriptions.lock()
             .map(|mut g| std::mem::take(&mut *g))
             .unwrap_or_default();
-        for (_id, mut sub) in subs.drain() {
-            let worker = sub.worker.take();
-            drop(std::mem::replace(
-                &mut sub.sender,
-                std::sync::mpsc::sync_channel::<Arc<MetricSet>>(1).0,
-            ));
-            if let Some(handle) = worker {
-                let _ = handle.join();
-            }
+        for (_id, sub) in subs {
+            if let Ok(mut g) = sub.reporter.try_lock() { g.flush(); }
         }
     }
 }
@@ -855,8 +1033,8 @@ impl Drop for CadenceReporter {
 /// Drains the command channel, mutates the windows map exclusively
 /// (no lock), and republishes a fresh `ReaderState` after each batch
 /// of commands so readers always see a consistent view.
-fn run_owner(
-    cmd_rx: crossbeam_channel::Receiver<Cmd>,
+async fn run_owner(
+    mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
     layers: Vec<CadenceLayer>,
     state_pub: Arc<ArcSwap<ReaderState>>,
     subscriptions: Arc<Mutex<HashMap<SubscriberId, Subscription>>>,
@@ -865,17 +1043,17 @@ fn run_owner(
     let mut component_labels: HashMap<String, Labels> = HashMap::new();
 
     'outer: loop {
-        // Block on the first message of a batch.
-        let mut cmd = match cmd_rx.recv() {
-            Ok(c) => c,
-            Err(_) => break 'outer, // channel closed → shutdown
+        // Await the first message of a batch.
+        let mut cmd = match cmd_rx.recv().await {
+            Some(c) => c,
+            None => break 'outer, // all senders dropped → shutdown
         };
 
         // Drain commands without blocking; publish once at the end
         // of the batch so readers see all changes atomically. Acks
         // are collected and fired AFTER the publish so callers
         // observe the state they requested.
-        let mut acks: Vec<crossbeam_channel::Sender<()>> = Vec::new();
+        let mut acks: Vec<FlushAck> = Vec::new();
         loop {
             match cmd {
                 Cmd::Ingest { path, labels, snapshot, ack } => {
@@ -884,14 +1062,14 @@ fn run_owner(
                         &mut windows, &layers, path, snapshot,
                     );
                     fanout_owner(&subscriptions, &closed_by_cadence);
-                    if let Some(a) = ack { acks.push(a); }
+                    if let Some(a) = ack { acks.push(FlushAck::Sync(a)); }
                 }
                 Cmd::ClosePath { path, ack } => {
                     let closed_by_cadence = close_path_cascade(
                         &mut windows, &layers, &path,
                     );
                     fanout_owner(&subscriptions, &closed_by_cadence);
-                    if let Some(a) = ack { acks.push(a); }
+                    if let Some(a) = ack { acks.push(FlushAck::Sync(a)); }
                 }
                 Cmd::ShutdownFlushAll { ack } => {
                     let paths: Vec<String> = {
@@ -914,13 +1092,13 @@ fn run_owner(
                     // The ack fires after the post-batch publish,
                     // so the caller sees the cumulative effect of
                     // every prior FIFO command.
-                    acks.push(ack);
+                    acks.push(FlushAck::Sync(ack));
                 }
             }
 
             cmd = match cmd_rx.try_recv() {
                 Ok(c) => c,
-                Err(_) => break,
+                Err(_) => break, // batch drained (Empty) or closed
             };
         }
 
@@ -929,7 +1107,7 @@ fn run_owner(
         // Fire all acks AFTER publish so each waiter sees its own
         // command's effects in the reader state.
         for ack in acks.drain(..) {
-            let _ = ack.send(());
+            ack.signal();
         }
     }
 
@@ -999,50 +1177,88 @@ fn close_path_cascade(
     closed
 }
 
-/// Owner-side fanout: deliver each closed snapshot to subscribers at
-/// its cadence via non-blocking `try_send`. The owner thread is the
-/// sole writer of windows, so even the historical "blocking send at
-/// phase-end" semantics don't need to be blocking here — the
-/// deterministic publication boundary is the ack channel returned to
-/// `close_path`'s caller.
+/// Owner-side fanout: for each closed snapshot, spawn an **ephemeral
+/// delivery fiber** per matching subscriber. The owner never blocks
+/// (spawn returns immediately) and no dedicated per-subscriber thread
+/// sits parked — the signaling layer is now the cadence command stream
+/// plus short-lived fibers. The fiber `try_lock`s the subscriber's sink
+/// (a busy lock = a prior delivery still running ⇒ drop this window,
+/// the same lossy-under-backpressure contract the bounded channel had)
+/// and always bumps `delivered` so `quiesce` (pending == 0) converges.
+/// Each fiber runs inside the subscriber's `context_wrap` so a workload
+/// subscriber's report executes as its own execution (SRD-88).
 fn fanout_owner(
     subscriptions: &Arc<Mutex<HashMap<SubscriberId, Subscription>>>,
     closed: &[(Duration, Arc<MetricSet>)],
 ) {
     if closed.is_empty() { return; }
+    // Runs inside the owner task, so delivery fibers spawn onto the
+    // ambient runtime.
     let Ok(map) = subscriptions.lock() else { return };
     for (cadence, snapshot) in closed {
         for sub in map.values() {
             if sub.cadence != *cadence { continue; }
-            match sub.sender.try_send(snapshot.clone()) {
-                Ok(()) => { sub.state.sent.fetch_add(1, Ordering::Relaxed); }
-                Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
-                    let drops = sub.state.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
-                    if let Some(timeout) = sub.opts.timeout {
-                        let last = sub.state.last_delivered.lock()
-                            .map(|g| *g).unwrap_or_else(|_| Instant::now());
-                        let age = last.elapsed();
-                        if age >= timeout
-                            && !sub.state.timeout_fired.swap(true, Ordering::Relaxed)
-                        {
-                            if let Some(cb) = &sub.opts.on_timeout {
-                                cb(TimeoutEvent {
-                                    subscriber_id: sub.id,
-                                    cadence: sub.cadence,
-                                    snapshot_age: age,
-                                    consecutive_drops: drops,
-                                });
-                            } else {
-                                crate::diag::warn(&format!(
-                                    "metrics subscription {:?} at cadence {:?} has stalled for \
-                                     {age:?} ({drops} consecutive drops)",
-                                    sub.id, sub.cadence,
-                                ));
-                            }
+            // Stop feeding a one-shot subscriber that already terminated.
+            if sub.state.finished.load(Ordering::Relaxed) { continue; }
+
+            // Bounded backpressure: while in-flight deliveries (pending =
+            // sent − delivered) are at capacity, drop this window and
+            // escalate the stall timeout — the same policy the bounded
+            // channel had when it filled. Keeps a wedged sink from piling
+            // up unbounded `lock().await` waiters.
+            if sub.state.pending() >= sub.opts.channel_capacity as u64 {
+                let drops = sub.state.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                if let Some(timeout) = sub.opts.timeout {
+                    let last = sub.state.last_delivered.lock()
+                        .map(|g| *g).unwrap_or_else(|_| Instant::now());
+                    let age = last.elapsed();
+                    if age >= timeout
+                        && !sub.state.timeout_fired.swap(true, Ordering::Relaxed)
+                    {
+                        if let Some(cb) = &sub.opts.on_timeout {
+                            cb(TimeoutEvent {
+                                subscriber_id: sub.id,
+                                cadence: sub.cadence,
+                                snapshot_age: age,
+                                consecutive_drops: drops,
+                            });
+                        } else {
+                            crate::diag::warn(&format!(
+                                "metrics subscription {:?} at cadence {:?} has stalled for \
+                                 {age:?} ({drops} consecutive drops)",
+                                sub.id, sub.cadence,
+                            ));
                         }
                     }
                 }
+                continue;
             }
+
+            sub.state.sent.fetch_add(1, Ordering::Relaxed);
+            let reporter = sub.reporter.clone();
+            let state = sub.state.clone();
+            let snapshot = snapshot.clone();
+
+            let fut = async move {
+                // Serialize losslessly: wait for any prior delivery to
+                // finish, then report this window in order.
+                let mut g = reporter.lock().await;
+                g.report(&snapshot);
+                if g.finished() {
+                    state.finished.store(true, Ordering::Relaxed);
+                }
+                drop(g);
+                state.mark_delivered(); // resets consecutive_drops + timeout
+                // Closes out this in-flight delivery so `quiesce`
+                // (pending == 0) and the capacity gate converge.
+                state.delivered.fetch_add(1, Ordering::Relaxed);
+            };
+
+            let fut: Pin<Box<dyn Future<Output = ()> + Send>> = match &sub.context_wrap {
+                Some(w) => w(Box::pin(fut)),
+                None => Box::pin(fut),
+            };
+            tokio::spawn(fut);
         }
     }
 }
@@ -1096,8 +1312,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ingest_promotes_at_smallest_cadence_boundary() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ingest_promotes_at_smallest_cadence_boundary() {
         let cadences = Cadences::new(&[
             Duration::from_millis(100),
             Duration::from_millis(400),
@@ -1123,27 +1339,177 @@ mod tests {
             "promoted 400ms window holds the latest cumulative");
     }
 
-    #[test]
-    fn ring_caps_at_history_ring_cap() {
+    /// Build a counter snapshot stamped at an explicit `captured_at`, so a
+    /// test can drive the time-based retention without sleeping.
+    fn counter_set_at(captured_at: Instant, interval: Duration, value: u64) -> MetricSet {
+        let mut s = MetricSet::at(captured_at, interval);
+        s.insert_counter("ops", Labels::default(), value, captured_at);
+        s
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ring_retains_by_time_not_slot_count() {
+        // SRD-90 §M1: the smallest-cadence ring is TIME-bounded, not
+        // slot-bounded. Pushing more than HISTORY_RING_CAP windows, all within
+        // the counter horizon, retains every one (the old slot cap would have
+        // dropped the oldest 5) — that extra cheap counter history is what
+        // short-timeframe trending reads.
         let cadences = Cadences::new(&[Duration::from_millis(50)]).unwrap();
-        let tree = CadenceTree::plan_default(cadences);
-        let reporter = CadenceReporter::new(tree);
+        let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
         let labels = Labels::of("phase", "x");
 
+        let base = Instant::now();
         for i in 0..(HISTORY_RING_CAP + 5) {
-            reporter.ingest(&labels, counter_set(Duration::from_millis(50), (i as u64) + 1));
+            let at = base + Duration::from_millis(i as u64);
+            reporter.ingest(&labels, counter_set_at(at, Duration::from_millis(50), (i as u64) + 1));
         }
         reporter.flush_for_tests();
 
         let ring = reporter.ring(&labels, Duration::from_millis(50));
-        assert_eq!(ring.len(), HISTORY_RING_CAP);
-        // Newest at the back: total should be HISTORY_RING_CAP + 5.
+        assert_eq!(
+            ring.len(), HISTORY_RING_CAP + 5,
+            "time-bounded ring keeps all recent windows, not just HISTORY_RING_CAP",
+        );
         let newest_total = first_counter_total(ring.last().unwrap());
         assert_eq!(newest_total, (HISTORY_RING_CAP as u64) + 5);
     }
 
-    #[test]
-    fn force_close_publishes_partial_at_shutdown() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ring_evicts_windows_past_the_counter_horizon() {
+        // A window older than the counter retain horizon (relative to the
+        // newest) is evicted — the retention is bounded by wall-clock, not by
+        // run length.
+        let cadences = Cadences::new(&[Duration::from_millis(50)]).unwrap();
+        let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
+        let labels = Labels::of("phase", "x");
+
+        let base = Instant::now();
+        // One ancient window, then five "100s-later" windows. The ancient one
+        // is past the 60s horizon relative to the newest → evicted on the next
+        // append; the five recent ones remain.
+        reporter.ingest(&labels, counter_set_at(base, Duration::from_millis(50), 1));
+        for i in 1..=5u64 {
+            let at = base + Duration::from_secs(100) + Duration::from_millis(i);
+            reporter.ingest(&labels, counter_set_at(at, Duration::from_millis(50), 1 + i));
+        }
+        reporter.flush_for_tests();
+
+        let ring = reporter.ring(&labels, Duration::from_millis(50));
+        assert_eq!(ring.len(), 5, "the window past the retain horizon is evicted");
+        assert_eq!(
+            first_counter_total(ring.first().unwrap()), 2,
+            "oldest retained window is the first of the recent cluster",
+        );
+    }
+
+    /// A snapshot carrying BOTH a cumulative counter and an HDR histogram,
+    /// stamped at an explicit `captured_at`.
+    fn counter_and_hist_at(captured_at: Instant, interval: Duration, value: u64) -> MetricSet {
+        use hdrhistogram::Histogram as HdrHistogram;
+        let mut h = HdrHistogram::<u64>::new(3).unwrap();
+        h.record(value).unwrap();
+        let mut s = MetricSet::at(captured_at, interval);
+        s.insert_counter("ops", Labels::default(), value, captured_at);
+        s.insert_histogram("latency", Labels::default(), h, captured_at);
+        s
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn distributions_stripped_past_hist_horizon_but_counters_kept() {
+        // SRD-90 §M1 / the "histograms are a different matter" rule: past the
+        // tight distribution horizon (50ms × HISTORY_RING_CAP = 1.6s here), a
+        // retained window sheds its heavy HDR reservoir but keeps its cheap
+        // cumulative counter — so counter trending runs long while histogram
+        // memory stays bounded.
+        let cadences = Cadences::new(&[Duration::from_millis(50)]).unwrap();
+        let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
+        let labels = Labels::of("phase", "h");
+
+        let base = Instant::now();
+        // Old window (both families), then one 2s later: 2s > 1.6s hist horizon
+        // but well under the 60s counter horizon.
+        reporter.ingest(&labels, counter_and_hist_at(base, Duration::from_millis(50), 1));
+        reporter.ingest(&labels,
+            counter_and_hist_at(base + Duration::from_secs(2), Duration::from_millis(50), 2));
+        reporter.flush_for_tests();
+
+        let ring = reporter.ring(&labels, Duration::from_millis(50));
+        assert_eq!(ring.len(), 2, "both windows are within the counter horizon");
+        let old = ring.first().unwrap();
+        assert!(old.family("ops").is_some(), "old window keeps its cumulative counter");
+        assert!(old.family("latency").is_none(),
+            "old window's HDR histogram is stripped past the distribution horizon");
+        let recent = ring.last().unwrap();
+        assert!(recent.family("latency").is_some(), "the recent window keeps its histogram");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn partial_flush_is_retained_as_a_distinct_window() {
+        // SRD-90 §M2: a sub-cadence `scope_close` partial is STACKED as its own
+        // timestamped window in the smallest-tier ring — distinct from the
+        // pulse-closed windows, carrying its own `is_partial` flag and interval
+        // — not folded away. (Within-window sub-cadence ingests still coalesce
+        // into their window; it is each *close* that is a distinct point.)
+        let cadences = Cadences::new(&[Duration::from_secs(1)]).unwrap();
+        let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
+        let labels = Labels::of("phase", "p");
+        let base = Instant::now();
+
+        // A full 1s window → a regular (non-partial) closed window.
+        reporter.ingest(&labels, counter_set_at(base, Duration::from_secs(1), 10));
+        // A mid-cadence teardown flushes a 200ms partial right after.
+        let mut partial = MetricSet::at(base + Duration::from_secs(1), Duration::from_millis(200));
+        partial.insert_counter("ops", Labels::default(), 5, base + Duration::from_secs(1));
+        reporter.scope_close(&labels, partial);
+        reporter.flush_for_tests();
+
+        let ring = reporter.ring(&labels, Duration::from_secs(1));
+        assert_eq!(ring.len(), 2, "the pulse window AND the partial flush are both retained");
+        assert!(!ring[0].is_partial(), "first is the pulse-closed window");
+        assert_eq!(first_counter_total(&ring[0]), 10);
+        assert!(ring[1].is_partial(), "second is the scope_close partial, flagged");
+        assert_eq!(first_counter_total(&ring[1]), 5);
+        assert!(ring[1].interval() < Duration::from_secs(1), "partial carries its own sub-cadence interval");
+        assert!(ring[0].captured_at() < ring[1].captured_at(), "distinct timestamps, not coalesced");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metric_sink_fans_out_and_cadence_reporter_is_a_sink() {
+        // SRD-90 §M7/A7: `CadenceReporter` implements `MetricSink` at its inlet
+        // (`submit` = `ingest`), and `FanOutSink` delivers one snapshot to every
+        // interior sink — the write-side dual of `HybridStore` composing reads.
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        struct Recorder(Arc<AtomicU64>);
+        impl MetricSink for Recorder {
+            fn submit(&self, _labels: &Labels, snapshot: MetricSet) {
+                self.0.fetch_add(first_counter_total(&snapshot), Ordering::SeqCst);
+            }
+        }
+
+        let cadences = Cadences::new(&[Duration::from_millis(50)]).unwrap();
+        let reporter = Arc::new(CadenceReporter::new(CadenceTree::plan_default(cadences)));
+        let rec_a = Arc::new(AtomicU64::new(0));
+        let rec_b = Arc::new(AtomicU64::new(0));
+
+        let fan = FanOutSink::new(vec![
+            reporter.clone() as Arc<dyn MetricSink>,
+            Arc::new(Recorder(rec_a.clone())),
+            Arc::new(Recorder(rec_b.clone())),
+        ]);
+        let labels = Labels::of("phase", "f");
+        fan.submit(&labels, counter_set(Duration::from_millis(50), 7));
+        reporter.flush_for_tests();
+
+        assert_eq!(rec_a.load(Ordering::SeqCst), 7, "fan-out reached recorder A");
+        assert_eq!(rec_b.load(Ordering::SeqCst), 7, "fan-out reached recorder B");
+        let latest = reporter.latest(&labels, Duration::from_millis(50))
+            .expect("cadence reporter ingested via MetricSink::submit");
+        assert_eq!(first_counter_total(&latest), 7);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn force_close_publishes_partial_at_shutdown() {
         let cadences = Cadences::new(&[Duration::from_millis(1000)]).unwrap();
         let tree = CadenceTree::plan_default(cadences);
         let reporter = CadenceReporter::new(tree);
@@ -1154,7 +1520,7 @@ mod tests {
         reporter.flush_for_tests();
         assert!(reporter.latest(&labels, Duration::from_millis(1000)).is_none());
 
-        reporter.shutdown_flush();
+        reporter.shutdown_flush().await;
         let partial = reporter.latest(&labels, Duration::from_millis(1000))
             .expect("shutdown must publish trailing partial");
         assert_eq!(first_counter_total(&partial), 3);
@@ -1162,8 +1528,8 @@ mod tests {
             "partial interval must be < cadence: {:?}", partial.interval());
     }
 
-    #[test]
-    fn prebuffer_visible_for_in_flight_data() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prebuffer_visible_for_in_flight_data() {
         let cadences = Cadences::new(&[Duration::from_millis(1000)]).unwrap();
         let tree = CadenceTree::plan_default(cadences);
         let reporter = CadenceReporter::new(tree);
@@ -1191,8 +1557,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn subscribe_receives_snapshots_on_dispatch_thread() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn subscribe_receives_snapshots_on_dispatch_thread() {
         let cadences = Cadences::new(&[Duration::from_millis(100)]).unwrap();
         let reporter = Arc::new(CadenceReporter::new(CadenceTree::plan_default(cadences)));
         let labels = Labels::of("phase", "sub");
@@ -1215,8 +1581,8 @@ mod tests {
         assert_eq!(count.load(Ordering::Relaxed), 5);
     }
 
-    #[test]
-    fn quiesce_synchronously_drains_subscriber_and_is_non_terminal() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn quiesce_synchronously_drains_subscriber_and_is_non_terminal() {
         // SRD-88 — `quiesce` is the per-execution flush-to-store: after
         // it returns, the subscriber (the sink, e.g. SQLite) has
         // committed every closed window, WITHOUT the subscriber being
@@ -1239,20 +1605,20 @@ mod tests {
         // quiesce force-closes the open window, fans it out, and waits
         // for the worker to commit it — so the assertion needs NO drain
         // loop, unlike `subscribe_receives_snapshots_on_dispatch_thread`.
-        reporter.quiesce(Duration::from_secs(2));
+        reporter.quiesce(Duration::from_secs(2)).await;
         let after_first = count.load(Ordering::Relaxed);
         assert!(after_first >= 1,
             "quiesce must synchronously deliver the force-closed window; got {after_first}");
 
         // Non-terminal: the subscriber is still registered — more data flows.
         reporter.ingest(&labels, counter_set(Duration::from_millis(100), 1));
-        reporter.quiesce(Duration::from_secs(2));
+        reporter.quiesce(Duration::from_secs(2)).await;
         assert!(count.load(Ordering::Relaxed) > after_first,
             "subscriber must remain alive + receiving after quiesce");
     }
 
-    #[test]
-    fn subscribe_rejects_unknown_cadence() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn subscribe_rejects_unknown_cadence() {
         let cadences = Cadences::new(&[Duration::from_millis(100)]).unwrap();
         let reporter = Arc::new(CadenceReporter::new(CadenceTree::plan_default(cadences)));
 
@@ -1277,8 +1643,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stalled_subscriber_fires_timeout_without_blocking_cascade() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stalled_subscriber_fires_timeout_without_blocking_cascade() {
         let cadences = Cadences::new(&[Duration::from_millis(50)]).unwrap();
         let reporter = Arc::new(CadenceReporter::new(CadenceTree::plan_default(cadences)));
         let labels = Labels::of("phase", "stall");
@@ -1293,6 +1659,7 @@ mod tests {
             on_timeout: Some(Arc::new(move |_ev| {
                 fired_for_cb.fetch_add(1, Ordering::Relaxed);
             })),
+            context_wrap: None,
         };
         let _id = reporter.subscribe(
             Duration::from_millis(50),
@@ -1319,8 +1686,8 @@ mod tests {
         block.store(false, Ordering::Relaxed);
     }
 
-    #[test]
-    fn unsubscribe_stops_delivery() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unsubscribe_stops_delivery() {
         let cadences = Cadences::new(&[Duration::from_millis(50)]).unwrap();
         let reporter = Arc::new(CadenceReporter::new(CadenceTree::plan_default(cadences)));
         let labels = Labels::of("phase", "unsub");
@@ -1374,8 +1741,8 @@ mod tests {
         s
     }
 
-    #[test]
-    fn scope_close_marks_partial_and_publishes_immediately() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scope_close_marks_partial_and_publishes_immediately() {
         // Cadence is 1s. Component contributes 200ms of activity then
         // tears down. scope_close must publish a partial-annotated
         // snapshot at the smallest cadence right away, so a query
@@ -1398,8 +1765,8 @@ mod tests {
             "partial interval must be < cadence, got {:?}", latest.interval());
     }
 
-    #[test]
-    fn scope_close_counter_partial_carries_through_cascade() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scope_close_counter_partial_carries_through_cascade() {
         // SRD-42 §"Component lifecycle: scope_close flush" — a
         // scope_close partial cascades through every cadence layer
         // marked partial=true. The current implementation publishes
@@ -1453,8 +1820,8 @@ mod tests {
             "natural-pulse close must NOT be marked partial");
     }
 
-    #[test]
-    fn scope_close_gauge_partials_use_combine_rules() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scope_close_gauge_partials_use_combine_rules() {
         // Gauge combine is weighted-avg by interval. With two
         // partials of equal interval and gauge values 4.0 and 8.0,
         // the merged value must be 6.0 (mean) — the fold goes
@@ -1492,8 +1859,8 @@ mod tests {
         assert!((value - 6.0).abs() < 1e-9, "expected 6.0, got {value}");
     }
 
-    #[test]
-    fn scope_close_histogram_partials_hdr_merge() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scope_close_histogram_partials_hdr_merge() {
         // Histogram combine = HdrHistogram::add. Two partials each
         // recording disjoint values; the merged reservoir must
         // include all of them.
@@ -1521,8 +1888,8 @@ mod tests {
         assert!(h.value_at_quantile(1.0) >= 300);
     }
 
-    #[test]
-    fn scope_close_only_runs_when_component_is_running() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scope_close_only_runs_when_component_is_running() {
         // scope_close on the COMPONENT (vs. on the reporter direct)
         // skips Stopped/Stopping/Starting components per the
         // ComponentState gate — covered in the component module
@@ -1542,8 +1909,8 @@ mod tests {
             "empty-delta scope_close on never-seen path must not invent a snapshot");
     }
 
-    #[test]
-    fn separate_components_keyed_independently() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn separate_components_keyed_independently() {
         let cadences = Cadences::new(&[Duration::from_millis(100)]).unwrap();
         let tree = CadenceTree::plan_default(cadences);
         let reporter = CadenceReporter::new(tree);

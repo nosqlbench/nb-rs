@@ -2713,6 +2713,7 @@ dependencies = [
  "parking_lot",
  "plotters",
  "polydat",
+ "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -2848,6 +2849,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

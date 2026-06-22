@@ -560,8 +560,11 @@ mod tests {
         assert!((r - 100.0).abs() < 20.0, "expected ~100 ops/s, got {r}");
     }
 
-    #[test]
-    fn live_and_sqlite_backends_agree_on_cumulative_counter() {
+    // Constructs a live `CadenceReporter`, whose owner actor is a `tokio::spawn`
+    // task — so this test needs an active runtime (every other reporter test
+    // uses `#[tokio::test(multi_thread)]`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_and_sqlite_backends_agree_on_cumulative_counter() {
         // Backend independence: the live (cadence) and sqlite backends expose
         // a counter through the SAME `MetricAccess` contract — its CUMULATIVE
         // value, not the per-window delta. Build the same counter (per-window

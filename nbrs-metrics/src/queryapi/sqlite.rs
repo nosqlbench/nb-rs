@@ -314,9 +314,12 @@ impl MetricAccess for SqliteDataSource {
         // 2. Resolve label matchers to a set of candidate
         //    label_set_ids. The empty matcher list means
         //    "every label set under this family" — handled
-        //    by skipping the IN clause entirely.
+        //    by skipping the IN clause entirely. `exec_id` is a *column*
+        //    (`mi.exec_id`), not an `instance_label` row, so it is excluded
+        //    here and applied as `exec_label_filter` below (SRD-90 §M6: the
+        //    `exec_id` dimensional label, applied where it lives in sqlite).
         let other_matchers: Vec<&Matcher> = matchers.iter()
-            .filter(|m| m.label != "__name__")
+            .filter(|m| m.label != "__name__" && m.label != "exec_id")
             .collect();
         let label_filter = instance_label_filter_clause(&other_matchers)?;
 
@@ -341,12 +344,25 @@ impl MetricAccess for SqliteDataSource {
         // at the SQL level; `LatestPerInstance` fetches every
         // execution and picks the newest per logical instance in a
         // post-pass (below); `All` does no filtering.
+        // SRD-89 §3b / SRD-90 §M6 — `exec_id` is a uniform dimensional label:
+        // when a read carries an `exec_id="N"` matcher (injected by the scoping
+        // layer for the reading execution), apply it to the `exec_id` column
+        // here, exactly as the in-memory tier applies it to its label set. This
+        // is what scopes a hybrid live read's sqlite tail to the reading
+        // execution. It composes with `ExecutionSelection` (the report path,
+        // which carries no such matcher).
+        let exec_label_filter = matchers.iter()
+            .find(|m| m.label == "exec_id" && m.op == MatcherOp::Eq)
+            .and_then(|m| m.value.parse::<i64>().ok())
+            .map(|n| format!("AND mi.exec_id = {n} "))
+            .unwrap_or_default();
         let exec_filter = match self.selection {
             ExecutionSelection::Specific(n) => format!("AND mi.exec_id = {n} "),
             ExecutionSelection::Latest => "AND mi.exec_id = \
                 (SELECT MAX(exec_id) FROM metric_instance WHERE family_id = ?1) ".to_string(),
             ExecutionSelection::All | ExecutionSelection::LatestPerInstance => String::new(),
         };
+        let exec_filter = format!("{exec_filter}{exec_label_filter}");
         let sql = format!(
             "SELECT mi.id, sv.timestamp_ms, {stat_expr}{interval_proj} \
              FROM metric_instance mi \

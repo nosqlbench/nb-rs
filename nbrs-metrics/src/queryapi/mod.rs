@@ -33,6 +33,7 @@
 //!   backend's crate or features.
 
 pub mod catalog;
+mod hybrid;
 mod live;
 mod shapes;
 #[cfg(feature = "sqlite")]
@@ -41,10 +42,13 @@ pub mod sqlite;
 pub use catalog::{
     CachedCatalog, ExemplarPoint, LabelSet, MetricCatalog, MetricFamilyMeta, MetricType,
 };
+pub use hybrid::{HorizonAware, HybridStore, Tier};
 pub use live::MetricsQueryAccess;
 pub use shapes::{MatchOp, Matcher, Sample, Series, Vector};
 
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, OnceLock};
+
+use arc_swap::ArcSwapOption;
 
 /// Error from a metrics access backend. Backends own their taxonomy;
 /// the engine treats these as opaque from a flow-control standpoint.
@@ -120,20 +124,112 @@ pub trait MetricAccess: Send + Sync {
 // Runtime service location
 // ---------------------------------------------------------------------
 
+/// Sized holder for the trait-object service, so it can live in an
+/// `ArcSwapOption` (whose pointee must be `Sized`; a bare `dyn MetricAccess`
+/// is not).
+struct LiveHolder(Arc<dyn MetricAccess>);
+
 /// The live in-process access service for the current session. Wraps a
 /// per-session `MetricsQuery`, so it's *installed* (not static).
-static LIVE: LazyLock<Mutex<Option<Arc<dyn MetricAccess>>>> =
-    LazyLock::new(|| Mutex::new(None));
+///
+/// SRD-90 §M4 — an `ArcSwapOption`, not a `Mutex`: `live_access()` is on the
+/// metricsql read hot path (every settle pulse / TUI refresh resolves it), so
+/// the read is a single lock-free atomic load, never a mutex acquire that could
+/// contend under concurrent executions.
+static LIVE: LazyLock<ArcSwapOption<LiveHolder>> =
+    LazyLock::new(ArcSwapOption::empty);
 
 /// Install the live in-process access service. Called once by the
 /// runner when the session's `MetricsQuery` is built.
 pub fn install_live_access(service: Arc<dyn MetricAccess>) {
-    *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(service);
+    LIVE.store(Some(Arc::new(LiveHolder(service))));
 }
 
 /// The live in-process access service, if a session has installed one.
+/// Lock-free: one atomic `ArcSwap` load.
 pub fn live_access() -> Option<Arc<dyn MetricAccess>> {
-    LIVE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    LIVE.load_full().map(|h| h.0.clone())
+}
+
+/// Resolves the **reading execution's** `exec_id`, so a live metric read
+/// can scope itself to its own execution's series instead of every
+/// execution sharing the session (SRD-88 encapsulation — without this, an
+/// optimizer's `sum(rate(errors_total[…]))` would sum a concurrent
+/// neighbour's errors too). `exec_id` lives in nbrs-runtime's task-local
+/// `ExecutionContext`, a layer above this crate, so the runtime installs
+/// a small resolver hook here. `None` ⇒ no scope (single-run / outside any
+/// execution — read everything, A1).
+static READ_EXEC_ID_HOOK: OnceLock<fn() -> Option<u64>> = OnceLock::new();
+
+/// Install the reading-execution `exec_id` resolver (idempotent — first
+/// wins). The runtime calls this once with a fn that reads its task-local
+/// execution context.
+pub fn install_read_exec_id_hook(hook: fn() -> Option<u64>) {
+    let _ = READ_EXEC_ID_HOOK.set(hook);
+}
+
+/// The reading execution's `exec_id`, if a hook is installed and a scope
+/// is active. `None` ⇒ live reads are unscoped (A1 single-run).
+pub fn current_read_exec_id() -> Option<u64> {
+    READ_EXEC_ID_HOOK.get().and_then(|h| h())
+}
+
+/// SRD-89 §3b / SRD-90 §M6 — scope every read to its **reading execution** by
+/// injecting `exec_id` as a uniform **dimensional-label matcher**, so each
+/// interior backend applies it wherever `exec_id` lives (the in-memory tier's
+/// label set, the sqlite tier's `exec_id` column) with the same value. This
+/// replaces the per-backend special-casing (the live tier's bespoke post-filter,
+/// a sqlite selection mode) with one mechanism: `exec_id` is just a label.
+///
+/// `None` (single-run / outside any execution scope) ⇒ no injection — the read
+/// is unscoped and sees the sole execution's data, byte-identical to before
+/// (axiom A1). If the caller already constrained `exec_id`, nothing is injected.
+pub struct ExecScopedAccess {
+    inner: Arc<dyn MetricAccess>,
+}
+
+impl ExecScopedAccess {
+    pub fn new(inner: Arc<dyn MetricAccess>) -> Self {
+        Self { inner }
+    }
+
+    /// The matcher set with the reading execution's `exec_id` injected (when a
+    /// scope is active and the caller hasn't already constrained it).
+    fn scoped(&self, matchers: &[Matcher]) -> Option<Vec<Matcher>> {
+        let id = current_read_exec_id()?;
+        if matchers.iter().any(|m| m.label == "exec_id") {
+            return None; // caller already scoped — don't double-inject
+        }
+        let mut v = matchers.to_vec();
+        v.push(Matcher::eq("exec_id", &id.to_string()));
+        Some(v)
+    }
+}
+
+impl MetricAccess for ExecScopedAccess {
+    fn select_range(
+        &self,
+        matchers: &[Matcher],
+        start_ms: i64,
+        end_ms: i64,
+    ) -> Result<Vector, QueryError> {
+        match self.scoped(matchers) {
+            Some(scoped) => self.inner.select_range(&scoped, start_ms, end_ms),
+            None => self.inner.select_range(matchers, start_ms, end_ms),
+        }
+    }
+
+    fn select_instant(
+        &self,
+        matchers: &[Matcher],
+        at_ms: i64,
+        lookback_ms: Option<i64>,
+    ) -> Result<Vector, QueryError> {
+        match self.scoped(matchers) {
+            Some(scoped) => self.inner.select_instant(&scoped, at_ms, lookback_ms),
+            None => self.inner.select_instant(matchers, at_ms, lookback_ms),
+        }
+    }
 }
 
 /// A pluggable access backend, discovered at runtime via `inventory`.

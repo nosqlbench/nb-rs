@@ -49,3 +49,7 @@ polydat-nodes = ["dep:polydat", "dep:inventory"]
 # provides the backend itself (the engine sits over it).
 rusqlite = { version = "0.31", features = ["bundled"] }
 nbrs-metrics = { path = "../nbrs-metrics", features = ["sqlite"] }
+# A live `CadenceReporter` owner is a `tokio::spawn` task, so the
+# backend-parity integration test (tests/sqlite.rs) runs under a
+# multi-thread runtime.
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }

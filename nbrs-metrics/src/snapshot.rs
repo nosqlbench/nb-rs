@@ -157,6 +157,42 @@ impl MetricSet {
     pub fn len(&self) -> usize { self.families.len() }
     pub fn is_empty(&self) -> bool { self.families.is_empty() }
 
+    /// True if this set carries any HDR-reservoir distribution family
+    /// (`Histogram` / `GaugeHistogram`) — the memory-heavy part of a snapshot.
+    ///
+    /// SRD-90: cumulative counters/gauges cost ~nothing to retain across the
+    /// sub-interval history (a point is just `(timestamp, value)`), but a
+    /// distribution point carries a whole reservoir snapshot. The cadence
+    /// retention uses this to keep counter/gauge sub-windows over a long
+    /// horizon while distributions are kept only over a short one.
+    pub fn has_distributions(&self) -> bool {
+        self.families.iter().any(|f| {
+            matches!(f.r#type(), MetricType::Histogram | MetricType::GaugeHistogram)
+        })
+    }
+
+    /// A clone of this set with the heavy distribution families
+    /// (`Histogram` / `GaugeHistogram`) dropped, keeping the cheap cumulative
+    /// `Counter`/`Gauge` families. Used by the cadence retention to compact an
+    /// aged sub-window past the distribution horizon without losing the
+    /// counter history a windowed `rate()`/`increase()` derives from
+    /// (SRD-90 §M1; counters are cheap, histograms are "a different matter").
+    pub fn without_distributions(&self) -> MetricSet {
+        MetricSet {
+            captured_at: self.captured_at,
+            interval: self.interval,
+            partial: self.partial,
+            families: self
+                .families
+                .iter()
+                .filter(|f| {
+                    !matches!(f.r#type(), MetricType::Histogram | MetricType::GaugeHistogram)
+                })
+                .cloned()
+                .collect(),
+        }
+    }
+
     /// Insert a family. Panics if a family of the same name already
     /// exists — spec §4.1 requires unique names within a `MetricSet`.
     pub fn insert(&mut self, family: MetricFamily) {
