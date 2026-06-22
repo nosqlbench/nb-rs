@@ -23,7 +23,9 @@
 // any workload where timestamps must be strictly ordered and evenly
 // spaced within each entity's timeline.
 monotonic_ts(input: u64, base_epoch: u64, interval_ms: u64) -> (ts: u64) := {
-    ts := add(base_epoch, mul(input, interval_ms))
+    // `add`'s addend must be const; `base_epoch` is the const offset, so
+    // it goes second (commutative). `mul(input, …)` is the dynamic term.
+    ts := add(mul(input, interval_ms), base_epoch)
 }
 
 // Monotonic timestamp with per-point deterministic jitter.
@@ -42,7 +44,10 @@ monotonic_ts(input: u64, base_epoch: u64, interval_ms: u64) -> (ts: u64) := {
 // is unrealistic. The jitter prevents artificial patterns in
 // downstream analysis.
 jittered_ts(input: u64, base_epoch: u64, interval_ms: u64, jitter_ms: u64) -> (ts: u64) := {
-    base := add(base_epoch, mul(input, interval_ms))
+    // const offset (`base_epoch`) is the addend; the dynamic index term
+    // goes first. `base` + `noise` are both dynamic, so `sum` (variadic,
+    // wire+wire) does that add — `add` only takes a const addend.
+    base := add(mul(input, interval_ms), base_epoch)
     noise := mod(hash(input), jitter_ms)
-    ts := add(base, noise)
+    ts := sum(base, noise)
 }
