@@ -64,7 +64,7 @@ params:
   #
   # See `local/brute_force.md` for the analysis. The
   # `fulltest_rerank_pinned` scenario uses a scenario-tree
-  # `set: { rerank_mode: pinned }` node to shadow this default
+  # `set: { rerank_mode: '"pinned"' }` node to shadow this default
   # over its inner phase tree (see `scenarios:` below). The
   # workload-param default keeps `fulltest` (and every other
   # scenario without an override) resolvable — the
@@ -211,7 +211,7 @@ scenarios:
   # needed — the scenario name itself flips the behaviour.
   # cndb-only (OSS Cassandra rejects `WITH ann_options`).
   fulltest_rerank_pinned:
-    - set: { rerank_mode: pinned }
+    - set: { rerank_mode: '"pinned"' }
       phases:
         - scenario: fulltest
 

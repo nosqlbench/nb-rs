@@ -374,7 +374,7 @@ laid out left-to-right.
 |------------------------|-----------------------------------------------|-------|
 | `linear:N`             | `1,1,…,1` (N copies)                          | Uniform N-way split. |
 | `ratios:a,b,c,…`       | The literal weights                           | Explicit override; weights normalised. |
-| `mul:R`                | `1, R, R², R³, …`                             | One per term, terminate at the first weight whose contribution rounds to < 0.1%. |
+| `mul:R`                | `1, R, R², R³, …`                             | One per term. Decay (R<1): stop at the first weight rounding below 0.1% of the leading partition. Growth (R≥1): that decay test never fires, so generation stops at a 64-term hard cap. |
 | `mul:S,R`              | `S, S·R, S·R², …`                             | Same termination rule, scaled. |
 | `bin:N`                | `C(N-1,0), C(N-1,1), …, C(N-1,N-1)`           | Coefficients of the binomial expansion `(1+x)^(N-1)` — exactly N terms. Not the binomial distribution PMF. |
 | `fib:N`                | `F(1), F(2), …, F(N)` (first N Fibonacci)     | Distinct terms only; F(1)=1, F(2)=2, F(3)=3, …  Skips the redundant leading `1,1`. |
@@ -395,9 +395,10 @@ All weight-list forms produce contiguous partitions covering exactly
 summing to 53; normalised → 1.89%, 3.77%, 5.66%, 9.43%, 15.09%,
 24.53%, 39.62% (approximately).
 
-`mul:2.3` example: 1, 2.3, 5.29, 12.17, 27.98, 64.36, … — terms
-continue until each new term's contribution < 0.1% of the running
-total. Useful for "exponential ramp" testing.
+`mul:2.3` example: 1, 2.3, 5.29, 12.17, 27.98, 64.36, … is a growth
+series (R>1), so the "< 0.1% of running total" decay test never fires;
+generation stops at the 64-term hard cap instead. Useful for
+"exponential ramp" testing.
 
 #### Parser
 

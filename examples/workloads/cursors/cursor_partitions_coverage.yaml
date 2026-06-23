@@ -115,6 +115,18 @@ params:
   # Reified params for the `reified_warmup_steady` scenario.
   warmup_cursor: "0..10%"
   steady_cursor: "10%..100%"
+  # Param-sweep flow (`param_sweep` / `reify_sweep` scenarios). These
+  # surface a sibling `.partitions` projection wire that the scenario
+  # tree iterates. Defaults are VALID multi-partition specs so the
+  # workload stays standalone; a `sweep_cursor=<spec>` override on the
+  # CLI re-resolves the projected partition list. SRD-71 §"Driving an
+  # iteration" / §"Reified parameter names".
+  sweep_cursor: "linear:4"
+  warmup_sweep: "linear:3"
+  # Default for the param-flow rejection scenario (`reject_param_bad_spec`).
+  # The default is a VALID spec so the workload stays standalone; the
+  # rejection is driven only when the test passes `reject_cursor=<bad>`.
+  reject_cursor: "linear:4"
 
 scenarios:
 
@@ -167,6 +179,50 @@ scenarios:
   # them and uses `[start, end)` closure regardless.
   form1_brackets_tolerated:
     - form1_brackets_phase
+
+  # ── forms-a: uncovered Form 1 range spellings ─────────────────
+  #
+  # SRD 71 §"Form 1 — single sub-range" lists more spellings than
+  # the scenarios above exercise. Each narrows a cursor via an
+  # `over "<literal>"` pin and emits the resolved [lo, hi) once.
+  # The endpoint type is decided per-endpoint (pct / fraction /
+  # literal can be mixed); bracket / closure markers are advisory
+  # (always resolved [start, end) left-closed right-open).
+
+  # Spec `"0%..53%"` (both endpoints percentage) over range(0,1000)
+  # → [0, 530). The leading `0%` is the percentage spelling of the
+  # already-covered `0..53%` start; proves the both-pct form.
+  form1_both_pct:
+    - form1_both_pct_phase
+
+  # Spec `"[0..53)%"` — the `%` trails the CLOSING bracket and
+  # applies to the whole range. Over range(0,1000) → [0, 530).
+  form1_bracket_trailing_pct:
+    - form1_bracket_trailing_pct_phase
+
+  # Spec `"[0..53%]"` — square-bracket close marker. Closure
+  # markers are advisory: resolved [start, end) regardless, so
+  # over range(0,1000) → [0, 530), identical to the bare form.
+  form1_bracket_square_close:
+    - form1_bracket_square_close_phase
+
+  # Spec `"0.05..0.5"` (both endpoints fraction) over range(0,1000)
+  # → [50, 500) (5% to 50%). Proves the both-fraction spelling
+  # resolves the same as the percentage equivalent.
+  form1_both_fraction:
+    - form1_both_fraction_phase
+
+  # Spec `"100..1000"` (both endpoints literal) over range(0,10000)
+  # → [100, 1000). NOTE: the second literal is the ABSOLUTE end
+  # ordinal, not a count — Form 1 decides each endpoint
+  # independently, so `1000` is the end position, giving 900 ords.
+  form1_literal_both:
+    - form1_literal_both_phase
+
+  # Spec `"0..1000"` (literal end) over range(0,10000) → [0, 1000).
+  # The first 1000 rows.
+  form1_literal_end:
+    - form1_literal_end_phase
 
   # ─────────────────────────────────────────────────────────────
   # Form 2 — delta list (with and without `*` remainder)
@@ -240,6 +296,27 @@ scenarios:
   # ignore the rest" without writing an explicit upper bound.
   form2_short_list_drops_gap:
     - for: "p in partitions(\"20%,30%\")"
+      phases: [emit_p]
+
+  # ── forms-a: under-100% drops-remainder lists (literal/mixed) ──
+  #
+  # A list summing < the extent WITHOUT a tail token DROPS the
+  # trailing gap. `form2_short_list_drops_gap` covers the all-pct
+  # spelling; these add the literal and mixed-literal+pct spellings.
+
+  # Spec `"1000,5000"` (literal deltas, no `*`) over extent 10000 →
+  #   [0, 1000), [1000, 6000)
+  # Sum = 6000 < 10000; trailing 4000-ordinal gap dropped. Distinct
+  # from `form2_literal_with_star` which absorbs that remainder.
+  form2_literal_drops_remainder:
+    - for: "p in partitions(\"1000,5000\", 10000)"
+      phases: [emit_p]
+
+  # Spec `"1000,10%"` (mixed literal + percentage deltas, no `*`)
+  # over extent 10000 → [0, 1000), [1000, 2000). 10% of 10000 =
+  # 1000; sum = 2000 < 10000, trailing 8000-ordinal gap dropped.
+  form2_mixed_drops_remainder:
+    - for: "p in partitions(\"1000,10%\", 10000)"
       phases: [emit_p]
 
   # ─────────────────────────────────────────────────────────────
@@ -323,6 +400,93 @@ scenarios:
       phases: [emit_p]
 
   # ─────────────────────────────────────────────────────────────
+  # Form 2 tail tokens — UNCOVERED spellings (group `tails`)
+  #
+  # Each exercises a tail-token shape not asserted elsewhere:
+  #   - `*` sitting MID-LIST (position-independent remainder)
+  #   - head + bare `*` single-remainder partition
+  #   - bare `*` (no `%`) interchangeable with `*%`
+  #   - `*/N` general split and the `*/16` ≡ `linear:16` distinction
+  #   - `*/recipe` shaped tail (`*/fib:5`) and the no-head `*/recipe`
+  # ─────────────────────────────────────────────────────────────
+
+  # Spec `"2%,*,10%"` against default extent 100 →
+  #   [0, 2), [2, 90), [90, 100)
+  # `*` is position-independent: it may sit ANYWHERE in the list.
+  form2_star_midlist:
+    - for: "p in partitions(\"2%,*,10%\")"
+      phases: [emit_p]
+
+  # Spec `"90%,*"` against default extent 100 → [0, 90), [90, 100)
+  # Head plus a single-remainder `*`: exactly two partitions.
+  form2_head_star:
+    - for: "p in partitions(\"90%,*\")"
+      phases: [emit_p]
+
+  # Spec `"2%,10%,*"` against default extent 100 →
+  #   [0, 2), [2, 12), [12, 100)
+  # Bare `*` (no decorative `%`) — interchangeable with the `*%`
+  # spelling of `form2_pct_with_star`.
+  form2_plain_pct_star:
+    - for: "p in partitions(\"2%,10%,*\")"
+      phases: [emit_p]
+
+  # Spec `"*/16"` against default extent 100 → sixteen near-equal
+  # partitions. No head, so `*/N` divides the WHOLE extent —
+  # byte-identical to `linear:16` (asserted in the matching test).
+  form2_star_split_16:
+    - for: "p in partitions(\"*/16\")"
+      phases: [emit_p]
+
+  # Spec `"linear:16"` against default extent 100 → identical
+  # boundaries to `*/16`. Paired with `form2_star_split_16` so the
+  # test asserts the `*/N` ≡ `linear:N` equivalence.
+  form2_linear_16:
+    - for: "p in partitions(\"linear:16\")"
+      phases: [emit_p]
+
+  # Spec `"90%,*/fib:5"` against extent 1000 →
+  #   [0, 900), [900, 905), [905, 916), [916, 932), [932, 958), [958, 1000)
+  # `*/recipe:args` shapes the remainder by the recipe's weights.
+  form2_star_shaped_fib:
+    - for: "p in partitions(\"90%,*/fib:5\", 1000)"
+      phases: [emit_p]
+
+  # Spec `"*/ratios:1,3"` against extent 1000 → [0, 250), [250, 1000)
+  # `*/recipe` with NO head: the remainder is the whole extent, so
+  # the ratios weights (25% / 75%) shape the full [0, 1000).
+  form2_star_shaped_nohead:
+    - for: "p in partitions(\"*/ratios:1,3\", 1000)"
+      phases: [emit_p]
+
+  # ─────────────────────────────────────────────────────────────
+  # modwin group — modifier/window interactions not yet covered
+  # ─────────────────────────────────────────────────────────────
+
+  # Spec `"1%x5,*"` against default extent 100 →
+  #   [0,1) [1,2) [2,3) [3,4) [4,5)  (the xN repetition)
+  #   [5,100)                        (the `*` open tail)
+  # `<delta>xN` finite repetition COMPOSED WITH a `*` open tail.
+  rep_open_tail:
+    - for: "p in partitions(\"1%x5,*\")"
+      phases: [emit_p]
+
+  # Spec `"10%,~40%,*"` against default extent 100 →
+  #   [0,10) idx=0, then ~40% gap consumes [10,50) silently,
+  #   then `*` absorbs ONLY the remaining [50,100) idx=1.
+  gap_with_star:
+    - for: "p in partitions(\"10%,~40%,*\")"
+      phases: [emit_p]
+
+  # Spec `"fib:5 in 10%..90%"` against extent 1000 → window
+  # [100, 900) (800 ordinals); the fib:5 recipe chunks the WINDOW
+  # with cumulative rounding:
+  #   [100,142) [142,226) [226,353) [353,563) [563,900)
+  windowed_fib:
+    - for: "p in partitions(\"fib:5 in 10%..90%\", 1000)"
+      phases: [emit_p]
+
+  # ─────────────────────────────────────────────────────────────
   # Windowed chunking — `<chunking> in <window>`
   #
   # The `in` clause scopes the chunking to a Form 1 window; the
@@ -372,6 +536,26 @@ scenarios:
   # twice and asserts identical sequences.
   order_random:
     - for: "p in partitions(\"linear:4 random\")"
+      phases: [emit_p]
+
+  # `front_heavy:4 smallest_first` → iteration runs the SMALLEST
+  # partition first. front_heavy generates largest-first, so the
+  # size-ascending sort reverses the iteration: idx sequence
+  # 3, 2, 1, 0.
+  order_smallest_first:
+    - for: "p in partitions(\"front_heavy:4 smallest_first\")"
+      phases: [emit_p]
+
+  # `front_heavy:4 unchanged` → the explicit self-documenting word
+  # for generation order. Identical to the bare recipe: idx 0,1,2,3.
+  order_unchanged:
+    - for: "p in partitions(\"front_heavy:4 unchanged\")"
+      phases: [emit_p]
+
+  # `front_heavy:4 random` → a deterministic permutation seeded
+  # from the spec text, over a NON-uniform recipe.
+  order_random_front_heavy:
+    - for: "p in partitions(\"front_heavy:4 random\")"
       phases: [emit_p]
 
   # ─────────────────────────────────────────────────────────────
@@ -615,6 +799,71 @@ scenarios:
     - for: "p in partitions(\"back_heavy:4\")"
       phases: [emit_p]
 
+  # ── recipes group: uncovered recipe shapes ────────────────────
+
+  # Recipe `geom:N,R` with R < 1 → front-loaded DECAY (the mirror
+  # of `geom:4,2`). `"geom:4,0.5"` → weights [1, 0.5, 0.25, 0.125]
+  # sum 1.875 → [0, 53), [53, 80), [80, 93), [93, 100).
+  recipe_geom_decay:
+    - for: "p in partitions(\"geom:4,0.5\")"
+      phases: [emit_p]
+
+  # Recipe `ratios:3,1,1,1` (sum 6) heavy-head → 50%, ~16.7% x3 →
+  #   [0, 50), [50, 67), [67, 83), [83, 100).
+  recipe_ratios_head:
+    - for: "p in partitions(\"ratios:3,1,1,1\")"
+      phases: [emit_p]
+
+  # Recipe `ratios:1,4,9,16` (squares, sum 30) → quadratic growth →
+  #   [0, 3), [3, 17), [17, 47), [47, 100).
+  recipe_ratios_quadratic:
+    - for: "p in partitions(\"ratios:1,4,9,16\")"
+      phases: [emit_p]
+
+  # Recipe `fib:7` SRD worked example → weights [1,2,3,5,8,13,21]
+  # sum 53 → [0,2),[2,6),[6,11),[11,21),[21,36),[36,60),[60,100).
+  recipe_fib7:
+    - for: "p in partitions(\"fib:7\")"
+      phases: [emit_p]
+
+  # Recipe `mul:R` GROWTH case. `"mul:2.3"` keeps multiplying until
+  # each new term contributes < 0.1% of the running total → 10
+  # terms. Asserts COUNT only (boundary arithmetic is sensitive).
+  recipe_mul_growth:
+    - for: "p in partitions(\"mul:2.3\")"
+      phases: [emit_p_count]
+
+  # Recipe equivalence: `ratios:1,1,1,1` ≡ `linear:4` → four
+  # uniform quarter-partitions. Pairs with recipe_geom_unit.
+  recipe_ratios_uniform:
+    - for: "p in partitions(\"ratios:1,1,1,1\")"
+      phases: [emit_p]
+
+  # Recipe equivalence: `geom:4,1` ≡ `linear:4` (R=1 degenerates to
+  # equal weights) → identical quarter-partitions.
+  recipe_geom_unit:
+    - for: "p in partitions(\"geom:4,1\")"
+      phases: [emit_p]
+
+  # Recipe identity: `zipf:s,N` and `pareto:alpha,N` are the same
+  # math (1/k^s ≡ (1/k)^s). EXACT bounds asserted so the test can
+  # diff zipf vs pareto. `"zipf:1,4"` → [0,48)[48,72)[72,88)[88,100).
+  recipe_zipf_bounds:
+    - for: "p in partitions(\"zipf:1,4\")"
+      phases: [emit_p]
+
+  # Pareto spelling of the identity above — same weight list as
+  # `zipf:1,4`, asserted on EXACT bounds.
+  recipe_pareto_bounds:
+    - for: "p in partitions(\"pareto:1,4\")"
+      phases: [emit_p]
+
+  # Recipe `zipf:2,4` heavy-head case (the head takes ~70%) → 4
+  # partitions. Asserts COUNT only (float-sensitive).
+  recipe_zipf_heavy_head:
+    - for: "p in partitions(\"zipf:2,4\")"
+      phases: [emit_p_count]
+
   # ─────────────────────────────────────────────────────────────
   # `over` clause — different binding shapes
   #
@@ -672,6 +921,54 @@ scenarios:
   over_cross_cursor:
     - for: "p in partitions(\"linear:2\", 1000)"
       phases: [over_cross_phase]
+
+  # ─────────────────────────────────────────────────────────────
+  # Param-sweep flow — `for: "p in <param>.partitions"`
+  #
+  # THE distinguishing feature of these scenarios: the `for:` clause
+  # iterates the PARAM PROJECTION WIRE `<param>.partitions`, NOT a
+  # hardcoded `partitions("literal")`. The workload param (default
+  # `sweep_cursor: "linear:4"`, overridable on the CLI) is resolved
+  # to its spec string and surfaced as a sibling `.partitions` wire
+  # carrying the resolved partition list. The scenario tree iterates
+  # that list; the `emit_sweep` phase projects each partition's
+  # `idx_of(p)` / `start_of(p)` / `end_of(p)` against the default
+  # extent (100). Passing `sweep_cursor=<spec>` re-resolves the
+  # projected list — that re-partition is exactly what the CLI-
+  # override test asserts. SRD-71 §"Driving an iteration".
+  #
+  # With the default `sweep_cursor=linear:4` the iteration runs four
+  # times → [0,25) [25,50) [50,75) [75,100). The CLI-override tests
+  # in `cursor_partitions.rs` drive `sweep_cursor=linear:2` (two
+  # halves), `sweep_cursor=2%,10%,*` (a percentage delta list),
+  # `sweep_cursor=fib:5` (a recipe), and `sweep_cursor=0..50%` (a
+  # single-range), each asserting the re-resolved boundaries.
+  param_sweep:
+    - for: "p in sweep_cursor.partitions"
+      phases: [emit_sweep]
+
+  # Reified param-sweep: a CUSTOM-named param (`warmup_sweep`) carries
+  # the same `.partitions` projection surface as the built-in
+  # `cursor`. Distinct from the single-partition `over warmup_cursor`
+  # direct form (`reified_warmup_steady`) — this drives a multi-
+  # partition iteration through the projection wire. Default
+  # `warmup_sweep=linear:3` → [0,33) [33,67) [67,100); the override
+  # test drives `warmup_sweep=ratios:1,1,2`. SRD-71 §"Reified
+  # parameter names".
+  reify_sweep:
+    - for: "wp in warmup_sweep.partitions"
+      phases: [emit_reify_sweep]
+
+  # Comprehension SOURCE form: `partitions("<literal>")` used directly
+  # as the `for:` iterable (distinct from the hardcoded-in-a-cursor
+  # `over "<literal>"` Form-1 usage and from the param-projection
+  # sweep). The phase narrows a `range(0, 1000)` cursor `over p`, so
+  # each per-partition bound is re-scaled to the cursor's own extent
+  # → [0,250) [250,500) [500,750) [750,1000). SRD-71 §"Comprehension
+  # syntax for partition iteration".
+  partitions_source_over:
+    - for: "p in partitions(\"linear:4\")"
+      phases: [emit_source_over]
 
   # ─────────────────────────────────────────────────────────────
   # Stdlib partition functions
@@ -855,6 +1152,91 @@ scenarios:
   no_over_ignores_cursor_param:
     - no_over_phase
 
+  # ─────────────────────────────────────────────────────────────
+  # Clean rejection delivery (SRD-71 §"Rejection diagnostics")
+  #
+  # A malformed spec in comprehension position (`for: "p in
+  # partitions(\"<bad>\")"`) must surface the VERBATIM polydat
+  # diagnostic as the PRIMARY error — no panic backtrace, and no
+  # downstream "type mismatch: cannot connect String output to ext
+  # input" leak. These scenarios are NAMED-ONLY: they are never the
+  # walked scenario (the `#@ run` directive pins `windowed_chunking`)
+  # and are exercised exclusively by their own `#[test]` fns in
+  # `nbrs/tests/cursor_partitions.rs`, each asserting the run FAILS.
+  #
+  # CRITICAL: every rejection scenario points at the `noop_emit`
+  # phase, which makes NO reference to `p`. If the phase consumed
+  # `p` (e.g. `idx_of(p)`), the failed spec would leave `p` as a
+  # raw String and the binding would raise a String→ext type
+  # mismatch that MASKS the spec diagnostic — defeating the test.
+  # ─────────────────────────────────────────────────────────────
+
+  # Over-sum delta list (percentages): 60%+60% = 120% > extent 100.
+  reject_delta_overshoot_pct:
+    - for: "p in partitions(\"60%,60%\")"
+      phases: [noop_emit]
+
+  # Over-sum delta list (literals): 10000+5000 = 15000 > extent 10000.
+  reject_delta_overshoot_literal:
+    - for: "p in partitions(\"10000,5000\", 10000)"
+      phases: [noop_emit]
+
+  # Unknown recipe name.
+  reject_unknown_recipe:
+    - for: "p in partitions(\"frobnicate:3\")"
+      phases: [noop_emit]
+
+  # Unknown order suffix.
+  reject_unknown_order:
+    - for: "p in partitions(\"fib:5 sideways\")"
+      phases: [noop_emit]
+
+  # Bad window: a delta-list window endpoint that is itself a
+  # remainder/percentage-shaped chunking instead of a Form-1 range.
+  reject_bad_window:
+    - for: "p in partitions(\"linear:4 in 50%\")"
+      phases: [noop_emit]
+
+  # Malformed tail: `*/1%` — a percentage divisor after `*/`
+  # (the `*/N` divisor must be a bare integer chunk count).
+  reject_tail_pct_divisor:
+    - for: "p in partitions(\"90%,*/1%\")"
+      phases: [noop_emit]
+
+  # Malformed tail: `*/linear:4` — a recipe-named split that
+  # should be spelled `*/4`.
+  reject_tail_linear_split:
+    - for: "p in partitions(\"*/linear:4\")"
+      phases: [noop_emit]
+
+  # Malformed tail: two remainder tokens (`*,*`).
+  reject_double_star:
+    - for: "p in partitions(\"*,*\")"
+      phases: [noop_emit]
+
+  # Malformed tail: two distinct tail tokens (`90%,...,*`).
+  reject_double_tail:
+    - for: "p in partitions(\"90%,...,*\")"
+      phases: [noop_emit]
+
+  # Zero repetition: `1%x0` — the repetition count must be >= 1.
+  reject_x0:
+    - for: "p in partitions(\"1%x0\")"
+      phases: [noop_emit]
+
+  # Repeated tail entries after a star tail (`*/4,...`).
+  reject_repeated_tail:
+    - for: "p in partitions(\"*/4,...\")"
+      phases: [noop_emit]
+
+  # Param-flow rejection (combines ① + ②): the `for:` iterates the
+  # `reject_cursor.partitions` projection wire; the test drives a
+  # bad spec via `reject_cursor=frobnicate:3` on the CLI. The
+  # diagnostic must still surface cleanly through the param path.
+  reject_param_bad_spec:
+    - for: "p in reject_cursor.partitions"
+      phases: [noop_emit]
+
 phases:
 
   # ── Form 1 phases ─────────────────────────────────────────────
@@ -931,6 +1313,80 @@ phases:
         adapter: stdout
         stmt: "cp/form1 lo={lo} hi={hi}"
 
+  # ── forms-a Form 1 spelling phases ────────────────────────────
+
+  form1_both_pct_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over "0%..53%"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  form1_bracket_trailing_pct_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over "[0..53)%"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  form1_bracket_square_close_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over "[0..53%]"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  form1_both_fraction_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over "0.05..0.5"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  form1_literal_both_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 10000) over "100..1000"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  form1_literal_end_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 10000) over "0..1000"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
   # ── Generic partition-list emit phases ────────────────────────
 
   emit_p:
@@ -961,6 +1417,73 @@ phases:
       emit:
         adapter: stdout
         stmt: "cp/count idx={i}"
+
+  # ── Param-sweep emit phases ───────────────────────────────────
+
+  emit_sweep:
+    # Param-sweep flow: `p` is bound by `for: "p in
+    # sweep_cursor.partitions"`. Projects each partition's index +
+    # ordinal bounds (against the default extent 100) so the test can
+    # assert the param-resolved partition list. Distinct `cp/sweep`
+    # family so the test scans it independently of the generic
+    # `cp/iter` emits.
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      i := idx_of(p)
+      lo := start_of(p)
+      hi := end_of(p)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/sweep idx={i} lo={lo} hi={hi}"
+
+  emit_reify_sweep:
+    # Reified param-sweep: `wp` is bound by `for: "wp in
+    # warmup_sweep.partitions"`. Same projection as `emit_sweep` but
+    # under a distinct `cp/reify` family, driven by a custom-named
+    # param rather than the built-in `cursor`.
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      i := idx_of(wp)
+      lo := start_of(wp)
+      hi := end_of(wp)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/reify idx={i} lo={lo} hi={hi}"
+
+  emit_source_over:
+    # Comprehension-source form: `p` is bound by `for: "p in
+    # partitions("linear:4")"`, then a `range(0, 1000)` cursor is
+    # declared `over p`. The cursor's `q.cursor.*` projections report
+    # the per-partition bounds RE-SCALED to the cursor's 1000-ordinal
+    # extent (not the partition list's default extent 100).
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over p
+      i := idx_of(q.cursor)
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/source idx={i} lo={lo} hi={hi}"
+
+  noop_emit:
+    # Shared by every `reject_*` scenario. The for-clause spec is
+    # invalid, so partition resolution fails before this phase runs.
+    # The phase makes NO reference to `p`, ensuring the verbatim
+    # spec diagnostic is the primary error rather than a downstream
+    # String→ext type mismatch that would mask it.
+    cycles: 1
+    concurrency: 1
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/reject unreached"
 
   # ── `over` clause shape phases ────────────────────────────────
 

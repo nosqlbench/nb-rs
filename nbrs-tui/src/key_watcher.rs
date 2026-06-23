@@ -152,6 +152,11 @@ impl KeyWatcher {
         // `TerminalGuard`) is safe.
         crate::app::save_pretui_termios();
         crate::app::install_signal_terminal_restore();
+        // Restore the terminal on PANIC too, not just on signals. Without this a
+        // panic during a run (e.g. a kernel coercion failure) prints its message
+        // while the tty is still in raw mode, stair-stepping every line (`\n`
+        // with no `\r`). Idempotent with the full TUI's identical call.
+        crate::app::install_tui_panic_hook();
         if let Err(e) = crossterm::terminal::enable_raw_mode() {
             eprintln!("key_watcher: enable_raw_mode failed: {e} — toggle disabled");
             return None;

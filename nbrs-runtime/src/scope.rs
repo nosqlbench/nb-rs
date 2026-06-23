@@ -1121,7 +1121,6 @@ pub fn build_phase_scope_kernel(
         source.push('\n');
     }
 
-    let _ = parent_manifest; // reserved for future strict cross-scope checks
     let compile_options = polydat::kernel::subcontext::CompileOptions {
         workload_dir: workload_dir.map(|p| p.to_path_buf()),
         polydat_lib_paths,
@@ -1131,6 +1130,7 @@ pub fn build_phase_scope_kernel(
         cursor_limit: None,
         ..Default::default()
     };
+
     let matter = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
         .source(source)
@@ -1138,8 +1138,7 @@ pub fn build_phase_scope_kernel(
         .options(compile_options)
         .build()
         .map_err(|e| format!("{context}: phase scope synthesis: {e}"))?;
-    let mut kernel = parent_kernel
-        .build_subscope(matter)
+    let mut kernel = parent_kernel.build_subscope(matter)
         .map_err(|e| format!("{context}: phase scope synthesis: {e}"))?;
     parent_kernel.propagate_inputs_into(&mut kernel);
     Ok(kernel)
@@ -4980,4 +4979,5 @@ extern keyspace: String
         assert_ne!(phase_kind, Some(polydat::kernel::InputKind::Coordinate),
             "phase scope's has_sai_column_indexes must NOT be Coordinate; got {phase_kind:?}");
     }
+
 }

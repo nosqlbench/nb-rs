@@ -391,13 +391,12 @@ scenarios:
                 - for: "table in fknn_oat_{sm_lc}_m{mnc}_bw{bw}_h{eh}_nbo{nbo_label}_a{alf_label}"
                   phases:
                     # `set:` shadows each workload-param with the
-                    # iter-var's value via text-template substitution.
-                    # `set:` values are text-templates (not GK
-                    # expressions), so `{sm}` resolves to the iter-
-                    # var's current value at iter time and the set:
-                    # writes `const source_model := "<value>"` into
-                    # the local scope, shadowing the workload-param
-                    # default. Downstream `{source_model}` bind-points
+                    # iter-var's value. A bare `set:` value is a wire
+                    # REFERENCE (consistent with comprehension r-values),
+                    # so `set: { source_model: sm }` writes
+                    # `const source_model := sm` and binds sm's current
+                    # value; a string literal would need the explicit
+                    # `'"…"'` form. Downstream `{source_model}` bind-points
                     # in the schema phase pick up the shadow at
                     # op-execution time.
                     - set: { source_model: sm,

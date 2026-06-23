@@ -3310,7 +3310,7 @@ extern "C" fn signal_terminal_restore(
 ///    screen, a backgrounded session, or a parent process that
 ///    swallowed stderr.
 /// 3. Run the previous (default) hook so stack traces still render.
-fn install_tui_panic_hook() {
+pub(crate) fn install_tui_panic_hook() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static INSTALLED: AtomicBool = AtomicBool::new(false);
     if INSTALLED.swap(true, Ordering::SeqCst) {

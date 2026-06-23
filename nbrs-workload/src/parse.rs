@@ -575,6 +575,65 @@ fn has_recognised_scenario_key(obj: &serde_json::Map<String, JVal>) -> bool {
     RECOGNIZED.iter().any(|k| obj.contains_key(*k))
 }
 
+/// Emit the polydat RHS for a scenario `set:` value. A **bare identifier is a
+/// wire REFERENCE**, consistent with comprehension r-values (SRD-18f): so
+/// `set: { x: mnc }` binds `mnc`'s value, and an unresolved bare name is a
+/// hard error at scope synthesis. A number/bool is that literal; a YAML
+/// sequence is a list (of references / literals). A STRING literal must be
+/// written explicitly as a polydat-quoted scalar — `'"verbose"'` in YAML —
+/// because the pipeline's serde round-trips strip ordinary YAML quotes,
+/// leaving a bare word indistinguishable from a reference.
+fn emit_set_value_literal(value: &JVal) -> String {
+    match value {
+        JVal::Number(n) => n.to_string(),
+        JVal::Bool(b) => b.to_string(),
+        JVal::Null => "\"\"".to_string(),
+        // A YAML sequence is a list literal; its elements are references
+        // (bare) or literals.
+        JVal::Array(elems) => {
+            let parts: Vec<String> = elems.iter().map(emit_set_array_element).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        JVal::String(s) => {
+            let t = s.trim();
+            if is_polydat_quoted_string(t) {
+                // Explicit polydat string literal (`'"verbose"'` in YAML).
+                t.to_string()
+            } else if crate::bindpoints::is_bare_identifier(t) {
+                // Bare identifier ⇒ a wire reference (unquoted; polydat
+                // resolves it against the in-scope chain).
+                t.to_string()
+            } else {
+                // Free text / `{name}` templates ⇒ a string literal.
+                let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("\"{escaped}\"")
+            }
+        }
+        other => {
+            let escaped = other.to_string().replace('\\', "\\\\").replace('"', "\\\"");
+            format!("\"{escaped}\"")
+        }
+    }
+}
+
+/// One element of a `set:` sequence value: a bare-identifier element is a
+/// reference (unquoted), a number/bool is its literal, any other string is a
+/// quoted string element.
+fn emit_set_array_element(e: &JVal) -> String {
+    match e {
+        JVal::String(s) if crate::bindpoints::is_bare_identifier(s.trim()) => {
+            s.trim().to_string()
+        }
+        JVal::Number(n) => n.to_string(),
+        JVal::Bool(b) => b.to_string(),
+        JVal::String(s) => {
+            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("\"{escaped}\"")
+        }
+        other => other.to_string(),
+    }
+}
+
 /// Recursively parse scenario nodes from YAML.
 ///
 /// Handles:
@@ -825,22 +884,16 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 // (insertion order); declaration order wins on
                 // collision via the standard Polydat shadow semantics
                 // for the same source.
-                let pairs: Vec<(String, String)> = match set_val {
+                let pairs: Vec<(String, JVal)> = match set_val {
                     JVal::Object(map) => map.iter()
-                        .map(|(k, v)| {
-                            let raw = match v {
-                                JVal::String(s) => s.clone(),
-                                JVal::Bool(b) => b.to_string(),
-                                JVal::Number(n) => n.to_string(),
-                                JVal::Null => String::new(),
-                                other => other.to_string(),
-                            };
-                            (k.clone(), raw)
-                        })
+                        .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
                     JVal::String(s) => {
                         match s.split_once('=') {
-                            Some((k, v)) => vec![(k.trim().to_string(), v.trim().to_string())],
+                            Some((k, v)) => vec![(
+                                k.trim().to_string(),
+                                JVal::String(v.trim().to_string()),
+                            )],
                             None => {
                                 eprintln!(
                                     "warning: scenario `set:` string form must be \
@@ -882,38 +935,20 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     // lifetime — author doesn't need to think
                     // about which path the runtime takes.
                     //
-                    // Literal-format rules. YAML erases quote style
-                    // (serde_yaml gives `mode: "verbose"` and
-                    // `mode: verbose` the *same* `String`), so a bare
-                    // string scalar in `set:` is a string VALUE, not a
-                    // wire reference:
-                    //
-                    //   - bare numeric / `true` / `false` → emit as-is
-                    //   - polydat array literal `[…]`     → emit as-is
-                    //   - polydat-quoted string `"…"`      → emit as-is
-                    //   - anything else (a YAML string)    → wrap as a
-                    //     polydat string literal. `{name}` interpolation
-                    //     still resolves through the in-scope chain at
-                    //     scope-init; a wire *reference* is expressed
-                    //     with a `bindings:` block, not a bare `set:`
-                    //     word (which YAML can't distinguish from a
-                    //     quoted string anyway).
+                    // Each value lowers to `const NAME := <rhs>` via
+                    // `emit_set_value_literal`. A BARE identifier is a wire
+                    // reference (consistent with comprehension r-values,
+                    // SRD-18f) — `set: { x: mnc }` binds mnc's value, and an
+                    // unresolved bare name is a hard error at scope synthesis.
+                    // Numbers/bools are literals; a YAML sequence is a list. A
+                    // string literal is the explicit polydat-quoted form
+                    // `'"verbose"'` (ordinary YAML quotes don't survive the
+                    // pipeline's serde round-trips).
                     let mut source = String::new();
                     for (name, value) in &pairs {
-                        let trimmed = value.trim();
-                        let literal = if trimmed.parse::<u64>().is_ok()
-                            || trimmed.parse::<f64>().is_ok()
-                            || trimmed == "true"
-                            || trimmed == "false"
-                            || is_polydat_quoted_string(trimmed)
-                            || is_polydat_array_literal(trimmed)
-                        {
-                            trimmed.to_string()
-                        } else {
-                            let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-                            format!("\"{escaped}\"")
-                        };
-                        source.push_str(&format!("const {name} := {literal}\n"));
+                        source.push_str(&format!(
+                            "const {name} := {}\n", emit_set_value_literal(value),
+                        ));
                     }
                     vec![ScenarioNode::Bindings { source, children }]
                 }
@@ -2588,31 +2623,6 @@ fn is_polydat_quoted_string(s: &str) -> bool {
     true
 }
 
-fn is_polydat_array_literal(s: &str) -> bool {
-    if !s.starts_with('[') || !s.ends_with(']') { return false; }
-    let mut depth: i32 = 0;
-    let mut in_string = false;
-    let mut escape = false;
-    for c in s.chars() {
-        if escape { escape = false; continue; }
-        if in_string {
-            if c == '\\' { escape = true; }
-            else if c == '"' { in_string = false; }
-            continue;
-        }
-        match c {
-            '"' => in_string = true,
-            '[' => depth += 1,
-            ']' => {
-                depth -= 1;
-                if depth < 0 { return false; }
-            }
-            _ => {}
-        }
-    }
-    depth == 0
-}
-
 fn extract_value_map(val: Option<&JVal>) -> HashMap<String, JVal> {
     let mut map = HashMap::new();
     if let Some(JVal::Object(obj)) = val {
@@ -3058,6 +3068,7 @@ ops:
         assert!(matches!(&default[0], ScenarioNode::Phase(n) if n == "schema"));
         assert!(matches!(&default[1], ScenarioNode::Phase(n) if n == "main"));
     }
+
 
     #[test]
     fn parse_template_expansion() {
@@ -4252,5 +4263,36 @@ phases:
             .expect_err("path without leading / must error");
         assert!(err.contains("`capture.bad`") && err.contains("'/'"),
             "expected parse error to name the offending capture and require '/'; got: {err}");
+    }
+
+    #[test]
+    fn set_value_bare_is_reference() {
+        // A bare `set:` value is a wire REFERENCE (consistent with
+        // comprehension r-values); a string literal is the explicit
+        // polydat-quoted form; a number/bool is a literal; a sequence is a list.
+        fn set_source(pair: &str) -> String {
+            let yaml = format!(
+                "scenarios:\n  s:\n    - set: {{ {pair} }}\n      \
+                 phases:\n        - p\nops:\n  p: \"test\"\n"
+            );
+            let wl = super::parse_workload(&yaml, &HashMap::new()).expect("parse");
+            for n in &wl.scenarios["s"] {
+                if let ScenarioNode::Bindings { source, .. } = n {
+                    return source.trim().to_string();
+                }
+            }
+            panic!("no Bindings node for `set: {{ {pair} }}`");
+        }
+        // bare identifier → wire reference (unquoted)
+        assert_eq!(set_source("x: mnc"), "const x := mnc");
+        assert_eq!(set_source("x: verbose"), "const x := verbose");
+        // explicit polydat-quoted form → a string literal
+        assert_eq!(set_source(r#"x: '"verbose"'"#), r#"const x := "verbose""#);
+        // a YAML sequence → a list literal (of references)
+        assert_eq!(set_source("x: [a, b]"), "const x := [a, b]");
+        // numbers/bools are literals (serde distinguishes 8 from "8")
+        assert_eq!(set_source("x: 8"), "const x := 8");
+        assert_eq!(set_source(r#"x: "8""#), r#"const x := "8""#);
+        assert_eq!(set_source("x: true"), "const x := true");
     }
 }

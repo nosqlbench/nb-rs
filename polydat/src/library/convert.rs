@@ -103,6 +103,28 @@ fn __u32_to_string(input: u32) -> String { input.to_string() }
 // catch_unwind enrichment surfaces the panic with the node,
 // inputs, and source context.
 
+/// Shared diagnostic for the auto-inserted scalar string→number/bool
+/// coercions (`__str_to_u64`/`_f64`/`_bool`). They fire when a `str`-typed
+/// wire feeds a typed port — an op field bound to a number, a `set:`/`bindings:`
+/// value used numerically, and so on. When a *non-numeric* value reaches one of
+/// them, the overwhelmingly common cause is a NAME written where its VALUE was
+/// intended — most often a bare iteration variable in a scenario `set:` block,
+/// whose values are text-templates. Returns that guidance with a worked
+/// example so the message points at the fix, not just the failed parse.
+fn coercion_diagnostic(raw: &str, target: &str, detail: &str) -> String {
+    let braced = format!("{{{raw}}}"); // e.g. "mnc" -> "{mnc}"
+    format!(
+        "value {raw:?} is not {target}.\n\n\
+         This usually means a name was written where its VALUE was intended. In a \
+         scenario `set:` block, values are text-templates, so an iteration variable \
+         must be BRACED to substitute its value:\n    \
+         set: {{ field: \"{braced}\" }}    # the value of `{raw}`\n    \
+         set: {{ field: {raw} }}        # the literal text \"{raw}\"  <-- likely the bug\n\
+         In a `bindings:` block, reference names unquoted instead: `const field := {raw}`.\n\n\
+         (coercion detail: {detail})"
+    )
+}
+
 /// Convert string to bool.
 ///
 /// Signature: `__str_to_bool(input: str) -> (bool)`
@@ -119,10 +141,10 @@ fn __str_to_bool(input: &str) -> bool {
     match raw.to_ascii_lowercase().as_str() {
         "true" | "1" => true,
         "false" | "0" => false,
-        _ => panic!(
-            "__str_to_bool: cannot parse {raw:?} as bool \
-             (expected case-insensitive 'true'/'false' or '1'/'0')"
-        ),
+        _ => panic!("{}", coercion_diagnostic(
+            raw, "a boolean",
+            "__str_to_bool expected case-insensitive true/false or 1/0",
+        )),
     }
 }
 
@@ -130,7 +152,7 @@ fn __str_to_bool(input: &str) -> bool {
 fn __str_to_u64(input: &str) -> u64 {
     let raw = input.trim();
     raw.parse::<u64>().unwrap_or_else(|e| {
-        panic!("__str_to_u64: cannot parse {raw:?} as u64: {e}")
+        panic!("{}", coercion_diagnostic(raw, "a whole number", &format!("__str_to_u64: {e}")))
     })
 }
 
@@ -138,7 +160,7 @@ fn __str_to_u64(input: &str) -> u64 {
 fn __str_to_f64(input: &str) -> f64 {
     let raw = input.trim();
     raw.parse::<f64>().unwrap_or_else(|e| {
-        panic!("__str_to_f64: cannot parse {raw:?} as f64: {e}")
+        panic!("{}", coercion_diagnostic(raw, "a number", &format!("__str_to_f64: {e}")))
     })
 }
 

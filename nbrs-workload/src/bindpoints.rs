@@ -297,8 +297,9 @@ fn is_polydat_type_name(s: &str) -> bool {
 /// Bare-identifier shape: ASCII alpha or underscore start; rest
 /// alphanumeric / underscore. Used by [`extract_lvalue_spec`] to
 /// gate the suffix detection on shapes that look like names /
-/// type-words and nothing else.
-fn is_bare_identifier(s: &str) -> bool {
+/// type-words and nothing else, and by the `set:` classifier
+/// (SRD-18f §6) to decide a bare value is a wire reference.
+pub(crate) fn is_bare_identifier(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}

@@ -4,9 +4,11 @@
 #
 # `set:` shadow via a constant — baseline (no iter-var).
 #
-# `set: { mode: "verbose" }` publishes a scope-local `const mode` that
-# shadows the workload-param default over the inner phase. No iteration
-# variable is involved. Output: mode=verbose.
+# `set: { mode: '"verbose"' }` publishes a scope-local `const mode` that
+# shadows the workload-param default over the inner phase. A bare `set:`
+# value is a wire reference, so a string literal uses the explicit
+# polydat-quoted form `'"verbose"'`. No iteration variable is involved.
+# Output: mode=verbose.
 #
 # The sibling files extend this with an outer `for_each` iter-var that
 # the shadow reads (see set_sugar_iter_var, nested_for_under_set, …).
@@ -16,7 +18,7 @@ params:
 
 scenarios:
   default:
-    - set: { mode: "verbose" }
+    - set: { mode: '"verbose"' }
       phases:
         - announce_mode
 

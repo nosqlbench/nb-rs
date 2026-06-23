@@ -160,6 +160,11 @@ fn evaluate_spec_internal(
     if let Some(values) = try_eval_partition_call(&interpolated, kernel)? {
         return Ok(values);
     }
+    // SRD 71: `<param>.partitions` comprehension-position desugaring —
+    // resolve the param's spec string and expand it into its PartitionList.
+    if let Some(values) = try_eval_param_partitions(&interpolated, kernel)? {
+        return Ok(values);
+    }
     match crate::dsl::compile::eval_const_expr(&interpolated) {
         // SRD-18f relaxed source resolution: a resolved value is
         // peeled one level if it has an iteration interior
@@ -427,6 +432,11 @@ pub fn pre_evaluate_clause(
     // single placeholder partition in that case so iter-var
     // type detection still lands on `ext`.
     if let Some(values) = try_eval_partition_call(&interpolated, parent_kernel)? {
+        return Ok(values);
+    }
+    // SRD 71: `<param>.partitions` comprehension-position desugaring (same
+    // rule as the runtime path; the param may already be installed here).
+    if let Some(values) = try_eval_param_partitions(&interpolated, parent_kernel)? {
         return Ok(values);
     }
     let value_str = match crate::dsl::compile::eval_const_expr(&interpolated) {
@@ -1110,39 +1120,168 @@ fn try_eval_partition_call(
     let Some((name, args)) = parse_func_call(text) else {
         return Ok(None);
     };
-    if name != "subdivide" {
+    let arg_list = split_args_top_level(args);
+    match name {
+        "subdivide" => {
+            if arg_list.len() != 2 {
+                return Err(format!(
+                    "subdivide(p, n): expected 2 arguments (a partition and a count), got {}",
+                    arg_list.len()
+                ));
+            }
+            let src = arg_list[0].trim();
+            let n = parse_u64_arg(arg_list[1], "subdivide.n")?;
+            let Some(value) = kernel.lookup(src) else {
+                // Pre-evaluation probe: the outer iter-var isn't
+                // installed yet. Return one placeholder so the clause's
+                // iter-var type-detects as `ext`; real values arrive at
+                // runtime dispatch.
+                let placeholder = crate::iteration::cursor_partition::Partition {
+                    idx: 0, count: 1, start_ord: 0, end_ord: 1,
+                    start_pct: 0.0, end_pct: 100.0, base_extent: 1,
+                };
+                return Ok(Some(vec![Value::from_partition(placeholder)]));
+            };
+            let Some(p) = value.as_partition().copied() else {
+                return Err(format!(
+                    "subdivide({src}, {n}): `{src}` resolved to {} — expected a \
+                     Partition value (an iter-var from `for: \"p in partitions(...)\"` \
+                     or a cursor's `.cursor` projection)",
+                    value.to_display_string(),
+                ));
+            };
+            let subs = crate::iteration::cursor_partition::subdivide_partition(&p, n)?;
+            Ok(Some(subs.into_iter().map(Value::from_partition).collect()))
+        }
+        // SRD-71 grammar-position desugaring of an explicit
+        // `partitions(spec, [extent])` source. The spec string is in a
+        // comprehension position, so it is parsed + resolved HERE, on the
+        // Result path — a bad spec (over-sum list, bad recipe/order/window,
+        // malformed tail) surfaces a clean comprehension error rather than the
+        // `partitions()` node's eval-time `panic!` (which const-fold swallows
+        // into a misleading downstream type mismatch). The node is unchanged;
+        // a spec in comprehension position simply never reaches its eval.
+        // Default extent 100 (pct space) matches the node; the cursor's
+        // `over p` re-scales each partition to its declared range.
+        "partitions" => {
+            if arg_list.is_empty() || arg_list.len() > 2 {
+                return Err(format!(
+                    "partitions(spec, [extent]): expected 1 or 2 arguments, got {}",
+                    arg_list.len(),
+                ));
+            }
+            let spec = resolve_partition_spec_arg(arg_list[0], kernel)?;
+            let extent = match arg_list.get(1) {
+                Some(a) => parse_u64_arg(a, "partitions.extent")?,
+                None => 100,
+            };
+            desugar_partition_spec(&spec, extent, "comprehension source `partitions(...)`")
+                .map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// SRD-71 comprehension-position desugaring: a `<ident>.partitions`
+/// source (the primary operator sweep flow, `for: "p in cursor.partitions"`).
+///
+/// In comprehension position a *string* spec desugars per the partition
+/// grammar. `<ident>.partitions` resolves `<ident>` against the kernel chain
+/// to its spec string — a workload param such as `cursor=linear:4` — and the
+/// `.partitions` projection selects the partition-spec desugaring (as opposed
+/// to the string→token-list desugaring a bare string source would get),
+/// expanding it into the same `PartitionList` that `partitions(spec)` yields.
+/// Resolution uses the `partitions(spec)` node's default extent (100, pct
+/// space); the cursor's `over p` clause re-scales each partition's percentages
+/// to its actual declared range.
+///
+/// This MUST live here (not in `eval_const_expr`, which is kernel-less and
+/// resolves the `cursor.partitions` field-access to `None`): only the
+/// comprehension eval has the kernel needed to look the param up.
+///
+/// Returns `Ok(None)` when `text` is not a `<ident>.partitions` form. When the
+/// ident does not resolve (a pre-evaluation probe before the value is
+/// installed), a single placeholder partition is returned so iter-var type
+/// detection still lands on `ext` — the same contract as
+/// [`try_eval_partition_call`].
+fn try_eval_param_partitions(
+    text: &str,
+    kernel: &PolydatKernel,
+) -> Result<Option<Vec<Value>>, String> {
+    let Some(ident) = text.trim().strip_suffix(".partitions") else {
+        return Ok(None);
+    };
+    let ident = ident.trim();
+    if !is_single_bare_ident(ident) {
         return Ok(None);
     }
-    let arg_list = split_args_top_level(args);
-    if arg_list.len() != 2 {
-        return Err(format!(
-            "subdivide(p, n): expected 2 arguments (a partition and a count), got {}",
-            arg_list.len()
-        ));
-    }
-    let src = arg_list[0].trim();
-    let n = parse_u64_arg(arg_list[1], "subdivide.n")?;
-    let Some(value) = kernel.lookup(src) else {
-        // Pre-evaluation probe: the outer iter-var isn't
-        // installed yet. Return one placeholder so the clause's
-        // iter-var type-detects as `ext`; real values arrive at
-        // runtime dispatch.
+    let Some(value) = kernel.lookup(ident) else {
+        // Pre-eval probe: the param value isn't installed yet. Return one
+        // placeholder so the clause's iter-var type-detects as `ext`.
         let placeholder = crate::iteration::cursor_partition::Partition {
             idx: 0, count: 1, start_ord: 0, end_ord: 1,
             start_pct: 0.0, end_pct: 100.0, base_extent: 1,
         };
         return Ok(Some(vec![Value::from_partition(placeholder)]));
     };
-    let Some(p) = value.as_partition().copied() else {
+    // Already a resolved PartitionList → unpack directly.
+    if let Some(list) = value.as_partition_list() {
+        return Ok(Some(
+            list.as_slice().iter().map(|p| Value::from_partition(*p)).collect(),
+        ));
+    }
+    // Otherwise it must be a spec string — desugar it per the SRD-71 grammar.
+    let Value::Str(spec) = &value else {
         return Err(format!(
-            "subdivide({src}, {n}): `{src}` resolved to {} — expected a \
-             Partition value (an iter-var from `for: \"p in partitions(...)\"` \
-             or a cursor's `.cursor` projection)",
+            "comprehension source `{ident}.partitions`: `{ident}` resolved to \
+             {} — expected a partition-spec string (a workload param such as \
+             `cursor=linear:4`) or a PartitionList.",
             value.to_display_string(),
         ));
     };
-    let subs = crate::iteration::cursor_partition::subdivide_partition(&p, n)?;
-    Ok(Some(subs.into_iter().map(Value::from_partition).collect()))
+    desugar_partition_spec(spec, 100, &format!("comprehension source `{ident}.partitions`"))
+        .map(Some)
+}
+
+/// Parse + resolve a partition spec string into its unpacked partition
+/// values, on the Result path. Shared by the comprehension-position
+/// desugaring forms (`<ident>.partitions` and `partitions("...")`): a bad
+/// spec surfaces a clean error labelled by `ctx` HERE — it never reaches the
+/// `partitions()` node's eval-time `panic!`. This is a grammar-position
+/// concern (SRD-71), so spec validation lives where the spec is recognized.
+fn desugar_partition_spec(spec: &str, extent: u64, ctx: &str) -> Result<Vec<Value>, String> {
+    let parsed = crate::iteration::cursor_partition::parse(spec)
+        .map_err(|e| format!("{ctx}: bad spec `{spec}`: {e}"))?;
+    let parts = crate::iteration::cursor_partition::resolve(&parsed, 0, extent)
+        .map_err(|e| format!("{ctx}: resolve failed for `{spec}`: {e}"))?;
+    Ok(parts.into_iter().map(Value::from_partition).collect())
+}
+
+/// Resolve a `partitions(...)` spec argument to its string form: a quoted
+/// string literal yields its inner text; a bare identifier resolves against
+/// the kernel chain to its string value; anything else is taken verbatim (an
+/// unquoted spec such as a raw percentage list).
+fn resolve_partition_spec_arg(arg: &str, kernel: &PolydatKernel) -> Result<String, String> {
+    let a = arg.trim();
+    if a.len() >= 2
+        && ((a.starts_with('"') && a.ends_with('"'))
+            || (a.starts_with('\'') && a.ends_with('\'')))
+    {
+        return Ok(a[1..a.len() - 1].to_string());
+    }
+    if is_single_bare_ident(a) {
+        return match kernel.lookup(a) {
+            Some(Value::Str(s)) => Ok(s.to_string()),
+            Some(other) => Err(format!(
+                "partitions(...): `{a}` resolved to {} — expected a spec string",
+                other.to_display_string(),
+            )),
+            None => Err(format!(
+                "partitions(...): `{a}` did not resolve to a spec string in scope"
+            )),
+        };
+    }
+    Ok(a.to_string())
 }
 
 /// Evenly spaced numeric points over `[start, end]`.
