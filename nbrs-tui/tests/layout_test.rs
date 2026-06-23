@@ -91,8 +91,12 @@ fn make_test_state() -> (RunStateHandle, JoinHandle<()>) {
     spawn_run_state_actor(state)
 }
 
-#[test]
-fn render_layout_has_all_sections() {
+// `#[tokio::test]` (not `#[test]`): `App::new` builds a `MetricsQuery`
+// whose `CadenceReporter::new` spawns its single-writer actor as a tokio
+// task, so a runtime must be active at construction (same pattern as
+// control_edit_test). The render body itself is synchronous.
+#[tokio::test]
+async fn render_layout_has_all_sections() {
     let (state, _actor_join) = make_test_state();
     let (_tx, rx) = mpsc::channel();
     let mut app = App::new(rx, state.clone(), test_metrics_query());
@@ -158,8 +162,8 @@ fn render_layout_has_all_sections() {
     assert!(text.contains("quit"), "missing quit hint:\n{text}");
 }
 
-#[test]
-fn render_layout_no_active_phase() {
+#[tokio::test]
+async fn render_layout_no_active_phase() {
     // At least one pending phase must exist for the tree to have
     // a "nothing running yet" state (rather than "scenario
     // complete"). The placeholder surfaces in Focus LOD when
@@ -191,8 +195,8 @@ fn render_layout_no_active_phase() {
     assert!(text.contains("nbrs"), "header should always render:\n{text}");
 }
 
-#[test]
-fn render_layout_narrow_terminal() {
+#[tokio::test]
+async fn render_layout_narrow_terminal() {
     let (state, _actor_join) = make_test_state();
     let (_tx, rx) = mpsc::channel();
     let app = App::new(rx, state, test_metrics_query());
@@ -207,8 +211,8 @@ fn render_layout_narrow_terminal() {
     assert!(buf.area.width == 40);
 }
 
-#[test]
-fn render_prints_full_buffer() {
+#[tokio::test]
+async fn render_prints_full_buffer() {
     let (state, _actor_join) = make_test_state();
     let (_tx, rx) = mpsc::channel();
     let app = App::new(rx, state, test_metrics_query());

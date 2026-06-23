@@ -198,8 +198,13 @@ async fn interactive_dashboard_renders_the_run() {
     .expect("write workload");
     let wl_arg = format!("workload={}", wl.display());
     // A short run so the whole render (rows + outcome) fits the screen
-    // without scrolling the outcome out of view.
-    let cfg = pty_config(&[&wl_arg, "cycles=30"], &sessions, 110, 40);
+    // without scrolling the outcome out of view. `rate=` paces emission
+    // so the emulator drains each rendered line before the (otherwise
+    // instant) child exits — without it the child closes the PTY before
+    // shadow_terminal finishes draining and `render_all_output()` blocks
+    // (same harness concern the console-owning pin handles). Behavioral
+    // assertions below are unaffected by the pacing.
+    let cfg = pty_config(&[&wl_arg, "cycles=30", "rate=20"], &sessions, 110, 40);
     let mut stepper = SteppableTerminal::start(cfg).await.expect("start pty");
     // Wait for the last row so the sink has rendered through the end.
     wait_for(&mut stepper, "row-29", Duration::from_secs(30)).await;

@@ -26,6 +26,10 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 pty = { max-threads = 1 }
 
 [[profile.default.overrides]]
-# The shadow-terminal PTY test binaries.
-filter = 'binary(output_channel_harness) | binary(tui_display_harness) | binary(plotter_alignment)'
+# Every shadow-terminal PTY test binary must be in this group — any one
+# left out runs concurrently and its PTY allocation starves the others'
+# render loops (symptom: a dashboard render test hanging until the
+# slow-timeout fires). Keep this list in sync with the binaries that call
+# `SteppableTerminal::start`.
+filter = 'binary(output_channel_harness) | binary(tui_display_harness) | binary(plotter_alignment) | binary(tui_terminal_toggle) | binary(readout_pipeline)'
 test-group = 'pty'
