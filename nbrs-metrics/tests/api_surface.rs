@@ -363,7 +363,10 @@ async fn cadence_reporter_force_close_publishes_trailing_partial() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cadence_reporter_ring_is_capped() {
+async fn cadence_reporter_ring_retains_recent_by_time() {
+    // SRD-90 §M1: the smallest-cadence ring is TIME-bounded, not slot-capped.
+    // HISTORY_RING_CAP+5 windows all fall within the counter horizon, so every
+    // one is retained (the old fixed slot cap would have dropped the oldest 5).
     let cadences = Cadences::new(&[Duration::from_millis(50)]).unwrap();
     let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
     let labels = Labels::of("phase", "ring");
@@ -372,7 +375,7 @@ async fn cadence_reporter_ring_is_capped() {
     }
     reporter.flush_for_tests();
     let ring = reporter.ring(&labels, Duration::from_millis(50));
-    assert_eq!(ring.len(), HISTORY_RING_CAP);
+    assert_eq!(ring.len(), HISTORY_RING_CAP + 5);
 }
 
 // =========================================================================
@@ -601,7 +604,7 @@ async fn scheduler_feeds_cadence_reporter_and_delivers_to_external_reporter() {
             vec![(Labels::of("phase", "x"), s)]
         }));
 
-    let mut stop = handle.start();
+    let stop = handle.start();
     std::thread::sleep(Duration::from_millis(350));
     stop.stop();
 

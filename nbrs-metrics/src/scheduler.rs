@@ -595,7 +595,7 @@ mod tests {
             .add_reporter(Duration::from_millis(100), CountingReporter { count: c })
             .build(Box::new(mock_capture));
 
-        let mut stop = handle.start();
+        let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(350)).await;
         stop.stop();
 
@@ -616,7 +616,7 @@ mod tests {
             .with_cadence_reporter(reporter.clone())
             .build(Box::new(mock_capture));
 
-        let mut stop = handle.start();
+        let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(350)).await;
         stop.stop();
 
@@ -651,7 +651,7 @@ mod tests {
                 empty_snapshot(Duration::from_millis(50)),
             )]));
 
-        let mut stop = handle.start();
+        let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(450)).await;
         stop.stop();
 
@@ -696,7 +696,7 @@ mod tests {
                 empty_snapshot(Duration::from_millis(100)),
             )]));
 
-        let mut stop = handle.start();
+        let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(900)).await;
         stop.stop();
 
@@ -742,7 +742,7 @@ mod tests {
                 empty_snapshot(Duration::from_millis(50)),
             )]));
 
-        let mut stop = handle.start();
+        let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(3300)).await;
         stop.stop();
 

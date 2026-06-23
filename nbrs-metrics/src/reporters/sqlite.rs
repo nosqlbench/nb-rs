@@ -254,7 +254,77 @@ mod inner {
             });
         }
 
+        /// `PRAGMA user_version` levels — the single source of truth for how
+        /// far a db has been initialised. Monotonic: a db only moves up. Bump
+        /// the relevant constant when the layout changes so an existing db
+        /// re-runs just the missing migration on its next open.
+        ///
+        /// - [`Self::SCHEMA_VERSION`] (1): tables present. A write-time open
+        ///   leaves the db here — indexes are DEFERRED off the hot write path
+        ///   (per-row B-tree maintenance is what amplifies WAL volume).
+        /// - [`Self::INDEXED_VERSION`] (2): tables + all current read indexes,
+        ///   built by [`Self::ensure_indexes`] on first read / at shutdown.
+        const SCHEMA_VERSION: i64 = 1;
+        const INDEXED_VERSION: i64 = 2;
+
+        /// All read-path indexes, `IF NOT EXISTS` so a partially-indexed db
+        /// converges. Built by [`Self::ensure_read_indexes`] — never on the
+        /// hot write path. Add an index here AND bump [`Self::INDEXED_VERSION`].
+        const READ_INDEX_DDL: &'static str = "\
+            CREATE INDEX IF NOT EXISTS idx_instance_label_kv \
+                ON instance_label(key, value, instance_id);\
+            CREATE INDEX IF NOT EXISTS idx_instance_label_instance \
+                ON instance_label(instance_id);\
+            CREATE INDEX IF NOT EXISTS idx_sample_value_inst_ts \
+                ON sample_value(instance_id, timestamp_ms);\
+            CREATE INDEX IF NOT EXISTS idx_metric_instance_family \
+                ON metric_instance(family_id);\
+            CREATE INDEX IF NOT EXISTS idx_exemplar_inst_ts \
+                ON exemplar(instance_id, sample_timestamp_ms);\
+            CREATE INDEX IF NOT EXISTS idx_phase_errors_phase \
+                ON phase_errors(session, exec_id, phase_name, phase_labels);\
+            CREATE INDEX IF NOT EXISTS idx_phase_outcomes_ended \
+                ON phase_outcomes(ended_at_nanos);";
+
+        /// Build the read-path indexes iff the db isn't already at
+        /// [`Self::INDEXED_VERSION`], then stamp it. Idempotent and
+        /// self-healing: a db left at [`Self::SCHEMA_VERSION`] (deferred
+        /// indexes, or a crash before shutdown) is completed the next time a
+        /// read-write opener calls this, and bumping `INDEXED_VERSION` for a
+        /// new index migrates old dbs on their next such open. Called at
+        /// shutdown ([`Self::consolidate_wal`]) so the durable db is fully
+        /// indexed for external (non-runtime) readers. Takes a bare
+        /// `&Connection` (not `&self`) so any read-write opener can complete
+        /// the indexing.
+        pub(crate) fn ensure_read_indexes(conn: &Connection) -> Result<(), String> {
+            let version: i64 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .map_err(|e| format!("failed to read index version: {e}"))?;
+            if version >= Self::INDEXED_VERSION {
+                return Ok(());
+            }
+            conn.execute_batch(Self::READ_INDEX_DDL)
+                .map_err(|e| format!("index creation failed: {e}"))?;
+            conn.execute_batch(&format!(
+                "PRAGMA user_version = {};",
+                Self::INDEXED_VERSION
+            ))
+            .map_err(|e| format!("failed to stamp index version: {e}"))?;
+            Ok(())
+        }
+
+        /// Create the TABLES once per database — no indexes; those are deferred
+        /// to [`Self::ensure_indexes`]. A db already at [`Self::SCHEMA_VERSION`]
+        /// or beyond is assumed to have its tables, so the DDL — notably the
+        /// SRD-44 resume/refine reopen that appends in place — is skipped as
+        /// wasted parse + catalog work.
         fn create_schema(&mut self) -> Result<(), String> {
+            let version: i64 = self.conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .map_err(|e| format!("failed to read schema version: {e}"))?;
+            if version >= Self::SCHEMA_VERSION {
+                return Ok(());
+            }
             self.conn.execute_batch(
                 // SRD-77 — `executions` MUST be defined before any
                 // table that FK-references it; the FK on
@@ -423,39 +493,10 @@ mod inner {
                     value   TEXT,
                     PRIMARY KEY (session, exec_id, key)
                 );
-                -- Indexes for read paths.
-                --
-                -- (instance_label.key, value, instance_id):
-                --   matcher resolution — \"which instances
-                --   have label X = value Y\" is the inner
-                --   loop of every selector. Includes
-                --   instance_id last so the index covers the
-                --   subquery without a back-fetch.
-                CREATE INDEX IF NOT EXISTS idx_instance_label_kv
-                    ON instance_label(key, value, instance_id);
-                -- (instance_label.instance_id):
-                --   reverse direction — given an instance,
-                --   materialize its full label set.
-                CREATE INDEX IF NOT EXISTS idx_instance_label_instance
-                    ON instance_label(instance_id);
-                -- (sample_value.instance_id, timestamp_ms):
-                --   range scans for time-window queries.
-                CREATE INDEX IF NOT EXISTS idx_sample_value_inst_ts
-                    ON sample_value(instance_id, timestamp_ms);
-                -- (metric_instance.family_id):
-                --   \"every instance of family X\" — bypasses
-                --   the spec UNIQUE when only the family side
-                --   is known.
-                CREATE INDEX IF NOT EXISTS idx_metric_instance_family
-                    ON metric_instance(family_id);
-                -- (exemplar.instance_id, sample_timestamp_ms):
-                --   the pair-key the sample → exemplars
-                --   lookup uses. Read-side query
-                --   `MetricCatalog::exemplars` filters by
-                --   instance + time-window which both this
-                --   index serves directly.
-                CREATE INDEX IF NOT EXISTS idx_exemplar_inst_ts
-                    ON exemplar(instance_id, sample_timestamp_ms);
+                -- Read-path indexes are DEFERRED — see `ensure_indexes` /
+                -- `READ_INDEX_DDL`. Building them here would make every insert
+                -- maintain 6 extra B-trees (the WAL-volume amplifier); instead
+                -- they are built on first read and guaranteed at shutdown.
                 -- SRD-63 §6.4: per-(slot, subject, readout, lod)
                 -- snapshot of the latest render for that tuple.
                 -- Insert-or-replace upsert keeps memory bounded.
@@ -535,12 +576,13 @@ mod inner {
                     at_nanos     INTEGER NOT NULL,
                     retryable    INTEGER NOT NULL,
                     PRIMARY KEY (session, exec_id, phase_name, phase_labels, seq)
-                );
-                CREATE INDEX IF NOT EXISTS idx_phase_errors_phase
-                    ON phase_errors(session, exec_id, phase_name, phase_labels);
-                CREATE INDEX IF NOT EXISTS idx_phase_outcomes_ended
-                    ON phase_outcomes(ended_at_nanos);"
+                );"
             ).map_err(|e| format!("schema creation failed: {e}"))?;
+            // Tables done — stamp SCHEMA_VERSION so a reopen skips the table
+            // DDL. Indexes are deferred (a higher version) to `ensure_indexes`.
+            self.conn
+                .execute_batch(&format!("PRAGMA user_version = {};", Self::SCHEMA_VERSION))
+                .map_err(|e| format!("failed to stamp schema version: {e}"))?;
             Ok(())
         }
 
@@ -2418,15 +2460,31 @@ mod inner {
 
     impl Reporter for SqliteReporter {
         fn report(&mut self, snapshot: &MetricSet) {
+            // Batch the whole snapshot into ONE transaction. Without this each
+            // insert auto-commits — its own WAL commit record per row — and a
+            // snapshot carries many rows (per component × family × metric). One
+            // commit per tick collapses N commit records into one; the indexes
+            // are still maintained and the consolidation checkpoint still runs,
+            // so the durable, externally-readable db is byte-for-byte the same.
+            // If BEGIN can't start (already in a txn — shouldn't happen here),
+            // fall back to per-row auto-commit rather than skip the write.
+            let batched = self.conn.execute_batch("BEGIN").is_ok();
             for family in snapshot.families() {
                 for metric in family.metrics() {
                     self.insert_metric(snapshot, family, metric);
                 }
             }
+            if batched {
+                if let Err(e) = self.conn.execute_batch("COMMIT") {
+                    crate::diag::warn(&format!("sqlite snapshot commit failed: {e}"));
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                }
+            }
         }
 
         fn flush(&mut self) {
-            // SQLite auto-commits
+            // Each `report` commits its own snapshot transaction; nothing is
+            // left buffered between snapshots.
         }
     }
 
@@ -2463,6 +2521,17 @@ mod inner {
         /// rollback-journal mode for any subsequent writes,
         /// so callers must not write after this fires.
         pub fn consolidate_wal(&self) {
+            // Build the deferred read indexes before the final checkpoint so
+            // the durable, externally-readable db is fully indexed (no-op if a
+            // read already triggered them). Best-effort: a failure here must
+            // not abort shutdown — the worst case is an unindexed db that the
+            // next reader self-heals.
+            if let Err(e) = Self::ensure_read_indexes(&self.conn) {
+                crate::diag::warn(&format!(
+                    "sqlite shutdown index build failed: {e} — db left unindexed \
+                     until the next read completes it"
+                ));
+            }
             // PRAGMA returns a row carrying (busy, log_size,
             // checkpointed_count). We don't care about the
             // values — just need the operation to run. Use
@@ -3155,6 +3224,7 @@ mod inner {
         fn unit_round_trips_into_name_suffix_and_unit_column() {
             use crate::snapshot::{GaugeValue, MetricPoint};
             let mut reporter = SqliteReporter::in_memory().unwrap();
+            reporter.insert_execution_start("s", 1, "run", None, 0, "", "");
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
 
             // Build a family with name="overscan" + unit="ratio" via
@@ -3164,7 +3234,7 @@ mod inner {
             let mut family = MetricFamily::new("overscan", MetricType::Gauge)
                 .with_unit("ratio");
             family.insert(Metric::single(
-                Labels::of("activity", "search"),
+                Labels::of("activity", "search").with("session", "s").with("exec_id", "1"),
                 MetricPoint::untimed(MetricValue::Gauge(GaugeValue::new(0.97))),
             ));
             snapshot.insert(family);
@@ -3189,12 +3259,13 @@ mod inner {
         fn unit_column_populated_when_name_already_carries_suffix() {
             use crate::snapshot::{GaugeValue, MetricPoint};
             let mut reporter = SqliteReporter::in_memory().unwrap();
+            reporter.insert_execution_start("s", 1, "run", None, 0, "", "");
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
 
             let mut family = MetricFamily::new("memory_bytes", MetricType::Gauge)
                 .with_unit("bytes");
             family.insert(Metric::single(
-                Labels::of("activity", "load"),
+                Labels::of("activity", "load").with("session", "s").with("exec_id", "1"),
                 MetricPoint::untimed(MetricValue::Gauge(GaugeValue::new(1024.0))),
             ));
             snapshot.insert(family);
@@ -3215,9 +3286,12 @@ mod inner {
         #[test]
         fn unit_column_null_when_family_has_no_unit() {
             let mut reporter = SqliteReporter::in_memory().unwrap();
+            reporter.insert_execution_start("s", 1, "run", None, 0, "", "");
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
             snapshot.insert_counter(
-                "ops_total", Labels::of("activity", "x"), 1, Instant::now(),
+                "ops_total",
+                Labels::of("activity", "x").with("session", "s").with("exec_id", "1"),
+                1, Instant::now(),
             );
             reporter.report(&snapshot);
 
@@ -3818,6 +3892,36 @@ mod inner {
             assert_eq!(rows[2].exec_id, 3);
             assert_eq!(rows[1].scope.as_deref(), Some("missing"));
             assert_eq!(rows[2].scope.as_deref(), Some("all"));
+        }
+
+        #[test]
+        fn read_indexes_are_deferred_until_shutdown() {
+            // SRD-90: tables are created at write time, the read indexes are
+            // deferred off the hot write path. The db sits at SCHEMA_VERSION
+            // with no read indexes until `consolidate_wal` builds them at
+            // shutdown — so the durable db an external (non-runtime) reader
+            // opens is always fully indexed.
+            let r = SqliteReporter::in_memory().unwrap();
+            let idx_count = |r: &SqliteReporter| -> i64 {
+                r.conn.query_row(
+                    "SELECT count(*) FROM sqlite_master \
+                     WHERE type='index' AND name LIKE 'idx_%'",
+                    [], |row| row.get(0),
+                ).unwrap()
+            };
+            let user_version = |r: &SqliteReporter| -> i64 {
+                r.conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap()
+            };
+            // Write time: tables only.
+            assert_eq!(user_version(&r), SqliteReporter::SCHEMA_VERSION);
+            assert_eq!(idx_count(&r), 0, "read indexes deferred at write time");
+            // Shutdown builds them and bumps the marker.
+            r.consolidate_wal();
+            assert_eq!(user_version(&r), SqliteReporter::INDEXED_VERSION);
+            assert_eq!(idx_count(&r), 7, "all read indexes built at shutdown");
+            // Idempotent + self-healing: a second call is a no-op.
+            r.consolidate_wal();
+            assert_eq!(idx_count(&r), 7);
         }
     }
 }
