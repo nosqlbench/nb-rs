@@ -8,6 +8,11 @@
 #   nbrs workload=compaction_test_updated.yaml dataset=/path/to/cohere-1M
 #   nbrs workload=compaction_test_updated.yaml dataset=cohere-1M host=10.0.0.1
 
+description: |
+  JVector two-flush compaction recall test: loads half the vectors,
+  flushes, loads the other half, flushes, forces a major compaction,
+  then measures recall.
+
 params:
   adapter: cql
   host: 18.215.16.255

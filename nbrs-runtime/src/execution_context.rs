@@ -237,8 +237,22 @@ mod tests {
         assert_eq!(wrapped, id, "propagate carries the exec_id across the spawn");
     }
 
+    // Holds a std lock across `.await`: the awaited `scope(...)`
+    // futures run inline (task-local scope, no inter-task yield), so
+    // there is no other task that needs the lock — it's held only to
+    // keep the process-global stop flag clear for the whole assertion
+    // window, serialized against `flag_starts_unset_and_responds_to_request`.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn per_execution_stop_is_isolated() {
+        // `stop_requested()` ORs the never-reset process-global
+        // `SESSION_STOP`; serialize with the other global-flag test and
+        // clear it so a sibling test's stop can't masquerade as B's.
+        let _guard = crate::session_signals::STOP_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::session_signals::clear_session_stop_for_test();
+
         let a = ExecutionContext::new();
         let b = ExecutionContext::new();
         assert_ne!(a.exec_id, b.exec_id, "concurrent executions get distinct ids");

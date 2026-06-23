@@ -148,22 +148,39 @@ pub fn trigger_graceful_stop() {
     }
 }
 
+/// Test-only: serialize the tests that touch the process-global
+/// `SESSION_STOP` flag. `SESSION_STOP` is a never-reset
+/// `OnceLock<Arc<AtomicBool>>`, so a test that sets it would
+/// otherwise leak into every sibling test in the same binary
+/// (notably the per-execution isolation test, which requires the
+/// global to be clear). Tests acquire this lock and clear the flag
+/// before asserting.
+#[cfg(test)]
+pub(crate) static STOP_GLOBAL_TEST_LOCK: std::sync::Mutex<()> =
+    std::sync::Mutex::new(());
+
+/// Test-only: reset the process-global stop flag to unset. Paired
+/// with [`STOP_GLOBAL_TEST_LOCK`] so global-flag tests don't leak
+/// state into each other.
+#[cfg(test)]
+pub(crate) fn clear_session_stop_for_test() {
+    flag().store(false, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn flag_starts_unset_and_responds_to_request() {
-        // The flag is process-global; if another test in this
-        // same process has already set it, just verify the
-        // request_stop / stop_requested wiring works.
-        if !stop_requested() {
-            assert!(!stop_requested());
-            request_stop();
-            assert!(stop_requested());
-        } else {
-            // Already set by a prior test in this process.
-            assert!(stop_requested());
-        }
+        // Serialize with the other global-flag test and reset the
+        // process-global flag around the assertions so this test
+        // neither sees nor leaks a stale stop.
+        let _guard = STOP_GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_session_stop_for_test();
+        assert!(!stop_requested());
+        request_stop();
+        assert!(stop_requested());
+        clear_session_stop_for_test();
     }
 }
