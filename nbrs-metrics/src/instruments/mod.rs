@@ -15,4 +15,5 @@
 pub mod counter;
 pub mod histogram;
 pub mod timer;
+pub mod outcome;
 pub mod gauge;

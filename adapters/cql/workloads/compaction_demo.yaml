@@ -69,12 +69,13 @@ scenarios:
   default:
     - teardown
     - schema
-    - tune_cluster
+##    - tune_cluster
+#    - continuous_ann_query - sparse throughout the life of the workload
     - rampup_first_half
-    - flush
+#    - flush # do not do this if we are treating the system as a basic user would
     - rampup_second_half
-    - flush
-    - finalize_index
+    #    - flush # do not do this if we are treating the system as a basic user would
+#    - finalize_index # we will want to do this, but only after capturing measurements first
     - ann_query
 
   # Single-phase scenarios for piecewise runs.
@@ -158,12 +159,7 @@ phases:
         raw: |
           CREATE TABLE IF NOT EXISTS {keyspace}.{table}
           (key text PRIMARY KEY, value vector<float, {dim}>)
-          WITH compaction = {
-            'class': 'SizeTieredCompactionStrategy',
-            'min_threshold': '100000',
-            'max_threshold': '100000'
-          }
-          AND compression = {'enabled': 'false'}
+          WITH compression = {'enabled': 'false'}
       create_vector_index:
         raw: |
           CREATE CUSTOM INDEX IF NOT EXISTS {table}{vector_idx_suffix}

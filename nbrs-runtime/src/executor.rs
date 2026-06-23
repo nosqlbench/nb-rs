@@ -4079,9 +4079,15 @@ async fn run_phase(
     // predicates bind to it (their native scope), not a conjured root.
     let phase_kernel = ctx.scope_tree.phase_node_by_name(phase_name)
         .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned());
+    // SRD-91 — outcome-instrument detail (counter vs timer) comes from
+    // the run's effective params (`metrics_detail`), which live on
+    // `merged_params` (CLI-overlaid), not the workload-declared-only
+    // `workload_params`.
+    let metric_detail =
+        crate::activity::metric_detail_from_params(&ctx.merged_params);
     let mut activity = Activity::with_params_and_sigdigs(
         config, &labels, op_sequence, ctx.workload_params.clone(), sigdigs,
-        phase_error_policy, phase_kernel,
+        phase_error_policy, phase_kernel, &metric_detail,
     );
     // SRD-32a Push 3 — propagate the workload-root
     // wrapper-order override and CLI default-order tiebreaker
@@ -4192,7 +4198,7 @@ async fn run_phase(
 
                 let started = progress_metrics.ops_started.load(std::sync::atomic::Ordering::Relaxed);
                 let finished = progress_metrics.ops_finished.load(std::sync::atomic::Ordering::Relaxed);
-                let successes = progress_metrics.successes_total.get();
+                let successes = progress_metrics.result_success.count();
                 let errors = progress_metrics.errors_total.get();
                 let elapsed = progress_start.elapsed().as_secs_f64();
                 let ops_per_sec = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
@@ -4429,7 +4435,7 @@ async fn run_phase(
     if ctx.observer.suppresses_stderr() {
         let started_total = progress_metrics.ops_started.load(std::sync::atomic::Ordering::Relaxed);
         let finished_total = progress_metrics.ops_finished.load(std::sync::atomic::Ordering::Relaxed);
-        let successes = progress_metrics.successes_total.get();
+        let successes = progress_metrics.result_success.count();
         let errors = progress_metrics.errors_total.get();
         let elapsed = progress_start.elapsed().as_secs_f64();
         let ops_per_sec = if elapsed > 0.0 { finished_total as f64 / elapsed } else { 0.0 };
@@ -4588,9 +4594,12 @@ async fn run_phase(
     let phase_duration = phase_start.elapsed().as_secs_f64();
     // SRD-83 — this child phase's op / error totals, folded into the
     // workload shell's aggregate at each outcome path below. `cycles`
-    // is ops dispatched; `errors_total` is the counted op errors.
+    // is ops dispatched; the error count is the per-OP terminal failure
+    // tally (`result_failure`, SRD-91) so the workload-shell error rate
+    // stays a per-op proportion in [0,1] (not the per-attempt
+    // `errors_total`, which counts retries).
     let phase_op_count = progress_metrics.cycles_completed();
-    let phase_error_count = progress_metrics.errors_total.get();
+    let phase_error_count = progress_metrics.result_failure.count();
     if stopped && !settle_succeeded && !servo_completed {
         // Pull the first triggering error captured by the
         // activity's stop_flag setter (activity.rs per-cycle

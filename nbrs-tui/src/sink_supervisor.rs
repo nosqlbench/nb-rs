@@ -185,11 +185,24 @@ fn run_supervision(
                             break;
                         }
                         WatcherSignal::Interrupt => {
-                            // Re-raise SIGINT so the runtime's
-                            // graceful-shutdown handler picks
-                            // it up via the same path as a
-                            // shell-issued Ctrl-C.
-                            unsafe { libc::raise(libc::SIGINT); }
+                            // In raw mode the terminal's Ctrl-C→SIGINT
+                            // translation is OFF, so this keystroke is NOT a
+                            // signal. Drive the graceful-stop flag DIRECTLY
+                            // rather than re-raising SIGINT: the TUI's
+                            // `install_signal_terminal_restore` sigaction
+                            // handler intercepts SIGINT and hard-terminates
+                            // (restoring the terminal) before the runtime's
+                            // graceful handler can run — so a re-raise here
+                            // loses both the operator notice and the metrics
+                            // flush. A SECOND Ctrl-C while a stop is already
+                            // pending is the force-exit escape hatch: restore
+                            // the terminal, then exit.
+                            if nbrs_runtime::session_signals::stop_requested() {
+                                let _ = crossterm::terminal::disable_raw_mode();
+                                std::process::exit(130);
+                            } else {
+                                nbrs_runtime::session_signals::trigger_graceful_stop();
+                            }
                         }
                         WatcherSignal::Suspend => {
                             // Honour the user's expectation that

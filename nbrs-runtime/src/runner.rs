@@ -1129,6 +1129,13 @@ impl SessionHost {
         self.cadence_reporter.shutdown().await;
         crate::diag!(crate::observer::LogLevel::Debug,
             "shutdown: cadence reporter flush+join {:?}", _teardown_t.elapsed());
+        // Release the live-access reader (the HybridStore's sqlite cold-tier
+        // connection on metrics.db) BEFORE consolidating the WAL: the
+        // `journal_mode=DELETE` flip in `consolidate_wal` needs an EXCLUSIVE
+        // db lock, which a still-open reader connection on the same file
+        // blocks ("database is locked"). The session is fully stopped here, so
+        // no live reads remain.
+        nbrs_metrics::queryapi::uninstall_live_access();
         crate::diag!(crate::observer::LogLevel::Info,
             "shutting down — consolidating metrics.db WAL");
         self.sqlite_guard.consume();

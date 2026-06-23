@@ -127,6 +127,27 @@ pub fn install_signal_handler() {
     });
 }
 
+/// Drive the graceful-shutdown stage directly — for callers that detect a
+/// Ctrl-C WITHOUT a SIGINT. In the interactive raw-mode key-watcher the
+/// terminal's Ctrl-C→SIGINT translation is OFF, so the keystroke never
+/// becomes a signal; and re-raising SIGINT there is unreliable because the
+/// TUI's `install_signal_terminal_restore` sigaction handler intercepts
+/// SIGINT and hard-terminates before tokio's graceful handler can run. The
+/// key-watcher supervisor calls this instead, setting the same stop flag the
+/// SIGINT handler sets and emitting the same operator notice. Idempotent:
+/// only the first call (flag false→true) sets the flag and logs; the caller
+/// escalates a subsequent Ctrl-C to a force-exit itself.
+pub fn trigger_graceful_stop() {
+    if !flag().swap(true, Ordering::Relaxed) {
+        crate::diag!(
+            crate::observer::LogLevel::Info,
+            "session: graceful shutdown requested (Ctrl-C). Active fibers \
+             will exit at the next cycle boundary; profiler / metrics / \
+             summaries will flush. Press Ctrl-C again to force-exit."
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

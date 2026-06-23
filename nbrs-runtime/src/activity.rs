@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use nbrs_metrics::instruments::counter::Counter;
 use nbrs_metrics::instruments::histogram::Histogram;
 use nbrs_metrics::instruments::timer::Timer;
+use nbrs_metrics::instruments::outcome::{OutcomeInstrument, MetricDetail, MetricDetailConfig};
 use nbrs_metrics::labels::Labels;
 use nbrs_metrics::snapshot::MetricSet;
 use nbrs_rate::RateLimiter;
@@ -184,39 +185,54 @@ pub struct ActivityMetrics {
     pub service_time: Arc<Timer>,
     pub wait_time: Arc<Timer>,
     pub response_time: Arc<Timer>,
-    /// Service time for successful ops only. Allows isolating
-    /// success latency from error/retry latency.
-    pub result_success_time: Arc<Timer>,
     /// Number of tries per op (1 = succeeded first try, 2+ = retried).
     /// Distribution shape reveals incremental saturation.
     pub tries_histogram: Arc<Histogram>,
+    /// Every op dispatched (incl. skips) — the rate driver. Distinct
+    /// from `result_total`, which excludes skips. SRD-91.
     pub cycles_total: Arc<Counter>,
-    /// Per-OP **terminal** dispositions — one increment per op instance,
-    /// mutually exclusive: `successes_total` if the op's FINAL attempt
-    /// succeeded, `errors_total` if it terminally failed (after exhausting
-    /// retries). So `errors_total ≤ cycles_total` always, and the error rate
-    /// over final ops (`errors_total / cycles_total`) is in [0,1] by
-    /// construction — non-terminal retries never inflate it. (Per-attempt
-    /// outcomes — which DO include retries — are `attempt_success` /
-    /// `attempt_failure` below.)
-    pub successes_total: Arc<Counter>,
     pub skips_total: Arc<Counter>,
+    // ── SRD-91 op-outcome taxonomy ────────────────────────────────
+    // Two layers that reconcile (the redundancy IS the validation):
+    //   • executor layer — `attempt_*` / `result_*`, counted in the
+    //     stanza hot loop;
+    //   • error-handler layer — `errors_total` + the per-type
+    //     breakdown, counted per failed attempt at error dispatch.
+    // Invariants:
+    //   attempt_total == attempt_success.count + attempt_failure.count
+    //   result_total  == result_success.count  + result_failure.count
+    //   cycles_total  == result_total + skips_total
+    //   errors_total  == Σ per-type == attempt_failure.count
+    //                    (when the policy counts every error)
+    /// Per-ATTEMPT total — one increment per `dispenser.execute`,
+    /// including retries.
+    pub attempt_total: Arc<Counter>,
+    /// Per-ATTEMPT outcomes (+ attempt latency when Timed). The count
+    /// is available in either detail mode — see [`OutcomeInstrument`].
+    pub attempt_success: OutcomeInstrument,
+    pub attempt_failure: OutcomeInstrument,
+    /// Per-OP terminal total — executed results only (success +
+    /// failure; excludes skips). Distinct from `cycles_total` by the
+    /// skip count.
+    pub result_total: Arc<Counter>,
+    /// Per-OP terminal outcomes (+ op latency when Timed).
+    /// `result_success` replaces the former `result_success_time`
+    /// timer and the unexported `successes_total` counter — its
+    /// `count()` IS the terminal-success count.
+    pub result_success: OutcomeInstrument,
+    pub result_failure: OutcomeInstrument,
+    /// Error-handler-layer tally: one increment per failed attempt at
+    /// error dispatch (per-attempt, so retries DO count here), keyed
+    /// by the handler-classified name for the per-type breakdown. The
+    /// per-op error rate uses `result_failure` instead, keeping it in
+    /// [0,1]. SRD-91.
     pub errors_total: Arc<Counter>,
-    /// Per-ATTEMPT outcomes — one increment per `dispenser.execute`,
-    /// including every non-terminal retry. `attempt_success` counts the
-    /// (single) succeeding attempt; `attempt_failure` counts every failing
-    /// attempt. The error rate over attempts
-    /// (`attempt_failure / (attempt_success + attempt_failure)`) is the load
-    /// signal that reflects retry pressure; the per-op rate above is the
-    /// disposition signal. Both are naturally in [0,1].
-    pub attempt_success: Arc<Counter>,
-    pub attempt_failure: Arc<Counter>,
     pub stanzas_total: Arc<Counter>,
     /// Daemon ops that exited cleanly via stop-signal cancellation
     /// at phase shutdown (the trigger-and-observe happy path).
     /// Counts increment on `DaemonExit::Cancelled` only — natural
-    /// completions are tracked through `successes_total` /
-    /// `errors_total` on the underlying op path. Visibility on
+    /// completions are tracked through `result_success` /
+    /// `result_failure` on the underlying op path. Visibility on
     /// this counter lets the operator distinguish "phase exited
     /// with N daemons cancelled" from "phase exited with no
     /// daemons in flight" without re-reading session.log.
@@ -247,9 +263,47 @@ pub struct ActivityMetrics {
     validation_metrics: std::sync::Mutex<Option<Arc<Vec<Arc<crate::validation::ValidationMetrics>>>>>,
 }
 
+/// Resolve the SRD-91 op-outcome detail config from the single
+/// `metrics_detail` param. The value is a comma-separated list: a bare
+/// token sets the global default (`counts` / `timers`), and a
+/// `family:mode` token overrides one instrument. Example:
+/// `metrics_detail=timers,attempt_success:counts,attempt_failure:counts`.
+/// Absent or unparseable tokens fall back to the default (timers).
+pub(crate) fn metric_detail_from_params(
+    params: &std::collections::HashMap<String, String>,
+) -> MetricDetailConfig {
+    let Some(spec) = params.get("metrics_detail") else {
+        return MetricDetailConfig::default();
+    };
+    let mut default = MetricDetail::default();
+    let mut overrides: Vec<(String, MetricDetail)> = Vec::new();
+    for tok in spec.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        if let Some((family, mode)) = tok.split_once(':') {
+            if let Some(d) = MetricDetail::parse(mode) {
+                overrides.push((family.trim().to_string(), d));
+            }
+        } else if let Some(d) = MetricDetail::parse(tok) {
+            default = d;
+        }
+    }
+    let mut cfg = MetricDetailConfig::new(default);
+    for (family, detail) in overrides {
+        cfg = cfg.with_override(family, detail);
+    }
+    cfg
+}
+
 impl ActivityMetrics {
     pub fn new(labels: &Labels) -> Self {
-        Self::with_sigdigs(labels, nbrs_metrics::instruments::histogram::DEFAULT_HDR_SIGDIGS)
+        Self::with_sigdigs(
+            labels,
+            nbrs_metrics::instruments::histogram::DEFAULT_HDR_SIGDIGS,
+            &MetricDetailConfig::default(),
+        )
     }
 
     /// Construct activity metrics using an explicit HDR
@@ -259,19 +313,27 @@ impl ActivityMetrics {
     /// [`nbrs_metrics::instruments::histogram::resolve_hdr_sigdigs`]
     /// once per activity and threads it here (SRD 40 §"HDR
     /// significant digits — subtree-scoped setting").
-    pub fn with_sigdigs(labels: &Labels, sigdigs: u8) -> Self {
+    pub fn with_sigdigs(labels: &Labels, sigdigs: u8, detail: &MetricDetailConfig) -> Self {
+        // Outcome instruments choose counter-vs-timer per family (global
+        // default + override), SRD-91. Default is Timers, preserving the
+        // historical always-on latency distributions.
+        let outcome = |name: &str| OutcomeInstrument::new(
+            labels.with("name", name), sigdigs, detail.for_family(name),
+        );
         Self {
             service_time: Arc::new(Timer::with_sigdigs(labels.with("name", "cycles_servicetime"), sigdigs)),
             wait_time: Arc::new(Timer::with_sigdigs(labels.with("name", "cycles_waittime"), sigdigs)),
             response_time: Arc::new(Timer::with_sigdigs(labels.with("name", "cycles_responsetime"), sigdigs)),
-            result_success_time: Arc::new(Timer::with_sigdigs(labels.with("name", "result_success"), sigdigs)),
             tries_histogram: Arc::new(nbrs_metrics::instruments::histogram::Histogram::with_sigdigs(labels.with("name", "tries"), sigdigs)),
             cycles_total: Arc::new(Counter::new(labels.with("name", "cycles_total"))),
-            successes_total: Arc::new(Counter::new(labels.with("name", "successes_total"))),
             skips_total: Arc::new(Counter::new(labels.with("name", "skips_total"))),
+            attempt_total: Arc::new(Counter::new(labels.with("name", "attempt_total"))),
+            attempt_success: outcome("attempt_success"),
+            attempt_failure: outcome("attempt_failure"),
+            result_total: Arc::new(Counter::new(labels.with("name", "result_total"))),
+            result_success: outcome("result_success"),
+            result_failure: outcome("result_failure"),
             errors_total: Arc::new(Counter::new(labels.with("name", "errors_total"))),
-            attempt_success: Arc::new(Counter::new(labels.with("name", "attempt_success"))),
-            attempt_failure: Arc::new(Counter::new(labels.with("name", "attempt_failure"))),
             stanzas_total: Arc::new(Counter::new(labels.with("name", "stanzas_total"))),
             daemon_cancelled_total: Arc::new(Counter::new(labels.with("name", "daemon_cancelled_total"))),
             daemon_errors_total: Arc::new(Counter::new(labels.with("name", "daemon_errors_total"))),
@@ -303,9 +365,9 @@ impl ActivityMetrics {
         use nbrs_metrics::component::InstrumentRef;
         // Order mirrors the historical capture_delta emission so
         // metric_family ordering stays stable for downstream
-        // consumers. `successes_total` was omitted historically
-        // even though the field exists; preserve that omission to
-        // avoid a behavioural change.
+        // consumers. SRD-91 outcome instruments register via
+        // `instrument_ref()` (a counter or summary family per the
+        // resolved detail mode).
         component.register_instrument(
             "cycles_servicetime",
             InstrumentRef::Timer(self.service_time.clone()),
@@ -320,7 +382,15 @@ impl ActivityMetrics {
         )?;
         component.register_instrument(
             "result_success",
-            InstrumentRef::Timer(self.result_success_time.clone()),
+            self.result_success.instrument_ref(),
+        )?;
+        component.register_instrument(
+            "result_failure",
+            self.result_failure.instrument_ref(),
+        )?;
+        component.register_instrument(
+            "result_total",
+            InstrumentRef::Counter(self.result_total.clone()),
         )?;
         component.register_instrument(
             "cycles_total",
@@ -335,12 +405,16 @@ impl ActivityMetrics {
             InstrumentRef::Counter(self.errors_total.clone()),
         )?;
         component.register_instrument(
+            "attempt_total",
+            InstrumentRef::Counter(self.attempt_total.clone()),
+        )?;
+        component.register_instrument(
             "attempt_success",
-            InstrumentRef::Counter(self.attempt_success.clone()),
+            self.attempt_success.instrument_ref(),
         )?;
         component.register_instrument(
             "attempt_failure",
-            InstrumentRef::Counter(self.attempt_failure.clone()),
+            self.attempt_failure.instrument_ref(),
         )?;
         component.register_instrument(
             "stanzas_total",
@@ -413,7 +487,6 @@ impl ActivityMetrics {
         let service_snap = self.service_time.snapshot();
         let wait_snap = self.wait_time.snapshot();
         let response_snap = self.response_time.snapshot();
-        let success_snap = self.result_success_time.snapshot();
         let tries_snap = self.tries_histogram.snapshot();
         let now = Instant::now();
         let mut snap = MetricSet::at(now, interval);
@@ -424,8 +497,18 @@ impl ActivityMetrics {
         snap.insert_histogram(n, lbl, wait_snap.histogram, now);
         let (n, lbl) = split_name_label(self.response_time.labels());
         snap.insert_histogram(n, lbl, response_snap.histogram, now);
-        let (n, lbl) = split_name_label(self.result_success_time.labels());
-        snap.insert_histogram(n, lbl, success_snap.histogram, now);
+        // result_success: a histogram when Timed, a plain count when
+        // Counted (SRD-91 detail mode).
+        match &self.result_success {
+            OutcomeInstrument::Timed(t) => {
+                let (n, lbl) = split_name_label(t.labels());
+                snap.insert_histogram(n, lbl, t.snapshot().histogram, now);
+            }
+            OutcomeInstrument::Counted(c) => {
+                let (n, lbl) = split_name_label(c.labels());
+                snap.insert_counter(n, lbl, c.get(), now);
+            }
+        }
 
         let (n, lbl) = split_name_label(self.cycles_total.labels());
         snap.insert_counter(n, lbl, self.cycles_total.get(), now);
@@ -860,6 +943,7 @@ impl Activity {
                 config.error_rate_max,
             ),
         );
+        let metric_detail = metric_detail_from_params(&params);
         Self::with_params_and_sigdigs(
             config, parent_labels, op_sequence, params,
             nbrs_metrics::instruments::histogram::DEFAULT_HDR_SIGDIGS,
@@ -867,6 +951,7 @@ impl Activity {
             // This shim is the no-phase-kernel path (tests / library use);
             // the executor's run_phase path passes the phase node's kernel.
             None,
+            &metric_detail,
         )
     }
 
@@ -885,9 +970,14 @@ impl Activity {
         sigdigs: u8,
         error_policy: Arc<crate::error_policy::ErrorPolicy>,
         phase_kernel: Option<Arc<polydat::kernel::PolydatKernel>>,
+        metric_detail: &MetricDetailConfig,
     ) -> Self {
         let labels = parent_labels.clone();
-        let metrics = Arc::new(ActivityMetrics::with_sigdigs(&labels, sigdigs));
+        // SRD-91 — counter-vs-timer detail for the op-outcome instruments,
+        // resolved by the caller from the run's effective params (the
+        // executor passes the CLI-overlaid set; the library shim derives
+        // from its own params). Default: timers.
+        let metrics = Arc::new(ActivityMetrics::with_sigdigs(&labels, sigdigs, metric_detail));
         // All phases go through sources. cycles: N desugars to range(0, N).
         // Named cursors in Polydat provide their own factory via config.source_factory.
         let source_factory: Arc<dyn polydat::iteration::source::DataSourceFactory> = config.source_factory
@@ -2199,7 +2289,11 @@ impl Activity {
                 // `op_count`, momentarily yielding `error_rate > 1.0` and
                 // SPURIOUSLY tripping the `error_rate > 1.0` guard under
                 // saturation (where the true rate sits exactly at 1.0).
-                let error_count = activity.metrics.errors_total.get();
+                // SRD-91: the stop-condition error rate is a per-OP
+                // proportion in [0,1], so it reads the per-op terminal
+                // failure count (`result_failure`), not the per-attempt
+                // `errors_total` (which can exceed op_count under retries).
+                let error_count = activity.metrics.result_failure.count();
                 let op_count = activity.metrics.cycles_completed();
                 let state = crate::stop_conditions::RuntimeState {
                     op_count,
@@ -2394,7 +2488,10 @@ impl Activity {
             // minus the skips-adjusted failed-op count).
             let consumed = activity.source_factory.global_consumed();
             let ops_completed = activity.metrics.cycles_completed();
-            let successes = activity.metrics.successes_total.get();
+            // SRD-91: terminal-success count = `result_success.count()`;
+            // `errors_total` is per-attempt, so `errors - failed_ops`
+            // yields the retry count.
+            let successes = activity.metrics.result_success.count();
             let errors = activity.metrics.errors_total.get();
             let elapsed = start_time.elapsed().as_secs_f64();
             let failed_ops = ops_completed.saturating_sub(successes).saturating_sub(
@@ -2847,9 +2944,24 @@ async fn daemon_dispatch(
     activity.metrics.ops_finished.fetch_add(1, Ordering::Relaxed);
     activity.metrics.service_time.record(service_nanos);
     activity.metrics.response_time.record(service_nanos);
-    if matches!(exit, crate::daemon_pool::DaemonExit::Completed) {
-        activity.metrics.successes_total.inc();
-        activity.metrics.result_success_time.record(service_nanos);
+    // SRD-91 op-outcome taxonomy for daemon dispatch (single attempt,
+    // no retry). Cancelled / TimedOut are shutdown outcomes tracked via
+    // daemon_cancelled_total / daemon_errors_total, not op results.
+    activity.metrics.attempt_total.inc();
+    match &exit {
+        crate::daemon_pool::DaemonExit::Completed => {
+            activity.metrics.attempt_success.observe(service_nanos);
+            activity.metrics.result_total.inc();
+            activity.metrics.result_success.observe(service_nanos);
+        }
+        crate::daemon_pool::DaemonExit::Errored(e) => {
+            activity.metrics.attempt_failure.observe(service_nanos);
+            activity.metrics.errors_total.inc();
+            activity.metrics.count_error_type(&e.error().error_name);
+            activity.metrics.result_total.inc();
+            activity.metrics.result_failure.observe(service_nanos);
+        }
+        _ => {}
     }
     crate::diag!(crate::observer::LogLevel::Debug,
         "daemon op '{op_name}' exit={} elapsed_ms={:.0}",
@@ -3304,37 +3416,37 @@ async fn executor_task(
             let exec_ctx = crate::fixture::ExecCtx::with_wires(&fields, &pulls, &cycle_wires);
             let service_start = Instant::now();
             let mut tries = 1u32;
-            // The op's FINAL-attempt error name, if it terminally fails. Set in
-            // the terminal branch below but the `errors_total` tally is DEFERRED
-            // until after `cycles_total` increments, so the snapshot invariant
-            // `errors_total ≤ cycles_total` holds at the source (error_rate is a
-            // proportion in [0,1] by construction — no consumer read-order care).
-            let mut terminal_error_name: Option<String> = None;
             let (success, skipped) = loop {
+                let attempt_start = Instant::now();
+                // Per-ATTEMPT total (executor layer) — one per dispatch,
+                // including retries. SRD-91.
+                activity.metrics.attempt_total.inc();
                 match dispenser.execute(cycle, &exec_ctx).await {
                     Ok(result) => {
-                        // Per-attempt success (this succeeding attempt). The
-                        // per-OP terminal success is recorded once after the
-                        // loop (`successes_total`).
-                        activity.metrics.attempt_success.inc();
+                        activity.metrics.attempt_success
+                            .observe(attempt_start.elapsed().as_nanos() as u64);
                         // OpResult.captures is vestigial — captures
                         // land on the per-op kernel directly via
                         // ctx.wires.write inside the dispenser stack.
-                        // The field itself is removed in step 7.
                         break (true, result.skipped);
                     }
                     Err(e) => {
+                        let attempt_nanos = attempt_start.elapsed().as_nanos() as u64;
                         let duration_nanos = service_start.elapsed().as_nanos() as u64;
                         let inner = e.error();
                         let detail = activity.error_policy.router.handle_error(
                             &inner.error_name, &inner.message, cycle, duration_nanos,
                         );
-                        // Per-ATTEMPT failure (counts this attempt, retried
-                        // or not). The per-OP terminal failure tally
-                        // (`errors_total` + the per-type breakdown) is
-                        // recorded once below, only when this attempt is the
-                        // op's last — so retries never inflate the error rate.
-                        activity.metrics.attempt_failure.inc();
+                        // Per-ATTEMPT failure (executor layer) + the
+                        // error-handler-layer tally (SRD-91): both count
+                        // every failed attempt, so retries DO count here.
+                        // The per-type breakdown is keyed by the handler-
+                        // classified name and sums to `errors_total`. The
+                        // per-OP error rate uses `result_failure`, so it
+                        // stays in [0,1].
+                        activity.metrics.attempt_failure.observe(attempt_nanos);
+                        activity.metrics.errors_total.inc();
+                        activity.metrics.count_error_type(&detail.name);
 
                         // Capture every per-cycle error into the
                         // phase's structured error buffer so the
@@ -3411,37 +3523,31 @@ async fn executor_task(
                         }
 
                         // Terminal failure for this op (this attempt is the
-                        // last). DEFER the per-op `errors_total` tally until
-                        // after `cycles_total` increments below — so a reader
-                        // never observes `errors_total > cycles_total`. Keyed by
-                        // the FINAL attempt's error, so the per-type breakdown
-                        // sums to `errors_total`.
-                        terminal_error_name = Some(inner.error_name.clone());
+                        // op's last) — the per-OP failure is recorded after
+                        // the loop via `result_failure`.
                         break (false, false);
                     }
                 }
             };
             let service_nanos = service_start.elapsed().as_nanos() as u64;
 
-            // Record metrics. `cycles_total` (the per-op total — every op,
-            // succeeded or failed) increments FIRST; the deferred terminal
-            // `errors_total` tally then increments AFTER it, so at every instant
-            // `errors_total ≤ cycles_total` and the error rate is a proportion
-            // in [0,1] by construction. (errors_total is per-OP terminal: retries
-            // already went to `attempt_failure`, never here.)
+            // Per-OP totals (SRD-91): `cycles_total` counts every op
+            // dispatched; executed ops go to `result_total`
+            // (= result_success + result_failure). Skipped ops increment
+            // `skips_total` in the `if:` wrapper (wrappers/if.rs), so
+            // `cycles_total == result_total + skips_total` holds without a
+            // tally here. The per-op error rate reads `result_failure`
+            // (in [0,1]); the per-attempt `errors_total` was already
+            // tallied in the loop.
             activity.metrics.cycles_total.inc();
-            if let Some(ref name) = terminal_error_name {
-                activity.metrics.errors_total.inc();
-                activity.metrics.count_error_type(name);
-            }
             if !skipped {
+                activity.metrics.result_total.inc();
                 activity.metrics.service_time.record(service_nanos);
                 activity.metrics.wait_time.record(wait_nanos);
                 activity.metrics.response_time.record(service_nanos + wait_nanos);
                 activity.metrics.tries_histogram.record(tries as u64);
                 if success {
-                    activity.metrics.successes_total.inc();
-                    activity.metrics.result_success_time.record(service_nanos);
+                    activity.metrics.result_success.observe(service_nanos);
                     // Captures landed on the per-op-template kernel
                     // directly via ctx.wires.write inside the
                     // dispenser stack — no post-execute pump.
@@ -3463,6 +3569,8 @@ async fn executor_task(
                     //    result-binding whose LHS isn't a
                     //    write-through stays dormant.
                     fiber.pull_all_op_template_outputs_for_idx(template_idx);
+                } else {
+                    activity.metrics.result_failure.observe(service_nanos);
                 }
             }
 

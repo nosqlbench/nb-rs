@@ -195,6 +195,10 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
     // (e.g. `100ms`/`200ms`), so a windowed optimizer objective
     // settles in a fraction of the default 1s-cadence wall-clock.
     crate::cli_spec::KvParam { key: "metrics_cadence=", provider: free_form },
+    // SRD-91 — op-outcome instrument detail. `counts` or `timers`
+    // (global default), with optional per-family overrides in one value:
+    // `metrics_detail=timers,attempt_success:counts,attempt_failure:counts`.
+    crate::cli_spec::KvParam { key: "metrics_detail=", provider: free_form },
 ];
 
 /// The run-style `key=value` param vocabulary (each key sans its trailing

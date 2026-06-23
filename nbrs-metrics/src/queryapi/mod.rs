@@ -145,6 +145,18 @@ pub fn install_live_access(service: Arc<dyn MetricAccess>) {
     LIVE.store(Some(Arc::new(LiveHolder(service))));
 }
 
+/// Drop the installed live-access service and everything it owns —
+/// crucially the HybridStore's sqlite "cold tier" reader connection on
+/// `metrics.db`. The runner calls this at session shutdown BEFORE the
+/// SQLite reporter consolidates the WAL: `PRAGMA journal_mode=DELETE` needs
+/// an EXCLUSIVE lock on the db, which a still-open reader connection on the
+/// same file blocks ("database is locked"). `swap` + explicit `drop` so the
+/// holder's Arc chain is released here rather than deferred to the next
+/// `store`. Idempotent; a no-op if nothing was installed.
+pub fn uninstall_live_access() {
+    drop(LIVE.swap(None));
+}
+
 /// The live in-process access service, if a session has installed one.
 /// Lock-free: one atomic `ArcSwap` load.
 pub fn live_access() -> Option<Arc<dyn MetricAccess>> {

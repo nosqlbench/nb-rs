@@ -280,7 +280,20 @@ pub fn spec() -> Command {
                 flags: Vec::new(),
                 kv_params: &[],
         dynamic_options: None,
-        positionals: Vec::new(),
+        // Completion-only positional: `raw_args=true` makes the
+        // walker hand the unparsed tail straight to
+        // `metricsql_cmd::query` (see walker.rs — the raw-args
+        // branch returns before positionals are read), so this
+        // entry never affects runtime parsing. It exists so
+        // `nbrs metrics query <TAB>` completes the first token to
+        // a metric family name, matching the `list`/`show`/`match`
+        // siblings.
+        positionals: vec![crate::cli_spec::Positional {
+                    name: "expr",
+                    help: "metricsql expression; first token completes to a metric family name.",
+                    value: crate::cli_spec::ValueProvider::Custom(crate::completion::metric_family_provider),
+                    kind: crate::cli_spec::PositionalKind::ZeroOrOne,
+                }],
                 subcommands: Vec::new(),
                 handler: Some(Handler::Sync(handle_query)),
                 raw_args: true,
@@ -293,7 +306,13 @@ pub fn spec() -> Command {
                 flags: Vec::new(),
                 kv_params: &[],
         dynamic_options: None,
-        positionals: Vec::new(),
+        // Completion-only positional — see the `query` note above.
+        positionals: vec![crate::cli_spec::Positional {
+                    name: "expr",
+                    help: "metricsql expression; first token completes to a metric family name.",
+                    value: crate::cli_spec::ValueProvider::Custom(crate::completion::metric_family_provider),
+                    kind: crate::cli_spec::PositionalKind::ZeroOrOne,
+                }],
                 subcommands: Vec::new(),
                 handler: Some(Handler::Sync(handle_watch)),
                 raw_args: true,
@@ -1175,9 +1194,38 @@ struct InstanceRow {
     values: Option<ValueSummary>,
 }
 
+/// What the leading count figure on a leaf means, so the
+/// rendered word matches the metric kind instead of always
+/// claiming "samples". A counter's headline is its cumulative
+/// total; a summary's is its observation count; a gauge's is the
+/// number of readings.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+enum CountKind {
+    /// Number of sampled readings (gauges and other scalar series).
+    #[default]
+    Samples,
+    /// Cumulative counter total.
+    Total,
+    /// Cumulative observation count behind a distribution summary.
+    Obs,
+}
+
+impl CountKind {
+    fn word(self) -> &'static str {
+        match self {
+            CountKind::Samples => "samples",
+            CountKind::Total   => "total",
+            CountKind::Obs     => "obs",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct ValueSummary {
     count:  Option<i64>,
+    /// Interpretation of [`count`](Self::count) for this leaf —
+    /// drives the rendered word and reflects the metric kind.
+    count_kind: CountKind,
     mean:   Option<f64>,
     p50:    Option<f64>,
     p99:    Option<f64>,
@@ -1670,9 +1718,13 @@ fn nest_label_tree(
 /// One-line text summary used at `--tree` leaves: a compact,
 /// scannable encoding of count / time range / canonical
 /// statistical moments. Format:
-/// `samples[N] timespan[<duration>] (min,mean,max,median,stddev)=(...)`.
-/// Unknown fields render as `?` so the format stays positional
-/// (a reader can `cut`/`awk` it without a header).
+/// `<kind>[N] timespan[<duration>] (min,mean,max,median,stddev)=(...)`,
+/// where `<kind>` is `obs` (summary), `total` (counter) or
+/// `samples` (gauge/scalar) per [`CountKind`]. The five moments
+/// are computed over the value set appropriate to the kind (see
+/// [`load_value_summary`]). Unknown fields render as `?` so the
+/// format stays positional (a reader can `cut`/`awk` it without a
+/// header).
 fn tree_leaf_summary(v: &ValueSummary) -> String {
     let n = v.count.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
     let span = match (v.ts_min_ms, v.ts_max_ms) {
@@ -1681,7 +1733,8 @@ fn tree_leaf_summary(v: &ValueSummary) -> String {
     };
     let f = |x: Option<f64>| x.map(|v| format!("{v}")).unwrap_or_else(|| "?".into());
     format!(
-        "samples[{n}] timespan[{span}] (min,mean,max,median,stddev)=({},{},{},{},{})",
+        "{}[{n}] timespan[{span}] (min,mean,max,median,stddev)=({},{},{},{},{})",
+        v.count_kind.word(),
         f(v.min), f(v.mean), f(v.max), f(v.p50), f(v.stddev),
     )
 }
@@ -2069,29 +2122,173 @@ fn write_dim_tree(
     Ok(())
 }
 
+/// Which statistic semantics a leaf's [`ValueSummary`] should
+/// carry, decided by the metric family's declared type.
+enum LeafKind {
+    /// `summary` — the stored HDR-reservoir moments describe the
+    /// observation distribution within a window.
+    Distribution,
+    /// `gauge` / `stateset` / unknown — the stored scalar lives in
+    /// the `mean` column and each row is one reading.
+    Gauge,
+    /// `counter` / `histogram` / `info` — the `count` column is a
+    /// cumulative total; the meaningful distribution is over its
+    /// per-window increments.
+    Counter,
+}
+
+/// Build the leaf [`ValueSummary`] for an instance, choosing the
+/// statistic semantics by metric kind. The five moments
+/// (`min/mean/max/median/stddev`) aren't quantiles — only the
+/// median is — so they're well-defined over any scalar series;
+/// earlier this read the reservoir columns unconditionally, so
+/// every non-summary leaf rendered `(?,?,?,?,?)`.
+///
+/// - **summary** → stored reservoir moments from the most-observed
+///   window (within-window observation distribution); `count` is
+///   the cumulative observation count (`obs`).
+/// - **gauge / scalar** → moments over the *series of readings*
+///   (the `mean` column across windows); `count` is the number of
+///   readings (`samples`).
+/// - **counter / histogram / info** → moments over the *per-window
+///   increments* of the cumulative `count` column (throughput-
+///   per-window distribution); `count` is the cumulative total
+///   (`total`).
 fn load_value_summary(conn: &rusqlite::Connection, instance_id: i64) -> ValueSummary {
     if instance_id < 0 { return ValueSummary::default(); }
-    // Pull the highest-count snapshot's stats — sample_value
-    // rows are typically rolling-window or final summaries, and
-    // the row with peak count is the most representative single
-    // observation. Subqueries grab the timespan covered by all
-    // rows for this instance so callers can render
-    // `timespan[5m23s]` alongside the stats.
-    // One row of optional stats columns plus the two timespan
-    // bounds, mirroring the SELECT below positionally.
+    let (ts_min_ms, ts_max_ms) = load_timespan(conn, instance_id);
+    match family_kind(conn, instance_id) {
+        LeafKind::Distribution =>
+            load_reservoir_summary(conn, instance_id, ts_min_ms, ts_max_ms),
+        LeafKind::Gauge => {
+            let xs = load_scalar_series(conn, instance_id, "mean");
+            let n = Some(xs.len() as i64);
+            summary_from_values(xs, n, CountKind::Samples, ts_min_ms, ts_max_ms)
+        }
+        LeafKind::Counter => {
+            let cum = load_scalar_series(conn, instance_id, "count");
+            let total = if cum.is_empty() {
+                None
+            } else {
+                Some(cum.iter().cloned().fold(f64::NEG_INFINITY, f64::max) as i64)
+            };
+            let deltas = window_increments(&cum);
+            summary_from_values(deltas, total, CountKind::Total, ts_min_ms, ts_max_ms)
+        }
+    }
+}
+
+/// Map an instance's family `type` to the leaf statistic kind.
+fn family_kind(conn: &rusqlite::Connection, instance_id: i64) -> LeafKind {
+    let ty: String = conn.query_row(
+        "SELECT mf.type FROM metric_instance mi \
+         JOIN metric_family mf ON mi.family_id = mf.id \
+         WHERE mi.id = ?1",
+        [instance_id],
+        |r| r.get(0),
+    ).unwrap_or_default();
+    match ty.as_str() {
+        "summary" => LeafKind::Distribution,
+        "counter" | "histogram" | "gaugehistogram" | "info" => LeafKind::Counter,
+        // gauge, stateset, unknown, and anything else: each row's
+        // `mean` is one scalar reading.
+        _ => LeafKind::Gauge,
+    }
+}
+
+/// `(min, max)` sample timestamps for an instance — the span its
+/// data covers.
+fn load_timespan(conn: &rusqlite::Connection, instance_id: i64)
+    -> (Option<i64>, Option<i64>)
+{
+    conn.query_row(
+        "SELECT MIN(timestamp_ms), MAX(timestamp_ms) \
+         FROM sample_value WHERE instance_id = ?1",
+        [instance_id],
+        |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?)),
+    ).unwrap_or((None, None))
+}
+
+/// Time-ordered, non-null values of one scalar column for an
+/// instance. `col` is a fixed internal column name (never user
+/// input), so direct interpolation is safe.
+fn load_scalar_series(conn: &rusqlite::Connection, instance_id: i64, col: &str)
+    -> Vec<f64>
+{
+    let sql = format!(
+        "SELECT {col} FROM sample_value \
+         WHERE instance_id = ?1 AND {col} IS NOT NULL \
+         ORDER BY timestamp_ms"
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([instance_id], |r| r.get::<_, f64>(0))
+        .map(|it| it.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+/// Per-window increments of a cumulative series, each clamped at
+/// 0 so a counter reset contributes 0 rather than a negative
+/// spike. The first window's increment is measured from 0.
+fn window_increments(cum: &[f64]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(cum.len());
+    let mut prev = 0.0;
+    for &c in cum {
+        out.push((c - prev).max(0.0));
+        prev = c;
+    }
+    out
+}
+
+/// Five canonical moments over a value set. Median and p99 use
+/// nearest-rank on the sorted values; stddev is population.
+fn summary_from_values(
+    mut xs: Vec<f64>,
+    count: Option<i64>,
+    count_kind: CountKind,
+    ts_min_ms: Option<i64>,
+    ts_max_ms: Option<i64>,
+) -> ValueSummary {
+    if xs.is_empty() {
+        return ValueSummary { count, count_kind, ts_min_ms, ts_max_ms, ..Default::default() };
+    }
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = xs.len();
+    let mean = xs.iter().sum::<f64>() / n as f64;
+    let var = xs.iter().map(|x| { let d = x - mean; d * d }).sum::<f64>() / n as f64;
+    let pct = |q: f64| xs[(((n - 1) as f64) * q).round() as usize];
+    ValueSummary {
+        count,
+        count_kind,
+        mean: Some(mean),
+        p50: Some(pct(0.50)),
+        p99: Some(pct(0.99)),
+        min: Some(xs[0]),
+        max: Some(xs[n - 1]),
+        stddev: Some(var.sqrt()),
+        ts_min_ms,
+        ts_max_ms,
+    }
+}
+
+/// Distribution summary for a `summary` family: the stored HDR
+/// reservoir moments from the most-observed window (peak `count`).
+fn load_reservoir_summary(
+    conn: &rusqlite::Connection,
+    instance_id: i64,
+    ts_min_ms: Option<i64>,
+    ts_max_ms: Option<i64>,
+) -> ValueSummary {
     #[allow(clippy::type_complexity)]
     let row: Result<(
         Option<f64>, Option<f64>, Option<f64>, Option<f64>,
         Option<f64>, Option<i64>, Option<f64>,
-        Option<i64>, Option<i64>,
     ), _> = conn.query_row(
-        "SELECT mean, p50, p99, min, max, count, stddev,
-                (SELECT MIN(timestamp_ms) FROM sample_value WHERE instance_id = ?1),
-                (SELECT MAX(timestamp_ms) FROM sample_value WHERE instance_id = ?1)
-         FROM sample_value
-         WHERE instance_id = ?1
-         ORDER BY count DESC
-         LIMIT 1",
+        "SELECT mean, p50, p99, min, max, count, stddev \
+         FROM sample_value WHERE instance_id = ?1 \
+         ORDER BY count DESC LIMIT 1",
         [instance_id],
         |r| Ok((
             r.get::<_, Option<f64>>(0)?,
@@ -2101,24 +2298,24 @@ fn load_value_summary(conn: &rusqlite::Connection, instance_id: i64) -> ValueSum
             r.get::<_, Option<f64>>(4)?,
             r.get::<_, Option<i64>>(5)?,
             r.get::<_, Option<f64>>(6)?,
-            r.get::<_, Option<i64>>(7)?,
-            r.get::<_, Option<i64>>(8)?,
         )),
     );
     match row {
-        Ok((mean, p50, p99, min, max, count, stddev, ts_min_ms, ts_max_ms)) =>
-            ValueSummary {
-                count, mean, p50, p99, min, max, stddev,
-                ts_min_ms, ts_max_ms,
-            },
-        Err(_) => ValueSummary::default(),
+        Ok((mean, p50, p99, min, max, count, stddev)) => ValueSummary {
+            count, count_kind: CountKind::Obs,
+            mean, p50, p99, min, max, stddev,
+            ts_min_ms, ts_max_ms,
+        },
+        Err(_) => ValueSummary {
+            count_kind: CountKind::Obs, ts_min_ms, ts_max_ms, ..Default::default()
+        },
     }
 }
 
 fn value_summary_string(conn: &rusqlite::Connection, instance_id: i64) -> String {
     let v = load_value_summary(conn, instance_id);
     let mut parts: Vec<String> = Vec::new();
-    if let Some(c) = v.count { parts.push(format!("n={c}")); }
+    if let Some(c) = v.count { parts.push(format!("{}={c}", v.count_kind.word())); }
     if let Some(m) = v.mean { parts.push(format!("mean={m:.4}")); }
     if let Some(p) = v.p50 { parts.push(format!("p50={p:.4}")); }
     if let Some(p) = v.p99 { parts.push(format!("p99={p:.4}")); }
@@ -2295,5 +2492,63 @@ mod tests {
         let m = parse_filter(r#"{profile=~label}"#).unwrap();
         assert!(m.matches("any", &[("profile".into(), "label_03".into())]));
         assert!(!m.matches("any", &[("profile".into(), "default".into())]));
+    }
+
+    // ── leaf summary statistics (type-aware) ──────────────────
+
+    #[test]
+    fn counter_increments_measured_from_zero() {
+        // Cumulative counter snapshots → per-window increments,
+        // first window measured from 0.
+        assert_eq!(window_increments(&[10.0, 30.0, 60.0]), vec![10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn counter_reset_clamped_to_zero() {
+        // A cumulative drop (counter reset) contributes 0, not a
+        // negative spike.
+        assert_eq!(window_increments(&[50.0, 10.0, 25.0]), vec![50.0, 0.0, 15.0]);
+    }
+
+    #[test]
+    fn moments_over_value_set() {
+        let v = summary_from_values(
+            vec![10.0, 20.0, 30.0], Some(60), CountKind::Total, Some(0), Some(1000));
+        assert_eq!(v.count, Some(60));
+        assert_eq!(v.count_kind, CountKind::Total);
+        assert_eq!(v.min, Some(10.0));
+        assert_eq!(v.max, Some(30.0));
+        assert_eq!(v.mean, Some(20.0));
+        assert_eq!(v.p50, Some(20.0));
+        // population stddev = sqrt(((100+0+100)/3))
+        let sd = v.stddev.unwrap();
+        assert!((sd - (200.0_f64 / 3.0).sqrt()).abs() < 1e-9, "stddev={sd}");
+    }
+
+    #[test]
+    fn empty_series_yields_unknown_moments_but_keeps_kind() {
+        let v = summary_from_values(vec![], None, CountKind::Samples, None, None);
+        assert!(v.min.is_none() && v.mean.is_none() && v.p50.is_none() && v.stddev.is_none());
+        assert_eq!(v.count_kind, CountKind::Samples);
+    }
+
+    #[test]
+    fn tree_leaf_word_and_positions_match_kind() {
+        let v = ValueSummary {
+            count: Some(5), count_kind: CountKind::Total,
+            min: Some(1.0), mean: Some(2.0), max: Some(3.0),
+            p50: Some(2.0), stddev: Some(0.5),
+            ts_min_ms: Some(0), ts_max_ms: Some(2000), ..Default::default()
+        };
+        let s = tree_leaf_summary(&v);
+        assert!(s.starts_with("total[5] timespan["), "{s}");
+        assert!(s.ends_with("(min,mean,max,median,stddev)=(1,2,3,2,0.5)"), "{s}");
+    }
+
+    #[test]
+    fn count_kind_words() {
+        assert_eq!(CountKind::Samples.word(), "samples");
+        assert_eq!(CountKind::Total.word(), "total");
+        assert_eq!(CountKind::Obs.word(), "obs");
     }
 }

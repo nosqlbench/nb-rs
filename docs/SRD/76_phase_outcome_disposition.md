@@ -4,6 +4,16 @@
 disposition surface that flows through both realtime
 displays and `nbrs replay`.
 
+> **Metric-naming note (SRD-91):** the op-outcome metric
+> taxonomy described here (`successes_total` / `errors_total` /
+> `attempt_success` / `attempt_failure`) is superseded by
+> [SRD-91](91_op_outcome_metrics.md), which makes it symmetric
+> (`attempt_*` / `result_*`), self-validating (cross-check
+> invariants), and detail-configurable. `successes_total` is
+> retired (use `result_success`), and `errors_total` is now a
+> per-attempt handler-layer tally; the per-op terminal failure
+> count is `result_failure`. Defer to SRD-91 for metric names.
+
 **Owner:** nbrs-runtime (scene tree + observer +
 executor extensions), nbrs-metrics (sqlite persistence),
 nbrs-tui / nbrs-cli (consumers), nbrs (replay command).

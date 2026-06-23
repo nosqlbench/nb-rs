@@ -337,7 +337,9 @@ pub fn build_inline_refresh_context(
     let started = progress_metrics.ops_started.load(Ordering::Relaxed);
     let finished = progress_metrics.ops_finished.load(Ordering::Relaxed);
     let ops_completed = progress_metrics.cycles_completed();
-    let successes = progress_metrics.successes_total.get();
+    // SRD-91: terminal-success count = `result_success.count()`;
+    // `errors_total` is per-attempt, so `errors - failed_ops` is retries.
+    let successes = progress_metrics.result_success.count();
     let errors = progress_metrics.errors_total.get();
     let failed_ops = ops_completed
         .saturating_sub(successes)
