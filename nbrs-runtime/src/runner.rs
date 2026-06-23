@@ -413,6 +413,10 @@ pub async fn run_with_observer(
         }
         _ => args,
     };
+    // Reject conflicting duplicate `key=value` params (e.g. two
+    // different `scenario=` values) before any work — otherwise the
+    // last silently wins. Errors here, before session creation.
+    detect_conflicting_duplicate_params(args)?;
     run_impl(args, observer).await
 }
 
@@ -4897,6 +4901,77 @@ pub(crate) fn elide_outer_quotes(s: &str) -> &str {
     }
 }
 
+/// Flags consumed by `crate::session::resolve_session_dir` at startup.
+/// They appear in raw `args` but shouldn't reach the per-key params map.
+/// Both equals-form (`--session-dir=/path`) and space-form
+/// (`--session-dir /path`) are recognised; the space-form value is
+/// silently absorbed. Shared by [`parse_params`] and
+/// [`detect_conflicting_duplicate_params`] so they treat these args
+/// identically.
+const SESSION_DIR_FLAGS: &[&str] = &[
+    // Umbrella flag (kv-list).
+    "--session",
+    // Per-key long-form flags.
+    "--session-name", "--session-path", "--session-reuse",
+    "--session-keep", "--session-shelflife",
+    // SRD-63 §8: `--readout=<body>` overrides the workload's
+    // `on_update` binding for the run. Resolved by
+    // `crate::session::resolve_flag` at runner-init; consumed here so
+    // the value doesn't bleed into the workload params map.
+    "--readout",
+];
+
+/// Reject a `key=value` run param supplied more than once with
+/// *conflicting* values. These params collapse into a map (last value
+/// wins — see [`parse_params`]), which silently discards an earlier
+/// value: e.g. `scenario=reset scenario=idx_sweep` drops `reset` and
+/// runs `idx_sweep`. A repeat with an IDENTICAL value is harmless and
+/// allowed (re-passing the same value shouldn't break a script); a
+/// conflicting repeat is an ambiguous instruction, so it's rejected and
+/// surfaced rather than silently last-wins ("Never Ignore Silently").
+///
+/// Mirrors `parse_params`'s arg walk: session-dir flags (own resolver)
+/// and dotted phase-scoped overrides (`<phase>.<param>=`, a separate
+/// namespace) are skipped, and the same quote elision is applied so
+/// `scenario=x` and `scenario='x'` compare equal.
+pub fn detect_conflicting_duplicate_params(args: &[String]) -> Result<(), String> {
+    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        // Session-dir flags: consumed by the startup hook, absorb the
+        // space-form value so it isn't mistaken for a param.
+        if SESSION_DIR_FLAGS.iter().any(|p| arg == p || arg.starts_with(&format!("{p}="))) {
+            if !arg.contains('=') {
+                let _consumed = iter.next();
+            }
+            continue;
+        }
+        let unquoted = elide_outer_quotes(arg.as_str());
+        let stripped = unquoted.trim_start_matches('-');
+        let Some(eq_pos) = stripped.find('=') else { continue };
+        let key = stripped[..eq_pos].to_string();
+        // Dotted (non-path) keys are SRD-71 phase-scoped overrides — a
+        // separate namespace — skipped here as in `parse_params`.
+        if key.contains('.') && !key.contains('/') && !key.contains('\\') {
+            continue;
+        }
+        let value = elide_outer_quotes(&stripped[eq_pos + 1..]).to_string();
+        match seen.get(&key) {
+            Some(prev) if *prev != value => {
+                return Err(format!(
+                    "parameter '{key}' specified more than once with conflicting \
+                     values ('{prev}' and '{value}') — pass it exactly once"
+                ));
+            }
+            Some(_) => {} // identical repeat — harmless, allow.
+            None => {
+                seen.insert(key, value);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Parse `key=value` pairs from command line args.
 ///
 /// Quote handling (SRD 71): if the whole arg or just the value
@@ -4907,25 +4982,6 @@ pub(crate) fn elide_outer_quotes(s: &str) -> &str {
 /// pair. The first `=` still splits name from value, so values
 /// containing `=` retain everything after the first split.
 pub fn parse_params(args: &[String]) -> HashMap<String, String> {
-    // Flags consumed by `crate::session::resolve_session_dir`
-    // at startup. They appear in raw `args` but shouldn't reach
-    // the per-key params map. Both equals-form
-    // (`--session-dir=/path`) and space-form
-    // (`--session-dir /path`) are recognised; the space-form
-    // value is silently absorbed.
-    const SESSION_DIR_FLAGS: &[&str] = &[
-        // Umbrella flag (kv-list).
-        "--session",
-        // Per-key long-form flags.
-        "--session-name", "--session-path", "--session-reuse",
-        "--session-keep", "--session-shelflife",
-        // SRD-63 §8: `--readout=<body>` overrides the
-        // workload's `on_update` binding for the run.
-        // Resolved by `crate::session::resolve_flag` at
-        // runner-init; consumed here so the value
-        // doesn't bleed into the workload params map.
-        "--readout",
-    ];
     let mut params = HashMap::new();
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
@@ -5213,6 +5269,52 @@ mod tests {
         let m = pp(&["cursor='0..53%\""]);
         // First char `'`, last char `"` — no matching pair.
         assert_eq!(m.get("cursor").map(String::as_str), Some("'0..53%\""));
+    }
+
+    fn dup(args: &[&str]) -> Result<(), String> {
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        detect_conflicting_duplicate_params(&owned)
+    }
+
+    #[test]
+    fn duplicate_conflicting_scenario_is_rejected() {
+        let err = dup(&["workload=x.yaml", "scenario=reset", "scenario=idx_sweep"])
+            .unwrap_err();
+        assert!(err.contains("scenario") && err.contains("reset") && err.contains("idx_sweep"),
+            "expected a conflicting-duplicate error naming both values, got: {err}");
+    }
+
+    #[test]
+    fn duplicate_identical_value_is_allowed() {
+        // Re-passing the same value is harmless.
+        assert!(dup(&["scenario=idx_sweep", "scenario=idx_sweep"]).is_ok());
+    }
+
+    #[test]
+    fn distinct_params_are_allowed() {
+        assert!(dup(&["workload=x.yaml", "scenario=reset", "cycles=10", "host=h"]).is_ok());
+    }
+
+    #[test]
+    fn conflicting_duplicate_any_param_is_rejected() {
+        // The guard is general — not just `scenario=`.
+        assert!(dup(&["cycles=10", "cycles=20"]).is_err());
+    }
+
+    #[test]
+    fn duplicate_check_elides_quotes_before_comparing() {
+        // `scenario=reset` and `scenario='reset'` are the SAME value.
+        assert!(dup(&["scenario=reset", "scenario='reset'"]).is_ok());
+        // …but genuinely different quoted values still conflict.
+        assert!(dup(&["scenario='reset'", "scenario=\"idx_sweep\""]).is_err());
+    }
+
+    #[test]
+    fn duplicate_check_skips_session_flags_and_dotted_overrides() {
+        // Session-dir flags are consumed by their own resolver; dotted
+        // keys are phase-scoped overrides — neither participates here.
+        assert!(dup(&["--session-path", "/a", "--session-path", "/b"]).is_ok());
+        assert!(dup(&["phase1.cycles=10", "phase2.cycles=20"]).is_ok());
     }
 
     #[test]

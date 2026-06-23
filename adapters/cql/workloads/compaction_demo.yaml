@@ -43,27 +43,19 @@ params:
   min_query_ms: 30000
   vector_idx_suffix: _vector_idx
 
-  # SAI jvector index build knobs.
+  # SAI jvector index build knob. The only index-construction
+  # parameter besides the computed `similarity_function`; all other
+  # build knobs (maximum_node_connections, construction_beam_width,
+  # enable_hierarchy, neighborhood_overflow, alpha) are left at the
+  # server defaults.
   source_model: COHERE_V3
-  maximum_node_connections: 16
-  construction_beam_width: 100
-  enable_hierarchy: true
-  neighborhood_overflow: 1.2
-  alpha: 1.2
 
-  # ── idx_sweep axes ───────────────────────────────────────────
-  # The `idx_sweep` scenario sweeps these SAI index-build knobs. The
-  # short `sm`/`mnc`/… for: iter-var names (used below) deliberately
-  # differ from the long workload-param names they shadow via `set:`.
-  # Values are comma-strings; pin any axis on the CLI to collapse it
-  # (e.g. `mnc_values=16 eh_values=true`). Defaults are modest (8
-  # combinations) — widen them for a fuller sweep.
+  # ── idx_sweep axis ───────────────────────────────────────────
+  # The `idx_sweep` scenario sweeps the source_model index-build knob.
+  # The short `sm` for: iter-var name (used below) deliberately differs
+  # from the long workload-param name it shadows via `set:`. Values are
+  # comma-strings; pin on the CLI to collapse (e.g. `sm_values=OTHER`).
   sm_values:    [OTHER]
-  mnc_values:   [8, 16]
-  bw_values:    [50, 100]
-  eh_values:    [false, true]
-  nbo_v_values: [1.2]
-  alf_v_values: [1.2]
 
 scenarios:
   default:
@@ -89,34 +81,23 @@ scenarios:
 
   # ── Index-build parameter sweep (full_cql_vector_sweep.yaml pattern) ──
   #
-  # For every combination of the SAI build knobs — source_model ×
-  # maximum_node_connections × construction_beam_width × enable_hierarchy
-  # × neighborhood_overflow × alpha — rebuild the table+index with those
-  # knobs and run the full two-flush compaction load → major-compaction →
+  # For every source_model value — rebuild the table+index with that
+  # knob and run the full two-flush compaction load → major-compaction →
   # recall query. So recall and `time_to_index` are reported PER
-  # index-build configuration (the recall metric carries the knob values
-  # as labels via the in-scope iter-vars).
+  # index-build configuration (the recall metric carries the knob value
+  # as a label via the in-scope iter-var).
   #
-  # The short `sm`/`mnc`/… iter-vars shadow the long workload params via
-  # `set:` (a bare `set:` value is a wire reference). One table, rebuilt
-  # per combination by the leading `teardown` — so no per-variant table
-  # names or keyspace_reset are needed (unlike full_cql_vector_sweep,
-  # which keeps every variant's table and must reset the keyspace).
+  # The short `sm` iter-var shadows the long `source_model` workload
+  # param via `set:` (a bare `set:` value is a wire reference). One
+  # table, rebuilt per value by the leading `teardown` — so no
+  # per-variant table names or keyspace_reset are needed (unlike
+  # full_cql_vector_sweep, which keeps every variant's table and must
+  # reset the keyspace).
   idx_sweep:
     - for: |
-        sm in sm_values,
-        mnc in mnc_values,
-        bw in bw_values,
-        eh in eh_values,
-        nbo_v in nbo_v_values,
-        alf_v in alf_v_values
+        sm in sm_values
       phases:
-        - set: { source_model: sm,
-                 maximum_node_connections: mnc,
-                 construction_beam_width: bw,
-                 enable_hierarchy: eh,
-                 neighborhood_overflow: nbo_v,
-                 alpha: alf_v }
+        - set: { source_model: sm }
           phases:
             - teardown
             - schema
@@ -167,12 +148,7 @@ phases:
           USING 'StorageAttachedIndex'
           WITH OPTIONS = {
             'similarity_function': '{similarity_function}',
-            'source_model': '{source_model}',
-            'maximum_node_connections': '{maximum_node_connections}',
-            'construction_beam_width': '{construction_beam_width}',
-            'enable_hierarchy': '{enable_hierarchy}',
-            'neighborhood_overflow': '{neighborhood_overflow}',
-            'alpha': '{alpha}'
+            'source_model': '{source_model}'
           }
 
   # Boost compaction throughput + parallelism at session start so the
