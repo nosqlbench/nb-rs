@@ -1,0 +1,482 @@
+#!/usr/bin/env nbrs
+# Incremental profile-sweep compaction recall test (derived from
+# compaction_demo.yaml).
+#
+# Instead of loading a single profile of a dataset, this workload walks
+# the dataset's profiles as SIZE TIERS, lowest-numbered (smallest) first,
+# and at each tier:
+#   1. loads ONLY the incremental vectors since the previously loaded
+#      tier  (`range(prev_count, this_count)`),
+#   2. flushes + major-compacts (the compaction-demo behaviour), and
+#   3. runs a recall check against THAT tier's own ground-truth set.
+# It stops at the configured maximum size (`max_size`) or the last
+# profile, whichever comes first.
+#
+# The sweep is a cursor-PARTITION comprehension (SRD-71):
+#   - `profile_partitions("{dataset}", "{profile_pattern}")` partitions
+#     the dataset's vector space by the profiles matching the pattern,
+#     treated as cumulative size tiers in ascending order. Each partition
+#     `p` spans `[previous tier size, this tier size)` — the incremental
+#     range — so `range(start_of(p), end_of(p))` loads ONLY the delta. A
+#     partition carries its own start, so no cross-iteration carry is
+#     needed.
+#   - `profile_pattern` follows the literal / glob / regex promotion
+#     (`pattern_match`): `*m` and `*mi` select different suffix series so
+#     their progressions aren't mixed.
+#   - per-tier ground truth: name the tier with
+#     `matching_profile_name_at(..., idx_of(p))`, prebuffer its own
+#     facets, and recall with `query_vector_at` / `neighbor_indices_at`.
+#   - `if: "end_of(p) <= max_size"` caps the sweep at the configured size
+#     (sizes ascend; the last matching profile is the natural end).
+#
+# A dataset with only the default profile yields a single tier (one full
+# load + recall). A dataset with multiple profiles uses the matching
+# tiers instead, smallest first.
+#
+# Usage:
+#   nbrs workload=compaction_demo_derived.yaml host=10.0.0.1
+#   nbrs workload=compaction_demo_derived.yaml max_size=500000
+
+description: |
+  Incremental profile-sweep compaction recall test: walk a dataset's
+  profiles as size tiers (smallest first), load only the incremental
+  vectors at each tier, flush + major-compact, and measure ANN recall
+  against that tier's ground truth — up to a configured max size or the
+  last profile. Derived from compaction_demo.yaml; requires a
+  vector-capable CQL target, a Jolokia agent on :8778, and a local
+  vector dataset catalog.
+
+params:
+  adapter: cql
+  host: 18.215.16.255
+  dataset: changeme
+  profile: default
+  keyspace: baselines
+  # `table` is NOT a param — it is derived (sanitized) from the dataset
+  # and profile in the top-level `bindings:` block below, so a different
+  # `dataset=`/`profile=` automatically lands in its own table.
+  concurrency: "100"
+  query_concurrency: "20"
+  replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
+  # k / limit / min_query_ms are referenced as bare wires (`k: k`,
+  # `r: limit`, `until_elapsed(base, min_query_ms)`), so they are
+  # numeric params, not strings.
+  k: 10
+  limit: 100
+  min_query_ms: 10000
+  # Open-extent budget for the `concurrent_query` daemon's cursor. The
+  # daemon is cut short by the foreground's completion (its `daemon_stop`),
+  # so this only needs to exceed the longest tier's ingest+index time —
+  # set generously (default 24h). Until-stopped is the SRD-82 Part 6
+  # follow-up that would remove the need for a budget here.
+  query_budget_ms: 86400000
+  vector_idx_suffix: _vector_idx
+
+  # SAI jvector index build knob (the only index-construction param
+  # besides the computed `similarity_function`); all other build knobs
+  # are left at the server defaults.
+  source_model: [other]
+
+  # ── Incremental profile sweep controls ───────────────────────
+  # `profile_pattern`: which profiles form the sweep, by the literal /
+  #   glob / regex promotion (`pattern_match`). `*` = all profiles; `*m`
+  #   vs `*mi` selects one suffix series so progressions aren't mixed;
+  #   `^vec_(1|2|4)m$` for an explicit regex set.
+  # `max_size`: stop once a tier's cumulative base-vector count would
+  #   exceed this; the last loaded tier is the largest matching profile
+  #   that fits (or the last matching profile, whichever comes first).
+  #   Accepts magnitude suffixes on the CLI (decimal `10m`/`2b`, binary
+  #   `4Gi`) since the default below is numeric.
+  profile_pattern: "*"
+  max_size: 1000000
+
+  # ── Post-load step toggles (1 = enabled, 0 = skipped) ────────
+  # Independently enable/disable each post-load step per tier. Defaults
+  # keep the full compaction-demo behaviour; set any to 0 on the CLI to
+  # measure the sweep without that step (e.g. `enable_compact=0`).
+  enable_flush: 1      # forced memtable flush after each tier's load
+  enable_finalize: 1   # the finalize_index phase (flush + sstable read + compaction)
+  enable_compact: 1    # the forced major compaction (inside finalize_index)
+
+# Derived identifiers, visible to every phase's op text. The CQL table
+# holds the cumulative vectors for this dataset+profile, so its name is
+# sanitized from them (every character outside [a-zA-Z0-9_] → '_')
+# rather than hard-coded — `dataset=ibm-datapile-1b profile=default`
+# becomes table `ibm_datapile_1b_default`. (CQL folds the identifier to
+# lowercase; dataset names are letter-leading in practice.)
+bindings: |
+  const table := regex_replace("{dataset}_{profile}", "[^a-zA-Z0-9_]", "_")
+
+scenarios:
+  # Default: the incremental size-tier sweep.
+  default:
+    - scenario: incremental
+
+  incremental:
+    - teardown
+    - schema
+    - tune_cluster
+    # Walk the masked profiles smallest-first as cumulative size tiers.
+    # `profile_partitions` yields one partition per matching profile;
+    # partition `p` spans `[previous tier size, this tier size)` — the
+    # incremental range — and carries its masked position as `idx_of(p)`.
+    - for: "p in profile_partitions('{dataset}', '{profile_pattern}')"
+      phases:
+        # `concurrent_query` is a DAEMON phase (SRD-82 Part 6): listed
+        # FIRST so it is spawned in daemon mode and runs at 1/s
+        # CONCURRENTLY with the foreground load/flush/finalize/recall of
+        # this tier, then stops cleanly when they finish. It probes ANN
+        # query behaviour while the tier is being ingested + indexed.
+        - concurrent_query
+        - load_increment
+        - flush
+        - finalize_index
+        - recall_check
+
+  # Single-phase scenarios for piecewise runs.
+  reset:   [teardown]
+  ddl:     [schema]
+  compact: [finalize_index]
+
+phases:
+  # Anti-DDL teardown: drop the index, then the table. Per-statement
+  # timeout floor — a DROP on a populated SAI index can take tens of
+  # seconds. Runs ONCE before the sweep (the table accumulates vectors
+  # incrementally across tiers; it is NOT reset between profiles).
+  teardown:
+    concurrency: 1
+    bindings: |
+      const request_timeout_ms := 300000
+    ops:
+      drop_vector_index:
+        raw: "DROP INDEX IF EXISTS {keyspace}.{table}{vector_idx_suffix}"
+      drop_table:
+        raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
+
+  schema:
+    concurrency: 1
+    bindings: |
+      dim := vector_dim("{dataset}:{profile}")
+      similarity_function := dataset_distance_function("{dataset}:{profile}")
+    ops:
+      create_keyspace:
+        raw: |
+          CREATE KEYSPACE IF NOT EXISTS {keyspace}
+          WITH replication = {replication} AND durable_writes = true
+      create_table:
+        # STCS thresholds pinned high (100000) so the size-tier
+        # compactor never fires spontaneously mid-load — the test
+        # owns compaction timing via `finalize_index`.
+        raw: |
+          CREATE TABLE IF NOT EXISTS {keyspace}.{table}
+          (key text PRIMARY KEY, value vector<float, {dim}>)
+          WITH compression = {'enabled': 'false'}
+      create_vector_index:
+        raw: |
+          CREATE CUSTOM INDEX IF NOT EXISTS {table}{vector_idx_suffix}
+          ON {keyspace}.{table} (value)
+          USING 'StorageAttachedIndex'
+          WITH OPTIONS = {
+            'similarity_function': '{similarity_function}',
+            'source_model': '{source_model}'
+          }
+
+  # Boost compaction throughput + parallelism at session start so the
+  # major compaction in `finalize_index` isn't throttled by the
+  # per-node defaults. `0` is Cassandra's "no rate limit" sentinel.
+  tune_cluster:
+    adapter: http
+    concurrency: 1
+    cycles: 1
+    ops:
+      set_compaction_throughput:
+        adapter: http
+        uri: "http://{host}:8778/jolokia/"
+        method: POST
+        body: |
+          {"type":"write",
+           "mbean":"org.apache.cassandra.db:type=StorageService",
+           "attribute":"CompactionThroughputMbPerSec",
+           "value":0}
+        request_timeout_ms: 10000
+        verify:
+          - field: status
+            eq: "200"
+        strict: true
+        memo:
+          before: "tuning: CompactionThroughputMbPerSec -> 0 (unlimited)"
+          after:  "tuned: CompactionThroughputMbPerSec -> 0 (unlimited)"
+      set_concurrent_compactors:
+        adapter: http
+        uri: "http://{host}:8778/jolokia/"
+        method: POST
+        body: |
+          {"type":"write",
+           "mbean":"org.apache.cassandra.db:type=StorageService",
+           "attribute":"ConcurrentCompactors",
+           "value":10}
+        request_timeout_ms: 10000
+        verify:
+          - field: status
+            eq: "200"
+        strict: true
+        memo:
+          before: "tuning: ConcurrentCompactors -> 10"
+          after:  "tuned: ConcurrentCompactors -> 10"
+
+  # Concurrent ANN query probe — an SRD-82 Part 6 DAEMON phase. Runs at
+  # 1/s alongside the foreground load → flush → finalize → recall of this
+  # tier (it is listed FIRST in the `for:` body, so the scenario shell
+  # spawns it in daemon mode, off the foreground concurrency budget), on
+  # its OWN scope so it pulls from a distinct cursor base. It stops
+  # cleanly when the tier's foreground phases complete. The op's
+  # `result_success` timer (SRD-91) captures ANN query latency *while the
+  # tier is being ingested and indexed* — the whole point of the probe.
+  concurrent_query:
+    adapter: cql
+    daemon: true
+    concurrency: 1
+    # 1 query/s — numeric so it builds the activity RateLimiter (a string
+    # like "1/s" would not parse as f64 and would be ignored).
+    rate: 1
+    bindings: |
+      # This tier's own query set (the same prebuffer as recall_check).
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
+      const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
+      const base := query_count(prebuffered)
+      # Open-extent cursor: wrap the query set for up to query_budget_ms;
+      # the daemon's stop signal cuts it the moment the foreground tier
+      # completes, so it never actually reaches the budget.
+      cursor q = until_elapsed(base, query_budget_ms)
+      query_vector := query_vector_at(prebuffered, q % base)
+    ops:
+      probe_ann:
+        # Same cap as the rest of the sweep — skip tiers over max_size.
+        if: "end_of(p) <= max_size"
+        prepared: |
+          SELECT [key] FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector}
+          LIMIT {limit}
+        metrics:
+          probe_rows:
+            kind: gauge
+            value: count
+
+  # Incremental load: insert ONLY the vectors new to this size tier —
+  # the absolute range [prev_count, this_count) of the profile's base
+  # facet, where `this_count` is this tier's cumulative size and
+  # `prev_count` is the previous (smaller) tier's size (0 for the first).
+  # The key is the absolute ordinal, so keys never collide across tiers
+  # and the table ends each tier holding exactly [0, this_count).
+  # Skipped (no-op) once a tier's size exceeds `max_size`.
+  load_increment:
+    concurrency: "{concurrency}"
+    bindings: |
+      # `p` is the active masked profile tier from `profile_partitions`:
+      # `[start_of(p), end_of(p))` is the incremental delta since the
+      # previous tier — a partition carries its own start ordinal, so no
+      # cross-iteration carry is needed. `idx_of(p)` is the masked
+      # position, used to name this tier's own prebuffer.
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
+      const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
+      # The cursor bounds this tier to `cardinality(p)` cycles (the delta
+      # this_count - prev_count). The ABSOLUTE base-vector ordinal is
+      # `at(p, cycle)` = `start_of(p) + cycle`, so keys/vectors span the
+      # incremental `[prev_count, this_count)` — never `[0, delta)`. (A
+      # cursor's value wire is the local index; the absolute ordinal comes
+      # from the partition accessor.)
+      cursor row = range(start_of(p), end_of(p))
+      ord := at(p, cycle)
+      id := format_u64(ord, 10)
+      train_vector := vector_at(prebuffered, ord)
+    ops:
+      insert:
+        # Cap the sweep at max_size; sizes ascend, so once a tier's end
+        # exceeds the cap every later tier is skipped too (the last
+        # profile is the natural end of the partition list).
+        if: "end_of(p) <= max_size"
+        max_batch_size: 64KB
+        batchtype: unlogged
+        prepared: |
+          INSERT INTO {keyspace}.{table} (key, value)
+          VALUES ('{id}', {train_vector})
+
+  # Flush memtables to disk (synchronous JMX exec) so the just-loaded
+  # increment rolls into an on-disk SSTable for `finalize_index` to
+  # compact-merge with the prior tiers' SSTables.
+  flush:
+    adapter: http
+    concurrency: 1
+    cycles: 1
+    ops:
+      flush:
+        adapter: http
+        # Forced-flush toggle: skip the whole flush when disabled.
+        if: "enable_flush != 0"
+        uri: "http://{host}:8778/jolokia/"
+        method: POST
+        body: |
+          {"type":"exec",
+           "mbean":"org.apache.cassandra.db:type=StorageService",
+           "operation":"forceKeyspaceFlush(java.lang.String,[Ljava.lang.String;)",
+           "arguments":["{keyspace}",[]]}
+        request_timeout_ms: 600000
+        verify:
+          - field: status
+            eq: "200"
+        strict: true
+        memo:
+          before: "flushing keyspace {keyspace}"
+          after:  "flushed keyspace {keyspace}"
+
+  # Major compaction. One stanza, ops run once each in order:
+  #   flush           -> roll any remaining memtable to disk
+  #   read_sstables   -> read LiveSSTableCount; capture `sstables`
+  #   trigger_compact -> DAEMON, `if: sstables > 1`; holds the JMX
+  #                      socket open for the whole synchronous compaction
+  #   poll_progress   -> CQL system_views.sstable_tasks, op-level
+  #                      `poll: await_empty`; live progress until idle
+  finalize_index:
+    adapter: cql
+    concurrency: 1
+    cycles: 1
+    bindings: |
+      # Cross-op cell: `read_sstables` writes it, `trigger_compact`'s
+      # `if:` reads it. `shared` so the write-through propagates across
+      # ops on the phase scope.
+      shared sstables := 0
+      # Wall-clock read for the phase-duration metric.
+      volatile now_ms := current_epoch_millis()
+    metrics:
+      time_to_index: { kind: gauge, value: "now_ms - phase_start" }
+    ops:
+      flush:
+        adapter: http
+        # Part of finalize: gated by the finalize toggle.
+        if: "enable_finalize != 0"
+        uri: "http://{host}:8778/jolokia/"
+        method: POST
+        body: |
+          {"type":"exec",
+           "mbean":"org.apache.cassandra.db:type=StorageService",
+           "operation":"forceKeyspaceFlush(java.lang.String,[Ljava.lang.String;)",
+           "arguments":["{keyspace}",[]]}
+        request_timeout_ms: 600000
+        verify:
+          - field: status
+            eq: "200"
+        strict: true
+        memo:
+          before: "flushing keyspace {keyspace}"
+          after:  "flushed keyspace {keyspace}"
+      read_sstables:
+        adapter: http
+        if: "enable_finalize != 0"
+        uri: "http://{host}:8778/jolokia/read/org.apache.cassandra.metrics:type=Table,keyspace={keyspace},scope={table},name=LiveSSTableCount/Value"
+        method: GET
+        request_timeout_ms: 10000
+        verify:
+          - field: status
+            eq: "200"
+        strict: true
+        capture:
+          # Jolokia wraps the attribute value in `{value: N, status: 200}`.
+          sstables: "/value"
+        metrics:
+          table_live_sstables: { kind: gauge, value: sstables }
+        memo:
+          after: "{keyspace}.{table}: {sstables} live sstable(s) before compaction"
+      trigger_compact:
+        adapter: http
+        daemon: true
+        # Forced compaction: only when finalize AND compaction are
+        # enabled AND there is more than one sstable to merge.
+        if: "enable_finalize != 0 && enable_compact != 0 && sstables > 1"
+        uri: "http://{host}:8778/jolokia/"
+        method: POST
+        body: |
+          {"type":"exec",
+           "mbean":"org.apache.cassandra.db:type=StorageService",
+           "operation":"forceKeyspaceCompaction(boolean,java.lang.String,[Ljava.lang.String;)",
+           "arguments":[false,"{keyspace}",["{table}"]]}
+        request_timeout_ms: 3600000
+        verify:
+          - field: status
+            eq: "200"
+        strict: true
+        memo:
+          before: "compacting {keyspace}.{table}"
+          after:  "compacted {keyspace}.{table}"
+      poll_progress:
+        adapter: cql
+        # Nothing to poll unless a compaction was triggered.
+        if: "enable_finalize != 0 && enable_compact != 0"
+        bindings: |
+          extern active_compactions: u64 = 0
+          extern completion_ratio:   f64 = 0.0
+          extern progress:           u64 = 0
+          extern total:              u64 = 0
+        raw: |
+          SELECT completion_ratio, progress, total
+            FROM system_views.sstable_tasks
+           WHERE keyspace_name = '{keyspace}'
+             AND table_name   = '{table}'
+             AND kind         = 'compaction'
+          ALLOW FILTERING
+        capture:
+          active_compactions: ":count"
+          completion_ratio:   "/0/completion_ratio"
+          progress:           "/0/progress"
+          total:              "/0/total"
+        poll:
+          mode: await_empty
+          interval_ms: 5000
+          timeout_ms: 14400000
+          max_error_retries: 5
+          metric_name: compaction_wait_time_s
+        metrics:
+          compaction_completion_ratio: { kind: gauge, value: completion_ratio }
+          compaction_progress_bytes:   { kind: gauge, value: progress }
+          compaction_total_bytes:      { kind: gauge, value: total }
+          compaction_pending_tasks:    { kind: gauge, value: active_compactions }
+        memo:
+          after: "compacting {keyspace}.{table}: ratio {completion_ratio}, {progress}/{total} bytes ({active_compactions} task(s) in flight)"
+        request_timeout_ms: 60000
+
+  # Recall against the post-compaction index AT THIS TIER'S SIZE, using
+  # THIS tier's own ground truth (query set + neighbor indices from the
+  # tier's prebuffer). `recall` is therefore reported per size tier (the
+  # metric carries the profile name as the in-scope `{tier}` label).
+  # Skipped (no-op) once a tier's size exceeds `max_size`.
+  recall_check:
+    concurrency: "{query_concurrency}"
+    bindings: |
+      # Same masked tier as the load: name it by its masked position
+      # idx_of(p), prebuffer the tier's own ground-truth facets.
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
+      const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
+      const base := query_count(prebuffered)
+      cursor q = until_elapsed(base, min_query_ms)
+      query_vector := query_vector_at(prebuffered, q % base)
+      ground_truth := neighbor_indices_at(prebuffered, q % base)
+    ops:
+      select_ann:
+        if: "end_of(p) <= max_size"
+        prepared: |
+          SELECT [key] FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector}
+          LIMIT {limit}
+        metrics:
+          rows_per_op:
+            kind: gauge
+            value: count
+        evaluations:
+          relevancy:
+            actual: key
+            expected: ground_truth
+            k: k
+            r: limit
+            functions:
+              - recall

@@ -375,6 +375,24 @@ pub fn compile_polydat_with_libs(
 ///
 /// When `cursor_limit` is `Some(n)`, the compiler inserts a `limit(cursor, n)`
 /// node after each cursor declaration, clamping its extent.
+/// RAII guard that sets the data-file base directory (see
+/// [`crate::library::datafile::set_data_base_dir`]) for the duration of
+/// a synchronous compile and restores the previous value on drop, so
+/// nested compiles unwind cleanly.
+struct DataBaseDirGuard(Option<PathBuf>);
+
+impl DataBaseDirGuard {
+    fn set(dir: &Path) -> Self {
+        DataBaseDirGuard(crate::library::datafile::set_data_base_dir(Some(dir.to_path_buf())))
+    }
+}
+
+impl Drop for DataBaseDirGuard {
+    fn drop(&mut self) {
+        crate::library::datafile::set_data_base_dir(self.0.take());
+    }
+}
+
 pub fn compile_polydat_with_libs_and_limit(
     source: &str,
     source_dir: Option<&Path>,
@@ -384,6 +402,10 @@ pub fn compile_polydat_with_libs_and_limit(
     context: &str,
     cursor_limit: Option<u64>,
 ) -> Result<PolydatKernel, String> {
+    // Relative data-file paths (csv/jsonl nodes) resolve against the
+    // workload's own directory for the duration of this synchronous
+    // compile — see `library::datafile::set_data_base_dir`.
+    let _data_base = source_dir.map(DataBaseDirGuard::set);
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
     let extended = if required_outputs.is_empty() {
@@ -1138,6 +1160,9 @@ pub fn compile_ast_with_libs(
     strict: bool,
     context: &str,
 ) -> Result<PolydatKernel, String> {
+    // See `compile_polydat_with_libs_and_limit`: resolve relative
+    // data-file paths against the workload directory for this compile.
+    let _data_base = source_dir.map(DataBaseDirGuard::set);
     let extended = if required_outputs.is_empty() {
         Vec::new()
     } else {

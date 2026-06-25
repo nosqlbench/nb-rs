@@ -83,6 +83,51 @@ pub fn request_graceful_stop() {
         .store(true, Ordering::Relaxed);
 }
 
+/// Why a shell-driven stop halted the walk (SRD-82 Part 4). A
+/// [`StopCause::Fault`] is a `fail`-effect trip — a child phase failed,
+/// so the run's validity is `Failed` and the halt records
+/// `Interrupted + Failed`. A [`StopCause::Interrupt`] is a clean `stop`
+/// (a graceful condition or user Ctrl-C) — later phases are deliberately
+/// skipped and the result is re-usable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopCause {
+    Interrupt,
+    Fault,
+}
+
+/// Shared "a `fail`-effect stop condition halted the walk" flag (SRD-82
+/// Part 4). Distinct from [`GRACEFUL_STOP`]: a fault halt skips the tail
+/// phases (so the unreached-phase check stays quiet, like graceful) but
+/// the run still exits non-zero — the failing phase's own `Err` carries
+/// that via the `run_result` path. The flag records the *cause* so the
+/// end-of-run accounting and the trip log read "fault", not "graceful".
+static FAULT_STOP: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+
+/// True once a `fail`-effect stop condition has halted the walk.
+#[inline]
+pub fn fault_stop_requested() -> bool {
+    FAULT_STOP.get()
+        .map(|f| f.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+/// Record that a `fail`-effect stop condition halted the remaining walk
+/// (SRD-82 Part 4, `StopCause::Fault`). Idempotent.
+pub fn request_fault_stop() {
+    FAULT_STOP.get_or_init(|| Arc::new(AtomicBool::new(false)))
+        .store(true, Ordering::Relaxed);
+}
+
+/// Route a shell stop to the right session signal by its
+/// [`StopCause`]. Both halt the tail; `Fault` additionally marks the
+/// run failed (non-zero exit via the failing phase's `Err`).
+pub fn request_shell_stop(cause: StopCause) {
+    match cause {
+        StopCause::Fault => request_fault_stop(),
+        StopCause::Interrupt => request_graceful_stop(),
+    }
+}
+
 /// Install a tokio task that watches `ctrl_c()` and translates
 /// SIGINT into the two-stage shutdown described in the module
 /// doc. Idempotent — only the first call wins; subsequent calls

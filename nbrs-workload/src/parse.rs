@@ -106,8 +106,12 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     let mut resolved_params = HashMap::new();
     for (key, default_value) in &yaml_params {
         let resolved = if let Some(cli_value) = params.get(key) {
-            // CLI override
-            cli_value.clone()
+            // CLI override — coerce to the declared default's type. The
+            // workload default is the source of truth for type, so a
+            // numeric default makes a suffixed override (`10m`, `4Ki`)
+            // resolve numerically rather than landing as a string; a
+            // non-numeric default leaves the override untouched.
+            crate::magnitude::coerce_param_override(default_value, cli_value)
         } else if let Some(env_name) = default_value.strip_prefix("env:") {
             // Environment variable lookup
             std::env::var(env_name).unwrap_or_else(|_| default_value.clone())
@@ -1189,6 +1193,18 @@ fn parse_phases(
         let rate = phase_obj.get("rate")
             .and_then(|v| v.as_f64());
 
+        // SRD-82 Part 6 — daemon phase (runs concurrently with foreground
+        // siblings, stopped when they complete). Accept bool / 0|1 / on|off.
+        let daemon = phase_obj.get("daemon")
+            .map(|v| match v {
+                JVal::Bool(b) => *b,
+                JVal::Number(n) => n.as_u64().map(|u| u != 0).unwrap_or(false),
+                JVal::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(),
+                    "true" | "on" | "yes" | "1"),
+                _ => false,
+            })
+            .unwrap_or(false);
+
         let adapter = phase_obj.get("adapter")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
@@ -1443,6 +1459,7 @@ fn parse_phases(
             cycles,
             concurrency,
             rate,
+            daemon,
             adapter,
             errors,
             error_rate_max,

@@ -24,14 +24,6 @@
 
 use regex::Regex;
 
-/// Characters whose presence in an input means "this is a
-/// regular expression already, don't glob-expand". Excludes `*`
-/// because the glob dialect uses `*` and only `*`.
-const REGEX_METACHARS: &[char] = &[
-    '.', '+', '?', '(', ')', '|', '[', ']', '{', '}',
-    '^', '$', '\\',
-];
-
 /// Compiled phase-name pattern. Wraps a `regex::Regex` plus the
 /// original source for diagnostics.
 #[derive(Debug, Clone)]
@@ -82,28 +74,17 @@ impl PhasePattern {
         if source.is_empty() {
             return Err("phases= pattern is empty".into());
         }
-        let has_regex_metachar = source.chars().any(|c| REGEX_METACHARS.contains(&c));
-        let has_glob_star = source.contains('*');
-        let (anchored, dialect) = if has_regex_metachar {
-            // Full regex dialect — wrap in anchors so a partial
-            // match doesn't accidentally fire across the whole
-            // namespace.
-            (format!("^(?:{source})$"), PhaseDialect::Regex)
-        } else if has_glob_star {
-            // Glob: escape every literal char, then turn each
-            // escaped `\*` into `.*`. regex::escape() produces
-            // `\*` for `*`, which is the marker we replace.
-            let escaped = regex::escape(source);
-            let pattern = escaped.replace("\\*", ".*");
-            (format!("^{pattern}$"), PhaseDialect::Glob)
-        } else {
-            // Literal: escape the whole string and anchor it.
-            (format!("^{}$", regex::escape(source)), PhaseDialect::Literal)
+        // Delegate to the shared literal/glob/regex promotion (SRD —
+        // one rule-set; the `pattern_match` polydat node uses the same
+        // `compile_pattern`, so `phases=…` and a workload's
+        // `pattern_match(...)` interpret a pattern identically).
+        let (re, dialect) = polydat::library::regex::compile_pattern(source)
+            .map_err(|e| format!("phases={e}"))?;
+        let dialect = match dialect {
+            polydat::library::regex::PatternDialect::Literal => PhaseDialect::Literal,
+            polydat::library::regex::PatternDialect::Glob => PhaseDialect::Glob,
+            polydat::library::regex::PatternDialect::Regex => PhaseDialect::Regex,
         };
-        let re = Regex::new(&anchored).map_err(|e| {
-            format!("phases='{source}' did not compile (dialect={}): {e}",
-                dialect.as_str())
-        })?;
         Ok(Self { re, source: source.to_string(), dialect })
     }
 

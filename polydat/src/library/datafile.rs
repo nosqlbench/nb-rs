@@ -28,13 +28,59 @@
 #[cfg(test)]
 use crate::ast::{PolydatNode, Value};
 
+// ─── Workload-relative path resolution ─────────────────────────
+//
+// Data-file paths are read at construction time relative to the
+// process CWD. That breaks when a workload is run from anywhere but
+// the directory its relative paths assume. So — mirroring how
+// `extends:` resolves relative targets against the workload's own
+// directory — a compile sets the workload's directory as a base, and a
+// relative path that doesn't resolve against the CWD is retried
+// against it. Absolute paths and CWD-resolvable paths are untouched,
+// so existing workloads are unaffected.
+
+thread_local! {
+    static DATA_BASE_DIR: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Set the base directory relative data-file paths resolve against
+/// (the workload's own directory). Returns the previous value so the
+/// caller can restore it — compiles nest. The compile entry points
+/// bracket their (synchronous) body with this; concurrent compiles on
+/// different threads keep independent values.
+pub fn set_data_base_dir(dir: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    DATA_BASE_DIR.with(|d| d.replace(dir))
+}
+
+/// Resolve a data-file path. Absolute paths and paths that already
+/// resolve against the CWD are returned verbatim; otherwise, if a
+/// workload base dir is set and `<base>/<path>` exists, that absolute
+/// path is returned. Falls back to the original so a genuine
+/// not-found error names the path the author wrote.
+fn resolve_data_path(filename: &str) -> std::borrow::Cow<'_, str> {
+    let p = std::path::Path::new(filename);
+    if p.is_absolute() || p.exists() {
+        return std::borrow::Cow::Borrowed(filename);
+    }
+    DATA_BASE_DIR.with(|d| {
+        if let Some(base) = d.borrow().as_ref() {
+            let candidate = base.join(filename);
+            if candidate.exists() {
+                return std::borrow::Cow::Owned(candidate.to_string_lossy().into_owned());
+            }
+        }
+        std::borrow::Cow::Borrowed(filename)
+    })
+}
+
 // ─── CSV ───────────────────────────────────────────────────────
 
 /// Setup function for `csv_field`: read the named column from the
 /// CSV file and return one entry per data row. Panics on read or
 /// column-not-found error (workload-compile diagnostic path).
 fn read_csv_column(filename: &str, column: &str) -> Vec<String> {
-    let content = std::fs::read_to_string(filename)
+    let content = std::fs::read_to_string(resolve_data_path(filename).as_ref())
         .unwrap_or_else(|e| panic!("csv_field: failed to read '{filename}': {e}"));
     let mut lines = content.lines();
 
@@ -93,7 +139,7 @@ fn csv_field(
 /// Panics on read failure or empty file — workload-compile error
 /// path (preserves the original error-message format).
 fn read_csv_data_rows(filename: &str) -> Vec<String> {
-    let content = std::fs::read_to_string(filename)
+    let content = std::fs::read_to_string(resolve_data_path(filename).as_ref())
         .unwrap_or_else(|e| panic!("csv_row: failed to read '{filename}': {e}"));
     let rows: Vec<String> = content.lines()
         .skip(1) // skip header
@@ -109,7 +155,7 @@ fn read_csv_data_rows(filename: &str) -> Vec<String> {
 /// Read a CSV file and return its data-row count (excluding header).
 /// Panics on read failure — workload-compile error path.
 fn read_csv_row_count(filename: &str) -> u64 {
-    let content = std::fs::read_to_string(filename)
+    let content = std::fs::read_to_string(resolve_data_path(filename).as_ref())
         .unwrap_or_else(|e| panic!("csv_row_count: failed to read '{filename}': {e}"));
     content.lines()
         .skip(1)
@@ -159,7 +205,7 @@ fn csv_row_count(
 /// Panics on read or JSON-parse error (workload-compile diagnostic
 /// path).
 fn read_jsonl_field(filename: &str, path: &str) -> Vec<String> {
-    let content = std::fs::read_to_string(filename)
+    let content = std::fs::read_to_string(resolve_data_path(filename).as_ref())
         .unwrap_or_else(|e| panic!("jsonl_field: failed to read '{filename}': {e}"));
     let mut values = Vec::new();
     for (line_num, line) in content.lines().enumerate() {
@@ -205,7 +251,7 @@ fn jsonl_field(
 /// Read all non-empty lines of a JSONL file. Panics on read failure
 /// or empty file (workload-compile error path).
 fn read_jsonl_lines(filename: &str) -> Vec<String> {
-    let content = std::fs::read_to_string(filename)
+    let content = std::fs::read_to_string(resolve_data_path(filename).as_ref())
         .unwrap_or_else(|e| panic!("jsonl_row: failed to read '{filename}': {e}"));
     let rows: Vec<String> = content.lines()
         .filter(|l| !l.trim().is_empty())
@@ -220,7 +266,7 @@ fn read_jsonl_lines(filename: &str) -> Vec<String> {
 /// Count non-empty lines in a JSONL file. Panics on read failure
 /// (workload-compile error path).
 fn read_jsonl_row_count(filename: &str) -> u64 {
-    let content = std::fs::read_to_string(filename)
+    let content = std::fs::read_to_string(resolve_data_path(filename).as_ref())
         .unwrap_or_else(|e| panic!("jsonl_row_count: failed to read '{filename}': {e}"));
     content.lines()
         .filter(|l| !l.trim().is_empty())
@@ -328,6 +374,33 @@ mod tests {
         // Wrap around
         node.eval(&[Value::U64(2)], &mut out);
         assert_eq!(out[0].to_display_string(), "alice");
+    }
+
+    #[test]
+    fn relative_path_resolves_against_data_base_dir() {
+        // A file in a subdirectory, referenced by basename only —
+        // the workload-relative resolution mirrors how `extends:`
+        // resolves relative targets against the workload's directory.
+        let dir = std::env::temp_dir().join("nbrs_datafile_base_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("base_rows.jsonl");
+        std::fs::write(&file, "{\"v\": 7}\n").unwrap();
+
+        // No base dir: a bare basename does not resolve to the file.
+        let prev = set_data_base_dir(None);
+        assert_eq!(resolve_data_path("base_rows.jsonl").as_ref(), "base_rows.jsonl");
+
+        // Base dir set: the basename resolves to the absolute file, and
+        // the reader honours it.
+        set_data_base_dir(Some(dir.clone()));
+        assert_eq!(resolve_data_path("base_rows.jsonl").as_ref(), file.to_string_lossy());
+        assert_eq!(read_jsonl_field("base_rows.jsonl", "v"), vec!["7".to_string()]);
+
+        // Absolute paths pass through untouched even with a base set.
+        let abs = file.to_string_lossy().into_owned();
+        assert_eq!(resolve_data_path(&abs).as_ref(), abs);
+
+        set_data_base_dir(prev);
     }
 
     #[test]

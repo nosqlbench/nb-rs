@@ -39,6 +39,7 @@
 //! `Validity` is carried by the failing phase's own `Err` (the existing
 //! `run_siblings_concurrently` cascade) rather than re-derived here.
 
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -70,8 +71,14 @@ pub struct WorkloadShell {
     /// `.await` (cf. `feedback_no_blocking_in_async`).
     stop_set: Mutex<StopConditionSet>,
     /// Latched `true` by the first condition to trip. Read by every
-    /// dispatch loop before starting the next sibling.
-    walk_stop: AtomicBool,
+    /// dispatch loop before starting the next sibling — and, via
+    /// [`Self::walk_stop_flag`], polled by this execution's in-flight
+    /// activities so concurrent (`Bounded(N>1)`) sibling phases abort
+    /// cooperatively rather than draining (SRD-82 Part 4). `Arc` so the
+    /// flag can be shared into those activities; it stays per-execution
+    /// (one shell per `ExecCtx`), never leaking across SRD-88 concurrent
+    /// in-process executions.
+    walk_stop: Arc<AtomicBool>,
     /// The reason recorded when `walk_stop` latched (the tripping
     /// condition's error class), for diagnostics.
     stop_reason: Mutex<Option<String>>,
@@ -96,7 +103,7 @@ impl WorkloadShell {
             op_count: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
             stop_set: Mutex::new(stop_set),
-            walk_stop: AtomicBool::new(false),
+            walk_stop: Arc::new(AtomicBool::new(false)),
             stop_reason: Mutex::new(None),
             stop_outcome: Mutex::new(None),
             start: Instant::now(),
@@ -167,6 +174,16 @@ impl WorkloadShell {
     /// walk.
     pub fn should_stop(&self) -> bool {
         self.walk_stop.load(Ordering::Relaxed)
+    }
+
+    /// A clone of the latch flag, for this execution's in-flight
+    /// activities to poll at their cooperative boundaries (SRD-82 Part
+    /// 4): once the walk stops, already-running concurrent sibling
+    /// phases see it and abort rather than draining to completion. The
+    /// flag is per-execution (one shell per `ExecCtx`), so a fault in
+    /// one execution never aborts another's activities.
+    pub fn walk_stop_flag(&self) -> Arc<AtomicBool> {
+        self.walk_stop.clone()
     }
 
     /// The reason the shell stopped, if it has.

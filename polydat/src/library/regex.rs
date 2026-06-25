@@ -72,6 +72,131 @@ fn regex_extract(
 }
 
 // ---------------------------------------------------------------------------
+// Pattern promotion (literal / glob / regex) + the `pattern_match` node
+// ---------------------------------------------------------------------------
+//
+// A *pattern* is a source string lifted into an anchored regex by the
+// shape of the source. Shared with `nbrs-runtime`'s phase-name filter
+// (which delegates to `compile_pattern`) so `phases=…` and a workload's
+// `pattern_match(...)` agree on what a pattern means.
+
+/// Which dialect [`promote_pattern`] / [`compile_pattern`] picked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternDialect {
+    /// No regex metachars and no `*` — strict, anchored full-string
+    /// match (`^src$`).
+    Literal,
+    /// `*` (and no other regex metachar) — each `*` expands to `.*`,
+    /// anchored.
+    Glob,
+    /// Any regex metachar — a full Rust regex, anchored `^(?:src)$`.
+    Regex,
+}
+
+impl PatternDialect {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PatternDialect::Literal => "literal",
+            PatternDialect::Glob => "glob",
+            PatternDialect::Regex => "regex",
+        }
+    }
+}
+
+/// Metachars whose presence means "already a regex — don't glob-expand".
+/// Excludes `*`, which is the glob marker.
+const PATTERN_REGEX_METACHARS: &[char] = &[
+    '.', '+', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$', '\\',
+];
+
+/// Classify `source` and return its anchored regex source + dialect.
+/// Pure — does not compile. Promotion rules:
+/// - any regex metachar → full regex, `^(?:src)$`
+/// - else if it contains `*` → glob, each `*` → `.*`, `^…$`
+/// - else → literal, `^escape(src)$`
+pub fn promote_pattern(source: &str) -> (String, PatternDialect) {
+    let has_regex_metachar =
+        source.chars().any(|c| PATTERN_REGEX_METACHARS.contains(&c));
+    let has_glob_star = source.contains('*');
+    if has_regex_metachar {
+        (format!("^(?:{source})$"), PatternDialect::Regex)
+    } else if has_glob_star {
+        // regex::escape renders `*` as `\*`; turn those back into `.*`.
+        let pattern = regex::escape(source).replace("\\*", ".*");
+        (format!("^{pattern}$"), PatternDialect::Glob)
+    } else {
+        (format!("^{}$", regex::escape(source)), PatternDialect::Literal)
+    }
+}
+
+/// Promote and compile `source` into an anchored [`Regex`].
+pub fn compile_pattern(source: &str) -> Result<(Regex, PatternDialect), String> {
+    let (anchored, dialect) = promote_pattern(source);
+    let re = Regex::new(&anchored).map_err(|e| {
+        format!("pattern '{source}' did not compile (dialect={}): {e}",
+            dialect.as_str())
+    })?;
+    Ok((re, dialect))
+}
+
+/// Build-time helper for [`pattern_match`]: promote + compile the const
+/// pattern once. Panics on an un-compilable pattern, like
+/// [`compile_regex`].
+fn compile_promoted(pattern: &str) -> Regex {
+    compile_pattern(pattern).unwrap_or_else(|e| panic!("{e}")).0
+}
+
+/// Promoted pattern match: `true` if `input` matches `pattern` under the
+/// literal / glob / regex promotion rules. Sibling to [`regex_match`]
+/// (which takes a *raw* regex) — use this when the pattern may be a
+/// strict string, a `*` glob, or a regex and the kind should be
+/// auto-detected from its shape.
+#[crate::polydat_node(category = Regex)]
+fn pattern_match(
+    input: &str,
+    pattern: crate::derive_support::Const<&str>,
+    #[poly_const(compile_promoted, from = pattern)]
+    re: &Regex,
+) -> bool {
+    re.is_match(input)
+}
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::*;
+
+    #[test]
+    fn literal_is_strict_anchored() {
+        let (re, d) = compile_pattern("schema").unwrap();
+        assert_eq!(d, PatternDialect::Literal);
+        assert!(re.is_match("schema"));
+        assert!(!re.is_match("schema_v2"));
+        assert!(!re.is_match("pre_schema"));
+    }
+
+    #[test]
+    fn glob_star_distinguishes_suffix_series() {
+        // The motivating case: `*m` vs `*mi`.
+        let (m, dm) = compile_pattern("*m").unwrap();
+        assert_eq!(dm, PatternDialect::Glob);
+        assert!(m.is_match("100m"));
+        assert!(!m.is_match("100mi"));
+        let (mi, _) = compile_pattern("*mi").unwrap();
+        assert!(mi.is_match("100mi"));
+        assert!(!mi.is_match("100m"));
+    }
+
+    #[test]
+    fn regex_metachar_promotes() {
+        let (re, d) = compile_pattern("(100|200)m").unwrap();
+        assert_eq!(d, PatternDialect::Regex);
+        assert!(re.is_match("100m"));
+        assert!(re.is_match("200m"));
+        assert!(!re.is_match("300m"));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Signature declarations for the DSL registry
 // ---------------------------------------------------------------------------
 

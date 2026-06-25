@@ -118,7 +118,7 @@ fn run_blocking_io<R>(body: impl FnOnce() -> R) -> R {
 ///
 /// Uses the vectordata catalog API: `catalog.open(name)` handles
 /// catalog discovery, cache resolution, and download transparently.
-fn load_dataset_group(source: &str) -> Result<Arc<TestDataGroup>, String> {
+pub(crate) fn load_dataset_group(source: &str) -> Result<Arc<TestDataGroup>, String> {
     let (dataset_name, _profile) = parse_source_specifier(source);
     // Both keys (dataset name and full source spec) point at the
     // same `Arc<TestDataGroup>`; the `OnceCache` slot for one is
@@ -972,15 +972,19 @@ handle_metadata_node!(
 ///
 /// `group` declares its source-string auto-resolver via the
 /// `Resolved<GroupResolver, _>` marker wrapper — the macro reads
-/// `<Resolved<GroupResolver, TestDataGroup> as Wire>::RESOLVER` at
+/// `<Resolved<GroupResolver, DatasetHandle> as Wire>::RESOLVER` at
 /// codegen and emits the matching `FuncSig.default_resolver`
-/// (`DefaultResolver::Group`).
+/// (`DefaultResolver::Group`). The spliced `dataset_group_open` yields
+/// the canonical `Value::Handle(Arc<DatasetHandle>)`, so the wire is
+/// resolved as `DatasetHandle` and the group is taken via `group_of`
+/// (downcasting straight to `TestDataGroup` would fail — the handle is
+/// always the unified `DatasetHandle` enum).
 #[crate::polydat_node(category = RealData)]
 fn matching_profiles(
-    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, TestDataGroup>,
+    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, DatasetHandle>,
     prefix: &str,
 ) -> String {
-    let group: &TestDataGroup = &group;
+    let group: &TestDataGroup = group_of(&group);
     let all = group.profile_names();
     let mut matched: Vec<&str> = if prefix.is_empty() {
         all.iter().map(|s| s.as_str()).collect()
@@ -1052,10 +1056,10 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 /// Index wraps modulo the number of profiles.
 #[crate::polydat_node(category = RealData)]
 fn dataset_profile_name_at(
-    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, TestDataGroup>,
+    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, DatasetHandle>,
     index: u64,
 ) -> String {
-    let group: &TestDataGroup = &group;
+    let group: &TestDataGroup = group_of(&group);
     let names = group.profile_names();
     if names.is_empty() {
         String::new()
@@ -1069,10 +1073,10 @@ fn dataset_profile_name_at(
 /// Signature: `profile_base_count(group, index: u64) -> (u64)`
 #[crate::polydat_node(category = RealData)]
 fn profile_base_count(
-    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, TestDataGroup>,
+    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, DatasetHandle>,
     index: u64,
 ) -> u64 {
-    let group: &TestDataGroup = &group;
+    let group: &TestDataGroup = group_of(&group);
     let names = group.profile_names();
     if names.is_empty() {
         0
@@ -1090,10 +1094,10 @@ fn profile_base_count(
 /// Signature: `profile_facets(group, index: u64) -> (String)`
 #[crate::polydat_node(category = RealData)]
 fn profile_facets(
-    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, TestDataGroup>,
+    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, DatasetHandle>,
     index: u64,
 ) -> String {
-    let group: &TestDataGroup = &group;
+    let group: &TestDataGroup = group_of(&group);
     let names = group.profile_names();
     if names.is_empty() {
         String::new()
@@ -1112,6 +1116,125 @@ fn profile_facets(
             }
             None => String::new(),
         }
+    }
+}
+
+/// Partition a dataset's vector space by its **profiles matching a
+/// pattern**, treated as cumulative size tiers (an SRD-71 partition
+/// source). One partition per masked profile, in canonical
+/// (base-count-ascending) order: partition `k` spans
+/// `[prev_masked_base_count, this_masked_base_count)` — exactly the
+/// vectors added at that tier — so a sweep's "load only the increment
+/// since the previously loaded set" is just the partition's
+/// `[start_of(p), end_of(p))`, and a partition inherently knows its
+/// start (no cross-iteration carry needed). `idx_of(p)` is the 0-based
+/// masked position (pairs with [`matching_profile_name_at`] to address
+/// the tier's own ground-truth facets); `count_of(p)` is the number of
+/// masked tiers; `base_extent` is the largest masked tier's size.
+///
+/// `pattern` follows the literal / glob / regex promotion of
+/// [`crate::library::regex::compile_pattern`]; `*` (or any pattern that
+/// matches all names) selects every profile.
+///
+/// Signature: `profile_partitions(group, pattern: str) -> (PartitionList)`
+#[crate::polydat_node(category = RealData)]
+fn profile_partitions(
+    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, DatasetHandle>,
+    pattern: &str,
+) -> crate::derive_support::Ext<crate::iteration::cursor_partition::PartitionList> {
+    let group: &TestDataGroup = group_of(&group);
+    let parts = build_profile_partitions(group, pattern);
+    crate::derive_support::Ext(
+        crate::iteration::cursor_partition::PartitionList::new(parts),
+    )
+}
+
+/// Build the cumulative size-tier partitions for the profiles of `group`
+/// matching `pattern` (literal/glob/regex promotion). Shared by the
+/// [`profile_partitions`] node and the comprehension-source desugaring
+/// in `iteration::comprehension::eval` so a `for: "p in
+/// profile_partitions(...)"` sweep produces identical partitions either
+/// way. Partition `k` spans `[prev masked base_count, this base_count)`.
+/// The masked profile size-tiers for `group` matching `pattern`, in
+/// canonical (base-count-ascending) order: `(name, cumulative_base_count)`
+/// for each matching profile WITH a non-zero base count. Profiles with no
+/// base facet, or a zero count, are skipped — they would otherwise emit a
+/// degenerate empty `[prev, prev)` partition (and a query against an empty
+/// tier). Shared by [`build_profile_partitions`] and
+/// [`matching_profile_name_at`] so a partition's `idx_of(p)` and the tier
+/// name resolve against the SAME masked sequence.
+fn masked_profile_tiers(group: &TestDataGroup, pattern: &str) -> Vec<(String, u64)> {
+    let (re, _) = crate::library::regex::compile_pattern(pattern)
+        .unwrap_or_else(|e| panic!("profile pattern: {e}"));
+    group
+        .profile_names()
+        .iter()
+        .filter(|n| re.is_match(n))
+        .filter_map(|n| {
+            group.profile(n)
+                .and_then(|v| v.base_count())
+                .filter(|&c| c > 0)
+                .map(|c| (n.clone(), c))
+        })
+        .collect()
+}
+
+pub(crate) fn build_profile_partitions(
+    group: &TestDataGroup,
+    pattern: &str,
+) -> Vec<crate::iteration::cursor_partition::Partition> {
+    // Masked size-tiers (matching profiles with a non-zero base count),
+    // canonical (ascending) order — skipping zero-count profiles avoids a
+    // degenerate empty first partition.
+    let masked: Vec<u64> = masked_profile_tiers(group, pattern)
+        .into_iter()
+        .map(|(_, c)| c)
+        .collect();
+    let base_extent = masked.last().copied().unwrap_or(0);
+    let count = masked.len() as u64;
+    let pct = |o: u64| if base_extent == 0 { 0.0 } else { (o as f64 / base_extent as f64) * 100.0 };
+    let mut parts: Vec<crate::iteration::cursor_partition::Partition> =
+        Vec::with_capacity(masked.len());
+    let mut prev: u64 = 0;
+    for (k, &this) in masked.iter().enumerate() {
+        parts.push(crate::iteration::cursor_partition::Partition {
+            idx: k as u64,
+            count,
+            start_ord: prev,
+            end_ord: this,
+            start_pct: pct(prev),
+            end_pct: pct(this),
+            base_extent,
+        });
+        prev = this;
+    }
+    parts
+}
+
+/// Name of the `index`-th profile **matching `pattern`**, in canonical
+/// (base-count-ascending) order. Pairs with [`profile_partitions`]'s
+/// masked-position `idx_of` so a sweep can prebuffer the active tier's
+/// own ground-truth facets (`dataset_prebuffer(str_concat("ds:", name))`).
+/// `pattern` follows the literal / glob / regex promotion; the index
+/// wraps modulo the number of matching profiles; empty string if none
+/// match.
+///
+/// Signature: `matching_profile_name_at(group, pattern: str, index: u64) -> (String)`
+#[crate::polydat_node(category = RealData)]
+fn matching_profile_name_at(
+    group: crate::derive_support::Resolved<crate::derive_support::GroupResolver, DatasetHandle>,
+    pattern: &str,
+    index: u64,
+) -> String {
+    let group: &TestDataGroup = group_of(&group);
+    // Same masked sequence `profile_partitions` uses (matching profiles
+    // with a non-zero base count, canonical order), so `idx_of(p)` from a
+    // partition resolves to the right tier name.
+    let tiers = masked_profile_tiers(group, pattern);
+    if tiers.is_empty() {
+        String::new()
+    } else {
+        tiers[(index as usize) % tiers.len()].0.clone()
     }
 }
 
@@ -1231,12 +1354,12 @@ fn do_dataset_prebuffer_inner(source: &str) -> Result<Arc<DatasetHandle>, String
     // `view.prebuffer_all_with_progress` only fires its outer cb
     // once per facet *completion*; the per-chunk cb is exposed
     // via `FacetStorage::prebuffer_with_progress`). Every facet's
-    // chunk-level progress is throttled to ~1 Hz log emissions
-    // and then a final per-facet `covered` line lands when its
-    // download finishes.
+    // chunk-level progress is throttled per facet: ~1 Hz for the first
+    // 10s of its download (fine detail while it ramps), then one line
+    // per 10s for the long tail so a multi-gigabyte facet doesn't spew
+    // thousands of lines into session.log; a final per-facet `covered`
+    // line lands when the download finishes.
     let mut facet_count: u64 = 0;
-    let mut last_log_at = std::time::Instant::now();
-    let log_interval = std::time::Duration::from_secs(1);
     for (name, _descriptor) in view.facet_manifest() {
         // Skip facets with unrecognised element types (vectordata's
         // own default impl skips these — they're not data facets the
@@ -1261,6 +1384,8 @@ fn do_dataset_prebuffer_inner(source: &str) -> Result<Arc<DatasetHandle>, String
         let prebuf_profile = profile.to_string();
         let prebuf_facet   = name.clone();
         let mut last_done: u64 = 0;
+        let facet_start = std::time::Instant::now();
+        let mut last_log_at = facet_start;
         // `prebuffer_with_progress` drives `reqwest::blocking`,
         // which spins up a private tokio runtime per request.
         // Without parking the outer worker via `block_in_place`,
@@ -1269,11 +1394,19 @@ fn do_dataset_prebuffer_inner(source: &str) -> Result<Arc<DatasetHandle>, String
         // blocking is not allowed". Same pattern as
         // `load_dataset_group` and `load_uniform_facet`.
         let prebuf_result = run_blocking_io(|| storage.prebuffer_with_progress(|p| {
-            // Rate-limit to one line per second per facet so a
-            // gigabyte-sized facet doesn't spew thousands of
-            // progress lines into session.log.
+            // Per-facet throttle: ~1 Hz for the first 10s of this
+            // facet's download, then once per 10s, so a gigabyte-sized
+            // facet doesn't spew thousands of progress lines.
             let now = std::time::Instant::now();
-            if now.duration_since(last_log_at) < log_interval {
+            let interval = if now.duration_since(facet_start)
+                < std::time::Duration::from_secs(10)
+            {
+                std::time::Duration::from_secs(1)
+            } else {
+                std::time::Duration::from_secs(10)
+            };
+            let since_last = now.duration_since(last_log_at);
+            if since_last < interval {
                 return;
             }
             last_log_at = now;
@@ -1282,12 +1415,15 @@ fn do_dataset_prebuffer_inner(source: &str) -> Result<Arc<DatasetHandle>, String
             let total_c   = p.total_chunks();
             let done_c    = p.completed_chunks();
             let pct       = p.fraction() * 100.0;
+            // Throughput over the actual gap between log lines, so the
+            // rate reads correctly whichever interval is in force.
             let delta_mb  = (done_b.saturating_sub(last_done)) as f64 / (1024.0 * 1024.0);
+            let rate_mb_s = delta_mb / since_last.as_secs_f64().max(0.001);
             last_done = done_b;
             crate::library::support::audit::info(&format!(
                 "prebuffer: progress {prebuf_source}:{prebuf_profile}/{prebuf_facet} \
                  {pct:5.1}% ({done_c}/{total_c} chunks, \
-                 {done_mb:.1}/{total_mb:.1} MB, +{delta_mb:.1} MB last sec)",
+                 {done_mb:.1}/{total_mb:.1} MB, {rate_mb_s:.1} MB/s)",
                 done_mb  = done_b  as f64 / (1024.0 * 1024.0),
                 total_mb = total_b as f64 / (1024.0 * 1024.0),
             ));

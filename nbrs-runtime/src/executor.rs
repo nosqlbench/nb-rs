@@ -272,6 +272,12 @@ pub struct ExecCtx {
     /// already compiled into it; this is the unfiltered source for the
     /// structural `each:` fan-out at the phase level.
     pub workload_stop_when: Vec<nbrs_workload::model::StopConditionSpec>,
+    /// SRD-82 Part 6 — when this context is dispatching a DAEMON phase,
+    /// the scenario shell sets this to the daemon-group's completion flag
+    /// (latched once the scope's foreground phases finish). `run_phase`
+    /// threads it onto the daemon phase's `Activity::daemon_stop` so its
+    /// fibers stop cooperatively. `None` for foreground phases.
+    pub daemon_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// SRD-86 — when set (by `dispatch_optimization` during an optimize-node
     /// search), `run_phase` pulls this objective wire off the phase's **single
     /// live kernel** just before execution and stores the value in
@@ -405,6 +411,108 @@ pub fn execute_tree<'a>(
     execute_tree_at(ctx, nodes, 0)
 }
 
+// ─── SRD-82 execution shells ──────────────────────────────────────
+//
+// The scenario graph is SRD-82's outermost execution shell. A shell
+// runs its BODY (child units, via the one SRD-02 concurrency path),
+// HANDLES each unit's result through its handler (the scenario policy),
+// and AGGREGATES into a two-axis `Outcome`. The phase / stanza / op
+// shells follow the same shape as the unification proceeds.
+
+/// SRD-82 Part 3 — what the shell handler decides for one child result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellAction {
+    /// Keep running the rest of the body.
+    Continue,
+    /// Halt the body now (the SRD-82 `stop` action).
+    Stop,
+}
+
+/// SRD-82 Part 3 — the scenario-graph handler (the "scenario policy").
+/// Today it is the `*Failed:stop` default: a child whose `Outcome` is
+/// `Failed` halts the body. Generalising it to the full router
+/// (child-validity / aggregate match keys, `count`/`warn`/`retry`/`fail`
+/// actions) is SRD-82 Part 5 step 2.
+#[derive(Debug, Clone, Copy)]
+struct ShellHandler;
+
+impl ShellHandler {
+    fn scenario_default() -> Self { ShellHandler }
+    /// Decide the action for one child's outcome.
+    fn decide(&self, child: &crate::phase_outcome::Outcome) -> ShellAction {
+        if child.is_failure() { ShellAction::Stop } else { ShellAction::Continue }
+    }
+}
+
+/// SRD-82 Part 2 — one execution shell, recursively composed. The
+/// scenario graph is the first instance; phase / stanza / op follow.
+/// The formal contract: a shell runs its body and returns its two-axis
+/// [`crate::phase_outcome::Outcome`]. The concrete dispatch
+/// ([`ScenarioShell::dispatch`]) additionally surfaces the first failure
+/// reason, which the bare `Outcome` (a `(Disposition, Validity)` pair)
+/// cannot carry. Daemon units (Part 6) and the phase/stanza/op shells
+/// hang off this contract.
+#[allow(dead_code)] // WIP SRD-82 — the contract; phase/stanza/op shells + daemon units consume it next.
+trait ExecShell {
+    fn run<'a>(
+        &'a self,
+        ctx: &'a mut ExecCtx,
+        nodes: &'a [ScenarioNode],
+        depth: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>;
+}
+
+/// The scenario-graph shell (SRD-82). Carries the scenario handler;
+/// [`Self::dispatch`] runs body + handle + aggregate.
+struct ScenarioShell {
+    handler: ShellHandler,
+}
+
+impl ScenarioShell {
+    fn scenario() -> Self {
+        Self { handler: ShellHandler::scenario_default() }
+    }
+    /// Run the body and return the aggregate `Outcome` plus the first
+    /// failure reason (preserved alongside because `Outcome` carries no
+    /// message). This is the scenario shell's real entry point.
+    async fn dispatch(
+        &self,
+        ctx: &mut ExecCtx,
+        nodes: &[ScenarioNode],
+        depth: usize,
+    ) -> (crate::phase_outcome::Outcome, Option<String>) {
+        run_scenario_body(&self.handler, ctx, nodes, depth).await
+    }
+}
+
+impl ExecShell for ScenarioShell {
+    fn run<'a>(
+        &'a self,
+        ctx: &'a mut ExecCtx,
+        nodes: &'a [ScenarioNode],
+        depth: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
+        Box::pin(async move { self.dispatch(ctx, nodes, depth).await.0 })
+    }
+}
+
+/// Classify a joined child task into its [`crate::phase_outcome::Outcome`]
+/// + reason. A child `Err` / task panic is `Failed` (the message is the
+/// reason); a clean `Ok` is `Completed`. (Until the deeper unification
+/// flows a real child `Outcome` up through `execute_node`, the child's
+/// `Result` is the faithful proxy — a soft-failed phase already returns
+/// `Err` via the per-phase error-rate breaker.)
+fn classify_child(
+    res: Result<Result<(), String>, tokio::task::JoinError>,
+) -> (crate::phase_outcome::Outcome, Option<String>) {
+    use crate::phase_outcome::Outcome;
+    match res {
+        Err(join_err) => (Outcome::failed(), Some(format!("concurrent task panicked: {join_err}"))),
+        Ok(Err(e)) => (Outcome::failed(), Some(e)),
+        Ok(Ok(())) => (Outcome::completed(), None),
+    }
+}
+
 /// Depth-tagged tree walk. Each recursive descent (into ForEach
 /// children, ForCombinations children, DoWhile / DoUntil bodies,
 /// or phase-level iterations) bumps `depth`. The `schedule_spec`
@@ -422,8 +530,19 @@ fn execute_tree_at<'a>(
     depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
-        let limit = ctx.schedule_spec.limit_at(depth);
-        run_siblings_concurrently(ctx, nodes, depth, limit).await
+        // Run the scenario-graph ExecShell (SRD-82) and project its
+        // two-axis Outcome onto the `Result` the rest of the walker still
+        // threads: `Failed` → `Err` (with the failing child's reason),
+        // otherwise `Ok`. A broad stop-condition halt aggregates as
+        // `Interrupted` (→ `Ok`) — the failing phase, if any, carries the
+        // fault up its own branch, exactly as before the shell.
+        let shell = ScenarioShell::scenario();
+        let (outcome, reason) = shell.dispatch(ctx, nodes, depth).await;
+        if outcome.is_failure() {
+            Err(reason.unwrap_or_else(|| "scenario shell: a child unit failed".to_string()))
+        } else {
+            Ok(())
+        }
     })
 }
 
@@ -434,13 +553,20 @@ fn execute_tree_at<'a>(
 /// `Semaphore`; Unlimited launches all at once. Joins via
 /// `JoinSet`; the first task error aborts the rest (remaining
 /// tasks still finish their own permits).
-async fn run_siblings_concurrently(
+/// SRD-82 — the scenario-graph shell's BODY + HANDLE + AGGREGATE. Runs
+/// the sibling units via the one SRD-02 concurrency path (semaphore-gated
+/// `JoinSet`, `Bounded(1)` = serial), feeds each joined child through
+/// `handler` (the `*Failed:stop` scenario policy), and aggregates into a
+/// two-axis [`crate::phase_outcome::Outcome`] + the first failure reason.
+/// Wrapped by [`ScenarioShell`] / [`ExecShell`].
+async fn run_scenario_body(
+    handler: &ShellHandler,
     ctx: &mut ExecCtx,
     nodes: &[ScenarioNode],
     depth: usize,
-    limit: crate::scheduler::ConcurrencyLimit,
-) -> Result<(), String> {
+) -> (crate::phase_outcome::Outcome, Option<String>) {
     use crate::scheduler::ConcurrencyLimit;
+    let limit = ctx.schedule_spec.limit_at(depth);
 
     // Stable-order preview before spawning. Concurrent phases
     // race each other to the per-phase log entry, so without
@@ -521,21 +647,69 @@ async fn run_siblings_concurrently(
     let child_scope_indices: Vec<crate::scope_tree::ScopeNodeIdx> =
         ctx.scope_tree.nodes[parent_scope_idx].children.clone();
     if child_scope_indices.len() != nodes.len() {
-        return Err(format!(
+        return (crate::phase_outcome::Outcome::failed(), Some(format!(
             "scope-tree/scenario-tree drift: scope node {parent_scope_idx} has {} \
              child scopes but the walker is dispatching {} sibling scenario nodes",
             child_scope_indices.len(),
             nodes.len(),
-        ));
+        )));
+    }
+
+    // SRD-82/83 — if the walk has already halted (a prior phase failed,
+    // or a stop condition tripped — possibly in another for-loop
+    // iteration or sibling subtree), run NOTHING in this scope: neither
+    // foreground phases NOR daemons. The foreground loop's per-node
+    // `should_stop` check below would skip the foreground, but daemons
+    // are spawned before it — so without this guard the comprehension
+    // keeps iterating after a halt and every iteration still spawns its
+    // daemon phase(s). Returns a clean Interrupt; the failing branch
+    // carries the fault up its own `Err`.
+    if ctx.workload_shell.should_stop() {
+        return (crate::phase_outcome::Outcome::interrupted(), None);
+    }
+
+    // SRD-82 Part 6 — partition the body into FOREGROUND and DAEMON
+    // units. A daemon phase runs concurrently with the foreground
+    // siblings, OFF the foreground concurrency budget, and is stopped
+    // when the foreground completes. Daemons are spawned first, onto
+    // their own `JoinSet` and without a foreground permit, so they are up
+    // for the foreground's whole duration; the foreground loop skips them.
+    let daemon_flags: Vec<bool> = nodes.iter().map(|n| match n {
+        ScenarioNode::Phase(name) =>
+            ctx.phases.get(name).map(|p| p.daemon).unwrap_or(false),
+        _ => false,
+    }).collect();
+    let any_daemon = daemon_flags.iter().any(|&d| d);
+    let daemon_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut daemon_set = tokio::task::JoinSet::new();
+    for (i, node) in nodes.iter().enumerate() {
+        if !daemon_flags[i] { continue; }
+        let node_scope_idx = child_scope_indices[i];
+        let node = node.clone();
+        let mut task_ctx = ctx.clone();
+        // The daemon-group completion flag — `run_phase` threads it onto
+        // the daemon phase's `Activity::daemon_stop`.
+        task_ctx.daemon_stop = Some(daemon_stop.clone());
+        daemon_set.spawn(crate::execution_context::propagate(async move {
+            execute_node(&mut task_ctx, &node, node_scope_idx, depth).await
+        }));
     }
 
     let mut set = tokio::task::JoinSet::new();
-    let mut first_err: Option<String> = None;
+    // The first child the handler decided to STOP on (its reason). `Outcome`
+    // carries no message, so the reason rides alongside.
+    let mut first_failure: Option<String> = None;
     for (i, node) in nodes.iter().enumerate() {
+        if daemon_flags[i] { continue; }  // daemons already spawned off-budget
         let node_scope_idx = child_scope_indices[i];
         let permit = match sem.as_ref() {
-            Some(s) => Some(s.clone().acquire_owned().await
-                .map_err(|e| e.to_string())?),
+            Some(s) => match s.clone().acquire_owned().await {
+                Ok(p) => Some(p),
+                // The semaphore is owned here and never closed, so this is
+                // effectively unreachable — surface it as a fault rather
+                // than panicking if it ever does.
+                Err(e) => return (crate::phase_outcome::Outcome::failed(), Some(e.to_string())),
+            },
             None => None,
         };
         // After waiting for a permit, drain any completed
@@ -551,19 +725,15 @@ async fn run_siblings_concurrently(
         // the only difference is how many in-flight tasks the
         // cap allows.
         while let Some(res) = set.try_join_next() {
-            match res {
-                Err(join_err) => {
-                    if first_err.is_none() {
-                        first_err = Some(format!("concurrent task panicked: {join_err}"));
-                    }
-                }
-                Ok(Err(e)) => {
-                    if first_err.is_none() { first_err = Some(e); }
-                }
-                Ok(Ok(())) => {}
+            // HANDLE: feed each joined child through the scenario handler.
+            let (child, reason) = classify_child(res);
+            if matches!(handler.decide(&child), ShellAction::Stop)
+                && first_failure.is_none()
+            {
+                first_failure = reason;
             }
         }
-        if first_err.is_some() {
+        if first_failure.is_some() {
             // Drop the permit we just acquired — it would
             // otherwise sit unused until the dispatch loop
             // exits.
@@ -577,8 +747,12 @@ async fn run_siblings_concurrently(
         // give — it reaches every dispatch loop at every depth, so a
         // trip in one subtree stops not-yet-started phases in sibling
         // subtrees too (the scenario stop-on-error default). In-flight
-        // siblings (Bounded(N>1)) still drain at the join below;
-        // cooperatively aborting them is the SRD-82 Part 4 follow-up.
+        // `Bounded(N>1)` siblings already running abort cooperatively
+        // too (SRD-82 Part 4): their fibers poll the same per-execution
+        // `walk_stop` flag (`Activity::walk_stop`) at their boundaries
+        // and exit rather than draining — so this check halts the
+        // not-yet-dispatched ones and the in-flight ones unwind in
+        // parallel.
         if ctx.workload_shell.should_stop() {
             crate::diag!(crate::observer::LogLevel::Debug,
                 "workload shell stopped — halting dispatch of remaining \
@@ -600,24 +774,45 @@ async fn run_siblings_concurrently(
             execute_node(&mut task_ctx, &node, node_scope_idx, depth).await
         }));
     }
-    // Drain any still-running tasks (those spawned before the
-    // first error was observed).
+    // Drain any still-running tasks (those spawned before the stop was
+    // observed), feeding each through the same handler.
     while let Some(res) = set.join_next().await {
-        match res {
-            Err(join_err) => {
-                if first_err.is_none() {
-                    first_err = Some(format!("concurrent task panicked: {join_err}"));
-                }
-            }
-            Ok(Err(e)) => {
-                if first_err.is_none() { first_err = Some(e); }
-            }
-            Ok(Ok(())) => {}
+        let (child, reason) = classify_child(res);
+        if matches!(handler.decide(&child), ShellAction::Stop)
+            && first_failure.is_none()
+        {
+            first_failure = reason;
         }
     }
-    match first_err {
-        Some(e) => Err(e),
-        None => Ok(()),
+    // SRD-82 Part 6 — the foreground body has finished: latch the daemon
+    // group's completion flag (each daemon phase's fibers poll it and
+    // exit within their cancel grace), then drain the daemons. A
+    // cleanly-stopped daemon is `Completed` → Continue; a daemon that
+    // ERRORED folds through the same handler and bubbles up as a failure.
+    if any_daemon {
+        daemon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        while let Some(res) = daemon_set.join_next().await {
+            let (child, reason) = classify_child(res);
+            if matches!(handler.decide(&child), ShellAction::Stop)
+                && first_failure.is_none()
+            {
+                first_failure = reason;
+            }
+        }
+    }
+    // AGGREGATE: this shell's two-axis Outcome.
+    if let Some(reason) = first_failure {
+        // A child here failed and the handler stopped the body →
+        // Interrupted + Failed (a fault); the reason rides alongside.
+        (crate::phase_outcome::Outcome::failed(), Some(reason))
+    } else if ctx.workload_shell.should_stop() {
+        // A stop condition latched the broad walk-halt (no child failed
+        // in THIS scope): stop dispatching, but this shell's own result
+        // is a clean Interrupt — any failing phase carries the fault up
+        // its own branch. Matches the pre-shell `Ok`-on-should_stop.
+        (crate::phase_outcome::Outcome::interrupted(), None)
+    } else {
+        (crate::phase_outcome::Outcome::completed(), None)
     }
 }
 
@@ -4089,6 +4284,16 @@ async fn run_phase(
         config, &labels, op_sequence, ctx.workload_params.clone(), sigdigs,
         phase_error_policy, phase_kernel, &metric_detail,
     );
+    // SRD-82 Part 4 — wire this execution's walk-stop flag so in-flight
+    // fibers abort cooperatively when the scenario walk halts (a sibling
+    // phase failed, or a stop condition tripped). Per-execution
+    // (`ctx.workload_shell` is one shell per `ExecCtx`), so a fault in
+    // one execution never aborts another's phases.
+    activity.walk_stop = Some(ctx.workload_shell.walk_stop_flag());
+    // SRD-82 Part 6 — a daemon phase also carries its group's completion
+    // flag (set on `task_ctx` by the scenario shell before spawning it),
+    // so its fibers stop when the foreground phases it shadows finish.
+    activity.daemon_stop = ctx.daemon_stop.clone();
     // SRD-32a Push 3 — propagate the workload-root
     // wrapper-order override and CLI default-order tiebreaker
     // from the run context.
@@ -4710,22 +4915,26 @@ async fn run_phase(
                     "checkpoint flush after phase '{phase_name}' failed: {e}");
             }
         }
-        // SRD-83 — fold this failed child into the workload shell. A
-        // workload `children_failed > 0` (stop-on-error) condition trips
-        // here; the walk-stop it latches halts sibling phases the local
-        // `Err` cascade can't reach (concurrent / cross-subtree). The
-        // session-level failure itself rides on this `Err` (which exits
-        // before the unreached-phase check), so the graceful-stop flag
-        // is moot on this path but set for symmetry with the success one.
-        if let Some((_outcome, reason)) = ctx.workload_shell
+        // SRD-82 Part 4/6 — fold this failed child into the workload
+        // shell. The default scenario-graph `children_failed > 0` rule
+        // (a `fail` effect) trips here; the walk-stop it latches halts
+        // sibling phases the local `Err` cascade can't reach (concurrent
+        // / cross-subtree). Route by the tripping outcome's cause: a
+        // `fail` effect is a FAULT stop (the session is failing — this
+        // phase returns `Err` below, driving the non-zero exit), so the
+        // skipped tail is recorded as a fault, not mistaken for a
+        // graceful early stop.
+        if let Some((outcome, reason)) = ctx.workload_shell
             .record_phase(true, phase_op_count, phase_error_count)
         {
-            // The phase already failed (we return Err below); the
-            // workload condition's own effect is moot on this path —
-            // the walk-stop latch just halts unreached siblings.
-            crate::session_signals::request_graceful_stop();
+            let cause = if outcome.is_failure() {
+                crate::session_signals::StopCause::Fault
+            } else {
+                crate::session_signals::StopCause::Interrupt
+            };
+            crate::session_signals::request_shell_stop(cause);
             crate::diag!(crate::observer::LogLevel::Warn,
-                "workload stop condition tripped ({reason}) after phase \
+                "scenario stop-on-error ({reason}) after phase \
                  '{phase_name}' — halting remaining walk");
         }
         return Err(format!("phase '{phase_name}' {detail_msg}"));

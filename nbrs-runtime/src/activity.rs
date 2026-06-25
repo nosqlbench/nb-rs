@@ -759,6 +759,20 @@ pub struct Activity {
     /// Shared flag: set to true when a `stop` error handler fires.
     /// All fibers check this and exit their loop when set.
     pub stop_flag: Arc<std::sync::atomic::AtomicBool>,
+    /// Per-execution walk-stop flag (SRD-82 Part 4), cloned from this
+    /// execution's `WorkloadShell`. Distinct from `stop_flag` (which is
+    /// this phase's OWN stop): set when the scenario WALK halts — a
+    /// sibling phase failed (a fault) or a stop condition tripped — so
+    /// in-flight fibers abort cooperatively and a concurrent
+    /// (`Bounded(N>1)`) sibling phase stops instead of draining. `None`
+    /// outside a walk (tests, the library shim) → never aborts.
+    pub walk_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// SRD-82 Part 6 — set ONLY for a daemon phase: the daemon-group
+    /// completion flag, latched by the scenario shell once the scope's
+    /// foreground phases finish. A daemon phase's fibers poll it at their
+    /// cooperative boundaries and exit, so the daemon stops when the
+    /// foreground it shadows completes. `None` for foreground phases.
+    pub daemon_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// First error message that triggered `stop_flag` — captured
     /// once (the first stopping error wins, subsequent fibers'
     /// errors don't overwrite). Surfaced in the phase-level
@@ -996,6 +1010,8 @@ impl Activity {
             source_factory,
             workload_params: Arc::new(params),
             stop_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            walk_stop: None,
+            daemon_stop: None,
             stop_reason: Arc::new(std::sync::Mutex::new(None)),
             phase_errors: Arc::new(std::sync::Mutex::new(Vec::new())),
             validation_frame: Arc::new(std::sync::Mutex::new(None)),
@@ -1005,6 +1021,27 @@ impl Activity {
             memo: Arc::new(arc_swap::ArcSwap::from_pointee(String::new())),
             phase_poll: None,
         }
+    }
+
+    /// Whether this execution's scenario walk has halted (SRD-82 Part
+    /// 4). Fibers poll this at their cooperative boundaries, alongside
+    /// `stop_flag` and `session_signals::stop_requested()`, to abort an
+    /// in-flight phase when a sibling failed or a stop condition
+    /// tripped. `false` when no walk-stop flag is wired (tests / shim).
+    #[inline]
+    pub fn walk_stop_requested(&self) -> bool {
+        self.walk_stop.as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Whether this (daemon) phase's group has signalled completion
+    /// (SRD-82 Part 6) — the scenario shell latches `daemon_stop` once
+    /// the scope's foreground phases finish, and the daemon's fibers poll
+    /// this to exit. `false` for a foreground phase (no flag wired).
+    #[inline]
+    pub fn daemon_stop_requested(&self) -> bool {
+        self.daemon_stop.as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// SRD-32a Push 3 — set the workload-root wrapper-
@@ -2859,8 +2896,17 @@ impl Activity {
             }
         }
 
+        // NOTE: this is the `stopped` RETURN that `run_phase` reads to
+        // decide whether the phase FAILED — so it must reflect only
+        // abnormal stops (the error-handler `stop_flag`, Ctrl-C, a walk
+        // fault). A daemon phase's `daemon_stop` is a CLEAN termination
+        // (Interrupted+Succeeded — the foreground it shadows finished),
+        // so it drives the loop BREAKS below but is deliberately NOT
+        // included here; otherwise a daemon would be recorded as failed
+        // and trip the scenario stop-on-error.
         activity.stop_flag.load(Ordering::Relaxed)
             || crate::session_signals::stop_requested()
+            || activity.walk_stop_requested()
     }
 }
 
@@ -3047,6 +3093,8 @@ async fn executor_task(
     loop {
         if activity.stop_flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
         if crate::session_signals::stop_requested() { break; }
+        if activity.walk_stop_requested() { break; }
+        if activity.daemon_stop_requested() { break; }
         if fiber_stop.load(std::sync::atomic::Ordering::Acquire) { break; }
 
         // Phase 1: RESERVE — CAS on shared cursor, instantaneous.
@@ -3245,6 +3293,8 @@ async fn executor_task(
         for ordinal in range.clone() {
             if activity.stop_flag.load(Ordering::Relaxed) { break; }
             if crate::session_signals::stop_requested() { break; }
+            if activity.walk_stop_requested() { break; }
+            if activity.daemon_stop_requested() { break; }
 
             // Mark op as active from render through result join.
             // "Active" means this fiber is working on an op — resolving

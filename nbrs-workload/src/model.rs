@@ -747,6 +747,15 @@ pub struct WorkloadPhase {
     /// Rate limit (ops/sec). Default unlimited.
     #[serde(default)]
     pub rate: Option<f64>,
+    /// SRD-82 Part 6 — daemon phase. When `true`, this phase runs
+    /// CONCURRENTLY with its foreground sibling phases (off the
+    /// scenario's foreground concurrency budget) and is stopped
+    /// cooperatively when the scope's foreground phases complete (a
+    /// background "daemon unit" at the phase shell). Its own scope gives
+    /// it an independent cursor base. Pair with an open-extent cursor
+    /// (e.g. `until_elapsed`) so it runs for the foreground's duration.
+    #[serde(default)]
+    pub daemon: bool,
     /// Adapter override for this phase.
     #[serde(default)]
     pub adapter: Option<String>,

@@ -2750,24 +2750,38 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // error-rate condition is installed at the workload aggregate.
         let workload_shell = {
             use nbrs_workload::model::ScopeLevel;
-            let declared: Vec<crate::stop_conditions::StopConditionDecl> = workload.stop_when.iter()
+            // SRD-82 Part 3/6 — the scenario-graph default `*Failed:stop`:
+            // any child phase whose outcome is Failed halts the remaining
+            // walk and records `Interrupted + Failed` (a fault). Expressed
+            // as the SRD-83 stop condition `children_failed > 0` with a
+            // `fail` effect, so it rides the same workload-shell mechanism
+            // as declared conditions and reaches concurrent / cross-subtree
+            // siblings the local `Err` cascade can't. First in the list →
+            // a failed child trips it before any declared graceful rule.
+            let mut conditions: Vec<crate::stop_conditions::StopConditionDecl> = vec![
+                crate::stop_conditions::StopConditionDecl {
+                    when: "children_failed > 0".to_string(),
+                    effect: crate::phase_outcome::Outcome::failed(),
+                },
+            ];
+            // Declared workload-level conditions (`each ∋ self|workload`).
+            // A declared trip defaults to a graceful `stop`
+            // (Interrupted+Succeeded): nothing failed, later phases are
+            // deliberately skipped.
+            conditions.extend(workload.stop_when.iter()
                 .filter(|c| c.each.iter().any(|l| matches!(l,
                     ScopeLevel::SelfScope | ScopeLevel::Workload)))
-                // SRD-83 Part 5 — a workload-level trip defaults to a
-                // graceful `stop` (Interrupted+Succeeded): nothing failed,
-                // the later phases are deliberately skipped.
                 .map(|c| crate::stop_conditions::StopConditionDecl {
                     when: c.when.clone(),
                     effect: crate::stop_conditions::StopConditionDecl::effect_from_str(
                         c.effect.as_deref(),
                         crate::phase_outcome::Outcome::interrupted(),
                     ),
-                })
-                .collect();
+                }));
             let set = match scope_tree.nodes[scope_tree.workload_root_idx()].cached_kernel.get() {
-                Some(root_kernel) if !declared.is_empty() => {
+                Some(root_kernel) => {
                     crate::stop_conditions::StopConditionSet::build_for_phase(
-                        root_kernel, None, &declared,
+                        root_kernel, None, &conditions,
                     ).unwrap_or_else(|e| {
                         crate::diag!(crate::observer::LogLevel::Error,
                             "workload stop-condition compile failed: {e}");
@@ -2800,6 +2814,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             phase_param_overrides,
             workload_shell,
             workload_stop_when: workload.stop_when.clone(),
+            daemon_stop: None,
             workload_readouts: workload_readouts.clone(),
             cli_readout_override: cli_readout_override.clone(),
             workload_params: workload_params.clone(),
@@ -5040,7 +5055,16 @@ fn overlay_cli_params(
     cli: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     for (k, v) in cli {
-        base.insert(k.clone(), v.clone());
+        // Coerce the CLI value to the type already inferred for this key
+        // (the declared default, resolved by `parse_workload`), so a
+        // suffixed override like `max_size=10m` re-applies as a number
+        // rather than overwriting the coerced value with raw text. Keys
+        // with no declared default (ad-hoc CLI params) pass through.
+        let coerced = match base.get(k) {
+            Some(existing) => nbrs_workload::magnitude::coerce_param_override(existing, v),
+            None => v.clone(),
+        };
+        base.insert(k.clone(), coerced);
     }
     base
 }
@@ -5616,7 +5640,7 @@ mod tests {
         use std::collections::HashMap;
 
         let phase = WorkloadPhase {
-            cycles: None, concurrency: None, rate: None,
+            cycles: None, concurrency: None, rate: None, daemon: false,
             adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,

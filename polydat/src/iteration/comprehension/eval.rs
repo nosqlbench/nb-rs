@@ -1178,6 +1178,54 @@ fn try_eval_partition_call(
             desugar_partition_spec(&spec, extent, "comprehension source `partitions(...)`")
                 .map(Some)
         }
+        // Profile-driven partition source: `profile_partitions(dataset,
+        // pattern)` cuts the dataset's vector space at the cumulative
+        // sizes of the profiles matching `pattern`, one partition per
+        // masked tier (see `library::vectors::build_profile_partitions`).
+        // Resolved here (like `partitions`/`subdivide`) so the iter-var
+        // type-detects as a partition even when the dataset can't be
+        // const-folded at compile time: a resolvable group yields the
+        // real tiers; an unresolvable one (a compile-time probe, or a
+        // catalog miss surfaced later by the prebuffer) yields a single
+        // placeholder so the iter-var still types as `ext`.
+        "profile_partitions" => {
+            if arg_list.len() != 2 {
+                return Err(format!(
+                    "profile_partitions(dataset, pattern): expected 2 arguments, got {}",
+                    arg_list.len()
+                ));
+            }
+            // Both args are literal strings after `{...}` interpolation;
+            // strip matching outer quotes.
+            let strip = |s: &str| -> String {
+                let s = s.trim();
+                let b = s.as_bytes();
+                if b.len() >= 2 && (b[0] == b'\'' || b[0] == b'"') && b[b.len() - 1] == b[0] {
+                    s[1..s.len() - 1].to_string()
+                } else {
+                    s.to_string()
+                }
+            };
+            let dataset = strip(arg_list[0]);
+            let pattern = strip(arg_list[1]);
+            match crate::library::vectors::load_dataset_group(&dataset) {
+                Ok(group) => {
+                    let parts =
+                        crate::library::vectors::build_profile_partitions(&group, &pattern);
+                    Ok(Some(parts.into_iter().map(Value::from_partition).collect()))
+                }
+                Err(_) => {
+                    // Probe / dataset unavailable: one placeholder so the
+                    // clause's iter-var type-detects as `ext`. Real tiers
+                    // arrive once the catalog resolves the group.
+                    let placeholder = crate::iteration::cursor_partition::Partition {
+                        idx: 0, count: 1, start_ord: 0, end_ord: 1,
+                        start_pct: 0.0, end_pct: 100.0, base_extent: 1,
+                    };
+                    Ok(Some(vec![Value::from_partition(placeholder)]))
+                }
+            }
+        }
         _ => Ok(None),
     }
 }

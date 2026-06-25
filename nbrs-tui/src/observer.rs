@@ -871,7 +871,15 @@ pub fn unreached_phase_exit_code(
     // it like Ctrl-C: no warning, clean exit. The trip was already
     // logged ("workload stop condition tripped … halting remaining
     // walk"), so the skip is not silent.
-    if nbrs_runtime::session_signals::graceful_stop_requested() {
+    //
+    // A FAULT stop (SRD-82 Part 4 `*Failed:stop`) likewise halts the
+    // walk on purpose — the failed phase already drives the non-zero
+    // exit via `run_result`, and its tail was deliberately skipped, so
+    // this check stays quiet rather than re-reporting the tail as
+    // stranded. The "scenario stop-on-error … halting remaining walk"
+    // log already records the skip.
+    if nbrs_runtime::session_signals::graceful_stop_requested()
+        || nbrs_runtime::session_signals::fault_stop_requested() {
         return None;
     }
     eprintln!();
