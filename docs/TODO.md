@@ -15,4 +15,6 @@
   iteration, because iterating over an empty set is just doing nothing, 
   and starting and stopping a deamon thread is meaningless if done for as 
   little time as possible.
-* "daemon no-spam after a for-loop halt" smells ... too special 
+* "daemon no-spam after a for-loop halt" smells ... too special
+* users should not have to use vectordata to tap into vectdordata hosted 
+  datsets with the programmatic access layers

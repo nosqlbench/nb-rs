@@ -1775,6 +1775,20 @@ fn dispatch_comprehension<'a>(
                     .map_err(|e| e.to_string())?),
                 None => None,
             };
+            // SRD-83 — stop iterating once the walk has halted (a prior
+            // iteration's phase failed, a stop condition tripped, or a
+            // sibling subtree faulted). At Bounded(1) the permit acquire
+            // above already waited for the previous iteration to finish,
+            // so its `walk_stop` latch is visible here. Each remaining
+            // step would early-return in `run_scenario_body` anyway, but
+            // breaking ends the sweep immediately instead of spinning
+            // through every remaining iteration (its per-iter scene-node
+            // push + task spawn). Already-in-flight iterations (Bounded
+            // N>1) drain at the join below.
+            if ctx.workload_shell.should_stop() {
+                drop(permit);
+                break;
+            }
             // Structural push: per-iter scene-tree node. Pushed
             // in the dispatcher loop (not the spawned task) so
             // order is deterministic and stable phase seq numbers
