@@ -88,6 +88,9 @@ pub(crate) mod phase_params;
 /// SRD-76 phase outcome disposition (structured
 /// per-phase status + error list).
 pub mod phase_outcome;
+/// SRD-92 / ExecUnification Step 5a — the unified child-stream contract
+/// (`ChildSource` + `Realizability`). Additive; callers land in 5b+.
+pub(crate) mod child_source;
 /// Phase-end trigger registry — content-agnostic callbacks
 /// that fire after every phase completion or failure. Used by
 /// the `watch=plots` / `watch=report` CLI flags to keep an
