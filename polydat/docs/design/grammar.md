@@ -1,5 +1,16 @@
 # The Polydat Grammar — Design
 
+> **Superseded as the entry point (2026-06-28).** The definitive,
+> read-top-to-bottom specification and guide for the Polydat surface
+> language — with worked, machine-verified examples and a programmatic
+> construction companion — is now
+> [`polydat_grammar.md`](polydat_grammar.md). Start there. This document
+> is **retained as the detailed formal appendix**: the verbatim EBNF
+> productions, the complete type-inference rules, the full G-axiom
+> statements, and the G-axiom composition diagram. `polydat_grammar.md`
+> summarizes this material and cross-references back here for the formal
+> detail; it is authoritative on any grammar-structural conflict.
+
 **Subtitle:** The Grammar Substrate.
 
 Formalises polydat's Polydat grammar as a substrate the other

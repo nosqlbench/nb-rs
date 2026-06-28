@@ -15,6 +15,14 @@ node functions.
 The DSL syntax, type system, node contract, wiring model, and
 compilation pipeline now live in the polydat crate:
 
+- [polydat/docs/design/polydat_grammar.md](../../polydat/docs/design/polydat_grammar.md)
+  — **the definitive Polydat surface-language specification and guide**
+  (2026-06-28). For any grammar matter — lexical rules, statement and
+  expression productions, modifiers, cursors (including the `over`
+  clause), `as` casts, type-name vocabulary, projection/round-trip
+  behaviour — this is authoritative. Its examples are machine-verified on
+  every `cargo test` run, with a programmatic AST-builder companion at
+  [polydat_grammar_programmatic.md](../../polydat/docs/design/polydat_grammar_programmatic.md).
 - [polydat/docs/design/language_spec.md](../../polydat/docs/design/language_spec.md)
   — the substrate half of this SRD (moved 2026-05-30 as part of
   the import-first reorganization; see
@@ -23,8 +31,12 @@ compilation pipeline now live in the polydat crate:
 This file retains only the **nbrs-side framing** — why GK
 is the unified access surface for nbrs workloads, how nbrs
 selects outputs, how the Polydat kernel acts as the unified
-state holder for inter-op flow, op-level binding
-conventions, and cursor declarations.
+state holder for inter-op flow, and op-level binding
+conventions. Its grammar-facing material (cursor declarations,
+modifiers) is now specified definitively in
+[polydat_grammar.md](../../polydat/docs/design/polydat_grammar.md); the
+prose below is retained for the host-integration framing and resolves to
+that spec on any grammar-structural conflict.
 
 ---
 

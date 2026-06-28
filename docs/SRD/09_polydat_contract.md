@@ -44,7 +44,7 @@ framing**; the authoritative substrate design is in `polydat/docs/`. Map:
 
 | docs/SRD (nbrs integration) | polydat/docs substrate (authoritative) |
 |---|---|
-| [10 Language](10_polydat_language.md) (nbrs-side: unified access surface, reification, op-level bindings) | `design/grammar.md`, `design/language_spec.md`, `design/graph_compiler.md` |
+| [10 Language](10_polydat_language.md) (nbrs-side: unified access surface, reification, op-level bindings) | **`design/polydat_grammar.md`** (definitive surface-language spec+guide; `design/grammar.md` is its formal appendix), `design/language_spec.md`, `design/graph_compiler.md` |
 | [11 Evaluation](11_polydat_evaluation.md) (nbrs-side: FiberBuilder, cursor-driven eval) | `design/evaluation_model.md`, `design/runtime_model.md` |
 | [12 Stdlib](12_polydat_stdlib.md) *(stub)* | `design/library_catalog.md` |
 | [13 Modules](13_polydat_modules.md) (nbrs-side: diagnostic event stream) | `design/module_system.md` |

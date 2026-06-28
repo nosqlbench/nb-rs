@@ -47,7 +47,7 @@ for the public surface nb-rs consumes and the map into `polydat/docs/`. Several 
 | # | Document | Scope |
 |---|----------|-------|
 | 09 | [Polydat Contract Surface](09_polydat_contract.md) | **Front door:** the public boundary nb-rs consumes (`PolydatKernel`, `Value`, `compile_polydat`, `PolydatMatter`, `audit`, …) + the map from each polydat-integration SRD to its authoritative `polydat/docs/` home. Pillar 1 for the exemplar |
-| 10 | [GK Language and Compilation](10_polydat_language.md) | DSL syntax, compiler pipeline, node wiring, type system, op-level bindings, cursor declarations, **Polydat as the unified access surface for runtime state** |
+| 10 | [GK Language and Compilation](10_polydat_language.md) | nbrs-side framing only (output selection, unified state holder, op-level bindings); **the definitive surface-language grammar spec+guide is [polydat_grammar.md](../../polydat/docs/design/polydat_grammar.md)**, with **Polydat as the unified access surface for runtime state** |
 | 11 | [GK Evaluation Model](11_polydat_evaluation.md) | Kernel/state split, input spaces, two lifecycles (effectively-const / dynamic), provenance-based invalidation, const-binding contract |
 | 12 | [GK Standard Library](12_polydat_stdlib.md) | Node catalog, type signatures, P3 JIT eligibility, runtime context nodes |
 | 13 | [GK Modules](13_polydat_modules.md) | File-based modules, inlining resolution, compiler diagnostic event stream |

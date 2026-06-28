@@ -106,7 +106,12 @@ fn pp_extern_port(p: &ExternPort) -> String {
 }
 
 fn pp_cursor(c: &CursorDecl) -> String {
-    format!("cursor {} = {}", c.name, pp_expr(&c.constructor))
+    let mut out = format!("cursor {} = {}", c.name, pp_expr(&c.constructor));
+    if let Some(over) = &c.over {
+        out.push_str(" over ");
+        out.push_str(&pp_expr(over));
+    }
+    out
 }
 
 fn pp_module_def(m: &ModuleDef) -> String {
@@ -281,5 +286,28 @@ table := first(profiles)
     #[test]
     fn round_trip_array_literal() {
         round_trip("const weights := [60.0, 20.0, 15.0, 5.0]\n");
+    }
+
+    #[test]
+    fn round_trip_cursor() {
+        round_trip("cursor users = range(0, 1000000)\n");
+    }
+
+    #[test]
+    fn round_trip_cursor_with_over() {
+        // The `over <expr>` partition clause (SRD-71) must survive
+        // projection — pp_cursor emits it so over-bearing cursors
+        // round-trip faithfully.
+        round_trip("cursor q = range(0, 100) over p\n");
+    }
+
+    #[test]
+    fn pp_cursor_emits_over_clause() {
+        let ast = parse("cursor q = range(0, 100) over p\n");
+        let printed = pp_file(&ast);
+        assert!(
+            printed.contains(" over p"),
+            "projected cursor must retain its `over` clause, got:\n{printed}"
+        );
     }
 }
