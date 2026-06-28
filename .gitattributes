@@ -1,0 +1,34 @@
+# Line-ending policy for the whole repo.
+#
+# `text=auto eol=lf` makes Git store every text file with LF in the
+# repository AND check it out with LF in the working tree on *every*
+# platform — Linux and Windows alike. Because .gitattributes takes
+# precedence over each machine's `core.autocrlf` / `core.eol`, this
+# settles the policy in the repo instead of per-developer config, which
+# is what eliminates the "LF will be replaced by CRLF" warnings.
+* text=auto eol=lf
+
+# Known binaries — never normalize, never diff as text.
+*.ttf     binary
+*.otf     binary
+*.woff    binary
+*.woff2   binary
+*.a       binary
+*.so      binary
+*.dll     binary
+*.lib     binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.pdf     binary
+*.gz      binary
+*.zip     binary
+*.parquet binary
+
+# (No .bat/.cmd/.ps1 are tracked. If Windows-only batch scripts are ever
+# added and misbehave with LF, pin them here, e.g.:
+#   *.bat text eol=crlf
+#   *.cmd text eol=crlf
+# )
