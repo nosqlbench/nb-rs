@@ -23,6 +23,8 @@
 
 use std::ops::Range;
 
+use polydat::iteration::source::DataSource;
+
 /// How knowable a [`ChildSource`]'s child set is — a graded PROPERTY the
 /// executor reads to steer (03b). Cumulative ladder (higher subsumes lower):
 /// - `Dynamic`   — pull-only; count unknown ahead (poll / open-ended).
@@ -83,50 +85,81 @@ pub trait ChildSource {
     }
 }
 
+/// SRD-92 / ExecUnification Step 5b — `ChildSource` over a realized,
+/// distinct-sub-unit list (the scenario node slice / comprehension instances):
+/// yields `Node(0..len)` in declaration order. `Realizable` — the full set is
+/// known ahead (pre-map / dryrun / plan). The executor (5d) resolves `Node(i)`
+/// to `nodes[i]` + its positional scope (as today).
+pub struct CountedSource {
+    next: usize,
+    len: usize,
+}
+
+impl CountedSource {
+    pub fn new(len: usize) -> Self {
+        Self { next: 0, len }
+    }
+}
+
+impl ChildSource for CountedSource {
+    fn poll_next(&mut self) -> Option<Child> {
+        if self.next >= self.len {
+            return None;
+        }
+        let i = self.next;
+        self.next += 1;
+        Some(Child::Node(i))
+    }
+    fn realizability(&self) -> Realizability {
+        Realizability::Realizable
+    }
+    fn extent(&self) -> Option<u64> {
+        Some(self.len as u64)
+    }
+}
+
+/// SRD-92 / ExecUnification Step 5b — `ChildSource` over a polydat `DataSource`
+/// cursor (the per-cycle / dataset stream). `poll_next` IS `reserve(stride)`,
+/// yielding an ordinal `Range` over the SHARED body — so it never materializes N
+/// units. `Rangeable` when the source has a known `extent` (bounded → plannable),
+/// else `Dynamic` (unbounded → pull-only for planning). Holds a boxed source,
+/// matching the as-built `DataSourceFactory::create_reader()` output (5e wires
+/// the `FiberPool` onto it).
+pub struct CursorSource {
+    source: Box<dyn DataSource>,
+    stride: usize,
+}
+
+impl CursorSource {
+    pub fn new(source: Box<dyn DataSource>, stride: usize) -> Self {
+        Self { source, stride }
+    }
+}
+
+impl ChildSource for CursorSource {
+    fn poll_next(&mut self) -> Option<Child> {
+        self.source.reserve(self.stride).map(Child::Ordinals)
+    }
+    fn realizability(&self) -> Realizability {
+        if self.source.extent().is_some() {
+            Realizability::Rangeable
+        } else {
+            Realizability::Dynamic
+        }
+    }
+    fn extent(&self) -> Option<u64> {
+        self.source.extent()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A realized, distinct-sub-unit source (the scenario/comprehension shape).
-    struct VecSource(std::vec::IntoIter<usize>, u64);
-    impl ChildSource for VecSource {
-        fn poll_next(&mut self) -> Option<Child> {
-            self.0.next().map(Child::Node)
-        }
-        fn realizability(&self) -> Realizability {
-            Realizability::Realizable
-        }
-        fn extent(&self) -> Option<u64> {
-            Some(self.1)
-        }
-    }
-
-    /// A ranged, shared-body source (the cursor/cycle shape) — `poll_next`
-    /// reserves a stride-2 ordinal range, the way the cursor does.
-    struct RangeSource {
-        next: u64,
-        end: u64,
-    }
-    impl ChildSource for RangeSource {
-        fn poll_next(&mut self) -> Option<Child> {
-            if self.next >= self.end {
-                return None;
-            }
-            let lo = self.next;
-            self.next = (lo + 2).min(self.end);
-            Some(Child::Ordinals(lo..self.next))
-        }
-        fn realizability(&self) -> Realizability {
-            Realizability::Rangeable
-        }
-        fn extent(&self) -> Option<u64> {
-            Some(self.end)
-        }
-    }
+    use polydat::iteration::source::{DataSourceFactory, RangeSourceFactory};
 
     #[test]
-    fn realizable_vec_source_drains_in_order() {
-        let mut s = VecSource(vec![0, 1, 2].into_iter(), 3);
+    fn counted_source_is_realizable_node_indices() {
+        let mut s = CountedSource::new(3);
         assert_eq!(s.realizability(), Realizability::Realizable);
         assert_eq!(s.extent(), Some(3));
         let mut got = vec![];
@@ -137,9 +170,12 @@ mod tests {
     }
 
     #[test]
-    fn rangeable_source_yields_ordinal_ranges() {
-        let mut s = RangeSource { next: 0, end: 5 };
+    fn cursor_source_over_range_is_rangeable_and_yields_ordinals() {
+        // poll_next IS reserve(stride): stride-2 over [0,5) → 0..2, 2..4, 4..5.
+        let f = RangeSourceFactory::new(0, 5);
+        let mut s = CursorSource::new(f.create_reader(), 2);
         assert_eq!(s.realizability(), Realizability::Rangeable);
+        assert_eq!(s.extent(), Some(5));
         let mut ranges = vec![];
         while let Some(Child::Ordinals(r)) = s.poll_next() {
             ranges.push(r);
