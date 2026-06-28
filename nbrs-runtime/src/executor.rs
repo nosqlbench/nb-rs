@@ -987,8 +987,17 @@ async fn run_scenario_body(
     // SRD-92 two-latch fold — the validity latch: the first FAILED child's
     // reason, set independent of the handler's stop decision.
     let mut any_failed_reason: Option<String> = None;
-    for (i, node) in nodes.iter().enumerate() {
+    // SRD-92 Step 5d — the foreground children now come through the unified
+    // `ChildSource` contract: a realized, distinct-sub-unit list → `Realizable`
+    // → `select_drive` = `BoundedSpawn` (this very JoinSet path). `poll_next`
+    // yields `Node(i)` in declaration order — behaviour-identical to the old
+    // `nodes.iter().enumerate()`; the walker resolves `nodes[i]` by position.
+    use crate::child_source::{select_drive, Child, ChildSource, CountedSource, Drive};
+    let mut foreground = CountedSource::new(nodes.len());
+    debug_assert_eq!(select_drive(foreground.realizability()), Drive::BoundedSpawn);
+    while let Some(Child::Node(i)) = foreground.poll_next() {
         if daemon_flags[i] { continue; }  // daemons already spawned off-budget
+        let node = &nodes[i];
         let node_scope_idx = child_scope_indices[i];
         let permit = match sem.as_ref() {
             Some(s) => match s.clone().acquire_owned().await {
@@ -2060,7 +2069,18 @@ fn dispatch_comprehension<'a>(
         // order in which iterations are LOFTED for execution
         // is the deterministic comprehension-step order.
         let mut set = tokio::task::JoinSet::new();
-        for step in steps {
+        // SRD-92 Step 5d — drive the comprehension iterations through the
+        // unified `ChildSource` contract: a realized instance list → `Realizable`
+        // → `BoundedSpawn`. The `CountedSource` gates the per-iteration drive
+        // (one `poll_next` per instance, in declaration order); the owned
+        // `IterationStep`s are consumed in lockstep (no extra clone — identical
+        // to the old `for step in steps`).
+        use crate::child_source::{select_drive, Child, ChildSource, CountedSource, Drive};
+        let mut csrc = CountedSource::new(steps.len());
+        debug_assert_eq!(select_drive(csrc.realizability()), Drive::BoundedSpawn);
+        let mut steps_iter = steps.into_iter();
+        while let Some(Child::Node(_)) = csrc.poll_next() {
+            let step = steps_iter.next().expect("CountedSource length matches steps");
             let permit = match sem.as_ref() {
                 Some(s) => match s.clone().acquire_owned().await {
                     Ok(p) => Some(p),
