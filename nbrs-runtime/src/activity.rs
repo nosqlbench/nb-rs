@@ -2929,12 +2929,11 @@ impl Activity {
         // abnormal stops (the error-handler `stop_flag`, Ctrl-C, a walk
         // fault). A daemon phase's `daemon_stop` is a CLEAN termination
         // (Interrupted+Succeeded — the foreground it shadows finished),
-        // so it drives the loop BREAKS below but is deliberately NOT
-        // included here; otherwise a daemon would be recorded as failed
-        // and trip the scenario stop-on-error.
-        activity.stop_flag.load(Ordering::Relaxed)
-            || crate::session_signals::stop_requested()
-            || activity.walk_stop_requested()
+        // so it drives the loop BREAKS below but is deliberately NOT a
+        // fault. The daemon exclusion lives once in `StopView::abnormal`
+        // (session_signals.rs) — this delegates to it rather than
+        // re-deriving the rule (was a hand-rolled copy; SRD-92 dedup).
+        activity.stop_view().abnormal()
     }
 }
 
