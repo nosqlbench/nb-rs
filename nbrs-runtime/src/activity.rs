@@ -2495,7 +2495,6 @@ impl Activity {
                         crate::diag!(crate::observer::LogLevel::Error,
                             "daemon op '{op_name}' errored: [{}] {}",
                             inner.error_name, inner.message);
-                        activity.stop_flag.store(true, Ordering::Relaxed);
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
@@ -2510,7 +2509,6 @@ impl Activity {
                         crate::diag!(crate::observer::LogLevel::Error,
                             "daemon op '{op_name}': did not acknowledge stop \
                              within grace window — phase fails");
-                        activity.stop_flag.store(true, Ordering::Relaxed);
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
@@ -2525,7 +2523,6 @@ impl Activity {
                         activity.metrics.daemon_errors_total.inc();
                         crate::diag!(crate::observer::LogLevel::Error,
                             "daemon op '{op_name}' panicked: {msg}");
-                        activity.stop_flag.store(true, Ordering::Relaxed);
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
@@ -2534,6 +2531,13 @@ impl Activity {
                             ));
                         }
                     }
+                }
+                // SRD-92: the "does this exit fail the phase?" rule lives
+                // once in the DaemonExit taxonomy's own classifier — gate
+                // the shared stop-flag latch on it rather than re-encoding
+                // which variants fail by which arms call store().
+                if exit.is_phase_error() {
+                    activity.stop_flag.store(true, Ordering::Relaxed);
                 }
             }
         }

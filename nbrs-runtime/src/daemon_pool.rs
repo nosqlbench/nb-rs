@@ -75,7 +75,6 @@ impl DaemonExit {
     /// Whether this outcome should fail the enclosing phase.
     /// Clean completions and clean cancellations don't; errors,
     /// timeouts, and panics do.
-    #[allow(dead_code)] // WIP: SRD-82/83 daemon-exit → phase-failure wiring
     pub fn is_phase_error(&self) -> bool {
         matches!(self,
             DaemonExit::Errored(_)
