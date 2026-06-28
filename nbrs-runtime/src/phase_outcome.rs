@@ -29,6 +29,7 @@
 //!   error classes that lands here.
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Per-phase terminal status. Mutually exclusive — a phase
 /// ends in exactly one of these states.
@@ -130,12 +131,37 @@ pub enum Validity {
     Failed,
 }
 
+/// SRD-92 / ExecUnification — the opaque return **payload** a unit may carry
+/// on its [`Outcome`], above the leaf-projection boundary.
+///
+/// A scaffold-owned **marker** (no methods yet — the loop/poll read-path is a
+/// later step): the op leaf fills it, aggregates leave it `None`. Kept neutral
+/// (not the adapter's [`crate::adapter::ResultBody`]) so the universal return
+/// type does not depend on the adapter result trait, and a future aggregate
+/// fold-summary can implement `Payload` honestly without faking row-count
+/// methods. `Send + Sync + 'static` keeps [`Outcome`] spawn / `ArcSwap` /
+/// `Mutex` safe; `Debug` keeps `Outcome`'s derive working.
+pub trait Payload: Send + Sync + std::fmt::Debug + 'static {}
+
+/// Every adapter [`crate::adapter::ResultBody`] is a [`Payload`]. A **blanket**
+/// impl (not a subtrait) so it covers `ResultBody` impls in the adapter crates
+/// and tests too with **zero cross-crate churn** — the impl lives here, where
+/// `Payload` is defined. A neutral fold-summary type may still `impl Payload`
+/// directly (no overlap, since it is not a `ResultBody`). Trade-off: a blanket
+/// gives no `dyn`-upcasting, so Step 2 lifts the *erased* `Box<dyn ResultBody>`
+/// via a thin wrapper rather than an `Arc<dyn ResultBody> -> Arc<dyn Payload>`
+/// coercion.
+impl<T: ?Sized + crate::adapter::ResultBody + 'static> Payload for T {}
+
 /// SRD-82 Part 1 — the two-axis result of any execution shell, and the
 /// `effect` of an SRD-83 stop condition. The four meaningful
 /// quadrants: `Completed+Succeeded` (clean), `Completed+Failed` (ran
 /// fully, garbage), `Interrupted+Succeeded` (partial, re-usable),
 /// `Interrupted+Failed` (partial, discard).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `PartialEq` is hand-written (control facts only); `Eq` is dropped — see the
+/// `impl PartialEq` below.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Outcome {
     pub disposition: Disposition,
     pub validity: Validity,
@@ -147,11 +173,19 @@ pub struct Outcome {
     /// when present, so axis-only `Outcome` JSON round-trips unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// SRD-92 / ExecUnification — the optional opaque return **payload** a unit
+    /// may carry above the leaf-projection boundary (the op leaf fills it via
+    /// [`Outcome::with_payload`]; aggregates leave it `None`). `Arc` (not `Box`)
+    /// so `Outcome` stays `Clone`; `#[serde(skip)]` because it is runtime-only,
+    /// so axis-only JSON round-trips unchanged. Excluded from `PartialEq` — it
+    /// is data, not control identity. Its *contents* are the deferred data layer.
+    #[serde(skip)]
+    pub payload: Option<Arc<dyn Payload>>,
 }
 
 impl Outcome {
     pub const fn new(disposition: Disposition, validity: Validity) -> Self {
-        Self { disposition, validity, reason: None }
+        Self { disposition, validity, reason: None, payload: None }
     }
     /// Ran fully, result trustworthy.
     pub const fn completed() -> Self {
@@ -161,6 +195,12 @@ impl Outcome {
     /// / a `StopCause::Fault`.
     pub const fn failed() -> Self {
         Self::new(Disposition::Interrupted, Validity::Failed)
+    }
+    /// SRD-92 — ran fully but the result is untrustworthy (a ran-and-errored
+    /// op): `Completed+Failed`. Distinct from [`Outcome::failed`]
+    /// (`Interrupted+Failed` — stopped early by a fault).
+    pub const fn completed_failed() -> Self {
+        Self::new(Disposition::Completed, Validity::Failed)
     }
     /// Stopped early, partial result usable — the SRD-83 `stop` effect
     /// / a `StopCause::Interrupt` (e.g. user Ctrl-C, budget met).
@@ -181,6 +221,15 @@ impl Outcome {
         self
     }
 
+    /// SRD-92 / ExecUnification — attach the opaque return [`Payload`] (the op
+    /// leaf's body, lifted at the projection boundary in a later step).
+    /// Aggregates never call this — the payload rides the leaf's `Outcome` and
+    /// is ignored by the fold.
+    pub fn with_payload(mut self, payload: Arc<dyn Payload>) -> Self {
+        self.payload = Some(payload);
+        self
+    }
+
     /// The result is not trustworthy (the session-level red mark).
     pub fn is_failure(&self) -> bool {
         matches!(self.validity, Validity::Failed)
@@ -197,6 +246,21 @@ impl Outcome {
             (Disposition::Interrupted, Validity::Succeeded) => PhaseStatus::CursorSuspended,
             (_, Validity::Succeeded) => PhaseStatus::Completed,
         }
+    }
+}
+
+/// SRD-92 / ExecUnification — equality over the CONTROL FACTS only
+/// (`disposition`, `validity`, `reason`). The `payload` is intentionally
+/// excluded: it is data, not control identity, so two outcomes that differ
+/// only in their payload compare equal. Do NOT "fix" this to compare payloads —
+/// `dyn Payload` is not `PartialEq`, and aggregation / tests key on control
+/// facts, never the payload. (`Eq` is dropped: it is unused — no
+/// `HashSet`/`HashMap<Outcome>` exists — and a `dyn` field can't satisfy it.)
+impl PartialEq for Outcome {
+    fn eq(&self, other: &Self) -> bool {
+        self.disposition == other.disposition
+            && self.validity == other.validity
+            && self.reason == other.reason
     }
 }
 

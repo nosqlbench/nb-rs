@@ -655,24 +655,41 @@ impl<'p> ExecShell for PhaseShell<'p> {
 /// projection-boundary). This is the "map once at the bottom" — an op
 /// dispenser's `Result<OpResult, ExecutionError>` projected to the
 /// universal two-axis `Outcome`: a skip is `Skipped`, a clean result is
-/// `Completed + Succeeded`, an error is `failed()`. The op-specific payload
-/// (`OpResult.body: Box<dyn ResultBody>`) stays strictly below this
-/// projection. Consumed when the activity flows per-op Outcomes (next
-/// steps); the `StanzaShell` (the per-cycle op chain) likewise folds its
-/// ops' projections inside the activity rather than as a walker shell.
+/// `Completed + Succeeded`, and a ran-and-errored op is `Completed + Failed`
+/// (it *ran*; the result is untrustworthy — `Interrupted` is reserved for
+/// cancelled-by-abort; the message rides `reason`). The op-specific payload
+/// (`OpResult.body`) is **lifted into** the `Outcome` payload slot via
+/// `OpBodyPayload` (SRD-92 Step 2). Consumed when the activity flows per-op
+/// Outcomes (next steps); the `StanzaShell` (the per-cycle op chain) likewise
+/// folds its ops' projections inside the activity rather than as a walker shell.
+///
+/// `OpBodyPayload` wraps the leaf's *erased* result body so it can ride the
+/// payload slot as `Arc<dyn Payload>` — needed because the `ResultBody ->
+/// Payload` bridge is a blanket impl (no `dyn`-upcast off a `Box<dyn
+/// ResultBody>`). The body is moved in (no copy); one `Arc` alloc, only when a
+/// body is present. Contents stay deferred (the data layer reads it later).
+#[derive(Debug)]
+#[allow(dead_code)] // WIP SRD-92.
+struct OpBodyPayload(Box<dyn crate::adapter::ResultBody>);
+impl crate::phase_outcome::Payload for OpBodyPayload {}
+
 #[allow(dead_code)] // WIP SRD-92.
 struct OpShell;
 
 #[allow(dead_code)]
 impl OpShell {
     fn project(
-        res: &Result<crate::adapter::OpResult, crate::adapter::ExecutionError>,
+        res: Result<crate::adapter::OpResult, crate::adapter::ExecutionError>,
     ) -> crate::phase_outcome::Outcome {
         use crate::phase_outcome::Outcome;
+        use std::sync::Arc;
         match res {
             Ok(r) if r.skipped => Outcome::skipped(),
-            Ok(_) => Outcome::completed(),
-            Err(_) => Outcome::failed(),
+            Ok(r) => match r.body {
+                Some(body) => Outcome::completed().with_payload(Arc::new(OpBodyPayload(body))),
+                None => Outcome::completed(),
+            },
+            Err(e) => Outcome::completed_failed().with_reason(e.to_string()),
         }
     }
 }
@@ -683,16 +700,34 @@ mod srd92_leaf_shell_tests {
     use crate::phase_outcome::{Disposition, Validity};
 
     #[test]
-    fn op_shell_projects_skip_vs_clean() {
-        let clean: Result<crate::adapter::OpResult, crate::adapter::ExecutionError> =
-            Ok(crate::adapter::OpResult::default());
-        let o = OpShell::project(&clean);
+    fn op_shell_projects_quadrants_and_payload() {
+        use crate::adapter::{AdapterError, ExecutionError, OpResult, TextBody};
+
+        // clean, no body -> Completed+Succeeded, no payload
+        let o = OpShell::project(Ok(OpResult::default()));
         assert_eq!(o.disposition, Disposition::Completed);
         assert_eq!(o.validity, Validity::Succeeded);
+        assert!(o.payload.is_none());
 
-        let skip: Result<crate::adapter::OpResult, crate::adapter::ExecutionError> =
-            Ok(crate::adapter::OpResult::skipped());
-        assert_eq!(OpShell::project(&skip).disposition, Disposition::Skipped);
+        // skipped -> Skipped
+        assert_eq!(OpShell::project(Ok(OpResult::skipped())).disposition, Disposition::Skipped);
+
+        // ran-and-errored -> Completed+Failed (NOT Interrupted), message on reason
+        let err = ExecutionError::Op(AdapterError {
+            error_name: "test".into(),
+            message: "boom".into(),
+            retryable: false,
+        });
+        let o = OpShell::project(Err(err));
+        assert_eq!(o.disposition, Disposition::Completed);
+        assert_eq!(o.validity, Validity::Failed);
+        assert!(o.reason.as_deref().unwrap_or_default().contains("boom"));
+
+        // clean WITH a body -> payload populated
+        let r = OpResult { body: Some(Box::new(TextBody("hi".into()))), skipped: false };
+        let o = OpShell::project(Ok(r));
+        assert_eq!(o.disposition, Disposition::Completed);
+        assert!(o.payload.is_some());
     }
 }
 
