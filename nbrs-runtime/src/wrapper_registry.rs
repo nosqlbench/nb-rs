@@ -39,6 +39,19 @@ impl std::fmt::Display for WrapperName {
     }
 }
 
+/// SRD-92 / ExecUnification — the execution-graph level(s) a wrapper is legal
+/// at. Today every wrapper is op-level; the unified scaffold (Step 5) reads
+/// this to place a layer at the right level once layering goes cross-level.
+/// Kept decoupled from executor's WIP `ShellKind` until the unification lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrapperLevel {
+    Op,
+    Stanza,
+    Phase,
+    Scenario,
+    Session,
+}
+
 /// One entry per registered wrapper. Entries are submitted at
 /// link time via `inventory::submit!` and collected at startup
 /// into the [`WrapperRegistry`] view.
@@ -109,9 +122,47 @@ pub struct WrapperRegistration {
     /// error-context dumps. This describes the *wrapper's
     /// contribution* for init-time diagnostics.
     pub describe_assignment: fn(&ParsedOp) -> Option<String>,
+
+    /// SRD-92 / ExecUnification — the execution-graph level(s) this wrapper is
+    /// legal at. Every current wrapper is `&[WrapperLevel::Op]`; the unified
+    /// scaffold reads this to know where a layer may sit. Carried as metadata
+    /// now; consumed when layering goes cross-level (Step 5).
+    pub levels: &'static [WrapperLevel],
 }
 
 inventory::collect!(WrapperRegistration);
+
+impl WrapperRegistration {
+    /// SRD-92 — whether this wrapper is legal at `level`.
+    pub fn applies_at(&self, level: WrapperLevel) -> bool {
+        self.levels.contains(&level)
+    }
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+
+    fn no_trigger(_: &ParsedOp) -> bool { false }
+    fn no_describe(_: &ParsedOp) -> Option<String> { None }
+
+    #[test]
+    fn applies_at_reads_declared_levels() {
+        let reg = WrapperRegistration {
+            name: WrapperName::new("t"),
+            owned_fields: &[],
+            triggers: no_trigger,
+            requires_inner: &[],
+            forbids_outer: &[],
+            mutually_exclusive_with: &[],
+            describe_assignment: no_describe,
+            levels: &[WrapperLevel::Op, WrapperLevel::Phase],
+        };
+        assert!(reg.applies_at(WrapperLevel::Op));
+        assert!(reg.applies_at(WrapperLevel::Phase));
+        assert!(!reg.applies_at(WrapperLevel::Session));
+    }
+}
 
 /// Live view over every registered wrapper. Built once at
 /// startup from the `inventory` collection.

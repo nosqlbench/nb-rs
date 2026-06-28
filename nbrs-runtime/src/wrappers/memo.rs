@@ -57,6 +57,7 @@ inventory::submit! {
         forbids_outer: &[],
         mutually_exclusive_with: &[],
         describe_assignment,
+        levels: &[crate::wrapper_registry::WrapperLevel::Op],
     }
 }
 
