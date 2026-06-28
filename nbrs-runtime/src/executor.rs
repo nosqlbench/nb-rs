@@ -613,6 +613,62 @@ fn join_outcome(
     }
 }
 
+/// SRD-92 two-latch fold step. Updates **two independent latches** from one
+/// joined child:
+/// - `any_failed_reason` — the validity latch: set by ANY failed child
+///   (`is_failure`), *independent* of the stop decision, so a non-stop policy
+///   that lets a failed child through still surfaces as `Completed+Failed`
+///   rather than a lost failure.
+/// - `first_failure` — the cascade-stop trigger + reason: set only when the
+///   handler decides to `Stop` (drives the dispatch break + the `Interrupted`
+///   disposition), exactly as before.
+/// The aggregate reads the two latches separately when building its `Outcome`.
+fn fold_child(
+    res: Result<crate::phase_outcome::Outcome, tokio::task::JoinError>,
+    handler: &ShellHandler,
+    first_failure: &mut Option<String>,
+    any_failed_reason: &mut Option<String>,
+) {
+    let (child, reason) = join_outcome(res);
+    if child.is_failure() && any_failed_reason.is_none() {
+        *any_failed_reason = reason.clone();
+    }
+    if matches!(handler.decide(&child), ShellAction::Stop) && first_failure.is_none() {
+        *first_failure = reason;
+    }
+}
+
+/// SRD-92 two-latch aggregate fold → the shell's two-axis `Outcome`.
+/// `disposition` and `validity` are INDEPENDENT axes:
+/// - `validity` = `Failed` iff a child failed — via the cascade-stop reason
+///   (`first_failure`) OR the validity latch (`any_failed_reason`), so a
+///   non-stop policy that let a failed child through still surfaces (the
+///   `Completed+Failed` quadrant), rather than a lost failure.
+/// - `disposition` = `Interrupted` iff dispatch was CUT SHORT (a handler
+///   cascade-stop or a workload-shell halt), else `Completed`.
+/// Quadrants: stop-policy fail → `Interrupted+Failed`; non-stop fail (all ran)
+/// → `Completed+Failed`; workload halt → `Interrupted+Succeeded`; clean →
+/// `Completed+Succeeded`. (`to_status()` is `Failed` for either failed quadrant.)
+fn fold_aggregate(
+    first_failure: Option<String>,
+    any_failed_reason: Option<String>,
+    should_stop: bool,
+) -> crate::phase_outcome::Outcome {
+    use crate::phase_outcome::{Disposition, Outcome, Validity};
+    let cut_short = first_failure.is_some() || should_stop;
+    let disposition = if cut_short { Disposition::Interrupted } else { Disposition::Completed };
+    let validity = if first_failure.is_some() || any_failed_reason.is_some() {
+        Validity::Failed
+    } else {
+        Validity::Succeeded
+    };
+    let mut outcome = Outcome::new(disposition, validity);
+    if let Some(reason) = first_failure.or(any_failed_reason) {
+        outcome = outcome.with_reason(reason);
+    }
+    outcome
+}
+
 /// SRD-92 — the PHASE leaf shell: the walker's leaf, an [`ExecShell`] (the
 /// universal marker, NOT [`CompositeShell`] — a phase has no node list,
 /// Decision B). Carries the phase name; `run` drives the phase's `Activity`
@@ -728,6 +784,25 @@ mod srd92_leaf_shell_tests {
         let o = OpShell::project(Ok(r));
         assert_eq!(o.disposition, Disposition::Completed);
         assert!(o.payload.is_some());
+    }
+
+    #[test]
+    fn fold_aggregate_two_latch_quadrants() {
+        // stop-policy fail: cascade reason + cut short -> Interrupted+Failed
+        let o = fold_aggregate(Some("boom".into()), Some("boom".into()), false);
+        assert_eq!((o.disposition, o.validity), (Disposition::Interrupted, Validity::Failed));
+        assert_eq!(o.reason.as_deref(), Some("boom"));
+        // NON-STOP fail (the fix): a failed child the handler let through, all
+        // ran -> Completed+Failed (failure NOT lost), reason carried.
+        let o = fold_aggregate(None, Some("soft".into()), false);
+        assert_eq!((o.disposition, o.validity), (Disposition::Completed, Validity::Failed));
+        assert_eq!(o.reason.as_deref(), Some("soft"));
+        // workload halt, no failure -> Interrupted+Succeeded
+        let o = fold_aggregate(None, None, true);
+        assert_eq!((o.disposition, o.validity), (Disposition::Interrupted, Validity::Succeeded));
+        // all clean -> Completed+Succeeded
+        let o = fold_aggregate(None, None, false);
+        assert_eq!((o.disposition, o.validity), (Disposition::Completed, Validity::Succeeded));
     }
 }
 
@@ -909,6 +984,9 @@ async fn run_scenario_body(
     // The first child the handler decided to STOP on (its reason). `Outcome`
     // carries no message, so the reason rides alongside.
     let mut first_failure: Option<String> = None;
+    // SRD-92 two-latch fold — the validity latch: the first FAILED child's
+    // reason, set independent of the handler's stop decision.
+    let mut any_failed_reason: Option<String> = None;
     for (i, node) in nodes.iter().enumerate() {
         if daemon_flags[i] { continue; }  // daemons already spawned off-budget
         let node_scope_idx = child_scope_indices[i];
@@ -935,13 +1013,8 @@ async fn run_scenario_body(
         // the only difference is how many in-flight tasks the
         // cap allows.
         while let Some(res) = set.try_join_next() {
-            // HANDLE: feed each joined child through the scenario handler.
-            let (child, reason) = join_outcome(res);
-            if matches!(handler.decide(&child), ShellAction::Stop)
-                && first_failure.is_none()
-            {
-                first_failure = reason;
-            }
+            // HANDLE + two-latch fold: cascade-stop decision + validity latch.
+            fold_child(res, handler, &mut first_failure, &mut any_failed_reason);
         }
         if first_failure.is_some() {
             // Drop the permit we just acquired — it would
@@ -987,12 +1060,7 @@ async fn run_scenario_body(
     // Drain any still-running tasks (those spawned before the stop was
     // observed), feeding each through the same handler.
     while let Some(res) = set.join_next().await {
-        let (child, reason) = join_outcome(res);
-        if matches!(handler.decide(&child), ShellAction::Stop)
-            && first_failure.is_none()
-        {
-            first_failure = reason;
-        }
+        fold_child(res, handler, &mut first_failure, &mut any_failed_reason);
     }
     // SRD-82 Part 6 — the foreground body has finished: latch the daemon
     // group's completion flag (each daemon phase's fibers poll it and
@@ -1002,28 +1070,11 @@ async fn run_scenario_body(
     if any_daemon {
         daemon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         while let Some(res) = daemon_set.join_next().await {
-            let (child, reason) = join_outcome(res);
-            if matches!(handler.decide(&child), ShellAction::Stop)
-                && first_failure.is_none()
-            {
-                first_failure = reason;
-            }
+            fold_child(res, handler, &mut first_failure, &mut any_failed_reason);
         }
     }
-    // AGGREGATE: this shell's two-axis Outcome (reason rides on it).
-    if let Some(reason) = first_failure {
-        // A child here failed and the handler stopped the body →
-        // Interrupted + Failed (a fault); the reason rides on the Outcome.
-        crate::phase_outcome::Outcome::failed().with_reason(reason)
-    } else if ctx.workload_shell.should_stop() {
-        // A stop condition latched the broad walk-halt (no child failed
-        // in THIS scope): stop dispatching, but this shell's own result
-        // is a clean Interrupt — any failing phase carries the fault up
-        // its own branch. Matches the pre-shell `Ok`-on-should_stop.
-        crate::phase_outcome::Outcome::interrupted()
-    } else {
-        crate::phase_outcome::Outcome::completed()
-    }
+    // AGGREGATE: SRD-92 two-latch fold (disposition × validity independent).
+    fold_aggregate(first_failure, any_failed_reason, ctx.workload_shell.should_stop())
 }
 
 // ─── SceneTree push helpers ───────────────────────────────────────
@@ -2087,13 +2138,12 @@ fn dispatch_comprehension<'a>(
                 }
             }
         }
-        if let Some(e) = first_err {
-            crate::phase_outcome::Outcome::failed().with_reason(e)
-        } else if ctx.workload_shell.should_stop() {
-            crate::phase_outcome::Outcome::interrupted()
-        } else {
-            crate::phase_outcome::Outcome::completed()
-        }
+        // SRD-92 two-latch fold. `first_err` is the validity latch (already set
+        // on ANY failed/panicked iteration — comprehension drains all, no local
+        // cascade), so the fix is the DISPOSITION: an all-ran comprehension with
+        // a failed iteration is Completed+Failed, not Interrupted+Failed; only a
+        // workload-shell halt cuts it short. (`to_status()` is Failed either way.)
+        fold_aggregate(None, first_err, ctx.workload_shell.should_stop())
     })
 }
 
