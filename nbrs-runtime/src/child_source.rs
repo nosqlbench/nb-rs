@@ -152,6 +152,33 @@ impl ChildSource for CursorSource {
     }
 }
 
+/// Which drive primitive the executor uses for a child set. The two stay
+/// distinct (SRD-02 "One Walker = one configured-limit shape, not one literal
+/// harness"); this is the single point that chooses between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drive {
+    /// Bounded-spawn `JoinSet` (Semaphore-gated; `Bounded(1)` = serial) — small,
+    /// realized, distinct sub-units (scenario / comprehension / loop body).
+    BoundedSpawn,
+    /// `FiberPool` cursor-reserve — huge / ranged ordinal streams (the cycle
+    /// stream); can't spawn 1M `JoinSet` tasks.
+    CursorReserve,
+}
+
+/// SRD-92 / ExecUnification Step 5c — the level→drive selector (03b steering),
+/// in one place. `Realizable`/`Countable` sources yield distinct sub-units
+/// (`Child::Node`) → bounded-spawn; `Rangeable`/`Dynamic` sources yield ordinal
+/// ranges (`Child::Ordinals`) → cursor-reserve. The level and the child KIND
+/// partition identically (Node sources are Realizable/Countable; Ordinals
+/// sources are Rangeable/Dynamic), so steering on the level *is* steering on the
+/// kind. The loop (how-many-passes) is a SEPARATE axis (Step 6), above the source.
+pub fn select_drive(realizability: Realizability) -> Drive {
+    match realizability {
+        Realizability::Realizable | Realizability::Countable => Drive::BoundedSpawn,
+        Realizability::Rangeable | Realizability::Dynamic => Drive::CursorReserve,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +215,22 @@ mod tests {
         assert!(Realizability::Dynamic < Realizability::Countable);
         assert!(Realizability::Countable < Realizability::Rangeable);
         assert!(Realizability::Rangeable < Realizability::Realizable);
+    }
+
+    #[test]
+    fn select_drive_routes_by_level() {
+        assert_eq!(select_drive(Realizability::Realizable), Drive::BoundedSpawn);
+        assert_eq!(select_drive(Realizability::Countable), Drive::BoundedSpawn);
+        assert_eq!(select_drive(Realizability::Rangeable), Drive::CursorReserve);
+        assert_eq!(select_drive(Realizability::Dynamic), Drive::CursorReserve);
+    }
+
+    #[test]
+    fn select_drive_aligns_with_source_kinds() {
+        // a Node-yielding source drives via bounded-spawn; an Ordinals-yielding
+        // (cursor) source drives via cursor-reserve.
+        assert_eq!(select_drive(CountedSource::new(2).realizability()), Drive::BoundedSpawn);
+        let cursor = CursorSource::new(RangeSourceFactory::new(0, 4).create_reader(), 2);
+        assert_eq!(select_drive(cursor.realizability()), Drive::CursorReserve);
     }
 }
