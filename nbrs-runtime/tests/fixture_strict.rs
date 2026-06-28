@@ -136,8 +136,7 @@ fn while_without_synthesised_binding_errors_loud() {
     let program = program_minimal();
     let mut fx = ScopeFixture::new(program);
     let inner: Arc<dyn OpDispenser> = Arc::new(NoopDispenser);
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let result = WhileWrapper::wrap(inner, stop, &mut fx);
+    let result = WhileWrapper::wrap(inner, nbrs_runtime::session_signals::StopView::default(), &mut fx);
     let err = match result {
         Ok(_) => panic!("wrap should have errored: __while is not in the program"),
         Err(e) => e,
@@ -159,8 +158,7 @@ fn while_with_synthesised_binding_succeeds() {
     ).expect("compile_polydat").into_program();
     let mut fx = ScopeFixture::new(program);
     let inner: Arc<dyn OpDispenser> = Arc::new(NoopDispenser);
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    WhileWrapper::wrap(inner, stop, &mut fx)
+    WhileWrapper::wrap(inner, nbrs_runtime::session_signals::StopView::default(), &mut fx)
         .expect("wrap with synthesised __while should succeed");
     let plan = fx.seal();
     assert_eq!(plan.names(), vec!["__while"]);

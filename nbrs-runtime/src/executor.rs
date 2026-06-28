@@ -339,6 +339,22 @@ pub(crate) fn enrich_with_yaml_location(
     format!("{}:{line}:{col}: {err}", src.path)
 }
 
+/// SRD-92 — yaml-enrich a child subtree's [`crate::phase_outcome::Outcome`]
+/// in place: if it failed, rewrite its `reason` with the source location
+/// (the Outcome analog of [`enrich_with_yaml_location`], preserving the
+/// two-axis disposition instead of collapsing to a `Result`).
+fn enrich_outcome(
+    ctx: &ExecCtx,
+    needle: &str,
+    mut o: crate::phase_outcome::Outcome,
+) -> crate::phase_outcome::Outcome {
+    if o.is_failure() {
+        let m = enrich_with_yaml_location(ctx, needle, o.reason.take().unwrap_or_default());
+        o = o.with_reason(m);
+    }
+    o
+}
+
 impl ExecCtx {
     /// Build Labels from the current label stack.
     ///
@@ -408,7 +424,16 @@ pub fn execute_tree<'a>(
     ctx: &'a mut ExecCtx,
     nodes: &'a [ScenarioNode],
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
-    execute_tree_at(ctx, nodes, 0)
+    // The runner boundary stays `Result` (exit-code / run-result mapping in
+    // runner.rs is unchanged). Project the walker's two-axis Outcome here.
+    Box::pin(async move {
+        let o = execute_tree_at(ctx, nodes, 0).await;
+        if o.is_failure() {
+            Err(o.reason.clone().unwrap_or_else(|| "scenario: a unit failed".to_string()))
+        } else {
+            Ok(())
+        }
+    })
 }
 
 // ─── SRD-82 execution shells ──────────────────────────────────────
@@ -444,17 +469,78 @@ impl ShellHandler {
     }
 }
 
-/// SRD-82 Part 2 — one execution shell, recursively composed. The
-/// scenario graph is the first instance; phase / stanza / op follow.
-/// The formal contract: a shell runs its body and returns its two-axis
-/// [`crate::phase_outcome::Outcome`]. The concrete dispatch
-/// ([`ScenarioShell::dispatch`]) additionally surfaces the first failure
-/// reason, which the bare `Outcome` (a `(Disposition, Validity)` pair)
-/// cannot carry. Daemon units (Part 6) and the phase/stanza/op shells
-/// hang off this contract.
-#[allow(dead_code)] // WIP SRD-82 — the contract; phase/stanza/op shells + daemon units consume it next.
-trait ExecShell {
+/// SRD-92 — the tagging trait EVERY execution shell implements, at every
+/// nesting level (session · scenario · phase · stanza · op). A shell is the
+/// smallest thing that can be asked to run and answer with an
+/// [`crate::phase_outcome::Outcome`]. Its contract today is exactly the two
+/// aspects verified semantically UNIFORM across all five layers (the
+/// aspect×layer alignment grid):
+///   * OUTCOME — produce one two-axis `Outcome` (the sole upward signal); a
+///     leaf PRODUCES it, a composite FOLDS it from children.
+///   * POLL — obey one cooperative stop at every boundary; a stop yields a
+///     clean `Interrupted`, never a forced kill.
+///
+/// Realign in next (the grid's `UNIFORM_SHAPE` tier), each behind ONE typed
+/// knob: GUARD · WALK-AT-DEPTH · OPEN · FOLD · CLOSE · EMIT. Capabilities
+/// and level-intrinsic state (the child-set generator, the concurrency
+/// category, the lateral results carrier, daemon, rate, all world/state)
+/// stay OUT — they are not trait members.
+#[allow(dead_code)] // WIP SRD-92 — leaf shells (phase/stanza/op) + the universal `run` seam consume it next.
+trait ExecShell: Send + Sync {
+    /// OUTCOME. Run this shell to a terminal `Outcome`. The shell value
+    /// carries whatever its body needs (a composite holds its node-set; a
+    /// phase its name; an op its dispenser), so the universal signature
+    /// takes NO node list — a leaf has none.
     fn run<'a>(
+        &'a self,
+        ctx: &'a mut ExecCtx,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>;
+
+    /// POLL. The one cooperative stop, consulted at every boundary. The
+    /// default folds the existing per-execution stop signals (a fault
+    /// outranks a graceful / walk stop); the Step-0 `StopView` consolidation
+    /// will replace the body WITHOUT changing this signature.
+    fn poll_stop(&self, ctx: &ExecCtx) -> Option<crate::session_signals::StopCause> {
+        use crate::session_signals::{self as sig, StopCause};
+        if sig::fault_stop_requested() {
+            Some(StopCause::Fault)
+        } else if sig::stop_requested() || ctx.workload_shell.should_stop() {
+            Some(StopCause::Interrupt)
+        } else {
+            None
+        }
+    }
+
+    /// Stable identity for projection / introspection (EMIT, dryrun) and the
+    /// per-level knob lookups the uniform-shape aspects will key on.
+    fn shell_kind(&self) -> ShellKind;
+}
+
+/// SRD-92 — which level a shell sits at (for EMIT / dryrun / per-level knobs).
+#[allow(dead_code)] // WIP SRD-92.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellKind {
+    Session,
+    Scenario,
+    Phase,
+    Stanza,
+    Op,
+}
+
+/// SRD-92 — a shell whose BODY is a child node-set, dispatched through the
+/// one concurrency path ([`run_scenario_body`]). The Composite half of
+/// Composite-vs-Leaf: the scenario graph today, the workload tier next.
+/// Leaf shells (phase / stanza / op) do NOT implement this — they PRODUCE
+/// an `Outcome`, they do not dispatch a node list (SRD-92 Decision B).
+#[allow(dead_code)] // WIP SRD-92.
+trait CompositeShell: ExecShell {
+    fn handler(&self) -> &ShellHandler;
+
+    /// BODY + HANDLE + AGGREGATE over the node-set. Returns the aggregate
+    /// `Outcome` plus the first-failure reason (carried alongside until the
+    /// later `Outcome.reason` enrichment), which the bare two-axis `Outcome`
+    /// cannot hold.
+    fn dispatch<'a>(
         &'a self,
         ctx: &'a mut ExecCtx,
         nodes: &'a [ScenarioNode],
@@ -462,54 +548,151 @@ trait ExecShell {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>>;
 }
 
-/// The scenario-graph shell (SRD-82). Carries the scenario handler;
-/// [`Self::dispatch`] runs body + handle + aggregate.
-struct ScenarioShell {
+/// The scenario-graph shell (SRD-82/92) — a [`CompositeShell`]. Carries the
+/// scenario handler plus the node-set + depth it was built for, so it also
+/// satisfies the universal [`ExecShell`] (`run` -> `Outcome`).
+struct ScenarioShell<'n> {
     handler: ShellHandler,
+    nodes: &'n [ScenarioNode],
+    depth: usize,
 }
 
-impl ScenarioShell {
-    fn scenario() -> Self {
-        Self { handler: ShellHandler::scenario_default() }
-    }
-    /// Run the body and return the aggregate `Outcome` plus the first
-    /// failure reason (preserved alongside because `Outcome` carries no
-    /// message). This is the scenario shell's real entry point.
-    async fn dispatch(
-        &self,
-        ctx: &mut ExecCtx,
-        nodes: &[ScenarioNode],
-        depth: usize,
-    ) -> (crate::phase_outcome::Outcome, Option<String>) {
-        run_scenario_body(&self.handler, ctx, nodes, depth).await
+impl<'n> ScenarioShell<'n> {
+    fn scenario(nodes: &'n [ScenarioNode], depth: usize) -> Self {
+        Self { handler: ShellHandler::scenario_default(), nodes, depth }
     }
 }
 
-impl ExecShell for ScenarioShell {
+impl<'n> ExecShell for ScenarioShell<'n> {
     fn run<'a>(
+        &'a self,
+        ctx: &'a mut ExecCtx,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
+        Box::pin(async move { self.dispatch(ctx, self.nodes, self.depth).await })
+    }
+    fn shell_kind(&self) -> ShellKind { ShellKind::Scenario }
+}
+
+impl<'n> CompositeShell for ScenarioShell<'n> {
+    fn handler(&self) -> &ShellHandler { &self.handler }
+    fn dispatch<'a>(
         &'a self,
         ctx: &'a mut ExecCtx,
         nodes: &'a [ScenarioNode],
         depth: usize,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
-        Box::pin(async move { self.dispatch(ctx, nodes, depth).await.0 })
+        Box::pin(run_scenario_body(&self.handler, ctx, nodes, depth))
     }
 }
 
-/// Classify a joined child task into its [`crate::phase_outcome::Outcome`]
-/// + reason. A child `Err` / task panic is `Failed` (the message is the
-/// reason); a clean `Ok` is `Completed`. (Until the deeper unification
-/// flows a real child `Outcome` up through `execute_node`, the child's
-/// `Result` is the faithful proxy — a soft-failed phase already returns
-/// `Err` via the per-phase error-rate breaker.)
-fn classify_child(
-    res: Result<Result<(), String>, tokio::task::JoinError>,
+/// Fold a joined child task into its [`crate::phase_outcome::Outcome`] +
+/// reason. SRD-92: `execute_node` now produces the child's REAL two-axis
+/// Outcome, so this no longer re-projects a `Result` — it passes the
+/// child's Outcome through (surfacing its own `reason` for the aggregate
+/// fold) and only maps the one remaining lossy case, a task **panic**
+/// (which has no Outcome), to a fault.
+fn join_outcome(
+    res: Result<crate::phase_outcome::Outcome, tokio::task::JoinError>,
 ) -> (crate::phase_outcome::Outcome, Option<String>) {
     use crate::phase_outcome::Outcome;
     match res {
-        Err(join_err) => (Outcome::failed(), Some(format!("concurrent task panicked: {join_err}"))),
-        Ok(Err(e)) => (Outcome::failed(), Some(e)),
-        Ok(Ok(())) => (Outcome::completed(), None),
+        // A panicked task: the only place a lossy projection remains — a
+        // panic has no Outcome, so it becomes a fault.
+        Err(join_err) => {
+            let msg = format!("concurrent task panicked: {join_err}");
+            (Outcome::failed().with_reason(msg.clone()), Some(msg))
+        }
+        // SRD-92 flow-up: the child task now carries its REAL two-axis
+        // Outcome (produced by `run_phase` / the scenario subtree) — no
+        // `Result -> Outcome` re-projection. Surface its own reason for the
+        // aggregate fold.
+        Ok(outcome) => {
+            let reason = outcome.reason.clone();
+            (outcome, reason)
+        }
+    }
+}
+
+/// SRD-92 — the PHASE leaf shell: the walker's leaf, an [`ExecShell`] (the
+/// universal marker, NOT [`CompositeShell`] — a phase has no node list,
+/// Decision B). Carries the phase name; `run` drives the phase's `Activity`
+/// and returns its two-axis [`crate::phase_outcome::Outcome`].
+///
+/// WIP: today `run` projects `run_phase`'s `Result` (the faithful proxy,
+/// like [`join_outcome`]). The "flow real Outcome up" step makes
+/// `run_phase` return the `Outcome` it already computes internally — but
+/// that first needs `Outcome` to carry a `reason` (the `?` path at the
+/// phase call sites propagates the failure message, which the bare two-axis
+/// `Outcome` cannot). Once enriched, `execute_node` calls this directly and
+/// `join_outcome` goes away.
+#[allow(dead_code)] // WIP SRD-92 — wired by the enrich-Outcome + flow-Outcome-up steps.
+struct PhaseShell<'p> {
+    name: &'p str,
+}
+
+#[allow(dead_code)]
+impl<'p> PhaseShell<'p> {
+    fn new(name: &'p str) -> Self { Self { name } }
+}
+
+impl<'p> ExecShell for PhaseShell<'p> {
+    fn run<'a>(
+        &'a self,
+        ctx: &'a mut ExecCtx,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
+        // SRD-92 — run_phase now returns the two-axis Outcome directly; the
+        // PhaseShell leaf forwards it (no Result re-derive).
+        Box::pin(async move { run_phase(ctx, self.name).await })
+    }
+    fn shell_kind(&self) -> ShellKind { ShellKind::Phase }
+}
+
+/// SRD-92 — the OP-leaf projection façade. The op leaf is an owned
+/// per-worker producer BELOW the [`crate::phase_outcome::Outcome`]
+/// projection boundary: it runs per-cycle with a borrowed cycle ctx
+/// ([`crate::fixture::ExecCtx`]), so it is intentionally NOT an
+/// [`ExecShell`] driven by `&mut ExecCtx` (Decision B / the leaf-as-
+/// projection-boundary). This is the "map once at the bottom" — an op
+/// dispenser's `Result<OpResult, ExecutionError>` projected to the
+/// universal two-axis `Outcome`: a skip is `Skipped`, a clean result is
+/// `Completed + Succeeded`, an error is `failed()`. The op-specific payload
+/// (`OpResult.body: Box<dyn ResultBody>`) stays strictly below this
+/// projection. Consumed when the activity flows per-op Outcomes (next
+/// steps); the `StanzaShell` (the per-cycle op chain) likewise folds its
+/// ops' projections inside the activity rather than as a walker shell.
+#[allow(dead_code)] // WIP SRD-92.
+struct OpShell;
+
+#[allow(dead_code)]
+impl OpShell {
+    fn project(
+        res: &Result<crate::adapter::OpResult, crate::adapter::ExecutionError>,
+    ) -> crate::phase_outcome::Outcome {
+        use crate::phase_outcome::Outcome;
+        match res {
+            Ok(r) if r.skipped => Outcome::skipped(),
+            Ok(_) => Outcome::completed(),
+            Err(_) => Outcome::failed(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod srd92_leaf_shell_tests {
+    use super::*;
+    use crate::phase_outcome::{Disposition, Validity};
+
+    #[test]
+    fn op_shell_projects_skip_vs_clean() {
+        let clean: Result<crate::adapter::OpResult, crate::adapter::ExecutionError> =
+            Ok(crate::adapter::OpResult::default());
+        let o = OpShell::project(&clean);
+        assert_eq!(o.disposition, Disposition::Completed);
+        assert_eq!(o.validity, Validity::Succeeded);
+
+        let skip: Result<crate::adapter::OpResult, crate::adapter::ExecutionError> =
+            Ok(crate::adapter::OpResult::skipped());
+        assert_eq!(OpShell::project(&skip).disposition, Disposition::Skipped);
     }
 }
 
@@ -528,21 +711,13 @@ fn execute_tree_at<'a>(
     ctx: &'a mut ExecCtx,
     nodes: &'a [ScenarioNode],
     depth: usize,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
     Box::pin(async move {
-        // Run the scenario-graph ExecShell (SRD-82) and project its
-        // two-axis Outcome onto the `Result` the rest of the walker still
-        // threads: `Failed` → `Err` (with the failing child's reason),
-        // otherwise `Ok`. A broad stop-condition halt aggregates as
-        // `Interrupted` (→ `Ok`) — the failing phase, if any, carries the
-        // fault up its own branch, exactly as before the shell.
-        let shell = ScenarioShell::scenario();
-        let (outcome, reason) = shell.dispatch(ctx, nodes, depth).await;
-        if outcome.is_failure() {
-            Err(reason.unwrap_or_else(|| "scenario shell: a child unit failed".to_string()))
-        } else {
-            Ok(())
-        }
+        // SRD-92 — the scenario-graph shell's two-axis Outcome flows up
+        // unchanged (no `Result` re-projection): a failing child's
+        // disposition + validity + reason are preserved.
+        let shell = ScenarioShell::scenario(nodes, depth);
+        shell.dispatch(ctx, nodes, depth).await
     })
 }
 
@@ -564,7 +739,7 @@ async fn run_scenario_body(
     ctx: &mut ExecCtx,
     nodes: &[ScenarioNode],
     depth: usize,
-) -> (crate::phase_outcome::Outcome, Option<String>) {
+) -> crate::phase_outcome::Outcome {
     use crate::scheduler::ConcurrencyLimit;
     let limit = ctx.schedule_spec.limit_at(depth);
 
@@ -647,12 +822,12 @@ async fn run_scenario_body(
     let child_scope_indices: Vec<crate::scope_tree::ScopeNodeIdx> =
         ctx.scope_tree.nodes[parent_scope_idx].children.clone();
     if child_scope_indices.len() != nodes.len() {
-        return (crate::phase_outcome::Outcome::failed(), Some(format!(
+        return crate::phase_outcome::Outcome::failed().with_reason(format!(
             "scope-tree/scenario-tree drift: scope node {parent_scope_idx} has {} \
              child scopes but the walker is dispatching {} sibling scenario nodes",
             child_scope_indices.len(),
             nodes.len(),
-        )));
+        ));
     }
 
     // SRD-82/83 — if the walk has already halted (a prior phase failed,
@@ -665,7 +840,7 @@ async fn run_scenario_body(
     // daemon phase(s). Returns a clean Interrupt; the failing branch
     // carries the fault up its own `Err`.
     if ctx.workload_shell.should_stop() {
-        return (crate::phase_outcome::Outcome::interrupted(), None);
+        return crate::phase_outcome::Outcome::interrupted();
     }
 
     // SRD-82 Part 6 — partition the body into FOREGROUND and DAEMON
@@ -708,7 +883,7 @@ async fn run_scenario_body(
                 // The semaphore is owned here and never closed, so this is
                 // effectively unreachable — surface it as a fault rather
                 // than panicking if it ever does.
-                Err(e) => return (crate::phase_outcome::Outcome::failed(), Some(e.to_string())),
+                Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e.to_string()),
             },
             None => None,
         };
@@ -726,7 +901,7 @@ async fn run_scenario_body(
         // cap allows.
         while let Some(res) = set.try_join_next() {
             // HANDLE: feed each joined child through the scenario handler.
-            let (child, reason) = classify_child(res);
+            let (child, reason) = join_outcome(res);
             if matches!(handler.decide(&child), ShellAction::Stop)
                 && first_failure.is_none()
             {
@@ -777,7 +952,7 @@ async fn run_scenario_body(
     // Drain any still-running tasks (those spawned before the stop was
     // observed), feeding each through the same handler.
     while let Some(res) = set.join_next().await {
-        let (child, reason) = classify_child(res);
+        let (child, reason) = join_outcome(res);
         if matches!(handler.decide(&child), ShellAction::Stop)
             && first_failure.is_none()
         {
@@ -792,7 +967,7 @@ async fn run_scenario_body(
     if any_daemon {
         daemon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         while let Some(res) = daemon_set.join_next().await {
-            let (child, reason) = classify_child(res);
+            let (child, reason) = join_outcome(res);
             if matches!(handler.decide(&child), ShellAction::Stop)
                 && first_failure.is_none()
             {
@@ -800,19 +975,19 @@ async fn run_scenario_body(
             }
         }
     }
-    // AGGREGATE: this shell's two-axis Outcome.
+    // AGGREGATE: this shell's two-axis Outcome (reason rides on it).
     if let Some(reason) = first_failure {
         // A child here failed and the handler stopped the body →
-        // Interrupted + Failed (a fault); the reason rides alongside.
-        (crate::phase_outcome::Outcome::failed(), Some(reason))
+        // Interrupted + Failed (a fault); the reason rides on the Outcome.
+        crate::phase_outcome::Outcome::failed().with_reason(reason)
     } else if ctx.workload_shell.should_stop() {
         // A stop condition latched the broad walk-halt (no child failed
         // in THIS scope): stop dispatching, but this shell's own result
         // is a clean Interrupt — any failing phase carries the fault up
         // its own branch. Matches the pre-shell `Ok`-on-should_stop.
-        (crate::phase_outcome::Outcome::interrupted(), None)
+        crate::phase_outcome::Outcome::interrupted()
     } else {
-        (crate::phase_outcome::Outcome::completed(), None)
+        crate::phase_outcome::Outcome::completed()
     }
 }
 
@@ -972,7 +1147,7 @@ fn execute_node<'a>(
     // their installed kernel — no AST lookup (One Walker positional resolution).
     node_scope_idx: crate::scope_tree::ScopeNodeIdx,
     depth: usize,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
     Box::pin(async move {
         use crate::checkpoint::PathSegment;
         // Scope-elision gate: if a phases= filter is set and
@@ -987,7 +1162,7 @@ fn execute_node<'a>(
             if is_scope && !subtree_has_active_phase(node, &pat) {
                 crate::diag!(crate::observer::LogLevel::Debug,
                     "phases=<filter>: eliding scope (no descendant phase matches)");
-                return Ok(());
+                return crate::phase_outcome::Outcome::skipped();
             }
         }
         match node {
@@ -1006,27 +1181,36 @@ fn execute_node<'a>(
                     // is set as the parent for the leaf phase
                     // compile, the phase runs once per iter
                     // value.
-                    let scope_idx = ctx.scope_tree.phase_node_by_name(name)
-                        .ok_or_else(|| format!(
+                    let scope_idx = match ctx.scope_tree.phase_node_by_name(name) {
+                        Some(v) => v,
+                        None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
                             "phase '{name}' for_each '{spec}': no matching scope-tree entry."
-                        ))?;
-                    let canonical = ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
-                        .cloned()
-                        .ok_or_else(|| format!(
+                        )),
+                    };
+                    let canonical = match ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
+                        .cloned() {
+                        Some(v) => v,
+                        None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
                             "phase '{name}' for_each '{spec}': scope at index {scope_idx} \
                              has no installed phase-for_each kernel."
-                        ))?;
-                    let parent = effective_parent_kernel(ctx, scope_idx)
-                        .ok_or_else(|| format!(
+                        )),
+                    };
+                    let parent = match effective_parent_kernel(ctx, scope_idx) {
+                        Some(v) => v,
+                        None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
                             "phase '{name}' for_each '{spec}': no installed ancestor kernel."
-                        ))?;
+                        )),
+                    };
                     // Delegate the for_each grammar to polydat (the single
                     // owner): `parse_inline` builds the algebra comprehension for
                     // single- OR multi-clause specs (e.g. "batch in [1,2], conc in
                     // [8,16]"), identical to the scenario-level for_each path.
                     let comprehension =
-                        polydat::iteration::comprehension::spec::parse_inline(&spec)
-                            .map_err(|e| format!("phase '{name}' for_each '{spec}': {e}"))?;
+                        match polydat::iteration::comprehension::spec::parse_inline(&spec) {
+                            Ok(v) => v,
+                            Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(
+                                format!("phase '{name}' for_each '{spec}': {e}")),
+                        };
                     let iter_vars: Vec<String> = comprehension
                         .coordinate_specs()
                         .into_iter()
@@ -1051,9 +1235,13 @@ fn execute_node<'a>(
                     let steps = if continuous_axes.is_some() {
                         Vec::new()
                     } else {
-                        runtime_iterate(
+                        match runtime_iterate(
                             ctx, &canonical, &parent, &parent_coords, &comprehension,
-                        ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(
+                                enrich_with_yaml_location(ctx, &needle, e)),
+                        }
                     };
                     // Structural push: outer phase.for_each scope
                     // header. Per SRD 18b §"Single Walker Contract"
@@ -1129,7 +1317,7 @@ fn execute_node<'a>(
                     };
                     ctx.scene_tree_parent_id = saved_parent;
                     ctx.scene_tree_path = saved_path;
-                    return res.map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
+                    return enrich_outcome(ctx, &needle, res);   // SRD-92: propagate the real Outcome, yaml-enriched
                 } else {
                     // Structural push: leaf Phase node. Labels are
                     // the canonical leaf-first scope-coord path so
@@ -1225,7 +1413,10 @@ fn execute_node<'a>(
                         // Falls through for `scope=changed` (needs
                         // the hash, computed inside run_phase) and
                         // for non-refine runs.
-                        run_phase(ctx, name).await?;
+                        let __o = run_phase(ctx, name).await;
+                        if __o.is_failure() {
+                            return __o;   // SRD-92: propagate the phase's REAL Outcome (no round-trip)
+                        }
                     }
                 }
             }
@@ -1248,15 +1439,19 @@ fn execute_node<'a>(
                     ),
                     "{label}: positional scope node {scope_idx} is not the matching comprehension",
                 );
-                let canonical = ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
-                    .cloned()
-                    .ok_or_else(|| format!(
+                let canonical = match ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
+                    .cloned() {
+                    Some(v) => v,
+                    None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
                         "{label}: scope at index {scope_idx} has no installed kernel.",
-                    ))?;
-                let parent = effective_parent_kernel(ctx, scope_idx)
-                    .ok_or_else(|| format!(
+                    )),
+                };
+                let parent = match effective_parent_kernel(ctx, scope_idx) {
+                    Some(v) => v,
+                    None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
                         "{label}: no installed ancestor kernel.",
-                    ))?;
+                    )),
+                };
                 let own_names: Vec<String> = canonical.program().own_output_names()
                     .into_iter().map(String::from).collect();
                 let parent_coords = ctx.current_parent_kernel.as_ref()
@@ -1270,9 +1465,13 @@ fn execute_node<'a>(
                 // as a whole (PR 9c-4 spec amendment).
                 let coord_names = comprehension.coordinate_names();
                 let needle = coord_names.first().cloned().unwrap_or_default();
-                let steps = runtime_iterate(
+                let steps = match runtime_iterate(
                     ctx, &canonical, &parent, &parent_coords, comprehension,
-                ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(
+                        enrich_with_yaml_location(ctx, &needle, e)),
+                };
                 // Scene-tree path segment: ForEach for single
                 // coord, ForCombinations for multi.
                 let mut scope_path = ctx.scene_tree_path.clone();
@@ -1304,7 +1503,7 @@ fn execute_node<'a>(
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
                 ctx.current_scope_idx = saved_scope_idx;
-                return res.map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
+                return enrich_outcome(ctx, &needle, res);   // SRD-92: propagate the real Outcome, yaml-enriched
             }
             ScenarioNode::IncludedScenario { name, children } => {
                 // Structural push: scenario-include node. The
@@ -1334,7 +1533,7 @@ fn execute_node<'a>(
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
                 ctx.current_scope_idx = saved_scope_idx;
-                res?;
+                if res.is_failure() { return res; }   // SRD-92: propagate the subtree's real Outcome
             }
             ScenarioNode::DoWhile { condition, counter, children } => {
                 crate::diag!(crate::observer::LogLevel::Debug, "=== do_while: {condition} ===");
@@ -1365,7 +1564,7 @@ fn execute_node<'a>(
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
                 ctx.current_scope_idx = saved_scope_idx;
-                r?;
+                if let Err(e) = r { return crate::phase_outcome::Outcome::failed().with_reason(e); }
             }
             ScenarioNode::DoUntil { condition, counter, children } => {
                 crate::diag!(crate::observer::LogLevel::Debug, "=== do_until: {condition} ===");
@@ -1392,7 +1591,7 @@ fn execute_node<'a>(
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
                 ctx.current_scope_idx = saved_scope_idx;
-                r?;
+                if let Err(e) = r { return crate::phase_outcome::Outcome::failed().with_reason(e); }
             }
             ScenarioNode::Bindings { source, children } => {
                 // Push the bindings scope's installed kernel as
@@ -1432,12 +1631,14 @@ fn execute_node<'a>(
                     ),
                     "bindings: positional scope node {scope_idx} is not the matching bindings",
                 );
-                let installed = ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
-                    .cloned()
-                    .ok_or_else(|| format!(
+                let installed = match ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
+                    .cloned() {
+                    Some(v) => v,
+                    None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
                         "bindings scope at index {scope_idx} has no installed \
                          kernel — install-spec walker missed this node",
-                    ))?;
+                    )),
+                };
                 if !ctx.quiet() {
                     let one_line = source.lines().map(str::trim)
                         .find(|l| !l.is_empty()).unwrap_or("");
@@ -1460,19 +1661,23 @@ fn execute_node<'a>(
                 // first iter's value.
                 let chained = match ctx.current_parent_kernel.as_ref() {
                     Some(parent) => {
-                        let matter = polydat::kernel::subcontext::PolydatMatter::builder()
+                        let matter = match polydat::kernel::subcontext::PolydatMatter::builder()
                             .program(installed.program().clone())
-                            .build()
-                            .map_err(|e| format!(
+                            .build() {
+                            Ok(v) => v,
+                            Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(format!(
                                 "bindings scope at index {scope_idx}: \
                                  build subscope matter: {e:?}",
-                            ))?;
-                        parent.build_subscope(matter)
-                            .map(std::sync::Arc::new)
-                            .map_err(|e| format!(
+                            )),
+                        };
+                        match parent.build_subscope(matter)
+                            .map(std::sync::Arc::new) {
+                            Ok(v) => v,
+                            Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(format!(
                                 "bindings scope at index {scope_idx}: \
                                  chain to current parent kernel: {e:?}",
-                            ))?
+                            )),
+                        }
                     }
                     None => installed,
                 };
@@ -1505,10 +1710,10 @@ fn execute_node<'a>(
                 ctx.scene_tree_path = saved_scene_path;
                 ctx.current_scope_idx = saved_scope_idx;
                 ctx.current_parent_kernel = prior_parent;
-                res?;
+                if res.is_failure() { return res; }   // SRD-92: propagate the subtree's real Outcome
             }
         }
-        Ok(())
+        crate::phase_outcome::Outcome::completed()
     })
 }
 
@@ -1708,7 +1913,7 @@ fn dispatch_comprehension<'a>(
     // — per-iter inner scope is derived from the step
     // bindings + outer `ctx.scene_tree_path`.
     phase_terminal_meta: Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
     use crate::scheduler::ConcurrencyLimit;
     Box::pin(async move {
         if steps.is_empty() {
@@ -1717,7 +1922,7 @@ fn dispatch_comprehension<'a>(
             // an empty step list here is the success-with-zero-
             // iterations case (filter eliminated everything, or a
             // do-loop condition false from the start).
-            return Ok(());
+            return crate::phase_outcome::Outcome::completed();
         }
 
         // Effective limit: `sequential_only` (do-loop ordering
@@ -1771,8 +1976,10 @@ fn dispatch_comprehension<'a>(
         let mut set = tokio::task::JoinSet::new();
         for step in steps {
             let permit = match sem.as_ref() {
-                Some(s) => Some(s.clone().acquire_owned().await
-                    .map_err(|e| e.to_string())?),
+                Some(s) => match s.clone().acquire_owned().await {
+                    Ok(p) => Some(p),
+                    Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e.to_string()),
+                },
                 None => None,
             };
             // SRD-83 — stop iterating once the walk has halted (a prior
@@ -1831,21 +2038,26 @@ fn dispatch_comprehension<'a>(
 
         let mut first_err: Option<String> = None;
         while let Some(res) = set.join_next().await {
+            // SRD-92: each iteration task now yields its real Outcome.
             match res {
                 Err(join_err) => {
                     if first_err.is_none() {
                         first_err = Some(format!("concurrent comprehension iteration panicked: {join_err}"));
                     }
                 }
-                Ok(Err(e)) => {
-                    if first_err.is_none() { first_err = Some(e); }
+                Ok(o) => {
+                    if o.is_failure() && first_err.is_none() {
+                        first_err = Some(o.reason.unwrap_or_else(|| "comprehension iteration failed".to_string()));
+                    }
                 }
-                Ok(Ok(())) => {}
             }
         }
-        match first_err {
-            Some(e) => Err(e),
-            None => Ok(()),
+        if let Some(e) = first_err {
+            crate::phase_outcome::Outcome::failed().with_reason(e)
+        } else if ctx.workload_shell.should_stop() {
+            crate::phase_outcome::Outcome::interrupted()
+        } else {
+            crate::phase_outcome::Outcome::completed()
         }
     })
 }
@@ -1866,8 +2078,11 @@ fn dispatch_optimization<'a>(
     phase_name: &'a str,
     depth: usize,
     phase_meta: Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
     Box::pin(async move {
+        // SRD-92 — the niche `optimize:` subtree stays Result internally
+        // (its helpers + run_one_eval); wrap to the universal Outcome here.
+        let __opt_result: Result<(), String> = async move {
         if space.dims() == 0 {
             return Ok(());
         }
@@ -1977,6 +2192,11 @@ fn dispatch_optimization<'a>(
              after {evals} evals",
             method = block.method, objective = block.objective);
         Ok(())
+        }.await;
+        match __opt_result {
+            Ok(()) => crate::phase_outcome::Outcome::completed(),
+            Err(reason) => crate::phase_outcome::Outcome::failed().with_reason(reason),
+        }
     })
 }
 
@@ -2286,7 +2506,8 @@ async fn run_one_eval(
     let terminal = TerminalAction::Phase(phase_name);
     let res = run_one_iteration(ctx, step, &terminal, depth, "optimize").await;
     ctx.scene_tree_parent_id = saved;
-    res
+    // The optimize helpers stay `Result`-typed (niche subtree); map here.
+    if res.is_failure() { Err(res.reason.clone().unwrap_or_default()) } else { Ok(()) }
 }
 
 /// Pull the next coordinate batch from a source via its most-capable
@@ -2714,7 +2935,7 @@ async fn run_do_loop(
         let res = execute_tree_at(ctx, children, depth).await;
 
         if let Some(writer) = ctx.checkpoint_writer.as_ref() {
-            let outcome = if res.is_ok() { "completed" } else { "interrupted" };
+            let outcome = if !res.is_failure() { "completed" } else { "interrupted" };
             writer.emit_scope_exit(kind, iter_coords, path, outcome);
         }
 
@@ -2729,7 +2950,7 @@ async fn run_do_loop(
              still referenced after children completed — concurrency bug."
         ))?;
 
-        res?;
+        if res.is_failure() { return Err(res.reason.clone().unwrap_or_default()); }
         counter_value = counter_value.saturating_add(1);
     }
 
@@ -2757,7 +2978,7 @@ async fn run_one_iteration(
     terminal: &TerminalAction<'_>,
     depth: usize,
     kind: &'static str,
-) -> Result<(), String> {
+) -> crate::phase_outcome::Outcome {
     let prior_parent = ctx.current_parent_kernel.take();
     ctx.current_parent_kernel = Some(step.bound_kernel.clone());
     for (var, value) in &step.bindings {
@@ -2822,7 +3043,7 @@ async fn run_one_iteration(
             if ctx.diag.depth >= crate::runner::ExecDepth::Op {
                 run_phase(ctx, name).await
             } else {
-                Ok(())
+                crate::phase_outcome::Outcome::skipped()
             }
         }
     };
@@ -2854,7 +3075,7 @@ async fn run_one_iteration(
     // errored or was unwound (a stop signal propagates as an
     // `Err` here).
     if let Some(writer) = ctx.checkpoint_writer.as_ref() {
-        let outcome = if res.is_ok() { "completed" } else { "interrupted" };
+        let outcome = if !res.is_failure() { "completed" } else { "interrupted" };
         writer.emit_scope_exit(kind, enter_coords, enter_path, outcome);
     }
 
@@ -2920,7 +3141,8 @@ static EMPTY_BINDINGS: std::sync::LazyLock<HashMap<String, String>> =
 async fn run_phase(
     ctx: &mut ExecCtx,
     phase_name: &str,
-) -> Result<(), String> {
+) -> crate::phase_outcome::Outcome {
+    // SRD-92 — run_phase produces its two-axis Outcome natively (per-exit).
     let phase_start = std::time::Instant::now();
     // SRD-76 — wall-clock start nanos for the `phase_outcomes`
     // row. Instant gives monotonic duration; SystemTime gives
@@ -2930,9 +3152,11 @@ async fn run_phase(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as i64)
         .unwrap_or(0);
-    let phase = ctx.phases.get(phase_name)
-        .ok_or_else(|| format!("phase '{phase_name}' not found"))?
-        .clone();
+    let phase = match ctx.phases.get(phase_name) {
+        Some(p) => p.clone(),
+        None => return crate::phase_outcome::Outcome::failed()
+            .with_reason(format!("phase '{phase_name}' not found")),
+    };
     let has_bindings = phase.ops.iter().any(|op| !op.bindings.is_empty());
 
     // Derive iteration-variable values from the current parent
@@ -3037,7 +3261,7 @@ async fn run_phase(
             crate::phase_end_triggers::fire_phase_completed(
                 phase_name, &early_phase_labels, 0.0,
             );
-            return Ok(());
+            return crate::phase_outcome::Outcome::skipped();
         }
         crate::checkpoint::ResumeAction::IdentityMismatch { reason } => {
             crate::diag!(crate::observer::LogLevel::Warn,
@@ -3074,10 +3298,13 @@ async fn run_phase(
         // time); anything else that doesn't resolve is a hard
         // error with the field path and the in-scope name list
         // surfaced to the operator.
-        let parent_kernel = ctx.current_parent_kernel.as_ref().ok_or_else(|| format!(
-            "phase '{phase_name}': no current_parent_kernel — \
-             single-resolution-path requires the populated parent kernel",
-        ))?;
+        let parent_kernel = match ctx.current_parent_kernel.as_ref() {
+            Some(k) => k,
+            None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                "phase '{phase_name}': no current_parent_kernel — \
+                 single-resolution-path requires the populated parent kernel",
+            )),
+        };
         // SRD-68 Push 5c-cleanup: NO mutation of the workload
         // model. Op fields stay pristine (the dispenser handles
         // resolution at construction or cycle time per its
@@ -3106,8 +3333,10 @@ async fn run_phase(
             .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get())
             .map(|k| k.as_ref())
             .unwrap_or(parent_kernel);
-        crate::scope::validate_placeholders_via_kernel(&ops, validation_kernel)
-            .map_err(|e| format!("phase '{phase_name}': {e}"))?;
+        if let Err(e) = crate::scope::validate_placeholders_via_kernel(&ops, validation_kernel)
+            .map_err(|e| format!("phase '{phase_name}': {e}")) {
+            return crate::phase_outcome::Outcome::failed().with_reason(e);
+        }
 
         // Rewrite inline expressions ({{expr}} → {__expr_N}) in op templates.
         // This modifies op template strings and returns the expr→name map
@@ -3147,11 +3376,13 @@ async fn run_phase(
         // their already-detected native types. Workload root is
         // always installed (M3.4b), so this branch always
         // fires; the legacy `outer_manifest` fallback is gone.
-        let parent_kernel = ctx.current_parent_kernel.as_ref()
-            .ok_or_else(|| format!(
+        let parent_kernel = match ctx.current_parent_kernel.as_ref() {
+            Some(k) => k,
+            None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
                 "phase '{phase_name}': no current_parent_kernel — \
                  workload root install missed at session start (internal bug)."
-            ))?;
+            )),
+        };
         // SRD-13f §"Wire-reference classification" — for case-3
         // local-inclusion the synthesizer needs the phase scope
         // kernel (which carries `phase.bindings` as AST) when one
@@ -3172,7 +3403,7 @@ async fn run_phase(
         // this phase via the parent-kernel manifest's
         // auto-extern. Local injection here would just create
         // duplicate locals.
-        let scope = crate::scope::build_scope(
+        let scope = match crate::scope::build_scope(
             &ops,
             &EMPTY_BINDINGS,
             &effective_manifest,
@@ -3181,7 +3412,10 @@ async fn run_phase(
             phase.cycles.as_deref(),
             &[], // exclude
             Some(classifier_kernel),
-        )?;
+        ) {
+            Ok(v) => v,
+            Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
+        };
 
         // Validate scope rules (shadow detection, final checks)
         let polydat_context = if iter_var_values.is_empty() {
@@ -3192,7 +3426,9 @@ async fn run_phase(
                 .collect();
             format!("phase '{phase_name}' ({})", vars.join(", "))
         };
-        scope.validate().map_err(|e| format!("{polydat_context}: {e}"))?;
+        if let Err(e) = scope.validate().map_err(|e| format!("{polydat_context}: {e}")) {
+            return crate::phase_outcome::Outcome::failed().with_reason(e);
+        }
 
         // Compile-and-cache or rebind path (SRD 18b §"Cache-and-
         // rebind contract").
@@ -3232,7 +3468,7 @@ async fn run_phase(
                 // The program is iter-invariant (iter vars flow
                 // as wires; dataset specs interpolate at eval),
                 // so the same program serves every iteration.
-                let compiled = crate::bindings::compile_from_scope(
+                let compiled = match crate::bindings::compile_from_scope(
                     &scope,
                     ctx.workload_dir.as_deref(),
                     ctx.polydat_lib_paths.clone(),
@@ -3240,7 +3476,10 @@ async fn run_phase(
                     &polydat_context,
                     cursor_limit,
                     &phase_pragmas,
-                ).map_err(|e| format!("{polydat_context}: {e}"))?;
+                ).map_err(|e| format!("{polydat_context}: {e}")) {
+                    Ok(v) => v,
+                    Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
+                };
                 let prog = compiled.program().clone();
                 let _ = node.cached_kernel.set(std::sync::Arc::new(compiled));
                 prog
@@ -3249,7 +3488,7 @@ async fn run_phase(
             // Phase not in the scope tree (shouldn't happen for
             // any executor-driven invocation; defensive). Fall
             // back to the un-cached compile path.
-            crate::bindings::compile_from_scope(
+            match crate::bindings::compile_from_scope(
                 &scope,
                 ctx.workload_dir.as_deref(),
                 ctx.polydat_lib_paths.clone(),
@@ -3257,7 +3496,10 @@ async fn run_phase(
                 &polydat_context,
                 cursor_limit,
                 &phase_pragmas,
-            ).map_err(|e| format!("{polydat_context}: {e}"))?
+            ).map_err(|e| format!("{polydat_context}: {e}")) {
+                Ok(v) => v,
+                Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
+            }
             .program()
             .clone()
         };
@@ -3299,7 +3541,7 @@ async fn run_phase(
             match pull_result {
                 Ok(v) if !matches!(v, polydat::ast::Value::None) => {}
                 Ok(_) => {
-                    return Err(format!(
+                    return crate::phase_outcome::Outcome::failed().with_reason(format!(
                         "{polydat_context}: init binding '{init_name}' violates the init contract: \
                          scope-init eval returned Value::None (per SRD 11 §\"Init Binding Contract\" \
                          Plan B). The eval function signaled failure or returned no value."
@@ -3307,7 +3549,7 @@ async fn run_phase(
                 }
                 Err(payload) => {
                     let msg = panic_message(&payload);
-                    return Err(format!(
+                    return crate::phase_outcome::Outcome::failed().with_reason(format!(
                         "{polydat_context}: init binding '{init_name}' violates the init contract: \
                          scope-init eval panicked: {msg} (per SRD 11 §\"Init Binding Contract\" \
                          Plan B)."
@@ -3357,7 +3599,7 @@ async fn run_phase(
             match pull_result {
                 Ok(v) if !matches!(v, polydat::ast::Value::None) => {}
                 Ok(_) => {
-                    return Err(format!(
+                    return crate::phase_outcome::Outcome::failed().with_reason(format!(
                         "{polydat_context}: final binding '{final_name}' could not be \
                          materialised at scope activation: eval returned Value::None. \
                          If the RHS depends on a wire that's only available per cycle, \
@@ -3367,7 +3609,7 @@ async fn run_phase(
                 }
                 Err(payload) => {
                     let msg = panic_message(&payload);
-                    return Err(format!(
+                    return crate::phase_outcome::Outcome::failed().with_reason(format!(
                         "{polydat_context}: final binding '{final_name}' eval panicked at \
                          scope activation: {msg}"
                     ));
@@ -3389,9 +3631,12 @@ async fn run_phase(
         // legitimately spans phases that don't all consume the
         // param.
         if !ctx.phase_param_overrides.is_empty() {
-            let chosen = crate::phase_params::resolve_for_phase(
+            let chosen = match crate::phase_params::resolve_for_phase(
                 &ctx.phase_param_overrides, phase_name,
-            ).map_err(|e| format!("{polydat_context}: {e}"))?;
+            ).map_err(|e| format!("{polydat_context}: {e}")) {
+                Ok(v) => v,
+                Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
+            };
             for (ov, dialect) in chosen {
                 use polydat::kernel::{Dataflow, WriteError};
                 match kernel.set_wire(
@@ -3414,7 +3659,7 @@ async fn run_phase(
                         }
                     }
                     Err(e) => {
-                        return Err(format!(
+                        return crate::phase_outcome::Outcome::failed().with_reason(format!(
                             "{polydat_context}: phase-scoped override `{}.{}=`: {e}",
                             ov.pattern.source(), ov.param,
                         ));
@@ -3547,7 +3792,7 @@ async fn run_phase(
                         write_slot("__end_ordinal", PValue::U64(cursor_extent));
                     }
                     Err(e) => {
-                        return Err(format!(
+                        return crate::phase_outcome::Outcome::failed().with_reason(format!(
                             "cursor '{name}': `over` clause failed to resolve: {e}"
                         ));
                     }
@@ -3644,7 +3889,7 @@ async fn run_phase(
     let op_sequence = OpSequence::from_ops(iter_ops, ctx.seq_type);
     if op_sequence.stanza_length() == 0 {
         crate::diag!(crate::observer::LogLevel::Warn, "warning: phase '{phase_name}' has no ops, skipping");
-        return Ok(());
+        return crate::phase_outcome::Outcome::skipped();
     }
 
     // Resolve cycles
@@ -3721,8 +3966,11 @@ async fn run_phase(
         Some(s) => {
             let mut exp = crate::runner::expand_workload_params(s, &ctx.workload_params);
             for (v, val) in &iter_var_values { exp = exp.replace(&format!("{{{v}}}"), val); }
-            exp.parse::<usize>().map_err(|_| format!(
-                "phase '{phase_name}': concurrency '{exp}' not a valid integer"))?
+            match exp.parse::<usize>().map_err(|_| format!(
+                "phase '{phase_name}': concurrency '{exp}' not a valid integer")) {
+                Ok(v) => v,
+                Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
+            }
         }
         None => ctx.concurrency,
     };
@@ -4060,7 +4308,7 @@ async fn run_phase(
         crate::phase_end_triggers::fire_phase_completed(
             phase_name, &phase_labels, 0.0,
         );
-        return Ok(());
+        return crate::phase_outcome::Outcome::skipped();
     }
 
     let config = ActivityConfig {
@@ -4212,8 +4460,11 @@ async fn run_phase(
             // Shared path: the registration's
             // `resource_key` declares which params are
             // identity-bearing.
-            let key = (reg.resource_key)(&merged_params)?;
-            crate::resource_pool::attach_shared_adapter(
+            let key = match (reg.resource_key)(&merged_params) {
+                Ok(v) => v,
+                Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
+            };
+            match crate::resource_pool::attach_shared_adapter(
                 &ctx.resource_pool,
                 &aname_owned,
                 phase_name,
@@ -4223,11 +4474,14 @@ async fn run_phase(
                         &aname_for_factory, &merged_params,
                     ).await
                 },
-            ).await?
+            ).await {
+                Ok(v) => v,
+                Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
+            }
         } else {
             // Legacy path: per-phase key, fresh adapter
             // every phase. Push A behaviour preserved.
-            crate::resource_pool::attach_legacy_adapter(
+            match crate::resource_pool::attach_legacy_adapter(
                 &ctx.resource_pool,
                 &aname_owned,
                 phase_name,
@@ -4237,7 +4491,10 @@ async fn run_phase(
                         &aname_for_factory, &merged_params,
                     ).await
                 },
-            ).await?
+            ).await {
+                Ok(v) => v,
+                Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
+            }
         };
         // Insert under the REQUESTED adapter name (what the op
         // asked for via `adapter:` or workload default). Today
@@ -4360,7 +4617,7 @@ async fn run_phase(
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_completed(phase_name, &phase_labels, 0.0);
         });
-        return Ok(());
+        return crate::phase_outcome::Outcome::skipped();
     }
 
     // SRD-42 §"now" reads come through `MetricsQuery::now()` which
@@ -4481,14 +4738,16 @@ async fn run_phase(
         let timeout = std::time::Duration::from_millis(
             poll_spec.timeout_ms.unwrap_or(300_000),
         );
-        let phase_kernel = ctx.scope_tree.phase_node_by_name(phase_name)
-            .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned())
-            .ok_or_else(|| format!(
+        let phase_kernel = match ctx.scope_tree.phase_node_by_name(phase_name)
+            .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned()) {
+            Some(k) => k,
+            None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
                 "phase '{phase_name}': SRD-75 phase-poll requires the phase \
                  scope kernel to be installed, but no cached kernel was found. \
                  This is a synthesis bug — every phase with `poll:` should \
                  land via the `Bindings` install spec.",
-            ))?;
+            )),
+        };
         let started_at = std::time::Instant::now();
         // SRD-75 `on_timeout` — `Error` (default) when
         // unset OR the workload-declared string is the
@@ -4614,7 +4873,7 @@ async fn run_phase(
     // register + outcome cell stay readable.
     let settle_succeeded = settle.as_ref().is_some_and(|h| {
         matches!(
-            **h.outcome.load(),
+            &**h.outcome.load(),   // match by ref — Outcome no longer Copy (SRD-92 reason field)
             Some(o) if o.validity == crate::phase_outcome::Validity::Succeeded
         )
     });
@@ -4642,7 +4901,7 @@ async fn run_phase(
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_completed(phase_name, &phase_labels, 0.0);
         });
-        return Ok(());
+        return crate::phase_outcome::Outcome::skipped();
     }
 
     // Emit one final phase_progress with fresh numbers before
@@ -4951,7 +5210,7 @@ async fn run_phase(
                 "scenario stop-on-error ({reason}) after phase \
                  '{phase_name}' — halting remaining walk");
         }
-        return Err(format!("phase '{phase_name}' {detail_msg}"));
+        return crate::phase_outcome::Outcome::failed().with_reason(format!("phase '{phase_name}' {detail_msg}"));
     }
 
     // Indent the completion line by scope depth so
@@ -5032,7 +5291,7 @@ async fn run_phase(
             crate::diag!(crate::observer::LogLevel::Error,
                 "workload stop condition tripped ({reason}) after phase \
                  '{phase_name}' — failing session");
-            return Err(format!("workload stop condition tripped: {reason}"));
+            return crate::phase_outcome::Outcome::failed().with_reason(format!("workload stop condition tripped: {reason}"));
         }
         // A graceful `stop` effect: nothing failed, halt the walk and
         // flag the deliberately-skipped tail so the unreached-phase
@@ -5042,7 +5301,7 @@ async fn run_phase(
             "workload stop condition tripped ({reason}) after phase \
              '{phase_name}' — halting remaining walk");
     }
-    Ok(())
+    crate::phase_outcome::Outcome::completed()
 }
 
 /// Phase-level `metrics:` emission, run once at phase completion.

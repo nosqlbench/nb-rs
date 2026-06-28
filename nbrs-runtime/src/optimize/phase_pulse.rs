@@ -116,7 +116,7 @@ mod tests {
     impl PulseEvaluator for FireOnNth {
         fn evaluate(&mut self, _w: &MetricSet) -> Option<Outcome> {
             self.seen += 1;
-            (self.seen >= self.n).then_some(self.outcome)
+            (self.seen >= self.n).then(|| self.outcome.clone())
         }
     }
 
@@ -142,13 +142,13 @@ mod tests {
         ev.report(&empty_window()); // third pulse fires
         assert!(stop.load(Ordering::Relaxed), "stop flag raised on the verdict");
         assert!(ev.finished(), "self-unregisters after the verdict");
-        let got = cell.load().expect("outcome published");
+        let got = (**cell.load()).clone().expect("outcome published");
         assert_eq!(got.disposition, Disposition::Interrupted);
         assert_eq!(got.validity, Validity::Succeeded);
 
         // Further pulses are no-ops — the disposition is not overwritten.
         ev.report(&empty_window());
-        assert_eq!(cell.load().expect("still set").disposition, Disposition::Interrupted);
+        assert_eq!((**cell.load()).clone().expect("still set").disposition, Disposition::Interrupted);
     }
 
     #[test]
@@ -161,7 +161,7 @@ mod tests {
         );
         let cell = ev.outcome_cell();
         ev.report(&empty_window());
-        let got = cell.load().expect("outcome published");
+        let got = (**cell.load()).clone().expect("outcome published");
         assert_eq!(got.disposition, Disposition::Interrupted);
         assert_eq!(got.validity, Validity::Failed, "timeout is the untrustworthy quadrant");
     }

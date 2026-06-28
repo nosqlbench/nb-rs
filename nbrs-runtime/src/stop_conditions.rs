@@ -255,7 +255,7 @@ impl StopConditionSet {
             let expr = compile_stop_condition(phase_kernel, idx, &decl.when)?;
             conditions.push(StopCondition {
                 expr,
-                effect: decl.effect,
+                effect: decl.effect.clone(),   // Outcome no longer Copy (SRD-92 reason field)
                 reason: format!("stop_condition: {}", decl.when),
             });
             idx += 1;
@@ -280,7 +280,7 @@ impl StopConditionSet {
     pub fn evaluate(&mut self, state: &RuntimeState) -> Option<(Outcome, String)> {
         for cond in &mut self.conditions {
             if state.trips(&mut cond.expr) {
-                return Some((cond.effect, cond.reason.clone()));
+                return Some((cond.effect.clone(), cond.reason.clone()));
             }
         }
         None

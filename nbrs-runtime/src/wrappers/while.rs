@@ -27,7 +27,6 @@
 //! loop starts, and the memo emits after the loop concludes).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
@@ -73,9 +72,12 @@ pub struct WhileWrapper {
     /// Handle for the synthesised `__while` binding registered
     /// into the scope fixture at init.
     cond_handle: crate::fixture::PullHandle,
-    /// Activity-global stop flag. Each loop iteration checks
-    /// this and exits cleanly when set.
-    activity_stop: Arc<AtomicBool>,
+    /// SRD-92 Step 0 — the cooperative-stop view (activity `stop_flag` +
+    /// session stop + SRD-83 `walk_stop` + SRD-82 P6 `daemon_stop`). Each
+    /// loop iteration checks it and exits cleanly when ANY arm is set.
+    /// Before Step 0 this held only the activity `stop_flag`, so a `while:`
+    /// op did NOT abort on a scenario walk-halt or a daemon-group stop.
+    stop_view: crate::session_signals::StopView,
     /// Hard ceiling on iterations per outer dispatch. Defends
     /// against runaway loops (a `while:` predicate that
     /// never flips falsy) hanging the activity. The default
@@ -104,7 +106,7 @@ impl WhileWrapper {
     /// compile and the kernel was rebuilt without it.
     pub fn wrap(
         inner: Arc<dyn OpDispenser>,
-        activity_stop: Arc<AtomicBool>,
+        stop_view: crate::session_signals::StopView,
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<Arc<dyn OpDispenser>, String> {
         let cond_handle = fx.register_pull(BINDING_NAME).map_err(|e| {
@@ -114,7 +116,7 @@ impl WhileWrapper {
         Ok(Arc::new(Self {
             inner,
             cond_handle,
-            activity_stop,
+            stop_view,
             iteration_ceiling: Self::DEFAULT_ITERATION_CEILING,
         }))
     }
@@ -123,7 +125,7 @@ impl WhileWrapper {
     #[cfg(test)]
     pub fn with_iteration_ceiling(
         inner: Arc<dyn OpDispenser>,
-        activity_stop: Arc<AtomicBool>,
+        stop_view: crate::session_signals::StopView,
         fx: &mut crate::fixture::ScopeFixture,
         ceiling: u64,
     ) -> Result<Arc<dyn OpDispenser>, String> {
@@ -133,7 +135,7 @@ impl WhileWrapper {
         Ok(Arc::new(Self {
             inner,
             cond_handle,
-            activity_stop,
+            stop_view,
             iteration_ceiling: ceiling,
         }))
     }
@@ -166,10 +168,11 @@ impl OpDispenser for WhileWrapper {
             let mut iterations: u64 = 0;
             let mut last_result: Option<OpResult> = None;
             loop {
-                if self.activity_stop.load(Ordering::Acquire) {
-                    // Session-level stop. Treat as clean exit;
-                    // any iteration metrics already landed
-                    // through the inner's wrappers.
+                if self.stop_view.stopped() {
+                    // Any cooperative stop (activity / session / SRD-83
+                    // walk / SRD-82 P6 daemon-group). Treat as a clean
+                    // exit; any iteration metrics already landed through
+                    // the inner's wrappers.
                     return Ok(last_result.unwrap_or_else(OpResult::skipped));
                 }
                 if iterations >= self.iteration_ceiling {

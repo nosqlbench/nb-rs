@@ -135,15 +135,23 @@ pub enum Validity {
 /// quadrants: `Completed+Succeeded` (clean), `Completed+Failed` (ran
 /// fully, garbage), `Interrupted+Succeeded` (partial, re-usable),
 /// `Interrupted+Failed` (partial, discard).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
     pub disposition: Disposition,
     pub validity: Validity,
+    /// SRD-92 — optional human reason (the first failing child's message),
+    /// absorbing the parallel `(Outcome, Option<String>)` tuple the scenario
+    /// shell carries today. `None` for clean outcomes; set via
+    /// [`Outcome::with_reason`]. Dropping `Copy` (a `String` is not `Copy`)
+    /// is the cost — by-value reuses become moves/clones. Serialized only
+    /// when present, so axis-only `Outcome` JSON round-trips unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl Outcome {
     pub const fn new(disposition: Disposition, validity: Validity) -> Self {
-        Self { disposition, validity }
+        Self { disposition, validity, reason: None }
     }
     /// Ran fully, result trustworthy.
     pub const fn completed() -> Self {
@@ -162,6 +170,15 @@ impl Outcome {
     /// Never started.
     pub const fn skipped() -> Self {
         Self::new(Disposition::Skipped, Validity::Succeeded)
+    }
+
+    /// SRD-92 — attach the human reason (the failing child's message). Used
+    /// by the flow-Outcome-up step so the leaf shells / aggregate fold carry
+    /// the message that the `?`-propagation path needs, retiring the parallel
+    /// `(Outcome, Option<String>)` tuple.
+    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
     }
 
     /// The result is not trustworthy (the session-level red mark).

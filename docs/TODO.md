@@ -1,3 +1,5 @@
+* partial download of large datasets restarts
+* scheduler tick drift: actual=1.19.... nominal=1s
 * optimizer improvements
   * initial space probe from centroid
   * PCA sort

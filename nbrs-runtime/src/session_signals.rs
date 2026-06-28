@@ -128,6 +128,74 @@ pub fn request_shell_stop(cause: StopCause) {
     }
 }
 
+/// SRD-92 Step 0 — one cooperative-stop view, consulted at every boundary.
+/// Bundles the per-execution stop sources so a boundary check is a single
+/// call, and so a unit that previously held only ONE flag (the `while:`
+/// wrapper held only the activity `stop_flag`) observes ALL of them. The
+/// global / per-execution session stop ([`stop_requested`]) is always
+/// folded in; a `fail`-effect global ([`fault_stop_requested`]) is folded
+/// into [`StopView::poll`].
+///
+/// The `daemon` source (the SRD-82 Part 6 daemon-group completion) is a
+/// CLEAN termination: it ends a loop ([`StopView::stopped`]) but is NOT a
+/// fault, so it is excluded from [`StopView::abnormal`] (the
+/// failure-determining set). Fiber-pool scale-down
+/// ([`crate::fiber_pool::StopFlag`]) is a per-fiber concern, deliberately
+/// NOT part of this view.
+#[derive(Clone, Default)]
+pub struct StopView {
+    activity: Option<Arc<AtomicBool>>,
+    walk: Option<Arc<AtomicBool>>,
+    daemon: Option<Arc<AtomicBool>>,
+}
+
+impl StopView {
+    /// Build from the per-execution stop sources (any may be absent).
+    pub fn new(
+        activity: Option<Arc<AtomicBool>>,
+        walk: Option<Arc<AtomicBool>>,
+        daemon: Option<Arc<AtomicBool>>,
+    ) -> Self {
+        Self { activity, walk, daemon }
+    }
+
+    #[inline]
+    fn on(f: &Option<Arc<AtomicBool>>) -> bool {
+        f.as_ref().is_some_and(|b| b.load(Ordering::Relaxed))
+    }
+
+    /// Any cooperative stop — incl. the clean daemon-group completion and
+    /// the global / per-execution session stop. Use at loop BREAK boundaries.
+    #[inline]
+    pub fn stopped(&self) -> bool {
+        Self::on(&self.activity)
+            || stop_requested()
+            || Self::on(&self.walk)
+            || Self::on(&self.daemon)
+    }
+
+    /// A stop that marks the unit FAILED / abnormal — EXCLUDES the clean
+    /// daemon-group stop. Use for the failure-determining return.
+    #[inline]
+    pub fn abnormal(&self) -> bool {
+        Self::on(&self.activity) || stop_requested() || Self::on(&self.walk)
+    }
+
+    /// The stop CAUSE for shell-level recording (SRD-82 Part 4): a fault
+    /// (the activity error-handler `stop_flag`, or a `fail`-effect global)
+    /// outranks a clean interrupt.
+    #[inline]
+    pub fn poll(&self) -> Option<StopCause> {
+        if fault_stop_requested() || Self::on(&self.activity) {
+            Some(StopCause::Fault)
+        } else if self.stopped() {
+            Some(StopCause::Interrupt)
+        } else {
+            None
+        }
+    }
+}
+
 /// Install a tokio task that watches `ctrl_c()` and translates
 /// SIGINT into the two-stage shutdown described in the module
 /// doc. Idempotent — only the first call wins; subsequent calls

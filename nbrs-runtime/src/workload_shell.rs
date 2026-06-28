@@ -164,7 +164,7 @@ impl WorkloadShell {
             *slot = Some(reason.clone());
         }
         if let Ok(mut slot) = self.stop_outcome.lock() {
-            *slot = Some(outcome);
+            *slot = Some(outcome.clone());   // Outcome no longer Copy (SRD-92 reason field)
         }
         Some((outcome, reason))
     }
@@ -197,7 +197,7 @@ impl WorkloadShell {
     /// session failure; `Interrupted+Succeeded` a graceful stop.
     #[allow(dead_code)] // WIP: SRD-83 — consumed by the executor stop path / future shell outcome
     pub fn stop_outcome(&self) -> Option<Outcome> {
-        self.stop_outcome.lock().ok().and_then(|g| *g)
+        self.stop_outcome.lock().ok().and_then(|g| g.clone())
     }
 }
 

@@ -1044,6 +1044,34 @@ impl Activity {
             .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
     }
 
+    /// SRD-92 Step 0 — the cooperative-stop view at a loop BREAK boundary:
+    /// the activity `stop_flag`, the global / per-execution session stop,
+    /// the SRD-83 `walk_stop`, and the SRD-82 P6 `daemon_stop`. Replaces the
+    /// scattered per-flag loads at the fiber boundaries. (The
+    /// failure-determining return deliberately uses a different set that
+    /// EXCLUDES `daemon_stop` — see
+    /// [`crate::session_signals::StopView::abnormal`].)
+    #[inline]
+    pub fn stopped(&self) -> bool {
+        self.stop_flag.load(std::sync::atomic::Ordering::Relaxed)
+            || crate::session_signals::stop_requested()
+            || self.walk_stop_requested()
+            || self.daemon_stop_requested()
+    }
+
+    /// The portable [`StopView`](crate::session_signals::StopView) for this
+    /// activity — handed to the `while:` wrapper (a `Send + 'static`
+    /// dispenser that cannot borrow the activity) so its loop observes the
+    /// full stop set, not just `stop_flag`. Built once at wrapper
+    /// construction, after `walk_stop` / `daemon_stop` are set in `run_phase`.
+    pub fn stop_view(&self) -> crate::session_signals::StopView {
+        crate::session_signals::StopView::new(
+            Some(self.stop_flag.clone()),
+            self.walk_stop.clone(),
+            self.daemon_stop.clone(),
+        )
+    }
+
     /// SRD-32a Push 3 — set the workload-root wrapper-
     /// composition override on this activity. Pass `None` to
     /// clear; pass `Some(order)` to install. The order list
@@ -1695,7 +1723,7 @@ impl Activity {
                                 // their extern slots.
                                 match crate::wrappers::WhileWrapper::wrap(
                                     current.clone(),
-                                    activity.stop_flag.clone(),
+                                    activity.stop_view(),
                                     &mut fx,
                                 ) {
                                     Ok(d) => { current = d; false }
@@ -3091,11 +3119,8 @@ async fn executor_task(
     let mut source = activity.source_factory.create_reader();
 
     loop {
-        if activity.stop_flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
-        if crate::session_signals::stop_requested() { break; }
-        if activity.walk_stop_requested() { break; }
-        if activity.daemon_stop_requested() { break; }
-        if fiber_stop.load(std::sync::atomic::Ordering::Acquire) { break; }
+        if activity.stopped() { break; }                              // SRD-92 Step 0: one stop view
+        if fiber_stop.load(std::sync::atomic::Ordering::Acquire) { break; }  // per-fiber scale-down (distinct)
 
         // Phase 1: RESERVE — CAS on shared cursor, instantaneous.
         // Acquires one stanza's worth of ordinals. This is the only
@@ -3291,10 +3316,7 @@ async fn executor_task(
         // Each op resolves via this fiber's Polydat instance, then
         // dispatches to the adapter. Sequential in declaration order.
         for ordinal in range.clone() {
-            if activity.stop_flag.load(Ordering::Relaxed) { break; }
-            if crate::session_signals::stop_requested() { break; }
-            if activity.walk_stop_requested() { break; }
-            if activity.daemon_stop_requested() { break; }
+            if activity.stopped() { break; }   // SRD-92 Step 0: one stop view
 
             // Mark op as active from render through result join.
             // "Active" means this fiber is working on an op — resolving
