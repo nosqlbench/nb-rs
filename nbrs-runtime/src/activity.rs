@@ -3116,7 +3116,17 @@ async fn executor_task(
     // Create per-fiber source reader (used for all phases).
     // Source-declared phases will eventually use the advancer model,
     // but for now all phases go through the source reader.
-    let mut source = activity.source_factory.create_reader();
+    // SRD-92 Step 5e — the per-cycle stream flows through the unified
+    // `ChildSource` contract: a `CursorSource` wraps the reader; `poll_next` IS
+    // `reserve(stanza_len)` (per-stanza, not per-cycle → zero per-cycle
+    // overhead), yielding an ordinal `Range`; `render` is the per-ordinal fetch.
+    // The level selects `CursorReserve` — this very FiberPool loop.
+    use crate::child_source::{select_drive, Child, ChildSource, CursorSource, Drive};
+    let mut source = CursorSource::new(
+        activity.source_factory.create_reader(),
+        stanza_len as usize,
+    );
+    debug_assert_eq!(select_drive(source.realizability()), Drive::CursorReserve);
 
     loop {
         if activity.stopped() { break; }                              // SRD-92 Step 0: one stop view
@@ -3125,9 +3135,11 @@ async fn executor_task(
         // Phase 1: RESERVE — CAS on shared cursor, instantaneous.
         // Acquires one stanza's worth of ordinals. This is the only
         // shared-state interaction per stanza.
-        let range = match source.reserve(stanza_len as usize) {
-            Some(r) => r,
-            None => {
+        let range = match source.poll_next() {
+            Some(Child::Ordinals(r)) => r,
+            // CursorSource yields only Ordinals; anything else (None) means the
+            // source is exhausted → the phase-poll rewind / standard break.
+            _ => {
                 // SRD-75 phase-poll: source exhausted ends a poll
                 // iteration. Check the predicate; if false and
                 // the deadline hasn't elapsed, sleep, rewind the
@@ -3289,7 +3301,10 @@ async fn executor_task(
                             std::sync::atomic::Ordering::Relaxed);
                         break;
                     }
-                    source = activity.source_factory.create_reader();
+                    source = CursorSource::new(
+                        activity.source_factory.create_reader(),
+                        stanza_len as usize,
+                    );
                     continue;
                 }
                 break; // source exhausted (standard path)
@@ -3324,7 +3339,7 @@ async fn executor_task(
             activity.metrics.ops_started.fetch_add(1, Ordering::Relaxed);
 
             // Render the source item (fiber-local, no shared state)
-            let item = source.render_item(ordinal);
+            let item = source.render(ordinal);
             let cycle = ordinal;
             // Publish the cycle to the enclosing fiber-context
             // scope so any Polydat node reading `cycle()` or implicitly

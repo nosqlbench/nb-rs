@@ -134,6 +134,16 @@ impl CursorSource {
     pub fn new(source: Box<dyn DataSource>, stride: usize) -> Self {
         Self { source, stride }
     }
+
+    /// Render a previously-reserved ordinal to its source item — the per-cycle,
+    /// fiber-local fetch (delegates to the inner `DataSource::render_item`).
+    /// Separate from the drive (`poll_next` = `reserve`); the hot loop calls
+    /// this once per ordinal — `#[inline]` so it costs exactly the inner
+    /// `render_item` (zero wrapper overhead on the per-cycle path).
+    #[inline]
+    pub fn render(&self, ordinal: u64) -> polydat::iteration::source::SourceItem {
+        self.source.render_item(ordinal)
+    }
 }
 
 impl ChildSource for CursorSource {
