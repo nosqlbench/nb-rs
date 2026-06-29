@@ -206,6 +206,15 @@ fn query_flags() -> Vec<Flag> {
             repeatable: false,
         },
         Flag {
+            long: "--family", short: None, aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::Custom(crate::completion::metric_family_provider),
+            help: "Add a metric family to the query (repeatable; tab-completes \
+                   to family names). Each is merged into one output — select \
+                   several families at once.",
+            repeatable: true,
+        },
+        Flag {
             long: "--at", short: None, aliases: &[],
             arity: Arity::Value, value: ValueProvider::None,
             help: "Anchor timestamp (ms epoch). Default: the db's latest sample.",

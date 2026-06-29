@@ -1848,7 +1848,7 @@ mod walker_tests {
         // (cli_spec §raw_args) — this is the gap that left `--lookback`
         // etc. un-completable, plus the new `--range`.
         let cands = complete(&["nbrs", "metrics", "query", "--"]);
-        for required in ["--range", "--lookback", "--at", "--step",
+        for required in ["--range", "--family", "--lookback", "--at", "--step",
                          "--stale-window", "--all-samples", "--db"]
         {
             assert!(cands.iter().any(|c| c == required),

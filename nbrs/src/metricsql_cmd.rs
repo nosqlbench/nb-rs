@@ -38,7 +38,7 @@ use nbrs_metricsql::runtime::{
 };
 
 pub fn query(args: &[String]) {
-    let mut parsed = match parse_args(args) {
+    let parsed = match parse_args(args) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("nbrs metrics query: {e}");
@@ -93,8 +93,8 @@ pub fn query(args: &[String]) {
     // returned; otherwise the literal duration is appended verbatim. This
     // is the discoverable answer to "show me the metric over a window /
     // the whole run" without hand-typing the `[…]` selector.
-    if let Some(range) = parsed.range.clone() {
-        let suffix = if range.eq_ignore_ascii_case("all") {
+    let range_suffix: Option<String> = parsed.range.as_ref().map(|range| {
+        if range.eq_ignore_ascii_case("all") {
             let earliest = match earliest_sample_ts(&parsed.db_path) {
                 Ok(Some(ts)) => ts,
                 _ => anchor_ms,
@@ -102,27 +102,15 @@ pub fn query(args: &[String]) {
             let span = (anchor_ms - earliest).max(1);
             format!("[{span}ms]")
         } else {
-            if let Err(e) = parse_duration_ms(&range) {
+            if let Err(e) = parse_duration_ms(range) {
                 eprintln!("nbrs metrics query: --range: {e} \
                     (expected a duration like 1m / 30s, or `all`)");
                 std::process::exit(2);
             }
             format!("[{range}]")
-        };
-        parsed.query = format!("{}{}", parsed.query, suffix);
-    }
-
-    // SRD-77 — the DataSource coalesces across executions
-    // (per-instance-latest); no implicit single-`exec_id` injection.
-    // An explicit `exec_id="N"` the operator typed survives as a
-    // normal label matcher.
-    let expr = match nbrs_metricsql::parse(&parsed.query) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("nbrs metrics query: parse: {e}");
-            std::process::exit(2);
         }
-    };
+    });
+
     // Two query modes:
     //
     // - **Instant** (`--lookback 0`, the default): use
@@ -141,6 +129,10 @@ pub fn query(args: &[String]) {
     } else {
         (anchor_ms - parsed.lookback_ms, anchor_ms, None)
     };
+    // SRD-77 — the DataSource coalesces across executions
+    // (per-instance-latest); no implicit single-`exec_id` injection.
+    // An explicit `exec_id="N"` the operator typed survives as a
+    // normal label matcher.
     let ctx = EvalContext {
         data: &ds, start_ms: ctx_start, end_ms: ctx_end,
         step_ms, lookback_ms: instant_lookback,
@@ -148,19 +140,43 @@ pub fn query(args: &[String]) {
         // resolve to the original bounds.
         query_start_ms: Some(ctx_start), query_end_ms: Some(ctx_end),
     };
-    match evaluate(&ctx, &expr) {
-        Ok(series) => emit(&series, parsed.latest_only),
-        Err(e) => {
-            eprintln!("nbrs metrics query: evaluate: {e}");
-            std::process::exit(2);
+    // Evaluate each positional independently and merge the results: a
+    // single quoted expression is one eval; multiple bare family names
+    // (`attempt_total result_total …`) each resolve as a selector and
+    // their series union into one sorted output — "show me these
+    // families". `--range` (if given) applies to each.
+    let mut all_series: Vec<Series> = Vec::new();
+    for raw in &parsed.queries {
+        let q = match &range_suffix {
+            Some(s) => format!("{raw}{s}"),
+            None => raw.clone(),
+        };
+        let expr = match nbrs_metricsql::parse(&q) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("nbrs metrics query: parse {q:?}: {e}");
+                std::process::exit(2);
+            }
+        };
+        match evaluate(&ctx, &expr) {
+            Ok(series) => all_series.extend(series),
+            Err(e) => {
+                eprintln!("nbrs metrics query: evaluate {q:?}: {e}");
+                std::process::exit(2);
+            }
         }
     }
+    emit(&all_series, parsed.latest_only);
 }
 
 #[derive(Debug)]
 struct ParsedArgs {
     db_path: PathBuf,
-    query: String,
+    /// One or more positionals. A single quoted metricsql expression
+    /// (`'sum(x) by (y)'`) is one element evaluated as-is; multiple bare
+    /// family names (`attempt_total result_total …`) are each evaluated as
+    /// a selector and the results merged — "show me these families".
+    queries: Vec<String>,
     anchor_ms: Option<i64>,
     lookback_ms: i64,
     step_ms: i64,
@@ -184,7 +200,7 @@ struct ParsedArgs {
 
 fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
     let mut db_path: Option<PathBuf> = None;
-    let mut query: Option<String> = None;
+    let mut queries: Vec<String> = Vec::new();
     let mut anchor_ms: Option<i64> = None;
     // Default to instant query (lookback 0). Caller can opt
     // into range mode with `--lookback <duration>`.
@@ -232,6 +248,19 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
             other if other.starts_with("--range=") => {
                 range = Some(other["--range=".len()..].to_string());
             }
+            // Repeatable family selector. Each `--family <name>` adds a
+            // metric family to the query; their series merge into one
+            // output. This is the autocomplete-friendly way to select
+            // multiple families — veks completes a flag's value on every
+            // occurrence (positionals only complete the first token).
+            "--family" => {
+                queries.push(iter.next()
+                    .ok_or("--family requires a metric family name")?
+                    .to_string());
+            }
+            other if other.starts_with("--family=") => {
+                queries.push(other["--family=".len()..].to_string());
+            }
             "--stale-window" => {
                 let v = iter.next().ok_or("--stale-window requires a duration")?;
                 stale_window_ms = parse_duration_ms(v)?;
@@ -247,20 +276,22 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
             }
             other if other.starts_with("--session") => {}
             other if !other.starts_with("--") => {
-                if query.is_some() {
-                    return Err(format!("unexpected positional argument {other:?}"));
-                }
-                query = Some(other.to_string());
+                // Each bare positional is a query: one quoted metricsql
+                // expression, or several family names to merge.
+                queries.push(other.to_string());
             }
             other => {
                 return Err(format!("unknown flag '{other}'"));
             }
         }
     }
-    let query = query.ok_or("metricsql expression required (positional argument)")?;
+    if queries.is_empty() {
+        return Err("metricsql expression or metric family name(s) required \
+                    (positional argument)".to_string());
+    }
     let db_path = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     Ok(ParsedArgs {
-        db_path, query, anchor_ms, lookback_ms, step_ms,
+        db_path, queries, anchor_ms, lookback_ms, step_ms,
         stale_window_ms, latest_only, range,
     })
 }
@@ -714,6 +745,11 @@ pub fn print_usage() {
     eprintln!("                               reporting cadence, e.g. 1m. Tab-");
     eprintln!("                               completes to `all` + this session's");
     eprintln!("                               cadences.");
+    eprintln!("  --family <name>              Add a metric family (repeatable;");
+    eprintln!("                               tab-completes). Each family's series");
+    eprintln!("                               are shown independently — NOT");
+    eprintln!("                               aggregated. Bare positionals work");
+    eprintln!("                               too (only the first tab-completes).");
     eprintln!();
     eprintln!("Durations: 5m, 1h30m, 500ms, 2.5s. Bare numbers are seconds.");
 }
@@ -766,7 +802,18 @@ mod tests {
         let p = parse_args(&args).unwrap();
         assert_eq!(p.db_path, PathBuf::from("/tmp/x.db"));
         assert_eq!(p.lookback_ms, 300_000);
-        assert_eq!(p.query, "sum(cpu)");
+        assert_eq!(p.queries, vec!["sum(cpu)".to_string()]);
+    }
+
+    #[test]
+    fn arg_parser_collects_multiple_family_positionals() {
+        // Multiple bare family names → one query each, merged at eval.
+        let args: Vec<String> = ["attempt_total", "result_total", "--range", "all"]
+            .iter().map(|s| s.to_string()).collect();
+        let p = parse_args(&args).unwrap();
+        assert_eq!(p.queries,
+            vec!["attempt_total".to_string(), "result_total".to_string()]);
+        assert_eq!(p.range.as_deref(), Some("all"));
     }
 
     #[test]
@@ -798,10 +845,27 @@ mod tests {
     }
 
     #[test]
-    fn arg_parser_rejects_two_positionals() {
-        let args: Vec<String> = ["sum(cpu)", "another"]
+    fn arg_parser_accepts_multiple_positional_families() {
+        // Multiple bare positionals are now distinct families (each
+        // evaluated as its own selector, series shown independently —
+        // not aggregated), not an error.
+        let args: Vec<String> = ["attempt_total", "result_total", "cycles_total"]
             .iter().map(|s| s.to_string()).collect();
-        let err = parse_args(&args).unwrap_err();
-        assert!(err.contains("unexpected"));
+        let p = parse_args(&args).unwrap();
+        assert_eq!(p.queries, vec![
+            "attempt_total".to_string(),
+            "result_total".to_string(),
+            "cycles_total".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn arg_parser_collects_repeatable_family_flag() {
+        let args: Vec<String> =
+            ["--family", "attempt_total", "--family", "attempt_success"]
+                .iter().map(|s| s.to_string()).collect();
+        let p = parse_args(&args).unwrap();
+        assert_eq!(p.queries,
+            vec!["attempt_total".to_string(), "attempt_success".to_string()]);
     }
 }
