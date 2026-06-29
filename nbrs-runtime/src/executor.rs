@@ -5548,6 +5548,10 @@ async fn run_phase_inner(
     if let Some((outcome, reason)) = ctx.workload_shell
         .record_phase(false, phase_op_count, phase_error_count)
     {
+        // The ACTUAL aggregate wires that crossed the threshold
+        // (`children_done=2/3, …`), so the message says WHY, not just which
+        // predicate. Snapshotted right after the tripping `record_phase`.
+        let actual = ctx.workload_shell.describe_state();
         if outcome.is_failure() {
             // SRD-83 Part 5 — a `fail`-effect workload condition tripped
             // on the new aggregate even though this phase succeeded
@@ -5556,17 +5560,18 @@ async fn run_phase_inner(
             // walk halts. The phase's own outcome stays Completed (it
             // did complete); the workload-level breach is what fails.
             crate::diag!(crate::observer::LogLevel::Error,
-                "workload stop condition tripped ({reason}) after phase \
-                 '{phase_name}' — failing session");
-            return crate::phase_outcome::Outcome::failed().with_reason(format!("workload stop condition tripped: {reason}"));
+                "workload stop condition tripped ({reason}) — actual: {actual} \
+                 — after phase '{phase_name}' — failing session");
+            return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                "workload stop condition tripped: {reason} — actual: {actual}"));
         }
         // A graceful `stop` effect: nothing failed, halt the walk and
         // flag the deliberately-skipped tail so the unreached-phase
         // check treats it like a clean Ctrl-C stop.
         crate::session_signals::request_graceful_stop();
         crate::diag!(crate::observer::LogLevel::Warn,
-            "workload stop condition tripped ({reason}) after phase \
-             '{phase_name}' — halting remaining walk");
+            "workload stop condition tripped ({reason}) — actual: {actual} \
+             — after phase '{phase_name}' — halting remaining walk");
     }
     crate::phase_outcome::Outcome::completed()
 }

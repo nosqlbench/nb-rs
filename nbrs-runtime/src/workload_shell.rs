@@ -135,6 +135,13 @@ impl WorkloadShell {
         self.evaluate()
     }
 
+    /// Human-readable snapshot of the current aggregate wires
+    /// (`children_done=2/3, …`), for a tripped workload-condition's message
+    /// so it reports the ACTUAL values, not just the predicate. SRD-83.
+    pub fn describe_state(&self) -> String {
+        self.snapshot().describe()
+    }
+
     /// The current aggregate as a [`RuntimeState`] snapshot.
     fn snapshot(&self) -> RuntimeState {
         RuntimeState {

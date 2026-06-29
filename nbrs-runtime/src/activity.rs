@@ -2222,10 +2222,18 @@ impl Activity {
                     // Failed); a `stop` effect is a clean halt (no error,
                     // the phase ends Completed). Either way the stop_flag
                     // drains the fibers at their next cycle boundary.
+                    // Human-readable detail: the ACTUAL wire values that
+                    // crossed the threshold (op_count / errors / error_rate /
+                    // elapsed), so the failure says WHY, not just which
+                    // predicate. The predicate itself rides the `[{reason}]`
+                    // class prefix on the slot, so the message no longer
+                    // repeats it (matches the `[class] message` convention
+                    // used by the cycle-/daemon-error paths).
+                    let actual = state.describe();
                     if outcome.is_failure() {
-                        let msg = format!("stop condition tripped ({reason}) — failing phase");
+                        let msg = format!("stop condition tripped — actual: {actual} — failing phase");
                         crate::diag!(crate::observer::LogLevel::Error,
-                            "activity '{}': {msg}", activity.config.name);
+                            "activity '{}': {reason} — {msg}", activity.config.name);
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
@@ -2246,9 +2254,9 @@ impl Activity {
                             });
                         }
                     } else {
-                        let msg = format!("stop condition tripped ({reason}) — stopping phase");
+                        let msg = format!("stop condition tripped — actual: {actual} — stopping phase");
                         crate::diag!(crate::observer::LogLevel::Warn,
-                            "activity '{}': {msg}", activity.config.name);
+                            "activity '{}': {reason} — {msg}", activity.config.name);
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {

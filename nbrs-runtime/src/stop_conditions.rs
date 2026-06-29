@@ -86,6 +86,28 @@ impl RuntimeState {
         }
     }
 
+    /// Human-readable snapshot of the live wires at evaluation time, for a
+    /// tripped condition's message — so the failure reports the ACTUAL
+    /// values (`op_count=523, errors=22, error_rate=4.21%`) that crossed the
+    /// threshold, not just the predicate text. Adapts to the shell: a
+    /// scenario/workload shell reports `children_*`; a phase shell reports
+    /// the op / error counts.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if self.children_total > 0 {
+            parts.push(format!("children_done={}/{}", self.children_done, self.children_total));
+            if self.children_failed > 0 {
+                parts.push(format!("children_failed={}", self.children_failed));
+            }
+        } else {
+            parts.push(format!("op_count={}", self.op_count));
+            parts.push(format!("errors={}", self.error_count));
+            parts.push(format!("error_rate={:.2}%", self.error_rate() * 100.0));
+        }
+        parts.push(format!("elapsed={:.1}s", self.elapsed_ms as f64 / 1000.0));
+        parts.join(", ")
+    }
+
     /// The `(wire, value)` pairs this snapshot supplies. The single
     /// source for the wire→`Value` mapping, so the injector and any
     /// extern-declaration list stay in agreement.
