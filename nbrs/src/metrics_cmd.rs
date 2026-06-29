@@ -58,20 +58,24 @@ pub const LIST_FLAGS: &[&str] = &[
     "--db", "--format", "--tofile",
 ];
 
-/// Boolean flags for `nbrs metrics list` / `show`. Same
-/// single-source-of-truth contract as [`LIST_FLAGS`], but
-/// these don't take a value.
+/// Boolean flags for `nbrs metrics show`. Same single-source-of-truth
+/// contract as [`LIST_FLAGS`], but these don't take a value. `--list` is
+/// the consolidated former `list` subcommand: it drops the per-leaf value
+/// summary, leaving just the family + label-dimension tree.
 pub const LIST_BOOL_FLAGS: &[&str] = &[
     "--tree",
+    "--list",
 ];
 
 /// Canonical flag set for `nbrs metrics match`.
 pub const MATCH_FLAGS: &[&str] = &["--db"];
 
-/// Closed value set for `--format`.
+/// Closed value set for `--format`. `metricsql` is the single canonical
+/// name for the OpenMetrics/PromQL selector line form (`family{labels}`) —
+/// the former `openmetrics` / `promql` / `prometheus` synonyms are dropped
+/// (they produced byte-identical output; one name, no aliases).
 pub const FORMAT_VALUES: &[&str] = &[
-    "plain", "json", "jsonl", "yaml", "csv",
-    "metricsql", "openmetrics", "promql",
+    "plain", "json", "jsonl", "yaml", "csv", "metricsql",
 ];
 
 /// Concatenation helper: the full advertised flag list for a
@@ -157,6 +161,13 @@ fn list_or_show_flags() -> Vec<Flag> {
             help: "Reshape json/yaml as nested key=value tree.",
             repeatable: false,
         },
+        Flag {
+            long: "--list", short: None, aliases: &[],
+            arity: Arity::Bool, value: ValueProvider::None,
+            help: "Names only — families + label dimensions, no value summary \
+                   (the consolidated former `metrics list`).",
+            repeatable: false,
+        },
     ];
     out.extend(execution_qualifier_flags());
     out
@@ -196,26 +207,9 @@ pub fn spec() -> Command {
         completion_override: None,
         subcommands: vec![
             Command {
-                name: "list",
-                help: "List metric families and label dimensions.",
-                category: Category::Tools, level: Level::Secondary,
-                flags: list_or_show_flags(),
-                kv_params: &[],
-        dynamic_options: None,
-        positionals: vec![crate::cli_spec::Positional {
-                    name: "expr",
-                    help: "Optional filter (family-glob or `family{labels}`).",
-                    value: crate::cli_spec::ValueProvider::Custom(crate::completion::metric_family_provider),
-                    kind: crate::cli_spec::PositionalKind::ZeroOrOne,
-                }],
-                subcommands: Vec::new(),
-                handler: Some(Handler::Sync(handle_list)),
-                raw_args: false,
-                completion_override: None,
-            },
-            Command {
                 name: "show",
-                help: "Same as `list` plus a value summary at each leaf.",
+                help: "List metric families + label dimensions with a value \
+                       summary at each leaf; `--list` omits the values.",
                 category: Category::Tools, level: Level::Secondary,
                 flags: list_or_show_flags(),
                 kv_params: &[],
@@ -324,12 +318,10 @@ pub fn spec() -> Command {
 
 // ── handlers ──────────────────────────────────────────────
 
-fn handle_list(p: ParsedCommand) -> Result<(), String> {
-    list_from_parsed(&p, false);
-    Ok(())
-}
-
 fn handle_show(p: ParsedCommand) -> Result<(), String> {
+    // `show` renders the value summary by default; `--list` drops the
+    // values (the former `metrics list` subcommand, now a flag). The
+    // forwarded `--list` flips `show_values` off inside `list()`.
     list_from_parsed(&p, true);
     Ok(())
 }
@@ -436,6 +428,9 @@ fn list_from_parsed(p: &ParsedCommand, show_values: bool) {
     if p.bool("--tree") {
         argv.push("--tree".into());
     }
+    if p.bool("--list") {
+        argv.push("--list".into());
+    }
     forward_exec_qualifier_flags(p, &mut argv);
     if let Some(expr) = p.positional(0) {
         argv.push(expr.to_string());
@@ -447,7 +442,7 @@ pub fn metrics_command(args: &[String]) {
     let sub = args.first().map(String::as_str);
     let rest = args.get(1..).unwrap_or(&[]);
     match sub {
-        Some("list") => list(rest, false),
+        // `list` is consolidated into `show --list` (names only).
         Some("show") => list(rest, true),
         Some("match") => match_specs(rest),
         Some("groups") => groups_command(rest),
@@ -469,10 +464,10 @@ pub fn metrics_command(args: &[String]) {
 fn print_metrics_usage() {
     eprintln!();
     eprintln!("Usage:");
-    eprintln!("  nbrs metrics list  [<expr>]  List metric families + dimensions");
-    eprintln!("                               as a tree.");
-    eprintln!("  nbrs metrics show  [<expr>]  Same as `list` plus a one-line");
-    eprintln!("                               value summary at each leaf.");
+    eprintln!("  nbrs metrics show  [<expr>]  Metric families + label dimensions");
+    eprintln!("                               with a value summary at each leaf.");
+    eprintln!("                               Add --list for names only (no");
+    eprintln!("                               values); --tree for a nested view.");
     eprintln!("  nbrs metrics match  <expr>   Flat list of full");
     eprintln!("                               `family{{labels}}` specs that");
     eprintln!("                               match — copy-paste into other");
@@ -506,22 +501,22 @@ fn print_metrics_usage() {
     eprintln!("  --session <path-or-name>     SRD-04 umbrella; redirects");
     eprintln!("                               logs/latest before reading.");
     eprintln!();
-    eprintln!("Output (list / show):");
+    eprintln!("Output:");
     eprintln!("  --format <name>              plain | json | jsonl | yaml | csv");
     eprintln!("                               | metricsql");
-    eprintln!("                               Default: plain. `metricsql`");
-    eprintln!("                               (aliases: openmetrics / promql /");
-    eprintln!("                               prometheus) emits one OpenMetrics");
-    eprintln!("                               line per instance —");
+    eprintln!("                               Default: plain. `metricsql` emits");
+    eprintln!("                               one selector line per instance —");
     eprintln!("                               family{{key=\"value\",…}} — with");
     eprintln!("                               labels in natural alphanumeric");
     eprintln!("                               order so every line shares the");
     eprintln!("                               same key sequence (copy-paste");
-    eprintln!("                               into match/query/PromQL tools).");
+    eprintln!("                               into match / query tools).");
+    eprintln!("  --list                       Names only — omit the per-leaf");
+    eprintln!("                               value summary (families + label");
+    eprintln!("                               dimensions, no values).");
     eprintln!("  --tofile <path>              Write to <path>. With no");
     eprintln!("                               --format, the extension chooses");
     eprintln!("                               (.json, .jsonl, .yaml, .csv,");
-    eprintln!("                               .om / .openmetrics / .promql /");
     eprintln!("                               .metricsql → metricsql,");
     eprintln!("                               .txt → plain).");
     eprintln!("  --tree                       Reshape json/yaml output into a");
@@ -1110,8 +1105,7 @@ impl Format {
             "jsonl" | "ndjson" => Ok(Format::Jsonl),
             "yaml" | "yml" => Ok(Format::Yaml),
             "csv" => Ok(Format::Csv),
-            "metricsql" | "openmetrics" | "promql" | "prometheus"
-                => Ok(Format::MetricsQL),
+            "metricsql" => Ok(Format::MetricsQL),
             other => Err(format!(
                 "unknown format '{other}' (expected one of: \
                  plain, json, jsonl, yaml, csv, metricsql)"
@@ -1127,8 +1121,7 @@ impl Format {
             "jsonl" | "ndjson" => Format::Jsonl,
             "yaml" | "yml" => Format::Yaml,
             "csv"   => Format::Csv,
-            "om" | "openmetrics" | "promql" | "metricsql"
-                    => Format::MetricsQL,
+            "metricsql" => Format::MetricsQL,
             _ => Format::Plain,
         }
     }
@@ -1245,11 +1238,15 @@ fn list(args: &[String], show_values_in: bool) {
     let mut format_arg: Option<String> = None;
     let mut tofile: Option<PathBuf> = None;
     let mut tree_mode: bool = false;
+    // `--list` renders names only (families + label dimensions, no value
+    // summary) — the consolidated former `list` subcommand. It is applied
+    // AFTER parsing so it wins over `--tree`'s value promotion and the
+    // `show` default.
+    let mut list_mode: bool = false;
     // `show_values` may be promoted by `--tree`: tree mode's
     // leaves *are* the value summary — null leaves carry no
     // information, so loading the summary is required for the
-    // output to be useful. `list --tree` and `show --tree` thus
-    // produce the same content.
+    // output to be useful.
     let mut show_values: bool = show_values_in;
     let mut exec_flag = MetricsExecFlag::default();
     let mut iter = args.iter();
@@ -1278,6 +1275,7 @@ fn list(args: &[String], show_values_in: bool) {
                 tofile = Some(PathBuf::from(&other[10..]));
             }
             "--tree" => { tree_mode = true; show_values = true; }
+            "--list" => { list_mode = true; }
             // Globals consumed at startup.
             "--session" | "--session-name" | "--session-path"
             | "--session-reuse" | "--session-keep" | "--session-shelflife" => {
@@ -1292,6 +1290,12 @@ fn list(args: &[String], show_values_in: bool) {
                 std::process::exit(2);
             }
         }
+    }
+    // `--list` (names only) wins over both the `show` default and
+    // `--tree`'s value promotion: a list view never carries per-leaf
+    // values, whatever the layout.
+    if list_mode {
+        show_values = false;
     }
 
     // Resolve format. Explicit `--format` wins; otherwise derive
@@ -2440,11 +2444,16 @@ mod tests {
     }
 
     #[test]
-    fn format_parse_metricsql_aliases() {
-        for alias in &["metricsql", "openmetrics", "promql", "prometheus",
-                       "MetricsQL", "OpenMetrics"] {
-            assert_eq!(Format::parse(alias).unwrap(), Format::MetricsQL,
-                "alias '{alias}' must resolve to Format::MetricsQL");
+    fn format_parse_metricsql_is_canonical_and_synonyms_rejected() {
+        // `metricsql` is the one canonical name (case-insensitive); the
+        // former openmetrics / promql / prometheus synonyms are gone.
+        for ok in &["metricsql", "MetricsQL", "METRICSQL"] {
+            assert_eq!(Format::parse(ok).unwrap(), Format::MetricsQL,
+                "'{ok}' must resolve to Format::MetricsQL");
+        }
+        for gone in &["openmetrics", "promql", "prometheus"] {
+            assert!(Format::parse(gone).is_err(),
+                "synonym '{gone}' must be rejected — metricsql is canonical");
         }
     }
 

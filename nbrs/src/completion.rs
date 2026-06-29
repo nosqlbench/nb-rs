@@ -835,8 +835,7 @@ fn metrics_node() -> StrictNode<true, true> {
     let list_bools  = crate::metrics_cmd::LIST_BOOL_FLAGS;
     let match_flags = crate::metrics_cmd::match_all_flags();
     StrictNode::group(vec![
-        ("list",  Node::leaf_with_flags(&list_flags,  list_bools)
-            .with_value_provider("--format", fn_provider(static_metrics_format))),
+        // `list` is consolidated into `show --list` (a `--list` bool flag).
         ("show",  Node::leaf_with_flags(&list_flags,  list_bools)
             .with_value_provider("--format", fn_provider(static_metrics_format))),
         ("match", Node::leaf_with_flags(&match_flags, &[])),
