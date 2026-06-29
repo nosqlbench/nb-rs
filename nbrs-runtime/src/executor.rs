@@ -974,6 +974,36 @@ async fn run_scenario_body(
     let mut daemon_set = tokio::task::JoinSet::new();
     for (i, node) in nodes.iter().enumerate() {
         if !daemon_flags[i] { continue; }
+        // SRD-100 — a daemon is DISPATCHED ahead of its foreground siblings
+        // (spawned here, before the foreground loop below), so its scene
+        // node must also be PUSHED ahead of them: `seq` is assigned at push
+        // time (scene_tree: count-of-phases + 1), and a foreground sibling's
+        // async push would otherwise land first and steal the lower seq —
+        // making the daemon sort/display AFTER a phase it actually precedes.
+        // Push the daemon's leaf scene node synchronously NOW, in dispatch
+        // order; the later `execute_node` push is idempotent (find-or-create
+        // by (parent, name)) and resolves to this same node + seq. (Mirrors
+        // the leaf-phase push in `execute_node`'s `ScenarioNode::Phase` arm —
+        // keep the label/path derivation in sync. A for_each daemon is
+        // skipped: its per-iter cells are pushed asynchronously by the
+        // comprehension dispatcher, not here.)
+        if let ScenarioNode::Phase(dname) = node
+            && ctx.phases.get(dname.as_str()).map(|p| p.for_each.is_none()).unwrap_or(true)
+        {
+            let op_names: Vec<String> = ctx.phases.get(dname.as_str())
+                .map(|p| p.ops.iter().map(|op| op.name.clone()).collect())
+                .unwrap_or_default();
+            let phase_labels = canonical_phase_label(
+                &ctx.current_parent_kernel.as_ref()
+                    .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            );
+            let mut phase_path = ctx.scene_tree_path.clone();
+            phase_path.push(crate::checkpoint::PathSegment::Phase(dname.clone()));
+            let _ = push_phase_scene_node(
+                ctx.scene_tree_parent_id, phase_path, dname.clone(), phase_labels, op_names,
+            );
+        }
         let node_scope_idx = child_scope_indices[i];
         let node = node.clone();
         let mut task_ctx = ctx.clone();
