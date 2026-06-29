@@ -74,7 +74,7 @@ scenarios:
     let outer = nodes(&yaml, "outer");
     assert_eq!(outer.len(), 1);
     match &outer[0] {
-        ScenarioNode::Comprehension { comprehension, children } => {
+        ScenarioNode::Comprehension { comprehension, children, .. } => {
             assert_eq!(comprehension.coordinate_names(), vec!["k"]);
             assert_eq!(children.len(), 1);
             let (name, kids) = included(&children[0]);

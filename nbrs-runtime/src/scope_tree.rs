@@ -424,7 +424,7 @@ impl ScopeTree {
                 });
                 self.nodes[parent_idx].children.push(idx);
             }
-            ScenarioNode::Comprehension { comprehension, children } => {
+            ScenarioNode::Comprehension { comprehension, children, .. } => {
                 let idx = self.add_node(ScopeNode {
                     kind: ScopeKind::Comprehension {
                         comprehension: comprehension.clone(),
@@ -1230,7 +1230,7 @@ mod tests {
             r#where: None,
             order: None,
         }.into_algebra().unwrap();
-        ScenarioNode::Comprehension { comprehension, children }
+        ScenarioNode::Comprehension { comprehension, children, continue_if: None }
     }
 
     #[test]
@@ -1670,7 +1670,7 @@ mod tests {
                 ParsedOp::simple("alpha", "noop"),
                 ParsedOp::simple("beta", "noop"),
             ],
-            for_each: None, loop_scope: None, iter_scope: None,
+            for_each: None, continue_if: None, loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             poll: None,
             bindings: BindingsDef::default(),
@@ -1702,7 +1702,7 @@ mod tests {
             cycles: None, concurrency: None, rate: None, daemon: false,
             adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
             ops: vec![ParsedOp::simple("only", "noop")],
-            for_each: None, loop_scope: None, iter_scope: None,
+            for_each: None, continue_if: None, loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             poll: None,
             bindings: BindingsDef::default(),
@@ -1725,7 +1725,7 @@ mod tests {
             cycles: None, concurrency: None, rate: None, daemon: false,
             adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
             ops: vec![ParsedOp::simple("foo", "noop")],
-            for_each: None, loop_scope: None, iter_scope: None,
+            for_each: None, continue_if: None, loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
             poll: None,
             bindings: BindingsDef::default(),

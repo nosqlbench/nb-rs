@@ -12,8 +12,8 @@ use polydat::iteration::comprehension::spec::{
     parse_clause, parse_clause_list, ComprehensionSpec, ForSpec,
 };
 use crate::model::{
-    BindingsDef, MetricSpec, ParsedOp, ScenarioNode, StopConditionSpec, Workload,
-    WorkloadPhase,
+    BindingsDef, ContinueIfSpec, MetricSpec, ParsedOp, ScenarioNode, ScopeLevel,
+    StopConditionSpec, Workload, WorkloadPhase,
 };
 use crate::template::expand_templates;
 
@@ -644,6 +644,45 @@ fn emit_set_array_element(e: &JVal) -> String {
 /// - String: phase name
 /// - Object with `for_each` + `phases`: for_each loop (phases parsed recursively)
 /// - Array: list of nodes
+///
+/// Map a `ScopeLevel` keyword (the `each:` vocabulary) from YAML text.
+fn parse_scope_level(s: &str) -> Option<ScopeLevel> {
+    match s {
+        "self" => Some(ScopeLevel::SelfScope),
+        "op" => Some(ScopeLevel::Op),
+        "phase" => Some(ScopeLevel::Phase),
+        "scenario" => Some(ScopeLevel::Scenario),
+        "workload" => Some(ScopeLevel::Workload),
+        _ => None,
+    }
+}
+
+/// SRD-101 — parse a `continue_if:` value into a [`ContinueIfSpec`]. Accepts
+/// the short string form (`continue_if: "end_of(p) <= max"` → `each: scenario`)
+/// and the long map form (`{ when, each }`, where `each` is a single level or a
+/// list). `each` defaults to `scenario` (the enclosing sweep).
+fn parse_continue_if(val: Option<&JVal>) -> Option<ContinueIfSpec> {
+    match val? {
+        JVal::String(when) => Some(ContinueIfSpec {
+            when: when.clone(),
+            each: vec![ScopeLevel::Scenario],
+        }),
+        JVal::Object(map) => {
+            let when = map.get("when").and_then(|v| v.as_str())?.to_string();
+            let each: Vec<ScopeLevel> = match map.get("each") {
+                Some(JVal::String(s)) => parse_scope_level(s).into_iter().collect(),
+                Some(JVal::Array(arr)) => arr.iter()
+                    .filter_map(|v| v.as_str().and_then(parse_scope_level))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let each = if each.is_empty() { vec![ScopeLevel::Scenario] } else { each };
+            Some(ContinueIfSpec { when, each })
+        }
+        _ => None,
+    }
+}
+
 fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
     match val {
         JVal::String(s) => vec![ScenarioNode::Phase(s.clone())],
@@ -738,7 +777,10 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                                 .map(String::from),
                         };
                         match spec.into_algebra() {
-                            Ok(comprehension) => vec![ScenarioNode::Comprehension { comprehension, children }],
+                            Ok(comprehension) => vec![ScenarioNode::Comprehension {
+                        comprehension, children,
+                        continue_if: parse_continue_if(obj.get("continue_if")),
+                    }],
                             Err(e) => {
                                 eprintln!("warning: comprehension: {e}");
                                 vec![]
@@ -811,7 +853,10 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     order: obj.get("order").and_then(|v| v.as_str()).map(String::from),
                 };
                 match spec.into_algebra() {
-                    Ok(comprehension) => vec![ScenarioNode::Comprehension { comprehension, children }],
+                    Ok(comprehension) => vec![ScenarioNode::Comprehension {
+                        comprehension, children,
+                        continue_if: parse_continue_if(obj.get("continue_if")),
+                    }],
                     Err(e) => {
                         eprintln!("warning: for_combinations: {e}");
                         vec![]
@@ -1045,10 +1090,11 @@ pub fn resolve_scenario_includes(
                     children,
                 })
             }
-            ScenarioNode::Comprehension { comprehension, children } => {
+            ScenarioNode::Comprehension { comprehension, children, continue_if } => {
                 Ok(ScenarioNode::Comprehension {
                     comprehension: comprehension.clone(),
                     children: resolve_nodes(children, input, out, stack)?,
+                    continue_if: continue_if.clone(),
                 })
             }
             ScenarioNode::DoWhile { condition, counter, children } => {
@@ -1272,6 +1318,8 @@ fn parse_phases(
             .or_else(|| phase_obj.get("for"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        // SRD-101 — phase-level `continue_if` gate (bounds a `for_each` sweep).
+        let continue_if = parse_continue_if(phase_obj.get("continue_if"));
 
         let loop_scope = phase_obj.get("loop_scope")
             .and_then(|v| v.as_str())
@@ -1467,6 +1515,7 @@ fn parse_phases(
             tags,
             ops: inline_ops,
             for_each,
+            continue_if,
             loop_scope,
             iter_scope,
             checkpoint,

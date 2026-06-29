@@ -26,10 +26,12 @@
 #   - per-tier ground truth: name the tier with
 #     `matching_profile_name_at(..., idx_of(p))`, prebuffer its own
 #     facets, and recall with `query_vector_at` / `neighbor_indices_at`.
-#   - `if: "end_of(p) <= effective_max_size"` caps the sweep at the
-#     configured size (sizes ascend; the last matching profile is the
-#     natural end). `effective_max_size` defaults to the dataset's full
-#     base-vector count (`max_size=0`); a positive `max_size` caps below it.
+#   - `continue_if: "end_of(p) <= effective_max_size"` (SRD-101) caps the
+#     sweep: a pre-entry gate on the tier loop stops BEFORE the first tier
+#     whose cumulative size would exceed the cap (sizes ascend; the last
+#     in-budget profile is the natural end), ending the sweep gracefully.
+#     `effective_max_size` defaults to the dataset's full base-vector count
+#     (`max_size=0`); a positive `max_size` caps below it.
 #
 # A dataset with only the default profile yields a single tier (one full
 # load + recall). A dataset with multiple profiles uses the matching
@@ -116,8 +118,8 @@ bindings: |
   # dataset", resolved here to the dataset's actual base-vector count
   # (`vector_count` auto-opens the base facet); a positive `max_size`
   # CLI override caps below that. Effectively-const (bound once at
-  # scope init), referenced by the per-tier `if: end_of(p) <=
-  # effective_max_size` gates below.
+  # scope init), read by the `continue_if: "end_of(p) <=
+  # effective_max_size"` sweep gate on the tier loop below (SRD-101).
   const effective_max_size := if(max_size > 0, max_size, vector_count("{dataset}:{profile}"))
 
 scenarios:
@@ -134,6 +136,15 @@ scenarios:
     # partition `p` spans `[previous tier size, this tier size)` — the
     # incremental range — and carries its masked position as `idx_of(p)`.
     - for: "p in profile_partitions('{dataset}', '{profile_pattern}')"
+      # SRD-101 — bound the sweep: a pre-entry gate on the tier iteration. The
+      # walker evaluates this before entering each tier; the moment a tier's
+      # cumulative base-vector count would exceed `effective_max_size` (the
+      # dataset's full base count by default), the over-budget tier is NOT run
+      # and the sweep ends gracefully (Interrupted+Succeeded, exit 0), with a
+      # `continue_if:` marker recording the actual coordinate. `each` defaults
+      # to `scenario` (this tier loop). Replaces the three per-op `if:` gates
+      # that used to no-op past the cap while still iterating every tier.
+      continue_if: "end_of(p) <= effective_max_size"
       phases:
         # Each tier is TWO sibling sub-scopes (SRD-82 Part 6 daemon
         # isolation): the `tier_build` include holds the
@@ -291,8 +302,6 @@ phases:
       query_vector := query_vector_at(prebuffered, q % base)
     ops:
       probe_ann:
-        # Same cap as the rest of the sweep — skip tiers over max_size.
-        if: "end_of(p) <= effective_max_size"
         prepared: |
           SELECT [key] FROM {keyspace}.{table}
           ORDER BY value
@@ -344,10 +353,6 @@ phases:
       train_vector := vector_at(prebuffered, ord)
     ops:
       insert:
-        # Cap the sweep at max_size; sizes ascend, so once a tier's end
-        # exceeds the cap every later tier is skipped too (the last
-        # profile is the natural end of the partition list).
-        if: "end_of(p) <= effective_max_size"
         max_batch_size: 64KB
         batchtype: unlogged
         prepared: |
@@ -522,7 +527,6 @@ phases:
       ground_truth := neighbor_indices_at(prebuffered, q % base)
     ops:
       select_ann:
-        if: "end_of(p) <= effective_max_size"
         prepared: |
           SELECT [key] FROM {keyspace}.{table}
           ORDER BY value

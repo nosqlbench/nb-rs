@@ -206,6 +206,26 @@ impl WorkloadShell {
     pub fn stop_outcome(&self) -> Option<Outcome> {
         self.stop_outcome.lock().ok().and_then(|g| g.clone())
     }
+
+    /// SRD-101 — latch a graceful whole-walk halt requested by a
+    /// `continue_if` gate with `each: workload` (not a runtime `stop_when`
+    /// trip). Idempotent: only the first caller sets the latch + reason +
+    /// outcome; returns `true` iff this call latched it. Routes through the
+    /// SAME `walk_stop` / `stop_reason` / `stop_outcome` slots as
+    /// [`Self::evaluate`], so the halt surfaces identically — distinguished
+    /// only by the `continue_if:` reason prefix the caller supplies.
+    pub fn request_stop(&self, outcome: Outcome, reason: String) -> bool {
+        if self.walk_stop.swap(true, Ordering::Relaxed) {
+            return false; // already latched (by a stop condition or an earlier gate)
+        }
+        if let Ok(mut slot) = self.stop_reason.lock() {
+            *slot = Some(reason);
+        }
+        if let Ok(mut slot) = self.stop_outcome.lock() {
+            *slot = Some(outcome);
+        }
+        true
+    }
 }
 
 #[cfg(test)]

@@ -187,7 +187,7 @@ mod tests {
     fn empty_phase() -> WorkloadPhase {
         WorkloadPhase {
             cycles: None, concurrency: None, rate: None, daemon: false,
-            adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
+            adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), continue_if: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),
@@ -289,6 +289,7 @@ mod tests {
             ScenarioNode::Comprehension {
                 comprehension: comp,
                 children: vec![ScenarioNode::Phase("p".into())],
+                continue_if: None,
             },
         ]);
         mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);

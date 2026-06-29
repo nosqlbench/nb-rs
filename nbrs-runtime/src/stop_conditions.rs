@@ -26,6 +26,8 @@
 //! *not* baked into the phase kernel's own matter. The firing events /
 //! settle daemon (step 3) drive [`RuntimeState::trips`] per trigger.
 
+use std::sync::Arc;
+
 use polydat::ast::Value;
 use polydat::dsl::stub::{ExprStub, GraphMatter, ScopedExpr};
 use polydat::kernel::{Dataflow, PolydatKernel};
@@ -187,6 +189,61 @@ pub fn compile_stop_condition(
     );
     ScopedExpr::bind(phase_kernel, name, matter)
         .map_err(|e| format!("stop condition {idx} predicate `{when}`: {e}"))
+}
+
+/// SRD-101 — compile a `continue_if` predicate into a gate kernel with a single
+/// output, `__continue_if := <when>`.
+///
+/// The iteration coordinates (`p`, `k`, …) are pre-declared as `extern`s **at
+/// their runtime types** (from `coords`' [`Value::port_type`]) so the compiler
+/// does not default them — an `Ext<Partition>` coordinate must be typed `ext`,
+/// not `u64`, for `end_of(p)` to type-check. Every OTHER free identifier the
+/// predicate reads — outer-scope consts like `effective_max_size` — is left to
+/// the compiler's auto-extern; [`eval_continue_if`] then wires those in from the
+/// parent scope's cascade at materialisation. `coords` is a representative
+/// iteration's bindings (all iterations of a comprehension share coordinate
+/// names + types).
+pub fn compile_continue_if(
+    when: &str,
+    coords: &[(String, Value)],
+    strict: bool,
+) -> Result<Arc<PolydatKernel>, String> {
+    let mut source = String::new();
+    for (name, value) in coords {
+        source.push_str(&format!("extern {name}: {}\n", value.port_type().to_keyword()));
+    }
+    source.push_str(&format!("__continue_if := {when}"));
+    polydat::dsl::compile_polydat_with_outputs(
+        &source, None, &["__continue_if".to_string()], strict,
+    )
+    .map(Arc::new)
+    .map_err(|e| format!("continue_if predicate `{when}`: {e}"))
+}
+
+/// SRD-101 — evaluate a compiled `continue_if` gate for ONE iteration.
+///
+/// Materialises the gate kernel as a proper sub-scope of the sweep's `parent`
+/// — the SAME scope-walk that builds the body's per-iteration kernel
+/// ([`PolydatKernel::for_iteration`]) — so the auto-externed outer consts are
+/// WIRED IN from the parent's cascade and the iteration coordinates are SET
+/// from `bindings`. The predicate therefore resolves every in-scope name
+/// natively: the canonical-scope contract (one scope-walked kernel answers all
+/// names) rather than a hand-declared-extern sub-context that can't see
+/// inherited consts. Returns truthiness: `true` → keep sweeping (run this
+/// iteration); `false` → the gate has gone false, halt the sweep.
+pub fn eval_continue_if(
+    gate_canonical: &Arc<PolydatKernel>,
+    parent: &Arc<PolydatKernel>,
+    bindings: &[(String, Value)],
+) -> Result<bool, String> {
+    let mut kernel = PolydatKernel::for_iteration(gate_canonical, parent, bindings);
+    let pulled = Arc::get_mut(&mut kernel)
+        .ok_or("continue_if: freshly built gate kernel unexpectedly shared")?
+        .pull("__continue_if");
+    Ok(match pulled {
+        Value::Bool(b) => *b,
+        other => other.as_u64() != 0,
+    })
 }
 
 /// A declared stop condition resolved to its predicate text and its

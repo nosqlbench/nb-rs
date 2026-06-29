@@ -3985,7 +3985,7 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
         for node in nodes {
             match node {
                 nbrs_workload::model::ScenarioNode::Phase(_) => {}
-                nbrs_workload::model::ScenarioNode::Comprehension { comprehension, children } => {
+                nbrs_workload::model::ScenarioNode::Comprehension { comprehension, children, .. } => {
                     // Grammar-based source-reference extraction.
                     // A comprehension clause `eh in eh_values`
                     // carries `eh_values` as a *bare* source
@@ -4104,7 +4104,7 @@ fn collect_iter_vars_recursive(
     use nbrs_workload::model::ScenarioNode::*;
     match node {
         Phase(_) => {}
-        Comprehension { comprehension, children } => {
+        Comprehension { comprehension, children, .. } => {
             for name in comprehension.coordinate_names() {
                 out.insert(name.to_string());
             }
@@ -4667,7 +4667,7 @@ fn format_scenario_nodes(
                     ));
                 }
             }
-            Comprehension { comprehension, children } => {
+            Comprehension { comprehension, children, .. } => {
                 // Algebra-native display: walk the AST once to
                 // detect Union vs flat, then format. Matches
                 // the scope_tree::label_for_comprehension shape
@@ -5641,7 +5641,7 @@ mod tests {
 
         let phase = WorkloadPhase {
             cycles: None, concurrency: None, rate: None, daemon: false,
-            adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
+            adapter: None, errors: None, error_rate_max: None, stop_when: Vec::new(), continue_if: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),

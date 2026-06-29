@@ -1438,11 +1438,25 @@ fn execute_node<'a>(
                             Some((name.clone(), op_names, phase_path_for_iters)),
                         ).await
                     } else {
+                        // SRD-101 sweep gate (phase-level `for_each`) — compile
+                        // the gate against the sweep's parent scope before
+                        // `name` is moved into the terminal.
+                        let phase_continue_if = ctx.phases.get(name.as_str())
+                            .and_then(|p| p.continue_if.clone());
+                        let coord_sample = steps.first()
+                            .map(|s| s.bindings.as_slice()).unwrap_or(&[]);
+                        let gate = match resolve_continue_if(
+                            phase_continue_if, &parent, coord_sample, ctx.strict) {
+                            Ok(g) => g,
+                            Err(e) => return crate::phase_outcome::Outcome::failed()
+                                .with_reason(e),
+                        };
                         dispatch_comprehension(
                             ctx, steps,
                             TerminalAction::Phase(name), depth + 1, false,
                             "for_each",
                             Some((name.clone(), op_names, phase_path_for_iters)),
+                            gate,
                         ).await
                     };
                     ctx.scene_tree_parent_id = saved_parent;
@@ -1554,7 +1568,7 @@ fn execute_node<'a>(
                     }
                 }
             }
-            ScenarioNode::Comprehension { comprehension, children } => {
+            ScenarioNode::Comprehension { comprehension, children, continue_if } => {
                 let label = crate::scope_tree::ScopeKind::Comprehension {
                     comprehension: comprehension.clone(),
                 }.label();
@@ -1624,6 +1638,16 @@ fn execute_node<'a>(
                     ctx.scene_tree_parent_id, scope_path.clone(),
                     header, own_names.clone(),
                 );
+                // SRD-101 sweep gate (scenario `for:`) — compile against the
+                // sweep's parent scope so coords + outer consts both resolve.
+                let coord_sample = steps.first()
+                    .map(|s| s.bindings.as_slice()).unwrap_or(&[]);
+                let continue_if_gate = match resolve_continue_if(
+                    continue_if.clone(), &parent, coord_sample, ctx.strict) {
+                    Ok(g) => g,
+                    Err(e) => return crate::phase_outcome::Outcome::failed()
+                        .with_reason(enrich_with_yaml_location(ctx, &needle, e)),
+                };
                 let saved_parent = ctx.scene_tree_parent_id;
                 let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
                 let saved_scope_idx = ctx.current_scope_idx;
@@ -1633,6 +1657,7 @@ fn execute_node<'a>(
                     ctx, steps,
                     TerminalAction::Children(children), depth + 1, false,
                     kind, None,
+                    continue_if_gate,
                 ).await;
                 ctx.scene_tree_parent_id = saved_parent;
                 ctx.scene_tree_path = saved_path;
@@ -2006,6 +2031,39 @@ impl OwnedTerminal {
     }
 }
 
+/// SRD-101 — a `continue_if` sweep gate resolved for dispatch: the parsed spec
+/// (predicate text + `each` halt scope), the compiled gate kernel, and the
+/// sweep's parent scope. Per iteration, [`crate::stop_conditions::eval_continue_if`]
+/// materialises the gate kernel under `parent` (consts cascade in) bound to the
+/// iteration coordinates, and pulls the predicate — see [`resolve_continue_if`].
+struct ContinueIfGate {
+    spec: nbrs_workload::model::ContinueIfSpec,
+    gate_canonical: std::sync::Arc<polydat::kernel::PolydatKernel>,
+    parent: std::sync::Arc<polydat::kernel::PolydatKernel>,
+}
+
+/// SRD-101 — resolve a `continue_if` spec for a sweep: compile its predicate
+/// into a gate kernel (coordinates pre-typed from `coord_sample`, outer consts
+/// auto-externed) and capture the sweep's `parent` scope for per-iteration
+/// materialisation. `coord_sample` is one representative iteration's bindings
+/// (coordinate names + runtime types). `Ok(None)` when no gate is declared;
+/// `Err` surfaces a predicate compile error.
+fn resolve_continue_if(
+    spec: Option<nbrs_workload::model::ContinueIfSpec>,
+    parent: &std::sync::Arc<polydat::kernel::PolydatKernel>,
+    coord_sample: &[(String, polydat::ast::Value)],
+    strict: bool,
+) -> Result<Option<ContinueIfGate>, String> {
+    match spec {
+        None => Ok(None),
+        Some(spec) => {
+            let gate_canonical = crate::stop_conditions::compile_continue_if(
+                &spec.when, coord_sample, strict)?;
+            Ok(Some(ContinueIfGate { spec, gate_canonical, parent: parent.clone() }))
+        }
+    }
+}
+
 /// Unified comprehension dispatcher. Drains the strategy into a
 /// flat tuple list, then walks it through the semaphore-gated
 /// `JoinSet` harness per the level's `schedule=` policy. Per SRD
@@ -2047,6 +2105,9 @@ fn dispatch_comprehension<'a>(
     // — per-iter inner scope is derived from the step
     // bindings + outer `ctx.scene_tree_path`.
     phase_terminal_meta: Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
+    // SRD-101 — optional `continue_if` pre-entry gate bounding this sweep
+    // (the parsed spec + compiled gate kernel + the sweep's parent scope).
+    continue_if: Option<ContinueIfGate>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
     use crate::scheduler::ConcurrencyLimit;
     Box::pin(async move {
@@ -2118,8 +2179,66 @@ fn dispatch_comprehension<'a>(
         let mut csrc = CountedSource::new(steps.len());
         debug_assert_eq!(select_drive(csrc.realizability()), Drive::BoundedSpawn);
         let mut steps_iter = steps.into_iter();
+        // SRD-101 — set when a `continue_if` gate goes false: the sweep stops
+        // continuing and reports a graceful Interrupted+Succeeded outcome
+        // carrying this reason (the `PhaseOutcome` marker, §7).
+        let mut continue_if_halt: Option<String> = None;
         while let Some(Child::Node(_)) = csrc.poll_next() {
             let step = steps_iter.next().expect("CountedSource length matches steps");
+            // SRD-101 — `continue_if` PRE-ENTRY gate. Evaluate the predicate
+            // against THIS iteration's coordinate context (its bound kernel)
+            // BEFORE entering the body. While true the iteration runs; the
+            // moment it is false, halt the sweep gracefully (no body, the
+            // break ends dispatch; in-flight iterations drain at the join).
+            // Executional only — gated on depth >= Op AND not the structural
+            // pre-map pass (SRD-18b One Walker: structural always, executional
+            // gated). The pre-map walker maps op nodes at depth >= Op but binds
+            // placeholder coordinate values (e.g. a `u64` stand-in for an
+            // `Ext<Partition>`), so evaluating the gate there would mis-type;
+            // the cap is a real-execution decision, and pre-map shows the full
+            // structural tree.
+            if let Some(gate) = continue_if.as_ref() {
+                if ctx.diag.depth >= crate::runner::ExecDepth::Op && !ctx.pre_map_only {
+                    match crate::stop_conditions::eval_continue_if(
+                        &gate.gate_canonical, &gate.parent, &step.bindings,
+                    ) {
+                        Ok(true) => {}   // gate holds → run this iteration
+                        Ok(false) => {
+                            let coord = format_iter_label(&step.bindings);
+                            let reason = format!(
+                                "continue_if: {} — halted at {coord}", gate.spec.when);
+                            crate::diag!(crate::observer::LogLevel::Info,
+                                "sweep halted (continue_if): `{}` false at {coord}",
+                                gate.spec.when);
+                            // Signal a graceful early stop so the post-run
+                            // "pre-mapped phase(s) not executed" guard treats
+                            // the halted tail as deliberate (clean exit 0),
+                            // exactly as an SRD-83 `stop` effect does. This is
+                            // a post-run flag only — it does NOT itself halt
+                            // the walk (the break / walk_stop latch does).
+                            crate::session_signals::request_graceful_stop();
+                            // `each: workload` propagates the halt to the whole
+                            // run via the shared walk_stop latch; otherwise the
+                            // local break is the halt and the walk above this
+                            // sweep continues.
+                            if gate.spec.each.iter().any(|l|
+                                matches!(l, nbrs_workload::model::ScopeLevel::Workload))
+                            {
+                                ctx.workload_shell.request_stop(
+                                    crate::phase_outcome::Outcome::interrupted()
+                                        .with_reason(reason.clone()),
+                                    reason.clone(),
+                                );
+                            }
+                            continue_if_halt = Some(reason);
+                            break;
+                        }
+                        Err(e) => {
+                            return crate::phase_outcome::Outcome::failed().with_reason(e);
+                        }
+                    }
+                }
+            }
             let permit = match sem.as_ref() {
                 Some(s) => match s.clone().acquire_owned().await {
                     Ok(p) => Some(p),
@@ -2216,6 +2335,15 @@ fn dispatch_comprehension<'a>(
                         first_err = Some(o.reason.unwrap_or_else(|| "comprehension iteration failed".to_string()));
                     }
                 }
+            }
+        }
+        // SRD-101 — a `continue_if` gate halted the sweep: report it as a
+        // graceful Interrupted+Succeeded outcome carrying the marker reason
+        // (the sweep scope's `PhaseOutcome`, §7), UNLESS an in-flight iteration
+        // failed meanwhile — a real failure wins (honest).
+        if let Some(reason) = continue_if_halt {
+            if first_err.is_none() {
+                return crate::phase_outcome::Outcome::interrupted().with_reason(reason);
             }
         }
         // SRD-92 two-latch fold. `first_err` is the validity latch (already set

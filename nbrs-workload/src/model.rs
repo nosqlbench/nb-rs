@@ -731,6 +731,34 @@ pub struct StopConditionSpec {
     pub effect: Option<String>,
 }
 
+fn default_continue_if_each() -> Vec<ScopeLevel> {
+    // SRD-101 — a `continue_if` gate defaults to halting the enclosing
+    // SCENARIO sweep (the comprehension loop it rides), NOT the declaring
+    // node only. This intentionally differs from `StopConditionSpec`'s
+    // `default_each` (`self`): the gate's whole purpose is to bound a sweep.
+    vec![ScopeLevel::Scenario]
+}
+
+/// SRD-101 — a `continue_if` pre-entry sweep gate declared on a
+/// comprehension-bearing scenario step or phase. A polydat `when:` predicate
+/// over the iteration's COORDINATE context (`end_of(p)`, `idx_of(p)`,
+/// outer-scope consts like `effective_max_size`) plus an `each:` scope level.
+/// The walker evaluates it per iteration BEFORE entering the body; while it is
+/// true the iteration runs, and the moment it is false the sweep at `each`
+/// ends gracefully (Interrupted+Succeeded — see SRD-101 §4). Aligns with
+/// [`StopConditionSpec`] (shares `when`/`each` and the `ScopedExpr` machinery),
+/// but is a pre-entry gate with continue polarity and a fixed graceful effect.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContinueIfSpec {
+    /// Polydat predicate over the coordinate context. The sweep continues
+    /// while it is true and halts (gracefully) the moment it is false.
+    pub when: String,
+    /// Scope level whose sweep ends on a false predicate. Defaults to
+    /// `scenario` (the enclosing comprehension); `workload` halts the run.
+    #[serde(default = "default_continue_if_each", deserialize_with = "de_each")]
+    pub each: Vec<ScopeLevel>,
+}
+
 /// A workload phase: runs as a separate Activity with its own
 /// cycle count, concurrency, rate limit, and op selection.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -788,6 +816,11 @@ pub struct WorkloadPhase {
     /// Example: `for_each: "profile in matching_profiles('{dataset}', '{prefix}')"`
     #[serde(default)]
     pub for_each: Option<String>,
+    /// SRD-101 — optional `continue_if` pre-entry gate bounding this phase's
+    /// `for_each` sweep (see [`ContinueIfSpec`]). Ignored when `for_each` is
+    /// absent (no sweep to bound).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continue_if: Option<ContinueIfSpec>,
     /// Loop scope mode for `for_each` phases.
     ///
     /// Controls how the loop context is seeded from the outer scope:
@@ -1303,6 +1336,11 @@ pub enum ScenarioNode {
     Comprehension {
         comprehension: polydat::iteration::comprehension::Comprehension,
         children: Vec<ScenarioNode>,
+        /// SRD-101 — optional `continue_if` pre-entry gate bounding this
+        /// sweep: evaluated per iteration before the body; a false predicate
+        /// halts the sweep at its `each` scope, gracefully.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continue_if: Option<ContinueIfSpec>,
     },
     /// Execute children while condition is true (test after).
     DoWhile { condition: String, counter: Option<String>, children: Vec<ScenarioNode> },
