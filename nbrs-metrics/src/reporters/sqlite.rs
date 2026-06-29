@@ -506,6 +506,7 @@ mod inner {
                 -- consumers.
                 CREATE TABLE IF NOT EXISTS readout_snapshots (
                     slot TEXT NOT NULL,
+                    exec_id INTEGER NOT NULL,
                     subject_kind TEXT NOT NULL,
                     subject_id TEXT NOT NULL,
                     readout_name TEXT NOT NULL,
@@ -513,7 +514,7 @@ mod inner {
                     rendered_at INTEGER NOT NULL,
                     body_ansi BLOB,
                     body_plain TEXT NOT NULL,
-                    PRIMARY KEY (slot, subject_kind, subject_id, readout_name, lod)
+                    PRIMARY KEY (slot, exec_id, subject_kind, subject_id, readout_name, lod)
                 );
                 -- SRD-76: per-phase terminal outcome. The
                 -- identity is (session, exec_id, phase_name,
@@ -935,6 +936,7 @@ mod inner {
         pub fn upsert_readout_snapshot(
             &mut self,
             slot: &str,
+            exec_id: u64,
             subject_kind: &str,
             subject_id: &str,
             readout_name: &str,
@@ -945,11 +947,11 @@ mod inner {
         ) {
             let r = self.conn.execute(
                 "INSERT OR REPLACE INTO readout_snapshots \
-                 (slot, subject_kind, subject_id, readout_name, lod, \
+                 (slot, exec_id, subject_kind, subject_id, readout_name, lod, \
                   rendered_at, body_ansi, body_plain) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
-                    slot, subject_kind, subject_id, readout_name, lod,
+                    slot, exec_id as i64, subject_kind, subject_id, readout_name, lod,
                     rendered_at_nanos, body_ansi, body_plain,
                 ],
             );
@@ -965,7 +967,7 @@ mod inner {
         /// scrollback / replay see a stable sequence.
         pub fn read_readout_snapshots(&self) -> Vec<ReadoutSnapshotRow> {
             let mut stmt = match self.conn.prepare(
-                "SELECT slot, subject_kind, subject_id, readout_name, lod, \
+                "SELECT slot, exec_id, subject_kind, subject_id, readout_name, lod, \
                         rendered_at, body_ansi, body_plain \
                  FROM readout_snapshots \
                  ORDER BY rendered_at, slot, subject_kind, subject_id, readout_name"
@@ -976,13 +978,14 @@ mod inner {
             let rows = stmt.query_map([], |row| {
                 Ok(ReadoutSnapshotRow {
                     slot:          row.get(0)?,
-                    subject_kind:  row.get(1)?,
-                    subject_id:    row.get(2)?,
-                    readout_name:  row.get(3)?,
-                    lod:           row.get(4)?,
-                    rendered_at:   row.get(5)?,
-                    body_ansi:     row.get(6)?,
-                    body_plain:    row.get(7)?,
+                    exec_id:       row.get::<_, i64>(1)? as u64,
+                    subject_kind:  row.get(2)?,
+                    subject_id:    row.get(3)?,
+                    readout_name:  row.get(4)?,
+                    lod:           row.get(5)?,
+                    rendered_at:   row.get(6)?,
+                    body_ansi:     row.get(7)?,
+                    body_plain:    row.get(8)?,
                 })
             });
             match rows {
@@ -1520,6 +1523,7 @@ mod inner {
     #[derive(Debug, Clone)]
     pub struct ReadoutSnapshotRow {
         pub slot: String,
+        pub exec_id: u64,
         pub subject_kind: String,
         pub subject_id: String,
         pub readout_name: String,
@@ -2729,7 +2733,7 @@ mod inner {
             let ansi: &[u8] = "\x1b[34m[setup]\x1b[0m 100% \x1b[32m✓\x1b[0m".as_bytes();
             let plain = "[setup] 100% ✓";
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "setup#1", "phase_outcome", "labeled",
+                "on_phase_end", 1, "phase", "setup#1", "phase_outcome", "labeled",
                 1_000_000_000, Some(ansi), plain,
             );
             let rows = r.read_readout_snapshots();
@@ -2790,17 +2794,44 @@ mod inner {
             // Two upserts with the same primary key — second
             // wins (latest body, latest timestamp).
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "setup", "phase_outcome", "labeled",
+                "on_phase_end", 1, "phase", "setup", "phase_outcome", "labeled",
                 1_000, None, "first",
             );
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "setup", "phase_outcome", "labeled",
+                "on_phase_end", 1, "phase", "setup", "phase_outcome", "labeled",
                 2_000, None, "second",
             );
             let rows = r.read_readout_snapshots();
             assert_eq!(rows.len(), 1, "PK collision should overwrite, not duplicate");
             assert_eq!(rows[0].body_plain, "second");
             assert_eq!(rows[0].rendered_at, 2_000);
+        }
+
+        #[test]
+        fn readout_snapshot_distinct_per_exec_id() {
+            // SRD-100 §2.6 / §9 — two concurrent executions render the
+            // same phase (identical slot/kind/subject/readout/lod). With
+            // exec_id in the PK they must NOT collide: both renders
+            // survive as distinct rows (pre-SRD-100 this upsert-collided,
+            // silently losing one execution's render).
+            let mut r = super::SqliteReporter::in_memory().unwrap();
+            r.upsert_readout_snapshot(
+                "on_phase_end", 1, "phase", "setup", "phase_outcome", "labeled",
+                1_000, None, "exec-1 render",
+            );
+            r.upsert_readout_snapshot(
+                "on_phase_end", 2, "phase", "setup", "phase_outcome", "labeled",
+                1_000, None, "exec-2 render",
+            );
+            let rows = r.read_readout_snapshots();
+            assert_eq!(rows.len(), 2, "distinct exec_id must not upsert-collide");
+            let mut bodies: Vec<_> =
+                rows.iter().map(|x| (x.exec_id, x.body_plain.clone())).collect();
+            bodies.sort();
+            assert_eq!(bodies, vec![
+                (1, "exec-1 render".to_string()),
+                (2, "exec-2 render".to_string()),
+            ]);
         }
 
         // ── SRD-76 phase_outcomes / phase_errors ──────────────
@@ -2950,16 +2981,16 @@ mod inner {
             let mut r = super::SqliteReporter::in_memory().unwrap();
             // Same readout, different LOD → separate rows.
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "setup", "phase_outcome", "compact",
+                "on_phase_end", 1, "phase", "setup", "phase_outcome", "compact",
                 1_000, None, "compact form",
             );
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "setup", "phase_outcome", "labeled",
+                "on_phase_end", 1, "phase", "setup", "phase_outcome", "labeled",
                 1_000, None, "labeled form",
             );
             // Same readout, same LOD, different subject → separate.
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "load", "phase_outcome", "labeled",
+                "on_phase_end", 1, "phase", "load", "phase_outcome", "labeled",
                 1_000, None, "load form",
             );
             assert_eq!(r.read_readout_snapshots().len(), 3);

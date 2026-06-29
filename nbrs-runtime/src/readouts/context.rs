@@ -87,6 +87,17 @@ pub trait ReadoutContext {
     /// scope subjects.
     fn subject_labels(&self) -> &str { "" }
 
+    /// The execution this subject belongs to (SRD-88 `exec_id`,
+    /// SRD-100 §9). Part of the snapshot key so concurrent executions
+    /// of the same phase don't upsert-collide (the §2.6 data-loss bug).
+    /// Defaults to the current execution resolved from the task-local
+    /// `ExecutionContext` (`1` for the single-execution case, SRD-88
+    /// A1); an off-task producer overrides with an exec_id captured by
+    /// value before it leaves the task.
+    fn subject_exec_id(&self) -> u64 {
+        crate::execution_context::current_exec_id()
+    }
+
     /// Stable identifier used as part of the snapshot
     /// primary key. Default: `subject_name` when no labels,
     /// `name@labels` otherwise. Surfaces that need a

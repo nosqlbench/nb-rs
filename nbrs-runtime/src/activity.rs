@@ -2126,6 +2126,7 @@ impl Activity {
                     crate::readouts::snapshot::capture(
                         snapshot_writer.as_ref(),
                         crate::lifecycle::EventType::Update.slot_name(),
+                        ctx.subject_exec_id(),
                         crate::lifecycle::EventType::Update.subject_kind().as_str(),
                         &ctx.subject_id(),
                         "binder",
@@ -2691,6 +2692,7 @@ impl Activity {
                     crate::readouts::snapshot::capture(
                         activity.config.snapshot_writer.as_ref(),
                         crate::lifecycle::EventType::Update.slot_name(),
+                        final_ctx.subject_exec_id(),
                         crate::lifecycle::EventType::Update.subject_kind().as_str(),
                         &final_ctx.subject_id(),
                         "binder",
@@ -2759,6 +2761,7 @@ impl Activity {
                 crate::readouts::snapshot::capture(
                     activity.config.snapshot_writer.as_ref(),
                     crate::lifecycle::EventType::PhaseEnd.slot_name(),
+                    ctx.subject_exec_id(),
                     crate::lifecycle::EventType::PhaseEnd.subject_kind().as_str(),
                     &ctx.subject_id(),
                     "binder",

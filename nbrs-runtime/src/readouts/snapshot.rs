@@ -73,6 +73,7 @@ pub fn lod_str(lod: super::Lod) -> &'static str {
 pub fn capture(
     writer: Option<&SnapshotWriter>,
     slot: &str,
+    exec_id: u64,
     subject_kind: &str,
     subject_id: &str,
     readout_name: &str,
@@ -96,7 +97,7 @@ pub fn capture(
     };
     if let Some(reporter) = guard.as_mut() {
         reporter.upsert_readout_snapshot(
-            slot, subject_kind, subject_id, readout_name, lod,
+            slot, exec_id, subject_kind, subject_id, readout_name, lod,
             now_nanos, body_ansi, &plain,
         );
     }

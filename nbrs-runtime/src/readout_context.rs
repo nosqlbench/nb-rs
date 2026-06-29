@@ -301,6 +301,7 @@ pub fn fire_lifecycle(
     crate::readouts::snapshot::capture(
         snapshot_writer,
         event.slot_name(),
+        ctx.subject_exec_id(),
         event.subject_kind().as_str(),
         &subject_id,
         "binder",
