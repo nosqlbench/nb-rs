@@ -494,33 +494,67 @@ impl SceneTree {
             .map(|n| n.id)
     }
 
-    /// Mark a phase as running. Looks up the first pending phase
-    /// matching `(name, labels)` and transitions it.
-    pub fn set_phase_running(&mut self, name: &str, labels: &str, op_count: usize) {
-        if let Some(id) = self.find_phase(name, labels, Some(&PhaseStatus::Pending)) {
-            let n = &mut self.nodes[id];
+    // ── id-based lifecycle flips (SRD-100 P1c) ──────────────────
+    //
+    // The canonical lifecycle-routing primitives: flip the node at
+    // a dispatch-time [`SceneNodeId`] directly, no DFS-order match.
+    // Under concurrent dispatch two phases sharing a `name` race in
+    // `find_phase` (it ignores labels and matches first-by-status),
+    // mis-attributing status / op_count / duration / outcome to the
+    // wrong node. The executor allocates each phase's node id at
+    // dispatch and threads it through the observer lifecycle so the
+    // flip lands on THIS phase's node regardless of sibling timing.
+
+    /// Mark the phase node at `id` as running. No-op if `id` is out
+    /// of range (defensive against a stale/foreign id).
+    pub fn set_phase_running_at(&mut self, id: SceneNodeId, op_count: usize) {
+        if let Some(n) = self.nodes.get_mut(id) {
             n.status = PhaseStatus::Running;
             n.op_count = op_count;
         }
     }
 
-    /// Mark a phase as completed. Matches the running phase with
-    /// the given (name, labels).
-    pub fn set_phase_completed(&mut self, name: &str, labels: &str, duration_secs: f64) {
-        if let Some(id) = self.find_phase(name, labels, Some(&PhaseStatus::Running)) {
-            let n = &mut self.nodes[id];
+    /// Mark the phase node at `id` as completed with `duration_secs`.
+    pub fn set_phase_completed_at(&mut self, id: SceneNodeId, duration_secs: f64) {
+        if let Some(n) = self.nodes.get_mut(id) {
             n.status = PhaseStatus::Completed;
             n.duration_secs = Some(duration_secs);
         }
     }
 
-    /// Mark a phase as failed. Matches the first phase with the
-    /// given (name, labels) regardless of status — failure can
-    /// arrive while the phase is still pending in the rare case
-    /// of pre-flight resolution errors.
+    /// Mark the phase node at `id` as failed with `error`.
+    pub fn set_phase_failed_at(&mut self, id: SceneNodeId, error: &str) {
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.status = PhaseStatus::Failed(error.to_string());
+        }
+    }
+
+    /// Mark a phase as running. By-name convenience delegating to
+    /// [`Self::set_phase_running_at`] via [`Self::find_phase`] —
+    /// used by tests and non-concurrent by-name call sites. The
+    /// production lifecycle path threads the dispatch-time id
+    /// (P1c) and calls the `_at` form directly.
+    pub fn set_phase_running(&mut self, name: &str, labels: &str, op_count: usize) {
+        if let Some(id) = self.find_phase(name, labels, Some(&PhaseStatus::Pending)) {
+            self.set_phase_running_at(id, op_count);
+        }
+    }
+
+    /// Mark a phase as completed. By-name convenience (see
+    /// [`Self::set_phase_running`]).
+    pub fn set_phase_completed(&mut self, name: &str, labels: &str, duration_secs: f64) {
+        if let Some(id) = self.find_phase(name, labels, Some(&PhaseStatus::Running)) {
+            self.set_phase_completed_at(id, duration_secs);
+        }
+    }
+
+    /// Mark a phase as failed. By-name convenience matching the
+    /// first phase with the given (name, labels) regardless of
+    /// status — failure can arrive while the phase is still
+    /// pending in the rare case of pre-flight resolution errors.
     pub fn set_phase_failed(&mut self, name: &str, labels: &str, error: &str) {
         if let Some(id) = self.find_phase(name, labels, None) {
-            self.nodes[id].status = PhaseStatus::Failed(error.to_string());
+            self.set_phase_failed_at(id, error);
         }
     }
 
@@ -545,7 +579,20 @@ impl SceneTree {
         outcome: crate::phase_outcome::PhaseOutcome,
     ) {
         let Some(id) = self.find_phase(name, labels, None) else { return };
-        let n = &mut self.nodes[id];
+        self.set_phase_outcome_at(id, outcome);
+    }
+
+    /// SRD-100 P1c — install the structured outcome on the phase
+    /// node at `id` directly (dispatch-time-keyed, race-safe under
+    /// concurrent same-name phases). The by-name
+    /// [`Self::set_phase_outcome`] delegates here after a
+    /// [`Self::find_phase`] lookup.
+    pub fn set_phase_outcome_at(
+        &mut self,
+        id: SceneNodeId,
+        outcome: crate::phase_outcome::PhaseOutcome,
+    ) {
+        let Some(n) = self.nodes.get_mut(id) else { return };
         // Overwrite-on-re-run matches the legacy `status` /
         // `duration_secs` fields: comprehension iterations
         // re-use the same SceneNode for each tuple of the
@@ -673,11 +720,8 @@ impl SceneTree {
 }
 
 /// Indent prefix (single-space repeats) for log lines whose
-/// visual nesting should match the currently-running phase's
-/// scope depth. Looks up the global scene tree, finds the
-/// first `Running` phase in DFS order, returns `" ".repeat(depth)`
-/// for it. Empty string when no scene tree is installed or no
-/// phase is currently running.
+/// visual nesting should match the **executing** phase's scope
+/// depth. Empty string when no scene tree is installed.
 ///
 /// One char per level — deep scenario trees can stack 5+
 /// levels of nesting; a 2-char indent burns 10+ columns of
@@ -685,19 +729,26 @@ impl SceneTree {
 ///
 /// Used by emit sites that fire from inside a phase's
 /// execution (polling-op progress, activity-end DONE summary,
-/// relevancy stats) so they nest under the phase's startup line
-/// in tui=terminal output.
+/// relevancy stats, the errorhandler / metrics-diag log
+/// bridges) so they nest under the phase's startup line in
+/// tui=terminal output.
 ///
-/// Note: with concurrent phases the "first Running in DFS
-/// order" picks one; for poll / verify ops within a single
-/// phase's stanza this is unambiguous, but a workload running
-/// peer phases concurrently may see a poll-progress line
-/// indented to the wrong sibling. Acceptable approximation
-/// for v1 — a richer "carry phase context through ExecCtx"
-/// design would let each emit know exactly which phase it
-/// belongs to.
+/// SRD-100 P1c — the depth comes from the **ambient executing
+/// phase** ([`crate::execution_context::current_phase_node`], a
+/// task-local set by `run_phase` and carried across fiber spawns
+/// by `propagate`), so under concurrency each phase's emit nests
+/// under ITS OWN depth. The historical "first `Running` in DFS
+/// order" guess — which mis-indented a poll line to a concurrent
+/// sibling — remains only as the fallback for emitters with no
+/// phase task-local (the metrics scheduler thread and other
+/// genuinely cross-phase sinks, where "which phase" is undefined).
 pub fn running_phase_indent() -> String {
     let Some(tree) = current() else { return String::new(); };
+    if let Some(id) = crate::execution_context::current_phase_node()
+        && let Some(n) = tree.nodes.get(id)
+    {
+        return " ".repeat(n.depth.saturating_sub(1));
+    }
     tree.dfs_phases()
         .find(|n| matches!(n.status, PhaseStatus::Running))
         .map(|n| " ".repeat(n.depth.saturating_sub(1)))
@@ -765,6 +816,99 @@ mod tests {
         let n2 = t.find_phase("p", "x=2", Some(&PhaseStatus::Running)).unwrap();
         assert_ne!(n, n2);
         assert_eq!(t.nodes[n2].op_count, 5);
+    }
+
+    /// SRD-100 §12 — when two same-named phases are **distinct nodes**
+    /// (scenario-level `for_each`, `for_combinations`, nesting — each
+    /// cell pushed under its OWN per-iter scope), their status /
+    /// op_count / duration must attribute to the CORRECT node. The
+    /// dispatch-time [`SceneNodeId`] keys each flip directly; the
+    /// legacy by-name [`SceneTree::find_phase`] (first-pending-by-DFS,
+    /// labels ignored) races and mis-attributes when completion order
+    /// differs from dispatch order. This pins the `_at` flips against
+    /// that race: x=2 completes BEFORE x=1, yet each node keeps its
+    /// own numbers (a `find_phase(.., Running)` lookup would have
+    /// recorded x=2's 10.0s onto the first-DFS node, p[x=1]).
+    ///
+    /// NOTE the scope boundary: `build_simple` puts each `p` under a
+    /// SEPARATE scope, so they ARE distinct nodes. Flat phase-level
+    /// `for_each` / optimize sweeps push every cell under ONE scope and
+    /// collapse to a single node (see
+    /// [`same_name_cells_under_one_parent_alias_to_one_node`]) — the
+    /// threaded id cannot disambiguate those; node distinctness for that
+    /// topology is a separate concern from this routing fix.
+    #[test]
+    fn id_based_flips_attribute_to_correct_node_under_reordered_completion() {
+        let mut t = build_simple();
+        // The two same-named "p" cells: p[x=1] is first in DFS,
+        // p[x=2] the second. `find_phase` ignores labels, so locate
+        // them structurally by DFS position.
+        let p_x1 = t.dfs_phases().filter(|n| n.name == "p").next().unwrap().id;
+        let p_x2 = t.dfs_phases().filter(|n| n.name == "p").nth(1).unwrap().id;
+        assert_ne!(p_x1, p_x2);
+
+        // Both cells start running (dispatch order x=1 then x=2).
+        t.set_phase_running_at(p_x1, 3);
+        t.set_phase_running_at(p_x2, 7);
+
+        // Completion arrives in REVERSED order: x=2 finishes first.
+        t.set_phase_completed_at(p_x2, 10.0);
+        t.set_phase_completed_at(p_x1, 5.0);
+
+        // Each node carries ITS OWN op_count + duration + status.
+        assert_eq!(t.nodes[p_x1].op_count, 3);
+        assert_eq!(t.nodes[p_x2].op_count, 7);
+        assert_eq!(t.nodes[p_x1].duration_secs, Some(5.0));
+        assert_eq!(t.nodes[p_x2].duration_secs, Some(10.0));
+        assert_eq!(t.nodes[p_x1].status, PhaseStatus::Completed);
+        assert_eq!(t.nodes[p_x2].status, PhaseStatus::Completed);
+    }
+
+    /// SRD-100 §12 — structured outcomes (SRD-76 carrier) install on
+    /// the dispatch-time node, not a same-named sibling. Mirrors the
+    /// duration race for the `set_phase_outcome_at` path.
+    #[test]
+    fn id_based_outcome_install_targets_the_dispatch_node() {
+        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome};
+        let mut t = build_simple();
+        let p_x1 = t.dfs_phases().filter(|n| n.name == "p").next().unwrap().id;
+        let p_x2 = t.dfs_phases().filter(|n| n.name == "p").nth(1).unwrap().id;
+        t.set_phase_running_at(p_x1, 1);
+        t.set_phase_running_at(p_x2, 1);
+        // Install x=2's outcome first (reversed completion order).
+        t.set_phase_outcome_at(p_x2,
+            PhaseOutcome::completed(PhaseIdentity::new("p", "x=2"), 9.0));
+        t.set_phase_outcome_at(p_x1,
+            PhaseOutcome::completed(PhaseIdentity::new("p", "x=1"), 4.0));
+        assert_eq!(t.nodes[p_x1].duration_secs, Some(4.0));
+        assert_eq!(t.nodes[p_x2].duration_secs, Some(9.0));
+        assert!(t.nodes[p_x1].outcome.is_some());
+        assert!(t.nodes[p_x2].outcome.is_some());
+    }
+
+    /// SRD-100 P1c invariant — [`SceneTree::push`] is find-or-create by
+    /// `(parent, kind, name)`, **labels ignored**, so same-name cells pushed
+    /// under ONE parent collapse to a single node id. This is the reason the
+    /// comprehension dispatcher (phase-level `for_each`) wraps each cell in
+    /// its OWN per-iter scope before pushing the phase (executor.rs
+    /// `dispatch_comprehension`): distinctness comes from a distinct PARENT,
+    /// not from label-keying the phase (which would re-introduce the §4
+    /// byte-exact label-identity coupling). Pinning the primitive's
+    /// idempotency so that contract is explicit and a regression in it would
+    /// surface here, not as a silent same-name collapse downstream.
+    #[test]
+    fn same_name_cells_under_one_parent_alias_to_one_node() {
+        let mut t = SceneTree::new();
+        let s = t.push(t.root(), NodeKind::Scope, "phase.for_each x", "");
+        let c1 = t.push(s, NodeKind::Phase, "p", "x=1");
+        let c2 = t.push(s, NodeKind::Phase, "p", "x=2");
+        assert_eq!(c1, c2,
+            "push is idempotent by name — flat for_each / sweep cells collapse");
+        // Contrast: distinct PARENTS yield distinct ids (the topology the
+        // attribution tests above rely on).
+        let s2 = t.push(t.root(), NodeKind::Scope, "phase.for_each y", "");
+        let c3 = t.push(s2, NodeKind::Phase, "p", "y=1");
+        assert_ne!(c1, c3, "same name under a DIFFERENT parent is a distinct node");
     }
 
     #[test]

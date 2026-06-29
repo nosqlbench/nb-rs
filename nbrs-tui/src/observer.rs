@@ -296,10 +296,11 @@ impl TuiObserver {
 }
 
 impl nbrs_runtime::observer::RunObserver for TuiObserver {
-    fn phase_starting(&self, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
+    fn phase_starting(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
         self.ensure_tui_started();
         self.state.send(RunStateCmd::PhaseStarting {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
+            scene_node_id,
             name: name.to_string(),
             labels: labels.to_string(),
             op_templates,
@@ -323,9 +324,10 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
             &format!("[{name}]{coords_part}: {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}"));
     }
 
-    fn phase_completed(&self, name: &str, labels: &str, duration_secs: f64) {
+    fn phase_completed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, duration_secs: f64) {
         self.state.send(RunStateCmd::PhaseCompleted {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
+            scene_node_id,
             name: name.to_string(),
             labels: labels.to_string(),
             duration_secs,
@@ -342,9 +344,10 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
         }
     }
 
-    fn phase_failed(&self, name: &str, labels: &str, error: &str) {
+    fn phase_failed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, error: &str) {
         self.state.send(RunStateCmd::PhaseFailed {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
+            scene_node_id,
             name: name.to_string(),
             labels: labels.to_string(),
             error: error.to_string(),
@@ -359,16 +362,11 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
         self.state.send(RunStateCmd::PhaseProgress(update.clone()));
     }
 
-    fn set_status_line(&self, rendered: Option<String>) {
-        // Same actor channel as the log-only observer: route the
-        // pre-rendered status string into RunState so whichever
-        // sink is currently active (LogOnlySink or TuiSink)
-        // can pick it up. The TUI app today still draws from
-        // ActivePhase directly, but exposing the binder output
-        // through the actor means a future "render the same
-        // status string the terminal would" panel works without
-        // re-running the binder.
-        self.state.send(RunStateCmd::SetStatusLine(rendered));
+    fn phase_render_attach(&self, handle: nbrs_runtime::observer::PhaseRenderHandle) {
+        // SRD-100 P2 — hand the per-phase render handle to the actor so
+        // the active sink folds `active_phases` and renders each phase's
+        // status itself (replacing the inline-status producer thread).
+        self.state.send(RunStateCmd::AttachPhaseRender(handle));
     }
 
     fn run_finished(&self) {

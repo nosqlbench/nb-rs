@@ -4,7 +4,7 @@
 //! Activity: the unit of concurrent execution.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 
@@ -1985,174 +1985,22 @@ impl Activity {
             }
         }
 
-        // Spawn a progress reporter thread that prints cycle count to stderr
-        // every 500 ms when stderr is a TTY and cycle count is large enough
-        // to be worth reporting. The flag is cleared after all executor
-        // fibers finish so the thread terminates and clears its line.
-        let progress_flag = Arc::new(AtomicBool::new(true));
+        // SRD-100 P2 — the inline-status refresh thread is RETIRED. The
+        // live phase status is now folded at the display consumer from the
+        // `active_phases` snapshot (the executor attaches each phase's
+        // render handle on-task; see `RunObserver::phase_render_attach` and
+        // `nbrs_tui::status_fold`). This removes the last-writer race on the
+        // single status slot, the `std::thread` cross-execution hazard (the
+        // thread couldn't read the SRD-88 task-local channel), and the
+        // per-phase-clear-wipes-peers bug. The phase-scoped values below
+        // still feed the phase-END readout + outcome line.
         let activity_name = activity.config.name.clone();
-        // The inline-status refresh thread no longer writes
-        // directly to stdout/stderr — it publishes the binder's
-        // rendered status string through the global observer's
-        // actor channel, and the active `DisplaySink` (LogOnly /
-        // TuiSink) owns the surface. The TTY check stays here
-        // because a non-TTY stderr means no interactive console
-        // is consuming the actor's snapshots (no SinkSupervisor
-        // is spawned in `nbrs/src/run.rs` for that case), so
-        // there's no point running the refresh thread.
-        let is_stderr_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
         let suppress_progress = adapters.values()
             .any(|a| a.name() == "plotter");
         let start_time = Instant::now();
         // Use source extent for progress (data-driven), not cycles
         let source_for_progress = activity.source_factory.clone();
         let total_extent = source_for_progress.global_extent().unwrap_or(activity.config.cycles);
-        let cursor_name = {
-            let name = &source_for_progress.schema().name;
-            format!(" cursor={name}")
-        };
-        // Spawn the inline-status refresh thread for every TTY
-        // phase (was previously gated on `total_extent > 1000`).
-        // Reasoning: the historical threshold was meant to avoid
-        // status-line noise for trivial phases, but it also
-        // suppressed the inline display for long-running single-
-        // op phases (jolokia_compact, schema migrations) where
-        // the memo wrapper's `before:` state is exactly what the
-        // operator needs to see. Phases that finish in <500ms
-        // emit zero ticks because the loop sleeps before its
-        // first emission; phases that run longer get the
-        // two-line readout + memo header live.
-        if is_stderr_tty && !suppress_progress {
-            // Spawn the inline progress thread unconditionally
-            // (subject to the TTY / extent / adapter guards).
-            // The thread gates each emission tick on the live
-            // `suppress_status_line` flag, so a TUI dismissal
-            // mid-run (`q` keypress) flips emission back on
-            // automatically — same UX as if tui=off had been
-            // set from the start.
-            let flag = progress_flag.clone();
-            let suppress_flag = activity.config.suppress_status_line.clone();
-            let progress_metrics = activity.metrics.clone();
-            let activity_name_progress = activity_name.clone();
-            let cursor_name_progress = cursor_name.clone();
-            let activity_concurrency = activity.config.concurrency;
-            // Clone the source factory into the progress thread
-            // so each refresh tick can query the LIVE extent
-            // (`global_extent()`) — needed because
-            // ExtendingRangeSourceFactory grows its end value at
-            // runtime under the until_elapsed policy. Without
-            // this, the displayed total would stay pinned at
-            // the initial `base` value while the actual cursor
-            // ran several base-multiples worth of cycles.
-            let progress_source_factory = source_for_progress.clone();
-            let progress_default_cycles = activity.config.cycles;
-            let status_metrics = activity.config.status_metrics.clone();
-            let memo_handle = activity.memo.clone();
-            // Build the on_update binder once at spawn time:
-            // workload's `on_update:` overrides if any, else
-            // the default `phase_status` body. This is the
-            // SRD-63 §7 binding layer landing — every refresh
-            // tick fires through the binder rather than
-            // calling the readout directly.
-            let phase_status_default = {
-                let readout = crate::readouts::Registry::lookup("phase_status")
-                    .expect("phase_status registered");
-                crate::readouts::BakedBody::from_single(
-                    readout, crate::readouts::Lod::Labeled,
-                )
-            };
-            let update_binder = match crate::readouts::binder::build_event_binder_with_cli(
-                &activity.config.readouts,
-                crate::lifecycle::EventType::Update,
-                phase_status_default,
-                activity.config.cli_readout_override.as_deref(),
-            ) {
-                Ok(b) => b,
-                Err(e) => {
-                    crate::diag!(crate::observer::LogLevel::Error,
-                        "readouts: failed to bind on_update — {e}");
-                    return false;
-                }
-            };
-            let snapshot_writer_for_thread = activity.config.snapshot_writer.clone();
-            std::thread::spawn(move || {
-                let activity_name = activity_name_progress;
-                let cursor_name = cursor_name_progress;
-                let snapshot_writer = snapshot_writer_for_thread;
-                let mut tick: u64 = 0;
-                let mut binder = update_binder;
-                while flag.load(Ordering::Relaxed) {
-                    std::thread::sleep(Duration::from_millis(500));
-                    if !flag.load(Ordering::Relaxed) { break; }
-                    tick = tick.wrapping_add(1);
-                    if suppress_flag.load(Ordering::Relaxed) {
-                        // TUI is currently displaying — don't
-                        // overwrite its alternate-screen
-                        // rendering with a stderr status line.
-                        // Re-check next tick.
-                        continue;
-                    }
-                    // Snapshot the per-tick context, hand it
-                    // to the binder; the binder walks its
-                    // resolved bodies in declaration order
-                    // and writes into the StringSink.
-                    // Live extent: re-read each tick so growing
-                    // sources (until_elapsed and friends) surface
-                    // their current ceiling to the operator
-                    // instead of the cached initial value.
-                    let live_extent = progress_source_factory
-                        .global_extent()
-                        .unwrap_or(progress_default_cycles);
-                    let ctx = crate::readout_context::build_inline_refresh_context(
-                        &progress_metrics,
-                        &activity_name,
-                        activity_concurrency,
-                        live_extent,
-                        start_time.elapsed().as_secs_f64(),
-                        tick,
-                        &status_metrics,
-                        memo_handle.as_ref(),
-                    );
-                    use crate::readouts::ReadoutBinder;
-                    let mut sink = crate::readouts::StringSink::with_capacity(192);
-                    binder.fire(crate::lifecycle::EventType::Update, &ctx, &mut sink);
-                    let rendered = sink.take();
-                    // Push 6: capture the latest on_update
-                    // render to the snapshot store. PK collapses
-                    // ticks to the most recent — the inline
-                    // thread fires often, but only the last
-                    // render survives in `readout_snapshots`.
-                    use crate::readouts::ReadoutContext;
-                    crate::readouts::snapshot::capture(
-                        snapshot_writer.as_ref(),
-                        crate::lifecycle::EventType::Update.slot_name(),
-                        ctx.subject_exec_id(),
-                        crate::lifecycle::EventType::Update.subject_kind().as_str(),
-                        &ctx.subject_id(),
-                        "binder",
-                        crate::readouts::snapshot::lod_str(crate::readouts::Lod::Labeled),
-                        &rendered,
-                    );
-                    // Publish the rendered status line through
-                    // the global observer's actor channel; the
-                    // active DisplaySink (LogOnlySink for
-                    // tui=terminal, TuiSink for tui=on) renders
-                    // it as a managed bottom region in lockstep
-                    // with the log stream it produces. No direct
-                    // `print!`/`eprint!` here — two writers on
-                    // one byte stream is what produced the
-                    // multi-line "staggering" pattern, and the
-                    // sink-managed surface is the documented
-                    // architectural fix.
-                    // SRD-87 §5: submit the live status line to the channel's
-                    // status bucket (forwards to the display today; folds into
-                    // the channel impl later) rather than the observer directly.
-                    crate::output_channel::status(Some(rendered));
-                    let _ = cursor_name; // retained for log-file detail; status line stays compact
-                }
-            });
-        }
-
         // One Arc<str> shared by every fiber in this phase. The
         // Polydat runtime-context `phase()` node clones this per read
         // instead of per fiber, keeping the per-cycle cost O(1).
@@ -2578,19 +2426,12 @@ impl Activity {
             let relevancy_str: String = activity.metrics
                 .collect_status_values(&activity.config.status_metrics)
                 .concat();
-            // Clear the in-place progress line ONLY when the
-            // inline progress thread was actually rendering. Must
-            // match the spawn gate above (TTY + !suppress) so
-            // pipelined / quiet runs don't emit spurious clear
-            // sequences.
-            let inline_was_rendering = is_stderr_tty && !suppress_progress;
-            if inline_was_rendering {
-                // Clear the status slot via the channel's status bucket; the
-                // sink wipes its bottom region on the next tick. No direct
-                // terminal writes from the activity layer — the sink owns the
-                // surface. (SRD-87 §5.)
-                crate::output_channel::status(None);
-            }
+            // SRD-100 P2 — no explicit status clear here. The consumer
+            // folds `active_phases`, and the executor's `PhaseCompleted`
+            // removes this phase from that map, so the status footer
+            // self-clears for this phase on the next render tick (while
+            // any concurrent phase's status survives — the old single-slot
+            // `status(None)` wiped peers).
             // Render the ✓ DONE line via the readout engine.
             // SRD-63 / Push 1: the previous inline `format!()`
             // is now `phase_outcome.render()` driven by an
@@ -2661,6 +2502,8 @@ impl Activity {
             // ✓ summary; we just want the snapshot row to
             // reflect end-state.
             {
+                let (final_seq, final_depth) =
+                    crate::readout_context::resolve_phase_coord_by_name(&activity.config.name);
                 let final_ctx = crate::readout_context::build_inline_refresh_context(
                     &activity.metrics,
                     &activity.config.name,
@@ -2670,6 +2513,8 @@ impl Activity {
                     u64::MAX,  // sentinel: spinner frame doesn't matter at end-of-phase
                     &activity.config.status_metrics,
                     activity.memo.as_ref(),
+                    final_seq,
+                    final_depth,
                 );
                 let phase_status_default = {
                     let readout = crate::readouts::Registry::lookup("phase_status")
@@ -2785,10 +2630,6 @@ impl Activity {
                 );
             }
         }
-
-        // Signal the progress thread to stop.
-        progress_flag.store(false, Ordering::Relaxed);
-        std::thread::sleep(Duration::from_millis(10));
 
         // Print validation summary AND capture to the metrics
         // store in one pass. `snapshot()` drains the histogram

@@ -325,6 +325,7 @@ mod tests {
                     std::time::Duration::from_secs(10)
                 )
             ),
+            render: None,
         };
 
         // First fire: default LOD = Labeled.

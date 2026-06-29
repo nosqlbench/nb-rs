@@ -67,9 +67,9 @@ impl Default for HeadlessObserver {
 }
 
 impl RunObserver for HeadlessObserver {
-    fn phase_starting(&self, _name: &str, _labels: &str, _ops: usize, _cycles: u64, _conc: usize) {}
+    fn phase_starting(&self, _scene_node_id: crate::scene_tree::SceneNodeId, _name: &str, _labels: &str, _ops: usize, _cycles: u64, _conc: usize) {}
 
-    fn phase_completed(&self, name: &str, labels: &str, duration_secs: f64) {
+    fn phase_completed(&self, _scene_node_id: crate::scene_tree::SceneNodeId, name: &str, labels: &str, duration_secs: f64) {
         self.phases.lock().unwrap_or_else(|e| e.into_inner()).push(PhaseRecord::Completed {
             name: name.to_string(),
             labels: labels.to_string(),
@@ -77,7 +77,7 @@ impl RunObserver for HeadlessObserver {
         });
     }
 
-    fn phase_failed(&self, name: &str, labels: &str, error: &str) {
+    fn phase_failed(&self, _scene_node_id: crate::scene_tree::SceneNodeId, name: &str, labels: &str, error: &str) {
         self.phases.lock().unwrap_or_else(|e| e.into_inner()).push(PhaseRecord::Failed {
             name: name.to_string(),
             labels: labels.to_string(),

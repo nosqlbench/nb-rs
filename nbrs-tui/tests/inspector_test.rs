@@ -71,7 +71,8 @@ fn server_responds_to_basic_commands() {
     let mut rs = RunState::new("test.yaml", "smoke", "stdout");
     rs.profiler = "off".into();
     rs.limit = "100".into();
-    rs.set_phase_running("schema", "", 4);
+    // By-name fallback (no pre-mapped tree): root id 0 → find_phase. SRD-100 P1c.
+    rs.set_phase_running(0, "schema", "", 4);
 
     let (handle, _join) = spawn_run_state_actor(rs);
     let tmp = tempfile_path();
@@ -126,6 +127,7 @@ fn server_reflects_live_state_changes() {
     // and the next inspector query sees it.
     handle.send(RunStateCmd::PhaseStarting {
         exec_id: 1,
+        scene_node_id: 0,
         name: "ramp".into(),
         labels: "k=10".into(),
         op_templates: 100,

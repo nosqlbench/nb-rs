@@ -2691,6 +2691,7 @@ dependencies = [
 name = "nbrs"
 version = "0.1.2"
 dependencies = [
+ "arc-swap",
  "cassandra-cpp 3.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "glob",
  "libc",

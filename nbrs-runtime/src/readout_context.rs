@@ -322,6 +322,53 @@ pub fn fire_lifecycle(
 // reason: cohesive per-tick context builder — each argument is a distinct
 // counter snapshot/handle taken once per refresh tick; grouping them into a
 // struct would only relocate the same fields.
+/// Resolve a phase's `(seq, total)` pre-map coordinate + depth indent
+/// from the GLOBAL scene tree by NAME, matching the first Running node.
+///
+/// Retained for the legacy inline-status / phase-end callers that only
+/// have the activity name. The executor's on-task render-handle attach
+/// (SRD-100 P2) resolves these from the dispatch-time `SceneNodeId`
+/// instead — race-safe under concurrent same-name dispatch, where this
+/// first-Running-match could pick the wrong sibling.
+pub fn resolve_phase_coord_by_name(activity_name: &str) -> (Option<(usize, usize)>, String) {
+    let bare_name = activity_name
+        .split_once(" (")
+        .map(|(n, _)| n)
+        .unwrap_or(activity_name);
+    crate::scene_tree::current()
+        .and_then(|t| {
+            let node = t.dfs_phases()
+                .find(|n| n.name == bare_name
+                    && matches!(n.status, crate::scene_tree::PhaseStatus::Running))?
+                .clone();
+            let seq = node.seq?;
+            let depth = node.depth.saturating_sub(1);
+            Some((Some((seq, t.total_phases())), " ".repeat(depth)))
+        })
+        .unwrap_or((None, String::new()))
+}
+
+/// Resolve a phase's `(seq, total)` pre-map coordinate + depth indent
+/// from the GLOBAL scene tree by its dispatch-time [`SceneNodeId`](crate::scene_tree::SceneNodeId).
+///
+/// SRD-100 P2 — the race-safe replacement for [`resolve_phase_coord_by_name`]:
+/// keying on the node id (allocated at dispatch, P1c) addresses the exact
+/// node, so concurrent same-name siblings (sweep cells, comprehension
+/// iterations, daemon+foreground) each resolve their OWN coordinate. The
+/// executor calls this once at render-handle attach time.
+pub fn resolve_phase_coord_by_id(
+    scene_node_id: crate::scene_tree::SceneNodeId,
+) -> (Option<(usize, usize)>, String) {
+    crate::scene_tree::current()
+        .and_then(|t| {
+            let node = t.nodes.get(scene_node_id)?;
+            let seq = node.seq?;
+            let depth = node.depth.saturating_sub(1);
+            Some((Some((seq, t.total_phases())), " ".repeat(depth)))
+        })
+        .unwrap_or((None, String::new()))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_inline_refresh_context(
     progress_metrics: &Arc<crate::activity::ActivityMetrics>,
@@ -332,6 +379,13 @@ pub fn build_inline_refresh_context(
     refresh_tick: u64,
     status_metrics: &[String],
     memo: &arc_swap::ArcSwap<String>,
+    // SRD-100 P2 — pre-map `(seq, total)` coordinate + depth indent,
+    // resolved by the caller. The producer no longer walks the global
+    // scene tree by name (a first-Running-match that raced under
+    // concurrent same-name dispatch); the executor's on-task attach
+    // resolves these from the dispatch-time `SceneNodeId` instead.
+    phase_seq: Option<(usize, usize)>,
+    depth_indent: String,
 ) -> InlineRefreshContext {
     // Counter snapshots — must match the prior inline-status
     // formulas so byte equivalence holds.
@@ -388,28 +442,13 @@ pub fn build_inline_refresh_context(
         .collect_status_values(status_metrics)
         .concat();
 
-    // Pre-map sequence + depth — single scene-tree walk.
-    // Activity name carries the leaf coord; the scene-tree
-    // node was registered under the bare phase name.
+    // Activity name carries the leaf coord; the bare phase name is the
+    // readout's subject identity. (`phase_seq` / `depth_indent` now arrive
+    // as params — resolved race-safely by the caller.)
     let bare_name = activity_name
         .split_once(" (")
         .map(|(n, _)| n)
         .unwrap_or(activity_name);
-    let (phase_seq, depth_indent) = crate::scene_tree::current()
-        .and_then(|t| {
-            let node = t.dfs_phases()
-                .find(|n| n.name == bare_name
-                    && matches!(n.status,
-                        crate::scene_tree::PhaseStatus::Running))?
-                .clone();
-            let seq = node.seq?;
-            let depth = node.depth.saturating_sub(1);
-            Some((
-                Some((seq, t.total_phases())),
-                " ".repeat(depth),
-            ))
-        })
-        .unwrap_or((None, String::new()));
 
     let memo_snapshot: String = memo.load().as_str().to_string();
     InlineRefreshContext {

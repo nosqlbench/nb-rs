@@ -72,16 +72,34 @@ pub trait RunObserver: Send + Sync {
     /// because they answer different questions: the first describes
     /// the *shape* of the phase, the second describes the *amount*
     /// of work it represents.
-    fn phase_starting(&self, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize);
+    ///
+    /// `scene_node_id` is the phase's dispatch-time
+    /// [`crate::scene_tree::SceneNodeId`] (SRD-100 P1c) — the stable
+    /// row key for lifecycle routing. Observers flip *that* node
+    /// directly instead of re-matching by `(name, status)` in DFS
+    /// order, which races under concurrent same-name dispatch
+    /// (sweep cells, comprehension iterations, daemon+foreground).
+    fn phase_starting(&self, scene_node_id: crate::scene_tree::SceneNodeId, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize);
 
-    /// A phase completed successfully.
-    fn phase_completed(&self, name: &str, labels: &str, duration_secs: f64);
+    /// A phase completed successfully. `scene_node_id` keys the
+    /// node to flip (see [`Self::phase_starting`]).
+    fn phase_completed(&self, scene_node_id: crate::scene_tree::SceneNodeId, name: &str, labels: &str, duration_secs: f64);
 
-    /// A phase failed.
-    fn phase_failed(&self, name: &str, labels: &str, error: &str);
+    /// A phase failed. `scene_node_id` keys the node to flip (see
+    /// [`Self::phase_starting`]).
+    fn phase_failed(&self, scene_node_id: crate::scene_tree::SceneNodeId, name: &str, labels: &str, error: &str);
 
     /// Update live metrics for the active phase (called at progress tick rate).
     fn phase_progress(&self, update: &PhaseProgressUpdate);
+
+    /// SRD-100 P2 — attach the per-phase [`PhaseRenderHandle`] to the live
+    /// display fold, **once**, after the activity's metrics/binder exist
+    /// (the executor calls this on-task at progress-setup time). Observers
+    /// that own a run-state actor (TUI / log-only) route it to an
+    /// `AttachPhaseRender` mutation so the consumer can fold `active_phases`
+    /// and re-derive each phase's status line itself; the no-op default is
+    /// correct for surfaces with no live status fold (Stderr / Headless).
+    fn phase_render_attach(&self, _handle: PhaseRenderHandle) {}
 
     /// The entire run is complete.
     fn run_finished(&self);
@@ -100,22 +118,11 @@ pub trait RunObserver: Send + Sync {
         self.log(level, message);
     }
 
-    /// Publish (or clear) the latest rendered status line for
-    /// the active phase. Default implementation is a no-op —
-    /// observers that route output through the run-state actor
-    /// (TUI / log-only sinks) override to push a
-    /// `SetStatusLine` mutation; the
-    /// [`StderrObserver`] fallback ignores it.
-    ///
-    /// SRD-87 §5: this is the **status bucket's forwarding target**, not the
-    /// producer-facing API. Producers (the activity's inline-status refresh
-    /// thread) submit via [`crate::output_channel::status`], which delivers
-    /// `Some(rendered)` per tick and `None` at phase end through this method
-    /// until the display sink folds into the channel impl (push 3+). The
-    /// owning sink coordinates the surface — clearing and redrawing the status
-    /// line in lockstep with its log-line stream. Calling [`Self::log`] never
-    /// blocks on this and is never interleaved with it on the same byte stream.
-    fn set_status_line(&self, _rendered: Option<String>) {}
+    // SRD-100 P2 — `set_status_line` is removed. The status line is no
+    // longer produced by submitting a pre-rendered string up to the actor;
+    // each display surface folds `active_phases` and re-derives the status
+    // itself (`nbrs_tui::status_fold`). The producer-side render handle now
+    // travels via `phase_render_attach` instead.
 
     /// Whether to suppress the inline stderr progress line
     /// (because the TUI is handling display).
@@ -222,6 +229,72 @@ pub struct PhaseProgressUpdate {
     /// `recall@10`). Each has a moving-window mean over the last N
     /// recall calculations and a whole-activity running mean.
     pub relevancy: Vec<crate::validation::RelevancyLive>,
+}
+
+/// SRD-100 P2 — the per-phase **live render handle**, attached to the
+/// display fold's `ActivePhase` exactly once (after the `Activity` and its
+/// metrics exist — executor.rs creates the activity well after
+/// `phase_starting`, so this cannot ride that callback). It carries
+/// everything a display surface needs to re-derive *this phase's* status
+/// line **at the consumer** by folding the snapshot, replacing the retired
+/// per-phase inline-status producer threads (SRD-100 §6).
+///
+/// Why a handle of live shared state rather than a pre-rendered string:
+/// the consumer calls [`crate::readout_context::build_inline_refresh_context`]
+/// verbatim against `metrics` and fires `bodies`, so single-run output is
+/// **byte-identical** to the old producer path (SRD-100 §12 A1) by code
+/// reuse — and §11 mandates that "each phase owns its `Arc<ActivityMetrics>`".
+/// `BakedBody` is `Send + Sync` (its `Readout` handles are), so the format
+/// template rides the ArcSwap snapshot as pure data; only the `!Sync`
+/// *binder* is kept out of the snapshot (the consumer fires bodies with
+/// `&self`).
+#[derive(Clone)]
+pub struct PhaseRenderHandle {
+    /// Routing key — together with `name`+`labels`, selects the
+    /// `ActivePhase` slot to attach to (mirrors [`PhaseProgressUpdate`]).
+    pub exec_id: u64,
+    pub name: String,
+    pub labels: String,
+    /// The activity's display name (`activity.config.name`, which may carry
+    /// the leaf coord, e.g. `"phase (k=10)"`). Fed verbatim to
+    /// `build_inline_refresh_context` so the consumer's render is
+    /// byte-identical to the retired producer thread's.
+    pub activity_name: String,
+    /// Live atomic counters for this phase (SRD-100 §11). Read lock-free
+    /// at render time so the status stays fresh without a producer thread.
+    pub metrics: Arc<crate::activity::ActivityMetrics>,
+    /// Resolved `on_update`-slot render template (workload binding + CLI
+    /// override + built-in `phase_status` default). Immutable, fired with
+    /// `&self` by the consumer; shared, never cloned per render.
+    pub bodies: Arc<Vec<crate::readouts::BakedBody>>,
+    /// Live memo header (the memo-wrapper `before:`/`after:` state),
+    /// snapshotted into the context each render.
+    pub memo: Arc<arc_swap::ArcSwap<String>>,
+    /// `status_metrics:` selection for the per-phase status chips.
+    pub status_metrics: Arc<[String]>,
+    /// Fiber count at attach time (the inline context's `concurrency`).
+    pub concurrency: usize,
+    /// `(seq, total)` pre-map coordinate, resolved from the dispatch-time
+    /// `scene_node_id` (NOT a racy by-name DFS match — SRD-100 P1c).
+    pub seq: Option<(usize, usize)>,
+    /// Depth indent string (`" ".repeat(depth-1)`), resolved from the
+    /// scene node at attach time.
+    pub depth_indent: String,
+}
+
+impl std::fmt::Debug for PhaseRenderHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Deliberately shallow: `ActivityMetrics` / `ArcSwap` are not
+        // `Debug`, and a render handle in a command log only needs its
+        // identity, not its live counters.
+        f.debug_struct("PhaseRenderHandle")
+            .field("exec_id", &self.exec_id)
+            .field("name", &self.name)
+            .field("labels", &self.labels)
+            .field("seq", &self.seq)
+            .field("bodies", &self.bodies.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Global observer for code that can't thread the observer through.
@@ -597,7 +670,7 @@ impl StderrObserver {
 }
 
 impl RunObserver for StderrObserver {
-    fn phase_starting(&self, name: &str, _labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
+    fn phase_starting(&self, _scene_node_id: crate::scene_tree::SceneNodeId, name: &str, _labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
         // Route through the canonical event channel so the line
         // lands in `session.log` AND on stderr (via the recursive
         // call back into `StderrObserver::log` below).
@@ -607,7 +680,7 @@ impl RunObserver for StderrObserver {
             &format!("phase '{name}': {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}"));
     }
 
-    fn phase_completed(&self, _name: &str, _labels: &str, _duration_secs: f64) {
+    fn phase_completed(&self, _scene_node_id: crate::scene_tree::SceneNodeId, _name: &str, _labels: &str, _duration_secs: f64) {
         // No-op — the executor's own diag emits a fully-formatted
         // "phase 'X' complete (Ns)" line via the log path. Doing
         // it here too produced a duplicate (and a less
@@ -615,7 +688,7 @@ impl RunObserver for StderrObserver {
         // callback stays for non-stderr consumers.
     }
 
-    fn phase_failed(&self, _name: &str, _labels: &str, _error: &str) {
+    fn phase_failed(&self, _scene_node_id: crate::scene_tree::SceneNodeId, _name: &str, _labels: &str, _error: &str) {
         // Same reasoning as phase_completed — the executor diags
         // already emit "phase 'X' stopped by error handler (Ns)"
         // (or other failure messages) right before calling this.

@@ -132,6 +132,10 @@ veks-completion = "1"
 
 [dev-dependencies]
 regex = "1"
+# SRD-100 P2 — the `tui_display_harness` example builds a
+# `PhaseRenderHandle` (whose `memo` is an `ArcSwap<String>`) to drive the
+# consumer-side status fold without a real activity.
+arc-swap = "1"
 # Headless terminal emulator for E2E tests of the
 # `tui=terminal` ↔ `tui=on` toggle path. The toggle is
 # interactive-only — Ctrl-T isn't observable from a piped

@@ -97,15 +97,15 @@ impl RunObserver for RunStateFeedObserver {
     fn scenario_pre_mapped(&self, tree: &nbrs_runtime::scene_tree::SceneTree) {
         self.lock_state().install_tree(tree.clone());
     }
-    fn phase_starting(&self, name: &str, labels: &str, ops: usize, _cycles: u64, _conc: usize) {
-        self.lock_state().set_phase_running(name, labels, ops);
+    fn phase_starting(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, ops: usize, _cycles: u64, _conc: usize) {
+        self.lock_state().set_phase_running(scene_node_id, name, labels, ops);
     }
-    fn phase_completed(&self, name: &str, labels: &str, duration_secs: f64) {
+    fn phase_completed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, duration_secs: f64) {
         self.lock_state()
-            .set_phase_completed(name, labels, duration_secs, PhaseSummary::default());
+            .set_phase_completed(scene_node_id, name, labels, duration_secs, PhaseSummary::default());
     }
-    fn phase_failed(&self, name: &str, labels: &str, error: &str) {
-        self.lock_state().set_phase_failed(name, labels, error);
+    fn phase_failed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, error: &str) {
+        self.lock_state().set_phase_failed(scene_node_id, name, labels, error);
     }
     fn phase_progress(&self, _update: &PhaseProgressUpdate) {}
     fn run_finished(&self) {}

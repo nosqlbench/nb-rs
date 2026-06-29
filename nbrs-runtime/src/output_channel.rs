@@ -38,17 +38,12 @@ pub trait OutputChannel: Send + Sync {
     /// terminal/file the channel owns — never around it.
     fn op_output(&self, line: &str);
 
-    /// status bucket: the live, rewritable status line (readout-projected),
-    /// or `None` to clear it (SRD-87 §5). The default forwards to the
-    /// installed observer's `set_status_line` — the transitional delivery
-    /// path until the display sink folds into the channel (push 3+). A
-    /// console-owning run suppresses the status line upstream (the producer
-    /// doesn't submit), so this default is correct for every production impl.
-    fn status(&self, rendered: Option<String>) {
-        if let Some(obs) = crate::observer::global_observer() {
-            obs.set_status_line(rendered);
-        }
-    }
+    // SRD-100 P2 — the status bucket is removed. The live phase status is
+    // folded at the display consumer from the `active_phases` snapshot
+    // (`nbrs_tui::status_fold`), not submitted as a pre-rendered string to
+    // a single channel slot. No keyed submission survives, so per SRD-100
+    // §6 the bucket + `RunObserver::set_status_line` are deleted rather than
+    // re-keyed.
 
     /// log bucket: project one diagnostic line to the **live terminal**
     /// (SRD-87 §5). This is the *output* half only — the durable
@@ -111,7 +106,6 @@ impl OutputChannel for RawStdoutChannel {
 #[derive(Default, Clone)]
 pub struct CaptureChannel {
     op_lines: Arc<Mutex<Vec<String>>>,
-    status_frames: Arc<Mutex<Vec<Option<String>>>>,
     log_lines: Arc<Mutex<Vec<(LogLevel, String)>>>,
     raster_frames: Arc<Mutex<Vec<String>>>,
 }
@@ -124,12 +118,6 @@ impl CaptureChannel {
     /// Every op-output line submitted so far, in submission order.
     pub fn op_lines(&self) -> Vec<String> {
         self.op_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// Every status-bucket frame submitted so far, in submission order
-    /// (`None` is a clear).
-    pub fn status_frames(&self) -> Vec<Option<String>> {
-        self.status_frames.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Every log-bucket line submitted so far, in submission order.
@@ -149,13 +137,6 @@ impl OutputChannel for CaptureChannel {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(line.to_string());
-    }
-
-    fn status(&self, rendered: Option<String>) {
-        self.status_frames
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(rendered);
     }
 
     fn log(&self, level: LogLevel, message: &str) {
@@ -239,19 +220,6 @@ pub fn installed() -> Option<Arc<dyn OutputChannel>> {
     CHANNEL.load_full().map(|h| h.0.clone())
 }
 
-/// Submit a **status-bucket** frame (the live status line, or `None` to
-/// clear it). Producers call this instead of `observer::set_status_line`
-/// directly (SRD-87 §5 — the status bucket is owned by the channel). Routes
-/// to the installed channel, falling back to the observer before any channel
-/// is installed so behavior is unchanged in bootstrap / observer-only tests.
-pub fn status(rendered: Option<String>) {
-    if let Some(ch) = installed() {
-        ch.status(rendered);
-    } else if let Some(obs) = crate::observer::global_observer() {
-        obs.set_status_line(rendered);
-    }
-}
-
 /// Project a diagnostic line to the **log bucket** (the live terminal).
 /// Called by `observer::log_categorized`/the observer impls *after* the
 /// L1 intake (session.log + fold ring) and *after* the
@@ -293,14 +261,6 @@ mod tests {
         ch.op_output("id-0");
         ch.op_output("id-1");
         assert_eq!(ch.op_lines(), vec!["id-0".to_string(), "id-1".to_string()]);
-    }
-
-    #[test]
-    fn capture_channel_records_status_frames() {
-        let ch = CaptureChannel::new();
-        ch.status(Some("running".to_string()));
-        ch.status(None);
-        assert_eq!(ch.status_frames(), vec![Some("running".to_string()), None]);
     }
 
     #[test]

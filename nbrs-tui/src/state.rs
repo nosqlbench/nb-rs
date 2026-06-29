@@ -195,6 +195,16 @@ pub struct ActivePhase {
     /// Rolling max latency over the last 10 seconds — drives the
     /// `╫` 10s-peak cross-bar marker.
     pub latency_peak_10s: Arc<PeakTracker>,
+
+    /// SRD-100 P2 — the per-phase live render handle. `Some` once the
+    /// executor has attached it (after the activity's metrics/binder
+    /// exist); `None` for the brief window between `phase_starting` and
+    /// the attach, and for phases with no live display fold. The
+    /// consumer-side status renderers fold `active_phases` and call
+    /// [`crate::status_fold::render_phase_status`] on this handle to
+    /// re-derive *this phase's* status line — replacing the retired
+    /// inline-status producer threads + the single `status_render` scalar.
+    pub render: Option<nbrs_runtime::observer::PhaseRenderHandle>,
 }
 
 /// A single entry rendered in the TUI's phase list — a flat
@@ -340,24 +350,6 @@ pub struct RunState {
     /// Set to true when the run is complete.
     pub finished: bool,
 
-    /// Latest rendered status line for the active phase.
-    /// Owned by the [`crate::display_sink::DisplaySink`] consumer
-    /// (currently [`crate::log_only_sink::LogOnlySink`]) as a
-    /// managed bottom region. Producer is the activity's inline-
-    /// status thread, which sends
-    /// [`crate::run_state_actor::RunStateCmd::SetStatusLine`]
-    /// once per refresh tick via the observer's actor handle.
-    /// `None` between phases.
-    ///
-    /// Why this lives on the actor: keeping the status renderer
-    /// off the wire (no direct `eprint!`/`print!` from the
-    /// activity layer) means the sink can coordinate the status
-    /// line with the log stream it's also producing — clearing
-    /// and redrawing as a single owner of the rendering surface.
-    /// Two writers on the same byte stream is what produces the
-    /// "staggering" stale-row pattern we hit on multi-line
-    /// status renders; one writer eliminates it by construction.
-    pub status_render: Option<String>,
 }
 
 impl RunState {
@@ -397,7 +389,6 @@ impl RunState {
             p99_history: Vec::new(),
             p999_history: Vec::new(),
             finished: false,
-            status_render: None,
         }
     }
 
@@ -504,44 +495,111 @@ impl RunState {
         self.rebuild_phases();
     }
 
-    /// Mark a phase as running. The first pending phase matching
-    /// (name, labels) wins, so repeat iterations transition in
-    /// encounter order.
-    pub fn set_phase_running(&mut self, name: &str, labels: &str, op_count: usize) {
-        if self.tree.find_phase(name, labels, Some(&PhaseStatus::Pending)).is_some() {
-            self.tree.set_phase_running(name, labels, op_count);
+    /// Resolve the scene-tree node id to mutate for a lifecycle
+    /// transition (SRD-100 P1c). Prefers the dispatch-time
+    /// `scene_node_id` threaded from the executor — race-safe under
+    /// concurrent same-name dispatch — when it addresses a matching
+    /// `Phase` node **in the wanted state**. Falling back to the
+    /// by-name [`SceneTree::find_phase`] (filtered by `want`)
+    /// otherwise covers two cases the threaded id can't:
+    ///
+    /// 1. **Runtime-materialized phases** absent from this tree
+    ///    (pushed by the executor after `scenario_pre_mapped`
+    ///    snapshotted it).
+    /// 2. **Sequential loop re-runs** (`do_while` / `do_until` /
+    ///    phase-level `for_each`) where the executor reuses ONE
+    ///    global node id across iterations (`SceneTree::push` is
+    ///    idempotent by name). After iteration 1 completes, that id
+    ///    is no longer `Pending` — so the next `set_phase_running`
+    ///    falls through to `find_phase(Pending)`, misses, and
+    ///    appends a fresh per-iteration node, preserving the
+    ///    one-row-per-iteration rollup the post-run summary shows.
+    ///
+    /// The `want` filter is what distinguishes (2) — a re-used id
+    /// whose node is already terminal — from a genuine concurrent
+    /// sibling, whose own node is still in the wanted state when its
+    /// transition fires.
+    fn resolve_phase_node(
+        &self,
+        scene_node_id: SceneNodeId,
+        name: &str,
+        labels: &str,
+        want: Option<&PhaseStatus>,
+    ) -> Option<SceneNodeId> {
+        let id_addresses_live_phase = self.tree.nodes.get(scene_node_id)
+            .is_some_and(|n| n.kind == EntryKind::Phase
+                && n.name == name
+                && match want {
+                    // Running/completed transitions: the threaded id wins
+                    // only when its node is in the exact wanted state.
+                    Some(w) => &n.status == w,
+                    // Failure (want=None): the id wins for an *active*
+                    // (Pending/Running) node — the phase that just failed.
+                    // A terminal node at this id is a re-used loop id, so
+                    // fall through to the by-name lookup instead.
+                    None => !matches!(n.status,
+                        PhaseStatus::Completed | PhaseStatus::Failed(_)),
+                });
+        if id_addresses_live_phase {
+            return Some(scene_node_id);
+        }
+        // Fallback: runtime-materialized phase, or a re-used loop id whose node
+        // is no longer in the wanted state.
+        match want {
+            // Failure: target the LIVE iteration — Running, else Pending — so a
+            // failing loop iteration N marks ITS row, not iteration 1's already
+            // -completed one (`find_phase(.., None)` returns the first-by-DFS
+            // node, which is the stale terminal row). Last-resort any-status
+            // match keeps a degenerate single-row tree working.
+            None => self.tree.find_phase(name, labels, Some(&PhaseStatus::Running))
+                .or_else(|| self.tree.find_phase(name, labels, Some(&PhaseStatus::Pending)))
+                .or_else(|| self.tree.find_phase(name, labels, None)),
+            some => self.tree.find_phase(name, labels, some),
+        }
+    }
+
+    /// Mark a phase as running, keyed by the dispatch-time
+    /// `scene_node_id` (SRD-100 P1c). Pre-mapped phases flip their
+    /// own node directly; a phase the pre-map never enumerated is
+    /// pushed dynamically so it still gets a tree slot.
+    pub fn set_phase_running(&mut self, scene_node_id: SceneNodeId, name: &str, labels: &str, op_count: usize) {
+        if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Pending)) {
+            self.tree.set_phase_running_at(id, op_count);
         } else {
             // Not found — add dynamically and mark running. Phases
             // that weren't pre-mapped (e.g. unresolvable for_each
             // at pre-map time) still need a tree slot.
             let root = self.tree.root();
             let id = self.tree.push(root, EntryKind::Phase, name, labels);
-            let n = &mut self.tree.nodes[id];
-            n.status = PhaseStatus::Running;
-            n.op_count = op_count;
+            self.tree.set_phase_running_at(id, op_count);
         }
         self.rebuild_phases();
     }
 
-    /// Mark a phase as completed and attach a metrics summary.
+    /// Mark a phase as completed and attach a metrics summary,
+    /// keyed by the dispatch-time `scene_node_id` (SRD-100 P1c).
     pub fn set_phase_completed(
         &mut self,
+        scene_node_id: SceneNodeId,
         name: &str,
         labels: &str,
         duration_secs: f64,
         summary: PhaseSummary,
     ) {
-        if let Some(id) = self.tree.find_phase(name, labels, Some(&PhaseStatus::Running)) {
-            self.tree.set_phase_completed(name, labels, duration_secs);
+        if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Running)) {
+            self.tree.set_phase_completed_at(id, duration_secs);
             self.summaries.insert(id, summary);
             self.rebuild_phases();
         }
     }
 
-    /// Mark a phase as failed.
-    pub fn set_phase_failed(&mut self, name: &str, labels: &str, error: &str) {
-        self.tree.set_phase_failed(name, labels, error);
-        self.rebuild_phases();
+    /// Mark a phase as failed, keyed by the dispatch-time
+    /// `scene_node_id` (SRD-100 P1c).
+    pub fn set_phase_failed(&mut self, scene_node_id: SceneNodeId, name: &str, labels: &str, error: &str) {
+        if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, None) {
+            self.tree.set_phase_failed_at(id, error);
+            self.rebuild_phases();
+        }
     }
 
     /// Elapsed time since run started.
@@ -579,5 +637,89 @@ impl RunState {
     /// denominator for the `[N/total]` and `phase X/Y` displays.
     pub fn total_phases(&self) -> usize {
         self.tree.total_phases()
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    //! SRD-100 P1c — `resolve_phase_node` is the reconciliation between
+    //! id-keyed routing (race-safe under concurrent distinct-node dispatch)
+    //! and the by-name fallback (runtime-materialized phases + sequential
+    //! loop id-reuse). These drive it through the public `set_phase_*` API.
+    use super::*;
+
+    /// A two-cell distinct-node tree: two same-name `p` phases under DISTINCT
+    /// parent scopes (the topology scenario-level `for_each` /
+    /// `for_combinations` / nesting produce, where each cell gets its own id).
+    fn two_cell_tree() -> (SceneTree, SceneNodeId, SceneNodeId) {
+        let mut t = SceneTree::new();
+        let s1 = t.push(t.root(), EntryKind::Scope, "x=1", "");
+        let p1 = t.push(s1, EntryKind::Phase, "p", "x=1");
+        let s2 = t.push(t.root(), EntryKind::Scope, "x=2", "");
+        let p2 = t.push(s2, EntryKind::Phase, "p", "x=2");
+        (t, p1, p2)
+    }
+
+    fn row(s: &RunState, id: SceneNodeId) -> &PhaseEntry {
+        s.phases.iter().find(|e| e.node_id == id).expect("row for id")
+    }
+
+    fn running_count(s: &RunState) -> usize {
+        s.phases.iter().filter(|e| matches!(e.status, PhaseStatus::Running)).count()
+    }
+
+    /// The id-keyed-wins branch: two distinct same-name nodes, completed in
+    /// REVERSED order, each keep their own op_count / duration / status. With
+    /// the pre-P1c by-name routing the first completion would land on the
+    /// first-DFS node and mis-attribute.
+    #[test]
+    fn id_keyed_wins_under_reordered_completion() {
+        let (tree, p1, p2) = two_cell_tree();
+        let mut s = RunState::new("", "", "");
+        s.install_tree(tree);
+        s.set_phase_running(p1, "p", "x=1", 3);
+        s.set_phase_running(p2, "p", "x=2", 7);
+        s.set_phase_completed(p2, "p", "x=2", 10.0, PhaseSummary::default());
+        s.set_phase_completed(p1, "p", "x=1", 5.0, PhaseSummary::default());
+        assert_eq!(row(&s, p1).duration_secs, Some(5.0));
+        assert_eq!(row(&s, p2).duration_secs, Some(10.0));
+        assert_eq!(row(&s, p1).op_count, 3);
+        assert_eq!(row(&s, p2).op_count, 7);
+        assert!(matches!(row(&s, p1).status, PhaseStatus::Completed));
+        assert!(matches!(row(&s, p2).status, PhaseStatus::Completed));
+    }
+
+    /// Sequential loop id-reuse: the executor reuses ONE node id across
+    /// iterations (push is idempotent by name). Iteration 2's `running`
+    /// falls through to append a fresh live row; a FAILURE on iteration 2
+    /// (reported with the reused, now-Completed id) must mark the LIVE row,
+    /// leaving iteration 1's completed row intact and nothing stranded
+    /// Running. Fails against the naive `find_phase(.., None)` failure
+    /// fallback (which grabs the first-DFS terminal row).
+    #[test]
+    fn reused_loop_id_appends_and_failure_targets_live_row() {
+        // The looped phase sits under a scope (a `do_while` / `for_each`
+        // header), as it does in a real run — so the append-on-miss fallback
+        // (which pushes under root) yields a node distinct from the reused
+        // scoped one, rather than colliding with it via push idempotency.
+        let mut t = SceneTree::new();
+        let scope = t.push(t.root(), EntryKind::Scope, "do_while", "");
+        let p = t.push(scope, EntryKind::Phase, "p", "");
+        let mut s = RunState::new("", "", "");
+        s.install_tree(t);
+        // iteration 1 reuses the pre-mapped node `p`
+        s.set_phase_running(p, "p", "i=1", 1);
+        s.set_phase_completed(p, "p", "i=1", 1.0, PhaseSummary::default());
+        // iteration 2 reuses the same id (now Completed) -> append a live row
+        s.set_phase_running(p, "p", "i=2", 1);
+        assert_eq!(running_count(&s), 1, "iteration 2 appended a distinct live row");
+        // iteration 2 fails, reported with the reused id `p`
+        s.set_phase_failed(p, "p", "i=2", "boom");
+        assert!(matches!(row(&s, p).status, PhaseStatus::Completed),
+            "iteration 1's row stays Completed, got {:?}", row(&s, p).status);
+        let failed = s.phases.iter()
+            .filter(|e| matches!(e.status, PhaseStatus::Failed(_))).count();
+        assert_eq!(failed, 1, "exactly the live iteration-2 row failed");
+        assert_eq!(running_count(&s), 0, "no row left stranded Running");
     }
 }

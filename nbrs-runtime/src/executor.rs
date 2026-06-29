@@ -698,7 +698,12 @@ impl<'p> ExecShell for PhaseShell<'p> {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
         // SRD-92 — run_phase now returns the two-axis Outcome directly; the
         // PhaseShell leaf forwards it (no Result re-derive).
-        Box::pin(async move { run_phase(ctx, self.name).await })
+        Box::pin(async move {
+            // SRD-100 P1c — this WIP shell carries the phase's scene
+            // node as the ctx's current parent.
+            let phase_node_id = ctx.scene_tree_parent_id;
+            run_phase(ctx, self.name, phase_node_id).await
+        })
     }
     fn shell_kind(&self) -> ShellKind { ShellKind::Phase }
 }
@@ -1429,7 +1434,11 @@ fn execute_node<'a>(
                     // the scene-tree push — the gate below still
                     // needs to match it against the refine plan.
                     let phase_labels_for_gate = phase_labels.clone();
-                    push_phase_scene_node(
+                    // SRD-100 P1c — capture this leaf phase's own
+                    // scene-node id; it's the dispatch-time row key
+                    // threaded into the sentinel flips + `run_phase`
+                    // so lifecycle routing never re-matches by name.
+                    let phase_node_id = push_phase_scene_node(
                         ctx.scene_tree_parent_id, phase_path, name.clone(),
                         phase_labels, op_names,
                     );
@@ -1477,11 +1486,11 @@ fn execute_node<'a>(
                         // into the run.
                         if !ctx.pre_map_only {
                             crate::scene_tree::with_global_mut(|t| {
-                                t.set_phase_running(name, &phase_labels, 0);
-                                t.set_phase_completed(name, &phase_labels, 0.0);
+                                t.set_phase_running_at(phase_node_id, 0);
+                                t.set_phase_completed_at(phase_node_id, 0.0);
                             });
-                            ctx.observer.phase_starting(name, &phase_labels, 0, 0, 0);
-                            ctx.observer.phase_completed(name, &phase_labels, 0.0);
+                            ctx.observer.phase_starting(phase_node_id, name, &phase_labels, 0, 0, 0);
+                            ctx.observer.phase_completed(phase_node_id, name, &phase_labels, 0.0);
                             crate::phase_end_triggers::fire_phase_completed(
                                 name, &phase_labels, 0.0,
                             );
@@ -1496,11 +1505,11 @@ fn execute_node<'a>(
                             "refine: skipping phase '{name}' [{phase_labels}] \
                              (prior completed outcome)");
                         crate::scene_tree::with_global_mut(|t| {
-                            t.set_phase_running(name, &phase_labels, 0);
-                            t.set_phase_completed(name, &phase_labels, 0.0);
+                            t.set_phase_running_at(phase_node_id, 0);
+                            t.set_phase_completed_at(phase_node_id, 0.0);
                         });
-                        ctx.observer.phase_starting(name, &phase_labels, 0, 0, 0);
-                        ctx.observer.phase_completed(name, &phase_labels, 0.0);
+                        ctx.observer.phase_starting(phase_node_id, name, &phase_labels, 0, 0, 0);
+                        ctx.observer.phase_completed(phase_node_id, name, &phase_labels, 0.0);
                         crate::phase_end_triggers::fire_phase_completed(
                             name, &phase_labels, 0.0,
                         );
@@ -1508,7 +1517,7 @@ fn execute_node<'a>(
                         // Falls through for `scope=changed` (needs
                         // the hash, computed inside run_phase) and
                         // for non-refine runs.
-                        let __o = run_phase(ctx, name).await;
+                        let __o = run_phase(ctx, name, phase_node_id).await;
                         if __o.is_failure() {
                             return __o;   // SRD-92: propagate the phase's REAL Outcome (no round-trip)
                         }
@@ -2108,9 +2117,30 @@ fn dispatch_comprehension<'a>(
             // get assigned in DFS / iteration order.
             let per_iter_scene_id = match &phase_terminal_meta {
                 Some((phase_name, op_names, phase_yaml_path)) => {
+                    // SRD-100 — wrap each cell in its OWN per-iter scope
+                    // (keyed by the iteration binding), then push the phase
+                    // under it. Same-name cells become distinct nodes via
+                    // distinct PARENTS, never aliased by `push`'s
+                    // name-idempotency — so a concurrent sweep's lifecycle
+                    // routing (P1c) and per-cell display attribute correctly.
+                    // The phase node's identity stays = name (no byte-exact
+                    // coordinate-label-string coupling, §4 invariant); the
+                    // distinctness is carried by the scope segment, which is
+                    // where an iteration binding algebraically belongs — and
+                    // it makes phase-level `for_each` topology IDENTICAL to
+                    // the scenario-level (Children) form below. The phase
+                    // (child of the per-iter scope) is the leaf threaded
+                    // into `run_phase`; its `yaml_path` is unchanged, so
+                    // checkpoint identity `(yaml_path, coords)` is preserved.
+                    let iter_scope = push_scope_scene_node(
+                        ctx.scene_tree_parent_id,
+                        ctx.scene_tree_path.clone(),
+                        format_iter_label(&step.bindings),
+                        Vec::new(),
+                    );
                     let labels = canonical_phase_label(&step.coord_path);
                     push_phase_scene_node(
-                        ctx.scene_tree_parent_id,
+                        iter_scope,
                         phase_yaml_path.clone(),
                         phase_name.clone(),
                         labels,
@@ -3146,7 +3176,13 @@ async fn run_one_iteration(
             // `run_phase` only runs at depth >= Op. SRD 18b
             // §"Single Walker Contract" point 3.
             if ctx.diag.depth >= crate::runner::ExecDepth::Op {
-                run_phase(ctx, name).await
+                // SRD-100 P1c — for a Phase terminal, the dispatcher
+                // (comprehension / optimize) set this ctx's
+                // `scene_tree_parent_id` to the per-iter Phase node
+                // itself before spawning the iteration, so it IS this
+                // phase's dispatch-time row key.
+                let phase_node_id = ctx.scene_tree_parent_id;
+                run_phase(ctx, name, phase_node_id).await
             } else {
                 crate::phase_outcome::Outcome::skipped()
             }
@@ -3243,9 +3279,33 @@ static EMPTY_BINDINGS: std::sync::LazyLock<HashMap<String, String>> =
 /// phase's enclosing scope is reachable via the standard Polydat API
 /// on that one kernel. The legacy `bindings: HashMap` parameter
 /// is gone (M3.4b).
+/// Run a phase. Thin wrapper that scopes the ambient executing-phase
+/// task-local ([`crate::execution_context::with_current_phase`]) for the whole
+/// body, so every emit inside — the activity loop and the fibers it
+/// `propagate`s — resolves `running_phase_indent` to THIS phase's depth under
+/// concurrency (SRD-100 P1c). [`run_phase_inner`] carries the logic.
 async fn run_phase(
     ctx: &mut ExecCtx,
     phase_name: &str,
+    scene_node_id: crate::scene_tree::SceneNodeId,
+) -> crate::phase_outcome::Outcome {
+    crate::execution_context::with_current_phase(
+        scene_node_id,
+        run_phase_inner(ctx, phase_name, scene_node_id),
+    )
+    .await
+}
+
+async fn run_phase_inner(
+    ctx: &mut ExecCtx,
+    phase_name: &str,
+    // SRD-100 P1c — this phase's dispatch-time scene-tree node id.
+    // Allocated by the walker (`push_phase_scene_node`) before
+    // `run_phase` is called and threaded through every lifecycle
+    // flip + observer callback so status/duration/outcome land on
+    // THIS phase's node, never a same-named sibling's (the
+    // `find_phase`-by-DFS-order race).
+    scene_node_id: crate::scene_tree::SceneNodeId,
 ) -> crate::phase_outcome::Outcome {
     // SRD-92 — run_phase produces its two-axis Outcome natively (per-exit).
     let phase_start = std::time::Instant::now();
@@ -3358,11 +3418,11 @@ async fn run_phase(
             crate::diag!(crate::observer::LogLevel::Info,
                 "phase '{phase_name}' [skipped — checkpoint resume]");
             crate::scene_tree::with_global_mut(|t| {
-                t.set_phase_running(phase_name, &early_phase_labels, 0);
-                t.set_phase_completed(phase_name, &early_phase_labels, 0.0);
+                t.set_phase_running_at(scene_node_id, 0);
+                t.set_phase_completed_at(scene_node_id, 0.0);
             });
-            ctx.observer.phase_starting(phase_name, &early_phase_labels, 0, 0, 0);
-            ctx.observer.phase_completed(phase_name, &early_phase_labels, 0.0);
+            ctx.observer.phase_starting(scene_node_id, phase_name, &early_phase_labels, 0, 0, 0);
+            ctx.observer.phase_completed(scene_node_id, phase_name, &early_phase_labels, 0.0);
             crate::phase_end_triggers::fire_phase_completed(
                 phase_name, &early_phase_labels, 0.0,
             );
@@ -4252,6 +4312,22 @@ async fn run_phase(
         .map(|f| f.schema().name.clone())
         .unwrap_or_else(|| "cycles".into());
     let progress_fibers = phase_concurrency;
+    // SRD-100 P2 — a clone of the source factory that survives the move
+    // into `config` below, so the progress thread can re-read the LIVE
+    // extent each tick. ExtendingRangeSourceFactory grows its `end` at
+    // runtime under `until_elapsed`; `progress_extent` is a one-shot
+    // snapshot, so without this the displayed total / percent / ETA would
+    // stay pinned at the initial base value (the status line is now folded
+    // from `ActivePhase.cursor_extent`, fed by these progress updates).
+    let progress_source_factory = source_factory.clone();
+    // Read the current (possibly grown) extent from a source-factory clone,
+    // falling back to the one-shot snapshot for sourceless / fixed phases.
+    fn live_extent_of(
+        factory: &Option<Arc<dyn polydat::iteration::source::DataSourceFactory>>,
+        fallback: u64,
+    ) -> u64 {
+        factory.as_ref().and_then(|f| f.global_extent()).unwrap_or(fallback)
+    }
 
     // Stride-alignment warning: when stanza_len doesn't evenly
     // divide the cursor's extent, the boundary stanza is
@@ -4297,9 +4373,9 @@ async fn run_phase(
     // un-indented because the lookup fires before
     // `set_phase_running`.
     crate::scene_tree::with_global_mut(|t| {
-        t.set_phase_running(phase_name, &phase_labels, stanza_len);
+        t.set_phase_running_at(scene_node_id, stanza_len);
     });
-    ctx.observer.phase_starting(phase_name, &phase_labels,
+    ctx.observer.phase_starting(scene_node_id, phase_name, &phase_labels,
         stanza_len, progress_extent, phase_concurrency);
 
     // Fire `EventType::PhaseStart` once per phase. No built-in
@@ -4405,11 +4481,11 @@ async fn run_phase(
             "refine: skipping phase '{phase_name}' [{phase_labels}] \
              (scope=changed: prior hash matches current)");
         crate::scene_tree::with_global_mut(|t| {
-            t.set_phase_running(phase_name, &phase_labels, 0);
-            t.set_phase_completed(phase_name, &phase_labels, 0.0);
+            t.set_phase_running_at(scene_node_id, 0);
+            t.set_phase_completed_at(scene_node_id, 0.0);
         });
-        ctx.observer.phase_starting(phase_name, &phase_labels, 0, 0, 0);
-        ctx.observer.phase_completed(phase_name, &phase_labels, 0.0);
+        ctx.observer.phase_starting(scene_node_id, phase_name, &phase_labels, 0, 0, 0);
+        ctx.observer.phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
         crate::phase_end_triggers::fire_phase_completed(
             phase_name, &phase_labels, 0.0,
         );
@@ -4476,10 +4552,8 @@ async fn run_phase(
             polydat::kernel::format_scope_coordinate_path(&parent_coords)
         },
         phase_seq: crate::scene_tree::current()
-            .and_then(|t| t.find_phase(phase_name, &phase_labels,
-                Some(&crate::scene_tree::PhaseStatus::Running))
-                .and_then(|id| t.nodes.get(id).map(|n| n.seq))
-                .flatten()
+            .and_then(|t| t.nodes.get(scene_node_id)
+                .and_then(|n| n.seq)
                 .map(|s| (s, t.total_phases()))),
         readouts: ctx.workload_readouts.clone(),
         cli_readout_override: ctx.cli_readout_override.clone(),
@@ -4715,12 +4789,12 @@ async fn run_phase(
     // `dryrun=Dispenser` exits happen post-`run_with_adapters`
     // below, so dispenser construction can run first.
     if ctx.diag.depth < crate::runner::ExecDepth::Dispenser {
-        ctx.observer.phase_completed(phase_name, &phase_labels, 0.0);
+        ctx.observer.phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
         crate::phase_end_triggers::fire_phase_completed(
             phase_name, &phase_labels, 0.0,
         );
         crate::scene_tree::with_global_mut(|t| {
-            t.set_phase_completed(phase_name, &phase_labels, 0.0);
+            t.set_phase_completed_at(scene_node_id, 0.0);
         });
         return crate::phase_outcome::Outcome::skipped();
     }
@@ -4739,6 +4813,58 @@ async fn run_phase(
     let progress_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let progress_flag = progress_running.clone();
 
+    // SRD-100 P2 — attach this phase's live render handle to the display
+    // fold, once, now that the activity (and its metrics / memo) exist
+    // (they did NOT at `phase_starting` — the activity is built well after
+    // it). A display surface folds `active_phases` and re-derives each
+    // phase's status line off this handle, replacing the retired
+    // inline-status producer thread. Attached unconditionally: the handle
+    // is just snapshot data, so a sink activated mid-phase (Ctrl-T) still
+    // finds it — whether to render is the consumer's per-tick decision.
+    {
+        let (seq, depth_indent) =
+            crate::readout_context::resolve_phase_coord_by_id(scene_node_id);
+        // Resolve the on_update render template (workload binding + CLI
+        // override + built-in `phase_status` default) into owned bodies the
+        // consumer fires with `&self` — the `!Sync` binder never enters the
+        // snapshot.
+        let update_bodies = {
+            let phase_status_default = {
+                let readout = crate::readouts::Registry::lookup("phase_status")
+                    .expect("phase_status registered");
+                crate::readouts::BakedBody::from_single(
+                    readout, crate::readouts::Lod::Labeled,
+                )
+            };
+            match crate::readouts::build_event_binder_with_cli(
+                &activity.config.readouts,
+                crate::lifecycle::EventType::Update,
+                phase_status_default,
+                activity.config.cli_readout_override.as_deref(),
+            ) {
+                Ok(mut binder) => binder.take_bodies(crate::lifecycle::EventType::Update),
+                Err(e) => {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "readouts: failed to bind on_update — {e}");
+                    Vec::new()
+                }
+            }
+        };
+        observer_for_progress.phase_render_attach(crate::observer::PhaseRenderHandle {
+            exec_id: crate::execution_context::current_exec_id(),
+            name: phase_name.to_string(),
+            labels: phase_labels.clone(),
+            activity_name: activity.config.name.clone(),
+            metrics: progress_metrics.clone(),
+            bodies: std::sync::Arc::new(update_bodies),
+            memo: activity.memo.clone(),
+            status_metrics: activity.config.status_metrics.clone().into(),
+            concurrency: activity.config.concurrency,
+            seq,
+            depth_indent,
+        });
+    }
+
     // Send initial progress to set cursor info on the observer
     if observer_for_progress.suppresses_stderr() {
         observer_for_progress.phase_progress(&crate::observer::PhaseProgressUpdate {
@@ -4746,7 +4872,7 @@ async fn run_phase(
             name: phase_name.to_string(),
             labels: phase_labels.clone(),
             cursor_name: progress_cursor_name.clone(),
-            cursor_extent: progress_extent,
+            cursor_extent: live_extent_of(&progress_source_factory, progress_extent),
             fibers: progress_fibers,
             ops_started: 0,
             ops_finished: 0,
@@ -4769,6 +4895,9 @@ async fn run_phase(
         // Clone so the post-phase final-progress emission below still
         // has access — the thread needs to own its own Arc handle.
         let progress_metrics = progress_metrics.clone();
+        // SRD-100 P2 — clone the source-factory handle so the thread can
+        // re-read the live (growing) extent each tick.
+        let factory_for_thread = progress_source_factory.clone();
         Some(std::thread::spawn(move || {
             let progress_cursor_name = cursor_name_for_thread;
             let progress_fibers = fibers_for_thread;
@@ -4810,7 +4939,7 @@ async fn run_phase(
                     name: phase_name.clone(),
                     labels: phase_labels.clone(),
                     cursor_name: progress_cursor_name.clone(),
-                    cursor_extent: progress_extent,
+                    cursor_extent: live_extent_of(&factory_for_thread, progress_extent),
                     fibers: progress_fibers,
                     ops_started: started,
                     ops_finished: finished,
@@ -5001,12 +5130,12 @@ async fn run_phase(
     // directly — the post-run summary shows `[ok]` with no
     // duration suffix, matching the dryrun=phase path.
     if ctx.diag.depth < crate::runner::ExecDepth::Cycle {
-        ctx.observer.phase_completed(phase_name, &phase_labels, 0.0);
+        ctx.observer.phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
         crate::phase_end_triggers::fire_phase_completed(
             phase_name, &phase_labels, 0.0,
         );
         crate::scene_tree::with_global_mut(|t| {
-            t.set_phase_completed(phase_name, &phase_labels, 0.0);
+            t.set_phase_completed_at(scene_node_id, 0.0);
         });
         return crate::phase_outcome::Outcome::skipped();
     }
@@ -5046,7 +5175,7 @@ async fn run_phase(
             name: phase_name.to_string(),
             labels: phase_labels.clone(),
             cursor_name: progress_cursor_name.clone(),
-            cursor_extent: progress_extent,
+            cursor_extent: live_extent_of(&progress_source_factory, progress_extent),
             fibers: progress_fibers,
             ops_started: started_total,
             ops_finished: finished_total,
@@ -5227,7 +5356,7 @@ async fn run_phase(
         );
         crate::diag!(crate::observer::LogLevel::Error,
             "{depth_indent}phase '{bold}{phase_name}{reset}'{coords_part} {red}{detail_msg}{reset} {dim}({phase_duration:.2}s){reset}");
-        ctx.observer.phase_failed(phase_name, &phase_labels, &detail_msg);
+        ctx.observer.phase_failed(scene_node_id, phase_name, &phase_labels, &detail_msg);
         crate::phase_end_triggers::fire_phase_failed(
             phase_name, &phase_labels, &detail_msg,
         );
@@ -5285,8 +5414,8 @@ async fn run_phase(
                 reporter.write_phase_outcome(&row);
             }
         crate::scene_tree::with_global_mut(|t| {
-            t.set_phase_failed(phase_name, &phase_labels, &detail_msg);
-            t.set_phase_outcome(phase_name, &phase_labels, outcome);
+            t.set_phase_failed_at(scene_node_id, &detail_msg);
+            t.set_phase_outcome_at(scene_node_id, outcome);
         });
         if let Some(writer) = ctx.checkpoint_writer.as_ref() {
             let identity = phase_identity_for(phase_name, &phase_labels);
@@ -5329,7 +5458,7 @@ async fn run_phase(
     // the throughput / ok-rate / errors detail the user needs,
     // while the phase identity and coords are already on the
     // phase-starting row directly above.
-    ctx.observer.phase_completed(phase_name, &phase_labels, phase_duration);
+    ctx.observer.phase_completed(scene_node_id, phase_name, &phase_labels, phase_duration);
     // Phase-end trigger fan-out: registered triggers
     // (plot re-render, report rebuild, etc.) run on the
     // worker thread so the executor's loop isn't blocked.
@@ -5367,8 +5496,8 @@ async fn run_phase(
             reporter.write_phase_outcome(&row);
         }
     crate::scene_tree::with_global_mut(|t| {
-        t.set_phase_completed(phase_name, &phase_labels, phase_duration);
-        t.set_phase_outcome(phase_name, &phase_labels, success_outcome);
+        t.set_phase_completed_at(scene_node_id, phase_duration);
+        t.set_phase_outcome_at(scene_node_id, success_outcome);
     });
     if let Some(writer) = ctx.checkpoint_writer.as_ref() {
         let identity = phase_identity_for(phase_name, &phase_labels);

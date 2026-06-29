@@ -65,6 +65,7 @@ pub mod key_watcher;
 pub mod log_only_observer;
 pub mod log_only_sink;
 pub mod formatted_line_sink;
+pub mod status_fold;
 pub mod repl_state;
 pub(crate) mod prompt_state;
 pub(crate) mod readout_panel;

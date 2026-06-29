@@ -106,6 +106,23 @@ impl ExecutionContext {
 
 tokio::task_local! {
     static EXEC_CTX: Arc<ExecutionContext>;
+
+    /// SRD-100 P1c — the scene node of the phase the **current task** is
+    /// executing. Set by `run_phase` (via [`with_current_phase`]) for the
+    /// phase body's duration and carried across fiber spawns by
+    /// [`propagate`], so an *ambient* emit — `running_phase_indent`, the
+    /// errorhandler / metrics-diag log bridges, poll / validation progress —
+    /// nests under ITS OWN phase's depth instead of a global
+    /// first-running-by-DFS guess.
+    ///
+    /// Deliberately a **separate task-local**, not a field on the shared
+    /// per-execution [`ExecutionContext`]: concurrent sibling phases run in
+    /// ONE execution (so they share one `ExecutionContext` `Arc`) but each
+    /// must resolve to ITS node — a shared field would be stomped. Task-locals
+    /// are per-task, so each phase body (and its propagated fibers) sees its
+    /// own. `None` outside any phase body (e.g. the metrics scheduler thread);
+    /// readers fall back to the first-running DFS heuristic (A1).
+    static CURRENT_PHASE: crate::scene_tree::SceneNodeId;
 }
 
 
@@ -173,6 +190,27 @@ pub async fn scope<F: std::future::Future>(ctx: Arc<ExecutionContext>, fut: F) -
     EXEC_CTX.scope(ctx, fut).await
 }
 
+/// Run `fut` as the body of the phase at `scene_node_id` (SRD-100 P1c): scopes
+/// the task-local [`CURRENT_PHASE`] for the future's duration. `run_phase`
+/// wraps itself with this so its whole body — the activity loop and every
+/// fiber it [`propagate`]s — resolves to this phase's node, and any ambient
+/// emit nests under its depth.
+pub async fn with_current_phase<F: std::future::Future>(
+    scene_node_id: crate::scene_tree::SceneNodeId,
+    fut: F,
+) -> F::Output {
+    CURRENT_PHASE.scope(scene_node_id, fut).await
+}
+
+/// The scene node of the phase the current task is executing, if set (inside a
+/// `run_phase` body or a fiber it propagated). `None` on tasks/threads outside
+/// any phase (e.g. the metrics scheduler) — readers fall back to the
+/// first-running DFS heuristic (A1). Distinct from [`current_scene_tree`]: that
+/// is the execution's whole tree; this is the one node the task is *in*.
+pub fn current_phase_node() -> Option<crate::scene_tree::SceneNodeId> {
+    CURRENT_PHASE.try_with(|id| *id).ok()
+}
+
 /// Wrap `fut` so it runs under the CURRENT execution context — captured **now**
 /// (at the call site, which is still inside the parent's scope) and
 /// re-established as the task-local inside a freshly-spawned task. A no-op
@@ -190,11 +228,22 @@ where
     F: std::future::Future + Send + 'static,
     F::Output: Send,
 {
+    // Capture BOTH task-locals now, while still inside the parent's scope.
     let ctx = try_current();
+    let phase = current_phase_node();
     async move {
+        // Re-establish the executing-phase (inner) inside the execution
+        // context (outer), so a fiber deep inside a phase still resolves to
+        // both its execution AND its phase node (SRD-100 P1c).
+        let inner = async move {
+            match phase {
+                Some(p) => CURRENT_PHASE.scope(p, fut).await,
+                None => fut.await,
+            }
+        };
         match ctx {
-            Some(c) => scope(c, fut).await,
-            None => fut.await,
+            Some(c) => scope(c, inner).await,
+            None => inner.await,
         }
     }
 }
@@ -235,6 +284,51 @@ mod tests {
         .await;
         assert_eq!(bare, 1, "a bare spawn loses the context (sees the default)");
         assert_eq!(wrapped, id, "propagate carries the exec_id across the spawn");
+    }
+
+    #[tokio::test]
+    async fn current_phase_node_defaults_to_none_and_scopes() {
+        // Outside any phase body the ambient phase is unset (so
+        // `running_phase_indent` falls back to the DFS heuristic).
+        assert_eq!(current_phase_node(), None);
+        // Inside `with_current_phase` it resolves to the scoped node, and
+        // reverts after the body returns.
+        let inside = with_current_phase(7, async { current_phase_node() }).await;
+        assert_eq!(inside, Some(7));
+        assert_eq!(current_phase_node(), None, "the scope reverts on exit");
+    }
+
+    #[tokio::test]
+    async fn propagate_carries_current_phase_across_spawn() {
+        // SRD-100 P1c — a bare spawn inside a phase body loses the ambient
+        // phase; `propagate` re-establishes it so a fiber deep inside the
+        // activity still indents to ITS phase's node.
+        let (bare, wrapped) = with_current_phase(42, async {
+            let bare = tokio::spawn(async { current_phase_node() }).await.unwrap();
+            let wrapped = tokio::spawn(propagate(async { current_phase_node() }))
+                .await
+                .unwrap();
+            (bare, wrapped)
+        })
+        .await;
+        assert_eq!(bare, None, "a bare spawn loses the ambient phase");
+        assert_eq!(wrapped, Some(42), "propagate carries the phase node across the spawn");
+    }
+
+    #[tokio::test]
+    async fn propagate_carries_both_exec_ctx_and_phase() {
+        // The two task-locals compose: a propagated fiber sees BOTH its
+        // execution's exec_id AND its phase node.
+        let ctx = ExecutionContext::new();
+        let id = ctx.exec_id;
+        let (eid, phase) = scope(ctx, with_current_phase(9, async {
+            tokio::spawn(propagate(async { (current_exec_id(), current_phase_node()) }))
+                .await
+                .unwrap()
+        }))
+        .await;
+        assert_eq!(eid, id, "propagate carries exec_id");
+        assert_eq!(phase, Some(9), "propagate carries the phase node");
     }
 
     // Holds a std lock across `.await`: the awaited `scope(...)`

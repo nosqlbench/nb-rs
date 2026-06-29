@@ -370,7 +370,12 @@ fn run_render_loop(
         // Drain new log entries.
         let snap = state.load();
         let total = snap.log_seq_total;
-        let next_status: Option<String> = snap.status_render.clone();
+        // SRD-100 P2 — fold the live `active_phases` snapshot into the
+        // status block at the consumer, rather than reading a single
+        // pre-rendered scalar that N producer threads stomped. Single-phase
+        // output is byte-identical (same builder + bodies); multi-phase
+        // stacks per-phase renders (P3 adds the cap / multi-running counter).
+        let next_status: Option<String> = crate::status_fold::render_active_status(&snap);
         let need_log_emit = total > last_seen;
         let status_changed = next_status != status_published;
 

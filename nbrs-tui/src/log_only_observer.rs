@@ -268,11 +268,12 @@ impl RunObserver for LogOnlyObserver {
         self.state.send(RunStateCmd::InstallTree(tree.clone()));
     }
 
-    fn phase_starting(&self, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
+    fn phase_starting(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
         // Snapshot mutation: same RunStateCmd shape TuiObserver
         // sends, so the snapshot model is identical between modes.
         self.state.send(RunStateCmd::PhaseStarting {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
+            scene_node_id,
             name: name.to_string(),
             labels: labels.to_string(),
             op_templates,
@@ -324,10 +325,16 @@ impl RunObserver for LogOnlyObserver {
         // ancestors collecting every Scope-kind ancestor in
         // outer-first order. Phase nodes have either Phase or
         // Root parents at the top of the chain — we only emit
-        // Scope ancestors as headers.
-        let phase_id = tree.find_phase(name, labels,
-            Some(&nbrs_runtime::scene_tree::PhaseStatus::Running));
-        let phase_node = phase_id.and_then(|id| tree.nodes.get(id));
+        // Scope ancestors as headers. SRD-100 P1c — address the
+        // dispatch-time node directly (race-safe under concurrent
+        // same-name dispatch); fall back to a by-name lookup only
+        // for a runtime-materialized phase absent from this
+        // (possibly pre-map-snapshot) tree handle.
+        let phase_node = tree.nodes.get(scene_node_id)
+            .filter(|n| n.kind == nbrs_runtime::scene_tree::NodeKind::Phase && n.name == name)
+            .or_else(|| tree.find_phase(name, labels,
+                Some(&nbrs_runtime::scene_tree::PhaseStatus::Running))
+                .and_then(|id| tree.nodes.get(id)));
         let (seq, phase_depth, ancestor_chain) = match phase_node {
             Some(n) => {
                 let mut chain: Vec<usize> = Vec::new();
@@ -406,9 +413,10 @@ impl RunObserver for LogOnlyObserver {
                  concurrency, template_word, cycle_word, seq, labels);
     }
 
-    fn phase_completed(&self, name: &str, labels: &str, duration_secs: f64) {
+    fn phase_completed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, duration_secs: f64) {
         self.state.send(RunStateCmd::PhaseCompleted {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
+            scene_node_id,
             name: name.to_string(),
             labels: labels.to_string(),
             duration_secs,
@@ -421,9 +429,10 @@ impl RunObserver for LogOnlyObserver {
         // phase_completed.
     }
 
-    fn phase_failed(&self, name: &str, labels: &str, error: &str) {
+    fn phase_failed(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, error: &str) {
         self.state.send(RunStateCmd::PhaseFailed {
             exec_id: nbrs_runtime::execution_context::current_exec_id(),
+            scene_node_id,
             name: name.to_string(),
             labels: labels.to_string(),
             error: error.to_string(),
@@ -435,15 +444,11 @@ impl RunObserver for LogOnlyObserver {
         self.state.send(RunStateCmd::PhaseProgress(update.clone()));
     }
 
-    fn set_status_line(&self, rendered: Option<String>) {
-        // The activity's inline-status thread sends the binder's
-        // rendered status string through here instead of writing
-        // it directly to the terminal. The active
-        // `DisplaySink` (currently `LogOnlySink`) renders it as
-        // a managed bottom region in lockstep with its log
-        // stream, so log lines and status updates can't stagger
-        // each other — a single owner of the surface.
-        self.state.send(RunStateCmd::SetStatusLine(rendered));
+    fn phase_render_attach(&self, handle: nbrs_runtime::observer::PhaseRenderHandle) {
+        // SRD-100 P2 — route the per-phase render handle to the actor;
+        // LogOnlySink folds `active_phases` and renders each phase's
+        // status footer off it (no inline-status producer thread).
+        self.state.send(RunStateCmd::AttachPhaseRender(handle));
     }
 
     fn run_finished(&self) {

@@ -557,6 +557,15 @@ impl DefaultBinder {
     pub fn unbind(&mut self, event: EventType) {
         self.bindings.remove(&event);
     }
+
+    /// Remove and return the resolved bodies bound to `event`, leaving the
+    /// slot empty. SRD-100 P2 — the executor extracts the resolved
+    /// `on_update` template from a freshly-built binder to attach to the
+    /// live render handle (`PhaseRenderHandle::bodies`), so the consumer
+    /// can fire it with `&self` without holding the `!Sync` binder.
+    pub fn take_bodies(&mut self, event: EventType) -> Vec<BakedBody> {
+        self.bindings.remove(&event).unwrap_or_default()
+    }
 }
 
 impl Default for DefaultBinder {

@@ -37,14 +37,16 @@ fn make_test_state() -> (RunStateHandle, JoinHandle<()>) {
     state.profiler = "off".into();
     state.limit = "5000".into();
 
-    // Add some completed phases
-    state.set_phase_running("teardown", "table=fknn_default", 3);
-    state.set_phase_completed("teardown", "table=fknn_default", 0.2, nbrs_tui::state::PhaseSummary::default());
-    state.set_phase_running("schema", "table=fknn_default", 4);
-    state.set_phase_completed("schema", "table=fknn_default", 1.1, nbrs_tui::state::PhaseSummary::default());
+    // Add some completed phases. No pre-mapped tree, so these route
+    // by name via the runtime-materialized fallback (`scene_node_id =
+    // 0` = root, never a Phase node → `find_phase`). SRD-100 P1c.
+    state.set_phase_running(0, "teardown", "table=fknn_default", 3);
+    state.set_phase_completed(0, "teardown", "table=fknn_default", 0.2, nbrs_tui::state::PhaseSummary::default());
+    state.set_phase_running(0, "schema", "table=fknn_default", 4);
+    state.set_phase_completed(0, "schema", "table=fknn_default", 1.1, nbrs_tui::state::PhaseSummary::default());
 
     // Active phase
-    state.set_phase_running("fknn_rampup_data", "optimize_for=RECALL", 1);
+    state.set_phase_running(0, "fknn_rampup_data", "optimize_for=RECALL", 1);
     let key = nbrs_tui::state::ActivePhaseId::new(
         1, "fknn_rampup_data", "optimize_for=RECALL",
     );
@@ -68,6 +70,7 @@ fn make_test_state() -> (RunStateHandle, JoinHandle<()>) {
         rate_ewma: Arc::new(Ewma::new(Duration::from_secs(5))),
         latency_peak_5s: Arc::new(PeakTracker::max(Duration::from_secs(5))),
         latency_peak_10s: Arc::new(PeakTracker::max(Duration::from_secs(10))),
+        render: None,
     });
 
     // Pending phases

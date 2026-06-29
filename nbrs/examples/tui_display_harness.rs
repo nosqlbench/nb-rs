@@ -118,6 +118,9 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
             if let Some(name) = parts.next() {
                 handle.send(RunStateCmd::PhaseStarting {
                     exec_id: 1,
+                    // Manual by-name driver: route via find_phase against
+                    // the installed tree (scene_node_id = 0 = root). SRD-100 P1c.
+                    scene_node_id: 0,
                     name: name.to_string(),
                     labels: String::new(),
                     op_templates: 1,
@@ -130,6 +133,7 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
             if let Some(name) = parts.next() {
                 handle.send(RunStateCmd::PhaseCompleted {
                     exec_id: 1,
+                    scene_node_id: 0,
                     name: name.to_string(),
                     labels: String::new(),
                     duration_secs: 1.23,
@@ -152,13 +156,59 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
             // The live status block. `|` separates rows so a test can
             // drive a multi-row status (which is what makes the
             // bottom-region scroll-on-growth fire).
+            //
+            // SRD-100 P2 — the status line is no longer a scalar the
+            // harness sets directly; it is folded at the consumer from
+            // `active_phases`. So drive it through the real fold: inject a
+            // synthetic active phase whose `on_update` body is the literal
+            // text. The consumer (`status_fold::render_active_status`)
+            // fires that body and produces exactly the same bytes the old
+            // `SetStatusLine(text)` did — the footer geometry under test is
+            // unchanged. Empty text removes the phase, so the fold clears.
+            const LIVE: &str = "·live·";
             let text: String = parts.collect::<Vec<_>>().join(" ");
-            let rendered = if text.is_empty() {
-                None
+            if text.is_empty() {
+                handle.send(RunStateCmd::PhaseCompleted {
+                    exec_id: 1,
+                    scene_node_id: 0,
+                    name: LIVE.to_string(),
+                    labels: String::new(),
+                    duration_secs: 0.0,
+                });
             } else {
-                Some(text.replace('|', "\n"))
-            };
-            handle.send(RunStateCmd::SetStatusLine(rendered));
+                let rendered = text.replace('|', "\n");
+                // (Re)create the synthetic phase, then attach a literal-body
+                // render handle carrying the text.
+                handle.send(RunStateCmd::PhaseStarting {
+                    exec_id: 1,
+                    scene_node_id: 0,
+                    name: LIVE.to_string(),
+                    labels: String::new(),
+                    op_templates: 1,
+                    total_cycles: 100,
+                    concurrency: 1,
+                });
+                let body = nbrs_runtime::readouts::BakedBody::from_steps(vec![
+                    nbrs_runtime::readouts::RenderStep::Literal(rendered),
+                ]);
+                handle.send(RunStateCmd::AttachPhaseRender(
+                    nbrs_runtime::observer::PhaseRenderHandle {
+                        exec_id: 1,
+                        name: LIVE.to_string(),
+                        labels: String::new(),
+                        activity_name: LIVE.to_string(),
+                        metrics: Arc::new(nbrs_runtime::activity::ActivityMetrics::new(
+                            &nbrs_metrics::labels::Labels::empty(),
+                        )),
+                        bodies: Arc::new(vec![body]),
+                        memo: Arc::new(arc_swap::ArcSwap::from_pointee(String::new())),
+                        status_metrics: Arc::from(Vec::<String>::new()),
+                        concurrency: 1,
+                        seq: None,
+                        depth_indent: String::new(),
+                    },
+                ));
+            }
         }
         Some("out") => {
             let text: String = parts.collect::<Vec<_>>().join(" ");

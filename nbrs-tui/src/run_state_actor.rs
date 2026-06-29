@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 
 use nbrs_runtime::observer::PhaseProgressUpdate;
-use nbrs_runtime::scene_tree::SceneTree;
+use nbrs_runtime::scene_tree::{SceneNodeId, SceneTree};
 use nbrs_metrics::summaries::binomial_summary::BinomialSummary;
 use nbrs_metrics::summaries::ewma::Ewma;
 use nbrs_metrics::summaries::peak_tracker::PeakTracker;
@@ -52,6 +52,11 @@ pub enum RunStateCmd {
     /// [`ActivePhase`] entry.
     PhaseStarting {
         exec_id: u64,
+        /// SRD-100 P1c — dispatch-time scene-tree node id for this
+        /// phase. The actor flips THIS node (race-safe under
+        /// concurrent same-name dispatch) instead of re-matching by
+        /// `(name, status)`.
+        scene_node_id: SceneNodeId,
         name: String,
         labels: String,
         /// Count of distinct op definitions in the phase (the
@@ -67,6 +72,9 @@ pub enum RunStateCmd {
     /// removing it.
     PhaseCompleted {
         exec_id: u64,
+        /// SRD-100 P1c — dispatch-time scene-tree node id (see
+        /// [`Self::PhaseStarting`]).
+        scene_node_id: SceneNodeId,
         name: String,
         labels: String,
         duration_secs: f64,
@@ -75,12 +83,21 @@ pub enum RunStateCmd {
     /// flips the tree node's status.
     PhaseFailed {
         exec_id: u64,
+        /// SRD-100 P1c — dispatch-time scene-tree node id (see
+        /// [`Self::PhaseStarting`]).
+        scene_node_id: SceneNodeId,
         name: String,
         labels: String,
         error: String,
     },
     /// Live update from the executor's progress thread.
     PhaseProgress(PhaseProgressUpdate),
+    /// SRD-100 P2 — attach the per-phase live render handle to the
+    /// matching `ActivePhase`, fired once by the executor after the
+    /// activity's metrics/binder exist. The consumer-side status
+    /// renderers fold `active_phases` and render each phase's status
+    /// off its handle (no producer thread, no `status_render` scalar).
+    AttachPhaseRender(nbrs_runtime::observer::PhaseRenderHandle),
     /// Run is complete; flips `state.finished` so the renderer
     /// drops out of its event loop.
     RunFinished,
@@ -115,13 +132,6 @@ pub enum RunStateCmd {
         profiler: Option<String>,
         limit: Option<String>,
     },
-    /// Set (or clear) the latest rendered status line for the
-    /// active phase. The activity's inline-status thread fires
-    /// this once per refresh tick instead of writing directly
-    /// to the terminal. `None` clears the slot at phase end.
-    /// See [`crate::state::RunState::status_render`] for the
-    /// rationale (single-owner rendering surface).
-    SetStatusLine(Option<String>),
     /// Synchronous render checkpoint. Processed in command order
     /// so its position in the queue marks "all preceding mutations
     /// have been applied". The actor:
@@ -305,8 +315,8 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         RunStateCmd::InstallTree(tree) => {
             state.install_tree(tree);
         }
-        RunStateCmd::PhaseStarting { exec_id, name, labels, op_templates, total_cycles: _, concurrency } => {
-            state.set_phase_running(&name, &labels, op_templates);
+        RunStateCmd::PhaseStarting { exec_id, scene_node_id, name, labels, op_templates, total_cycles: _, concurrency } => {
+            state.set_phase_running(scene_node_id, &name, &labels, op_templates);
             let key = crate::state::ActivePhaseId::new(exec_id, name.clone(), labels.clone());
             // Sparkline capacity = bar width used by
             // latency_detail_lines so the throughput row aligns
@@ -338,6 +348,7 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
                 rate_ewma,
                 latency_peak_5s,
                 latency_peak_10s,
+                render: None,
             });
             // Sparklines reset on every phase boundary so a
             // short ann_query phase doesn't show several seconds
@@ -346,7 +357,7 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             state.rows_history.clear();
             state.rows_sparkline_label = None;
         }
-        RunStateCmd::PhaseCompleted { exec_id, name, labels, duration_secs } => {
+        RunStateCmd::PhaseCompleted { exec_id, scene_node_id, name, labels, duration_secs } => {
             let key = crate::state::ActivePhaseId::new(exec_id, name.clone(), labels.clone());
             let min_ns = state.min_nanos;
             let p50_ns = state.p50_nanos;
@@ -377,11 +388,11 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
                 // the ActivePhase below.
                 throughput_samples: a.throughput_summary.snapshot(),
             }).unwrap_or_default();
-            state.set_phase_completed(&name, &labels, duration_secs, summary);
+            state.set_phase_completed(scene_node_id, &name, &labels, duration_secs, summary);
             state.active_phases.remove(&key);
         }
-        RunStateCmd::PhaseFailed { exec_id, name, labels, error } => {
-            state.set_phase_failed(&name, &labels, &error);
+        RunStateCmd::PhaseFailed { exec_id, scene_node_id, name, labels, error } => {
+            state.set_phase_failed(scene_node_id, &name, &labels, &error);
             state.active_phases.remove(&crate::state::ActivePhaseId::new(exec_id, name, labels));
         }
         RunStateCmd::PhaseProgress(update) => {
@@ -405,6 +416,18 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
                     .collect();
                 active.throughput_summary.record(update.ops_per_sec);
                 active.rate_ewma.record_now(update.ops_per_sec);
+            }
+        }
+        RunStateCmd::AttachPhaseRender(handle) => {
+            // Attach to the live phase slot keyed by (exec_id, name,
+            // labels). If `phase_starting` hasn't been processed yet, or
+            // the phase already completed, the slot is absent and the
+            // handle is dropped — the consumer simply renders no status
+            // for that (now-gone) phase, which is correct.
+            let key = crate::state::ActivePhaseId::new(
+                handle.exec_id, handle.name.as_str(), handle.labels.as_str());
+            if let Some(active) = state.active_phases.get_mut(&key) {
+                active.render = Some(handle);
             }
         }
         RunStateCmd::RunFinished => {
@@ -457,9 +480,6 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         RunStateCmd::SetMeta { profiler, limit } => {
             if let Some(p) = profiler { state.profiler = p; }
             if let Some(l) = limit    { state.limit    = l; }
-        }
-        RunStateCmd::SetStatusLine(rendered) => {
-            state.status_render = rendered;
         }
         RunStateCmd::FrameAck(_) => {
             // Routed to `handle_cmd` before reaching this match;

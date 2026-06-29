@@ -809,9 +809,9 @@ mod tests {
     }
 
     impl nbrs_runtime::observer::RunObserver for CapturingObserver {
-        fn phase_starting(&self, _: &str, _: &str, _: usize, _: u64, _: usize) {}
-        fn phase_completed(&self, _: &str, _: &str, _: f64) {}
-        fn phase_failed(&self, _: &str, _: &str, _: &str) {}
+        fn phase_starting(&self, _: nbrs_runtime::scene_tree::SceneNodeId, _: &str, _: &str, _: usize, _: u64, _: usize) {}
+        fn phase_completed(&self, _: nbrs_runtime::scene_tree::SceneNodeId, _: &str, _: &str, _: f64) {}
+        fn phase_failed(&self, _: nbrs_runtime::scene_tree::SceneNodeId, _: &str, _: &str, _: &str) {}
         fn phase_progress(&self, _: &nbrs_runtime::observer::PhaseProgressUpdate) {}
         fn run_finished(&self) {}
         fn log(&self, level: LogLevel, message: &str) {
