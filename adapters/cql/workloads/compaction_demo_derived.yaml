@@ -122,16 +122,32 @@ scenarios:
     # incremental range — and carries its masked position as `idx_of(p)`.
     - for: "p in profile_partitions('{dataset}', '{profile_pattern}')"
       phases:
-        # `concurrent_query` is a DAEMON phase (SRD-82 Part 6): listed
-        # FIRST so it is spawned in daemon mode and runs at 1/s
-        # CONCURRENTLY with the foreground load/flush/finalize/recall of
-        # this tier, then stops cleanly when they finish. It probes ANN
-        # query behaviour while the tier is being ingested + indexed.
-        - concurrent_query
-        - load_increment
-        - flush
-        - finalize_index
+        # Each tier is TWO sibling sub-scopes (SRD-82 Part 6 daemon
+        # isolation): the `tier_build` include holds the
+        # ingest→flush→compact phases together with the `concurrent_query`
+        # DAEMON, so the daemon shadows EXACTLY those and is stopped the
+        # moment they finish — its `daemon_stop` is latched when its own
+        # scope's foreground completes (executor `run_scenario_body`). The
+        # `recall_check` then runs in a SIBLING scope, after the daemon has
+        # stopped, so the probe load never perturbs the recall measurement.
+        - scenario: tier_build
         - recall_check
+
+  # The build half of one tier: load the incremental vectors, flush, and
+  # major-compact — shadowed by the `concurrent_query` daemon. Rooted as
+  # its OWN scope (a `scenario:` include) so the daemon's stop boundary is
+  # this group's completion, NOT the whole tier (which would include the
+  # recall check). `concurrent_query` is listed FIRST so it is spawned in
+  # daemon mode (off the foreground budget) BEFORE the ingestion phase and
+  # runs at 1/s for the whole build, then stops cleanly when
+  # `finalize_index` completes. The for-loop tier `p` is in scope here
+  # (inherited from the enclosing `for:`), so the phases resolve
+  # `idx_of(p)` / `start_of(p)` / `end_of(p)` unchanged.
+  tier_build:
+    - concurrent_query
+    - load_increment
+    - flush
+    - finalize_index
 
   # Single-phase scenarios for piecewise runs.
   reset:   [teardown]
@@ -225,17 +241,28 @@ phases:
           after:  "tuned: ConcurrentCompactors -> 10"
 
   # Concurrent ANN query probe — an SRD-82 Part 6 DAEMON phase. Runs at
-  # 1/s alongside the foreground load → flush → finalize → recall of this
-  # tier (it is listed FIRST in the `for:` body, so the scenario shell
+  # 1/s alongside the foreground load → flush → finalize of this tier (it
+  # is listed FIRST in the `tier_build` include, so the scenario shell
   # spawns it in daemon mode, off the foreground concurrency budget), on
-  # its OWN scope so it pulls from a distinct cursor base. It stops
-  # cleanly when the tier's foreground phases complete. The op's
-  # `result_success` timer (SRD-91) captures ANN query latency *while the
-  # tier is being ingested and indexed* — the whole point of the probe.
+  # its OWN scope so it pulls from a distinct cursor base. It stops cleanly
+  # when `tier_build`'s foreground (load/flush/finalize) completes —
+  # BEFORE `recall_check` runs in the sibling scope, so the probe never
+  # contends with the recall measurement. The op's `result_success` timer
+  # (SRD-91) captures ANN query latency *while the tier is being ingested
+  # and indexed* — the whole point of the probe.
   concurrent_query:
     adapter: cql
     daemon: true
     concurrency: 1
+    # SRD-82 ErrorPolicy — this probe runs DURING ingest + indexing, where
+    # ANN query timeouts are EXPECTED (the index isn't built yet). Count
+    # them and keep probing rather than letting one timeout abort the sweep
+    # (the prior default stop-on-error). NO error-rate guard here on
+    # purpose: the probe's job is to MEASURE query behaviour while the index
+    # builds, so its errors are the data, not a failure signal — the
+    # foreground `load_increment` / `recall_check` guards below catch a
+    # genuinely unhealthy run.
+    errors: ".*:warn,counter"
     # 1 query/s — numeric so it builds the activity RateLimiter (a string
     # like "1/s" would not parse as f64 and would be ignored).
     rate: 1
@@ -272,6 +299,18 @@ phases:
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   load_increment:
     concurrency: "{concurrency}"
+    # SRD-82 ErrorPolicy + SRD-83 stop conditions — tolerate transient
+    # insert errors (timeouts under load) instead of aborting the whole
+    # sweep on the first one (the prior default stop-on-error). Every error
+    # is logged + tallied and the load keeps going; the async guard below
+    # fails the phase ONLY if the windowed error rate crosses 1%. The
+    # `op_count > 100` clause holds the breaker off until the rate is
+    # measured over a real sample (error_rate is result_failure/op_count, so
+    # one early error would otherwise spike it). polydat predicates use `&`,
+    # not `&&`.
+    errors: ".*:warn,counter"
+    stop_when:
+      - when: "(op_count > 100) & (error_rate > 0.01)"
     bindings: |
       # `p` is the active masked profile tier from `profile_partitions`:
       # `[start_of(p), end_of(p))` is the incremental delta since the
@@ -451,6 +490,14 @@ phases:
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   recall_check:
     concurrency: "{query_concurrency}"
+    # SRD-82 ErrorPolicy + SRD-83 stop conditions — recall queries run
+    # AFTER compaction, so they should mostly succeed; a transient timeout
+    # is counted (not fatal), but if the windowed error rate exceeds 1% the
+    # measurement is untrustworthy, so the async guard fails the phase. Same
+    # 1% budget + `op_count > 100` floor as `load_increment`.
+    errors: ".*:warn,counter"
+    stop_when:
+      - when: "(op_count > 100) & (error_rate > 0.01)"
     bindings: |
       # Same masked tier as the load: name it by its masked position
       # idx_of(p), prebuffer the tier's own ground-truth facets.
