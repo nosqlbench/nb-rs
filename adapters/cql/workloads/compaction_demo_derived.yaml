@@ -26,8 +26,10 @@
 #   - per-tier ground truth: name the tier with
 #     `matching_profile_name_at(..., idx_of(p))`, prebuffer its own
 #     facets, and recall with `query_vector_at` / `neighbor_indices_at`.
-#   - `if: "end_of(p) <= max_size"` caps the sweep at the configured size
-#     (sizes ascend; the last matching profile is the natural end).
+#   - `if: "end_of(p) <= effective_max_size"` caps the sweep at the
+#     configured size (sizes ascend; the last matching profile is the
+#     natural end). `effective_max_size` defaults to the dataset's full
+#     base-vector count (`max_size=0`); a positive `max_size` caps below it.
 #
 # A dataset with only the default profile yields a single tier (one full
 # load + recall). A dataset with multiple profiles uses the matching
@@ -85,10 +87,14 @@ params:
   # `max_size`: stop once a tier's cumulative base-vector count would
   #   exceed this; the last loaded tier is the largest matching profile
   #   that fits (or the last matching profile, whichever comes first).
-  #   Accepts magnitude suffixes on the CLI (decimal `10m`/`2b`, binary
-  #   `4Gi`) since the default below is numeric.
+  #   `0` (the default) means NO cap — it resolves at runtime to the
+  #   dataset's actual base-vector count (`vector_count` of the base
+  #   facet), so by default the sweep loads every tier up to the full
+  #   dataset. Set a positive value to cap; accepts magnitude suffixes on
+  #   the CLI (decimal `10m`/`2b`, binary `4Gi`) since the default is
+  #   numeric. See `effective_max_size` in the top-level `bindings:`.
   profile_pattern: "*"
-  max_size: 1000000
+  max_size: 0
 
   # ── Post-load step toggles (1 = enabled, 0 = skipped) ────────
   # Independently enable/disable each post-load step per tier. Defaults
@@ -106,6 +112,13 @@ params:
 # lowercase; dataset names are letter-leading in practice.)
 bindings: |
   const table := regex_replace("{dataset}_{profile}", "[^a-zA-Z0-9_]", "_")
+  # Effective sweep cap. `max_size=0` (the default) means "the whole
+  # dataset", resolved here to the dataset's actual base-vector count
+  # (`vector_count` auto-opens the base facet); a positive `max_size`
+  # CLI override caps below that. Effectively-const (bound once at
+  # scope init), referenced by the per-tier `if: end_of(p) <=
+  # effective_max_size` gates below.
+  const effective_max_size := if(max_size > 0, max_size, vector_count("{dataset}:{profile}"))
 
 scenarios:
   # Default: the incremental size-tier sweep.
@@ -279,7 +292,7 @@ phases:
     ops:
       probe_ann:
         # Same cap as the rest of the sweep — skip tiers over max_size.
-        if: "end_of(p) <= max_size"
+        if: "end_of(p) <= effective_max_size"
         prepared: |
           SELECT [key] FROM {keyspace}.{table}
           ORDER BY value
@@ -334,7 +347,7 @@ phases:
         # Cap the sweep at max_size; sizes ascend, so once a tier's end
         # exceeds the cap every later tier is skipped too (the last
         # profile is the natural end of the partition list).
-        if: "end_of(p) <= max_size"
+        if: "end_of(p) <= effective_max_size"
         max_batch_size: 64KB
         batchtype: unlogged
         prepared: |
@@ -509,7 +522,7 @@ phases:
       ground_truth := neighbor_indices_at(prebuffered, q % base)
     ops:
       select_ann:
-        if: "end_of(p) <= max_size"
+        if: "end_of(p) <= effective_max_size"
         prepared: |
           SELECT [key] FROM {keyspace}.{table}
           ORDER BY value
