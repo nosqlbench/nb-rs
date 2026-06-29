@@ -38,7 +38,7 @@ use nbrs_metricsql::runtime::{
 };
 
 pub fn query(args: &[String]) {
-    let parsed = match parse_args(args) {
+    let mut parsed = match parse_args(args) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("nbrs metrics query: {e}");
@@ -85,6 +85,32 @@ pub fn query(args: &[String]) {
         }
     };
     let step_ms = parsed.step_ms;
+
+    // `--range <dur|all>` applies the normative metricsql `[<dur>]`
+    // range-vector suffix to the (selector) query — the evaluator handles
+    // `[...]` natively. `all` sizes the window to the whole test span
+    // (anchor − earliest sample) so every series across the run is
+    // returned; otherwise the literal duration is appended verbatim. This
+    // is the discoverable answer to "show me the metric over a window /
+    // the whole run" without hand-typing the `[…]` selector.
+    if let Some(range) = parsed.range.clone() {
+        let suffix = if range.eq_ignore_ascii_case("all") {
+            let earliest = match earliest_sample_ts(&parsed.db_path) {
+                Ok(Some(ts)) => ts,
+                _ => anchor_ms,
+            };
+            let span = (anchor_ms - earliest).max(1);
+            format!("[{span}ms]")
+        } else {
+            if let Err(e) = parse_duration_ms(&range) {
+                eprintln!("nbrs metrics query: --range: {e} \
+                    (expected a duration like 1m / 30s, or `all`)");
+                std::process::exit(2);
+            }
+            format!("[{range}]")
+        };
+        parsed.query = format!("{}{}", parsed.query, suffix);
+    }
 
     // SRD-77 — the DataSource coalesces across executions
     // (per-instance-latest); no implicit single-`exec_id` injection.
@@ -148,6 +174,12 @@ struct ParsedArgs {
     /// every sample the evaluator produced — useful for
     /// time-range debugging.
     latest_only: bool,
+    /// `--range <dur|all>`: apply the normative metricsql `[<dur>]`
+    /// range-vector suffix to the (selector) query. `all` expands to the
+    /// whole test span. `None` leaves the query untouched. Autocompletes
+    /// to `all` + the session's actual reporting cadences (distinct
+    /// `interval_ms` in the db).
+    range: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
@@ -167,6 +199,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
     // intent for ad-hoc instant queries. `--all-samples`
     // flips it for range debugging.
     let mut latest_only = true;
+    let mut range: Option<String> = None;
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
         match a.as_str() {
@@ -191,6 +224,14 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
                 }
             }
             "--all-samples" => { latest_only = false; }
+            "--range" => {
+                range = Some(iter.next()
+                    .ok_or("--range requires a duration (e.g. 1m) or `all`")?
+                    .to_string());
+            }
+            other if other.starts_with("--range=") => {
+                range = Some(other["--range=".len()..].to_string());
+            }
             "--stale-window" => {
                 let v = iter.next().ok_or("--stale-window requires a duration")?;
                 stale_window_ms = parse_duration_ms(v)?;
@@ -220,7 +261,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
     let db_path = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
     Ok(ParsedArgs {
         db_path, query, anchor_ms, lookback_ms, step_ms,
-        stale_window_ms, latest_only,
+        stale_window_ms, latest_only, range,
     })
 }
 
@@ -272,6 +313,22 @@ fn latest_sample_ts(db: &std::path::Path) -> Result<Option<i64>, String> {
     ).map_err(|e| e.to_string())?;
     conn.query_row(
         "SELECT MAX(timestamp_ms) FROM sample_value",
+        [],
+        |row| row.get::<_, Option<i64>>(0),
+    ).map_err(|e| e.to_string())
+}
+
+/// One-shot probe for the db's earliest sample timestamp — the start of
+/// the test span. Used by `--range all` to size the `[<dur>]` window so it
+/// covers the whole run.
+fn earliest_sample_ts(db: &std::path::Path) -> Result<Option<i64>, String> {
+    let conn = rusqlite::Connection::open_with_flags(
+        db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT MIN(timestamp_ms) FROM sample_value",
         [],
         |row| row.get::<_, Option<i64>>(0),
     ).map_err(|e| e.to_string())
@@ -651,6 +708,12 @@ pub fn print_usage() {
     eprintln!("                               Default: 1m.");
     eprintln!("  --all-samples                Emit every sample in the window.");
     eprintln!("                               Default: latest sample per series.");
+    eprintln!("  --range <dur|all>            Apply the metricsql `[<dur>]` range");
+    eprintln!("                               to the selector. `all` = the whole");
+    eprintln!("                               test span (every series); or a");
+    eprintln!("                               reporting cadence, e.g. 1m. Tab-");
+    eprintln!("                               completes to `all` + this session's");
+    eprintln!("                               cadences.");
     eprintln!();
     eprintln!("Durations: 5m, 1h30m, 500ms, 2.5s. Bare numbers are seconds.");
 }

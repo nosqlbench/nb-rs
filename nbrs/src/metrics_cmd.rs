@@ -184,6 +184,60 @@ fn match_flags() -> Vec<Flag> {
     out
 }
 
+/// Flags for `nbrs metrics query`. The runtime parse lives in
+/// `metricsql_cmd::parse_args` (the `query` cli_spec entry is `raw_args`),
+/// but declaring the flags here drives completion — the spec stays the
+/// source of truth (cli_spec §`raw_args`). Keep in sync with
+/// `metricsql_cmd::parse_args`.
+fn query_flags() -> Vec<Flag> {
+    vec![
+        Flag {
+            long: "--db", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::Path,
+            help: "Override metrics db. Default: sessions/latest/metrics.db",
+            repeatable: false,
+        },
+        Flag {
+            long: "--range", short: None, aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::Custom(crate::completion::metrics_range_provider),
+            help: "Apply a metricsql `[<dur>]` range to the selector: `all` = \
+                   the whole test span, or a reporting cadence (e.g. 1m).",
+            repeatable: false,
+        },
+        Flag {
+            long: "--at", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Anchor timestamp (ms epoch). Default: the db's latest sample.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--lookback", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Range-query lookback window (stepped). Default: 0 = instant.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--step", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Range-query step. Default: 1m.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--stale-window", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Instant-query staleness window. Default: 5m.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--all-samples", short: None, aliases: &[],
+            arity: Arity::Bool, value: ValueProvider::None,
+            help: "Emit every sample, not just the latest per series.",
+            repeatable: false,
+        },
+    ]
+}
+
 pub fn spec() -> Command {
     // No-subcommand handler: print usage. The walker lands
     // here when the user types `nbrs metrics` or
@@ -271,7 +325,10 @@ pub fn spec() -> Command {
                 name: "query",
                 help: "Evaluate a metricsql expression against the db.",
                 category: Category::Tools, level: Level::Secondary,
-                flags: Vec::new(),
+                // `raw_args` delegates parsing to `metricsql_cmd`, but the
+                // declared flags still drive completion (cli_spec §raw_args)
+                // — so `--range`/`--lookback`/… now tab-complete.
+                flags: query_flags(),
                 kv_params: &[],
         dynamic_options: None,
         // Completion-only positional: `raw_args=true` makes the

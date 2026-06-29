@@ -288,6 +288,44 @@ pub(crate) fn phase_name_db_provider(partial: &str, _ctx: &[&str]) -> Vec<String
         .collect()
 }
 
+/// `nbrs metrics query --range <TAB>` — completes to `all` plus the
+/// session's ACTUAL reporting cadences, read live from the data (the
+/// distinct `interval_ms` windows in `sample_value`). `all` expands to the
+/// whole test span; each cadence is the normative metricsql `[<dur>]`
+/// range-vector window.
+pub(crate) fn metrics_range_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = vec!["all".to_string()];
+    let db_path = nbrs_runtime::session::latest_metrics_db();
+    if db_path.exists()
+        && let Ok(conn) = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+    {
+        // `prepare` fails cleanly if `sample_value` is absent → just `all`.
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT DISTINCT interval_ms FROM sample_value \
+             WHERE interval_ms > 0 ORDER BY interval_ms",
+        ) && let Ok(rows) = stmt.query_map([], |r| r.get::<_, i64>(0)) {
+            for ms in rows.filter_map(|r| r.ok()) {
+                out.push(format_duration_ms(ms));
+            }
+        }
+    }
+    out.into_iter().filter(|v| v.starts_with(partial)).collect()
+}
+
+/// Format a millisecond window as a compact metricsql duration:
+/// `1000 → "1s"`, `60000 → "1m"`, else `"<ms>ms"`.
+fn format_duration_ms(ms: i64) -> String {
+    if ms % 86_400_000 == 0 { format!("{}d", ms / 86_400_000) }
+    else if ms % 3_600_000 == 0 { format!("{}h", ms / 3_600_000) }
+    else if ms % 60_000 == 0 { format!("{}m", ms / 60_000) }
+    else if ms % 1_000 == 0 { format!("{}s", ms / 1_000) }
+    else { format!("{ms}ms") }
+}
+
 /// `phases=` filter completion: phase names declared by the
 /// `workload=` already on the line (falls back to the latest
 /// session db when no workload is in context).
@@ -1800,6 +1838,21 @@ mod walker_tests {
         {
             assert!(cands.iter().any(|c| c == required),
                 "missing subcommand `{required}` in: {cands:?}");
+        }
+    }
+
+    #[test]
+    fn metrics_query_offers_its_flags() {
+        // `query` is `raw_args` (parsing is delegated to metricsql_cmd),
+        // but its declared flags must still drive completion
+        // (cli_spec §raw_args) — this is the gap that left `--lookback`
+        // etc. un-completable, plus the new `--range`.
+        let cands = complete(&["nbrs", "metrics", "query", "--"]);
+        for required in ["--range", "--lookback", "--at", "--step",
+                         "--stale-window", "--all-samples", "--db"]
+        {
+            assert!(cands.iter().any(|c| c == required),
+                "missing flag `{required}` for `metrics query` in: {cands:?}");
         }
     }
 
