@@ -7,8 +7,8 @@ language.
 > truthiness combinators; short-circuit deferred) and the uniform
 > `<expr> as <type>` cast described below have shipped. They occupy the
 > lowest precedence band (`&&`/`||`) and the tightest postfix position
-> (`as`) respectively. See [SRD-84](../../../docs/SRD/84_grammar_safe_matter.md)
-> Parts 1 + 1b for the original framing.
+> (`as`) respectively. See the host's **SRD-84** Parts 1 + 1b for the
+> original framing.
 
 <a id="sec-authority"></a>
 ## 0. Authority and supersession
@@ -30,10 +30,9 @@ It **supersedes and replaces**:
   forward here in summary (§[17](#sec-gaxioms)); `grammar.md` carries a
   supersession banner pointing here as the definitive entry point and is
   retained as the detailed formal appendix this spec cross-references.
-- [`docs/SRD/10_polydat_language.md`](../../../docs/SRD/10_polydat_language.md)
-  — *nbrs-side framing.* Its grammar-facing material (cursor
-  declarations, modifiers, output selection as it touches syntax) is
-  carried forward here; its host-integration framing remains in SRD-10,
+- the host's **SRD-10** (*nbrs-side framing*). Its grammar-facing material
+  (cursor declarations, modifiers, output selection as it touches syntax)
+  is carried forward here; its host-integration framing remains in SRD-10,
   which now points here for all grammar matters.
 
 It **does not** supersede:
