@@ -192,6 +192,12 @@ pub trait RunObserver: Send + Sync {
 /// Live metrics snapshot for progress updates.
 #[derive(Clone, Debug)]
 pub struct PhaseProgressUpdate {
+    /// The execution this update belongs to (SRD-88 `exec_id`,
+    /// SRD-100 §4). With `name`+`labels` it forms the live routing
+    /// key, so concurrent executions of the same phase route to
+    /// distinct `ActivePhase` slots. `1` for the single-execution
+    /// case (SRD-88 A1).
+    pub exec_id: u64,
     /// Phase name this update belongs to — matches the `name`
     /// passed to [`RunObserver::phase_starting`]. Present so
     /// observers that track multiple concurrent phases can route

@@ -36,6 +36,7 @@ fn actor_publishes_snapshots() {
         RunState::new("test.yaml", "repro", "stdout"),
     );
     handle.send(RunStateCmd::PhaseStarting {
+        exec_id: 1,
         name: "schema".into(),
         labels: "".into(),
         op_templates: 4,

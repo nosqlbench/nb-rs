@@ -51,6 +51,7 @@ pub enum RunStateCmd {
     /// A phase has begun. Carries everything needed to seed an
     /// [`ActivePhase`] entry.
     PhaseStarting {
+        exec_id: u64,
         name: String,
         labels: String,
         /// Count of distinct op definitions in the phase (the
@@ -65,6 +66,7 @@ pub enum RunStateCmd {
     /// [`PhaseSummary`] from its own active-phase entry before
     /// removing it.
     PhaseCompleted {
+        exec_id: u64,
         name: String,
         labels: String,
         duration_secs: f64,
@@ -72,6 +74,7 @@ pub enum RunStateCmd {
     /// A phase failed. The actor removes the active entry and
     /// flips the tree node's status.
     PhaseFailed {
+        exec_id: u64,
         name: String,
         labels: String,
         error: String,
@@ -302,9 +305,9 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         RunStateCmd::InstallTree(tree) => {
             state.install_tree(tree);
         }
-        RunStateCmd::PhaseStarting { name, labels, op_templates, total_cycles: _, concurrency } => {
+        RunStateCmd::PhaseStarting { exec_id, name, labels, op_templates, total_cycles: _, concurrency } => {
             state.set_phase_running(&name, &labels, op_templates);
-            let key = (name.clone(), labels.clone());
+            let key = crate::state::ActivePhaseId::new(exec_id, name.clone(), labels.clone());
             // Sparkline capacity = bar width used by
             // latency_detail_lines so the throughput row aligns
             // with the latency rows.
@@ -343,8 +346,8 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             state.rows_history.clear();
             state.rows_sparkline_label = None;
         }
-        RunStateCmd::PhaseCompleted { name, labels, duration_secs } => {
-            let key = (name.clone(), labels.clone());
+        RunStateCmd::PhaseCompleted { exec_id, name, labels, duration_secs } => {
+            let key = crate::state::ActivePhaseId::new(exec_id, name.clone(), labels.clone());
             let min_ns = state.min_nanos;
             let p50_ns = state.p50_nanos;
             let p99_ns = state.p99_nanos;
@@ -377,12 +380,12 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             state.set_phase_completed(&name, &labels, duration_secs, summary);
             state.active_phases.remove(&key);
         }
-        RunStateCmd::PhaseFailed { name, labels, error } => {
+        RunStateCmd::PhaseFailed { exec_id, name, labels, error } => {
             state.set_phase_failed(&name, &labels, &error);
-            state.active_phases.remove(&(name, labels));
+            state.active_phases.remove(&crate::state::ActivePhaseId::new(exec_id, name, labels));
         }
         RunStateCmd::PhaseProgress(update) => {
-            if let Some(active) = state.active_phase_mut(&update.name, &update.labels) {
+            if let Some(active) = state.active_phase_mut(update.exec_id, &update.name, &update.labels) {
                 active.cursor_name = update.cursor_name.clone();
                 active.cursor_extent = update.cursor_extent;
                 active.fibers = update.fibers;

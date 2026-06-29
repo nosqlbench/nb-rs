@@ -4742,6 +4742,7 @@ async fn run_phase(
     // Send initial progress to set cursor info on the observer
     if observer_for_progress.suppresses_stderr() {
         observer_for_progress.phase_progress(&crate::observer::PhaseProgressUpdate {
+            exec_id: crate::execution_context::current_exec_id(),
             name: phase_name.to_string(),
             labels: phase_labels.clone(),
             cursor_name: progress_cursor_name.clone(),
@@ -4805,6 +4806,7 @@ async fn run_phase(
                 let relevancy = progress_metrics.collect_relevancy_live();
 
                 obs.phase_progress(&crate::observer::PhaseProgressUpdate {
+                    exec_id: crate::execution_context::current_exec_id(),
                     name: phase_name.clone(),
                     labels: phase_labels.clone(),
                     cursor_name: progress_cursor_name.clone(),
@@ -5040,6 +5042,7 @@ async fn run_phase(
         } else { 0.0 };
         let relevancy = progress_metrics.collect_relevancy_live();
         ctx.observer.phase_progress(&crate::observer::PhaseProgressUpdate {
+            exec_id: crate::execution_context::current_exec_id(),
             name: phase_name.to_string(),
             labels: phase_labels.clone(),
             cursor_name: progress_cursor_name.clone(),

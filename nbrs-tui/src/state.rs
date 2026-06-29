@@ -29,10 +29,27 @@ use nbrs_metrics::summaries::binomial_summary::BinomialSummary;
 use nbrs_metrics::summaries::ewma::Ewma;
 use nbrs_metrics::summaries::peak_tracker::PeakTracker;
 
-/// Composite key for the active-phase map: (name, labels).
-/// Matches the tuple observer callbacks already use to address a
-/// specific phase iteration.
-pub type PhaseKey = (String, String);
+/// Composite key for the active-phase map (SRD-100 §4):
+/// `(exec_id, name, labels)`. `exec_id` (SRD-88) partitions
+/// concurrent in-process executions so two executions running the
+/// same phase don't collide on one slot; `name`+`labels` address a
+/// specific phase iteration within an execution.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ActivePhaseId {
+    pub exec_id: u64,
+    pub name: String,
+    pub labels: String,
+}
+
+impl ActivePhaseId {
+    pub fn new(exec_id: u64, name: impl Into<String>, labels: impl Into<String>) -> Self {
+        Self { exec_id, name: name.into(), labels: labels.into() }
+    }
+}
+
+/// Transitional alias — existing `PhaseKey` type positions resolve
+/// to [`ActivePhaseId`]; construction sites use the struct directly.
+pub type PhaseKey = ActivePhaseId;
 
 /// Log severity level for display coloring.
 ///
@@ -396,14 +413,19 @@ impl RunState {
     /// labels) pair — used when the caller already knows which
     /// phase row it's rendering detail for.
     pub fn active_phase(&self, name: &str, labels: &str) -> Option<&ActivePhase> {
-        self.active_phases.get(&(name.to_string(), labels.to_string()))
+        // Compat lookup by (name, labels) — display detail paths only have
+        // a scene-tree row, not yet an exec_id (SRD-100 P1c threads exec_id
+        // through the scene tree). First match: correct for a single
+        // execution; ambiguous under concurrent executions of the same
+        // phase (same as the pre-SRD-100 (name,labels) key), resolved in P1c.
+        self.active_phases.values().find(|a| a.name == name && a.labels == labels)
     }
 
     /// Mutable borrow of the active-phase entry for a specific
-    /// (name, labels) pair. Used by the observer's progress callback
-    /// to update in place.
-    pub fn active_phase_mut(&mut self, name: &str, labels: &str) -> Option<&mut ActivePhase> {
-        self.active_phases.get_mut(&(name.to_string(), labels.to_string()))
+    /// (exec_id, name, labels) key. Used by the observer's progress
+    /// callback to update in place.
+    pub fn active_phase_mut(&mut self, exec_id: u64, name: &str, labels: &str) -> Option<&mut ActivePhase> {
+        self.active_phases.get_mut(&ActivePhaseId::new(exec_id, name, labels))
     }
 
     /// Push a log entry to the ring buffer (capped at 200).

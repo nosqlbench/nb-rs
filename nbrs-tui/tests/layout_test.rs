@@ -45,9 +45,8 @@ fn make_test_state() -> (RunStateHandle, JoinHandle<()>) {
 
     // Active phase
     state.set_phase_running("fknn_rampup_data", "optimize_for=RECALL", 1);
-    let key = (
-        "fknn_rampup_data".to_string(),
-        "optimize_for=RECALL".to_string(),
+    let key = nbrs_tui::state::ActivePhaseId::new(
+        1, "fknn_rampup_data", "optimize_for=RECALL",
     );
     state.active_phases.insert(key, ActivePhase {
         name: "fknn_rampup_data".into(),

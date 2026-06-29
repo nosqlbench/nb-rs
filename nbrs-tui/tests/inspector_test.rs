@@ -125,6 +125,7 @@ fn server_reflects_live_state_changes() {
     // Send a command — the actor publishes a new snapshot,
     // and the next inspector query sees it.
     handle.send(RunStateCmd::PhaseStarting {
+        exec_id: 1,
         name: "ramp".into(),
         labels: "k=10".into(),
         op_templates: 100,

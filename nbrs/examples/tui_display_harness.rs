@@ -117,6 +117,7 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
         Some("start") => {
             if let Some(name) = parts.next() {
                 handle.send(RunStateCmd::PhaseStarting {
+                    exec_id: 1,
                     name: name.to_string(),
                     labels: String::new(),
                     op_templates: 1,
@@ -128,6 +129,7 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
         Some("done") => {
             if let Some(name) = parts.next() {
                 handle.send(RunStateCmd::PhaseCompleted {
+                    exec_id: 1,
                     name: name.to_string(),
                     labels: String::new(),
                     duration_secs: 1.23,

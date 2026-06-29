@@ -299,6 +299,7 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
     fn phase_starting(&self, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
         self.ensure_tui_started();
         self.state.send(RunStateCmd::PhaseStarting {
+            exec_id: nbrs_runtime::execution_context::current_exec_id(),
             name: name.to_string(),
             labels: labels.to_string(),
             op_templates,
@@ -324,6 +325,7 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
 
     fn phase_completed(&self, name: &str, labels: &str, duration_secs: f64) {
         self.state.send(RunStateCmd::PhaseCompleted {
+            exec_id: nbrs_runtime::execution_context::current_exec_id(),
             name: name.to_string(),
             labels: labels.to_string(),
             duration_secs,
@@ -342,6 +344,7 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
 
     fn phase_failed(&self, name: &str, labels: &str, error: &str) {
         self.state.send(RunStateCmd::PhaseFailed {
+            exec_id: nbrs_runtime::execution_context::current_exec_id(),
             name: name.to_string(),
             labels: labels.to_string(),
             error: error.to_string(),

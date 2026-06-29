@@ -272,6 +272,7 @@ impl RunObserver for LogOnlyObserver {
         // Snapshot mutation: same RunStateCmd shape TuiObserver
         // sends, so the snapshot model is identical between modes.
         self.state.send(RunStateCmd::PhaseStarting {
+            exec_id: nbrs_runtime::execution_context::current_exec_id(),
             name: name.to_string(),
             labels: labels.to_string(),
             op_templates,
@@ -407,6 +408,7 @@ impl RunObserver for LogOnlyObserver {
 
     fn phase_completed(&self, name: &str, labels: &str, duration_secs: f64) {
         self.state.send(RunStateCmd::PhaseCompleted {
+            exec_id: nbrs_runtime::execution_context::current_exec_id(),
             name: name.to_string(),
             labels: labels.to_string(),
             duration_secs,
@@ -421,6 +423,7 @@ impl RunObserver for LogOnlyObserver {
 
     fn phase_failed(&self, name: &str, labels: &str, error: &str) {
         self.state.send(RunStateCmd::PhaseFailed {
+            exec_id: nbrs_runtime::execution_context::current_exec_id(),
             name: name.to_string(),
             labels: labels.to_string(),
             error: error.to_string(),
