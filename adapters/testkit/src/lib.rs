@@ -54,6 +54,11 @@ use nbrs_workload::model::ParsedOp;
 use nbrs_adapter_stdout::{StdoutFormat, StdoutConfig};
 use xxhash_rust::xxh3;
 
+/// Distinct xxh3 seed for the `panic_rate` injection stream, so injected
+/// panics fall on a cycle set independent of injected errors (which hash the
+/// bare cycle with the default seed).
+const PANIC_SEED: u64 = 0x5041_4e49_435f_5f5f; // "PANIC___"
+
 /// Configuration for the model adapter.
 #[derive(Default)]
 pub struct ModelConfig {
@@ -118,6 +123,17 @@ pub struct ModelParams {
     /// `ThrowAt`; pin a specific name when the workload's
     /// errors cascade needs to match a label.
     pub throw_name: String,
+    /// Panic injection rate (0.0–1.0), deterministic per cycle on a stream
+    /// INDEPENDENT of `error_rate` (distinct seed), so injected panics and
+    /// injected errors don't land on the same cycles. When it fires the op
+    /// PANICS — unwinds out of `execute` rather than returning `Err` — the
+    /// misbehaviour that exercises the fiber-boundary panic catch keeping a
+    /// phase's target concurrency intact irrespective of error handling.
+    /// `0.0` = never.
+    pub panic_rate: f64,
+    /// Message carried by an injected panic (the cycle is appended for a
+    /// reproducible signature). Default `testkit: injected op panic`.
+    pub panic_message: String,
 }
 
 impl Default for ModelParams {
@@ -132,6 +148,8 @@ impl Default for ModelParams {
             overload: None,
             throw_at_cycle: None,
             throw_name: "ThrowAt".into(),
+            panic_rate: 0.0,
+            panic_message: "testkit: injected op panic".into(),
         }
     }
 }
@@ -450,6 +468,21 @@ impl OpDispenser for ModelDispenser {
                 }
             }
 
+            // Panic injection: deterministic per cycle on a stream
+            // INDEPENDENT of `error_rate` (distinct seed), so injected panics
+            // and injected errors don't collide on the same cycles. Unlike
+            // every other misbehaviour this UNWINDS out of `execute` — the
+            // adapter-panic misbehaviour that the fiber's op-boundary
+            // `catch_unwind` must survive without dropping the fiber
+            // (concurrency invariant). See `op_panic_resilience.yaml`.
+            if self.model_params.panic_rate > 0.0 {
+                let h = xxh3::xxh3_64_with_seed(&cycle.to_le_bytes(), PANIC_SEED);
+                let p = h as f64 / u64::MAX as f64;
+                if p < self.model_params.panic_rate {
+                    panic!("{} (cycle={cycle})", self.model_params.panic_message);
+                }
+            }
+
             // Service time. Happens *while holding the permit*, so
             // later ops wait in the semaphore queue rather than
             // racing through.
@@ -528,6 +561,22 @@ pub fn extract_model_params(params: &HashMap<String, serde_json::Value>) -> Mode
     if let Some(val) = params.get("result-error-message")
         && let Some(s) = val.as_str() {
             mp.error_message = s.to_string();
+        }
+
+    // result-panic-rate: deterministic per-cycle PANIC injection (the op
+    // unwinds out of `execute` instead of returning). Accepts a JSON number
+    // or a numeric string (workloads often interpolate a binding here).
+    if let Some(val) = params.get("result-panic-rate") {
+        if let Some(n) = val.as_f64() {
+            mp.panic_rate = n;
+        } else if let Some(n) = val.as_str().and_then(|s| s.trim().parse::<f64>().ok()) {
+            mp.panic_rate = n;
+        }
+    }
+
+    if let Some(val) = params.get("result-panic-message")
+        && let Some(s) = val.as_str() {
+            mp.panic_message = s.to_string();
         }
 
     if let Some(n) = params.get("result-capacity").and_then(parse_usize_param)

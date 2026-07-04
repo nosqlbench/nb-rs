@@ -3363,7 +3363,41 @@ async fn executor_task(
                 // Per-ATTEMPT total (executor layer) — one per dispatch,
                 // including retries. SRD-91.
                 activity.metrics.attempt_total.inc();
-                match dispenser.execute(cycle, &exec_ctx).await {
+                // Concurrency invariant — the phase's target fiber count must be
+                // maintained IRRESPECTIVE of error handling. An adapter that
+                // PANICS out of `execute` (e.g. an FFI driver on a broken
+                // connection / timed-out future) would otherwise unwind and kill
+                // THIS fiber's task outright; the pool has no self-heal, so
+                // concurrency silently decays op-panic by op-panic. Catch the
+                // unwind and route the panic through the SAME error-policy path
+                // as a returned `Err` (synthesised as a `panic`-named op error),
+                // so the fiber SURVIVES — the policy decides continue/retry/stop,
+                // and the panic is counted like any other error. Mirrors the
+                // daemon-op path's `catch_unwind` (but keeps the fiber alive
+                // rather than stopping the phase).
+                let attempt = {
+                    use futures::FutureExt as _;
+                    match std::panic::AssertUnwindSafe(
+                        dispenser.execute(cycle, &exec_ctx),
+                    ).catch_unwind().await {
+                        Ok(r) => r,
+                        Err(payload) => {
+                            let msg = payload
+                                .downcast_ref::<&'static str>()
+                                .map(|s| (*s).to_string())
+                                .or_else(|| payload.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "<non-string panic payload>".into());
+                            Err(crate::adapter::ExecutionError::Op(
+                                crate::adapter::AdapterError {
+                                    error_name: "panic".into(),
+                                    message: msg,
+                                    retryable: false,
+                                },
+                            ))
+                        }
+                    }
+                };
+                match attempt {
                     Ok(result) => {
                         activity.metrics.attempt_success
                             .observe(attempt_start.elapsed().as_nanos() as u64);
