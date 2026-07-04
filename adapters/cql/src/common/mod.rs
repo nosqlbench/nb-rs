@@ -38,3 +38,38 @@ pub use config::{CqlConfig, CqlConsistency};
 pub use opmode::{OpMode, STMT_FIELD_NAMES};
 pub use resolver::CQL_TRACE_RATE;
 pub use status::default_status_metrics;
+
+/// Whether a raw CQL driver error string denotes a TRANSIENT condition a
+/// retry may clear — request / coordinator timeouts, overload, or unavailable
+/// replicas. Permanent errors (syntax, invalid query, auth, unprepared) are
+/// NOT retryable: retrying them only burns the `retries:` budget and delays
+/// the real failure.
+///
+/// Engine-agnostic: matches the RAW driver error text of either engine
+/// (case-insensitively), evaluated BEFORE the statement text is appended, so a
+/// statement that happens to contain one of these words can't cause a
+/// false-positive. Consumed at each engine's `cql_error` execute site to set
+/// [`nbrs_runtime::adapter::AdapterError::retryable`], which the runtime's
+/// `RetryDispenser` honours.
+pub fn cql_error_is_retryable(raw: &str) -> bool {
+    let u = raw.to_ascii_uppercase();
+    u.contains("TIMED_OUT")      // cassandra `LIB_REQUEST_TIMED_OUT`
+        || u.contains("TIMEOUT")     // scylla RequestTimeout / server READ_/WRITE_TIMEOUT
+        || u.contains("OVERLOAD")    // OVERLOADED
+        || u.contains("UNAVAILABLE") // not enough replicas — a retry may find them
+}
+
+#[cfg(test)]
+mod retryable_tests {
+    use super::cql_error_is_retryable;
+    #[test]
+    fn transient_errors_retry_permanent_do_not() {
+        assert!(cql_error_is_retryable("LIB_REQUEST_TIMED_OUT: Request timed out"));
+        assert!(cql_error_is_retryable("Request timeout"));
+        assert!(cql_error_is_retryable("Database returned: WRITE_TIMEOUT"));
+        assert!(cql_error_is_retryable("Overloaded"));
+        assert!(cql_error_is_retryable("Not enough replicas available: UNAVAILABLE"));
+        assert!(!cql_error_is_retryable("Invalid query: unconfigured table foo"));
+        assert!(!cql_error_is_retryable("Syntax error at line 1"));
+    }
+}

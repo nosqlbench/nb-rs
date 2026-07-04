@@ -66,7 +66,7 @@ impl OpDispenser for ScyllaRawDispenser {
                 .map_err(|e| op_error(
                     "cql_error",
                     format_cql_error(&e.to_string(), &text),
-                    false,
+                    crate::common::cql_error_is_retryable(&e.to_string()),
                 ))?;
 
             let body = ScyllaResultBody::from_query_result(result);

@@ -117,7 +117,7 @@ impl OpDispenser for ScyllaBatchDispenser {
                         "batch ({row_count} rows): {}",
                         format_cql_error(&e.to_string(), &self.stmt_text),
                     ),
-                    false,
+                    crate::common::cql_error_is_retryable(&e.to_string()),
                 ))?;
 
             let body = ScyllaResultBody::from_query_result(result);

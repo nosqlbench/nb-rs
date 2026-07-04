@@ -1309,7 +1309,7 @@ impl OpDispenser for CqlRawDispenser {
                     Err(ExecutionError::Op(AdapterError {
                         error_name: "cql_error".into(),
                         message: format!("{e}\n  statement: {truncated}"),
-                        retryable: false,
+                        retryable: crate::common::cql_error_is_retryable(&e.to_string()),
                     }))
                 }
             };
@@ -1541,7 +1541,7 @@ impl OpDispenser for CqlPreparedDispenser {
                     Err(ExecutionError::Op(AdapterError {
                         error_name: "cql_error".into(),
                         message: format!("{e}\n  statement: {truncated}"),
-                        retryable: false,
+                        retryable: crate::common::cql_error_is_retryable(&e.to_string()),
                     }))
                 }
             };
