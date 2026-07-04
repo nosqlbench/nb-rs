@@ -113,6 +113,7 @@ pub mod observer;
 pub mod output_channel;
 pub(crate) mod trace_router;
 pub mod session;
+pub mod timeval;
 pub mod runner;
 pub(crate) mod executor;
 pub(crate) mod error_policy;

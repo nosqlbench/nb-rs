@@ -1898,7 +1898,7 @@ inventory::submit! {
         }),
         known_params: || &[
             "hosts", "host", "port", "keyspace", "connect_keyspace", "consistency",
-            "username", "password", "request_timeout_ms",
+            "username", "password", "timeout", "request_timeout_ms",
             "cassandra_log_level",
             "trace_rate", "trace_log",
         ],

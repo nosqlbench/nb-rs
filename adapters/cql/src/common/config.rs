@@ -149,6 +149,15 @@ impl CqlConfig {
                     "invalid request_timeout_ms value '{v}' — expected an integer"
                 ))?;
         }
+        // `timeout` is the canonical root request-timeout default: a duration
+        // spec-string (`60s`, `500ms`) or a bare number = fractional seconds
+        // (`60`, `60.5`). WINS over `request_timeout_ms` (the ms escape hatch),
+        // matching the per-op `timeout` precedence; per-op `timeout` still
+        // overrides this connection default.
+        if let Some(v) = params.get("timeout") {
+            config.request_timeout_ms = nbrs_runtime::timeval::parse_time_ms(v)
+                .map_err(|e| format!("invalid timeout value '{v}': {e}"))?;
+        }
         if let Some(v) = params.get("trace_rate") {
             let parsed: f64 = v.parse()
                 .map_err(|_| format!(

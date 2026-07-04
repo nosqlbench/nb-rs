@@ -398,7 +398,7 @@ inventory::submit! {
         }),
         known_params: || &[
             "hosts", "host", "port", "keyspace", "connect_keyspace", "consistency",
-            "username", "password", "request_timeout_ms",
+            "username", "password", "timeout", "request_timeout_ms",
             // Accepted for parity with the cassandra-cpp engine,
             // so workloads that switch driver via `cqldriver=`
             // don't trip an unknown-param guard. The scylla

@@ -28,7 +28,13 @@ use polydat::ast::Value;
 /// Naming conventions documented in SRD 73 §"CQL universal
 /// field superset":
 ///
-/// - `request_timeout_ms` — explicit unit suffix; matches the
+/// - `timeout` — the canonical per-op request timeout, given as a duration
+///   spec-string (`60s`, `500ms`, `1h30m`) OR a bare number meaning
+///   fractional seconds (`60`, `60.5`). Normalised to the per-statement
+///   request timeout uniformly across engines (see
+///   [`build_cql_modifier_chain`]); WINS over `request_timeout_ms` when both
+///   are bound.
+/// - `request_timeout_ms` — explicit-milliseconds escape hatch; matches the
 ///   existing session-level workload-param name.
 /// - `page_size` — CQL-spec spelling.
 /// - `consistency` / `serial_consistency` — full words; no
@@ -41,6 +47,7 @@ use polydat::ast::Value;
 pub const CQL_UNIVERSAL_FIELDS: &[&str] = &[
     "consistency",
     "serial_consistency",
+    "timeout",
     "request_timeout_ms",
     "page_size",
     "cql_trace",
@@ -94,7 +101,24 @@ where
     F: CqlModifierFactory,
 {
     let mut active: Vec<Box<dyn OpFieldModifier<F::Statement>>> = Vec::new();
+
+    // `timeout` is the canonical request-timeout knob: a duration spec-string
+    // or bare fractional-seconds. It normalises to `request_timeout_ms` in
+    // milliseconds RIGHT HERE (parse once, shared) and reuses each engine's
+    // existing request-timeout modifier — so cassandra-cpp and scylla behave
+    // identically with no per-engine parsing. When set it WINS over an
+    // explicit `request_timeout_ms` (the ms escape hatch).
+    let timeout_ms: Option<u64> = match parent.lookup("timeout") {
+        Some(v) => Some(cql_timeout_value_to_ms(&v)
+            .map_err(|e| format!("CQL universal field 'timeout': {e}"))?),
+        None => None,
+    };
+
     for &field in CQL_UNIVERSAL_FIELDS {
+        // `timeout` is normalised below, not a modifier of its own.
+        if field == "timeout" { continue; }
+        // A bound `timeout` overrides an explicit `request_timeout_ms`.
+        if field == "request_timeout_ms" && timeout_ms.is_some() { continue; }
         let Some(value) = parent.lookup(field) else {
             continue; // user did not bind this field — driver default in force
         };
@@ -104,11 +128,40 @@ where
             active.push(m);
         }
     }
+
+    // Emit the request-timeout modifier normalised from `timeout` (if any),
+    // via the engine's existing `request_timeout_ms` path.
+    if let Some(ms) = timeout_ms
+        && let Some(m) = F::modifier_for("request_timeout_ms", Value::U64(ms))
+            .map_err(|e| format!("CQL universal field 'timeout': {e}"))?
+    {
+        active.push(m);
+    }
+
     Ok(ModifierChain::new(
         op_label,
         active,
         nbrs_runtime::op_modifier::session_sink(),
     ))
+}
+
+/// Convert a bound `timeout` [`Value`] to whole milliseconds.
+///
+/// A **string** is parsed as a duration spec / bare fractional-seconds
+/// (`60s`, `500ms`, `1h30m`, `60.5`) via
+/// [`nbrs_runtime::timeval::parse_time_ms`]. A **numeric** value is treated as
+/// fractional SECONDS (`60` → 60000 ms, `60.5` → 60500 ms) — the same
+/// convention as the bare-number string form.
+pub fn cql_timeout_value_to_ms(value: &Value) -> Result<u64, String> {
+    match value {
+        Value::Str(s) => nbrs_runtime::timeval::parse_time_ms(s),
+        Value::U64(n) => Ok(n.saturating_mul(1000)),
+        Value::I64(n) if *n >= 0 => Ok((*n as u64).saturating_mul(1000)),
+        Value::F64(f) if f.is_finite() && *f >= 0.0 => Ok((f * 1000.0).round() as u64),
+        other => Err(format!(
+            "expected a duration string (e.g. '60s') or a non-negative number \
+             of seconds, got {other:?}")),
+    }
 }
 
 /// Parse a consistency-level string into the engine-agnostic
@@ -134,6 +187,29 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), CQL_UNIVERSAL_FIELDS.len(), "duplicate field names");
+    }
+
+    #[test]
+    fn timeout_value_to_ms_accepts_all_forms() {
+        // Duration spec-string.
+        assert_eq!(cql_timeout_value_to_ms(&Value::Str("60s".into())).unwrap(), 60_000);
+        assert_eq!(cql_timeout_value_to_ms(&Value::Str("500ms".into())).unwrap(), 500);
+        assert_eq!(cql_timeout_value_to_ms(&Value::Str("1h30m".into())).unwrap(), 5_400_000);
+        // Bare number string = fractional seconds.
+        assert_eq!(cql_timeout_value_to_ms(&Value::Str("60".into())).unwrap(), 60_000);
+        assert_eq!(cql_timeout_value_to_ms(&Value::Str("60.5".into())).unwrap(), 60_500);
+        // Numeric values = fractional seconds (same convention).
+        assert_eq!(cql_timeout_value_to_ms(&Value::U64(60)).unwrap(), 60_000);
+        assert_eq!(cql_timeout_value_to_ms(&Value::F64(60.5)).unwrap(), 60_500);
+        assert_eq!(cql_timeout_value_to_ms(&Value::F64(0.25)).unwrap(), 250);
+        // Garbage rejected.
+        assert!(cql_timeout_value_to_ms(&Value::Str("nope".into())).is_err());
+        assert!(cql_timeout_value_to_ms(&Value::Bool(true)).is_err());
+    }
+
+    #[test]
+    fn timeout_is_a_universal_field() {
+        assert!(CQL_UNIVERSAL_FIELDS.contains(&"timeout"));
     }
 
     #[test]
