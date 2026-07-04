@@ -51,12 +51,13 @@ description: |
   vector dataset catalog.
 
 params:
-  # Curated defaults (root-level; per-op / per-phase overrides win).
-  # `timeout` = the CQL request timeout as a duration spec-string or a bare
-  # number of (fractional) seconds. `retries` = the retry budget for
-  # retryable errors (e.g. CQL timeouts) before a failure reaches the result
-  # level.
-  timeout: 60s
+  # `retries` = the retry budget for retryable errors (e.g. CQL request
+  # timeouts) before a failure reaches the result level. Root-level so every
+  # phase inherits it. `timeout` is NOT set at the root: a root timeout would
+  # override each op's own request timeout, clobbering the long-running
+  # orchestration ops (flush / compaction). Instead the read/write ops set
+  # `timeout: 60s` themselves (below); the orchestration ops keep their own
+  # longer request_timeout_ms.
   retries: 20
   adapter: cql
   host: 18.215.16.255
@@ -309,6 +310,7 @@ phases:
       query_vector := query_vector_at(prebuffered, q % base)
     ops:
       probe_ann:
+        timeout: 60s   # 60s per read; retried up to `retries` (20) on a CQL timeout
         prepared: |
           SELECT [key] FROM {keyspace}.{table}
           ORDER BY value
@@ -362,6 +364,7 @@ phases:
       insert:
         max_batch_size: 64KB
         batchtype: unlogged
+        timeout: 60s   # 60s per write; retried up to `retries` (20) on a CQL timeout
         prepared: |
           INSERT INTO {keyspace}.{table} (key, value)
           VALUES ('{id}', {train_vector})
@@ -534,6 +537,7 @@ phases:
       ground_truth := neighbor_indices_at(prebuffered, q % base)
     ops:
       select_ann:
+        timeout: 60s   # 60s per read; retried up to `retries` (20) on a CQL timeout
         prepared: |
           SELECT [key] FROM {keyspace}.{table}
           ORDER BY value
