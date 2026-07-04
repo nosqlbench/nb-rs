@@ -33,6 +33,11 @@ description: |
   CompactionManager.Compactions attribute reports active tasks.
   Requires a reachable Cassandra/CNDB node with Jolokia.
 params:
+  # Curated defaults (root-level; per-op/per-phase overrides win). `timeout`
+  # = CQL request timeout (duration spec-string or fractional seconds);
+  # `retries` = retry budget for retryable errors (e.g. timeouts).
+  timeout: 60s
+  retries: 20
   adapter: cql
   dataset: example
   profile: default

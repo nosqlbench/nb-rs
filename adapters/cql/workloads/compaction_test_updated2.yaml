@@ -26,6 +26,11 @@ description: |
   and a local vector dataset catalog.
 
 params:
+  # Curated defaults (root-level; per-op/per-phase overrides win). `timeout`
+  # = CQL request timeout (duration spec-string or fractional seconds);
+  # `retries` = retry budget for retryable errors (e.g. timeouts).
+  timeout: 60s
+  retries: 20
   adapter: cql
   host: 18.215.16.255
   dataset: cohere-english-v3-1M

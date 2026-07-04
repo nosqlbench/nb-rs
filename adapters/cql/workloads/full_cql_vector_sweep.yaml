@@ -79,6 +79,11 @@ extends: ./full_cql_vector.yaml
 # control the iter-var value LISTS.
 
 params:
+  # Curated defaults (root-level; per-op/per-phase overrides win). `timeout`
+  # = CQL request timeout (duration spec-string or fractional seconds);
+  # `retries` = retry budget for retryable errors (e.g. timeouts).
+  timeout: 60s
+  retries: 20
   # ── idx_sweep dimensions (6 axes × 2 = 64 cells) ──────────
   # The iter-var name is the short form (`sm`, `mnc`, ...);
   # the param name binds the value LIST for that axis. Each

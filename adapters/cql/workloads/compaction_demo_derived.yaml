@@ -51,6 +51,13 @@ description: |
   vector dataset catalog.
 
 params:
+  # Curated defaults (root-level; per-op / per-phase overrides win).
+  # `timeout` = the CQL request timeout as a duration spec-string or a bare
+  # number of (fractional) seconds. `retries` = the retry budget for
+  # retryable errors (e.g. CQL timeouts) before a failure reaches the result
+  # level.
+  timeout: 60s
+  retries: 20
   adapter: cql
   host: 18.215.16.255
   dataset: changeme

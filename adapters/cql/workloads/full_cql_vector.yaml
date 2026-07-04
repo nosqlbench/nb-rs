@@ -19,6 +19,11 @@ description: |
   {dataset}, and {profile}. Requires a vector-capable CQL target
   and a local vector dataset catalog.
 params:
+  # Curated defaults (root-level; per-op/per-phase overrides win). `timeout`
+  # = CQL request timeout (duration spec-string or fractional seconds);
+  # `retries` = retry budget for retryable errors (e.g. timeouts).
+  timeout: 60s
+  retries: 20
   host: localhost
   adapter: cql
   dataset: example
