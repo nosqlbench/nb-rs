@@ -1262,6 +1262,11 @@ fn parse_phases(
         let error_rate_max = phase_obj.get("error_rate_max")
             .and_then(|v| v.as_f64());
 
+        // Per-phase retry budget override (root `retries` param otherwise).
+        let retries = phase_obj.get("retries")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32);
+
         // SRD-83 — `stop_when:` is a list of {when, trigger?, effect?}.
         // StopConditionSpec derives Deserialize, so deserialize the
         // sub-tree directly; surface a malformed block as a parse error.
@@ -1510,6 +1515,7 @@ fn parse_phases(
             daemon,
             adapter,
             errors,
+            retries,
             error_rate_max,
             stop_when,
             tags,

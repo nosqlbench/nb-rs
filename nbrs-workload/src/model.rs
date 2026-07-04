@@ -790,6 +790,12 @@ pub struct WorkloadPhase {
     /// Error routing spec override.
     #[serde(default)]
     pub errors: Option<String>,
+    /// Retry budget override for this phase — additional attempts beyond the
+    /// first on an adapter-retryable op error (a CQL timeout/overload). Owned
+    /// by the innermost `RetryDispenser`; `0` = single attempt. Overrides the
+    /// workload-root `retries` param. `None` = inherit the root default.
+    #[serde(default)]
+    pub retries: Option<u32>,
     /// Error-rate circuit breaker override (e.g. `0.1` = fail this
     /// phase once >10% of its ops error). Overrides the session-wide
     /// `error_rate_max=` default. A value `>= 1.0` disables it for
