@@ -10,9 +10,16 @@
 //!
 //! ```text
 //! {depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{activity_name} \
-//!   {pct:.0}% {rate_str} ok:{ok_pct:.0}% e:{errors} r:{retries} c:{concurrency}\
+//!   {pct:.0}% {rate_str} ok:{ok_pct:.0}% att:{att_pct:.0}% e:{errors} r:{retries} c:{concurrency}\
 //!   {adapter_status}{batch_info}{relevancy_str}{eta}
 //! ```
+//!
+//! `ok:` is the result-level success rate (`result_success /
+//! cycles_completed`); `att:` is the attempt-level success rate
+//! (`attempt_success / (attempt_success + attempt_failure)`,
+//! SRD-91 — resolved attempts only, so in-flight attempts don't
+//! skew it). They coincide when no retry fires and diverge under
+//! retry pressure.
 //!
 //! Width clamping (`truncate_to_width`) is the surface's
 //! job — see the inline-status driver in `nbrs-runtime::activity`.
@@ -81,7 +88,7 @@ fn render_labeled_explanation(
     let _ = write!(
         &mut tmp,
         "spin (bar) [phase-name]{coords} \
-progress% throughput ok:ok% e:errors r:retries c:concurrency \
+progress% throughput ok:result-ok% att:attempt-ok% e:errors r:retries c:concurrency \
 (metrics) ETA remaining",
     );
     let len = tmp.len();
@@ -99,7 +106,7 @@ fn render_expanded_explanation(
     let s = "\
 spin [phase-name]\n  \
 progress:   progress% (bar)  ETA remaining\n  \
-throughput: throughput  ok:ok%\n  \
+throughput: throughput  ok:result-ok%  att:attempt-ok%\n  \
 counters:   e:errors r:retries c:concurrency\n  \
 adapter:    adapter-counters\n  \
 batch:      batch-info\n  \
@@ -134,6 +141,8 @@ fn render_labeled(
     let successes    = ctx.ops_ok();
     let errors       = ctx.errors();
     let retries      = ctx.retries();
+    let attempt_ok   = ctx.attempt_ok();
+    let attempt_failed = ctx.attempt_failed();
     let elapsed      = ctx.elapsed_secs();
     let concurrency  = ctx.concurrency();
 
@@ -178,6 +187,21 @@ fn render_labeled(
     };
     let ok_pct: f64 = if ops_completed > 0 {
         successes as f64 * 100.0 / ops_completed as f64
+    } else {
+        100.0
+    };
+    // Attempt success rate (SRD-91): fraction of RESOLVED
+    // adapter invocations that succeeded. Denominator is
+    // `attempt_ok + attempt_failed` (both tallied at attempt
+    // end) so in-flight attempts don't skew it — the same
+    // completed-only basis `ok_pct` uses. Equals `ok_pct` when
+    // no retry ever fired; drops below it under retry pressure,
+    // where results still land green (`ok%`) only after wasted
+    // attempts. Surfaced so an operator sees cluster strain
+    // before it propagates to result-level failures.
+    let attempt_resolved = attempt_ok + attempt_failed;
+    let att_pct: f64 = if attempt_resolved > 0 {
+        attempt_ok as f64 * 100.0 / attempt_resolved as f64
     } else {
         100.0
     };
@@ -238,6 +262,11 @@ fn render_labeled(
     // distinction reads at a glance.
     let err_tone   = if errors > 0 || retries > 0 { yellow } else { dim };
     let ok_tone    = if ok_pct >= 100.0 { dim } else { yellow };
+    // Attempt-success chip tone mirrors ok%: dim (quiet) when
+    // every attempt lands, yellow (warn) the moment attempts
+    // are being burned on retries. Kept adjacent to `ok:` so
+    // the result-vs-attempt divergence reads at a glance.
+    let att_tone   = if att_pct >= 100.0 { dim } else { yellow };
 
     // Memo header (if any): operator-visible state string
     // published by the `memo:` wrapper. Sits ABOVE the regular
@@ -305,6 +334,7 @@ fn render_labeled(
         "{memo_header}\
 {depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{bold}{blue}{activity_name}{reset}{coords_part} {pct:.0}%\n\
 {depth_indent}    {dim}{rate_str}{reset} {ok_tone}ok:{ok_pct:.0}%{reset} \
+{att_tone}att:{att_pct:.0}%{reset} \
 {err_tone}e:{errors} r:{retries}{reset} {dim}c:{concurrency}{reset}{cycles_chip}\
 {adapter_status}{batch_info}{chips}{eta}",
     );
@@ -334,6 +364,8 @@ fn render_expanded(
     let successes    = ctx.ops_ok();
     let errors       = ctx.errors();
     let retries      = ctx.retries();
+    let attempt_ok   = ctx.attempt_ok();
+    let attempt_failed = ctx.attempt_failed();
     let elapsed      = ctx.elapsed_secs();
     let concurrency  = ctx.concurrency();
 
@@ -345,6 +377,12 @@ fn render_expanded(
     } else { 0.0 };
     let ok_pct: f64 = if ops_completed > 0 {
         successes as f64 * 100.0 / ops_completed as f64
+    } else { 100.0 };
+    // Attempt success rate over resolved attempts — see
+    // `render_labeled`.
+    let attempt_resolved = attempt_ok + attempt_failed;
+    let att_pct: f64 = if attempt_resolved > 0 {
+        attempt_ok as f64 * 100.0 / attempt_resolved as f64
     } else { 100.0 };
     let rate: f64 = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
     let rate_str = format_rate(rate);
@@ -374,7 +412,7 @@ fn render_expanded(
         &mut tmp,
         "{cyan}{spinner}{reset} {seq_prefix}{activity_name}\n  \
          progress:   {pct:.0}% {dim}{bar}{reset}  {eta}\n  \
-         throughput: {rate_str}  ok:{ok_pct:.0}%\n  \
+         throughput: {rate_str}  ok:{ok_pct:.0}%  att:{att_pct:.0}%\n  \
          counters:   e:{errors} r:{retries} c:{concurrency}",
         spinner = spinner_frame(ctx.refresh_tick()),
     );
@@ -442,6 +480,8 @@ mod tests {
         ops_ok: u64,
         errors: u64,
         retries: u64,
+        attempt_ok: u64,
+        attempt_failed: u64,
         concurrency: usize,
         elapsed_secs: f64,
         consumed: u64,
@@ -468,6 +508,8 @@ mod tests {
         fn ops_ok(&self) -> u64 { self.ops_ok }
         fn errors(&self) -> u64 { self.errors }
         fn retries(&self) -> u64 { self.retries }
+        fn attempt_ok(&self) -> u64 { self.attempt_ok }
+        fn attempt_failed(&self) -> u64 { self.attempt_failed }
         fn concurrency(&self) -> usize { self.concurrency }
         fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
         fn consumed(&self) -> u64 { self.consumed }
@@ -503,6 +545,8 @@ mod tests {
             ops_ok: 50,
             errors: 0,
             retries: 0,
+            attempt_ok: 50,
+            attempt_failed: 0,
             concurrency: 1,
             elapsed_secs: 1.0,
             consumed: 50,
@@ -521,12 +565,48 @@ mod tests {
         // tail begins with the indented counters.
         assert!(out.contains(" 50%\n"),
             "two-line break after pct missing: {out:?}");
-        assert!(out.contains("50/s ok:100% e:0 r:0 c:1"),
+        assert!(out.contains("50/s ok:100% att:100% e:0 r:0 c:1"),
             "labeled body wrong: {out:?}");
         // Time span: `(elapsed/eta)`. Both 1s here (elapsed=1,
         // remaining=cycles_total/rate=50/50=1s).
         assert!(out.contains("(1s/1s)"),
             "elapsed/ETA span missing for finite-rate phase: {out:?}");
+    }
+
+    #[test]
+    fn attempt_success_rate_diverges_from_ok_under_retry() {
+        // SRD-91: results all land green (ok:100%) but 50 of the
+        // 150 resolved attempts failed and were retried —
+        // attempt success is 100/(100+50) = 67%. The status line
+        // must surface BOTH: `ok:100% att:67%` is the
+        // retry-pressure tell.
+        let ctx = TestCtx {
+            phase_name: "run".into(),
+            activity_name: "run".into(),
+            phase_seq: Some((1, 1)),
+            cycles_completed: 100,
+            cycles_total: 100,
+            ops_started: 100,
+            ops_finished: 100,
+            ops_ok: 100,
+            errors: 50,
+            retries: 50,
+            attempt_ok: 100,
+            attempt_failed: 50,
+            concurrency: 4,
+            elapsed_secs: 1.0,
+            consumed: 100,
+            ..Default::default()
+        };
+        let out = render(&ctx, Lod::Labeled);
+        assert!(out.contains("ok:100% att:67%"),
+            "attempt success rate must sit beside ok%, diverging under retry: {out:?}");
+        // Same divergence must show at the Expanded LOD
+        // (monotonicity — the field can't vanish when detail
+        // grows).
+        let expanded = render(&ctx, Lod::Expanded);
+        assert!(expanded.contains("att:67%"),
+            "expanded throughput row missing attempt rate: {expanded:?}");
     }
 
     #[test]

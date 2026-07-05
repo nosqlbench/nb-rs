@@ -144,6 +144,27 @@ pub trait ReadoutContext {
     /// Default 0.
     fn retries(&self) -> u64 { 0 }
 
+    /// Cumulative count of successful ATTEMPTS (SRD-91
+    /// `attempt_success`), observed when the attempt returns.
+    /// Every result-success comes from exactly one successful
+    /// final attempt, so this coincides with
+    /// [`ops_ok`](Self::ops_ok) when no retry ever fired.
+    /// Default 0.
+    fn attempt_ok(&self) -> u64 { 0 }
+
+    /// Cumulative count of FAILED attempts (SRD-91
+    /// `attempt_failure`), observed when the attempt returns.
+    /// Retried failures are counted here too. The attempt
+    /// success rate the status line shows beside the
+    /// result-level `ok%` is `attempt_ok / (attempt_ok +
+    /// attempt_failed)` — RESOLVED attempts only (both counters
+    /// increment at attempt end), so in-flight attempts don't
+    /// skew it the way the dispatch-time `attempt_total` counter
+    /// would. It coincides with `ok%` when no retry fires and
+    /// falls below it under retry pressure (results still
+    /// succeed, but only after wasted attempts). Default 0.
+    fn attempt_failed(&self) -> u64 { 0 }
+
     /// Effective fiber count (concurrency). Default 0.
     fn concurrency(&self) -> usize { 0 }
 

@@ -2781,7 +2781,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 .filter(|c| c.each.iter().any(|l| matches!(l,
                     ScopeLevel::SelfScope | ScopeLevel::Workload)))
                 .map(|c| crate::stop_conditions::StopConditionDecl {
-                    when: c.when.clone(),
+                    // Same `{param}` interpolation as phase-level stop_when
+                    // (executor build_activity_config_for_phase) so a workload
+                    // breaker threshold can be a modular workload param.
+                    when: expand_workload_params(&c.when, &workload_params),
                     effect: crate::stop_conditions::StopConditionDecl::effect_from_str(
                         c.effect.as_deref(),
                         crate::phase_outcome::Outcome::interrupted(),
@@ -3948,6 +3951,13 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
         }
     }
 
+    // SRD-83 — workload-level `stop_when:` predicates: `{param}` interpolation
+    // only (same as phase-level), so a param used only by a workload breaker
+    // counts as referenced.
+    for c in &workload.stop_when {
+        scan_param_refs(&c.when, &mut refs);
+    }
+
     // Scan phases
     for phase in workload.phases.values() {
         if let Some(s) = &phase.cycles { scan_param_refs(s, &mut refs); }
@@ -3965,6 +3975,19 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             nbrs_workload::model::BindingsDef::Map(m) => {
                 for v in m.values() { scan_param_refs(v, &mut refs); }
             }
+        }
+        // SRD-83 / SRD-101 — breaker predicates can consume a workload param,
+        // but by DIFFERENT mechanisms, so scan each for the shape it actually
+        // supports (a param used in the UNsupported shape stays flagged):
+        //   - `stop_when` substitutes `{param}` before its predicate compiles;
+        //     its bound scope can't resolve a bare param wire → `{param}` only.
+        //   - `continue_if` resolves BARE wires through its for_iteration
+        //     scope-walk (inherited consts/params) → bare idents only.
+        for c in &phase.stop_when {
+            scan_param_refs(&c.when, &mut refs);
+        }
+        if let Some(ci) = &phase.continue_if {
+            scan_expression_idents(&ci.when, &mut refs.expression_idents);
         }
         for op in &phase.ops {
             scan_op(op, &mut refs);

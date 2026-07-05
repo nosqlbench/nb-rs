@@ -59,6 +59,14 @@ params:
   # `timeout: 60s` themselves (below); the orchestration ops keep their own
   # longer request_timeout_ms.
   retries: 20
+  # `error_rate_backstop` = the SANITY-BACKSTOP error rate (a proportion in
+  # [0,1]). It is a PLAIN WORKLOAD PARAM consumed by the data-plane phases'
+  # `stop_when` (load_increment / recall_check) — a modular, workload-expressed
+  # breaker, NOT the machine's built-in error_rate_max. Set it LOOSER than the
+  # adaptive rate servo's operating margin so the servo throttles first and
+  # this only trips on a genuine runaway. Tune on the CLI
+  # (`error_rate_backstop=0.02`).
+  error_rate_backstop: 0.05
   adapter: cql
   host: 18.215.16.255
   dataset: changeme
@@ -295,6 +303,8 @@ phases:
     # foreground `load_increment` / `recall_check` guards below catch a
     # genuinely unhealthy run.
     errors: ".*:warn,counter"
+    # No `stop_when` here on purpose (see comment above): this probe's errors
+    # are DATA, not a failure signal — it must not carry the data-plane backstop.
     # 1 query/s — numeric so it builds the activity RateLimiter (a string
     # like "1/s" would not parse as f64 and would be ignored).
     rate: 1
@@ -330,18 +340,18 @@ phases:
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   load_increment:
     concurrency: "{concurrency}"
-    # SRD-82 ErrorPolicy + SRD-83 stop conditions — tolerate transient
-    # insert errors (timeouts under load) instead of aborting the whole
-    # sweep on the first one (the prior default stop-on-error). Every error
-    # is logged + tallied and the load keeps going; the async guard below
-    # fails the phase ONLY if the windowed error rate crosses 1%. The
-    # `op_count > 100` clause holds the breaker off until the rate is
-    # measured over a real sample (error_rate is result_failure/op_count, so
-    # one early error would otherwise spike it). polydat predicates use `&`,
-    # not `&&`.
+    # SRD-82 ErrorPolicy + SRD-83 stop conditions — tolerate transient insert
+    # errors (timeouts under load) instead of aborting on the first one: every
+    # error is logged + tallied and the load keeps going. The `stop_when` below
+    # is a SANITY BACKSTOP: it fails the phase only if the error rate blows past
+    # `error_rate_backstop` — a threshold deliberately set LOOSER than the
+    # adaptive rate servo's operating margin, so the servo has room to throttle
+    # before this last-resort trips (the servo, not the breaker, is the primary
+    # control). `op_count > 100` holds it off until the rate is measured over a
+    # real sample. polydat predicates use `&`, not `&&`.
     errors: ".*:warn,counter"
     stop_when:
-      - when: "(op_count > 100) & (error_rate > 0.01)"
+      - when: "(op_count > 100) & (error_rate > {error_rate_backstop})"
     bindings: |
       # `p` is the active masked profile tier from `profile_partitions`:
       # `[start_of(p), end_of(p))` is the incremental delta since the
@@ -518,14 +528,15 @@ phases:
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   recall_check:
     concurrency: "{query_concurrency}"
-    # SRD-82 ErrorPolicy + SRD-83 stop conditions — recall queries run
-    # AFTER compaction, so they should mostly succeed; a transient timeout
-    # is counted (not fatal), but if the windowed error rate exceeds 1% the
-    # measurement is untrustworthy, so the async guard fails the phase. Same
-    # 1% budget + `op_count > 100` floor as `load_increment`.
+    # SRD-82 ErrorPolicy — recall queries run AFTER compaction, so they should
+    # mostly succeed; a transient timeout is counted (not fatal). The `stop_when`
+    # sanity backstop fails the phase only if the error rate exceeds
+    # `error_rate_backstop` (same servo-layered threshold as `load_increment`,
+    # set outside the servo margin) — meaning the recall measurement is
+    # untrustworthy.
     errors: ".*:warn,counter"
     stop_when:
-      - when: "(op_count > 100) & (error_rate > 0.01)"
+      - when: "(op_count > 100) & (error_rate > {error_rate_backstop})"
     bindings: |
       # Same masked tier as the load: name it by its masked position
       # idx_of(p), prebuffer the tier's own ground-truth facets.

@@ -2429,14 +2429,19 @@ impl Activity {
             let consumed = activity.source_factory.global_consumed();
             let ops_completed = activity.metrics.cycles_completed();
             // SRD-91: terminal-success count = `result_success.count()`;
-            // `errors_total` is per-attempt, so `errors - failed_ops`
-            // yields the retry count.
+            // `errors_total` is RESULT-level (one inc per terminal
+            // failure) — it drives `e:` directly. Retries = failed
+            // attempts that were NOT terminal, i.e. `attempt_failure
+            // - failed_ops`; the old `errors_total - failed_ops`
+            // collapsed to ~0 once `errors_total` went result-level
+            // with the RetryDispenser refactor.
             let successes = activity.metrics.result_success.count();
             let errors = activity.metrics.errors_total.get();
             let elapsed = start_time.elapsed().as_secs_f64();
             let failed_ops = ops_completed.saturating_sub(successes).saturating_sub(
                 activity.metrics.skips_total.get());
-            let retries = errors.saturating_sub(failed_ops);
+            let retries = activity.metrics.attempt_failure.count()
+                .saturating_sub(failed_ops);
             // Concurrency (fiber count) — the `c:N` tail mirrors
             // the live progress line so a completed phase reads
             // with the same shape as a running one.

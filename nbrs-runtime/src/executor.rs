@@ -4680,12 +4680,23 @@ async fn run_phase_inner(
                     nbrs_workload::model::ScopeLevel::Phase))))
             // SRD-83 Part 5 — a phase-level trip defaults to `fail`
             // (the phase result is suspect once a phase predicate fires).
-            .map(|c| crate::stop_conditions::StopConditionDecl {
-                when: c.when.clone(),
-                effect: crate::stop_conditions::StopConditionDecl::effect_from_str(
-                    c.effect.as_deref(),
-                    crate::phase_outcome::Outcome::failed(),
-                ),
+            .map(|c| {
+                // SRD-83 — interpolate `{param}` placeholders in the predicate
+                // against workload params (and this phase's iteration vars) so a
+                // breaker threshold can be a modular workload param, e.g.
+                // `error_rate > {error_rate_backstop}`. A stop predicate is a
+                // static config expression; the substituted value compiles as a
+                // literal (stop_when's compiled scope can't resolve a bare
+                // param wire — that's continue_if's scope-walked path).
+                let mut when = crate::runner::expand_workload_params(&c.when, &ctx.workload_params);
+                for (v, val) in &iter_var_values { when = when.replace(&format!("{{{v}}}"), val); }
+                crate::stop_conditions::StopConditionDecl {
+                    when,
+                    effect: crate::stop_conditions::StopConditionDecl::effect_from_str(
+                        c.effect.as_deref(),
+                        crate::phase_outcome::Outcome::failed(),
+                    ),
+                }
             })
             .collect(),
         // Retry budget for the innermost RetryDispenser: the phase's own

@@ -178,6 +178,14 @@ pub struct InlineRefreshContext {
     pub ops_ok: u64,
     pub errors: u64,
     pub retries: u64,
+    /// SRD-91 attempt-level tallies — successful and failed
+    /// RESOLVED attempts (both observed at attempt end).
+    /// `attempt_ok / (attempt_ok + attempt_failed)` is the
+    /// attempt success rate the status line surfaces beside the
+    /// result-level `ok%`; in-flight attempts are excluded so it
+    /// doesn't skew low the way the dispatch-time counter would.
+    pub attempt_ok: u64,
+    pub attempt_failed: u64,
     pub concurrency: usize,
     pub elapsed_secs: f64,
     pub consumed: u64,
@@ -204,6 +212,8 @@ impl ReadoutContext for InlineRefreshContext {
     fn ops_ok(&self) -> u64 { self.ops_ok }
     fn errors(&self) -> u64 { self.errors }
     fn retries(&self) -> u64 { self.retries }
+    fn attempt_ok(&self) -> u64 { self.attempt_ok }
+    fn attempt_failed(&self) -> u64 { self.attempt_failed }
     fn concurrency(&self) -> usize { self.concurrency }
     fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
     fn consumed(&self) -> u64 { self.consumed }
@@ -393,14 +403,33 @@ pub fn build_inline_refresh_context(
     let finished = progress_metrics.ops_finished.load(Ordering::Relaxed);
     let ops_completed = progress_metrics.cycles_completed();
     // SRD-91: terminal-success count = `result_success.count()`;
-    // `errors_total` is per-attempt, so `errors - failed_ops` is retries.
+    // `errors_total` is RESULT-level (one inc per terminal failure),
+    // so it drives the `e:` count directly.
     let successes = progress_metrics.result_success.count();
     let errors = progress_metrics.errors_total.get();
     let failed_ops = ops_completed
         .saturating_sub(successes)
         .saturating_sub(progress_metrics.skips_total.get());
-    let retries = errors.saturating_sub(failed_ops);
     let consumed = finished;
+    // SRD-91 attempt-level tallies, owned by the innermost
+    // `RetryDispenser` (always present). Both counters are
+    // observed when an attempt RETURNS, so their sum is the
+    // resolved-attempt count (in-flight attempts excluded) —
+    // `attempt_ok / (attempt_ok + attempt_failed)` is the
+    // attempt success rate, dropping below the result-level
+    // `ok%` exactly when retries burn attempts to keep results
+    // green. Using the dispatch-time `attempt_total` counter
+    // here would skew the rate low by the in-flight count.
+    let attempt_ok = progress_metrics.attempt_success.count();
+    let attempt_failed = progress_metrics.attempt_failure.count();
+    // Retries = failed attempts that were NOT the terminal outcome.
+    // `errors_total` went RESULT-level with the RetryDispenser
+    // refactor, so the old `errors - failed_ops` derivation
+    // collapsed to ~0; the per-attempt failure count now lives in
+    // `attempt_failure`, and `attempt_failed - failed_ops` is the
+    // true retry count (each non-terminal failed attempt spawned a
+    // retry).
+    let retries = attempt_failed.saturating_sub(failed_ops);
 
     // Adapter-status chips: ` <name>:<rate>/s` per registered
     // dispenser counter. `collect_status_counters` aggregates
@@ -463,6 +492,8 @@ pub fn build_inline_refresh_context(
         ops_ok: successes,
         errors,
         retries,
+        attempt_ok,
+        attempt_failed,
         concurrency,
         elapsed_secs,
         consumed,
