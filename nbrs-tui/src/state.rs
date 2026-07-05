@@ -436,14 +436,30 @@ impl RunState {
         category: LogCategory,
         message: String,
     ) {
-        self.log_messages.push(LogEntry {
+        self.push_log_entry(LogEntry {
             severity, message, category,
             at: std::time::SystemTime::now(),
         });
+    }
+
+    /// Push a pre-built [`LogEntry`] into the ring and return the
+    /// new [`Self::log_seq_total`] it was assigned. The ring stays
+    /// bounded (last 200) — it backs the inspector `log` view, the
+    /// TUI log panel, and the post-run failure dump, none of which
+    /// need unbounded history. The **durable, no-drop scrollback
+    /// stream** is a separate channel the actor feeds in lock-step
+    /// with this push (see
+    /// [`crate::run_state_actor::spawn_run_state_actor`]); the
+    /// returned seq tags the matching stream item so a
+    /// terminal-mode sink can skip lines already emitted elsewhere
+    /// (pre-handoff stderr, or a prior sink's scrollback).
+    pub fn push_log_entry(&mut self, entry: LogEntry) -> u64 {
+        self.log_messages.push(entry);
         if self.log_messages.len() > 200 {
             self.log_messages.remove(0);
         }
         self.log_seq_total = self.log_seq_total.saturating_add(1);
+        self.log_seq_total
     }
 
     /// Push an ops/s sample to the sparkline history (capped at 120).

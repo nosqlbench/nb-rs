@@ -37,7 +37,62 @@ use nbrs_metrics::summaries::binomial_summary::BinomialSummary;
 use nbrs_metrics::summaries::ewma::Ewma;
 use nbrs_metrics::summaries::peak_tracker::PeakTracker;
 
-use crate::state::{ActivePhase, LogSeverity, PhaseSummary, RunState};
+use crate::state::{ActivePhase, LogEntry, LogSeverity, PhaseSummary, RunState};
+
+/// One log line on the **durable scrollback stream** — the second
+/// down-channel from the actor to the active terminal-mode sink.
+///
+/// The status footer is a latest-wins ArcSwap snapshot (only the
+/// newest matters); log scrollback is sequential DATA where every
+/// line must be delivered, in order, exactly once. ArcSwap cannot
+/// carry deltas, so a renderer that misses a swap loses the
+/// intermediate lines — the drop bug this stream removes. The
+/// actor feeds one `LogLine` per [`RunStateCmd::Log`] into an
+/// **unbounded** channel; the sink drains it fully every tick and
+/// emits every line. `seq` matches the ring's
+/// [`RunState::log_seq_total`] so the sink can skip lines already
+/// emitted on stderr before the display handoff (or by a prior
+/// sink before a Ctrl-T swap).
+pub(crate) struct LogLine {
+    pub seq: u64,
+    pub entry: LogEntry,
+}
+
+/// Single-consumer handle to the durable scrollback stream, held by
+/// whichever terminal-mode sink is currently rendering.
+///
+/// The receiver is single-consumer and must move between sinks
+/// across a Ctrl-T swap (terminal → TUI → terminal), so it lives in
+/// a shared cell on [`RunStateHandle`]. A sink `take`s it on start
+/// (via [`RunStateHandle::take_log_stream`]) and this guard restores
+/// it to the cell on drop — so the next sink brought up after a swap
+/// resumes draining the SAME stream, and the lines that buffered
+/// while the TUI owned the alternate screen flush into the restored
+/// scrollback. The cell's `Mutex` is touched only at start / teardown
+/// (never per render tick) and only one sink renders at a time, so it
+/// is a handoff latch, not shared render state.
+pub(crate) struct ScrollbackReceiver {
+    cell: Arc<Mutex<Option<mpsc::Receiver<LogLine>>>>,
+    rx: Option<mpsc::Receiver<LogLine>>,
+}
+
+impl ScrollbackReceiver {
+    /// Non-blocking receive of the next buffered log line, or `None`
+    /// when the stream is momentarily empty / the receiver wasn't
+    /// available (another sink holds it — shouldn't happen, since
+    /// sinks are torn down before the next is brought up).
+    pub(crate) fn try_next(&self) -> Option<LogLine> {
+        self.rx.as_ref().and_then(|rx| rx.try_recv().ok())
+    }
+}
+
+impl Drop for ScrollbackReceiver {
+    fn drop(&mut self) {
+        if let Some(rx) = self.rx.take() {
+            *self.cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(rx);
+        }
+    }
+}
 
 /// One mutation of [`RunState`]. Every observer-driven and
 /// UI-driven write is one of these variants. The actor's
@@ -196,6 +251,24 @@ pub struct RunStateHandle {
     snapshot: Arc<ArcSwap<RunState>>,
     inbox: mpsc::Sender<RunStateCmd>,
     frame_sync: FrameSync,
+    /// Receiver end of the durable scrollback stream (see
+    /// [`LogLine`]), parked here between sinks so it survives a
+    /// Ctrl-T swap. Taken by the active terminal-mode sink via
+    /// [`Self::take_log_stream`] and restored on that sink's
+    /// teardown.
+    log_rx: Arc<Mutex<Option<mpsc::Receiver<LogLine>>>>,
+    /// One-way latch: `false` until a terminal-mode
+    /// [`crate::log_only_sink::LogOnlySink`] first claims the stream
+    /// (via [`Self::take_log_stream`]), then `true` for the rest of
+    /// the run. The actor feeds the scrollback stream ONLY while this
+    /// is set, so modes with no `LogOnlySink` (`tui=on` full TUI,
+    /// `tui=off` piped/CI, `tui=formatted`) never buffer a stream
+    /// nobody drains — the line still lands in the ring and
+    /// `session.log`. It is one-way (never cleared) so a Ctrl-T swap
+    /// window — when the sink is torn down and no one is draining —
+    /// keeps buffering, and the next terminal sink replays those lines
+    /// into the restored scrollback.
+    log_stream_active: Arc<AtomicBool>,
 }
 
 impl RunStateHandle {
@@ -238,6 +311,28 @@ impl RunStateHandle {
     pub fn frame_sync(&self) -> FrameSync {
         self.frame_sync.clone()
     }
+
+    /// Take ownership of the durable scrollback stream receiver for
+    /// the duration of a terminal-mode sink's render loop. The
+    /// returned [`ScrollbackReceiver`] restores the receiver to the
+    /// shared cell when it drops, so the next sink brought up after
+    /// a Ctrl-T swap resumes draining the same stream (the lines
+    /// that buffered while the TUI owned the alternate screen flush
+    /// into the restored scrollback). Only one sink renders at a
+    /// time, so at most one live `ScrollbackReceiver` exists.
+    ///
+    /// Flips the actor's [`Self::log_stream_active`] latch on first
+    /// call, so the actor begins buffering scrollback deltas. Callers
+    /// must set the latch (i.e. call this) BEFORE seeding their
+    /// `last_seen` cursor from `log_seq_total`, so no line sent in the
+    /// handoff window is lost: every line the sink expects to emit
+    /// (seq greater than the seed) is guaranteed to already be in the
+    /// stream.
+    pub(crate) fn take_log_stream(&self) -> ScrollbackReceiver {
+        self.log_stream_active.store(true, Ordering::Release);
+        let rx = self.log_rx.lock().unwrap_or_else(|e| e.into_inner()).take();
+        ScrollbackReceiver { cell: self.log_rx.clone(), rx }
+    }
 }
 
 /// Spawn the RunState actor on its own OS thread. Returns the
@@ -254,6 +349,20 @@ pub fn spawn_run_state_actor(
 ) -> (RunStateHandle, JoinHandle<()>) {
     let snapshot = Arc::new(ArcSwap::new(Arc::new(initial.clone())));
     let (tx, rx) = mpsc::channel::<RunStateCmd>();
+    // Durable, ordered, no-drop scrollback stream: the second
+    // down-channel (ArcSwap carries the latest-wins status; this
+    // carries every log delta). Unbounded so a burst of log lines
+    // never blocks the actor (which serves fire-and-forget
+    // producer threads) and never evicts an un-emitted line the
+    // way the bounded ring did. A slow terminal lets it grow during
+    // a burst (bounded by the run's total log volume); the sink
+    // drains it fully on the next lull.
+    let (log_tx, log_rx) = mpsc::channel::<LogLine>();
+    let log_rx = Arc::new(Mutex::new(Some(log_rx)));
+    // Latch: the actor feeds the scrollback stream only once a
+    // terminal-mode sink has claimed it (see `log_stream_active`).
+    let log_stream_active = Arc::new(AtomicBool::new(false));
+    let log_stream_active_for_thread = log_stream_active.clone();
     let snapshot_for_thread = snapshot.clone();
     let frame_sync = FrameSync::default();
     let frame_sync_for_thread = frame_sync.clone();
@@ -268,13 +377,15 @@ pub fn spawn_run_state_actor(
             // Async Contexts" only forbids blocking *inside*
             // tokio.
             while let Ok(first) = rx.recv() {
-                handle_cmd(&mut state, &frame_sync_for_thread, first);
+                handle_cmd(&mut state, &frame_sync_for_thread, &log_tx,
+                    &log_stream_active_for_thread, first);
                 // Coalesce: drain any further-pending commands
                 // before publishing. Cuts publish cost when the
                 // executor bursts updates; readers always see
                 // the latest published state anyway.
                 while let Ok(more) = rx.try_recv() {
-                    handle_cmd(&mut state, &frame_sync_for_thread, more);
+                    handle_cmd(&mut state, &frame_sync_for_thread, &log_tx,
+                        &log_stream_active_for_thread, more);
                 }
                 snapshot_for_thread.store(Arc::new(state.clone()));
             }
@@ -284,17 +395,27 @@ pub fn spawn_run_state_actor(
             // Drop any acks still queued so blocked observers
             // unblock instead of waiting out their full timeout.
             frame_sync_for_thread.signal_post_draw();
+            // `log_tx` drops here; the sink's drain sees the
+            // stream disconnect only after every buffered line has
+            // been delivered (mpsc yields buffered items before
+            // `Disconnected`).
         })
         .expect("spawn run-state-actor thread");
 
-    (RunStateHandle { snapshot, inbox: tx, frame_sync }, handle)
+    (RunStateHandle { snapshot, inbox: tx, frame_sync, log_rx, log_stream_active }, handle)
 }
 
 /// Top-level command dispatch. Most commands route to `apply`,
 /// which mutates the [`RunState`] in place. `FrameAck` is handled
 /// here because its target is the [`FrameSync`] surface, not the
 /// state.
-fn handle_cmd(state: &mut RunState, frame_sync: &FrameSync, cmd: RunStateCmd) {
+fn handle_cmd(
+    state: &mut RunState,
+    frame_sync: &FrameSync,
+    log_tx: &mpsc::Sender<LogLine>,
+    log_stream_active: &AtomicBool,
+    cmd: RunStateCmd,
+) {
     match cmd {
         RunStateCmd::FrameAck(tx) => {
             // Register the tx so the TUI app can signal it after
@@ -305,6 +426,34 @@ fn handle_cmd(state: &mut RunState, frame_sync: &FrameSync, cmd: RunStateCmd) {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(tx);
             frame_sync.force_redraw.store(true, Ordering::Release);
+        }
+        RunStateCmd::Log { severity, category, message } => {
+            // Two sinks for the same line, kept in lock-step:
+            //  1. the bounded ring (inspector `log` view, TUI log
+            //     panel, post-run failure dump) — last 200 only;
+            //  2. the durable scrollback stream — every line, in
+            //     order, exactly once, never evicted. The ring's
+            //     `seq` tags the stream item so a terminal sink can
+            //     skip lines already emitted on stderr before the
+            //     display handoff (or by a prior sink pre-swap).
+            let entry = LogEntry {
+                severity, message, category,
+                at: std::time::SystemTime::now(),
+            };
+            // Feed the durable stream only once a terminal-mode sink
+            // has claimed it — otherwise the line lives in the ring +
+            // session.log and the stream would just grow unbounded
+            // with no drainer (tui=on / tui=off / tui=formatted).
+            if log_stream_active.load(Ordering::Acquire) {
+                let stream_entry = entry.clone();
+                let seq = state.push_log_entry(entry);
+                // Fire-and-forget: a momentarily-parked receiver
+                // (Ctrl-T swap window) still buffers; the next sink
+                // replays it into the restored scrollback.
+                let _ = log_tx.send(LogLine { seq, entry: stream_entry });
+            } else {
+                state.push_log_entry(entry);
+            }
         }
         other => apply(state, other),
     }
@@ -433,8 +582,12 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         RunStateCmd::RunFinished => {
             state.finished = true;
         }
-        RunStateCmd::Log { severity, category, message } => {
-            state.push_log_categorized(severity, category, message);
+        RunStateCmd::Log { .. } => {
+            // Routed to `handle_cmd` before reaching this match (it
+            // feeds both the bounded ring and the durable scrollback
+            // stream); included here only to keep the match
+            // exhaustive.
+            unreachable!("Log is handled in handle_cmd before apply")
         }
         RunStateCmd::LatencyFrame { min, p50, p90, p99, p999, max } => {
             state.min_nanos  = min;
@@ -486,5 +639,160 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             // included here only to keep the match exhaustive.
             unreachable!("FrameAck is handled in handle_cmd before apply")
         }
+    }
+}
+
+#[cfg(test)]
+mod scrollback_stream_tests {
+    use super::*;
+    use crate::state::{LogSeverity, RunState};
+    use nbrs_runtime::observer::LogCategory;
+
+    /// The durable scrollback stream carries EVERY log line, in order,
+    /// exactly once — even when far more than the bounded ring's
+    /// capacity (200) arrive before anything drains. This is the
+    /// no-drop guarantee: the old renderer read log deltas off the
+    /// bounded `RunState.log_messages` ring, which evicts its oldest
+    /// entries past 200, so a renderer lagging the actor by >200 lines
+    /// lost the un-emitted oldest ones. The stream is unbounded, so it
+    /// cannot evict.
+    #[test]
+    fn stream_delivers_all_lines_past_ring_capacity() {
+        let (handle, join) =
+            spawn_run_state_actor(RunState::new("t", "default", "stdout"));
+
+        // Claim the stream first (as a real terminal-mode sink does),
+        // which flips the actor's feed latch on so every subsequent
+        // line is buffered.
+        let rx = handle.take_log_stream();
+
+        // 500 > the 200-line ring capacity, all queued before a single
+        // drain — the exact overflow condition that dropped lines.
+        const N: u64 = 500;
+        for i in 0..N {
+            handle.send(RunStateCmd::Log {
+                severity: LogSeverity::Info,
+                category: LogCategory::Diagnostic,
+                message: format!("line-{i}"),
+            });
+        }
+
+        // Drain the durable stream, waiting for the actor thread to
+        // finish enqueuing all N.
+        let mut got: Vec<(u64, String)> = Vec::new();
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while (got.len() as u64) < N && std::time::Instant::now() < deadline {
+            match rx.try_next() {
+                Some(line) => got.push((line.seq, line.entry.message)),
+                None => std::thread::sleep(std::time::Duration::from_millis(2)),
+            }
+        }
+
+        assert_eq!(got.len() as u64, N,
+            "every log line must be delivered — none dropped despite \
+             {N} lines arriving before any drain (ring cap is 200)");
+        // In order, contiguous seq 1..=N, messages line-0..line-(N-1).
+        for (i, (seq, msg)) in got.iter().enumerate() {
+            assert_eq!(*seq, i as u64 + 1, "seq monotonic + contiguous");
+            assert_eq!(msg, &format!("line-{i}"), "delivered in order");
+        }
+
+        drop(rx);
+        drop(handle);
+        let _ = join.join();
+    }
+
+    /// The actor does NOT feed the stream until a terminal-mode sink
+    /// claims it — so modes with no `LogOnlySink` (`tui=on` full TUI,
+    /// `tui=off` piped/CI, `tui=formatted`) never accumulate an
+    /// unbounded backlog on a stream nobody drains. Lines pushed before
+    /// the claim still reach the ring + `session.log`; they just aren't
+    /// buffered on the stream.
+    #[test]
+    fn stream_not_fed_until_a_sink_claims_it() {
+        let (handle, join) =
+            spawn_run_state_actor(RunState::new("t", "default", "stdout"));
+
+        // No sink has claimed the stream yet.
+        for i in 0..300u64 {
+            handle.send(RunStateCmd::Log {
+                severity: LogSeverity::Info,
+                category: LogCategory::Diagnostic,
+                message: format!("unfed-{i}"),
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(60));
+
+        // Claim now: nothing that predates the claim is buffered.
+        let rx = handle.take_log_stream();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(rx.try_next().is_none(),
+            "an unclaimed stream must not buffer a backlog — no leak when \
+             no LogOnlySink is draining");
+
+        // Lines sent AFTER the claim ARE delivered.
+        handle.send(RunStateCmd::Log {
+            severity: LogSeverity::Info,
+            category: LogCategory::Diagnostic,
+            message: "after-claim".into(),
+        });
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut got = None;
+        while got.is_none() && std::time::Instant::now() < deadline {
+            match rx.try_next() {
+                Some(line) => got = Some(line.entry.message),
+                None => std::thread::sleep(std::time::Duration::from_millis(2)),
+            }
+        }
+        assert_eq!(got.as_deref(), Some("after-claim"),
+            "lines sent after the claim must flow through the stream");
+
+        drop(rx);
+        drop(handle);
+        let _ = join.join();
+    }
+
+    /// The receiver survives a sink teardown: the `ScrollbackReceiver`
+    /// guard restores it to the shared cell on drop, so a subsequent
+    /// `take_log_stream` (the next terminal-mode sink after a Ctrl-T
+    /// swap) resumes the SAME stream and sees the lines that buffered
+    /// while no sink was draining.
+    #[test]
+    fn stream_receiver_survives_sink_handoff() {
+        let (handle, join) =
+            spawn_run_state_actor(RunState::new("t", "default", "stdout"));
+
+        // First "sink" takes the stream, then tears down (guard drops).
+        {
+            let _rx = handle.take_log_stream();
+        }
+        // Lines buffered while no sink is draining.
+        for i in 0..3u64 {
+            handle.send(RunStateCmd::Log {
+                severity: LogSeverity::Info,
+                category: LogCategory::Diagnostic,
+                message: format!("swap-{i}"),
+            });
+        }
+        // Second "sink" resumes the same stream and drains the backlog.
+        let rx = handle.take_log_stream();
+        let mut got = Vec::new();
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while got.len() < 3 && std::time::Instant::now() < deadline {
+            match rx.try_next() {
+                Some(line) => got.push(line.entry.message),
+                None => std::thread::sleep(std::time::Duration::from_millis(2)),
+            }
+        }
+        assert_eq!(got, vec!["swap-0", "swap-1", "swap-2"],
+            "the stream receiver must survive the sink handoff and \
+             flush the backlog buffered while no sink was draining");
+
+        drop(rx);
+        drop(handle);
+        let _ = join.join();
     }
 }

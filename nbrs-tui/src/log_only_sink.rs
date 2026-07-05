@@ -32,10 +32,11 @@
 //! 3. `start()` sets `sink_active = true` — from this moment the
 //!    observer suppresses its own stderr writes and the sink owns
 //!    the surface.
-//! 4. The render thread polls every ~50 ms, drains
-//!    `(log_seq_total - last_seen_seq)` entries off the tail of
-//!    `log_messages`, prints those that pass `min_level`, and
-//!    advances `last_seen_seq`.
+//! 4. The render thread polls every ~50 ms, drains **every** log
+//!    line the actor has queued on the durable scrollback stream
+//!    since the last tick (see
+//!    [`crate::run_state_actor::LogLine`]), prints those that pass
+//!    `min_level`, and advances `last_seen_seq`.
 //!
 //! `shutdown()` clears `sink_active` so the observer resumes
 //! synchronous writes for any straggler logs that fire after the
@@ -49,15 +50,22 @@
 //! frame channel is also drained on the same loop so it never
 //! reports a full / disconnected channel.
 //!
-//! ## Drop-on-overflow
+//! ## No drop
 //!
-//! If `(log_seq_total - last_seen_seq)` exceeds the ring's
-//! capacity (200), the sink lost some entries — i.e. the
-//! observer logged faster than the sink could drain. The
-//! diagnostic notes the count and continues; the dropped lines
-//! are still in `session.log` (the async sink in
-//! `nbrs_runtime::log_sink` takes every level unconditionally,
-//! see SRD 02 §"Display and Diagnostic Decoupling").
+//! Log scrollback is sequential DATA — every line must be
+//! delivered, in order, exactly once. It rides a durable,
+//! **unbounded** stream (an `mpsc::channel` fed by the actor per
+//! [`crate::run_state_actor::RunStateCmd::Log`]) that the render
+//! thread drains FULLY every tick, NOT the bounded `RunState`
+//! log ring. The ring is a latest-wins snapshot buffer (fine for
+//! the inspector view, the TUI log panel, and the failure dump)
+//! but it can evict an un-emitted line when the renderer lags the
+//! actor by more than its capacity — the drop this stream removes.
+//! A slow terminal lets the stream grow during a burst (bounded by
+//! the run's total log volume); the renderer drains it on the next
+//! lull. `session.log` still captures every level unconditionally
+//! (the async sink in `nbrs_runtime::log_sink`, see SRD 02
+//! §"Display and Diagnostic Decoupling").
 
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -74,7 +82,6 @@ use crate::prompt_state::{PromptAction, PromptState};
 use crate::state::LogSeverity;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
-const LOG_RING_CAPACITY: u64 = 200;
 
 /// Sentinel `resume_from` value meaning "fresh start": the sink
 /// seeds `last_seen` from the live `log_seq_total` so it doesn't
@@ -196,6 +203,16 @@ impl DisplaySink for LogOnlySink {
         let DisplayInputs { state, frame_rx, metrics_query: _ } = inputs;
         let LogOnlySink { min_level, sink_active, key_rx, runtime, resume_from } = *self;
 
+        // Claim the durable scrollback stream FIRST — this flips the
+        // actor's "buffer scrollback deltas" latch on (see
+        // [`crate::run_state_actor::RunStateHandle::take_log_stream`]).
+        // Claiming BEFORE the seed read below guarantees every line the
+        // sink will emit (seq greater than the seed) is already in the
+        // stream: no line sent during the handoff falls in a gap. The
+        // guard restores the receiver to the shared cell on teardown so
+        // a Ctrl-T swap-back resumes the same stream.
+        let scrollback = state.take_log_stream();
+
         // Seed the log cursor. A fresh sink snapshots the current
         // `log_seq_total` so it doesn't re-emit anything the observer
         // already printed pre-flag. A swap re-entry (the supervisor's
@@ -226,6 +243,7 @@ impl DisplaySink for LogOnlySink {
                     key_rx,
                     runtime,
                     resume_from,
+                    scrollback,
                 );
                 // Render thread exited (stop signaled or channel
                 // disconnected). Clear the flag so the observer
@@ -252,6 +270,7 @@ fn run_render_loop(
     key_rx: Option<mpsc::Receiver<WatcherSignal>>,
     runtime: Option<tokio::runtime::Handle>,
     resume_from: Option<Arc<AtomicU64>>,
+    scrollback: crate::run_state_actor::ScrollbackReceiver,
 ) {
     let mut stderr = io::stderr();
     // The raw status string most recently published by the
@@ -302,6 +321,15 @@ fn run_render_loop(
     // A change (from a dispatched command, a completion row, or any
     // other source) triggers a console repaint.
     let mut transcript_len_drawn: usize = 0;
+    // Durable scrollback stream — the no-drop log-delivery path,
+    // claimed by `LogOnlySink::start` before the seed read and moved
+    // in here. The guard restores the receiver to the shared cell on
+    // teardown so the next terminal-mode sink brought up after a
+    // Ctrl-T swap resumes the SAME stream and flushes every line that
+    // buffered while the TUI owned the alternate screen. `last_seen`
+    // filters lines already emitted on stderr before the display
+    // handoff (fresh start) or by a prior sink (swap re-entry) — see
+    // `seed_last_seen`.
     while !stop.load(Ordering::Acquire) {
         // Drain any metrics frames that arrived since the last
         // tick — only when a frame channel was actually wired in.
@@ -367,16 +395,19 @@ fn run_render_loop(
             }
         }
 
-        // Drain new log entries.
+        // Load the latest snapshot for the STATUS footer only
+        // (latest-wins ArcSwap — only the newest status matters). Log
+        // scrollback is DATA (every line, in order, exactly once) and
+        // comes from the durable stream drained further down, NOT from
+        // this snapshot's bounded ring — the ring can evict an
+        // un-emitted line, which was the drop bug.
         let snap = state.load();
-        let total = snap.log_seq_total;
         // SRD-100 P2 — fold the live `active_phases` snapshot into the
         // status block at the consumer, rather than reading a single
         // pre-rendered scalar that N producer threads stomped. Single-phase
         // output is byte-identical (same builder + bodies); multi-phase
         // stacks per-phase renders (P3 adds the cap / multi-running counter).
         let next_status: Option<String> = crate::status_fold::render_active_status(&snap);
-        let need_log_emit = total > last_seen;
         let status_changed = next_status != status_published;
 
         // Console (REPL) output is CONTAINED in the frame: it
@@ -466,6 +497,29 @@ fn run_render_loop(
             std::thread::sleep(POLL_INTERVAL);
             continue;
         }
+
+        // === Drain the durable scrollback stream FULLY ===
+        // Reached only when the console is Hidden (a visible console
+        // `continue`d above with the drain frozen, so lines buffered
+        // in the unbounded channel). Pull EVERY line the actor has
+        // queued since the last tick — no cap, so a renderer that
+        // lagged the actor by more than the old ring capacity can
+        // never lose a line. `last_seen` skips lines already emitted
+        // elsewhere: on a fresh start it was seeded from the live
+        // `log_seq_total` (the observer's pre-handoff stderr writes),
+        // and on a swap re-entry from the prior sink's final cursor
+        // (its scrollback). Both are `seq <= last_seen` and dropped
+        // from re-emission here; everything newer is emitted below.
+        let mut new_logs: Vec<crate::state::LogEntry> = Vec::new();
+        while let Some(line) = scrollback.try_next() {
+            if line.seq > last_seen {
+                last_seen = line.seq;
+                new_logs.push(line.entry);
+            }
+            // else: already on the surface (pre-handoff stderr / prior
+            // sink) — skip re-emitting, matching the old seq-cursor.
+        }
+        let need_log_emit = !new_logs.is_empty();
 
         // Region anchored at the bottom of the terminal:
         // [logs ...] [status] [separator] [prompt input].
@@ -657,22 +711,13 @@ fn run_render_loop(
             //     so the footer's first row reclaims that line with no
             //     gap.
             if need_log_emit {
-                let new_count = total - last_seen;
-                let take = new_count.min(LOG_RING_CAPACITY) as usize;
-                let ring = &snap.log_messages;
-                let start_idx = ring.len().saturating_sub(take);
-                // Note any drop. The session-log sink still has
-                // every entry; this is a render-side warning only.
-                if new_count > LOG_RING_CAPACITY {
-                    let dropped = new_count - LOG_RING_CAPACITY;
-                    let _ = write!(
-                        stderr,
-                        "log-only-sink: dropped {dropped} log line(s) (renderer too slow); see session.log\r\n",
-                    );
-                }
+                // Every line drained from the durable stream this tick
+                // is emitted — no cap, no drop. The stream carries them
+                // in order, exactly once; a slow renderer simply drains
+                // a longer burst on this tick.
                 let margin = format_margin_prefix(&snap,
                     nbrs_runtime::observer::use_color());
-                for entry in &ring[start_idx..] {
+                for entry in &new_logs {
                     let entry_level = severity_to_level(entry.severity);
                     if entry_level < min_level {
                         continue;
@@ -706,7 +751,8 @@ fn run_render_loop(
                         let _ = write!(stderr, "{margin}{row}\r\n");
                     }
                 }
-                last_seen = total;
+                // `last_seen` already advanced during the stream drain
+                // above (one bump per delivered line).
             }
 
             // (C) Draw the footer (status [+ inline prompt]) at the

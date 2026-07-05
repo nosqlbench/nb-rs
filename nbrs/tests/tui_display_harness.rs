@@ -463,3 +463,65 @@ async fn swap_re_renders_surface_byte_identically() {
 
     let _ = stepper.kill();
 }
+
+/// Regression for the log-line DROP bug: a burst of log lines far
+/// exceeding the bounded ring capacity (200) must ALL reach the
+/// scrollback — none dropped, in order — even when they arrive faster
+/// than the ~50 ms render cadence can drain them.
+///
+/// This drives the REAL [`nbrs_tui::log_only_sink::LogOnlySink`]
+/// render loop headlessly (no PTY needed — the sink falls back to a
+/// default terminal size and writes every drained line to stderr,
+/// which the terminal scrolls). It pipes 300 `log` commands to the
+/// harness in one shot so they all land in the actor before the first
+/// drain tick — the exact overflow condition that used to print
+/// `dropped N log line(s)` and lose the earliest 100 lines. The fix
+/// carries scrollback on a durable, unbounded stream the sink drains
+/// FULLY every tick, so stderr must contain every line and no drop
+/// banner.
+#[test]
+fn scrollback_burst_emits_every_line_without_drop() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    const N: usize = 300; // > the 200-line ring capacity
+
+    // Per-test sandbox cwd under target (the harness is a mock and
+    // writes nothing to disk, but keep the run out of the repo root).
+    let cwd = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("scrollback_burst");
+    let _ = std::fs::create_dir_all(&cwd);
+
+    let mut child = Command::new(harness_binary())
+        .current_dir(&cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn tui_display_harness");
+
+    {
+        let mut stdin = child.stdin.take().expect("harness stdin");
+        // Burst all N before the sink's first ~50 ms drain tick.
+        for i in 0..N {
+            writeln!(stdin, "log burst-{i:04}").expect("write burst line");
+        }
+        stdin.flush().expect("flush burst");
+        // Let the ~50 ms sink drain (many ticks' worth of headroom).
+        std::thread::sleep(Duration::from_millis(700));
+        writeln!(stdin, "quit").expect("write quit");
+    }
+
+    let out = child.wait_with_output().expect("await harness");
+    let err = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!err.contains("dropped"),
+        "the durable scrollback stream must never drop a line — found a \
+         drop banner in the harness output");
+    // Every single line reached the scrollback, in order.
+    for i in 0..N {
+        assert!(err.contains(&format!("burst-{i:04}")),
+            "scrollback line burst-{i:04} was dropped (renderer lag must \
+             not lose lines)");
+    }
+}
