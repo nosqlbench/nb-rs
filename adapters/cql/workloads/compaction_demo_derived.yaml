@@ -59,6 +59,13 @@ params:
   # `timeout: 60s` themselves (below); the orchestration ops keep their own
   # longer request_timeout_ms.
   retries: 20
+  # `connect_timeout` = how long the driver waits to ESTABLISH a connection
+  # (the control connection + each per-host connect). The cassandra-cpp default
+  # (5s) is too short for a distant / cold / slow-to-accept cluster — a control-
+  # connection `Connection timeout` is exactly that boundary expiring. 5 minutes
+  # is deliberately generous so a loaded or just-starting cluster still connects;
+  # drop it on the CLI (`connect_timeout=30s`) for a nearby cluster.
+  connect_timeout: 5m
   # `error_rate_backstop` = the SANITY-BACKSTOP error rate (a proportion in
   # [0,1]). It is a PLAIN WORKLOAD PARAM consumed by the data-plane phases'
   # `stop_when` (load_increment / recall_check) — a modular, workload-expressed
@@ -115,12 +122,13 @@ params:
   max_size: 0
 
   # ── Post-load step toggles (1 = enabled, 0 = skipped) ────────
-  # Independently enable/disable each post-load step per tier. Defaults
-  # keep the full compaction-demo behaviour; set any to 0 on the CLI to
-  # measure the sweep without that step (e.g. `enable_compact=0`).
-  enable_flush: 1      # forced memtable flush after each tier's load
-  enable_finalize: 1   # the finalize_index phase (flush + sstable read + compaction)
-  enable_compact: 1    # the forced major compaction (inside finalize_index)
+  # Independently enable/disable each post-load step per tier. All OFF by
+  # default — the base sweep just loads each tier with no post-load work;
+  # opt into the steps you want on the CLI (e.g. `enable_finalize=1
+  # enable_compact=1`).
+  enable_flush: 0      # forced memtable flush after each tier's load
+  enable_finalize: 0   # the finalize_index phase (flush + sstable read + compaction)
+  enable_compact: 0    # the forced major compaction (inside finalize_index)
 
 # Derived identifiers, visible to every phase's op text. The CQL table
 # holds the cumulative vectors for this dataset+profile, so its name is
