@@ -558,6 +558,17 @@ impl CqlAdapter {
                 .map_err(|e| format!("set credentials: {e}"))?;
         }
         cluster.set_request_timeout(std::time::Duration::from_millis(config.request_timeout_ms));
+        // Bound connection establishment (control + per-host connect). The
+        // driver default is 5000ms — the `Connection timeout` control-connection
+        // failure surfaces at exactly that boundary — so raise `connect_timeout`
+        // for distant / slow-to-accept clusters.
+        cluster.set_connect_timeout(std::time::Duration::from_millis(config.connect_timeout_ms));
+        // Exponential reconnection policy (the driver default, made explicit so
+        // the delays are operator-tunable).
+        cluster.set_exponential_reconnect(
+            std::time::Duration::from_millis(config.reconnect_base_delay_ms),
+            std::time::Duration::from_millis(config.reconnect_max_delay_ms),
+        );
 
         // `common::CqlConfig::from_params` already validated the
         // consistency string at parse time, so this conversion is
@@ -1899,6 +1910,8 @@ inventory::submit! {
         known_params: || &[
             "hosts", "host", "port", "keyspace", "connect_keyspace", "consistency",
             "username", "password", "timeout", "request_timeout_ms",
+            "connect_timeout", "request_timeout",
+            "reconnect_base_delay", "reconnect_max_delay",
             "cassandra_log_level",
             "trace_rate", "trace_log",
         ],

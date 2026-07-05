@@ -75,8 +75,11 @@ impl ScyllaCqlAdapter {
         if let (Some(u), Some(p)) = (&config.username, &config.password) {
             builder = builder.user(u, p);
         }
+        // Connection ESTABLISHMENT timeout (was conflated with the per-request
+        // timeout before `connect_timeout` existed). scylla manages
+        // reconnection internally, so the `reconnect_*` knobs are inert here.
         builder = builder.connection_timeout(std::time::Duration::from_millis(
-            config.request_timeout_ms,
+            config.connect_timeout_ms,
         ));
         if !config.keyspace.is_empty() {
             builder = builder.use_keyspace(config.keyspace.clone(), false);
@@ -399,11 +402,13 @@ inventory::submit! {
         known_params: || &[
             "hosts", "host", "port", "keyspace", "connect_keyspace", "consistency",
             "username", "password", "timeout", "request_timeout_ms",
-            // Accepted for parity with the cassandra-cpp engine,
-            // so workloads that switch driver via `cqldriver=`
-            // don't trip an unknown-param guard. The scylla
-            // engine doesn't yet honor per-statement tracing —
-            // the surface stays declared but inert until wired.
+            "connect_timeout", "request_timeout",
+            // Exponential-reconnect knobs + tracing: accepted for parity
+            // with the cassandra-cpp engine so a `cqldriver=` switch doesn't
+            // trip the unknown-param guard, but inert on the scylla engine
+            // (it manages reconnection internally and doesn't yet honor
+            // per-statement tracing) — declared until wired.
+            "reconnect_base_delay", "reconnect_max_delay",
             "trace_rate", "trace_log",
         ],
     }

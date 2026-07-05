@@ -30,6 +30,21 @@ pub struct CqlConfig {
     pub username: Option<String>,
     pub password: Option<String>,
     pub request_timeout_ms: u64,
+    /// Timeout for ESTABLISHING a connection to a node — the control
+    /// connection plus each per-host connect — distinct from the
+    /// per-request timeout above. Driver default 5000ms; raise it for
+    /// distant / slow-to-accept clusters (the `Connection timeout` class
+    /// of control-connection failure). Set via `connect_timeout`.
+    pub connect_timeout_ms: u64,
+    /// Exponential-reconnection policy knobs. `reconnect_base_delay_ms` is
+    /// the delay before the first reconnect attempt; the backoff grows
+    /// exponentially (with jitter) up to `reconnect_max_delay_ms`, then
+    /// holds. Driver defaults 2000ms / 600000ms. Set via
+    /// `reconnect_base_delay` / `reconnect_max_delay`. Honored by the
+    /// cassandra-cpp engine; the scylla engine manages reconnection
+    /// internally and leaves these declared-but-inert (see `known_params`).
+    pub reconnect_base_delay_ms: u64,
+    pub reconnect_max_delay_ms: u64,
     /// Initial value of the per-execute tracing probability
     /// (0.0–1.0). Engine-specific dispenser code seeds the
     /// `cql_trace_rate` dynamic control with this value, then
@@ -59,6 +74,9 @@ impl Default for CqlConfig {
             username: None,
             password: None,
             request_timeout_ms: 12_000,
+            connect_timeout_ms: 5_000,
+            reconnect_base_delay_ms: 2_000,
+            reconnect_max_delay_ms: 600_000,
             trace_rate: None,
             trace_log_path: None,
         }
@@ -68,11 +86,13 @@ impl Default for CqlConfig {
 impl CqlConfig {
     /// SRD-35 Push B — derive the pool resource key from
     /// the *instance-shaping* params (cluster contact
-    /// info, keyspace, auth). Per-statement and per-phase
-    /// values (`request_timeout_ms`, `trace_rate`,
-    /// `trace_log_path`) are deliberately excluded — they
-    /// flow through the per-phase shell, not the shared
-    /// instance.
+    /// info, keyspace, auth). Timeout / reconnection tuning
+    /// (`request_timeout_ms`, `connect_timeout_ms`,
+    /// `reconnect_base_delay_ms`, `reconnect_max_delay_ms`) and
+    /// per-phase values (`trace_rate`, `trace_log_path`) are
+    /// deliberately excluded — they tune a session, they don't
+    /// identify one, so phases that differ only in these knobs
+    /// still share one instance (the first to connect shapes it).
     ///
     /// Two phases whose `CqlConfig` produces equal keys
     /// share a single live cassandra-cpp / scylla session
@@ -115,7 +135,11 @@ impl CqlConfig {
     /// | `connect_keyspace` | (overrides `keyspace`) | escape hatch for DDL phases |
     /// | `consistency` | `LOCAL_ONE` | see [`CqlConsistency::parse`] for valid values |
     /// | `username`, `password` | none | both required for auth |
-    /// | `request_timeout_ms` | `12000` | per-request timeout |
+    /// | `request_timeout_ms` | `12000` | per-request timeout (ms escape hatch) |
+    /// | `request_timeout` / `timeout` | `12000ms` | per-request timeout (timeval) |
+    /// | `connect_timeout` | `5000ms` | connection-establishment timeout (timeval) |
+    /// | `reconnect_base_delay` | `2000ms` | exponential-reconnect base delay (timeval) |
+    /// | `reconnect_max_delay` | `600000ms` | exponential-reconnect max delay (timeval) |
     pub fn from_params(params: &HashMap<String, String>) -> Result<Self, String> {
         let mut config = Self::default();
         if let Some(v) = params.get("hosts").or_else(|| params.get("host")) {
@@ -157,6 +181,32 @@ impl CqlConfig {
         if let Some(v) = params.get("timeout") {
             config.request_timeout_ms = nbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid timeout value '{v}': {e}"))?;
+        }
+        // `request_timeout` is the explicit peer of `connect_timeout` and the
+        // canonical name for the connection request timeout (`timeout` is the
+        // legacy shorthand for the same knob). Placed after `timeout` so the
+        // explicit name wins when both are set. timeval or bare frac-seconds.
+        if let Some(v) = params.get("request_timeout") {
+            config.request_timeout_ms = nbrs_runtime::timeval::parse_time_ms(v)
+                .map_err(|e| format!("invalid request_timeout value '{v}': {e}"))?;
+        }
+        // `connect_timeout` bounds connection ESTABLISHMENT (control + per-host
+        // connect), distinct from the per-request timeout. This is the knob for
+        // the `Connection timeout` control-connection failure class. timeval or
+        // bare frac-seconds; driver default 5000ms.
+        if let Some(v) = params.get("connect_timeout") {
+            config.connect_timeout_ms = nbrs_runtime::timeval::parse_time_ms(v)
+                .map_err(|e| format!("invalid connect_timeout value '{v}': {e}"))?;
+        }
+        // Exponential-reconnection policy knobs (cassandra-cpp engine; see the
+        // field docs). timeval or bare frac-seconds each.
+        if let Some(v) = params.get("reconnect_base_delay") {
+            config.reconnect_base_delay_ms = nbrs_runtime::timeval::parse_time_ms(v)
+                .map_err(|e| format!("invalid reconnect_base_delay value '{v}': {e}"))?;
+        }
+        if let Some(v) = params.get("reconnect_max_delay") {
+            config.reconnect_max_delay_ms = nbrs_runtime::timeval::parse_time_ms(v)
+                .map_err(|e| format!("invalid reconnect_max_delay value '{v}': {e}"))?;
         }
         if let Some(v) = params.get("trace_rate") {
             let parsed: f64 = v.parse()
@@ -267,5 +317,40 @@ mod tests {
         params.insert("connect_keyspace".into(), "".into());
         let cfg = CqlConfig::from_params(&params).unwrap();
         assert_eq!(cfg.keyspace, "");
+    }
+
+    #[test]
+    fn config_connection_tuning_defaults() {
+        let cfg = CqlConfig::from_params(&HashMap::new()).unwrap();
+        assert_eq!(cfg.connect_timeout_ms, 5_000);
+        assert_eq!(cfg.request_timeout_ms, 12_000);
+        assert_eq!(cfg.reconnect_base_delay_ms, 2_000);
+        assert_eq!(cfg.reconnect_max_delay_ms, 600_000);
+    }
+
+    #[test]
+    fn config_connection_tuning_timeval_parsing() {
+        let mut params = HashMap::new();
+        // spec-string, bare-seconds, and ms forms all normalize to ms.
+        params.insert("connect_timeout".into(), "30s".into());
+        params.insert("request_timeout".into(), "45".into()); // 45s
+        params.insert("reconnect_base_delay".into(), "500ms".into());
+        params.insert("reconnect_max_delay".into(), "2m".into());
+        let cfg = CqlConfig::from_params(&params).unwrap();
+        assert_eq!(cfg.connect_timeout_ms, 30_000);
+        assert_eq!(cfg.request_timeout_ms, 45_000);
+        assert_eq!(cfg.reconnect_base_delay_ms, 500);
+        assert_eq!(cfg.reconnect_max_delay_ms, 120_000);
+    }
+
+    #[test]
+    fn config_request_timeout_wins_over_legacy_timeout() {
+        // `request_timeout` is the explicit name; it must override the
+        // legacy `timeout` shorthand for the same knob when both are set.
+        let mut params = HashMap::new();
+        params.insert("timeout".into(), "10s".into());
+        params.insert("request_timeout".into(), "60s".into());
+        let cfg = CqlConfig::from_params(&params).unwrap();
+        assert_eq!(cfg.request_timeout_ms, 60_000);
     }
 }
