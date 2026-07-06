@@ -163,7 +163,9 @@ fn format_status_snapshot(snap: &Arc<crate::state::RunState>) -> String {
             // ok% excludes SKIPS — an `if:`-gated skip is neither a
             // success nor a failure, so the basis is result-producing
             // ops only (`ops_finished - skips`).
-            let ok_denom = a.ops_finished.saturating_sub(a.skips);
+            // `.max(ops_ok)`: non-atomic counter reads can momentarily make
+            // this dip below ops_ok; it is never truly less. Keeps ok% <= 100%.
+            let ok_denom = a.ops_finished.saturating_sub(a.skips).max(a.ops_ok);
             let ok_pct = if ok_denom > 0 {
                 (a.ops_ok as f64) * 100.0 / (ok_denom as f64)
             } else { 100.0 };

@@ -189,7 +189,11 @@ fn render_labeled(
     // ok% excludes SKIPS — a skipped (`if:`-gated) op is neither a
     // success nor a failure, so the basis is result-producing ops only
     // (`cycles_completed - skips == result_total`).
-    let result_total = ops_completed.saturating_sub(skips);
+    // `.max(successes)`: cycles_completed and result_success are read
+    // non-atomically and bumped in the reverse order (cycles first), so a
+    // completing op can make this dip below `successes` momentarily —
+    // result_total is never truly < successes. Clamp up so ok% stays <= 100%.
+    let result_total = ops_completed.saturating_sub(skips).max(successes);
     let ok_pct: f64 = if result_total > 0 {
         successes as f64 * 100.0 / result_total as f64
     } else {
@@ -384,7 +388,11 @@ fn render_expanded(
     // ok% over RESOLVED ops only (`cycles_completed - skips ==
     // result_total`) — a skip is neither a success nor a failure,
     // so it must not dilute the rate. Matches `render_labeled`.
-    let result_total = ops_completed.saturating_sub(skips);
+    // `.max(successes)`: cycles_completed and result_success are read
+    // non-atomically and bumped in the reverse order (cycles first), so a
+    // completing op can make this dip below `successes` momentarily —
+    // result_total is never truly < successes. Clamp up so ok% stays <= 100%.
+    let result_total = ops_completed.saturating_sub(skips).max(successes);
     let ok_pct: f64 = if result_total > 0 {
         successes as f64 * 100.0 / result_total as f64
     } else { 100.0 };

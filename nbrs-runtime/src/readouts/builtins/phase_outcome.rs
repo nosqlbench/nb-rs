@@ -587,7 +587,10 @@ fn render_expanded_value(
 
     // ok% excludes SKIPS — a skipped (`if:`-gated) op is neither a
     // success nor a failure (cycles == result_total + skips).
-    let result_total = cycles.saturating_sub(skips);
+    // `.max(ok)`: cycles and result_success are read non-atomically and
+    // bumped cycles-first, so this can momentarily dip below `ok` — it is
+    // never truly < ok. Clamp up so ok% stays <= 100%.
+    let result_total = cycles.saturating_sub(skips).max(ok);
     let ok_pct: f64 = if result_total > 0 {
         ok as f64 * 100.0 / result_total as f64
     } else { 100.0 };
@@ -876,7 +879,10 @@ fn render_labeled_value(
 
     // ok% excludes SKIPS — a skipped (`if:`-gated) op is neither a
     // success nor a failure (cycles == result_total + skips).
-    let result_total = cycles.saturating_sub(skips);
+    // `.max(ok)`: cycles and result_success are read non-atomically and
+    // bumped cycles-first, so this can momentarily dip below `ok` — it is
+    // never truly < ok. Clamp up so ok% stays <= 100%.
+    let result_total = cycles.saturating_sub(skips).max(ok);
     let ok_pct: f64 = if result_total > 0 {
         ok as f64 * 100.0 / result_total as f64
     } else {
