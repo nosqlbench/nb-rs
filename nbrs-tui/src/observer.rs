@@ -51,14 +51,14 @@ use crate::state::{EntryKind, LogEntry, LogSeverity, PhaseEntry, PhaseStatus, Ru
 use nbrs_runtime::lifecycle::EventType;
 use nbrs_runtime::readouts as ro;
 
-/// Per-row `ReadoutContext` for the post-run summary's
-/// `[ok] [N/total] name 0.02s` lines. Routes through the
-/// SRD-63 `phase_summary` readout so the marker / sequence
-/// / duration formatting lives in one place. The call
-/// site (the post-run summary tree walk in
-/// [`emit_run_summary`]) supplies the depth-based indent
-/// — the readout doesn't know about the surrounding
-/// chrome.
+/// Per-row `ReadoutContext` for the `[ok] [N/total] name
+/// 0.02s` lines. Routes through the SRD-63 `phase_summary`
+/// readout so the marker / sequence / duration formatting
+/// lives in one place. The call sites (the persisted
+/// scenario-tree render in [`render_scenario_tree`] and the
+/// focused-failures inset in [`print_post_run_summary`])
+/// supply the depth-based indent — the readout doesn't know
+/// about the surrounding chrome.
 struct SummaryRowContext {
     name: String,
     labels: String,
@@ -115,11 +115,6 @@ struct SessionSummaryContext {
     failed: usize,
     pending: usize,
     total: usize,
-    /// SRD-63 Push 9h: truncated-phase count for the
-    /// `truncated_phases` readout. Set after the per-phase
-    /// loop counts how many entries the post-failure tail
-    /// trim dropped; zero when no truncation occurred.
-    truncated: std::cell::Cell<usize>,
 }
 
 impl ro::ReadoutContext for SessionSummaryContext {
@@ -132,7 +127,6 @@ impl ro::ReadoutContext for SessionSummaryContext {
     fn session_phases_failed(&self) -> usize { self.failed }
     fn session_phases_pending(&self) -> usize { self.pending }
     fn session_phases_total(&self) -> usize { self.total }
-    fn session_phases_truncated(&self) -> usize { self.truncated.get() }
 }
 
 impl ro::ReadoutContext for SummaryRowContext {
@@ -488,11 +482,6 @@ pub fn print_post_run_summary(
         failed,
         pending,
         total: phases_only.len(),
-        // Filled in by the per-phase loop below as it
-        // counts entries dropped from the post-failure
-        // tail trim. The `truncated_phases` readout reads
-        // this after the loop completes.
-        truncated: std::cell::Cell::new(0),
     };
     {
         let mut s_buf = String::with_capacity(96);
@@ -528,129 +517,32 @@ pub fn print_post_run_summary(
         }
         eprintln!("{s_buf}");
 
-        // When there's a failure, printing every pending phase
-        // after it gives screens of noise. Trim the tail: show
-        // at most a small window of phases after the last
-        // failure, then summarize the rest as "(... and N more
-        // phases)" with a pointer at `dryrun=phase` for the
-        // full plan.
-        let last_failed: Option<usize> = s.phases.iter().enumerate()
-            .rev()
-            .find(|(_, p)| matches!(p.status, PhaseStatus::Failed(_)))
-            .map(|(i, _)| i);
-        let pending_tail_limit: usize = 6; // phases after last failure
-        let mut printed_after_failure: usize = 0;
-        let mut truncated_phases: usize = 0;
-
-        for (i, phase) in s.phases.iter().enumerate() {
-            let indent = " ".repeat(phase.depth);
-
-            // Truncation guard: once we're past the last
-            // failure and past the small tail window, count the
-            // remainder for the summary line and skip the
-            // output.
-            if let Some(fi) = last_failed
-                && i > fi && printed_after_failure >= pending_tail_limit {
-                    if phase.kind == EntryKind::Phase {
-                        truncated_phases += 1;
-                    }
-                    continue;
-                }
-
-            if phase.kind == EntryKind::Scope {
-                // Group header — no status glyph. Scope nodes
-                // store their descriptor (e.g. `for_each k=10`,
-                // `for_combinations [k, limit]`) in `name`; the
-                // `labels` field is reserved for phase identity.
-                // Push 8c routes through the `scope_header`
-                // readout so the formatter (cyan bullet +
-                // italic name) lives in one place, shared
-                // with the live mid-run scope walker in
-                // `log_only_observer`.
-                let mut s_buf = String::with_capacity(64);
-                {
-                    let mut buf = ro::buf::StringBuf::new(&mut s_buf);
-                    use ro::Readout;
-                    ro::builtins::scope_header::ScopeHeader.render(
-                        &ScopeRowContext::new(&phase.name, false),
-                        ro::Lod::Labeled,
-                        ro::ContentMode::Value,
-                        &ro::ReadoutOptions::new(),
-                        &mut buf,
-                    );
-                }
-                eprintln!("  {indent}{s_buf}");
-                continue;
+        // The full `[ok]` scenario-tree walk used to print here.
+        // On large runs (hundreds of phases) it scrolled the live
+        // session output off-screen and duplicated data available
+        // elsewhere, so it no longer prints to stderr. Instead the
+        // same view — rendered through the same `scope_header` /
+        // `phase_summary` readouts — is persisted to
+        // `<session_dir>/scenario_tree.txt` and replayable on
+        // demand via `nbrs replay --format=tree`. The header above
+        // (session / logs / phases) plus the focused failures inset
+        // below are all that remain inline.
+        let tree = render_scenario_tree(&s.phases);
+        let tree_path = session_dir.join("scenario_tree.txt");
+        match std::fs::write(&tree_path, &tree) {
+            Ok(()) => {
+                eprintln!("scenario tree: nbrs replay --format=tree");
             }
-            // SRD-63 Push 8b: route the per-phase summary
-            // line through the `phase_summary` readout
-            // instead of hand-rolling the marker / seq /
-            // duration formatting here. Same byte output —
-            // the readout's branches on `subject_state`
-            // produce identical text — but the indent
-            // chrome (`"  {indent}"` prefix) stays the
-            // surface's job.
-            //
-            // Zero-duration completions (the `dryrun=phase`
-            // sentinel — see executor::run_phase's
-            // early-return) render without the " 0.00s"
-            // suffix; the dry-run plan view stays clean.
-            let total = phases_only.len();
-            let ctx = SummaryRowContext {
-                name: phase.name.clone(),
-                labels: phase.labels.clone(),
-                seq: phase.seq.map(|s| (s, total)),
-                duration_secs: phase.duration_secs.unwrap_or(0.0),
-                state: match &phase.status {
-                    PhaseStatus::Completed   => ro::LifecycleState::Completed,
-                    PhaseStatus::Running     => ro::LifecycleState::Running,
-                    PhaseStatus::Pending     => ro::LifecycleState::Pending,
-                    PhaseStatus::Failed(err) => ro::LifecycleState::Failed(err.clone()),
-                },
-            };
-            let mut s_buf = String::with_capacity(64);
-            {
-                let mut buf = ro::buf::StringBuf::new(&mut s_buf);
-                use ro::Readout;
-                ro::builtins::phase_summary::PhaseSummary.render(
-                    &ctx,
-                    ro::Lod::Labeled,
-                    ro::ContentMode::Value,
-                    &ro::ReadoutOptions::new(),
-                    &mut buf,
-                );
-            }
-            eprintln!("  {indent}{s_buf}");
-
-            if let Some(fi) = last_failed
-                && i > fi {
-                    printed_after_failure += 1;
-                }
-        }
-
-        // SRD-63 Push 9h: route the post-failure tail-trim
-        // rollup through the `truncated_phases` readout.
-        // Stamps the count onto the session ctx and fires;
-        // the readout returns zero bytes when count == 0,
-        // so no `if` guard is needed at the call site.
-        session_ctx.truncated.set(truncated_phases);
-        let mut s_buf = String::with_capacity(128);
-        {
-            let mut buf = ro::buf::StringBuf::new(&mut s_buf);
-            use ro::Readout;
-            ro::builtins::truncated_phases::TruncatedPhases.render(
-                &session_ctx,
-                ro::Lod::Labeled,
-                ro::ContentMode::Value,
-                &ro::ReadoutOptions::new(),
-                &mut buf,
-            );
-        }
-        if !s_buf.is_empty() {
-            // Match the prior emission's two-space indent
-            // for alignment with the per-phase rows above.
-            for line in s_buf.lines() {
-                eprintln!("  {line}");
+            Err(e) => {
+                // Best-effort: a write failure must not crash the
+                // post-run summary or hide the useful header. Note
+                // it (not silently) and carry on without the
+                // pointer, since the artifact it points at is
+                // missing.
+                nbrs_runtime::observer::log(
+                    nbrs_runtime::observer::LogLevel::Warn,
+                    &format!("could not persist scenario tree to {}: {e}",
+                        tree_path.display()));
             }
         }
     }
@@ -659,7 +551,9 @@ pub fn print_post_run_summary(
     // chain of for_each / for_combinations / do_while scopes
     // that enclose it, then the failed phase itself. The
     // reader gets the exact binding context that led to the
-    // failure without having to scan the full phase tree above.
+    // failure without having to open the full scenario tree
+    // (now persisted to `scenario_tree.txt` rather than printed
+    // inline).
     let failed: Vec<(usize, &PhaseEntry)> = s.phases.iter().enumerate()
         .filter(|(_, p)| p.kind == EntryKind::Phase
             && matches!(p.status, PhaseStatus::Failed(_)))
@@ -787,6 +681,90 @@ pub fn print_post_run_summary(
         }
         eprintln!("---");
     }
+}
+
+/// Render the full scenario-tree view — `· scenario 'x'` /
+/// `· each p` scope headers plus `[ok]/[!!]/[  ] [n/total]
+/// name 1.30s` phase lines, each indented by its scope depth
+/// — to a plain-text string.
+///
+/// This is the view that once printed to stderr at end-of-run
+/// (SRD-63 Push 8/9). It now lands in
+/// `<session_dir>/scenario_tree.txt` at run end and is
+/// replayable via `nbrs replay --format=tree`, keeping the
+/// live session output clear on large runs.
+///
+/// The rows route through the same `scope_header` and
+/// `phase_summary` readouts the inline view used, so the
+/// persisted text matches byte-for-byte what stderr used to
+/// show. Two deliberate departures: color is off (a file
+/// artifact, read later, shouldn't carry ANSI), and there is
+/// no post-failure tail trim — that guard existed only to
+/// bound on-screen noise, which an on-demand artifact doesn't
+/// have. The persisted tree is always complete.
+fn render_scenario_tree(phases: &[PhaseEntry]) -> String {
+    use std::fmt::Write as _;
+    // `total` for the `[n/total]` sequence chip counts
+    // executable phases only (scope headers are visual).
+    let total = phases.iter()
+        .filter(|p| p.kind == EntryKind::Phase)
+        .count();
+    let mut out = String::with_capacity(total * 48);
+    for phase in phases.iter() {
+        let indent = " ".repeat(phase.depth);
+
+        if phase.kind == EntryKind::Scope {
+            // Group header — no status glyph. Scope nodes store
+            // their descriptor (e.g. `for_each k=10`) in `name`;
+            // `labels` is reserved for phase identity. Routes
+            // through the `scope_header` readout so the bullet +
+            // italic formatter lives in one place.
+            let mut s_buf = String::with_capacity(64);
+            {
+                let mut buf = ro::buf::StringBuf::new(&mut s_buf);
+                use ro::Readout;
+                ro::builtins::scope_header::ScopeHeader.render(
+                    &ScopeRowContext::new(&phase.name, false),
+                    ro::Lod::Labeled,
+                    ro::ContentMode::Value,
+                    &ro::ReadoutOptions::new(),
+                    &mut buf,
+                );
+            }
+            let _ = writeln!(out, "  {indent}{s_buf}");
+            continue;
+        }
+
+        // Per-phase summary line through the `phase_summary`
+        // readout. Zero-duration completions (the `dryrun=phase`
+        // sentinel) render without the " 0.00s" suffix.
+        let ctx = SummaryRowContext {
+            name: phase.name.clone(),
+            labels: phase.labels.clone(),
+            seq: phase.seq.map(|sq| (sq, total)),
+            duration_secs: phase.duration_secs.unwrap_or(0.0),
+            state: match &phase.status {
+                PhaseStatus::Completed   => ro::LifecycleState::Completed,
+                PhaseStatus::Running     => ro::LifecycleState::Running,
+                PhaseStatus::Pending     => ro::LifecycleState::Pending,
+                PhaseStatus::Failed(err) => ro::LifecycleState::Failed(err.clone()),
+            },
+        };
+        let mut s_buf = String::with_capacity(64);
+        {
+            let mut buf = ro::buf::StringBuf::new(&mut s_buf);
+            use ro::Readout;
+            ro::builtins::phase_summary::PhaseSummary.render(
+                &ctx,
+                ro::Lod::Labeled,
+                ro::ContentMode::Value,
+                &ro::ReadoutOptions::new(),
+                &mut buf,
+            );
+        }
+        let _ = writeln!(out, "  {indent}{s_buf}");
+    }
+    out
 }
 
 /// Render `elapsed_secs` so the integer-seconds part takes
@@ -924,5 +902,72 @@ mod elapsed_format_tests {
         // adjustment. Don't surface a negative-elapsed
         // string; just clamp.
         assert_eq!(format_elapsed_seconds(-0.5), "0.00000");
+    }
+}
+
+#[cfg(test)]
+mod scenario_tree_tests {
+    //! Coverage for [`render_scenario_tree`] — the persisted
+    //! end-of-run tree view that `nbrs replay --format=tree`
+    //! streams back. The rows must route through the
+    //! `scope_header` / `phase_summary` readouts so the file
+    //! carries the same `· scope` / `[ok]/[!!]/[  ]` shapes the
+    //! surface once printed inline.
+    use super::render_scenario_tree;
+    use crate::state::{EntryKind, RunState, SceneTree};
+
+    /// A scope header, a failed phase under it, and a pending
+    /// (never-run) phase after it must render with the right
+    /// markers, plain (no ANSI), and correct `[n/total]` seqs.
+    #[test]
+    fn renders_scope_failed_and_pending_rows() {
+        let mut t = SceneTree::new();
+        let scope = t.push(t.root(), EntryKind::Scope, "for_each n", "");
+        let boom = t.push(scope, EntryKind::Phase, "boom", "n=1");
+        let _never = t.push(t.root(), EntryKind::Phase, "never", "");
+        let mut s = RunState::new("wl.yaml", "default", "testkit");
+        s.install_tree(t);
+        // boom runs then fails; never is left Pending.
+        s.set_phase_running(boom, "boom", "n=1", 1);
+        s.set_phase_failed(boom, "boom", "n=1", "synthetic failure");
+
+        let tree = render_scenario_tree(&s.phases);
+
+        // Scope header (cyan bullet, italic name) — plain here.
+        assert!(tree.contains("· for_each n"),
+            "scope header missing:\n{tree}");
+        // Failed leaf: [!!] marker + trailing (err), seq [1/2].
+        assert!(tree.contains("[!!] [1/2] boom"),
+            "failed marker/seq missing:\n{tree}");
+        assert!(tree.contains("(synthetic failure)"),
+            "failure text missing:\n{tree}");
+        // Pending leaf: [  ] marker + (not run), seq [2/2].
+        assert!(tree.contains("[  ] [2/2] never"),
+            "pending marker/seq missing:\n{tree}");
+        assert!(tree.contains("(not run)"),
+            "(not run) suffix missing:\n{tree}");
+        // Plain artifact — no ANSI escapes leak into the file.
+        assert!(!tree.contains('\u{1b}'),
+            "persisted tree must be plain (no ANSI):\n{tree:?}");
+    }
+
+    /// Completed phases render `[ok]` and drop the marker/seq
+    /// only — no color, no `(not run)` noise. Guards the happy
+    /// path the large-run maintainer cares about.
+    #[test]
+    fn completed_phase_renders_ok_marker() {
+        let mut t = SceneTree::new();
+        let p = t.push(t.root(), EntryKind::Phase, "warmup", "");
+        let mut s = RunState::new("wl.yaml", "default", "testkit");
+        s.install_tree(t);
+        s.set_phase_running(p, "warmup", "", 1);
+        s.set_phase_completed(p, "warmup", "", 0.02,
+            crate::state::PhaseSummary::default());
+
+        let tree = render_scenario_tree(&s.phases);
+        assert!(tree.contains("[ok] [1/1] warmup"),
+            "completed marker/seq missing:\n{tree}");
+        assert!(!tree.contains("(not run)"),
+            "completed row must not carry (not run):\n{tree}");
     }
 }

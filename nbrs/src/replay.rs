@@ -23,10 +23,29 @@
 //! nbrs replay --errors                 # only phases that failed
 //! nbrs replay --phase=<name>           # filter to one phase identity
 //! nbrs replay --json                   # machine-readable per-outcome JSON
+//! nbrs replay --format=tree            # replay the persisted scenario tree
 //! ```
 
 use std::io::Write as _;
 use std::path::PathBuf;
+
+/// What `nbrs replay` renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayFormat {
+    /// Default — walk the structured `phase_outcomes` store
+    /// (SRD-76) and render each terminal disposition via the
+    /// `phase_outcome` readout, falling back to the SRD-63
+    /// readout-snapshot store for pre-SRD-76 sessions.
+    Outcomes,
+    /// Replay the persisted end-of-run scenario-tree view
+    /// (`· scenario` scope headers + `[ok] [n/total] name
+    /// 1.30s` phase lines, indented by depth) from
+    /// `<session_dir>/scenario_tree.txt`. This is the tree that
+    /// the live surface no longer prints inline — the runner
+    /// writes it to the session dir at run end so it stays
+    /// available on demand without occluding the live output.
+    Tree,
+}
 
 pub fn replay_command(args: &[String]) {
     let opts = match parse_args(args) {
@@ -69,6 +88,10 @@ struct Opts {
     /// `Some(0)` is the sentinel for "all executions"
     /// (`--all-executions`).
     execution: Option<u64>,
+    /// Which view to render. Defaults to
+    /// [`ReplayFormat::Outcomes`]; `--format=tree` selects the
+    /// persisted scenario-tree artifact instead.
+    format: ReplayFormat,
 }
 
 fn parse_args(args: &[String]) -> Result<Opts, String> {
@@ -78,6 +101,7 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
     let mut phase_filter: Option<String> = None;
     let mut json = false;
     let mut execution: Option<u64> = None;
+    let mut format = ReplayFormat::Outcomes;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -122,6 +146,13 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
             // exec_ids are 1-indexed (Execution::first → 1), so 0
             // doesn't collide with any actual stored row.
             execution = Some(0);
+        } else if let Some(rest) = a.strip_prefix("--format=") {
+            format = parse_format(rest)?;
+        } else if a == "--format" {
+            let v = args.get(i + 1)
+                .ok_or_else(|| "--format requires a value".to_string())?;
+            format = parse_format(v)?;
+            i += 1;
         } else if a == "-h" || a == "--help" {
             print_usage();
             std::process::exit(0);
@@ -137,7 +168,26 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
             db_path.display(),
         ));
     }
-    Ok(Opts { db_path, plain, errors_only, phase_filter, json, execution })
+    Ok(Opts { db_path, plain, errors_only, phase_filter, json, execution, format })
+}
+
+/// Completion for `--format`: the two accepted view names,
+/// prefix-filtered against what the user has typed.
+fn format_value_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    ["outcomes", "tree"].into_iter()
+        .filter(|v| v.starts_with(partial))
+        .map(str::to_string)
+        .collect()
+}
+
+fn parse_format(v: &str) -> Result<ReplayFormat, String> {
+    match v {
+        "outcomes" | "outcome" => Ok(ReplayFormat::Outcomes),
+        "tree" => Ok(ReplayFormat::Tree),
+        other => Err(format!(
+            "unknown --format '{other}' (expected 'outcomes' or 'tree')"
+        )),
+    }
 }
 
 fn session_db(session_arg: &str) -> Result<PathBuf, String> {
@@ -177,10 +227,20 @@ fn print_usage() {
     eprintln!("  --json                Machine-readable JSON dump (one outcome per line)");
     eprintln!("  --execution=<n>       Filter to one execution (default: most recent)");
     eprintln!("  --all-executions      Render every execution's outcomes");
+    eprintln!("  --format <outcomes|tree>  outcomes (default): per-phase disposition;");
+    eprintln!("                            tree: the persisted end-of-run scenario tree");
     eprintln!("  -h, --help            Show this message");
 }
 
 fn run(opts: Opts) -> Result<(), String> {
+    // `--format=tree` replays the persisted scenario-tree
+    // artifact, not the structured db store. It has no exec_id /
+    // errors / phase axis to filter on (the tree is the whole-run
+    // plan view), so it short-circuits ahead of the db open.
+    if opts.format == ReplayFormat::Tree {
+        return run_tree(&opts);
+    }
+
     let reporter = nbrs_metrics::reporters::sqlite::SqliteReporter::new(&opts.db_path)
         .map_err(|e| format!("opening {}: {e}", opts.db_path.display()))?;
 
@@ -275,6 +335,35 @@ fn run(opts: Opts) -> Result<(), String> {
         };
         writeln!(out, "{body}").map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// `--format=tree` — print the persisted end-of-run scenario
+/// tree. The runner writes this view (scope headers + per-phase
+/// `[ok]` lines, indented by depth) to
+/// `<session_dir>/scenario_tree.txt` at run end, rendered through
+/// the same `scope_header` / `phase_summary` readouts the live
+/// surface used, so the replayed text matches what the terminal
+/// once showed inline. Replay just streams the file — the scope /
+/// depth structure lives only in the in-memory scene tree and is
+/// not reconstructable from the db's flat `phase_outcomes` rows.
+fn run_tree(opts: &Opts) -> Result<(), String> {
+    let session_dir = opts.db_path.parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let tree_path = session_dir.join("scenario_tree.txt");
+    let tree = std::fs::read_to_string(&tree_path).map_err(|e| format!(
+        "no scenario tree at '{}': {e}\n\
+         (the session may predate scenario-tree persistence, or was \
+         run under a console-owning adapter that suppressed the \
+         post-run summary)",
+        tree_path.display(),
+    ))?;
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    // The file already carries its own trailing newlines
+    // (one per row); stream it verbatim.
+    write!(out, "{tree}").map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -430,6 +519,9 @@ pub fn spec() -> crate::cli_spec::Command {
             argv.push("--execution".into()); argv.push(v.into());
         }
         if p.bool("--all-executions") { argv.push("--all-executions".into()); }
+        if let Some(v) = p.flag("--format") {
+            argv.push("--format".into()); argv.push(v.into());
+        }
         replay_command(&argv);
         Ok(())
     }
@@ -493,6 +585,13 @@ pub fn spec() -> crate::cli_spec::Command {
                 long: "--all-executions", short: None, aliases: &[],
                 arity: Arity::Bool, value: ValueProvider::None,
                 help: "Render every execution's outcomes.",
+                repeatable: false,
+            },
+            Flag {
+                long: "--format", short: None, aliases: &[],
+                arity: Arity::Value,
+                value: ValueProvider::Custom(format_value_provider),
+                help: "View to render: 'outcomes' (default) or 'tree'.",
                 repeatable: false,
             },
         ],
