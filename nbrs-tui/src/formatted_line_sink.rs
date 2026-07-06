@@ -160,8 +160,12 @@ fn format_status_snapshot(snap: &Arc<crate::state::RunState>) -> String {
             let pct = if a.cursor_extent > 0 {
                 (a.ops_finished as f64) * 100.0 / (a.cursor_extent as f64)
             } else { 0.0 };
-            let ok_pct = if a.ops_finished > 0 {
-                (a.ops_ok as f64) * 100.0 / (a.ops_finished as f64)
+            // ok% excludes SKIPS — an `if:`-gated skip is neither a
+            // success nor a failure, so the basis is result-producing
+            // ops only (`ops_finished - skips`).
+            let ok_denom = a.ops_finished.saturating_sub(a.skips);
+            let ok_pct = if ok_denom > 0 {
+                (a.ops_ok as f64) * 100.0 / (ok_denom as f64)
             } else { 100.0 };
             format!(" {name} {pct:.0}% (ok:{ok_pct:.0}% e:{e} r:{r})",
                 name = a.name,

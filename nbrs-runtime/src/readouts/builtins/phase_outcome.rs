@@ -579,13 +579,17 @@ fn render_expanded_value(
     let errors = ctx.errors();
     let retries = ctx.retries();
     let ok = ctx.ops_ok();
+    let skips = ctx.skips();
     let concurrency = ctx.concurrency();
     let elapsed = ctx.elapsed_secs();
     let consumed = ctx.consumed();
     let total_extent = ctx.cycles_total();
 
-    let ok_pct: f64 = if cycles > 0 {
-        ok as f64 * 100.0 / cycles as f64
+    // ok% excludes SKIPS — a skipped (`if:`-gated) op is neither a
+    // success nor a failure (cycles == result_total + skips).
+    let result_total = cycles.saturating_sub(skips);
+    let ok_pct: f64 = if result_total > 0 {
+        ok as f64 * 100.0 / result_total as f64
     } else { 100.0 };
     let pct: f64 = if total_extent > 0 {
         cycles as f64 * 100.0 / total_extent as f64
@@ -641,7 +645,7 @@ fn render_expanded_value(
 {depth_indent}  status:      {glyph_color}{status_label}{reset}\n\
 {depth_indent}  progress:    {pct:.0}% ({cycles} of {total})\n\
 {depth_indent}  throughput:  {rate_str}\n\
-{depth_indent}  ok:          {ok_pct:.0}%  ({ok} of {cycles})\n\
+{depth_indent}  ok:          {ok_pct:.0}%  ({ok} of {result_total})\n\
 {depth_indent}  reliability: {err_color}e:{errors} r:{retries}{reset}\n\
 {depth_indent}  concurrency: {concurrency}\n\
 {chips}\
@@ -864,13 +868,17 @@ fn render_labeled_value(
     let errors = ctx.errors();
     let retries = ctx.retries();
     let ok = ctx.ops_ok();
+    let skips = ctx.skips();
     let concurrency = ctx.concurrency();
     let elapsed = ctx.elapsed_secs();
     let consumed = ctx.consumed();
     let total_extent = ctx.cycles_total();
 
-    let ok_pct: f64 = if cycles > 0 {
-        ok as f64 * 100.0 / cycles as f64
+    // ok% excludes SKIPS — a skipped (`if:`-gated) op is neither a
+    // success nor a failure (cycles == result_total + skips).
+    let result_total = cycles.saturating_sub(skips);
+    let ok_pct: f64 = if result_total > 0 {
+        ok as f64 * 100.0 / result_total as f64
     } else {
         100.0
     };

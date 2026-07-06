@@ -487,6 +487,7 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
                 ops_started: 0,
                 ops_finished: 0,
                 ops_ok: 0,
+                skips: 0,
                 errors: 0,
                 retries: 0,
                 ops_per_sec: 0.0,
@@ -515,6 +516,7 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             let summary = state.active_phases.get(&key).map(|a| PhaseSummary {
                 ops_finished: a.ops_finished,
                 ops_ok: a.ops_ok,
+                skips: a.skips,
                 ops_started: a.ops_started,
                 errors: a.errors,
                 retries: a.retries,
@@ -552,6 +554,7 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
                 active.ops_started = update.ops_started;
                 active.ops_finished = update.ops_finished;
                 active.ops_ok = update.ops_ok;
+                active.skips = update.skips;
                 active.errors = update.errors;
                 active.retries = update.retries;
                 active.ops_per_sec = update.ops_per_sec;

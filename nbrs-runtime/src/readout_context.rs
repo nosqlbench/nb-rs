@@ -33,6 +33,9 @@ pub struct ActivityReadoutContext {
     pub cycles_completed: u64,
     pub cycles_total: u64,
     pub ops_ok: u64,
+    /// SKIPPED ops (`skips_total`) — excluded from the ok% denominator
+    /// (a skip is neither a success nor a failure).
+    pub skips: u64,
     pub errors: u64,
     pub retries: u64,
     pub concurrency: usize,
@@ -67,6 +70,7 @@ impl ReadoutContext for ActivityReadoutContext {
     fn cycles_completed(&self) -> u64 { self.cycles_completed }
     fn cycles_total(&self) -> u64 { self.cycles_total }
     fn ops_ok(&self) -> u64 { self.ops_ok }
+    fn skips(&self) -> u64 { self.skips }
     fn errors(&self) -> u64 { self.errors }
     fn retries(&self) -> u64 { self.retries }
     fn concurrency(&self) -> usize { self.concurrency }
@@ -176,6 +180,10 @@ pub struct InlineRefreshContext {
     pub ops_started: u64,
     pub ops_finished: u64,
     pub ops_ok: u64,
+    /// SKIPPED ops (`skips_total`) — `if:`-gated ops that ran no
+    /// adapter call. Excluded from the `ok%` denominator: a skip is
+    /// neither a success nor a failure.
+    pub skips: u64,
     pub errors: u64,
     pub retries: u64,
     /// SRD-91 attempt-level tallies — successful and failed
@@ -210,6 +218,7 @@ impl ReadoutContext for InlineRefreshContext {
     fn ops_started(&self) -> u64 { self.ops_started }
     fn ops_finished(&self) -> u64 { self.ops_finished }
     fn ops_ok(&self) -> u64 { self.ops_ok }
+    fn skips(&self) -> u64 { self.skips }
     fn errors(&self) -> u64 { self.errors }
     fn retries(&self) -> u64 { self.retries }
     fn attempt_ok(&self) -> u64 { self.attempt_ok }
@@ -490,6 +499,7 @@ pub fn build_inline_refresh_context(
         ops_started: started,
         ops_finished: finished,
         ops_ok: successes,
+        skips: progress_metrics.skips_total.get(),
         errors,
         retries,
         attempt_ok,

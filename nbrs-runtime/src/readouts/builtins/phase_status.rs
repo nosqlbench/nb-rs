@@ -139,6 +139,7 @@ fn render_labeled(
     let finished     = ctx.ops_finished();
     let ops_completed= ctx.cycles_completed();
     let successes    = ctx.ops_ok();
+    let skips        = ctx.skips();
     let errors       = ctx.errors();
     let retries      = ctx.retries();
     let attempt_ok   = ctx.attempt_ok();
@@ -185,8 +186,12 @@ fn render_labeled(
     } else {
         0.0
     };
-    let ok_pct: f64 = if ops_completed > 0 {
-        successes as f64 * 100.0 / ops_completed as f64
+    // ok% excludes SKIPS — a skipped (`if:`-gated) op is neither a
+    // success nor a failure, so the basis is result-producing ops only
+    // (`cycles_completed - skips == result_total`).
+    let result_total = ops_completed.saturating_sub(skips);
+    let ok_pct: f64 = if result_total > 0 {
+        successes as f64 * 100.0 / result_total as f64
     } else {
         100.0
     };
@@ -362,6 +367,7 @@ fn render_expanded(
     let finished     = ctx.ops_finished();
     let ops_completed= ctx.cycles_completed();
     let successes    = ctx.ops_ok();
+    let skips        = ctx.skips();
     let errors       = ctx.errors();
     let retries      = ctx.retries();
     let attempt_ok   = ctx.attempt_ok();
@@ -375,8 +381,12 @@ fn render_expanded(
     let pct: f64 = if total_extent > 0 {
         ops_completed as f64 * 100.0 / total_extent as f64
     } else { 0.0 };
-    let ok_pct: f64 = if ops_completed > 0 {
-        successes as f64 * 100.0 / ops_completed as f64
+    // ok% over RESOLVED ops only (`cycles_completed - skips ==
+    // result_total`) — a skip is neither a success nor a failure,
+    // so it must not dilute the rate. Matches `render_labeled`.
+    let result_total = ops_completed.saturating_sub(skips);
+    let ok_pct: f64 = if result_total > 0 {
+        successes as f64 * 100.0 / result_total as f64
     } else { 100.0 };
     // Attempt success rate over resolved attempts — see
     // `render_labeled`.
@@ -478,6 +488,7 @@ mod tests {
         ops_started: u64,
         ops_finished: u64,
         ops_ok: u64,
+        skips: u64,
         errors: u64,
         retries: u64,
         attempt_ok: u64,
@@ -506,6 +517,7 @@ mod tests {
         fn ops_started(&self) -> u64 { self.ops_started }
         fn ops_finished(&self) -> u64 { self.ops_finished }
         fn ops_ok(&self) -> u64 { self.ops_ok }
+        fn skips(&self) -> u64 { self.skips }
         fn errors(&self) -> u64 { self.errors }
         fn retries(&self) -> u64 { self.retries }
         fn attempt_ok(&self) -> u64 { self.attempt_ok }
@@ -571,6 +583,32 @@ mod tests {
         // remaining=cycles_total/rate=50/50=1s).
         assert!(out.contains("(1s/1s)"),
             "elapsed/ETA span missing for finite-rate phase: {out:?}");
+    }
+
+    #[test]
+    fn skips_excluded_from_ok_rate() {
+        // 3 ops completed: 2 succeeded, 1 was an `if:`-gated SKIP with
+        // NO error. ok% must read 100% (2 of 2 result-producing ops),
+        // NOT 67% (2 of 3) — a skip is neither a success nor a failure,
+        // so it must not sit in the ok% denominator.
+        let ctx = TestCtx {
+            phase_name: "run".into(),
+            cycles_completed: 3,
+            cycles_total: 3,
+            ops_started: 3,
+            ops_finished: 3,
+            ops_ok: 2,
+            skips: 1,
+            concurrency: 1,
+            elapsed_secs: 1.0,
+            consumed: 3,
+            ..Default::default()
+        };
+        let out = render(&ctx, Lod::Labeled);
+        assert!(out.contains("ok:100%"),
+            "a skip (0 errors) must not drag ok% below 100%: {out:?}");
+        assert!(!out.contains("ok:67%"),
+            "ok% wrongly counts the skip in its denominator: {out:?}");
     }
 
     #[test]

@@ -112,6 +112,8 @@ pub struct PhaseSummary {
     pub ops_finished: u64,
     /// Ops that succeeded (no error after retry).
     pub ops_ok: u64,
+    /// SKIPPED ops (`skips_total`) — excluded from the ok% denominator.
+    pub skips: u64,
     /// Ops started — used with `ops_finished` to compute active/pending.
     pub ops_started: u64,
     /// Errors observed (includes retries).
@@ -164,6 +166,8 @@ pub struct ActivePhase {
     pub ops_started: u64,
     pub ops_finished: u64,
     pub ops_ok: u64,
+    /// SKIPPED ops (`skips_total`) — excluded from the ok% denominator.
+    pub skips: u64,
     pub errors: u64,
     pub retries: u64,
     pub ops_per_sec: f64,

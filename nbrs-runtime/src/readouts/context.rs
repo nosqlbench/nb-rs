@@ -136,6 +136,14 @@ pub trait ReadoutContext {
     /// Default 0.
     fn ops_ok(&self) -> u64 { 0 }
 
+    /// Cumulative count of SKIPPED ops (`skips_total`) — ops whose
+    /// `if:` gate was false, so no adapter call ran. A skip is
+    /// neither a success nor a failure; it must be excluded from the
+    /// `ok%` denominator (`cycles_total == result_total + skips_total`,
+    /// so the success-rate basis is `cycles_completed - skips`).
+    /// Default 0.
+    fn skips(&self) -> u64 { 0 }
+
     /// Cumulative error count (includes retries). Default 0.
     fn errors(&self) -> u64 { 0 }
 

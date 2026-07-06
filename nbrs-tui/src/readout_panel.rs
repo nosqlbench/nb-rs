@@ -41,6 +41,7 @@ pub struct PhaseRowContext {
     ops_started: u64,
     ops_finished: u64,
     ops_ok: u64,
+    skips: u64,
     errors: u64,
     retries: u64,
     concurrency: usize,
@@ -71,6 +72,7 @@ impl PhaseRowContext {
             ops_started: live.ops_started,
             ops_finished: live.ops_finished,
             ops_ok: live.ops_ok,
+            skips: live.skips,
             errors: live.errors,
             retries: live.retries,
             concurrency: live.fibers,
@@ -93,10 +95,10 @@ impl PhaseRowContext {
             PhaseStatus::Pending   => ro::LifecycleState::Pending,
         };
         let elapsed = phase.duration_secs.unwrap_or(0.0);
-        let (cycles_completed, ops_ok, errors, retries, concurrency) =
+        let (cycles_completed, ops_ok, skips, errors, retries, concurrency) =
             phase.summary.as_ref().map(|s|
-                (s.ops_finished, s.ops_ok, s.errors, s.retries, s.fibers)
-            ).unwrap_or((0, 0, 0, 0, 0));
+                (s.ops_finished, s.ops_ok, s.skips, s.errors, s.retries, s.fibers)
+            ).unwrap_or((0, 0, 0, 0, 0, 0));
         let cycles_total = phase.summary.as_ref().map(|s| s.cursor_extent).unwrap_or(0);
         Self {
             name: phase.name.clone(),
@@ -108,6 +110,7 @@ impl PhaseRowContext {
             ops_started: cycles_completed,
             ops_finished: cycles_completed,
             ops_ok,
+            skips,
             errors,
             retries,
             concurrency,
@@ -129,6 +132,7 @@ impl ro::ReadoutContext for PhaseRowContext {
     fn ops_started(&self) -> u64 { self.ops_started }
     fn ops_finished(&self) -> u64 { self.ops_finished }
     fn ops_ok(&self) -> u64 { self.ops_ok }
+    fn skips(&self) -> u64 { self.skips }
     fn errors(&self) -> u64 { self.errors }
     fn retries(&self) -> u64 { self.retries }
     fn concurrency(&self) -> usize { self.concurrency }
@@ -301,6 +305,7 @@ mod tests {
             ops_started: 50,
             ops_finished: 50,
             ops_ok: 50,
+            skips: 0,
             errors: 0,
             retries: 0,
             ops_per_sec: 100.0,

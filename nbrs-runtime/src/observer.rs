@@ -220,6 +220,9 @@ pub struct PhaseProgressUpdate {
     pub ops_started: u64,
     pub ops_finished: u64,
     pub ops_ok: u64,
+    /// SKIPPED ops (`skips_total`) — excluded from the ok% denominator
+    /// (a skip is neither a success nor a failure).
+    pub skips: u64,
     pub errors: u64,
     pub retries: u64,
     pub ops_per_sec: f64,

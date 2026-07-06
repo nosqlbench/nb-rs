@@ -152,6 +152,7 @@ mod tests {
             ops_started: 0,
             ops_finished: 0,
             ops_ok: 0,
+            skips: 0,
             errors: 0,
             retries: 0,
             ops_per_sec: 0.0,

@@ -75,6 +75,7 @@ fn progress(exec_id: u64, name: &str, labels: &str, ops_finished: u64)
         ops_started: ops_finished,
         ops_finished,
         ops_ok: ops_finished,
+        skips: 0,
         errors: 0,
         retries: 0,
         ops_per_sec: 0.0,

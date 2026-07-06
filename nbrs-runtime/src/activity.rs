@@ -2499,6 +2499,7 @@ impl Activity {
                 cycles_completed: ops_completed,
                 cycles_total: final_extent,
                 ops_ok: successes,
+                skips: activity.metrics.skips_total.get(),
                 errors,
                 retries,
                 concurrency,

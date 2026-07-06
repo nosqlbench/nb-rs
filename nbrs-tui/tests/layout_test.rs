@@ -60,6 +60,7 @@ fn make_test_state() -> (RunStateHandle, JoinHandle<()>) {
         ops_started: 2600,
         ops_finished: 2500,
         ops_ok: 2500,
+        skips: 0,
         errors: 0,
         retries: 0,
         ops_per_sec: 220.0,
