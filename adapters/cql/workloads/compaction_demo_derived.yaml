@@ -399,6 +399,11 @@ phases:
         adapter: http
         # Forced-flush toggle: skip the whole flush when disabled.
         if: "enable_flush != 0"
+        # 15s TCP-connect budget to the Jolokia agent (distinct from the
+        # request_timeout_ms response deadline): a connect that hangs — e.g.
+        # the agent busy on another in-flight JMX call — fails fast and
+        # retries (root `retries: 20`) instead of stalling on the OS default.
+        connect_timeout: 15s
         uri: "http://{host}:8778/jolokia/"
         method: POST
         body: |
@@ -406,7 +411,7 @@ phases:
            "mbean":"org.apache.cassandra.db:type=StorageService",
            "operation":"forceKeyspaceFlush(java.lang.String,[Ljava.lang.String;)",
            "arguments":["{keyspace}",[]]}
-        request_timeout_ms: 600000
+        request_timeout_ms: 3600000
         verify:
           - field: status
             eq: "200"
@@ -440,6 +445,9 @@ phases:
         adapter: http
         # Part of finalize: gated by the finalize toggle.
         if: "enable_finalize != 0"
+        # 15s connect budget to the Jolokia agent (see the standalone `flush`
+        # phase): fail fast + retry (root retries:20) rather than hang.
+        connect_timeout: 15s
         uri: "http://{host}:8778/jolokia/"
         method: POST
         body: |
@@ -461,6 +469,7 @@ phases:
         uri: "http://{host}:8778/jolokia/read/org.apache.cassandra.metrics:type=Table,keyspace={keyspace},scope={table},name=LiveSSTableCount/Value"
         method: GET
         request_timeout_ms: 10000
+        connect_timeout: 15s
         verify:
           - field: status
             eq: "200"
@@ -475,6 +484,9 @@ phases:
       trigger_compact:
         adapter: http
         daemon: true
+        # 15s connect budget only — the request itself may run the full
+        # compaction (request_timeout_ms below); this bounds just the connect.
+        connect_timeout: 15s
         # Forced compaction: only when finalize AND compaction are
         # enabled AND there is more than one sstable to merge.
         if: "enable_finalize != 0 && enable_compact != 0 && sstables > 1"
