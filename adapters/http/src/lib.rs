@@ -37,6 +37,12 @@ pub struct HttpConfig {
     pub base_url: Option<String>,
     /// Default timeout per request in milliseconds.
     pub timeout_ms: u64,
+    /// Timeout for ESTABLISHING the TCP connection (the connect
+    /// phase), in ms. `None` leaves reqwest on the OS default (~tens
+    /// of seconds for an unreachable host). Distinct from `timeout_ms`
+    /// — the whole-request deadline — which cannot bound a connection
+    /// that never opens. Set via the `connect_timeout` param.
+    pub connect_timeout_ms: Option<u64>,
     /// Whether to follow redirects.
     pub follow_redirects: bool,
 }
@@ -46,6 +52,7 @@ impl Default for HttpConfig {
         Self {
             base_url: None,
             timeout_ms: 30_000,
+            connect_timeout_ms: None,
             follow_redirects: true,
         }
     }
@@ -58,6 +65,12 @@ impl HttpConfig {
             base_url: params.get("base_url").or(params.get("host")).cloned(),
             timeout_ms: params.get("timeout")
                 .and_then(|s| s.parse().ok()).unwrap_or(30_000),
+            // No client-wide `connect_timeout` from workload params: that
+            // name is already the CQL cluster-connect timeout at the workload
+            // root, and one value can't be both. HTTP takes `connect_timeout`
+            // as a PER-OP field instead (see `map_op`), so a Jolokia op can
+            // fail-fast without touching the CQL connect budget.
+            connect_timeout_ms: None,
             follow_redirects: true,
         }
     }
@@ -67,6 +80,28 @@ impl HttpConfig {
 pub struct HttpAdapter {
     client: reqwest::Client,
     base_url: Option<String>,
+    /// Retained so `map_op` can rebuild a client with a PER-OP
+    /// `connect_timeout` — reqwest's `.connect_timeout()` is client-wide,
+    /// not settable per request.
+    config: HttpConfig,
+}
+
+/// Build a reqwest client from the adapter config, optionally overriding the
+/// connect-timeout for a single op. reqwest's `.connect_timeout()` is a
+/// client-wide setting, so a per-op value needs its own client — built once
+/// at map_op (per op template), never per request.
+fn build_http_client(config: &HttpConfig, connect_timeout_override_ms: Option<u64>) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(config.timeout_ms))
+        .redirect(if config.follow_redirects {
+            reqwest::redirect::Policy::limited(10)
+        } else {
+            reqwest::redirect::Policy::none()
+        });
+    if let Some(ct) = connect_timeout_override_ms.or(config.connect_timeout_ms) {
+        builder = builder.connect_timeout(std::time::Duration::from_millis(ct));
+    }
+    builder.build().expect("failed to build HTTP client")
 }
 
 impl Default for HttpAdapter {
@@ -83,29 +118,82 @@ impl HttpAdapter {
 
     /// Create with explicit config.
     pub fn with_config(config: HttpConfig) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(config.timeout_ms))
-            .redirect(if config.follow_redirects {
-                reqwest::redirect::Policy::limited(10)
-            } else {
-                reqwest::redirect::Policy::none()
-            })
-            .build()
-            .expect("failed to build HTTP client");
-
+        let client = build_http_client(&config, None);
+        let base_url = config.base_url.clone();
         Self {
             client,
-            base_url: config.base_url,
+            base_url,
+            config,
         }
     }
 }
 
 /// Classify a reqwest error into an error name for the error router.
+/// Format a reqwest error together with its `.source()` chain. reqwest's
+/// own `Display` shows only the top layer (`error sending request for url
+/// (…)`); the ACTUAL cause — connection refused, connect timeout, dns
+/// failure — lives in the sources. Append each distinct layer so the
+/// operator sees WHAT failed, not just that something did.
+fn format_error_chain(e: &reqwest::Error) -> String {
+    use std::error::Error;
+    let mut msg = e.to_string();
+    let mut src: Option<&(dyn Error + 'static)> = e.source();
+    while let Some(s) = src {
+        let layer = s.to_string();
+        if !layer.is_empty() && !msg.contains(&layer) {
+            msg.push_str(": ");
+            msg.push_str(&layer);
+        }
+        src = s.source();
+    }
+    msg
+}
+
+/// True when the failure is a transient connection-phase problem —
+/// connect refused/reset/timeout, or a request timeout — worth retrying.
+/// reqwest's top-level `is_connect()` / `is_timeout()` report false when
+/// the real cause is buried under a generic "error sending request", so
+/// also walk the `.source()` chain for an io connect/timeout error.
+fn is_transient_failure(e: &reqwest::Error) -> bool {
+    use std::error::Error;
+    if e.is_timeout() || e.is_connect() {
+        return true;
+    }
+    let mut src: Option<&(dyn Error + 'static)> = e.source();
+    while let Some(s) = src {
+        if let Some(io) = s.downcast_ref::<std::io::Error>() {
+            use std::io::ErrorKind::*;
+            if matches!(io.kind(),
+                ConnectionRefused | ConnectionReset | ConnectionAborted
+                | TimedOut | NotConnected | BrokenPipe) {
+                return true;
+            }
+        }
+        let low = s.to_string().to_ascii_lowercase();
+        if low.contains("timed out") || low.contains("connection refused")
+            || low.contains("connection reset") || low.contains("dns error")
+            || low.contains("unreachable") {
+            return true;
+        }
+        src = s.source();
+    }
+    false
+}
+
 fn classify_reqwest_error(e: &reqwest::Error) -> String {
     if e.is_timeout() {
         "Timeout".into()
     } else if e.is_connect() {
         "ConnectionRefused".into()
+    } else if is_transient_failure(e) {
+        // Connect/timeout cause buried under a generic request error —
+        // name it by the underlying reason so `errors:` policies and the
+        // operator both see a connection problem, not bare "RequestError".
+        if format_error_chain(e).to_ascii_lowercase().contains("timed out") {
+            "Timeout".into()
+        } else {
+            "ConnectionRefused".into()
+        }
     } else if e.is_request() {
         "RequestError".into()
     } else {
@@ -140,7 +228,7 @@ impl DriverAdapter for HttpAdapter {
         // synchronous `forceKeyspaceCompaction`, where the
         // poll layer is the actual waiter / observer).
         Some(&["method", "content_type", "uri", "url", "body", "headers",
-               "request_timeout_ms", "on_timeout"])
+               "request_timeout_ms", "on_timeout", "connect_timeout"])
     }
 
     fn map_op<'a>(
@@ -207,8 +295,23 @@ impl DriverAdapter for HttpAdapter {
             .map(|s| s.eq_ignore_ascii_case("accept"))
             .unwrap_or(false);
 
+        // Per-op connect timeout. reqwest's `.connect_timeout()` is
+        // client-wide, so an op that sets `connect_timeout` (a duration
+        // spec-string like `15s`, or a bare number = fractional seconds) gets
+        // its OWN client built with that value. Distinct from
+        // `request_timeout_ms` (the response deadline): this bounds the TCP
+        // CONNECT phase, so an unreachable endpoint fails fast and `retries:`
+        // kicks in instead of hanging on the OS default (~tens of seconds).
+        let connect_timeout_ms = template.op.get("connect_timeout")
+            .and_then(|v| v.as_str())
+            .and_then(|s| nbrs_runtime::timeval::parse_time_ms(s).ok());
+        let client = match connect_timeout_ms {
+            Some(_) => build_http_client(&self.config, connect_timeout_ms),
+            None => self.client.clone(),
+        };
+
         Ok(Box::new(HttpDispenser {
-            client: self.client.clone(),
+            client,
             base_url: self.base_url.clone(),
             method,
             content_type,
@@ -403,7 +506,7 @@ impl OpDispenser for HttpDispenser {
                         );
                         return Ok(OpResult { body: None, skipped: false });
                     }
-                    let retryable = e.is_timeout() || e.is_connect();
+                    let retryable = is_transient_failure(&e);
                     let scope = if e.is_connect() {
                         ExecutionError::Adapter
                     } else {
@@ -411,7 +514,7 @@ impl OpDispenser for HttpDispenser {
                     };
                     return Err(scope(AdapterError {
                         error_name: classify_reqwest_error(&e),
-                        message: e.to_string(),
+                        message: format_error_chain(&e),
                         retryable,
                     }));
                 }
