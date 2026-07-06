@@ -380,7 +380,12 @@ phases:
       train_vector := vector_at(prebuffered, ord)
     ops:
       insert:
-        max_batch_size: 64KB
+        # `batch: N` = N prepared INSERTs per UNLOGGED batch (this path IS
+        # implemented; the inner statement is prepared). Row-count stopgap for
+        # the intended ~64KB byte-bounded batch: `max_batch_size` is accepted
+        # by the parser but NOT wired to any batch logic (silent no-op) — see
+        # docs/TODO.md. Tune N to your vector dim: rows ~= 65536 / (dim * 4).
+        batch: 10
         batchtype: unlogged
         timeout: 60s   # 60s per write; retried up to `retries` (20) on a CQL timeout
         prepared: |
