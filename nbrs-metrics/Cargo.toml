@@ -39,6 +39,10 @@ rusqlite = { version = "0.31", features = ["bundled", "functions"], optional = t
 regex = "1"
 reqwest = { version = "0.12", features = ["blocking"], optional = true }
 base64 = { version = "0.22", optional = true }
+# SRD-102 physical thread pools: sched_setscheduler / setpriority /
+# sched_setaffinity for the `timing` pool's realtime + affinity policy
+# (Linux; a logged no-op elsewhere).
+libc = "0.2"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

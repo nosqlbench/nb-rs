@@ -49,6 +49,14 @@ fn print_command(cmd: &Command, full_path: &[&str]) {
         eprintln!("  --help, -h     Show usage for the current command path");
         eprintln!("  --version, -V  Print the nbrs version");
         eprintln!();
+        eprintln!("PHYSICAL THREAD POOLS (SRD-102, process-wide; CLI > env > core-count defaults):");
+        eprintln!("  --threads.timing=N          timing-pool thread count (default 1)");
+        eprintln!("  --threads.io=N              io-pool thread count (default 2)");
+        eprintln!("  --threads.workers=N         async worker threads (default cores - 1)");
+        eprintln!("  --threads.timing.sched=P    timing sched policy: rr|fifo|nice|none (default rr)");
+        eprintln!("  --threads.timing.pin=C      timing core affinity: auto|off|<core> (default auto)");
+        eprintln!("  (env equivalents: NBRS_THREADS_TIMING, _IO, _WORKERS, _TIMING_SCHED, _TIMING_PIN)");
+        eprintln!();
         eprintln!("Run `{invocation} <subcommand> --help` for per-subcommand help.");
         return;
     }

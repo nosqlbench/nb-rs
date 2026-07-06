@@ -13,7 +13,7 @@
 //! store read by every consumer through
 //! [`crate::metrics_query::MetricsQuery`].
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::cadence_reporter::CadenceReporter;
@@ -268,188 +268,239 @@ impl SchedulerHandle {
         let cadence_reporter_for_stop = self.cadence_reporter.clone();
 
         let (frame_tx, frame_rx) = std::sync::mpsc::channel::<MetricSet>();
-        // Stop signal: wakes the task immediately out of its inter-tick
-        // wait instead of dwelling up to a full base interval.
-        // `StopHandle::stop`/`drop` notify it before waiting on `done`.
-        let stop_notify = Arc::new(tokio::sync::Notify::new());
-        let stop_notify_task = stop_notify.clone();
-        // The task fires `done` AFTER its final flush, so the sync
-        // `stop()` can wait for the trailing window to land (summary
-        // reports read complete data) without a thread to join.
+        // Hot-path split (SRD-102 §6): the `timing` thread only *captures*
+        // deltas and enqueues here; a single ordered `io`-pool worker drains
+        // this channel and does the potentially-slow reporter delivery
+        // (report()/ingest — CSV/SQLite/HTTP), keeping the timing thread's
+        // critical section to capture + enqueue.
+        let (io_tx, io_rx) = std::sync::mpsc::channel::<MetricSet>();
+        // Stop signal: `running` (a Mutex<bool>) gates the loop and the
+        // Condvar wakes the timing thread out of its inter-tick wait
+        // immediately on stop instead of dwelling a full base interval.
+        // Condvar + Arc<Mutex> are `Sync`, so a session host can still stop
+        // through a shared `Arc<StopHandle>` now that the wait is a std
+        // primitive rather than a tokio `Notify`.
+        let stop_cv = Arc::new(Condvar::new());
+        let stop_cv_thread = stop_cv.clone();
+        // The timing thread fires `done` AFTER its final flush, so the sync
+        // `stop()` can wait for the trailing window to land (summary reports
+        // read complete data).
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
 
         *running.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
         let stop_running = running.clone();
-        // The scheduler runs as a tokio task on the shared runtime — no
-        // dedicated thread. Requires a runtime at `start()` (always true
-        // in production; tests use `#[tokio::test(multi_thread)]`).
-        let handle = tokio::spawn(async move {
-            // Drift surveillance: real wall-clock elapsed between
-            // successive tick captures should match `interval` to
-            // within 5%. If it doesn't, the scheduler thread is
-            // being starved (GC pause, OS scheduling lag,
-            // upstream-channel drain spike). Warn — once per
-            // surveillance window — so the operator can correlate
-            // metric anomalies with scheduler health. Recorded
-            // snapshot intervals stay at the nominal cadence
-            // (preserving "canonical scheduler cadence as a
-            // matter of record"); the drift is reported
-            // out-of-band.
-            let drift_warn_min_interval = Duration::from_secs(60);
-            let drift_threshold = 0.05_f64;
-            let mut last_drift_warn: Option<Instant> = None;
-            let mut last_tick_capture: Option<Instant> = None;
-            let mut next_tick = Instant::now() + interval;
-            loop {
-                if !*stop_running.lock().unwrap_or_else(|e| e.into_inner()) {
-                    break;
-                }
+        // Capture a runtime handle (start() is called from the async runner)
+        // so the std timing thread can `block_on` the one async shutdown call
+        // (`cadence_reporter.shutdown_flush`). The timing thread is never a
+        // runtime worker, so blocking on it is safe.
+        let rt_handle = tokio::runtime::Handle::try_current().ok();
 
-                let now = Instant::now();
-                if now < next_tick {
-                    // Interruptible wait: wake immediately when stop is
-                    // notified, otherwise yield until the next tick. Both
-                    // arms run on the shared runtime — no thread parked.
-                    tokio::select! {
-                        _ = tokio::time::sleep(next_tick - now) => {}
-                        _ = stop_notify_task.notified() => break,
-                    }
-                }
-                next_tick += interval;
-
-                // Drift check: compare actual elapsed since last
-                // tick to the nominal interval. Skipped on the
-                // first iteration (no prior tick to compare).
-                let post_sleep = Instant::now();
-                if let Some(prev) = last_tick_capture {
-                    let actual = post_sleep.duration_since(prev);
-                    let actual_s = actual.as_secs_f64();
-                    let nominal_s = interval.as_secs_f64();
-                    let drift_ratio = (actual_s - nominal_s).abs() / nominal_s.max(f64::MIN_POSITIVE);
-                    if drift_ratio > drift_threshold {
-                        let should_warn = last_drift_warn
-                            .map(|t| post_sleep.duration_since(t) >= drift_warn_min_interval)
-                            .unwrap_or(true);
-                        if should_warn {
-                            last_drift_warn = Some(post_sleep);
-                            crate::diag::warn(&format!(
-                                "scheduler tick drift: actual={:?} nominal={:?} \
-                                 ({:.1}% off) — snapshots still recorded at nominal \
-                                 cadence; check for thread starvation or sleep \
-                                 oversleep",
-                                actual, interval, drift_ratio * 100.0,
-                            ));
-                        }
-                    }
-                }
-                last_tick_capture = Some(post_sleep);
-
-                // Drain async snapshot channel (lifecycle flushes from executor)
-                while let Ok(snapshot) = frame_rx.try_recv() {
-                    let mut root = root.lock().unwrap_or_else(|e| e.into_inner());
-                    for reporter in &mut root.reporters {
+        // The ordered `io`-pool reporter worker. Exits when the timing thread
+        // drops `io_tx` on shutdown, after it has delivered every enqueued
+        // snapshot. A single consumer preserves reporter delivery order (the
+        // `io` pool's thread *count* is capacity for other future consumers).
+        let root_io = root.clone();
+        let io_handle = crate::thread_pools::global()
+            .spawn("io", "reporter", move || {
+                while let Ok(snapshot) = io_rx.recv() {
+                    let mut node = root_io.lock().unwrap_or_else(|e| e.into_inner());
+                    for reporter in &mut node.reporters {
                         reporter.report(&snapshot);
                     }
-                    for child in &mut root.children {
+                    for child in &mut node.children {
                         child.ingest(snapshot.clone());
                     }
                 }
+            })
+            .expect("spawn io reporter thread");
 
-                // Capture per-component deltas from the tree
-                let component_snapshots = (capture)();
+        // The cadence tick loop runs on a dedicated `timing`-pool OS thread
+        // (SRD-102): realtime scheduling policy + affinity applied at spawn,
+        // never sharing duty with the async worker runtime, so timer wake-ups
+        // are not queued behind workload fibers.
+        let sched_thread = crate::thread_pools::global()
+            .spawn_timing("cadence", move || {
+                // Divergence surveillance (SRD-102 §6): compare the nominal
+                // deadline (`scheduled_ts`) to the actual fire instant. If
+                // they diverge by more than 250 ms the timing thread is being
+                // delayed (CPU starvation / oversleep). Warn — rate-limited —
+                // so the operator can correlate anomalies with scheduler
+                // health. Recorded snapshot intervals stay at the nominal
+                // cadence (canonical cadence as a matter of record); the
+                // divergence is reported out-of-band and stamped on the
+                // snapshot as scheduled_ts vs actual_ts.
+                let divergence_threshold = Duration::from_millis(250);
+                let divergence_warn_min_interval = Duration::from_secs(60);
+                let mut last_divergence_warn: Option<Instant> = None;
+                let mut next_tick = Instant::now() + interval;
+                loop {
+                    // Interruptible wait to the absolute `next_tick`. Holds the
+                    // `running` guard across `wait_timeout` (which atomically
+                    // releases + reacquires), so a stop set by `stop()` is seen
+                    // the instant the Condvar wakes us.
+                    let fire = {
+                        let mut guard = stop_running.lock().unwrap_or_else(|e| e.into_inner());
+                        loop {
+                            if !*guard {
+                                break false;
+                            }
+                            let now = Instant::now();
+                            if now >= next_tick {
+                                break true;
+                            }
+                            let (g, _) = stop_cv_thread
+                                .wait_timeout(guard, next_tick - now)
+                                .unwrap_or_else(|e| e.into_inner());
+                            guard = g;
+                        }
+                    };
+                    if !fire {
+                        break;
+                    }
 
-                // Feed each per-component delta into the cadence
-                // reporter (single writer of windowed snapshots).
-                if let Some(ref cr) = cadence_reporter {
-                    for (labels, snapshot) in &component_snapshots {
-                        cr.ingest(labels, snapshot.clone());
+                    let scheduled = next_tick;
+                    // Fixed-rate: advance by the nominal interval regardless of
+                    // when we actually woke, so cadence does not drift.
+                    next_tick += interval;
+                    let actual = Instant::now();
+
+                    if let Some(divergence) = divergence_warning(
+                        scheduled,
+                        actual,
+                        divergence_threshold,
+                        divergence_warn_min_interval,
+                        last_divergence_warn,
+                    ) {
+                        last_divergence_warn = Some(actual);
+                        crate::diag::warn(&format!(
+                            "scheduler cadence divergence: scheduled vs actual off \
+                             by {:?} (>250ms) — snapshots still recorded at nominal \
+                             cadence; the `timing` pool thread is being delayed \
+                             (CPU starvation / oversleep)",
+                            divergence,
+                        ));
+                    }
+
+                    // Drain async snapshot channel (lifecycle flushes from
+                    // executor) → offload delivery to the io worker.
+                    while let Ok(snapshot) = frame_rx.try_recv() {
+                        let _ = io_tx.send(snapshot);
+                    }
+
+                    // Capture per-component deltas from the tree.
+                    let component_snapshots = (capture)();
+
+                    // Feed each per-component delta into the cadence reporter
+                    // (single writer of windowed snapshots — a non-blocking
+                    // crossbeam send, kept on the timing thread as part of
+                    // capture).
+                    if let Some(ref cr) = cadence_reporter {
+                        for (labels, snapshot) in &component_snapshots {
+                            cr.ingest(labels, snapshot.clone());
+                        }
+                    }
+
+                    // Merge component snapshots into one combined snapshot for
+                    // the scheduler-tree reporters (CSV / SQLite / etc.), stamp
+                    // the scheduled/actual timestamp pair, and hand off to io.
+                    let all_snapshots: Vec<MetricSet> = component_snapshots
+                        .into_iter()
+                        .map(|(_, snapshot)| snapshot)
+                        .collect();
+                    let mut combined = if all_snapshots.is_empty() {
+                        MetricSet::new(interval)
+                    } else {
+                        let mut merged = MetricSet::coalesce(&all_snapshots);
+                        // Interval reflects the scheduler interval, not the sum
+                        // from coalesce (which sums intervals).
+                        merged.set_interval(interval);
+                        merged
+                    };
+                    combined.set_scheduled_ts(scheduled);
+                    let _ = io_tx.send(combined);
+                }
+
+                // Final capture before shutdown: ensures short-lived phases
+                // that completed between ticks get their data to reporters.
+                {
+                    let component_snapshots = (capture)();
+                    if let Some(ref cr) = cadence_reporter {
+                        for (labels, snapshot) in &component_snapshots {
+                            cr.ingest(labels, snapshot.clone());
+                        }
+                    }
+                    let all_snapshots: Vec<MetricSet> = component_snapshots
+                        .into_iter()
+                        .map(|(_, snapshot)| snapshot)
+                        .collect();
+                    if !all_snapshots.is_empty() {
+                        let mut merged = MetricSet::coalesce(&all_snapshots);
+                        merged.set_interval(interval);
+                        let _ = io_tx.send(merged);
                     }
                 }
 
-                // Merge all component snapshots into one combined snapshot
-                // for the scheduler-tree reporters (CSV / SQLite / etc.).
-                let all_snapshots: Vec<MetricSet> = component_snapshots.into_iter()
-                    .map(|(_, snapshot)| snapshot)
-                    .collect();
-                let combined = if all_snapshots.is_empty() {
-                    MetricSet::new(interval)
-                } else {
-                    let mut merged = MetricSet::coalesce(&all_snapshots);
-                    // Ensure the interval reflects the scheduler interval,
-                    // not the sum from coalesce (which sums intervals)
-                    merged.set_interval(interval);
-                    merged
-                };
+                // No more steady-state deliveries: close the io channel and
+                // join the reporter worker so every enqueued snapshot has
+                // landed before the final flush. After this the timing thread
+                // is the sole toucher of `root`.
+                drop(io_tx);
+                let _ = io_handle.join();
 
-                let mut root = root.lock().unwrap_or_else(|e| e.into_inner());
-
-                // Deliver to root-level reporters
-                for reporter in &mut root.reporters {
-                    reporter.report(&combined);
+                // Force-close any unpromoted cadence partials so the trailing
+                // window is not lost. The only async call — `block_on` on this
+                // dedicated (non-runtime) thread.
+                if let (Some(h), Some(cr)) = (rt_handle.as_ref(), cadence_reporter.as_ref()) {
+                    h.block_on(cr.shutdown_flush());
                 }
 
-                // Feed to children for coalescing
-                for child in &mut root.children {
-                    child.ingest(combined.clone());
-                }
-            }
-
-            // Final capture before shutdown: ensures short-lived phases
-            // that completed between ticks get their data to reporters.
-            {
-                let component_snapshots = (capture)();
-                if let Some(ref cr) = cadence_reporter {
-                    for (labels, snapshot) in &component_snapshots {
-                        cr.ingest(labels, snapshot.clone());
+                // Drain any remaining async frames directly (io worker joined).
+                while let Ok(snapshot) = frame_rx.try_recv() {
+                    let mut r = root.lock().unwrap_or_else(|e| e.into_inner());
+                    for reporter in &mut r.reporters {
+                        reporter.report(&snapshot);
+                    }
+                    for child in &mut r.children {
+                        child.ingest(snapshot.clone());
                     }
                 }
-                let all_snapshots: Vec<MetricSet> = component_snapshots.into_iter()
-                    .map(|(_, snapshot)| snapshot)
-                    .collect();
-                if !all_snapshots.is_empty() {
-                    let mut merged = MetricSet::coalesce(&all_snapshots);
-                    merged.set_interval(interval);
-                    let mut root_node = root.lock().unwrap_or_else(|e| e.into_inner());
-                    for reporter in &mut root_node.reporters {
-                        reporter.report(&merged);
-                    }
-                    for child in &mut root_node.children {
-                        child.ingest(merged.clone());
-                    }
-                }
-                // Force-close any unpromoted partials so the
-                // trailing window is not lost.
-                if let Some(ref cr) = cadence_reporter {
-                    cr.shutdown_flush().await;
-                }
-            }
-            // Drain any remaining async snapshots before final flush
-            while let Ok(snapshot) = frame_rx.try_recv() {
-                let mut r = root.lock().unwrap_or_else(|e| e.into_inner());
-                for reporter in &mut r.reporters {
-                    reporter.report(&snapshot);
-                }
-                for child in &mut r.children {
-                    child.ingest(snapshot.clone());
-                }
-            }
-            // Flush all reporters on shutdown
-            flush_tree(&mut root.lock().unwrap_or_else(|e| e.into_inner()));
-            // Trailing window has landed — release a waiting `stop()`.
-            let _ = done_tx.send(());
-        });
+                // Flush all reporters on shutdown.
+                flush_tree(&mut root.lock().unwrap_or_else(|e| e.into_inner()));
+                // Trailing window has landed — release a waiting `stop()`.
+                let _ = done_tx.send(());
+            })
+            .expect("spawn timing scheduler thread");
 
         StopHandle {
             running: self.running,
             cadence_reporter: cadence_reporter_for_stop,
             root: root_for_stop,
-            task: Mutex::new(Some(handle)),
+            task: Mutex::new(Some(sched_thread)),
             frame_tx,
-            stop_notify,
+            stop_cv,
             done_rx: Mutex::new(Some(done_rx)),
         }
     }
+}
+
+/// SRD-102 §6 divergence-warning decision (extracted for testability). The
+/// nominal `scheduled` deadline vs the `actual` fire instant must diverge by
+/// more than `threshold`, AND `min_interval` must have elapsed since the last
+/// warning (rate-limit so sustained drift warns once per window, not every
+/// tick). Returns the divergence magnitude when a warning is due.
+fn divergence_warning(
+    scheduled: Instant,
+    actual: Instant,
+    threshold: Duration,
+    min_interval: Duration,
+    last_warn: Option<Instant>,
+) -> Option<Duration> {
+    let divergence = if actual >= scheduled { actual - scheduled } else { scheduled - actual };
+    let due = last_warn
+        .map(|t| actual.duration_since(t) >= min_interval)
+        .unwrap_or(true);
+    (divergence > threshold && due).then_some(divergence)
 }
 
 fn flush_tree(node: &mut ScheduleNode) {
@@ -467,20 +518,21 @@ pub struct StopHandle {
     cadence_reporter: Option<Arc<CadenceReporter>>,
     #[allow(dead_code)] // retained for future direct-flush access
     root: Arc<Mutex<ScheduleNode>>,
-    /// The scheduler **task** handle (runs on the shared runtime — no
-    /// dedicated thread). Interior-mutable so the session host can stop
-    /// the scheduler through a shared `Arc<StopHandle>` (SRD-88 — host
-    /// owns the session-tier scheduler; executions only `report_frame`).
-    /// `take`n by whichever of `stop` / `drop` runs first; the other
-    /// sees `None` and is a no-op (idempotent).
-    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The scheduler thread handle — a dedicated `timing`-pool OS thread
+    /// (SRD-102), not a runtime task. Interior-mutable so the session host
+    /// can stop the scheduler through a shared `Arc<StopHandle>` (SRD-88 —
+    /// host owns the session-tier scheduler; executions only `report_frame`).
+    /// `take`n by whichever of `stop` / `drop` runs first; the other sees
+    /// `None` and is a no-op (idempotent).
+    task: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// Channel for async frame delivery — the executor sends frames here
-    /// instead of writing to reporters inline. The scheduler task drains
+    /// instead of writing to reporters inline. The scheduler thread drains
     /// this channel on each tick.
     frame_tx: std::sync::mpsc::Sender<MetricSet>,
-    /// Wakes the scheduler task out of its inter-tick wait so shutdown is
-    /// prompt instead of waiting out a base interval.
-    stop_notify: Arc<tokio::sync::Notify>,
+    /// Wakes the timing thread out of its inter-tick Condvar wait so shutdown
+    /// is prompt instead of waiting out a base interval. Paired with the
+    /// `running` Mutex the thread waits on.
+    stop_cv: Arc<Condvar>,
     /// Signalled by the task after its final flush; `stop()` waits on it
     /// so the trailing window is committed before it returns.
     done_rx: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
@@ -494,7 +546,7 @@ impl StopHandle {
     /// already taken and no-ops.
     pub fn stop(&self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        self.stop_notify.notify_one(); // wake the inter-tick wait
+        self.stop_cv.notify_all(); // wake the inter-tick wait
         // Wait for the task's final flush to land (the trailing window).
         let done = self.done_rx.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(done) = done {
@@ -524,39 +576,41 @@ impl StopHandle {
 impl Drop for StopHandle {
     fn drop(&mut self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        self.stop_notify.notify_one(); // wake the inter-tick wait
+        self.stop_cv.notify_all(); // wake the inter-tick wait
         let done = self.done_rx.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(done) = done {
             wait_for_done(done);
         }
-        if let Some(task) = self.task.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            task.abort();
-        }
+        // The timing thread signals `done` as its last act, then returns —
+        // drop the join handle (detach); no abort exists for an OS thread and
+        // none is needed.
+        let _ = self.task.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 }
 
-/// Wait (best-effort) for the scheduler task to signal its final flush is
-/// done, from the `StopHandle`'s `Drop` (a sync context — can't `.await`).
+/// Wait (best-effort) for the scheduler thread to signal its final flush is
+/// done, from `stop()` / the `StopHandle`'s `Drop` (a sync context — can't
+/// `.await`).
+///
+/// The scheduler now runs on an independent `timing`-pool OS thread
+/// (SRD-102), so the `done` signal is fired without needing the calling
+/// runtime thread to make progress — a blocking `recv` can neither deadlock
+/// nor starve it, whatever the runtime flavour.
 ///
 /// - **Multi-threaded runtime**: `block_in_place` so tokio spins a
-///   replacement worker and this brief session-end wait can't starve the
-///   task that fires the signal (or a neighbour under test parallelism).
-/// - **Current-thread runtime**: we're on the only worker, so a blocking
-///   wait can neither `block_in_place` (it panics) nor make progress (the
-///   scheduler task needs this thread). The graceful shutdown path already
-///   `.await`ed the scheduler's drain before this `Drop`, so a non-blocking
-///   `try_recv` is enough; the caller's `task.abort()` reaps the rest.
-/// - **Outside a runtime**: a plain blocking `recv`.
+///   replacement worker and this brief session-end wait doesn't hold a
+///   runtime worker.
+/// - **Current-thread runtime / outside a runtime**: a plain blocking `recv`
+///   (`block_in_place` would panic on a current-thread runtime).
 ///
-/// A disconnected channel (task panicked/aborted) returns immediately.
+/// A disconnected channel (thread panicked) returns immediately.
 fn wait_for_done(done: std::sync::mpsc::Receiver<()>) {
     use tokio::runtime::{Handle, RuntimeFlavor};
     match Handle::try_current() {
         Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => {
             tokio::task::block_in_place(|| { let _ = done.recv(); });
         }
-        Ok(_) => { let _ = done.try_recv(); }
-        Err(_) => { let _ = done.recv(); }
+        _ => { let _ = done.recv(); }
     }
 }
 
@@ -584,6 +638,59 @@ mod tests {
 
     fn empty_snapshot(interval: Duration) -> MetricSet {
         MetricSet::new(interval)
+    }
+
+    #[test]
+    fn divergence_under_threshold_does_not_warn() {
+        let scheduled = Instant::now();
+        let actual = scheduled + Duration::from_millis(100); // < 250ms
+        assert!(divergence_warning(
+            scheduled, actual,
+            Duration::from_millis(250), Duration::from_secs(60), None,
+        ).is_none());
+    }
+
+    #[test]
+    fn divergence_over_threshold_warns_first_time() {
+        let scheduled = Instant::now();
+        let actual = scheduled + Duration::from_millis(300); // > 250ms
+        let d = divergence_warning(
+            scheduled, actual,
+            Duration::from_millis(250), Duration::from_secs(60), None,
+        );
+        assert_eq!(d, Some(Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn divergence_is_rate_limited_within_window() {
+        let scheduled = Instant::now();
+        let actual = scheduled + Duration::from_millis(400);
+        // A warning fired 10s ago; the 60s window has not elapsed → suppressed.
+        let last_warn = Some(actual - Duration::from_secs(10));
+        assert!(divergence_warning(
+            scheduled, actual,
+            Duration::from_millis(250), Duration::from_secs(60), last_warn,
+        ).is_none());
+        // Once the window elapses, it warns again.
+        let last_warn = Some(actual - Duration::from_secs(61));
+        assert!(divergence_warning(
+            scheduled, actual,
+            Duration::from_millis(250), Duration::from_secs(60), last_warn,
+        ).is_some());
+    }
+
+    #[test]
+    fn scheduled_ts_is_stamped_on_tick_snapshots() {
+        // The scheduler stamps `scheduled_ts` on the combined snapshot each
+        // tick (captured_at is the actual fire instant). Verify the MetricSet
+        // carries the pair.
+        let mut s = MetricSet::new(Duration::from_millis(100));
+        assert!(s.scheduled_ts().is_none());
+        let sched = Instant::now();
+        s.set_scheduled_ts(sched);
+        assert_eq!(s.scheduled_ts(), Some(sched));
+        // actual_ts aliases captured_at.
+        assert_eq!(s.actual_ts(), s.captured_at());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

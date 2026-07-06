@@ -2830,6 +2830,7 @@ dependencies = [
  "futures",
  "hdrhistogram",
  "inventory",
+ "libc",
  "polydat",
  "regex",
  "reqwest 0.12.28",

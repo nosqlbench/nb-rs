@@ -90,6 +90,14 @@ pub struct MetricSet {
     /// scope-close contribution if needed. Coalesce result is
     /// partial whenever **any** contributing input was partial.
     partial: bool,
+    /// SRD-102 §6: the nominal cadence deadline this snapshot was
+    /// *scheduled* to fire at, when produced by the cadence scheduler.
+    /// `captured_at` is the *actual* fire instant; the pair lets
+    /// downstream tooling see schedule-vs-reality. `None` for
+    /// event-driven (non-cadence) snapshots. Logical/cadence
+    /// processing keeps using the prescribed `interval`/cadence — this
+    /// is a record of divergence, not an input to windowing.
+    scheduled_ts: Option<Instant>,
     families: Vec<MetricFamily>,
 }
 
@@ -99,6 +107,7 @@ impl Default for MetricSet {
             captured_at: Instant::now(),
             interval: Duration::ZERO,
             partial: false,
+            scheduled_ts: None,
             families: Vec::new(),
         }
     }
@@ -112,6 +121,7 @@ impl MetricSet {
             captured_at: Instant::now(),
             interval,
             partial: false,
+            scheduled_ts: None,
             families: Vec::new(),
         }
     }
@@ -119,10 +129,26 @@ impl MetricSet {
     /// Construct an empty snapshot stamped with an explicit
     /// `captured_at` (e.g., for tests reproducing a known instant).
     pub fn at(captured_at: Instant, interval: Duration) -> Self {
-        Self { captured_at, interval, partial: false, families: Vec::new() }
+        Self { captured_at, interval, partial: false, scheduled_ts: None, families: Vec::new() }
     }
 
     pub fn captured_at(&self) -> Instant { self.captured_at }
+
+    /// The *actual* instant this snapshot fired/was captured (alias of
+    /// [`captured_at`](Self::captured_at), named for the SRD-102
+    /// scheduled/actual timestamp pair).
+    pub fn actual_ts(&self) -> Instant { self.captured_at }
+
+    /// The nominal cadence deadline this snapshot was scheduled for, if
+    /// produced by the cadence scheduler (SRD-102 §6). `None` for
+    /// event-driven snapshots.
+    pub fn scheduled_ts(&self) -> Option<Instant> { self.scheduled_ts }
+
+    /// Stamp the nominal cadence deadline (the scheduler sets this after
+    /// coalescing a tick's component snapshots).
+    pub fn set_scheduled_ts(&mut self, scheduled: Instant) {
+        self.scheduled_ts = Some(scheduled);
+    }
     pub fn interval(&self) -> Duration { self.interval }
 
     /// True if this snapshot represents a partial cadence window
@@ -182,6 +208,7 @@ impl MetricSet {
             captured_at: self.captured_at,
             interval: self.interval,
             partial: self.partial,
+            scheduled_ts: self.scheduled_ts,
             families: self
                 .families
                 .iter()
@@ -248,8 +275,12 @@ impl MetricSet {
         // a scope_close partial, the merged result is too. SRD-42
         // §"Component lifecycle: scope_close flush" / SRD-40b §11.2.
         let partial = snapshots.iter().any(|s| s.partial);
+        // A coalesced set spans multiple inputs, so no single nominal
+        // deadline applies; the scheduler stamps `scheduled_ts` on the
+        // combined tick snapshot after coalescing (SRD-102 §6).
+        let scheduled_ts = None;
 
-        let mut out = MetricSet { captured_at, interval, partial, families: Vec::new() };
+        let mut out = MetricSet { captured_at, interval, partial, scheduled_ts, families: Vec::new() };
 
         // Family identity is `name`. For each unique family name
         // across inputs, fold its metrics in identity order.

@@ -71,7 +71,13 @@ fn main() {
         return;
     }
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+
+    // SRD-102: strip the process-wide `--threads.*` flags out of the arg
+    // vector BEFORE session handling and command dispatch. They are global,
+    // not per-subcommand, so the walker/runner param guards must never see
+    // them; their values are applied to the thread-pool config below.
+    let thread_overrides = extract_thread_overrides(&mut args);
 
     // SRD-45 startup hook: honors `--session`, `--session-path`,
     // `--session-name`, …, plus the `NBRS_SESSION*` env vars.
@@ -82,6 +88,19 @@ fn main() {
     // commands (plot, report) resolve their default
     // `logs/latest/metrics.db` paths immediately on entry.
     nbrs_runtime::session::apply_session_directory_at_startup(&args);
+
+    // SRD-102: resolve the physical thread-pool config — CLI `--threads.*`
+    // flags over NBRS_THREADS_* env over core-count-derived defaults — and
+    // install the process-wide registry before any tokio runtime or cadence
+    // scheduler starts. A malformed value (CLI or env) is a hard startup
+    // error — never silently ignored.
+    match nbrs_metrics::thread_pools::ThreadPoolConfig::resolve_with_cli(&thread_overrides) {
+        Ok(cfg) => nbrs_metrics::thread_pools::init(cfg),
+        Err(e) => {
+            eprintln!("nbrs: {e}");
+            std::process::exit(2);
+        }
+    }
 
     if args.is_empty() {
         cli_spec::help::render_usage(&root, &[]);
@@ -97,7 +116,7 @@ fn main() {
         && root.subcommands.iter().all(|s| s.name != cmd)
         && let Some(path) = cli::resolve_workload_path(cmd)
     {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = build_workers_runtime();
         let run_args = build_bare_workload_args(&path, &args[1..]);
         rt.block_on(run::run_command(&run_args));
         return;
@@ -142,7 +161,7 @@ fn main() {
     let result: Result<(), String> = match handler {
         Some(cli_spec::Handler::Sync(f)) => f(parsed),
         Some(cli_spec::Handler::Async(f)) => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = build_workers_runtime();
             rt.block_on(f(parsed))
         }
         None => {
@@ -157,6 +176,49 @@ fn main() {
         eprintln!("nbrs: {e}");
         std::process::exit(2);
     }
+}
+
+/// Pull the global `--threads.*` flags (SRD-102 §4) out of `args`, in place,
+/// returning their raw values. Equals-form only (`--threads.timing=2`); parsing
+/// and not-silent validation happen in [`nbrs_metrics::thread_pools::ThreadPoolConfig::resolve_with_cli`]
+/// so a malformed value is the same hard error as the env path. An unknown
+/// `--threads.<x>` subkey is left in `args` for the normal unknown-flag guard.
+fn extract_thread_overrides(
+    args: &mut Vec<String>,
+) -> nbrs_metrics::thread_pools::CliThreadOverrides {
+    let mut ov = nbrs_metrics::thread_pools::CliThreadOverrides::default();
+    args.retain(|a| {
+        let Some(rest) = a.strip_prefix("--threads.") else { return true; };
+        let Some((key, val)) = rest.split_once('=') else { return true; };
+        let slot = match key {
+            "timing" => &mut ov.timing,
+            "io" => &mut ov.io,
+            "workers" => &mut ov.workers,
+            "timing.sched" => &mut ov.timing_sched,
+            "timing.pin" => &mut ov.timing_pin,
+            // Unknown --threads.* subkey: leave it so the dispatch guard
+            // reports it, rather than silently swallowing a typo.
+            _ => return true,
+        };
+        *slot = Some(val.to_string());
+        false // consume this token
+    });
+    ov
+}
+
+/// The `workers` tokio runtime (SRD-102): the async worker pool that runs
+/// workload fibers, sized to `ThreadPoolConfig::workers` (cores − reserved)
+/// so the dedicated `timing`/`io` pools always have a core and the cadence
+/// scheduler is never queued behind a fiber. Named `workers` for `top`/perf
+/// legibility. Falls back to the tokio default if the sized build fails.
+fn build_workers_runtime() -> tokio::runtime::Runtime {
+    let workers = nbrs_metrics::thread_pools::global().config().workers;
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers.max(1))
+        .thread_name("workers")
+        .enable_all()
+        .build()
+        .unwrap_or_else(|_| tokio::runtime::Runtime::new().unwrap())
 }
 
 /// Walk the matched command path inside the root spec to find

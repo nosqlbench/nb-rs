@@ -80,6 +80,7 @@ pub mod instruments;
 pub mod summaries;
 pub mod selector;
 pub mod controls;
+pub mod thread_pools;
 pub mod scheduler;
 pub mod reporters;
 pub mod component;
