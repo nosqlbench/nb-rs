@@ -3295,17 +3295,19 @@ async fn executor_task(
                 );
                 match spawn_result {
                     Ok(()) => {
-                        // Dispatch succeeded — cycle-pool counts
-                        // this stanza-position as completed but
-                        // does NOT touch service/response metrics
-                        // (those are recorded by the daemon fiber
-                        // when it actually runs). The for-loop
-                        // already advances ordinal; just count
-                        // the cycle as done and skip the inline
-                        // execute path.
-                        activity.metrics.cycles_total.inc();
-                        activity.metrics.ops_finished.fetch_add(
-                            1, Ordering::Relaxed);
+                        // Dispatch succeeded — the daemon fiber
+                        // (`daemon_dispatch`) owns this op's accounting
+                        // end to end: it records `ops_started` when it
+                        // runs and `cycles_total` / `ops_finished` + the
+                        // SRD-91 result outcome when it completes. Counting
+                        // the stanza-position here too DOUBLE-counted the
+                        // op — one extra `cycles_total`/`ops_finished`
+                        // with no matching result — which dragged ok%
+                        // below 100% and pushed phase progress above it,
+                        // and broke the `cycles_total == result_total +
+                        // skips_total` invariant. The for-loop already
+                        // advances the ordinal; just skip the inline
+                        // execute path and let the daemon fiber count.
                         continue;
                     }
                     Err(msg) => {
