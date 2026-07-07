@@ -107,16 +107,37 @@ fn to_cass_consistency(c: CqlConsistency) -> cass::Consistency {
 /// relevancy measurement.
 #[derive(Debug)]
 pub struct CqlResultBody {
-    /// Rows as JSON-compatible maps: column_name → value.
+    /// Returned rows as JSON-compatible maps: column_name → value.
+    /// Populated for a result that carries a row-set (a SELECT, or an
+    /// LWT `[applied]` acknowledgment); empty for a plain write.
     pub rows: Vec<HashMap<String, serde_json::Value>>,
+    /// Rows WRITTEN by this op. A CQL write (INSERT/UPDATE/DELETE, a
+    /// whole BATCH, or a DDL ack) returns no row-set, so its result
+    /// carries the count of rows it wrote here instead. `element_count`
+    /// reports this when there are no returned rows — so a write's
+    /// `count` reflects the rows it wrote exactly as a read's reflects
+    /// the rows it returned (the two are mutually exclusive). `0` for a
+    /// read.
+    written_rows: u64,
 }
 
 impl CqlResultBody {
-    /// Build from a cassandra-cpp CassResult by iterating rows and columns.
+    /// Build from a cassandra-cpp CassResult, iterating rows and
+    /// columns. Classifies read vs write by the presence of a
+    /// result-set schema: a rows result (SELECT/LWT) has one or more
+    /// columns, while a write/DDL acknowledgment has zero columns and
+    /// no row-set. A read carries its returned rows and writes 0; a
+    /// single write/DDL statement acknowledges one written row.
     fn from_cass_result(result: &cass::CassResult) -> Self {
+        let col_count = result.column_count() as usize;
+        if col_count == 0 {
+            // No result-set schema → a write/DDL acknowledgment. This
+            // statement wrote one unit (a row for DML, the statement
+            // for DDL); its `count` is 1.
+            return Self { rows: Vec::new(), written_rows: 1 };
+        }
         let row_count = result.row_count() as usize;
         let mut rows = Vec::with_capacity(row_count);
-        let col_count = result.column_count() as usize;
         let mut iter = result.iter();
         while let Some(row) = iter.next() {
             let mut map = HashMap::new();
@@ -129,7 +150,14 @@ impl CqlResultBody {
             }
             rows.push(map);
         }
-        Self { rows }
+        Self { rows, written_rows: 0 }
+    }
+
+    /// A write result carrying an explicit rows-written count. Used
+    /// where the dispenser knows the count directly — a BATCH of `n`
+    /// rows. No returned rows, so `element_count()` reports `n`.
+    fn write_ack(rows_written: u64) -> Self {
+        Self { rows: Vec::new(), written_rows: rows_written }
     }
 
     /// Extract a single column value as serde_json::Value.
@@ -230,7 +258,17 @@ impl ResultBody for CqlResultBody {
 
     fn as_any(&self) -> &dyn std::any::Any { self }
 
-    fn element_count(&self) -> u64 { self.rows.len() as u64 }
+    fn element_count(&self) -> u64 {
+        // A read reports rows returned; a write reports rows written.
+        // The two are mutually exclusive — a write carries no returned
+        // rows — so returned rows win when present and the written
+        // count carries the write case.
+        if self.rows.is_empty() {
+            self.written_rows
+        } else {
+            self.rows.len() as u64
+        }
+    }
 }
 
 // CqlConfig + consistency parsing live in `crate::common`.
@@ -1382,8 +1420,14 @@ impl OpDispenser for CqlRawDispenser {
 
             let result = exec_result?;
 
-            let body = if result.row_count() > 0 {
-                Some(Box::new(CqlResultBody::from_cass_result(&result)) as Box<dyn ResultBody>)
+            // Build the result body, classifying read vs write inside
+            // `from_cass_result`: a SELECT reports its returned rows, a
+            // write reports one row written. An empty SELECT (a read
+            // that matched nothing) has element_count 0 → no body,
+            // preserving the prior no-body-for-empty-read behavior.
+            let body_obj = CqlResultBody::from_cass_result(&result);
+            let body = if body_obj.element_count() > 0 {
+                Some(Box::new(body_obj) as Box<dyn ResultBody>)
             } else {
                 None
             };
@@ -1614,8 +1658,14 @@ impl OpDispenser for CqlPreparedDispenser {
 
             let result = exec_result?;
 
-            let body = if result.row_count() > 0 {
-                Some(Box::new(CqlResultBody::from_cass_result(&result)) as Box<dyn ResultBody>)
+            // Build the result body, classifying read vs write inside
+            // `from_cass_result`: a SELECT reports its returned rows, a
+            // write reports one row written. An empty SELECT (a read
+            // that matched nothing) has element_count 0 → no body,
+            // preserving the prior no-body-for-empty-read behavior.
+            let body_obj = CqlResultBody::from_cass_result(&result);
+            let body = if body_obj.element_count() > 0 {
+                Some(Box::new(body_obj) as Box<dyn ResultBody>)
             } else {
                 None
             };
@@ -1872,8 +1922,13 @@ impl OpDispenser for CqlBatchDispenser {
                 "rows_inserted",
                 polydat::ast::Value::U64(submitted as u64),
             );
+            // A CQL write reports the rows it wrote as its result: the
+            // batch's `element_count` is `submitted` (rows written),
+            // just as a SELECT's is the rows it returned. Carried as a
+            // single `write_ack` for the whole op (the executed sub-
+            // batches acknowledge a write; the driver returns no rows).
             Ok(OpResult {
-                body: None,
+                body: Some(Box::new(CqlResultBody::write_ack(submitted as u64)) as Box<dyn ResultBody>),
                 skipped: false,
             })
         })
@@ -2697,5 +2752,44 @@ mod connect_diag_tests {
             assert!(!snap.contains("fds_in_use:    ?"),
                 "/proc/self/fd should yield a numeric count on Linux, got: {snap}");
         }
+    }
+}
+
+#[cfg(test)]
+mod result_body_tests {
+    use super::CqlResultBody;
+    use nbrs_runtime::adapter::ResultBody;
+
+    #[test]
+    fn write_result_reports_rows_written_as_element_count() {
+        // A CQL write carries no returned rows; its element_count is
+        // the number of rows it wrote — a single write = 1, a batch = n.
+        assert_eq!(CqlResultBody::write_ack(1).element_count(), 1);
+        assert_eq!(CqlResultBody::write_ack(500).element_count(), 500);
+        // A write body still serializes to an empty row array — its
+        // `count`, not its `body`, carries the write result.
+        assert_eq!(
+            CqlResultBody::write_ack(7).to_json(),
+            serde_json::Value::Array(Vec::new()),
+        );
+    }
+
+    #[test]
+    fn read_result_reports_returned_rows_as_element_count() {
+        // A read (returned rows present) reports the returned-row count
+        // and ignores any written count.
+        let mut row = std::collections::HashMap::new();
+        row.insert("key".to_string(), serde_json::json!("v"));
+        let body = CqlResultBody { rows: vec![row], written_rows: 0 };
+        assert_eq!(body.element_count(), 1);
+    }
+
+    #[test]
+    fn empty_read_reports_zero_not_a_write() {
+        // A SELECT that matched no rows is still a read: no returned
+        // rows AND no written count, so element_count is 0 (preserving
+        // the pre-change no-body behavior for empty reads).
+        let body = CqlResultBody { rows: Vec::new(), written_rows: 0 };
+        assert_eq!(body.element_count(), 0);
     }
 }

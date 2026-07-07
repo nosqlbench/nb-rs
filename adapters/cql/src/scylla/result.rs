@@ -19,15 +19,28 @@ use scylla::value::{CqlValue, Row};
 /// `ResultBody` implementer.
 #[derive(Debug)]
 pub(super) struct ScyllaResultBody {
-    /// Row data: each row is a column-name → JSON value map.
+    /// Returned row data: each row is a column-name → JSON value map.
+    /// Populated for a result that carries a row-set (a SELECT, or an
+    /// LWT's `[applied]` acknowledgment); empty for a plain write.
     pub rows: Vec<HashMap<String, serde_json::Value>>,
+    /// Rows WRITTEN by this op. A CQL write (INSERT/UPDATE/DELETE, a
+    /// whole BATCH, or a DDL ack) returns no row-set, so its result
+    /// carries the count of rows it wrote here instead. `element_count`
+    /// reports this when there are no returned rows — so a write's
+    /// `count` reflects the rows it wrote exactly as a read's reflects
+    /// the rows it returned (the two are mutually exclusive: a write
+    /// carries no returned rows). `0` for a read.
+    written_rows: u64,
 }
 
 impl ScyllaResultBody {
     pub fn from_query_result(result: QueryResult) -> Self {
-        // DDL results / non-row results: empty body. Mirrors the
-        // cassandra-cpp adapter's behavior.
-        let rows = match result.into_rows_result() {
+        // Classify by whether the server sent a result-set schema:
+        // `into_rows_result()` is Ok for a rows result (a SELECT/LWT,
+        // possibly zero rows) and Err for a write/DDL acknowledgment
+        // (no row-set). A read carries its returned rows and writes 0;
+        // a single write/DDL statement acknowledges one written row.
+        match result.into_rows_result() {
             Ok(rows_result) => {
                 let cols: Vec<String> = rows_result.column_specs()
                     .iter()
@@ -45,11 +58,17 @@ impl ScyllaResultBody {
                         row_maps.push(row_map);
                     }
                 }
-                row_maps
+                Self { rows: row_maps, written_rows: 0 }
             }
-            Err(_) => Vec::new(),
-        };
-        Self { rows }
+            Err(_) => Self { rows: Vec::new(), written_rows: 1 },
+        }
+    }
+
+    /// A write result carrying an explicit rows-written count. Used
+    /// where the dispenser knows the count directly — a BATCH of `n`
+    /// rows. No returned rows, so `element_count()` reports `n`.
+    pub fn write_ack(rows_written: u64) -> Self {
+        Self { rows: Vec::new(), written_rows: rows_written }
     }
 }
 
@@ -64,7 +83,17 @@ impl ResultBody for ScyllaResultBody {
 
     fn as_any(&self) -> &dyn Any { self }
 
-    fn element_count(&self) -> u64 { self.rows.len() as u64 }
+    fn element_count(&self) -> u64 {
+        // A read reports rows returned; a write reports rows written.
+        // The two are mutually exclusive — a write carries no returned
+        // rows — so returned rows win when present and the written
+        // count carries the write case.
+        if self.rows.is_empty() {
+            self.written_rows
+        } else {
+            self.rows.len() as u64
+        }
+    }
 }
 
 /// Convert a CqlValue cell to `serde_json::Value`. Same projection
@@ -115,4 +144,43 @@ fn hex_encode(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_result_reports_rows_written_as_element_count() {
+        // A CQL write carries no returned rows; its element_count is
+        // the number of rows it wrote — a single write = 1, a batch = n.
+        assert_eq!(ScyllaResultBody::write_ack(1).element_count(), 1);
+        assert_eq!(ScyllaResultBody::write_ack(500).element_count(), 500);
+        // The `written_rows` count is not shadowed by an empty row-set
+        // — a write body still serializes to an empty row array (its
+        // `count`, not its `body`, carries the write result).
+        assert_eq!(
+            ScyllaResultBody::write_ack(7).to_json(),
+            serde_json::Value::Array(Vec::new()),
+        );
+    }
+
+    #[test]
+    fn read_result_reports_returned_rows_as_element_count() {
+        // A read (returned rows present) reports the returned-row count
+        // and ignores any written count.
+        let mut row = HashMap::new();
+        row.insert("key".to_string(), serde_json::json!("v"));
+        let body = ScyllaResultBody { rows: vec![row], written_rows: 0 };
+        assert_eq!(body.element_count(), 1);
+    }
+
+    #[test]
+    fn empty_read_reports_zero_not_a_write() {
+        // A SELECT that matched no rows is still a read: no returned
+        // rows AND no written count, so element_count is 0 (preserving
+        // the pre-change no-body behavior for empty reads).
+        let body = ScyllaResultBody { rows: Vec::new(), written_rows: 0 };
+        assert_eq!(body.element_count(), 0);
+    }
 }

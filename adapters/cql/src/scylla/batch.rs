@@ -97,8 +97,11 @@ impl ScyllaBatchDispenser {
     }
 
     /// Execute one CQL `Batch` over the given row-value sets. Returns
-    /// the query result body when it carries rows (e.g. the
-    /// `[applied]` status of a conditional/LWT batch), else `None`.
+    /// the query result body ONLY when it carries returned rows (e.g.
+    /// the `[applied]` status of a conditional/LWT batch); a plain
+    /// write acknowledgment returns `None` here — the rows-written
+    /// count is summed as `submitted` in `execute` and carried by a
+    /// single [`ScyllaResultBody::write_ack`] for the whole op.
     /// Shared by every sub-batch flush.
     async fn flush_sub_batch(
         &self,
@@ -129,10 +132,15 @@ impl ScyllaBatchDispenser {
             ))?;
 
         let body = ScyllaResultBody::from_query_result(result);
-        if body.element_count() > 0 {
-            Ok(Some(Box::new(body)))
-        } else {
+        // Surface a sub-batch body only when the server returned rows
+        // (an LWT `[applied]` set). A plain write's `from_query_result`
+        // reports `written_rows = 1` per sub-batch, but the op's real
+        // rows-written count is the summed `submitted` — carried by the
+        // single `write_ack` built in `execute`, not per sub-batch.
+        if body.rows.is_empty() {
             Ok(None)
+        } else {
+            Ok(Some(Box::new(body)))
         }
     }
 }
@@ -222,8 +230,17 @@ impl OpDispenser for ScyllaBatchDispenser {
                 "rows_inserted",
                 polydat::ast::Value::U64(submitted as u64),
             );
+            // A CQL write reports the rows it wrote as its result: the
+            // batch's `element_count` is `submitted` (rows written),
+            // just as a SELECT's is the rows it returned. An LWT batch
+            // that returned an `[applied]` row surfaces that row-set
+            // instead (returned rows win — see `element_count`).
+            let body: Option<Box<dyn ResultBody>> = match last_body {
+                Some(rows_body) => Some(rows_body),
+                None => Some(Box::new(ScyllaResultBody::write_ack(submitted as u64))),
+            };
             Ok(OpResult {
-                body: last_body,
+                body,
                 skipped: false,
             })
         })

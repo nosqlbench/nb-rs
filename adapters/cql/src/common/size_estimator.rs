@@ -171,28 +171,34 @@ pub fn parse_byte_magnitude(raw: &str) -> Option<u64> {
 ///   adapter never caps it against the byte budget. When a `max_batch_size`
 ///   byte budget is also set it governs only the dynamic byte-fill in
 ///   `execute`, not this fixed stride.
-/// - `max_batch_size` alone (no `batch:`) → `floor_base10(budget / row_size)`
-///   — one budget-worth floored to a round power of ten — clamped to
-///   `1..=`[`MAX_PREDICTED_ROWS`]. A round `N` keeps the cursor stride
-///   legible and stable against row-size jitter.
+/// - `max_batch_size` alone (no `batch:`) → the UNFLOORED reserve
+///   `(budget / row_size)` clamped to `1..=`[`MAX_PREDICTED_ROWS`]. This
+///   sizes the reserve to one TRUE budget-worth of rows; the dynamic
+///   byte-fill in `execute` then fills to the real byte budget, so the
+///   op's `element_count` reports the ACTUAL number of rows batched — not a
+///   power-of-ten approximation of it. Any round-number shaping of that
+///   measurement is left entirely to the workload (e.g. a
+///   `floor_decade(count)` result-binding): the adapter measures the
+///   truth, the workload decides how to round it.
 /// - neither → a single row (unchanged single-op behavior).
 ///
-/// Reuses the `round_numbers::floor_base10` formula
-/// ([`polydat::library::round_numbers::floor_pow10`]) rather than
-/// re-deriving the power-of-ten floor (DRY). The `budget / row_size`
-/// argument is always strictly positive and finite, satisfying that
-/// function's precondition.
+/// The `budget / row_size` reserve is always `>= 1` (a single oversized
+/// row still reserves one) and never exceeds [`MAX_PREDICTED_ROWS`], the
+/// SRD-22 runaway-pull guard.
 pub fn fixed_batch_stride(row_size: u64, batch_n: usize, budget: Option<u64>) -> usize {
     let budget_rows = |b: u64| -> usize {
-        let raw = (b as f64 / row_size.max(1) as f64).max(1.0);
-        let floored = polydat::library::round_numbers::floor_pow10(raw) as usize;
-        floored.clamp(1, MAX_PREDICTED_ROWS)
+        // Unfloored: how many characterized rows fit in one budget-worth.
+        // Integer division truncates DOWN to the last whole row that fits,
+        // so the reserve never over-commits past the byte budget.
+        let rows = (b / row_size.max(1)).max(1);
+        (rows as usize).clamp(1, MAX_PREDICTED_ROWS)
     };
     match (batch_n, budget) {
         // A workload-authored `batch:` count is the stride, verbatim and
         // unfloored — never capped against the byte budget.
         (n, _) if n > 0 => n,
-        // `max_batch_size` alone → one budget-worth, floored to base-10.
+        // `max_batch_size` alone → one budget-worth, UNFLOORED (the byte-fill
+        // fills to the true budget; the workload owns any rounding).
         (0, Some(b)) => budget_rows(b),
         _ => 1,
     }
@@ -333,9 +339,16 @@ mod tests {
         // `batch: N` alone → exactly N, never floored.
         assert_eq!(fixed_batch_stride(6148, 8, None), 8);
         assert_eq!(fixed_batch_stride(6148, 300, None), 300);
-        // `max_batch_size` alone → one budget-worth, floored to base-10.
-        // 64_000 / 6_148 = 10.4 → floor_base10 = 10.
+        // `max_batch_size` alone → one budget-worth, UNFLOORED (truncated
+        // integer division). 64_000 / 6_148 = 10.4 → 10 rows fit.
         assert_eq!(fixed_batch_stride(6148, 0, Some(64_000)), 10);
+        // Unfloored vs floored contrast: 64_000 / 1_000 = 64 whole rows.
+        // The old floor_base10 path would have collapsed this to 10; the
+        // measure path now reserves the true count so element_count is real.
+        assert_eq!(fixed_batch_stride(1000, 0, Some(64_000)), 64);
+        // Another non-power-of-ten reserve survives unrounded: 90_000 /
+        // 300 = 300 rows (floor_base10 would have been 100).
+        assert_eq!(fixed_batch_stride(300, 0, Some(90_000)), 300);
         // both → `batch_n` used directly, unfloored: the workload authors the
         // stride and the byte budget no longer caps it (it drives only the
         // dynamic byte-fill in execute). 128_000/6_148=20.8 would floor to 10,
@@ -343,7 +356,7 @@ mod tests {
         assert_eq!(fixed_batch_stride(6148, 200, Some(128_000)), 200);
         // both, generous budget → still `batch_n` verbatim.
         assert_eq!(fixed_batch_stride(6148, 200, Some(10_000_000)), 200);
-        // tiny rows: floor_base10(1e7) = 1e7 clamps to the 1000-row cap.
+        // tiny rows: 10_000_000 / 1 rows clamps to the 1000-row cap.
         assert_eq!(fixed_batch_stride(1, 0, Some(10_000_000)), MAX_PREDICTED_ROWS);
         // oversized single row (row > budget) still yields ≥1.
         assert_eq!(fixed_batch_stride(100_000, 0, Some(64_000)), 1);
