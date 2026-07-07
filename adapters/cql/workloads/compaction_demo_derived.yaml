@@ -447,7 +447,7 @@ phases:
         # workload-root `shared measured` cell — `count` is the rows this
         # byte-budgeted write actually wrote (Change 1).
         result: |
-          measured := floor_decade(count*.0.9)
+          measured := floor_decade(count*0.9)
 
   # Incremental load: insert ONLY the vectors new to this size tier —
   # the absolute range [prev_count, this_count) of the profile's base
