@@ -23,7 +23,7 @@
 //! sub-batch fails the whole op.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use nbrs_runtime::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
 use polydat::ast::Value;
@@ -69,6 +69,18 @@ pub(super) struct ScyllaBatchDispenser {
     /// Fires the "single row exceeds max_batch_size" warning at most
     /// once per dispenser lifetime.
     oversize_warned: AtomicBool,
+    /// Cumulative rows written across every successful op — surfaced
+    /// as the `rows_inserted` status counter (mirrors the per-op
+    /// `ctx.wires.write("rows_inserted", …)`, which is only visible to
+    /// wrappers on the same cycle; the display reads the aggregate
+    /// through [`OpDispenser::status_counters`]).
+    rows_total: AtomicU64,
+    /// Cumulative count of batch ops that actually wrote ≥1 row — one
+    /// inc per successful `execute`. The display divides
+    /// `rows_inserted` by this to show the true average batch size,
+    /// instead of `rows_inserted / stanzas_total`, whose denominator
+    /// counts every op attempt (retries, failures, non-inserting ops).
+    batch_writes: AtomicU64,
 }
 
 impl ScyllaBatchDispenser {
@@ -93,6 +105,8 @@ impl ScyllaBatchDispenser {
             batch_type,
             consistency,
             oversize_warned: AtomicBool::new(false),
+            rows_total: AtomicU64::new(0),
+            batch_writes: AtomicU64::new(0),
         }
     }
 
@@ -148,6 +162,21 @@ impl ScyllaBatchDispenser {
 impl OpDispenser for ScyllaBatchDispenser {
     fn rows_per_op(&self) -> usize {
         self.n
+    }
+
+    /// Surface the cumulative `rows_inserted` and `batch_writes`
+    /// counters for the live status display (rows/s chip and true
+    /// average batch size). Mirrors the cassandra-cpp batch
+    /// dispenser's counter contract.
+    fn status_counters(&self) -> Vec<(&str, u64)> {
+        let total = self.rows_total.load(Ordering::Relaxed);
+        if total == 0 { return Vec::new(); }
+        let batches = self.batch_writes.load(Ordering::Relaxed);
+        let mut out = vec![("rows_inserted", total)];
+        if batches > 0 {
+            out.push(("batch_writes", batches));
+        }
+        out
     }
 
     fn execute<'a>(
@@ -230,6 +259,16 @@ impl OpDispenser for ScyllaBatchDispenser {
                 "rows_inserted",
                 polydat::ast::Value::U64(submitted as u64),
             );
+            // Aggregate the same values onto the dispenser's status
+            // counters so the display sees them through
+            // `status_counters()`. Reached only on the success path (a
+            // failed sub-batch returns early above), so `batch_writes`
+            // counts exactly the ops that wrote rows — the denominator
+            // for the true average batch size.
+            self.rows_total.fetch_add(submitted as u64, Ordering::Relaxed);
+            if submitted >= 1 {
+                self.batch_writes.fetch_add(1, Ordering::Relaxed);
+            }
             // A CQL write reports the rows it wrote as its result: the
             // batch's `element_count` is `submitted` (rows written),
             // just as a SELECT's is the rows it returned. An LWT batch

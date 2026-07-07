@@ -1138,6 +1138,7 @@ impl DriverAdapter for CqlAdapter {
                                 nbrs_metrics::labels::Labels::of("name", "rows_inserted"),
                             ),
                             rows_total: std::sync::atomic::AtomicU64::new(0),
+                            batch_writes: std::sync::atomic::AtomicU64::new(0),
                             trace_rate_bits: self.trace_rate_bits.clone(),
                             trace_log: self.trace_log.clone(),
                             modifiers,
@@ -1735,6 +1736,13 @@ struct CqlBatchDispenser {
     rows_timer: nbrs_metrics::instruments::timer::Timer,
     /// Cumulative row counter for the status line. Not reset on snapshot.
     rows_total: std::sync::atomic::AtomicU64,
+    /// Cumulative count of batch ops that actually wrote ≥1 row — one
+    /// inc per successful `execute` (a failed op returns early and is
+    /// never counted). Drives the display's true average batch size
+    /// (`rows_inserted / batch_writes`) instead of the attempt-based
+    /// `rows_inserted / stanzas_total`, which over-counts retries /
+    /// non-inserting ops in the denominator. Not reset on snapshot.
+    batch_writes: std::sync::atomic::AtomicU64,
     /// Live tracing probability (f64 bits). Loaded once per
     /// batch execute; `cql_trace_rate` control writes here.
     /// Sparse means "trace this batch invocation" — we roll
@@ -1802,7 +1810,15 @@ impl OpDispenser for CqlBatchDispenser {
     fn status_counters(&self) -> Vec<(&str, u64)> {
         let total = self.rows_total.load(std::sync::atomic::Ordering::Relaxed);
         if total == 0 { return Vec::new(); }
-        vec![("rows_inserted", total)]
+        let batches = self.batch_writes.load(std::sync::atomic::Ordering::Relaxed);
+        // Publish `batch_writes` alongside `rows_inserted` through the
+        // same status-counter surface so the display can derive the
+        // true average batch size (`rows_inserted / batch_writes`).
+        let mut out = vec![("rows_inserted", total)];
+        if batches > 0 {
+            out.push(("batch_writes", batches));
+        }
+        out
     }
 
     fn adapter_metrics(&self) -> Vec<(String, nbrs_metrics::labels::Labels, nbrs_metrics::snapshot::MetricValue)> {
@@ -1914,6 +1930,14 @@ impl OpDispenser for CqlBatchDispenser {
                 self.rows_timer.record(per_row_nanos);
             }
             self.rows_total.fetch_add(submitted as u64, std::sync::atomic::Ordering::Relaxed);
+            // Count this op as one batch write iff it actually wrote a
+            // row — the denominator for the display's true average
+            // batch size. Reached only on the success path (a failed
+            // sub-batch returns early above), so retried / failed ops
+            // never inflate it.
+            if submitted >= 1 {
+                self.batch_writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
 
             // `rows_inserted` lands on the per-fiber kernel via
             // ctx.wires.write — wrappers above this layer see it

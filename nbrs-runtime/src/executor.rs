@@ -5123,13 +5123,13 @@ async fn run_phase_inner(
                     .collect();
 
                 let stanzas = progress_metrics.stanzas_total.get();
-                let rows_total: u64 = adapter_counters.iter()
-                    .find(|(n, _, _)| n == "rows_inserted")
-                    .map(|(_, t, _)| *t)
-                    .unwrap_or(0);
-                let rows_per_batch = if stanzas > 0 && rows_total > stanzas {
-                    rows_total as f64 / stanzas as f64
-                } else { 0.0 };
+                let find_counter = |want: &str| adapter_counters.iter()
+                    .find(|(n, _, _)| n == want).map(|(_, t, _)| *t);
+                // True average batch size when the CQL batch dispensers
+                // publish `batch_writes`; attempt-based fallback otherwise.
+                let rows_per_batch = crate::readout_context::rows_per_batch(
+                    find_counter("rows_inserted"), find_counter("batch_writes"), stanzas,
+                ).unwrap_or(0.0);
 
                 let relevancy = progress_metrics.collect_relevancy_live();
 
@@ -5368,13 +5368,13 @@ async fn run_phase_inner(
             })
             .collect();
         let stanzas = progress_metrics.stanzas_total.get();
-        let rows_total: u64 = adapter_counters.iter()
-            .find(|(n, _, _)| n == "rows_inserted")
-            .map(|(_, t, _)| *t)
-            .unwrap_or(0);
-        let rows_per_batch = if stanzas > 0 && rows_total > stanzas {
-            rows_total as f64 / stanzas as f64
-        } else { 0.0 };
+        let find_counter = |want: &str| adapter_counters.iter()
+            .find(|(n, _, _)| n == want).map(|(_, t, _)| *t);
+        // True average batch size when the CQL batch dispensers publish
+        // `batch_writes`; attempt-based fallback otherwise.
+        let rows_per_batch = crate::readout_context::rows_per_batch(
+            find_counter("rows_inserted"), find_counter("batch_writes"), stanzas,
+        ).unwrap_or(0.0);
         let relevancy = progress_metrics.collect_relevancy_live();
         let (rows_consumed, rows_total) = live_rows_of(&progress_source_factory);
         ctx.observer.phase_progress(&crate::observer::PhaseProgressUpdate {

@@ -398,6 +398,43 @@ pub fn resolve_phase_coord_by_id(
         .unwrap_or((None, String::new()))
 }
 
+/// Average batch size for the ` rows/batch:` chip — rows written per
+/// successful batch op.
+///
+/// Prefers `rows_inserted / batch_writes`, where `batch_writes` is the
+/// number of ops that actually wrote ≥1 row (published by the CQL
+/// batch dispensers alongside `rows_inserted`). This is the true
+/// per-op stride: retried, failed, and non-inserting ops never touch
+/// `batch_writes`, so the denominator can't drift the way
+/// `stanzas_total` (one inc per op *attempt*, regardless of
+/// success/failure/type) does.
+///
+/// Falls back to `rows_inserted / stanzas_total` when no `batch_writes`
+/// counter is present — non-CQL or older adapter paths that never
+/// learned to publish it. Returns `None` when no batched write was
+/// observed (average would be ≤1 row/op, i.e. not a batch).
+///
+/// Kept as a free function (not inline at the call site) so the three
+/// display paths that render this chip — the inline refresh here and
+/// the two TUI progress-thread snapshots in `executor.rs` — share one
+/// formula, and so the formula is unit-testable in isolation.
+pub(crate) fn rows_per_batch(
+    rows_inserted: Option<u64>,
+    batch_writes: Option<u64>,
+    stanzas: u64,
+) -> Option<f64> {
+    let rows = rows_inserted?;
+    match batch_writes {
+        // A batch write count is present: divide by it directly. Show
+        // only when a real batch (>1 row/op) was observed.
+        Some(batches) if batches > 0 => {
+            (rows > batches).then(|| rows as f64 / batches as f64)
+        }
+        // Legacy / non-CQL fallback: attempt-count denominator.
+        _ => (stanzas > 0 && rows > stanzas).then(|| rows as f64 / stanzas as f64),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_inline_refresh_context(
     progress_metrics: &Arc<crate::activity::ActivityMetrics>,
@@ -477,18 +514,18 @@ pub fn build_inline_refresh_context(
         adapter_counters_text.push_str(&format!(" {name}:{rate_str}/s"));
     }
 
-    // Batch info: only fires when `rows_inserted > stanzas`
-    // (a batched write was observed). Same formula as before.
+    // Batch info: ` rows/batch:` = true average batch size (rows per
+    // successful batch op). Prefers `rows_inserted / batch_writes`
+    // when the CQL batch dispensers publish a `batch_writes` counter;
+    // otherwise falls back to the attempt-based `rows_inserted /
+    // stanzas_total`. See [`rows_per_batch`].
     let stanzas = progress_metrics.stanzas_total.get();
-    let mut batch_info_text = String::new();
-    if stanzas > 0 {
-        for (name, total) in &counters {
-            if name == "rows_inserted" && *total > stanzas {
-                let avg = *total as f64 / stanzas as f64;
-                batch_info_text = format!(" rows/batch:{avg:.1}");
-            }
-        }
-    }
+    let find_counter =
+        |want: &str| counters.iter().find(|(n, _)| n == want).map(|(_, t)| *t);
+    let batch_info_text =
+        rows_per_batch(find_counter("rows_inserted"), find_counter("batch_writes"), stanzas)
+            .map(|avg| format!(" rows/batch:{avg:.1}"))
+            .unwrap_or_default();
 
     // Pre-rendered status-metric chip string.
     let status_metric_chips = progress_metrics
@@ -531,5 +568,50 @@ pub fn build_inline_refresh_context(
         refresh_tick,
         use_color: crate::observer::use_color(),
         memo: memo_snapshot,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rows_per_batch;
+
+    /// With a `batch_writes` counter present, `rows/batch` is the true
+    /// average batch size (`rows_inserted / batch_writes`), NOT the
+    /// attempt-based `rows_inserted / stanzas_total`. Here 1000 rows
+    /// across 5 successful batch ops ⇒ 200.0, even though 40 op
+    /// attempts (stanzas) were recorded — the stanzas formula would
+    /// have wrongly shown 25.0.
+    #[test]
+    fn prefers_batch_writes_over_stanzas() {
+        let avg = rows_per_batch(Some(1000), Some(5), 40);
+        assert_eq!(avg, Some(200.0));
+    }
+
+    /// Without a `batch_writes` counter (non-CQL / older paths), the
+    /// formula falls back to `rows_inserted / stanzas_total`.
+    #[test]
+    fn falls_back_to_stanzas_without_batch_writes() {
+        let avg = rows_per_batch(Some(1000), None, 40);
+        assert_eq!(avg, Some(25.0));
+    }
+
+    /// `batch_writes = 0` behaves like "not present" — the counter is
+    /// only published once it has ticked, but guard against a zero
+    /// denominator either way and use the fallback.
+    #[test]
+    fn zero_batch_writes_uses_fallback() {
+        let avg = rows_per_batch(Some(1000), Some(0), 40);
+        assert_eq!(avg, Some(25.0));
+    }
+
+    /// No batched write observed (avg would be ≤1 row/op) ⇒ no chip.
+    #[test]
+    fn no_batch_observed_is_none() {
+        // batch_writes path: rows == batches ⇒ average of 1, not a batch.
+        assert_eq!(rows_per_batch(Some(5), Some(5), 40), None);
+        // stanzas fallback: rows == stanzas ⇒ not a batch.
+        assert_eq!(rows_per_batch(Some(40), None, 40), None);
+        // no rows_inserted counter at all ⇒ nothing to show.
+        assert_eq!(rows_per_batch(None, Some(5), 40), None);
     }
 }
