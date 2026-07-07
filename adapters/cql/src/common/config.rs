@@ -93,6 +93,11 @@ impl CqlConfig {
     /// deliberately excluded — they tune a session, they don't
     /// identify one, so phases that differ only in these knobs
     /// still share one instance (the first to connect shapes it).
+    /// `consistency` is likewise excluded (SRD-103 §7): it is a
+    /// per-statement concern applied per op via the modifier chain,
+    /// not a session identity, so a read-at-`LOCAL_ONE` phase and a
+    /// write-at-`LOCAL_QUORUM` phase against the same cluster share
+    /// one session.
     ///
     /// Two phases whose `CqlConfig` produces equal keys
     /// share a single live cassandra-cpp / scylla session
@@ -111,7 +116,6 @@ impl CqlConfig {
             .with("hosts", &self.hosts)
             .with("port", self.port.to_string())
             .with("keyspace", &self.keyspace)
-            .with("consistency", format!("{:?}", self.consistency))
             // Auth identity is part of the instance —
             // changing the username produces a different
             // logical session. The key's `fmt_for_log`

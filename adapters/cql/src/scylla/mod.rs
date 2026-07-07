@@ -21,6 +21,7 @@ mod op_modifier;
 mod prepared;
 mod raw;
 mod result;
+mod settings;
 
 use std::sync::Arc;
 
@@ -56,6 +57,12 @@ fn to_scylla_consistency(c: CqlConsistency) -> Consistency {
 /// CQL adapter using the scylla pure-Rust driver.
 pub struct ScyllaCqlAdapter {
     session: Arc<Session>,
+    /// The parsed connection config this adapter was built from — retained so
+    /// `map_op` can derive the phase's own SRD-35 fingerprint
+    /// (`config.to_resource_key("scylla").render_key()`) and bind it as the
+    /// `cql_session_key` scope constant for GK-resolved `max_batch_size`
+    /// (SRD-103 §3–4). Matches the pool entry's key, so `resource_lookup` hits.
+    config: CqlConfig,
     consistency: Consistency,
 }
 
@@ -89,6 +96,7 @@ impl ScyllaCqlAdapter {
             .map_err(|e| format!("scylla connect: {e}"))?;
         Ok(Self {
             session: Arc::new(session),
+            config: config.clone(),
             consistency,
         })
     }
@@ -103,6 +111,18 @@ impl DriverAdapter for ScyllaCqlAdapter {
 
     fn default_status_metrics(&self) -> Vec<StatusMetric> {
         crate::common::default_status_metrics()
+    }
+
+    /// SRD-103/104 — publish a [`CqlSessionHandle`](crate::common::CqlSessionHandle)
+    /// over this adapter's connected session as the pool-entry accessor
+    /// payload. The settings source runs on the SAME `Arc<Session>` the op
+    /// path uses.
+    fn accessor_payload(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        let source = settings::ScyllaSettingsSource::new(self.session.clone());
+        Some(Arc::new(crate::common::CqlSessionHandle::new(
+            "scylla",
+            Arc::new(source),
+        )))
     }
 
     fn map_op<'a>(
@@ -146,7 +166,11 @@ impl DriverAdapter for ScyllaCqlAdapter {
                 .collect()
         };
 
-        let has_batch = template.params.contains_key("batch");
+        // A `batch:` row cap OR a `max_batch_size:` byte budget both
+        // select the batch executor (SRD-103 §6): `max_batch_size`
+        // alone byte-bounds a dynamically-sized batch.
+        let has_batch = template.params.contains_key("batch")
+            || template.params.contains_key("max_batch_size");
         let mode = OpMode::from_stmt_field(stmt_field, has_batch);
 
         // SRD 73 — build the per-op modifier chain at dispenser
@@ -348,16 +372,29 @@ impl DriverAdapter for ScyllaCqlAdapter {
                                 _         => scylla::statement::batch::BatchType::Unlogged,
                             })
                             .unwrap_or(scylla::statement::batch::BatchType::Unlogged);
-                        let batch_size: usize = template.params.get("batch")
+                        // Raw `batch: N` row cap (0 = unset → the byte
+                        // budget, if any, drives the row count).
+                        let batch_n: usize = template.params.get("batch")
                             .or_else(|| template.params.get("batch-size"))
                             .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
-                            .unwrap_or(1) as usize;
+                            .unwrap_or(0) as usize;
+                        // SRD-103 §3 — `max_batch_size` is GK-resolved. A
+                        // literal magnitude (`64KB`) resolves directly; an
+                        // expression referencing the CQL session nodes is
+                        // evaluated against a subscope with this phase's own
+                        // `cql_session_key` bound, after the referenced
+                        // settings are pre-read into the session memo.
+                        let session_key = self.config.to_resource_key("scylla").render_key();
+                        let max_batch_bytes = crate::common::session_handle::resolve_max_batch_bytes(
+                            &parent, &session_key, template.params.get("max_batch_size"),
+                        ).await.map_err(|e| format!("op '{}': {e}", template.name))?;
                         Ok(Box::new(batch::ScyllaBatchDispenser::new(
                             self.session.clone(),
                             prepared_arc,
                             prepared_text,
                             bind_names,
-                            batch_size,
+                            batch_n,
+                            max_batch_bytes,
                             batch_type,
                             self.consistency,
                         )) as Box<dyn OpDispenser>)

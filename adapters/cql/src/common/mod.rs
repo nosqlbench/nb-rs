@@ -32,10 +32,13 @@ pub mod nodes;
 pub mod op_modifier;
 pub mod opmode;
 pub mod resolver;
+pub mod session_handle;
+pub mod size_estimator;
 pub mod status;
 
 pub use config::{CqlConfig, CqlConsistency};
 pub use opmode::{OpMode, STMT_FIELD_NAMES};
+pub use session_handle::{CqlSessionHandle, CqlSettingsSource};
 pub use resolver::CQL_TRACE_RATE;
 pub use status::default_status_metrics;
 

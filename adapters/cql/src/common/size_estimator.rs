@@ -1,0 +1,296 @@
+// Copyright 2024-2026 Jonathan Shook
+// SPDX-License-Identifier: Apache-2.0
+
+//! Type-aware CQL encoded-row size estimator, byte-magnitude parsing,
+//! and batch row-count planning — the shared numeric backbone of
+//! byte-bounded batching (SRD-103 §6).
+//!
+//! The batch dispensers accumulate rows until the estimated encoded
+//! size would cross a byte budget (`max_batch_size`), then flush. The
+//! estimate is derived from the same polydat [`Value`]s the binders
+//! consume, approximating Cassandra's mutation-size accounting:
+//!
+//! - fixed-width scalars bind to their CQL wire widths
+//!   (`bool` = 1, 32-bit = 4, 64-bit = 8, 128-bit / uuid = 16),
+//! - variable-length values (`text`, `blob`, JSON) carry a 4-byte
+//!   length prefix plus their payload byte length,
+//! - **typed vector slices dominate**: an `f32`/`i32` slice is
+//!   `n × 4` bytes, an `f64`/`i64` slice `n × 8`, etc. — the largest
+//!   term by far for embedding-insert workloads.
+//!
+//! The estimate is intentionally conservative (never under-counts a
+//! plausible CQL mapping) so the byte budget can be held safely below
+//! the server's `batch_size_fail_threshold` without approximation
+//! error crossing the reject line (SRD-103 §8).
+
+use polydat::ast::Value;
+
+/// Length prefix CQL writes before a variable-length cell (`[int]`
+/// length header) on the wire, in bytes.
+const VAR_PREFIX: u64 = 4;
+
+/// Conservative payload estimate for a reflected/adapter-contributed
+/// value with no precise width mapping (uuid, inet, timestamp, …).
+const UNKNOWN_SCALAR: u64 = 16;
+
+/// Hard cap on the row count predicted for a byte-budgeted op that
+/// sets `max_batch_size` without an explicit `batch: N` row cap —
+/// the SRD-22 "falls back to 1000-row cap" bound. Prevents a runaway
+/// pull when rows are tiny relative to the budget.
+pub const MAX_PREDICTED_ROWS: usize = 1000;
+
+/// Approximate the CQL-encoded size of a single bound [`Value`], in
+/// bytes. Handles every variant the CQL binders (both engines) map;
+/// unknown/reflected variants fall back to a small conservative
+/// constant rather than panicking.
+pub fn estimate_value_size(v: &Value) -> u64 {
+    match v {
+        Value::Bool(_) => 1,
+        // 64-bit integers most naturally bind to CQL `bigint` /
+        // `timestamp` (8 bytes). Use the wider mapping so the
+        // estimate never under-counts when the column is 64-bit;
+        // a narrower `int` column merely over-estimates by 4.
+        Value::U64(_) | Value::I64(_) => 8,
+        Value::F64(_) => 8, // double
+        Value::U128(_) | Value::I128(_) | Value::Reg128(..) => 16, // uuid / 128-bit
+        // Variable-length: 4-byte length prefix + payload bytes.
+        Value::Str(s) => VAR_PREFIX + s.len() as u64,
+        Value::Bytes(b) => VAR_PREFIX + b.len() as u64,
+        Value::Json(j) => VAR_PREFIX + json_estimate(j),
+        // Typed vector slices — the dominant term for vector
+        // workloads. `n × elem-width` plus the length prefix.
+        Value::VecF32(s) => VAR_PREFIX + (s.len() as u64) * 4,
+        Value::VecI32(s) => VAR_PREFIX + (s.len() as u64) * 4,
+        Value::VecF64(s) => VAR_PREFIX + (s.len() as u64) * 8,
+        Value::VecI64(s) => VAR_PREFIX + (s.len() as u64) * 8,
+        Value::VecF16(s) => VAR_PREFIX + (s.len() as u64) * 2,
+        Value::VecI16(s) => VAR_PREFIX + (s.len() as u64) * 2,
+        Value::VecI8(s) => VAR_PREFIX + (s.len() as u64),
+        // Reflected protocol values (uuid, inet, timestamp, …) and
+        // type-erased resource handles (never bound as a column, but
+        // handled for exhaustiveness): a small conservative constant,
+        // never panic.
+        Value::Ext(_) | Value::Handle(_) => VAR_PREFIX + UNKNOWN_SCALAR,
+        // Unset sentinel — contributes no wire bytes (never appears
+        // in a real bound row).
+        Value::None => 0,
+    }
+}
+
+/// Sum the estimated encoded sizes of every bound value in a row.
+pub fn estimate_row_size(values: &[Value]) -> u64 {
+    values.iter().map(estimate_value_size).sum()
+}
+
+/// Cheap structural size estimate for a JSON value, avoiding a full
+/// re-serialization on the batch path. Approximates the rendered
+/// text length.
+fn json_estimate(j: &serde_json::Value) -> u64 {
+    match j {
+        serde_json::Value::Null => 4,
+        serde_json::Value::Bool(_) => 5,
+        serde_json::Value::Number(_) => 8,
+        serde_json::Value::String(s) => s.len() as u64 + 2,
+        serde_json::Value::Array(a) => {
+            2 + a.len() as u64 + a.iter().map(json_estimate).sum::<u64>()
+        }
+        serde_json::Value::Object(o) => {
+            2 + o
+                .iter()
+                .map(|(k, v)| k.len() as u64 + 4 + json_estimate(v))
+                .sum::<u64>()
+        }
+    }
+}
+
+/// Parse a `max_batch_size` op-field value into a byte magnitude.
+///
+/// Accepts a bare JSON number (`65536`) or a magnitude string
+/// (`"64KB"`, `"128KiB"`, `"1MB"`, `"64k"`). Returns `None` for a
+/// missing field or an unparseable value (→ no byte cap).
+pub fn parse_max_batch_bytes(param: Option<&serde_json::Value>) -> Option<u64> {
+    let v = param?;
+    if let Some(u) = v.as_u64() {
+        return Some(u);
+    }
+    if let Some(f) = v.as_f64()
+        && f.is_finite()
+        && f >= 0.0
+    {
+        return Some(f.round() as u64);
+    }
+    if let Some(s) = v.as_str() {
+        return parse_byte_magnitude(s);
+    }
+    None
+}
+
+/// Parse a byte-magnitude string.
+///
+/// Delegates to [`nbrs_workload::magnitude::parse_magnitude`], which
+/// understands single-letter decimal (`k m g t p e`, powers of 1000)
+/// and two-letter binary (`ki mi gi …`, powers of 1024) suffixes.
+/// That parser does **not** recognise the trailing byte-unit marker
+/// used throughout the workloads (`64KB`, `128KiB`, `1MB` all return
+/// `None`), so a single trailing `b`/`B` is stripped as a "bytes"
+/// marker before a retry:
+///
+/// - `"64KB"`  → `64K`  → 64_000   (decimal `KB` = 1000)
+/// - `"64KiB"` → `64Ki` → 65_536   (binary `KiB` = 1024)
+/// - `"128KB"` → 128_000
+/// - `"1MB"`   → 1_000_000
+/// - `"1024"`  → 1_024   (bare number — no marker to strip)
+///
+/// Magnitude-native spellings that the base parser already accepts
+/// (`64k`, `64ki`, scientific `6.4e4`, and the bare-`b` = billion
+/// decimal alias) keep their meaning, because the raw string is tried
+/// first and only a `None` result triggers the byte-marker retry.
+pub fn parse_byte_magnitude(raw: &str) -> Option<u64> {
+    let t = raw.trim();
+    let parsed = nbrs_workload::magnitude::parse_magnitude(t).or_else(|| {
+        let stripped = t.strip_suffix(['b', 'B'])?;
+        nbrs_workload::magnitude::parse_magnitude(stripped)
+    })?;
+    if parsed.is_finite() && parsed >= 0.0 {
+        Some(parsed.round() as u64)
+    } else {
+        None
+    }
+}
+
+/// Decide how many rows a single batch-op invocation pulls in total,
+/// given the first row's estimated size and the two caps.
+///
+/// - `batch: N` set (`batch_n > 0`) → exactly `N` rows (the byte
+///   budget, if any, then splits those `N` into sub-batches).
+/// - only `max_batch_size` → predict `budget / first_row_bytes`
+///   rows (one budget-worth), clamped to `1..=`[`MAX_PREDICTED_ROWS`].
+/// - neither → a single row (today's default).
+///
+/// Deterministic for a given first-row size, so the op advances a
+/// fixed number of cursor coordinates with no test-and-discard.
+pub fn plan_total_rows(first_row_bytes: u64, batch_n: usize, budget: Option<u64>) -> usize {
+    if batch_n > 0 {
+        batch_n
+    } else if let Some(b) = budget {
+        let per = (b / first_row_bytes.max(1)) as usize;
+        per.clamp(1, MAX_PREDICTED_ROWS)
+    } else {
+        1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use polydat::ast::{SliceArc, Value};
+
+    fn vecf32(n: usize) -> Value {
+        Value::VecF32(SliceArc::from_vec(vec![0.0f32; n]))
+    }
+    fn veci32(n: usize) -> Value {
+        Value::VecI32(SliceArc::from_vec(vec![0i32; n]))
+    }
+
+    #[test]
+    fn f32_vector_row_is_payload_plus_small_prefix() {
+        // A 1536-dim f32 embedding dominates the row: n*4 bytes plus
+        // the 4-byte length prefix.
+        let row = [vecf32(1536)];
+        let est = estimate_row_size(&row);
+        assert_eq!(est, VAR_PREFIX + 1536 * 4);
+        // "≈ 1536*4": the prefix is a small constant overhead.
+        assert!(est >= 1536 * 4 && est <= 1536 * 4 + 8, "est={est}");
+    }
+
+    #[test]
+    fn i32_vector_row_matches_f32_width() {
+        assert_eq!(estimate_row_size(&[veci32(1536)]), VAR_PREFIX + 1536 * 4);
+    }
+
+    #[test]
+    fn wide_and_half_vectors() {
+        // f64/i64 = n*8, f16/i16 = n*2, i8 = n*1.
+        assert_eq!(
+            estimate_row_size(&[Value::VecF64(SliceArc::from_vec(vec![0.0f64; 4]))]),
+            VAR_PREFIX + 4 * 8
+        );
+        assert_eq!(
+            estimate_row_size(&[Value::VecI16(SliceArc::from_vec(vec![0i16; 8]))]),
+            VAR_PREFIX + 8 * 2
+        );
+        assert_eq!(
+            estimate_row_size(&[Value::VecI8(SliceArc::from_vec(vec![0i8; 10]))]),
+            VAR_PREFIX + 10
+        );
+    }
+
+    #[test]
+    fn mixed_scalar_row() {
+        // id(bigint=8) + flag(bool=1) + name(text: 4+3) + vec(4+16).
+        let row = [
+            Value::U64(42),
+            Value::Bool(true),
+            Value::Str("abc".into()),
+            veci32(4),
+        ];
+        let expected = 8 + 1 + (VAR_PREFIX + 3) + (VAR_PREFIX + 16);
+        assert_eq!(estimate_row_size(&row), expected);
+    }
+
+    #[test]
+    fn fixed_width_scalars() {
+        assert_eq!(estimate_value_size(&Value::Bool(false)), 1);
+        assert_eq!(estimate_value_size(&Value::U64(1)), 8);
+        assert_eq!(estimate_value_size(&Value::I64(-1)), 8);
+        assert_eq!(estimate_value_size(&Value::F64(1.5)), 8);
+        assert_eq!(estimate_value_size(&Value::Bytes([0u8; 12].into())), VAR_PREFIX + 12);
+        assert_eq!(estimate_value_size(&Value::None), 0);
+    }
+
+    #[test]
+    fn byte_magnitude_accepts_workload_spellings() {
+        // parse_magnitude alone rejects these (returns None); the
+        // trailing-byte-marker retry rescues them.
+        assert_eq!(parse_byte_magnitude("64KB"), Some(64_000));
+        assert_eq!(parse_byte_magnitude("128KB"), Some(128_000));
+        assert_eq!(parse_byte_magnitude("1MB"), Some(1_000_000));
+        assert_eq!(parse_byte_magnitude("64KiB"), Some(65_536));
+        assert_eq!(parse_byte_magnitude("50KiB"), Some(51_200));
+        // Bare numbers and magnitude-native spellings pass through.
+        assert_eq!(parse_byte_magnitude("1024"), Some(1024));
+        assert_eq!(parse_byte_magnitude("64k"), Some(64_000));
+        assert_eq!(parse_byte_magnitude("64Ki"), Some(65_536));
+        // Junk → None (no byte cap).
+        assert_eq!(parse_byte_magnitude("lots"), None);
+    }
+
+    #[test]
+    fn parse_max_batch_bytes_from_json() {
+        assert_eq!(
+            parse_max_batch_bytes(Some(&serde_json::json!("64KB"))),
+            Some(64_000)
+        );
+        assert_eq!(
+            parse_max_batch_bytes(Some(&serde_json::json!(65536))),
+            Some(65_536)
+        );
+        assert_eq!(parse_max_batch_bytes(None), None);
+    }
+
+    #[test]
+    fn plan_total_rows_matrix() {
+        // batch: N wins as the total regardless of budget.
+        assert_eq!(plan_total_rows(6148, 10, Some(64_000)), 10);
+        assert_eq!(plan_total_rows(6148, 8, None), 8);
+        // only max_batch_size → one budget-worth predicted from row 0.
+        // 64_000 / 6_148 = 10 rows.
+        assert_eq!(plan_total_rows(6148, 0, Some(64_000)), 10);
+        // tiny rows clamp to the 1000-row fallback cap.
+        assert_eq!(plan_total_rows(1, 0, Some(10_000_000)), MAX_PREDICTED_ROWS);
+        // oversized single row still yields ≥1.
+        assert_eq!(plan_total_rows(100_000, 0, Some(64_000)), 1);
+        // neither → single row.
+        assert_eq!(plan_total_rows(6148, 0, None), 1);
+    }
+}

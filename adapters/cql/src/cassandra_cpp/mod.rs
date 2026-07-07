@@ -23,6 +23,7 @@ use cass::LendingIterator;
 
 mod binder_meta;
 mod op_modifier;
+mod settings;
 mod tracing;
 use tracing::{TraceLog, TraceRecord};
 
@@ -240,6 +241,14 @@ impl ResultBody for CqlResultBody {
 /// CQL adapter using the Apache Cassandra C++ driver.
 pub struct CqlAdapter {
     session: cass::Session,
+    /// The parsed connection config this adapter was built from. Retained so
+    /// `map_op` can derive the phase's own SRD-35 resource fingerprint
+    /// (`config.to_resource_key("cassandra-cpp").render_key()`) and bind it as
+    /// the `cql_session_key` scope constant for GK-resolved `max_batch_size`
+    /// (SRD-103 §3–4). The stored config equals the one the pool's
+    /// `SharedDriverRegistration.resource_key` used, so the render-key matches
+    /// the pool entry's key exactly and `resource_lookup` is a sync hit.
+    config: CqlConfig,
     consistency: cass::Consistency,
     /// Per-execute tracing probability (0.0–1.0). Stored as
     /// `f64::to_bits` in an AtomicU64 so dispensers can read
@@ -635,6 +644,7 @@ impl CqlAdapter {
 
         Ok(Self {
             session,
+            config: config.clone(),
             consistency,
             trace_rate_bits,
             trace_log,
@@ -674,6 +684,18 @@ impl DriverAdapter for CqlAdapter {
 
     fn default_status_metrics(&self) -> Vec<nbrs_runtime::adapter::StatusMetric> {
         crate::common::default_status_metrics()
+    }
+
+    /// SRD-103/104 — publish a [`CqlSessionHandle`](crate::common::CqlSessionHandle)
+    /// over this adapter's connected session as the pool-entry accessor
+    /// payload. Kernels reach it via `cql_session(cql_session_key)`; the
+    /// settings source runs on the SAME `cass::Session` the op path uses.
+    fn accessor_payload(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        let source = settings::CassSettingsSource::new(self.session.clone());
+        Some(Arc::new(crate::common::CqlSessionHandle::new(
+            "cassandra-cpp",
+            Arc::new(source),
+        )))
     }
 
     fn declare_controls(
@@ -824,11 +846,26 @@ impl DriverAdapter for CqlAdapter {
 
         // Check for batch configuration on this op.
         // batch: <integer> — batch size (rows per batch), type defaults to unlogged.
+        // max_batch_size: <bytes> — byte budget bounding the encoded batch size (SRD-103 §6).
         // batchtype: logged|unlogged|counter — overrides batch type.
-        let has_batch = template.params.contains_key("batch");
-        let batch_size: usize = template.params.get("batch")
+        // A `batch:` row cap OR a `max_batch_size:` byte budget both select the
+        // batch executor; `max_batch_size` alone byte-bounds a dynamically-sized batch.
+        let has_batch = template.params.contains_key("batch")
+            || template.params.contains_key("max_batch_size");
+        // Raw `batch: N` row cap (0 = unset → the byte budget drives the row count).
+        let batch_n: usize = template.params.get("batch")
             .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
             .unwrap_or(0) as usize;
+        // SRD-103 §3 — `max_batch_size` is a GK-resolved field. A literal
+        // magnitude (`64KB`) resolves directly; an expression referencing the
+        // CQL session nodes is evaluated against a subscope with this phase's
+        // own `cql_session_key` bound, after the referenced settings are
+        // pre-read (async) into the session memo. The phase's session is
+        // pre-attached before op fields resolve, so `render_key` is a sync hit.
+        let session_key = self.config.to_resource_key("cassandra-cpp").render_key();
+        let max_batch_bytes = crate::common::session_handle::resolve_max_batch_bytes(
+            &parent, &session_key, template.params.get("max_batch_size"),
+        ).await.map_err(|e| format!("op '{}': {e}", template.name))?;
         let batch_type = template.params.get("batchtype")
             .and_then(|v| v.as_str())
             .map(|s| match s.to_lowercase().as_str() {
@@ -1037,7 +1074,9 @@ impl DriverAdapter for CqlAdapter {
                             stmt_field: "stmt".to_string(),
                             bind_names,
                             canonical_kernel,
-                            batch_size: if batch_size == 0 { 1 } else { batch_size },
+                            batch_n,
+                            max_batch_bytes,
+                            oversize_warned: std::sync::atomic::AtomicBool::new(false),
                             prepared: prepared_arc,
                             binders,
                             batch_type,
@@ -1597,12 +1636,20 @@ struct CqlBatchDispenser {
     /// See `CqlRawDispenser::canonical_kernel`.
     #[allow(dead_code)]
     canonical_kernel: std::sync::Arc<polydat::kernel::PolydatKernel>,
-    /// Batch row count from `batch: N` op param. Per the SRD-68
-    /// invariant "batch is an iteration container, each row is
-    /// another pull," the dispenser internally advances the
-    /// kernel coord N times per fiber-cycle, calling
-    /// `wires.get(bind_name)` for each row's typed values.
-    batch_size: usize,
+    /// Raw `batch: N` row cap from the op param (`0` → unset). Per
+    /// the SRD-68 invariant "batch is an iteration container, each
+    /// row is another pull," the dispenser internally advances the
+    /// kernel coord once per row, calling `wires.get(bind_name)` for
+    /// each row's typed values.
+    batch_n: usize,
+    /// SRD-103 §6 byte budget (`max_batch_size`, a literal
+    /// magnitude). `None` → no byte cap. When set, rows are packed
+    /// into sub-batches each held under this estimated encoded size;
+    /// one op invocation may emit multiple batch round-trips.
+    max_batch_bytes: Option<u64>,
+    /// Fires the "single row exceeds max_batch_size" warning at most
+    /// once per dispenser lifetime.
+    oversize_warned: std::sync::atomic::AtomicBool,
     /// Pre-prepared statement (constructed at `map_op` time).
     prepared: Arc<cass::PreparedStatement>,
     /// Per-position type-aware binders built at `map_op` time
@@ -1668,10 +1715,11 @@ impl OpDispenser for CqlBatchDispenser {
                 out.push(ch);
             }
         }
-        let suffix = if self.batch_size > 1 {
-            format!("  -- batch_size={}", self.batch_size)
-        } else {
-            String::new()
+        let suffix = match (self.batch_n, self.max_batch_bytes) {
+            (n, Some(b)) if n > 0 => format!("  -- batch={n}, max_batch_size={b}B"),
+            (0, Some(b)) => format!("  -- max_batch_size={b}B"),
+            (n, None) if n > 1 => format!("  -- batch={n}"),
+            _ => String::new(),
         };
         Some(format!("CQL batch: {}{}", flatten_one_line(&out), suffix))
     }
@@ -1713,162 +1761,213 @@ impl OpDispenser for CqlBatchDispenser {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
         Box::pin(async move {
-            // `self.prepared` and `self.binders` are built at
-            // `map_op` time — no per-cycle init.
-            let mut batch = self.session.get().batch(self.batch_type);
-
-            // Sparse-tracing decision once for the whole batch
-            // (not per row). Atomic load is cheap; the RNG roll
-            // only fires when the rate is non-zero, so the
-            // no-tracing hot path stays effectively free.
+            // Sparse-tracing decision once for the whole invocation
+            // (not per row / per sub-batch). Atomic load is cheap;
+            // the RNG roll only fires when the rate is non-zero, so
+            // the no-tracing hot path stays effectively free.
             let trace_rate = f64::from_bits(self.trace_rate_bits.load(Ordering::Acquire));
             let trace_this = trace_rate > 0.0
                 && rand::random::<f64>() < trace_rate;
 
-            // SRD-68 Push 5b' batch contract: "each iteration of
-            // the batch is considered another pull, just as if
-            // the operation inside the batch were separate. It
-            // is simply an iteration container." Drive the
-            // `batch_size` rows by advancing the per-fiber
-            // kernel coord via `wires.advance(coord)` and
-            // pulling each bind name via `wires.get(name)` for
-            // the row's typed values. Same single resolution
-            // surface (per SRD-68 invariant I-1) the prepared
-            // single-cycle path uses; no parallel fields/pulls
-            // path.
-            for row_idx in 0..self.batch_size {
-                let row_coord = cycle + row_idx as u64;
-                wires.advance(row_coord);
-                let mut stmt = self.prepared.bind();
-                let _ = stmt.set_consistency(self.consistency)
-                    .map_err(|e| ExecutionError::Op(AdapterError {
-                        error_name: "bind_error".into(),
-                        message: format!("set consistency: {e}"),
-                        retryable: false,
-                    }))?;
-                // SRD 73: per-op universal-field overrides on top
-                // of the session-level consistency, applied to each
-                // row's bound statement before tracing is layered.
-                self.modifiers.apply(&mut stmt);
-                if trace_this {
-                    let _ = stmt.set_tracing(true);
-                }
-                for (idx, name) in self.bind_names.iter().enumerate() {
-                    if let Some(value) = wires.get(name) {
-                        self.binders[idx](&mut stmt, idx, &value)
-                            .map_err(|e| ExecutionError::Op(AdapterError {
-                                error_name: "bind_error".into(),
-                                message: format!(
-                                    "bind position {idx} ('{name}') row {row_idx}: {e}"
-                                ),
-                                retryable: false,
-                            }))?;
-                    }
-                }
-                batch.add_statement(stmt)
-                    .map_err(|e| ExecutionError::Op(AdapterError {
-                        error_name: "batch_error".into(),
-                        message: format!("add_statement (row {row_idx}): {e}"),
-                        retryable: false,
-                    }))?;
-            }
-            let row_count = self.batch_size;
-
-            // Capture metadata for the trace log before dispatch.
-            // `started_at` is the wall-clock for the
-            // `system_traces.sessions` time-window correlation;
-            // `batch_start` is the monotonic clock used both for
-            // the rows_timer accounting and the trace log
-            // latency_nanos.
-            let started_at = std::time::SystemTime::now();
-            let batch_start = std::time::Instant::now();
-
-            // Two execute paths so the no-trace hot path stays
-            // exactly the existing shape. Traced batches go
-            // through the vendored `execute_batch_with_tracing`
-            // which pairs result with `cass_future_tracing_id`.
-            let exec_outcome = if trace_this {
-                self.session.get()
-                    .execute_batch_with_tracing(&batch)
-                    .await
-                    .map(|(r, tid)| (r, tid))
-            } else {
-                self.session.get()
-                    .execute_batch(&batch)
-                    .await
-                    .map(|r| (r, None))
+            // SRD-68 Push 5b' batch contract: "each iteration of the
+            // batch is considered another pull … an iteration
+            // container." Drive the rows by advancing the per-fiber
+            // kernel coord via `wires.advance(coord)` and pulling
+            // each bind name via `wires.get(name)`. Row 0 doubles as
+            // the size sample used to plan the total row count for a
+            // purely byte-budgeted op (SRD-103 §6).
+            let gather_row = |coord: u64| -> Vec<Option<polydat::ast::Value>> {
+                wires.advance(coord);
+                self.bind_names.iter().map(|n| wires.get(n)).collect()
             };
-
-            let batch_nanos = batch_start.elapsed().as_nanos() as u64;
-
-            match exec_outcome {
-                Ok((_result, trace_id)) => {
-                    if trace_this
-                        && let Some(log) = self.trace_log.as_ref()
-                    {
-                        log.submit(TraceRecord {
-                            // First-row cycle of the batch — the
-                            // dispenser's `cycle` arg points at
-                            // it.
-                            cycle,
-                            started_at,
-                            query: self.stmt_text.clone(),
-                            // Batches don't render every row's
-                            // binds (could be thousands). One
-                            // synthetic entry summarises the
-                            // batch dispatch.
-                            binds: vec![format!("batch of {} rows", row_count)],
-                            latency_nanos: batch_nanos,
-                            ok: true,
-                            error_name: None,
-                            trace_id: trace_id.map(|u| {
-                                let std_uuid: uuid::Uuid = u.into();
-                                std_uuid.to_string()
-                            }),
-                        });
-                    }
-                }
-                Err(e) => {
-                    if trace_this
-                        && let Some(log) = self.trace_log.as_ref()
-                    {
-                        log.submit(TraceRecord {
-                            cycle,
-                            started_at,
-                            query: self.stmt_text.clone(),
-                            binds: vec![format!("batch of {} rows", row_count)],
-                            latency_nanos: batch_nanos,
-                            ok: false,
-                            error_name: Some("batch_error".into()),
-                            trace_id: None,
-                        });
-                    }
-                    return Err(ExecutionError::Op(AdapterError {
-                        error_name: "batch_error".into(),
-                        message: format!("execute_batch ({row_count} statements): {e}"),
-                        retryable: false,
-                    }));
-                }
+            let row0 = gather_row(cycle);
+            let first_bytes = Self::estimate_optional_row(&row0);
+            let total = crate::common::size_estimator::plan_total_rows(
+                first_bytes, self.batch_n, self.max_batch_bytes);
+            let mut all_rows: Vec<Vec<Option<polydat::ast::Value>>> = Vec::with_capacity(total);
+            all_rows.push(row0);
+            for row_idx in 1..total {
+                all_rows.push(gather_row(cycle + row_idx as u64));
             }
 
-            let per_row_nanos = batch_nanos / row_count.max(1) as u64;
-            for _ in 0..row_count {
+            // Fill-to-budget: pack rows into the current sub-batch,
+            // flushing before a row that would push the estimated
+            // encoded size over `max_batch_bytes`. Always ≥1 row per
+            // sub-batch; `batch: N` (= `total` here) bounds the
+            // overall pull. One op invocation may emit multiple
+            // batch round-trips — summed into one OpResult; a
+            // failure on any sub-batch fails the whole op.
+            let mut submitted: usize = 0;
+            let mut total_nanos: u64 = 0;
+            let mut cur: Vec<Vec<Option<polydat::ast::Value>>> = Vec::new();
+            let mut cur_bytes: u64 = 0;
+            for row in all_rows {
+                let row_bytes = Self::estimate_optional_row(&row);
+                if let Some(budget) = self.max_batch_bytes {
+                    if !cur.is_empty() && cur_bytes + row_bytes > budget {
+                        total_nanos += self.exec_sub_batch(cycle, &cur, trace_this).await?;
+                        submitted += cur.len();
+                        cur.clear();
+                        cur_bytes = 0;
+                    }
+                    if cur.is_empty() && row_bytes > budget
+                        && !self.oversize_warned.swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        nbrs_runtime::diag!(
+                            nbrs_runtime::observer::LogLevel::Warn,
+                            "cql batch: a single row (~{row_bytes} B) exceeds \
+                             max_batch_size ({budget} B); sending it as a one-row \
+                             batch — the server may still reject it",
+                        );
+                    }
+                }
+                cur.push(row);
+                cur_bytes += row_bytes;
+            }
+            if !cur.is_empty() {
+                total_nanos += self.exec_sub_batch(cycle, &cur, trace_this).await?;
+                submitted += cur.len();
+            }
+
+            // Amortize the summed batch latency across every
+            // submitted row for rows/s throughput reporting.
+            let per_row_nanos = total_nanos / submitted.max(1) as u64;
+            for _ in 0..submitted {
                 self.rows_timer.record(per_row_nanos);
             }
-            self.rows_total.fetch_add(row_count as u64, std::sync::atomic::Ordering::Relaxed);
+            self.rows_total.fetch_add(submitted as u64, std::sync::atomic::Ordering::Relaxed);
 
             // `rows_inserted` lands on the per-fiber kernel via
             // ctx.wires.write — wrappers above this layer see it
             // through wires.get on the same cycle.
             let _ = ctx.wires.write(
                 "rows_inserted",
-                polydat::ast::Value::U64(row_count as u64),
+                polydat::ast::Value::U64(submitted as u64),
             );
             Ok(OpResult {
                 body: None,
                 skipped: false,
             })
         })
+    }
+}
+
+impl CqlBatchDispenser {
+    /// Sum the estimated CQL-encoded size of the present values in a
+    /// pulled row. Absent wires (`None`) contribute nothing, matching
+    /// the bind loop that skips them.
+    fn estimate_optional_row(row: &[Option<polydat::ast::Value>]) -> u64 {
+        row.iter()
+            .filter_map(|o| o.as_ref())
+            .map(crate::common::size_estimator::estimate_value_size)
+            .sum()
+    }
+
+    /// Bind and execute one CQL BATCH over the given pulled rows,
+    /// exactly as a single batch was executed before byte-bounding.
+    /// Returns the round-trip latency in nanos; submits a trace
+    /// record when `trace_this`. Any bind/add/execute failure maps to
+    /// an `ExecutionError::Op` and fails the whole op.
+    async fn exec_sub_batch(
+        &self,
+        cycle: u64,
+        rows: &[Vec<Option<polydat::ast::Value>>],
+        trace_this: bool,
+    ) -> Result<u64, ExecutionError> {
+        let mut batch = self.session.get().batch(self.batch_type);
+        for (row_idx, row) in rows.iter().enumerate() {
+            let mut stmt = self.prepared.bind();
+            let _ = stmt.set_consistency(self.consistency)
+                .map_err(|e| ExecutionError::Op(AdapterError {
+                    error_name: "bind_error".into(),
+                    message: format!("set consistency: {e}"),
+                    retryable: false,
+                }))?;
+            // SRD 73: per-op universal-field overrides on top of the
+            // session-level consistency, before tracing is layered.
+            self.modifiers.apply(&mut stmt);
+            if trace_this {
+                let _ = stmt.set_tracing(true);
+            }
+            for (idx, value_opt) in row.iter().enumerate() {
+                if let Some(value) = value_opt {
+                    self.binders[idx](&mut stmt, idx, value)
+                        .map_err(|e| ExecutionError::Op(AdapterError {
+                            error_name: "bind_error".into(),
+                            message: format!(
+                                "bind position {idx} ('{}') row {row_idx}: {e}",
+                                self.bind_names.get(idx).map(String::as_str).unwrap_or("?"),
+                            ),
+                            retryable: false,
+                        }))?;
+                }
+            }
+            batch.add_statement(stmt)
+                .map_err(|e| ExecutionError::Op(AdapterError {
+                    error_name: "batch_error".into(),
+                    message: format!("add_statement (row {row_idx}): {e}"),
+                    retryable: false,
+                }))?;
+        }
+        let row_count = rows.len();
+
+        // `started_at` correlates with `system_traces.sessions`;
+        // `batch_start` feeds both metrics and the trace latency.
+        let started_at = std::time::SystemTime::now();
+        let batch_start = std::time::Instant::now();
+        let exec_outcome = if trace_this {
+            self.session.get().execute_batch_with_tracing(&batch).await
+        } else {
+            self.session.get().execute_batch(&batch).await.map(|r| (r, None))
+        };
+        let batch_nanos = batch_start.elapsed().as_nanos() as u64;
+
+        match exec_outcome {
+            Ok((_result, trace_id)) => {
+                if trace_this
+                    && let Some(log) = self.trace_log.as_ref()
+                {
+                    log.submit(TraceRecord {
+                        cycle,
+                        started_at,
+                        query: self.stmt_text.clone(),
+                        // Batches don't render every row's binds
+                        // (could be thousands). One synthetic entry
+                        // summarises the sub-batch dispatch.
+                        binds: vec![format!("batch of {row_count} rows")],
+                        latency_nanos: batch_nanos,
+                        ok: true,
+                        error_name: None,
+                        trace_id: trace_id.map(|u| {
+                            let std_uuid: uuid::Uuid = u.into();
+                            std_uuid.to_string()
+                        }),
+                    });
+                }
+                Ok(batch_nanos)
+            }
+            Err(e) => {
+                if trace_this
+                    && let Some(log) = self.trace_log.as_ref()
+                {
+                    log.submit(TraceRecord {
+                        cycle,
+                        started_at,
+                        query: self.stmt_text.clone(),
+                        binds: vec![format!("batch of {row_count} rows")],
+                        latency_nanos: batch_nanos,
+                        ok: false,
+                        error_name: Some("batch_error".into()),
+                        trace_id: None,
+                    });
+                }
+                Err(ExecutionError::Op(AdapterError {
+                    error_name: "batch_error".into(),
+                    message: format!("execute_batch ({row_count} statements): {e}"),
+                    retryable: false,
+                }))
+            }
+        }
     }
 }
 
