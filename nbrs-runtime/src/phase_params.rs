@@ -126,9 +126,12 @@ pub fn resolve_for_phase<'a>(
             None => {
                 chosen.insert(ov.param.as_str(), (ov, dialect));
             }
-            Some((prev, prev_dialect)) => {
-                let prev_is_literal = *prev_dialect == PhaseDialect::Literal;
-                let this_is_literal = dialect == PhaseDialect::Literal;
+            Some((prev, _prev_dialect)) => {
+                // A negated pattern (`!foo`) spans many phases, so it
+                // never wins exact-beats-glob precedence even when its
+                // body is a literal — `is_exact_literal` folds that in.
+                let prev_is_literal = prev.pattern.is_exact_literal();
+                let this_is_literal = ov.pattern.is_exact_literal();
                 match (prev_is_literal, this_is_literal) {
                     // Exact beats pattern.
                     (true, false) => {}

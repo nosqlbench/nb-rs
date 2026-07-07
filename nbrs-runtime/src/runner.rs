@@ -2729,7 +2729,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                     let pat = crate::phase_filter::PhasePattern::parse(src)
                         .map_err(|e| format!("phases= param: {e}"))?;
                     crate::diag!(crate::observer::LogLevel::Info,
-                        "phases=<filter>: pattern '{src}' ({})",
+                        "phases=<filter>: pattern '{src}' ({}{})",
+                        if pat.negated() { "negated " } else { "" },
                         pat.dialect().as_str());
                     Some(Arc::new(pat))
                 }

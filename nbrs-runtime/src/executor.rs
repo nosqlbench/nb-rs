@@ -3964,7 +3964,7 @@ async fn run_phase_inner(
                 Ok(v) => v,
                 Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
             };
-            for (ov, dialect) in chosen {
+            for (ov, _dialect) in chosen {
                 use polydat::kernel::{Dataflow, WriteError};
                 match kernel.set_wire(
                     &ov.param,
@@ -3977,7 +3977,7 @@ async fn run_phase_inner(
                             ov.param, ov.value, ov.pattern.source(), ov.param);
                     }
                     Err(WriteError::UnknownWire { .. }) => {
-                        if dialect == crate::phase_filter::PhaseDialect::Literal {
+                        if ov.pattern.is_exact_literal() {
                             crate::diag!(crate::observer::LogLevel::Warn,
                                 "phase '{phase_name}': override `{}.{}=` names a \
                                  param this phase does not consume — no wire \
