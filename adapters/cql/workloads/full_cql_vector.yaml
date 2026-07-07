@@ -697,7 +697,7 @@ phases:
       train_vector := vector_at(prebuffered, row)
     ops:
       insert:
-        max_batch_size: 64KB
+        max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
         batchtype: unlogged
         prepared: |
           INSERT INTO {keyspace}.{table} 
@@ -725,7 +725,7 @@ phases:
       meta := metadata_value_at(prebuffered, row)
     ops:
       insert:
-        max_batch_size: 64KB
+        max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
         batchtype: unlogged
         prepared: |
           INSERT INTO {keyspace}.{table}

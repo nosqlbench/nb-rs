@@ -380,12 +380,14 @@ phases:
       train_vector := vector_at(prebuffered, ord)
     ops:
       insert:
-        # `batch: N` = N prepared INSERTs per UNLOGGED batch (this path IS
-        # implemented; the inner statement is prepared). Row-count stopgap for
-        # the intended ~64KB byte-bounded batch: `max_batch_size` is accepted
-        # by the parser but NOT wired to any batch logic (silent no-op) — see
-        # docs/TODO.md. Tune N to your vector dim: rows ~= 65536 / (dim * 4).
-        batch: 10
+        # Byte-bounded batch sized to the cluster's OWN configured limit
+        # (SRD-103): reads `batch_size_fail_threshold` from
+        # system_views.settings, backs off 10%, and fills each UNLOGGED batch
+        # up to that many encoded bytes (dynamic row count by vector dim). If
+        # the server doesn't expose it (older C* / permissions), this resolves
+        # to 0 = no byte cap = single-row inserts — safe: never exceeds the
+        # server's reject threshold.
+        max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
         batchtype: unlogged
         timeout: 60s   # 60s per write; retried up to `retries` (20) on a CQL timeout
         prepared: |

@@ -28,15 +28,9 @@
   event evicts between tiers. Fix: cache the prepared handle keyed by
   (session, statement text) so a statement is prepared once per session, not
   once per phase instance. Deferred — low impact, not urgent.
-* `max_batch_size` (CQL op field) is a SILENT NO-OP and an SRD-30 contract
-  violation. It is accepted by the parser allowlist (parse.rs:1847,
-  validation.rs:96) but wired to NO batch logic — batching only triggers on
-  the `batch: <rows>` param. 5 workloads set `max_batch_size: 64KB` intending
-  byte-bounded batching; none actually batch (they send single prepared
-  inserts). Root gap: the unknown-field guard checks allowlist MEMBERSHIP, not
-  IMPLEMENTATION, so an allowlisted-but-unimplemented field is silently dropped
-  instead of erroring. Fix: implement byte-bounded batching (accumulate bound
-  prepared rows until the encoded batch would exceed max_batch_size, then
-  flush) for both cassandra-cpp and scylla; and/or make the guard reject any
-  allowlisted field with no reader so this class can't recur. Until then a
-  bare row count (`batch: N`) is the only working batch control.
+* SRD-30 guard hardening: the unknown-field guard checks allowlist MEMBERSHIP,
+  not IMPLEMENTATION, so an allowlisted-but-unimplemented op field is silently
+  dropped rather than erroring — this is how `max_batch_size` stayed a silent
+  no-op for so long (now implemented, byte-bounded batching + server-limit
+  reads, via SRD-103). Harden the guard to reject any allowlisted field that
+  has no reader, so this class of silent no-op can't recur.
