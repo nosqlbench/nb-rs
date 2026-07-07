@@ -158,26 +158,71 @@ pub fn parse_byte_magnitude(raw: &str) -> Option<u64> {
     }
 }
 
-/// Decide how many rows a single batch-op invocation pulls in total,
-/// given the first row's estimated size and the two caps.
+/// Settle the FIXED, uniform batch stride `N` — the number of cursor
+/// ordinals one batch-op invocation reads AND advances — from the
+/// characterized row size and the two caps. Computed ONCE at `map_op`
+/// (not per-execute), so `OpDispenser::rows_per_op` can report it and
+/// the executor drives the phase cursor with `Σ rows_per_op` (SRD-22
+/// cover-once: fetch N, advance N — no over-insert).
 ///
-/// - `batch: N` set (`batch_n > 0`) → exactly `N` rows (the byte
-///   budget, if any, then splits those `N` into sub-batches).
-/// - only `max_batch_size` → predict `budget / first_row_bytes`
-///   rows (one budget-worth), clamped to `1..=`[`MAX_PREDICTED_ROWS`].
-/// - neither → a single row (today's default).
+/// - `batch: N` alone → exactly `N` (an explicit literal, never floored).
+/// - `max_batch_size` alone → `floor_base10(budget / row_size)` — one
+///   budget-worth floored to a round power of ten — clamped to
+///   `1..=`[`MAX_PREDICTED_ROWS`]. A round `N` keeps the cursor stride
+///   legible and stable against row-size jitter.
+/// - both → `min(batch_n, floor_base10(budget / row_size))`: the byte
+///   budget drives the fill, `batch` caps the row count (SRD-22).
+/// - neither → a single row (unchanged single-op behavior).
 ///
-/// Deterministic for a given first-row size, so the op advances a
-/// fixed number of cursor coordinates with no test-and-discard.
-pub fn plan_total_rows(first_row_bytes: u64, batch_n: usize, budget: Option<u64>) -> usize {
-    if batch_n > 0 {
-        batch_n
-    } else if let Some(b) = budget {
-        let per = (b / first_row_bytes.max(1)) as usize;
-        per.clamp(1, MAX_PREDICTED_ROWS)
-    } else {
-        1
+/// Reuses the `round_numbers::floor_base10` formula
+/// ([`polydat::library::round_numbers::floor_pow10`]) rather than
+/// re-deriving the power-of-ten floor (DRY). The `budget / row_size`
+/// argument is always strictly positive and finite, satisfying that
+/// function's precondition.
+pub fn fixed_batch_stride(row_size: u64, batch_n: usize, budget: Option<u64>) -> usize {
+    let budget_rows = |b: u64| -> usize {
+        let raw = (b as f64 / row_size.max(1) as f64).max(1.0);
+        let floored = polydat::library::round_numbers::floor_pow10(raw) as usize;
+        floored.clamp(1, MAX_PREDICTED_ROWS)
+    };
+    match (batch_n, budget) {
+        (n, None) if n > 0 => n,
+        (n, Some(b)) if n > 0 => n.min(budget_rows(b)),
+        (0, Some(b)) => budget_rows(b),
+        _ => 1,
     }
+}
+
+/// Characterize a representative row's estimated CQL-encoded size by
+/// evaluating the op's bound-value wires at cursor offset `0` through a
+/// fresh instance of the phase-scope (`parent`) kernel. Called ONCE at
+/// `map_op` to settle the fixed batch stride (see [`fixed_batch_stride`]).
+///
+/// The probe kernel is built with the SAME primitive a fiber uses per
+/// cycle ([`PolydatKernel::for_iteration`], wired under `parent`), then
+/// read through the SAME [`CycleWires`] surface the batch dispenser uses
+/// at execute time — so the sampled row-0 values (the dominant dataset
+/// vector included) match what the op will actually bind. `parent` is
+/// borrowed immutably and unaffected: pulling outputs evaluates the DAG
+/// without committing any write-through, so no shared cell is mutated.
+pub fn characterize_row_size(
+    parent: &std::sync::Arc<polydat::kernel::PolydatKernel>,
+    bind_names: &[String],
+) -> u64 {
+    use nbrs_runtime::wires::{CycleWires, WireSource};
+    // `for_iteration` returns a fresh, uniquely-owned Arc (refcount 1),
+    // so `try_unwrap` yields the owned, mutable kernel we position at 0.
+    let probe = polydat::kernel::PolydatKernel::for_iteration(parent, parent, &[]);
+    let mut probe = std::sync::Arc::try_unwrap(probe)
+        .ok()
+        .expect("for_iteration returns a uniquely-owned kernel");
+    let wires = CycleWires::new(&mut probe);
+    wires.advance(0);
+    let values: Vec<Value> = bind_names
+        .iter()
+        .map(|n| wires.get(n).unwrap_or(Value::None))
+        .collect();
+    estimate_row_size(&values)
 }
 
 #[cfg(test)]
@@ -279,18 +324,40 @@ mod tests {
     }
 
     #[test]
-    fn plan_total_rows_matrix() {
-        // batch: N wins as the total regardless of budget.
-        assert_eq!(plan_total_rows(6148, 10, Some(64_000)), 10);
-        assert_eq!(plan_total_rows(6148, 8, None), 8);
-        // only max_batch_size → one budget-worth predicted from row 0.
-        // 64_000 / 6_148 = 10 rows.
-        assert_eq!(plan_total_rows(6148, 0, Some(64_000)), 10);
-        // tiny rows clamp to the 1000-row fallback cap.
-        assert_eq!(plan_total_rows(1, 0, Some(10_000_000)), MAX_PREDICTED_ROWS);
-        // oversized single row still yields ≥1.
-        assert_eq!(plan_total_rows(100_000, 0, Some(64_000)), 1);
+    fn fixed_batch_stride_matrix() {
+        // `batch: N` alone → exactly N, never floored.
+        assert_eq!(fixed_batch_stride(6148, 8, None), 8);
+        assert_eq!(fixed_batch_stride(6148, 300, None), 300);
+        // `max_batch_size` alone → one budget-worth, floored to base-10.
+        // 64_000 / 6_148 = 10.4 → floor_base10 = 10.
+        assert_eq!(fixed_batch_stride(6148, 0, Some(64_000)), 10);
+        // both → min(batch_n, floored budget rows). 128_000 / 6_148 =
+        // 20.8 → floor_base10 = 10; min(200, 10) = 10 (budget drives).
+        assert_eq!(fixed_batch_stride(6148, 200, Some(128_000)), 10);
+        // both, budget generous → batch caps. floor_base10(10M/6148 =
+        // 1626) = 1000 (clamped); min(200, 1000) = 200.
+        assert_eq!(fixed_batch_stride(6148, 200, Some(10_000_000)), 200);
+        // tiny rows: floor_base10(1e7) = 1e7 clamps to the 1000-row cap.
+        assert_eq!(fixed_batch_stride(1, 0, Some(10_000_000)), MAX_PREDICTED_ROWS);
+        // oversized single row (row > budget) still yields ≥1.
+        assert_eq!(fixed_batch_stride(100_000, 0, Some(64_000)), 1);
         // neither → single row.
-        assert_eq!(plan_total_rows(6148, 0, None), 1);
+        assert_eq!(fixed_batch_stride(6148, 0, None), 1);
+    }
+
+    #[test]
+    fn characterize_row_size_evaluates_wires_at_coord_zero() {
+        use polydat::dsl::compile::compile_polydat;
+        // A coord-driven output: at cursor offset 0, `val` = 0 * 8 = 0.
+        // The probe must set the coord to 0 and pull `val` through the
+        // same wire surface the batch dispenser uses at execute time.
+        let kernel = compile_polydat("input cycle: u64\nval := cycle * 8\n")
+            .expect("compile probe program");
+        let parent = std::sync::Arc::new(kernel);
+        // One bind name → a single U64 → 8 bytes (bigint wire width).
+        assert_eq!(characterize_row_size(&parent, &["val".to_string()]), 8);
+        // An undeclared wire resolves to None → contributes 0 bytes,
+        // never panics.
+        assert_eq!(characterize_row_size(&parent, &["nope".to_string()]), 0);
     }
 }

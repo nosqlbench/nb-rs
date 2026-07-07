@@ -162,6 +162,57 @@ impl ChildSource for CursorSource {
     }
 }
 
+/// SRD-22 cover-once — distributes ONE reserved ordinal `Range` (the
+/// output of [`CursorSource::poll_next`]) across a stanza's ops. Each
+/// yielded `(pos, base, run_len)` says: the op at stanza position `pos`
+/// covers the contiguous sub-run `[base, base + run_len)`.
+///
+/// `run_len == per_pos_rows[pos]` (the op's `rows_per_op`) for every op
+/// EXCEPT the last one at the cursor tail: `reserve` truncates the final
+/// reservation to `[P, min(P + stride, end))`, so the last op receives
+/// the short remainder. Because `Σ per_pos_rows == the reserved stride`,
+/// the sub-runs tile the reserved range end-to-end with no gap and no
+/// overlap, and consecutive stanzas reserve disjoint ranges — so every
+/// ordinal in the phase's cursor space is covered EXACTLY ONCE, the
+/// partial tail included (never over-read, never dropped).
+///
+/// Zero-alloc (a running cursor over the slice), so it drops straight
+/// into the per-stanza hot loop; it is also the single, directly
+/// unit-testable expression of the distribution the executor performs.
+pub struct StanzaRuns<'a> {
+    per_pos_rows: &'a [usize],
+    pos: usize,
+    base: u64,
+    end: u64,
+}
+
+impl<'a> StanzaRuns<'a> {
+    pub fn new(range: Range<u64>, per_pos_rows: &'a [usize]) -> Self {
+        Self { per_pos_rows, pos: 0, base: range.start, end: range.end }
+    }
+}
+
+impl<'a> Iterator for StanzaRuns<'a> {
+    /// `(stanza position, sub-run base ordinal, sub-run length)`.
+    type Item = (usize, u64, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Stop at the end of the stanza OR when the reserved run is
+        // exhausted mid-stanza (a short tail truncated the reservation).
+        if self.pos >= self.per_pos_rows.len() || self.base >= self.end {
+            return None;
+        }
+        // `.max(1)` mirrors the executor's guard: an op never consumes
+        // zero ordinals, so the cursor always makes progress.
+        let rows = self.per_pos_rows[self.pos].max(1) as u64;
+        let sub_end = (self.base + rows).min(self.end);
+        let item = (self.pos, self.base, (sub_end - self.base) as usize);
+        self.pos += 1;
+        self.base = sub_end;
+        Some(item)
+    }
+}
+
 /// Which drive primitive the executor uses for a child set. The two stay
 /// distinct (SRD-02 "One Walker = one configured-limit shape, not one literal
 /// harness"); this is the single point that chooses between them.
@@ -242,5 +293,74 @@ mod tests {
         assert_eq!(select_drive(CountedSource::new(2).realizability()), Drive::BoundedSpawn);
         let cursor = CursorSource::new(RangeSourceFactory::new(0, 4).create_reader(), 2);
         assert_eq!(select_drive(cursor.realizability()), Drive::CursorReserve);
+    }
+
+    // === SRD-22 batching cover-once (StanzaRuns) ============================
+
+    #[test]
+    fn stanza_runs_cover_once_over_cursor_with_partial_tail() {
+        // The real driver path: a phase cursor over `[0, M)` with a SINGLE
+        // batch op of rows_per_op = N. M is NOT divisible by N, so the final
+        // reservation is a short tail — the exact case the coordinator flagged.
+        const M: u64 = 1000;
+        const N: usize = 300;
+        let per_pos_rows = [N]; // one op per stanza → Σ rows_per_op = N
+        let stanza_stride = N;
+
+        // `poll_next` IS `reserve(stanza_stride)`; the tail run is truncated.
+        let mut source =
+            CursorSource::new(RangeSourceFactory::new(0, M).create_reader(), stanza_stride);
+
+        let mut covered: Vec<(u64, usize)> = Vec::new(); // (base, run_len)
+        let mut next_expected: u64 = 0;
+        while let Some(Child::Ordinals(range)) = source.poll_next() {
+            for (pos, base, run_len) in StanzaRuns::new(range, &per_pos_rows) {
+                assert_eq!(pos, 0, "single-op stanza is always position 0");
+                // NO skip / NO overlap: each sub-run starts exactly where the
+                // previous one ended.
+                assert_eq!(base, next_expected, "gap or overlap at ordinal {base}");
+                next_expected = base + run_len as u64;
+                covered.push((base, run_len));
+            }
+        }
+
+        // Exact tiling: [0,300) [300,600) [600,900) [900,1000).
+        assert_eq!(covered, vec![(0, 300), (300, 300), (600, 300), (900, 100)]);
+        // The final op consumes the M % N = 100-row remainder — the partial
+        // tail is inserted, not dropped.
+        assert_eq!(covered.last().unwrap().1, (M % N as u64) as usize);
+        // Total ordinals consumed == M exactly (NOT M×N — the over-insert bug
+        // this fix removes).
+        let total: usize = covered.iter().map(|&(_, len)| len).sum();
+        assert_eq!(total as u64, M);
+    }
+
+    #[test]
+    fn stanza_runs_multi_op_stanza_tiles_reserved_stride() {
+        // Stanza of two ops: op0 rows_per_op=1 (ordinary), op1 rows_per_op=4
+        // (batch). stride = 5. A FULL reservation `[10, 15)` splits into
+        // op0 → [10,11) and op1 → [11,15).
+        let per_pos_rows = [1, 4];
+        let runs: Vec<_> = StanzaRuns::new(10..15, &per_pos_rows).collect();
+        assert_eq!(runs, vec![(0, 10, 1), (1, 11, 4)]);
+        // Σ run_len == the reserved stride; the last run ends exactly at
+        // range.end (disjoint from the next stanza's reservation).
+        assert_eq!(runs.iter().map(|&(_, _, l)| l).sum::<usize>(), 5);
+    }
+
+    #[test]
+    fn stanza_runs_truncates_short_tail_mid_stanza() {
+        // Reserved range shorter than the stanza stride (a tail). Stanza
+        // `[1, 4]` (stride 5) over `[12, 15)`: op0 → [12,13); op1 nominal 4
+        // but only 2 remain → [13,15) (run_len 2); no over-read past 15.
+        let per_pos_rows = [1, 4];
+        let runs: Vec<_> = StanzaRuns::new(12..15, &per_pos_rows).collect();
+        assert_eq!(runs, vec![(0, 12, 1), (1, 13, 2)]);
+        assert_eq!(runs.iter().map(|&(_, _, l)| l).sum::<usize>(), 3);
+
+        // A range that ends before the second op even starts: op1 gets
+        // nothing, and the iterator stops cleanly (no zero-length run).
+        let runs2: Vec<_> = StanzaRuns::new(14..15, &per_pos_rows).collect();
+        assert_eq!(runs2, vec![(0, 14, 1)]);
     }
 }

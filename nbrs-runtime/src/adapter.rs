@@ -548,6 +548,35 @@ pub trait OpDispenser: Send + Sync {
         }
     }
 
+    /// The op's uniform per-invocation cursor consumption — how many
+    /// consecutive wire ordinals one `execute` call reads and covers.
+    ///
+    /// The executor drives the phase cursor with `Σ rows_per_op` over
+    /// the stanza's ops (instead of the raw stanza length) and hands
+    /// each op a contiguous sub-run of exactly this size, so a batch
+    /// op that reads `N` rows per call also advances the cursor by
+    /// `N` — consecutive stanzas then cover disjoint ordinal runs
+    /// (SRD-22 "phase extent = cursor exhaustion", cover-once). A
+    /// batch dispenser overrides this to return its fixed stride `N`;
+    /// every ordinary op keeps the default `1` (identical to the
+    /// pre-batching model).
+    ///
+    /// The default **delegates to the inner dispenser** so a wrapped
+    /// batch op (retry / result / metrics layers) still reports its
+    /// leaf stride — the executor sees the outermost wrapper, and the
+    /// stride must reach it through the chain (mirrors `describe` /
+    /// `adapter_metrics`). Leaves with no inner fall through to `1`.
+    ///
+    /// This is the NOMINAL stride (what sets `reserve(N)`); at the
+    /// cursor tail the reservation may be shorter, and the executor
+    /// passes the actual (possibly-short) run length via
+    /// [`crate::fixture::ExecCtx::run_len`] so the op inserts exactly
+    /// the ordinals reserved — never over-reading, never dropping the
+    /// remainder.
+    fn rows_per_op(&self) -> usize {
+        self.inner_dispenser().map(|inner| inner.rows_per_op()).unwrap_or(1)
+    }
+
     /// Returns the wrapped dispenser when this is a
     /// wrapper, `None` when this is a leaf (the adapter's
     /// base dispenser — e.g. CQL raw / prepared / batch,

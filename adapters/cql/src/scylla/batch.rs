@@ -46,11 +46,18 @@ pub(super) struct ScyllaBatchDispenser {
     /// (SRD-68 invariant: "each iteration of the batch is
     /// considered another pull").
     bind_names: Vec<String>,
-    /// Raw `batch: N` row cap. `0` → unset (the byte budget drives
-    /// the row count).
-    batch_n: usize,
+    /// FIXED uniform batch stride — the nominal number of cursor
+    /// ordinals one invocation reads AND advances (SRD-22 cover-once).
+    /// Settled once at `map_op` from `batch:` / `max_batch_size` /
+    /// the characterized row size (see [`size_estimator::fixed_batch_stride`]).
+    /// Reported via [`OpDispenser::rows_per_op`] so the executor drives
+    /// the phase cursor with `Σ rows_per_op`; the ACTUAL per-invocation
+    /// row count is `ExecCtx::run_len` (== `n` except at the short tail).
+    n: usize,
     /// SRD-103 §6 byte budget (`max_batch_size`, a literal
-    /// magnitude). `None` → no byte cap.
+    /// magnitude). `None` → no byte cap. Retained as the sub-batch
+    /// flush safety valve (a fixed run should already fit, but a row
+    /// that alone exceeds the budget is split off defensively).
     max_batch_bytes: Option<u64>,
     batch_type: BatchType,
     /// Batch-level consistency — applied to the [`Batch`] itself
@@ -71,7 +78,7 @@ impl ScyllaBatchDispenser {
         prepared: Arc<PreparedStatement>,
         stmt_text: String,
         bind_names: Vec<String>,
-        batch_n: usize,
+        n: usize,
         max_batch_bytes: Option<u64>,
         batch_type: BatchType,
         consistency: Consistency,
@@ -81,7 +88,7 @@ impl ScyllaBatchDispenser {
             prepared,
             stmt_text,
             bind_names,
-            batch_n,
+            n: n.max(1),
             max_batch_bytes,
             batch_type,
             consistency,
@@ -131,18 +138,27 @@ impl ScyllaBatchDispenser {
 }
 
 impl OpDispenser for ScyllaBatchDispenser {
+    fn rows_per_op(&self) -> usize {
+        self.n
+    }
+
     fn execute<'a>(
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
+        // SRD-22 cover-once: read exactly the reserved sub-run — the
+        // executor advanced the phase cursor by this many ordinals, so
+        // the op inserts `[cycle, cycle + total)` and nothing beyond.
+        // `run_len` is the fixed stride `n` except at the cursor tail,
+        // where the final reservation was short (the partial batch is
+        // still inserted in full).
+        let total = ctx.run_len.max(1);
         Box::pin(async move {
             // SRD-68 batch contract: each iteration of the batch is
             // another pull. Advance the per-fiber wire coord and
-            // re-read bind values per row. Row 0 doubles as the size
-            // sample used to plan the total row count for a purely
-            // byte-budgeted op (SRD-103 §6).
+            // re-read bind values per row.
             let gather_row = |coord: u64| -> Vec<Value> {
                 wires.advance(coord);
                 self.bind_names.iter()
@@ -150,17 +166,11 @@ impl OpDispenser for ScyllaBatchDispenser {
                     .collect()
             };
 
-            let row0 = gather_row(cycle);
-            let first_bytes = size_estimator::estimate_row_size(&row0);
-            let total = size_estimator::plan_total_rows(
-                first_bytes, self.batch_n, self.max_batch_bytes);
-
             // Materialize all row-value sets up front so any
             // borrowed-slice NbrsCells stay valid through each
             // `batch()` call.
             let mut all_rows: Vec<Vec<Value>> = Vec::with_capacity(total);
-            all_rows.push(row0);
-            for row_idx in 1..total {
+            for row_idx in 0..total {
                 all_rows.push(gather_row(cycle + row_idx as u64));
             }
 

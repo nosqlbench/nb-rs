@@ -388,12 +388,23 @@ impl DriverAdapter for ScyllaCqlAdapter {
                         let max_batch_bytes = crate::common::session_handle::resolve_max_batch_bytes(
                             &parent, &session_key, template.params.get("max_batch_size"),
                         ).await.map_err(|e| format!("op '{}': {e}", template.name))?;
+                        // SRD-22 cover-once — settle the FIXED uniform stride N
+                        // now (not per-execute). Only characterize a row when a
+                        // byte budget must be converted to a row count; `batch:N`
+                        // / single-row need no probe.
+                        let row_size = if max_batch_bytes.is_some() {
+                            crate::common::size_estimator::characterize_row_size(&parent, &bind_names)
+                        } else {
+                            0
+                        };
+                        let stride_n = crate::common::size_estimator::fixed_batch_stride(
+                            row_size, batch_n, max_batch_bytes);
                         Ok(Box::new(batch::ScyllaBatchDispenser::new(
                             self.session.clone(),
                             prepared_arc,
                             prepared_text,
                             bind_names,
-                            batch_n,
+                            stride_n,
                             max_batch_bytes,
                             batch_type,
                             self.consistency,

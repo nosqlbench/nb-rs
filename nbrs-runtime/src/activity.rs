@@ -2971,7 +2971,24 @@ async fn executor_task(
     // wires.
     phase_name_arc: Arc<str>,
 ) {
-    let stanza_len = activity.op_sequence.stanza_length() as u64;
+    let stanza_positions = activity.op_sequence.stanza_length();
+    // SRD-22 batching cover-once: the phase-cursor stride is the SUM of
+    // each stanza op's `rows_per_op` (its uniform per-invocation cursor
+    // consumption), NOT the raw stanza length. A normal op contributes 1
+    // (identical to the pre-batching model); a batch op contributes its
+    // fixed stride `N`. Reserving `Σ rows_per_op` per stanza and handing
+    // each op a contiguous sub-run of its own `rows_per_op` makes
+    // consecutive stanzas cover DISJOINT ordinal runs — every ordinal is
+    // inserted exactly once. Precomputed once (rows_per_op is fixed per
+    // dispenser at map_op) so the hot loop pays no per-stanza virtual
+    // calls and `Σ per_pos_rows == stanza_stride` by construction.
+    let per_pos_rows: Vec<usize> = (0..stanza_positions)
+        .map(|pos| {
+            let (idx, _) = activity.op_sequence.get_with_index(pos as u64);
+            dispensers[idx].rows_per_op().max(1)
+        })
+        .collect();
+    let stanza_stride: usize = per_pos_rows.iter().sum::<usize>().max(1);
     // Per-fiber `FiberBuilder` carries scope values (per-iteration
     // extern inputs) populated by the OpBuilder, so iter-var
     // references like `{table}` in op templates resolve to the
@@ -2992,13 +3009,13 @@ async fn executor_task(
     // but for now all phases go through the source reader.
     // SRD-92 Step 5e — the per-cycle stream flows through the unified
     // `ChildSource` contract: a `CursorSource` wraps the reader; `poll_next` IS
-    // `reserve(stanza_len)` (per-stanza, not per-cycle → zero per-cycle
+    // `reserve(stanza_stride)` (per-stanza, not per-cycle → zero per-cycle
     // overhead), yielding an ordinal `Range`; `render` is the per-ordinal fetch.
     // The level selects `CursorReserve` — this very FiberPool loop.
     use crate::child_source::{select_drive, Child, ChildSource, CursorSource, Drive};
     let mut source = CursorSource::new(
         activity.source_factory.create_reader(),
-        stanza_len as usize,
+        stanza_stride,
     );
     debug_assert_eq!(select_drive(source.realizability()), Drive::CursorReserve);
 
@@ -3177,7 +3194,7 @@ async fn executor_task(
                     }
                     source = CursorSource::new(
                         activity.source_factory.create_reader(),
-                        stanza_len as usize,
+                        stanza_stride,
                     );
                     continue;
                 }
@@ -3201,10 +3218,21 @@ async fn executor_task(
         // The per-cycle reset + re-apply round-trip was 40% of single-
         // fiber CPU; removing it leaves end-state semantics identical.
 
-        // Phase 2: RENDER + EXECUTE — fiber-local, no contention.
-        // Each op resolves via this fiber's Polydat instance, then
-        // dispatches to the adapter. Sequential in declaration order.
-        for ordinal in range.clone() {
+        // Phase 2: RENDER + EXECUTE — distribute the reserved run across
+        // the stanza's ops via `StanzaRuns`. Each op covers a contiguous
+        // ordinal sub-run `[cycle, cycle + run_len)` of its own
+        // `rows_per_op` (1 for ordinary ops, N for a batch op); `Σ ==
+        // stanza_stride`, so consecutive stanzas cover DISJOINT ordinal
+        // runs (SRD-22 cover-once). The LUT POSITION (not the ordinal)
+        // selects the op, so a batch op that advances the cursor by N
+        // still maps to the right stanza slot. At the cursor tail
+        // `reserve` returned a short range, so the last op's `run_len`
+        // is the truncated remainder — the partial final batch is still
+        // inserted, never over-read, never dropped. Sequential in
+        // declaration order.
+        for (pos, cycle, run_len) in
+            crate::child_source::StanzaRuns::new(range.clone(), &per_pos_rows)
+        {
             if activity.stopped() { break; }   // SRD-92 Step 0: one stop view
 
             // Mark op as active from render through result join.
@@ -3212,9 +3240,9 @@ async fn executor_task(
             // fields, waiting for the adapter, or recording results.
             activity.metrics.ops_started.fetch_add(1, Ordering::Relaxed);
 
-            // Render the source item (fiber-local, no shared state)
-            let item = source.render(ordinal);
-            let cycle = ordinal;
+            // Render the source item at the sub-run base (fiber-local, no
+            // shared state). The op reads `[cycle, cycle + run_len)`.
+            let item = source.render(cycle);
             // Publish the cycle to the enclosing fiber-context
             // scope so any Polydat node reading `cycle()` or implicitly
             // `cycle` inside the DAG sees the same ordinal as
@@ -3227,7 +3255,10 @@ async fn executor_task(
             }
             let wait_nanos = wait_start.elapsed().as_nanos() as u64;
 
-            let (template_idx, template) = activity.op_sequence.get_with_index(cycle);
+            // The stanza POSITION (not the ordinal) selects the op —
+            // `get_with_index(pos)` returns `lut[pos]`, stable regardless
+            // of how many ordinals prior batch ops consumed.
+            let (template_idx, template) = activity.op_sequence.get_with_index(pos as u64);
 
             // Daemon-op dispatch. If the template declares
             // `daemon: ...` (non-disabled), spawn a fresh
@@ -3306,9 +3337,10 @@ async fn executor_task(
                         // with no matching result — which dragged ok%
                         // below 100% and pushed phase progress above it,
                         // and broke the `cycles_total == result_total +
-                        // skips_total` invariant. The for-loop already
-                        // advances the ordinal; just skip the inline
-                        // execute path and let the daemon fiber count.
+                        // skips_total` invariant. `StanzaRuns` already
+                        // advanced past this op's sub-run (daemon ops have
+                        // rows_per_op == 1); just skip the inline execute
+                        // path and let the daemon fiber count.
                         continue;
                     }
                     Err(msg) => {
@@ -3376,7 +3408,11 @@ async fn executor_task(
                 Some(p) => crate::wires::CycleWires::new(p),
                 None => crate::wires::CycleWires::new(fiber.main_kernel_mut()),
             };
-            let exec_ctx = crate::fixture::ExecCtx::with_wires(&fields, &pulls, &cycle_wires);
+            let mut exec_ctx = crate::fixture::ExecCtx::with_wires(&fields, &pulls, &cycle_wires);
+            // Hand the op the ACTUAL reserved sub-run length so a batch op
+            // inserts exactly `[base, base + run_len)` — the full run, or
+            // the short tail at cursor exhaustion. Ordinary ops ignore it.
+            exec_ctx.run_len = run_len;
             let service_start = Instant::now();
             // The op runs through the wrapper stack ONCE. The innermost
             // `RetryDispenser` owns the attempt loop, the `attempt_*` counters,

@@ -1067,6 +1067,18 @@ impl DriverAdapter for CqlAdapter {
                     }
 
                     if has_batch {
+                        // SRD-22 cover-once — settle the FIXED uniform stride N
+                        // now (not per-execute). Only characterize a row when a
+                        // byte budget must be converted to a row count; `batch:N`
+                        // / single-row need no probe.
+                        let row_size = if max_batch_bytes.is_some() {
+                            crate::common::size_estimator::characterize_row_size(
+                                &canonical_kernel, &bind_names)
+                        } else {
+                            0
+                        };
+                        let stride_n = crate::common::size_estimator::fixed_batch_stride(
+                            row_size, batch_n, max_batch_bytes);
                         Ok(Box::new(CqlBatchDispenser {
                             session,
                             consistency,
@@ -1075,6 +1087,7 @@ impl DriverAdapter for CqlAdapter {
                             bind_names,
                             canonical_kernel,
                             batch_n,
+                            n: stride_n,
                             max_batch_bytes,
                             oversize_warned: std::sync::atomic::AtomicBool::new(false),
                             prepared: prepared_arc,
@@ -1636,16 +1649,24 @@ struct CqlBatchDispenser {
     /// See `CqlRawDispenser::canonical_kernel`.
     #[allow(dead_code)]
     canonical_kernel: std::sync::Arc<polydat::kernel::PolydatKernel>,
-    /// Raw `batch: N` row cap from the op param (`0` → unset). Per
-    /// the SRD-68 invariant "batch is an iteration container, each
-    /// row is another pull," the dispenser internally advances the
-    /// kernel coord once per row, calling `wires.get(bind_name)` for
-    /// each row's typed values.
+    /// Raw `batch: N` row cap from the op param (`0` → unset).
+    /// Retained for the `describe_resolved` footer (shows the operator
+    /// the configured cap); the per-invocation row count now comes from
+    /// the fixed stride `n` / `ExecCtx::run_len`, not from this field.
     batch_n: usize,
+    /// FIXED uniform batch stride — the nominal number of cursor
+    /// ordinals one invocation reads AND advances (SRD-22 cover-once).
+    /// Settled once at `map_op` from `batch:` / `max_batch_size` / the
+    /// characterized row size (see [`crate::common::size_estimator::fixed_batch_stride`]).
+    /// Reported via [`OpDispenser::rows_per_op`] so the executor drives
+    /// the phase cursor with `Σ rows_per_op`; the ACTUAL per-invocation
+    /// row count is `ExecCtx::run_len` (== `n` except at the short tail).
+    n: usize,
     /// SRD-103 §6 byte budget (`max_batch_size`, a literal
     /// magnitude). `None` → no byte cap. When set, rows are packed
-    /// into sub-batches each held under this estimated encoded size;
-    /// one op invocation may emit multiple batch round-trips.
+    /// into sub-batches each held under this estimated encoded size
+    /// as a safety valve; one op invocation may emit multiple batch
+    /// round-trips.
     max_batch_bytes: Option<u64>,
     /// Fires the "single row exceeds max_batch_size" warning at most
     /// once per dispenser lifetime.
@@ -1754,12 +1775,23 @@ impl OpDispenser for CqlBatchDispenser {
         out
     }
 
+    fn rows_per_op(&self) -> usize {
+        self.n
+    }
+
     fn execute<'a>(
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_runtime::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         let wires = ctx.wires;
+        // SRD-22 cover-once: read exactly the reserved sub-run — the
+        // executor advanced the phase cursor by this many ordinals, so
+        // the op inserts `[cycle, cycle + total)` and nothing beyond.
+        // `run_len` is the fixed stride `n` except at the cursor tail,
+        // where the final reservation was short (the partial batch is
+        // still inserted in full).
+        let total = ctx.run_len.max(1);
         Box::pin(async move {
             // Sparse-tracing decision once for the whole invocation
             // (not per row / per sub-batch). Atomic load is cheap;
@@ -1773,20 +1805,13 @@ impl OpDispenser for CqlBatchDispenser {
             // batch is considered another pull … an iteration
             // container." Drive the rows by advancing the per-fiber
             // kernel coord via `wires.advance(coord)` and pulling
-            // each bind name via `wires.get(name)`. Row 0 doubles as
-            // the size sample used to plan the total row count for a
-            // purely byte-budgeted op (SRD-103 §6).
+            // each bind name via `wires.get(name)`.
             let gather_row = |coord: u64| -> Vec<Option<polydat::ast::Value>> {
                 wires.advance(coord);
                 self.bind_names.iter().map(|n| wires.get(n)).collect()
             };
-            let row0 = gather_row(cycle);
-            let first_bytes = Self::estimate_optional_row(&row0);
-            let total = crate::common::size_estimator::plan_total_rows(
-                first_bytes, self.batch_n, self.max_batch_bytes);
             let mut all_rows: Vec<Vec<Option<polydat::ast::Value>>> = Vec::with_capacity(total);
-            all_rows.push(row0);
-            for row_idx in 1..total {
+            for row_idx in 0..total {
                 all_rows.push(gather_row(cycle + row_idx as u64));
             }
 

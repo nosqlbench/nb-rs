@@ -286,6 +286,16 @@ pub struct ExecCtx<'a> {
     /// `NullWireSource` for legacy call sites; adapters that own a
     /// kernel construct via [`Self::with_wires`].
     pub wires:  &'a dyn crate::wires::WireSource,
+    /// Number of consecutive wire ordinals this invocation should
+    /// cover — the ACTUAL length of the cursor sub-run the executor
+    /// reserved for this op (`base .. actual_end`). Equals the op's
+    /// [`crate::adapter::OpDispenser::rows_per_op`] except at the
+    /// cursor tail, where the final reservation is short: a batch op
+    /// reads exactly `[cycle, cycle + run_len)` so the partial tail
+    /// of `M % N` rows is inserted too — never over-read, never
+    /// dropped. Ordinary (non-batch) ops ignore it. Defaults to `1`
+    /// for every legacy / test call site (single-row semantics).
+    pub run_len: usize,
 }
 
 impl<'a> ExecCtx<'a> {
@@ -298,7 +308,7 @@ impl<'a> ExecCtx<'a> {
         fields: &'a crate::adapter::ResolvedFields,
         pulls:  &'a ResolvedPulls,
     ) -> Self {
-        Self { fields, pulls, wires: &crate::wires::NULL_WIRES }
+        Self { fields, pulls, wires: &crate::wires::NULL_WIRES, run_len: 1 }
     }
 
     /// Construct an `ExecCtx` with an explicit `WireSource` — the
@@ -311,7 +321,7 @@ impl<'a> ExecCtx<'a> {
         pulls:  &'a ResolvedPulls,
         wires:  &'a dyn crate::wires::WireSource,
     ) -> Self {
-        Self { fields, pulls, wires }
+        Self { fields, pulls, wires, run_len: 1 }
     }
 }
 
