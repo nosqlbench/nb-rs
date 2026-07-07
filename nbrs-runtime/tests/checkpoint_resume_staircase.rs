@@ -7,9 +7,9 @@
 //! Drives the test fixture workload through a four-invocation
 //! staircase, verifying at each step that:
 //!
-//!   - the testkit's `side_effect_sequence_next_cycling` advances
+//!   - the testkit's `testkit_side_effect_sequence_next_cycling` advances
 //!     the threshold once per session,
-//!   - `throw_at(cycle, threshold, ...)` panics at the trip cycle
+//!   - `testkit_throw_at(cycle, threshold, ...)` panics at the trip cycle
 //!     and the errors cascade marks the active phase Failed,
 //!   - the resume planner classifies prior-Completed phases as
 //!     Skip (they don't re-run) and prior-Failed phases as ReRun
@@ -54,7 +54,7 @@ fn staircase_failures_resume_correctly() {
 
     let run_with = |resume: Option<&PathBuf>| {
         // Each cargo-test invocation runs in one process, but
-        // the testkit's `side_effect_sequence_next_cycling`
+        // the testkit's `testkit_side_effect_sequence_next_cycling`
         // caches its picked value process-wide (production
         // semantics — each `nbrs run` is a fresh process). To
         // simulate the process boundary in-test we clear the

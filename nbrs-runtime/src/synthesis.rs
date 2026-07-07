@@ -675,7 +675,7 @@ impl FiberBuilder {
         // path — no per-op matter), evaluating outputs here is
         // both redundant (the descendant evaluates the same
         // wires locally) and harmful (side-effecting nodes
-        // like `throw_at` fire outside the per-op cascade
+        // like `testkit_throw_at` fire outside the per-op cascade
         // surface, losing the panic-to-error pipeline).
         // When the per-op kernel has its own program, it
         // carries `extern <name>` slots for cross-scope wires

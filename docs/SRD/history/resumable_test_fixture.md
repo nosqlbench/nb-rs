@@ -156,11 +156,11 @@ Bindings include:
 
 ```
 threshold := failure_step(0, 10, 51, 101, 999)   # 4 thresholds → 4 invocations
-trip      := throw_at(cycle, threshold)
+trip      := testkit_throw_at(cycle, threshold)
 ```
 
 (Or `failure_step` does the throwing itself rather than feeding
-`throw_at` — see OQ-1 below.)
+`testkit_throw_at` — see OQ-1 below.)
 
 Each op template references `{trip}` so the binding evaluates per
 cycle.
@@ -223,15 +223,15 @@ panic site lives.
 
 ## Open questions
 
-### OQ-1 — does `failure_step` itself throw, or does it feed `throw_at`?
+### OQ-1 — does `failure_step` itself throw, or does it feed `testkit_throw_at`?
 
 Two readings of your earlier message:
 
 - **(i)** `failure_step` is the *thresholding* node and throws
-  directly — `throw_at` doesn't need to exist as a separate node.
+  directly — `testkit_throw_at` doesn't need to exist as a separate node.
   One node, simpler.
 - **(ii)** `failure_step` is the *state-machine* node (picks the
-  threshold from the list, manages the file). `throw_at` is the
+  threshold from the list, manages the file). `testkit_throw_at` is the
   *thrower* (compares cycle to threshold and panics). Two nodes,
   separation of concerns.
 
@@ -331,7 +331,7 @@ otherwise leave as terminal.
 1. Task 167 — `env()` / `env_or()` Polydat nodes (Pure / const-producing).
 2. New: const-fold trait method + `GkProgram::hash_const` + opt-out
    shape (per the just-agreed proposal — separate doc tracking).
-3. Task 168 — `throw_at(value, threshold)` Polydat node, opting out as
+3. Task 168 — `testkit_throw_at(value, threshold)` Polydat node, opting out as
    const-producing/accepting (or folded into `failure_step`, per OQ-1).
 4. New testkit Polydat node: `failure_step(...)` with state-file machinery
    (per this memo). Ship the reset path alongside per OQ-4.

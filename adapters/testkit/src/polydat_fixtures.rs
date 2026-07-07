@@ -5,30 +5,30 @@
 //!
 //! See `docs/SRD/history/resumable_test_fixture.md` for the full
 //! design and usage scenarios. The nodes here are intentionally
-//! obtrusively named (`side_effect_*`, `throw_at`) so workload
+//! obtrusively named (`testkit_side_effect_*`, `testkit_throw_at`) so workload
 //! authors don't reach for them by accident — they exist to
 //! exercise the resume / failure-injection paths that real
 //! workloads must not depend on.
 //!
 //! ## Surface
 //!
-//! - [`ThrowAt`] — `throw_at(value, threshold, errorname)`. Pass-through
+//! - [`TestkitThrowAt`] — `testkit_throw_at(value, threshold, errorname)`. Pass-through
 //!   identity on `value`; panics with a synthetic error tagged
 //!   `errorname` when `value == threshold`. Used to inject a
 //!   deterministic failure point inside binding eval.
 //!
-//! - [`SideEffectSequenceNextCycling`] —
-//!   `side_effect_sequence_next_cycling(statefile_path, csv_values) -> u64`.
+//! - [`TestkitSideEffectSequenceNextCycling`] —
+//!   `testkit_side_effect_sequence_next_cycling(statefile_path, csv_values) -> u64`.
 //!   Returns the next value from a CSV-encoded sequence on each
 //!   *session* (not each cycle), advancing a state file. After
 //!   the last value is consumed the state file is deleted and
 //!   the next session starts fresh from index 0.
 //!
-//! - [`SideEffectSequenceNextNoncycling`] — same but errors at
+//! - [`TestkitSideEffectSequenceNextNoncycling`] — same but errors at
 //!   construction time when the sequence is exhausted instead of
 //!   auto-looping.
 //!
-//! - [`SideEffectSequenceReset`] — deletes a named state file at
+//! - [`TestkitSideEffectSequenceReset`] — deletes a named state file at
 //!   construction time so the staircase test can be re-armed
 //!   between runs without manual fs operations.
 //!
@@ -96,41 +96,41 @@ pub fn clear_sequence_cache_for(path: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// throw_at(value, threshold, errorname) -> u64
+// testkit_throw_at(value, threshold, errorname) -> u64
 // ---------------------------------------------------------------------------
 
 /// Pass-through identity on `value`; panics when `value == threshold`.
 ///
-/// Signature: `throw_at(value: u64, threshold: u64, errorname: const str) ->
+/// Signature: `testkit_throw_at(value: u64, threshold: u64, errorname: const str) ->
 /// u64`. Authored via `#[polydat::polydat_node]` (SRD-80b). `errorname` is
 /// the synthetic error label; the errors-cascade machinery treats it like
 /// any driver-emitted error name. `no_jit` — the body panics / formats, so
 /// it stays an eval-only (P1) node.
-#[polydat::polydat_node(category = Diagnostic, no_jit)]
-fn throw_at(value: u64, threshold: u64, errorname: Const<&str>) -> u64 {
+#[polydat::polydat_node(category = Diagnostic, no_jit, adapter = "testkit")]
+fn testkit_throw_at(value: u64, threshold: u64, errorname: Const<&str>) -> u64 {
     if value == threshold {
         // Synthesized failure surfaces through the standard errors cascade —
         // which classifies via regex on the panic payload's string form.
         // Including the threshold value gives a reproducible signature.
-        panic!("throw_at[{}]: value reached threshold {threshold}", errorname.0);
+        panic!("testkit_throw_at[{}]: value reached threshold {threshold}", errorname.0);
     }
     value
 }
 
 // ---------------------------------------------------------------------------
-// side_effect_sequence_next_*  +  side_effect_sequence_reset
+// testkit_side_effect_sequence_next_*  +  testkit_side_effect_sequence_reset
 // ---------------------------------------------------------------------------
 
 /// Cycling variant: returns the next CSV value per *session*, auto-looping
 /// to index 0 after the last value (the state file is deleted on exhaustion).
 ///
-/// Signature: `side_effect_sequence_next_cycling(statefile_path: const str,
+/// Signature: `testkit_side_effect_sequence_next_cycling(statefile_path: const str,
 /// csv_values: const str) -> u64`. **Fallible construction** (SRD-80b): the
 /// body runs ONCE at node construction — it advances the state file and the
 /// `u64` is cached, so every eval returns the same picked value. An `Err`
 /// (bad CSV) surfaces as a build error.
-#[polydat::polydat_node(category = Diagnostic)]
-fn side_effect_sequence_next_cycling(
+#[polydat::polydat_node(category = Diagnostic, adapter = "testkit")]
+fn testkit_side_effect_sequence_next_cycling(
     statefile_path: Const<&str>,
     csv_values: Const<&str>,
 ) -> Result<u64, String> {
@@ -140,9 +140,9 @@ fn side_effect_sequence_next_cycling(
 
 /// Non-cycling variant: same per-session advance, but a hard error at
 /// construction when the sequence is fully consumed (design memo OQ-D-prime).
-/// **Fallible construction** — see [`side_effect_sequence_next_cycling`].
-#[polydat::polydat_node(category = Diagnostic)]
-fn side_effect_sequence_next_noncycling(
+/// **Fallible construction** — see [`testkit_side_effect_sequence_next_cycling`].
+#[polydat::polydat_node(category = Diagnostic, adapter = "testkit")]
+fn testkit_side_effect_sequence_next_noncycling(
     statefile_path: Const<&str>,
     csv_values: Const<&str>,
 ) -> Result<u64, String> {
@@ -153,13 +153,13 @@ fn side_effect_sequence_next_noncycling(
 /// Companion node — deletes the named state file at construction (re-arm).
 /// Output is a sentinel `0`; consumers shouldn't read it. **Fallible
 /// construction** — the delete happens once, at build.
-#[polydat::polydat_node(category = Diagnostic)]
-fn side_effect_sequence_reset(statefile_path: Const<&str>) -> Result<u64, String> {
+#[polydat::polydat_node(category = Diagnostic, adapter = "testkit")]
+fn testkit_side_effect_sequence_reset(statefile_path: Const<&str>) -> Result<u64, String> {
     match std::fs::remove_file(statefile_path.0) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!(
-            "side_effect_sequence_reset: failed to remove {}: {e}",
+            "testkit_side_effect_sequence_reset: failed to remove {}: {e}",
             statefile_path.0,
         )),
     }
@@ -225,9 +225,9 @@ fn advance_state_file(
             return Ok(value);
         } else {
             return Err(format!(
-                "side_effect_sequence_next_noncycling: state file {path} \
+                "testkit_side_effect_sequence_next_noncycling: state file {path} \
                  reports index {current_index} which is past the end of the \
-                 {n}-value sequence. Use side_effect_sequence_reset(...) or \
+                 {n}-value sequence. Use testkit_side_effect_sequence_reset(...) or \
                  manually delete the file to re-arm the test.",
             ));
         }
@@ -240,7 +240,7 @@ fn advance_state_file(
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!(
-                "side_effect_sequence_next_cycling: failed to remove {path} after exhaustion: {e}",
+                "testkit_side_effect_sequence_next_cycling: failed to remove {path} after exhaustion: {e}",
             )),
         }
     } else {
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn throw_at_passes_value_through_when_below_threshold() {
         // 5 != 10 → identity on value (const-folds at compile here).
-        assert_eq!(pull_u64("out := throw_at(5, 10, \"test\")"), 5);
+        assert_eq!(pull_u64("out := testkit_throw_at(5, 10, \"test\")"), 5);
     }
 
     #[test]
@@ -318,11 +318,11 @@ mod tests {
         // value == threshold → the node panics with the errorname-tagged
         // payload when evaluated (on pull here; per-cycle in a live workload).
         let r = std::panic::catch_unwind(|| {
-            let mut k = compile_polydat("out := throw_at(10, 10, \"staircase\")")
+            let mut k = compile_polydat("out := testkit_throw_at(10, 10, \"staircase\")")
                 .expect("compile");
             k.pull("out").as_u64()
         });
-        assert!(r.is_err(), "throw_at at threshold must panic");
+        assert!(r.is_err(), "testkit_throw_at at threshold must panic");
         let payload = r.unwrap_err();
         let msg = payload.downcast_ref::<String>().cloned()
             .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn cycling_walks_through_then_loops() {
         let path = tmpfile("cycle");
-        let src = format!("out := side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
+        let src = format!("out := testkit_side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
         // Each compile constructs the node (= advances once); clearing the
         // cache between models a fresh process (each `nbrs run`).
         let session = |s: &str| { let v = pull_u64(s); clear_sequence_cache_for(&path); v };
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn noncycling_walks_through_then_errors() {
         let path = tmpfile("noncycle");
-        let src = format!("out := side_effect_sequence_next_noncycling(\"{path}\", \"10,20\")");
+        let src = format!("out := testkit_side_effect_sequence_next_noncycling(\"{path}\", \"10,20\")");
         assert_eq!(pull_u64(&src), 10); clear_sequence_cache_for(&path);
         assert_eq!(pull_u64(&src), 20); clear_sequence_cache_for(&path);
         // Exhausted → construction (compile) hard-errors.
@@ -360,10 +360,10 @@ mod tests {
     #[test]
     fn reset_clears_state_file() {
         let path = tmpfile("reset");
-        let next = format!("out := side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
+        let next = format!("out := testkit_side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
         assert_eq!(pull_u64(&next), 10); clear_sequence_cache_for(&path);
         // Reset deletes the state file at construction.
-        let _ = pull_u64(&format!("out := side_effect_sequence_reset(\"{path}\")"));
+        let _ = pull_u64(&format!("out := testkit_side_effect_sequence_reset(\"{path}\")"));
         clear_sequence_cache_for(&path);
         assert_eq!(pull_u64(&next), 10, "reset rewinds to index 0");
         let _ = std::fs::remove_file(&path);
@@ -373,7 +373,7 @@ mod tests {
     fn reset_is_no_op_when_file_missing() {
         let path = tmpfile("reset-missing");
         // Compiles (construction deletes a nonexistent file → Ok).
-        let _ = pull_u64(&format!("out := side_effect_sequence_reset(\"{path}\")"));
+        let _ = pull_u64(&format!("out := testkit_side_effect_sequence_reset(\"{path}\")"));
     }
 
     #[test]
@@ -397,7 +397,7 @@ mod tests {
         // Multiple constructions in one session (no cache clear) advance the
         // file ONCE; every read returns the same cached value.
         let path = tmpfile("cache");
-        let src = format!("out := side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
+        let src = format!("out := testkit_side_effect_sequence_next_cycling(\"{path}\", \"10,20,30\")");
         assert_eq!(pull_u64(&src), 10);
         assert_eq!(pull_u64(&src), 10);
         assert_eq!(pull_u64(&src), 10);

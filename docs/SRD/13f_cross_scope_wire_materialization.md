@@ -103,7 +103,7 @@ the subscope, walking transitive references recursively (each
 recursion classified into the same four cases).
 
 - Synthesizer emits the binding's text in the subscope's
-  matter (e.g. `volatile trip := throw_at(cycle, threshold)`).
+  matter (e.g. `volatile trip := testkit_throw_at(cycle, threshold)`).
 - Subscope kernel evaluates the binding locally on its own
   state. `cycle` and any other per-fiber inputs are read from
   the subscope's slots; transitive dep wires are resolved
@@ -116,7 +116,7 @@ recursion classified into the same four cases).
   - Per-fiber-dep bindings re-eval as deps change via the
     standard dirty-propagation.
 - Side-effecting nullary nodes (e.g.,
-  `side_effect_sequence_next_cycling`) manage their own
+  `testkit_side_effect_sequence_next_cycling`) manage their own
   cross-kernel caching through the node's contract, not the
   kernel layer.
 

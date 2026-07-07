@@ -4,8 +4,8 @@
 #
 # Three phases declared `checkpoint: idempotent` with progressively
 # larger cycle counts. The shared `threshold` binding advances a
-# state file once per session via side_effect_sequence_next_cycling.
-# `trip := throw_at(cycle, threshold, "staircase")` fires when
+# state file once per session via testkit_side_effect_sequence_next_cycling.
+# `trip := testkit_throw_at(cycle, threshold, "staircase")` fires when
 # `cycle == threshold`; the errors cascade marks the phase Failed
 # and the next invocation's resume planner classifies it as ReRun.
 #
@@ -39,9 +39,9 @@ bindings: |
   # so the per-invocation threshold change doesn't invalidate
   # workload identity. Also suppresses the strict-mode
   # non-deterministic warning that the empty-wiring detector
-  # would otherwise raise on side_effect_sequence_next_cycling.
-  volatile threshold := side_effect_sequence_next_cycling("/tmp/nbrs_resume_test.seq", "10,51,101,999")
-  volatile trip := throw_at(cycle, threshold, "staircase")
+  # would otherwise raise on testkit_side_effect_sequence_next_cycling.
+  volatile threshold := testkit_side_effect_sequence_next_cycling("/tmp/nbrs_resume_test.seq", "10,51,101,999")
+  volatile trip := testkit_throw_at(cycle, threshold, "staircase")
 
 phases:
   phase1:

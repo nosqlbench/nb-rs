@@ -2098,7 +2098,7 @@ pub fn build_scope(
         // Propagate the parent's coordinate input names into this
         // scope when it doesn't already have an `input ...: u64`
         // declaration of its own. Without this, an included
-        // binding like `trip := throw_at(cycle, threshold, ...)`
+        // binding like `trip := testkit_throw_at(cycle, threshold, ...)`
         // references `cycle` but the auto-extern loop emits
         // `extern cycle: u64` (extern, not coord); set_inputs
         // propagation then skips it and per-cycle ticking dies.

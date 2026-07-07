@@ -118,6 +118,25 @@ pub fn polydat_node(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
+    // Adapter namespacing: when `adapter = "<name>"` is declared,
+    // the node's function name MUST start with `<name>_` so every
+    // adapter-provided node stays namespaced under the adapter's
+    // canonical registered name. Enforced here where the fn ident
+    // is in hand; validation-only (not threaded into codegen).
+    if let Some(adapter) = &attrs.adapter {
+        let fn_ident = &func.sig.ident;
+        let prefix = format!("{adapter}_");
+        if !fn_ident.to_string().starts_with(&prefix) {
+            let msg = format!(
+                "#[polydat_node(adapter = \"{adapter}\")] requires the node \
+                 name to start with \"{prefix}\" (found \"{fn_ident}\")",
+            );
+            return syn::Error::new_spanned(fn_ident, msg)
+                .to_compile_error()
+                .into();
+        }
+    }
+
     // SRD-80b Phase D1 — generic-over-Wire fanout. When the
     // operator declares `instantiate(T1, T2, ...)`, the macro
     // emits one full registration per type (per-instantiation
@@ -325,6 +344,14 @@ struct NodeAttrs {
     /// closures guard on `<T as Wire>::PORT` so only the matching
     /// one claims the call.
     instantiate: Vec<Type>,
+    /// Adapter canonical-name prefix enforcement. When present
+    /// (`adapter = "cql"`), the macro validates at expansion time
+    /// that the annotated function's name starts with `"<name>_"`,
+    /// keeping adapter-provided nodes namespaced under the
+    /// adapter's registered name. Validation-only for now — not
+    /// threaded into codegen. Absent → core polydat nodes stay
+    /// unprefixed.
+    adapter: Option<String>,
 }
 
 fn parse_attrs(attr: TokenStream2) -> syn::Result<NodeAttrs> {
@@ -350,6 +377,7 @@ fn parse_attrs(attr: TokenStream2) -> syn::Result<NodeAttrs> {
     let mut variadic_min: Option<syn::LitInt> = None;
     let mut output_names: Option<Vec<Ident>> = None;
     let mut instantiate: Vec<Type> = Vec::new();
+    let mut adapter: Option<String> = None;
 
     for item in items {
         match item {
@@ -476,6 +504,21 @@ fn parse_attrs(attr: TokenStream2) -> syn::Result<NodeAttrs> {
                         };
                         variadic_min = Some(n.clone());
                     }
+                    "adapter" => {
+                        // Canonical-name prefix enforcement. The value is
+                        // the adapter's registered name; the node function
+                        // name must start with `<name>_` (validated in the
+                        // macro entry point where the fn ident is in hand).
+                        let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value else {
+                            return Err(syn::Error::new_spanned(
+                                &nv.value,
+                                "`adapter` value must be a string literal \
+                                 (the adapter's canonical registered name, \
+                                 e.g. `adapter = \"cql\"`).",
+                            ));
+                        };
+                        adapter = Some(s.value());
+                    }
                     other => {
                         return Err(syn::Error::new_spanned(
                             &key,
@@ -485,7 +528,8 @@ fn parse_attrs(attr: TokenStream2) -> syn::Result<NodeAttrs> {
                                  `no_jit`, `compiled_u64 = ...`, \
                                  `jit_constants = ...`, `purity = ...`. \
                                  PR B.9 keys: `identity = ...`, \
-                                 `commutativity = ...`, `variadic_min = ...`.",
+                                 `commutativity = ...`, `variadic_min = ...`. \
+                                 Namespacing: `adapter = \"...\"`.",
                             ),
                         ));
                     }
@@ -554,6 +598,7 @@ fn parse_attrs(attr: TokenStream2) -> syn::Result<NodeAttrs> {
         variadic_min,
         output_names,
         instantiate,
+        adapter,
     })
 }
 

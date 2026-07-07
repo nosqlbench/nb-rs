@@ -1038,7 +1038,7 @@ impl PolydatKernel {
                 let name = program.output_names()[i].to_string();
                 // SRD-13f Push D: some workload-level bindings
                 // intentionally panic at specific cycles
-                // (`throw_at(cycle, threshold, ...)` for the
+                // (`testkit_throw_at(cycle, threshold, ...)` for the
                 // resume-test fixture). Those panics belong to
                 // the per-op evaluation path — the op's wire
                 // resolution pulls the same wire and the

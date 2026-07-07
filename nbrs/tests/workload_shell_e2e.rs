@@ -159,7 +159,7 @@ scenarios:
 /// that FAILS halts the remaining walk: the workload shell's default
 /// `children_failed > 0` rule trips with a `fail` effect (a fault, not a
 /// graceful stop), so the run exits non-zero AND `after`'s marker is
-/// absent. `throw_at(cycle, 0, ...)` panics in `boom`'s binding at cycle
+/// absent. `testkit_throw_at(cycle, 0, ...)` panics in `boom`'s binding at cycle
 /// 0, failing the phase. The skipped tail must not be reported as
 /// "stranded" (it was deliberately halted), and the log must read as a
 /// scenario stop-on-error (fault), distinct from the graceful
@@ -172,7 +172,7 @@ phases:
     cycles: 1
     concurrency: 1
     bindings: |
-      x := throw_at(cycle, 0, "boom")
+      x := testkit_throw_at(cycle, 0, "boom")
     ops:
       mark:
         stmt: "BOOM_OP x={x}"
@@ -224,7 +224,7 @@ phases:
     concurrency: 1
     cycles: 1
     bindings: |
-      x := throw_at(cycle, 0, "boom")
+      x := testkit_throw_at(cycle, 0, "boom")
     ops:
       mark:
         stmt: "BOOM_OP x={x}"
@@ -287,7 +287,7 @@ scenarios:
 
 /// SRD-82 Part 6 regression — a daemon phase inside a `for:` loop must
 /// NOT keep spawning for post-halt iterations. `work` fails on the first
-/// iteration (a `throw_at` binding at cycle 0), latching the walk-stop;
+/// iteration (a `testkit_throw_at` binding at cycle 0), latching the walk-stop;
 /// the scenario shell's early `should_stop` guard then skips the
 /// remaining iterations entirely, daemon included — so `MON i=3` (a
 /// clearly post-halt iteration) never appears. (Without the guard the
@@ -301,7 +301,7 @@ phases:
     concurrency: 1
     cycles: 1
     bindings: |
-      x := throw_at(cycle, 0, "boom")
+      x := testkit_throw_at(cycle, 0, "boom")
     ops:
       mark:
         stmt: "WORK i={i} x={x}"
@@ -343,7 +343,7 @@ phases:
     concurrency: 1
     cycles: 1
     bindings: |
-      x := throw_at(cycle, 0, "daemon_boom")
+      x := testkit_throw_at(cycle, 0, "daemon_boom")
     ops:
       mark:
         stmt: "MON_OP x={x}"

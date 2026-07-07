@@ -213,7 +213,7 @@ hash; it doesn't blind the resume planner to YAML changes.
 
 **Test fixtures** are the canonical use case
 (`docs/SRD/history/resumable_test_fixture.md`): the testkit's
-`side_effect_sequence_next_*` and `throw_at` nodes are
+`testkit_side_effect_sequence_next_*` and `testkit_throw_at` nodes are
 declared volatile so the staircase test can vary its
 failure-injection point across resumes without invalidating
 identity.

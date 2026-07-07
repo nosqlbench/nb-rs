@@ -166,7 +166,7 @@ contribute to identity, so the resume planner doesn't see a
 spurious mismatch and the completed phases skip cleanly.
 
 The test fixture at `examples/workloads/diagnostics/resume_test.yaml` is
-the worked example: `side_effect_sequence_next_cycling` advances
+the worked example: `testkit_side_effect_sequence_next_cycling` advances
 a state file once per session, returning a different threshold
 on each invocation. Without `volatile`, identity would
 invalidate on every resume; with it, identity is stable across

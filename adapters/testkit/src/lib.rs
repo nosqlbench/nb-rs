@@ -115,7 +115,7 @@ pub struct ModelParams {
     /// variant A). When set, the op returns an `Err` tagged
     /// `result-throw-name` (default `ThrowAt`) on the cycle whose
     /// numeric value equals this threshold. Distinct surface from
-    /// the GK-level `throw_at(...)` node — this throws from inside
+    /// the GK-level `testkit_throw_at(...)` node — this throws from inside
     /// the adapter's op execution path, exercising the
     /// op-result-error branch of the errors cascade.
     pub throw_at_cycle: Option<u64>,
@@ -423,12 +423,12 @@ impl OpDispenser for ModelDispenser {
                 None => None,
             };
 
-            // Driver-level throw_at fixture (resumable-test
+            // Driver-level `result-throw-at` fixture (resumable-test
             // staircase). Tripping here surfaces the failure at
             // the op-result boundary, exercising the
             // `Result<OpResult, ExecutionError>` branch of the
             // errors cascade — distinct from the GK-level
-            // `throw_at(...)` node which panics during binding
+            // `testkit_throw_at(...)` node which panics during binding
             // eval.
             if let Some(threshold) = self.model_params.throw_at_cycle
                 && cycle == threshold
@@ -442,7 +442,7 @@ impl OpDispenser for ModelDispenser {
                 return Err(ExecutionError::Op(AdapterError {
                     error_name: self.model_params.throw_name.clone(),
                     message: format!(
-                        "testkit driver-level throw_at: cycle {cycle} reached threshold {threshold}",
+                        "testkit driver-level result-throw-at: cycle {cycle} reached threshold {threshold}",
                     ),
                     retryable: false,
                 }));
