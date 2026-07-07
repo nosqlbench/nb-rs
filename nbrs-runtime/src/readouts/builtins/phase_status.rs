@@ -295,12 +295,27 @@ fn render_labeled(
     // under the activity name. The surface sink
     // (`LogOnlySink`) handles multi-line region clearing.
     //
-    // The `cycles:N/T` chip sits alongside `c:concurrency` —
-    // a glance shows both the running cycle count and the
-    // total extent the phase is bounded by. With no extent
-    // (unbounded sources, when those exist), we elide the `/T`
-    // half and show just the running counter.
-    let cycles_chip = if total_extent > 0 {
+    // The progress chip sits alongside `c:concurrency`.
+    //
+    // Cursor-driven phase (`rows_total > 0`): the cursor advances in
+    // STRIDES — one op consumes N ordinals — so an op-denominated
+    // `cycles:{ops}/{extent}` reads ~N× low against the row-denominated
+    // extent. Show the authoritative ordinal progress instead,
+    // `rows:{consumed}/{extent}`, plus a rows/s rate (consumed / elapsed,
+    // the same shape as the throughput rate line) so the fraction and
+    // the rate are both row-denominated and agree.
+    //
+    // Non-cursor phase (`rows_total == 0`, plain `cycles:`): keep the
+    // `cycles:N/T` chip — a glance shows both the running cycle count
+    // and the total extent the phase is bounded by. With no extent
+    // (unbounded sources, when those exist), we elide the `/T` half and
+    // show just the running counter.
+    let rows_total = ctx.rows_total();
+    let cycles_chip = if rows_total > 0 {
+        let rows_consumed = ctx.rows_consumed();
+        let rows_rate = if elapsed > 0.0 { rows_consumed as f64 / elapsed } else { 0.0 };
+        format!(" {dim}rows:{rows_consumed}/{rows_total} {}{reset}", format_rate(rows_rate))
+    } else if total_extent > 0 {
         format!(" {dim}cycles:{ops_completed}/{total_extent}{reset}")
     } else if ops_completed > 0 {
         format!(" {dim}cycles:{ops_completed}{reset}")
@@ -504,6 +519,8 @@ mod tests {
         concurrency: usize,
         elapsed_secs: f64,
         consumed: u64,
+        rows_consumed: u64,
+        rows_total: u64,
         chips: String,
         adapter: String,
         batch: String,
@@ -533,6 +550,8 @@ mod tests {
         fn concurrency(&self) -> usize { self.concurrency }
         fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
         fn consumed(&self) -> u64 { self.consumed }
+        fn rows_consumed(&self) -> u64 { self.rows_consumed }
+        fn rows_total(&self) -> u64 { self.rows_total }
         fn status_metric_chips(&self) -> String { self.chips.clone() }
         fn adapter_counters_text(&self) -> String { self.adapter.clone() }
         fn batch_info_text(&self) -> String { self.batch.clone() }
@@ -591,6 +610,70 @@ mod tests {
         // remaining=cycles_total/rate=50/50=1s).
         assert!(out.contains("(1s/1s)"),
             "elapsed/ETA span missing for finite-rate phase: {out:?}");
+    }
+
+    #[test]
+    fn cursor_phase_renders_rows_chip_not_cycles() {
+        // A DATA-DRIVEN phase (rows_total > 0) consumes its cursor in
+        // strides, so the progress chip must be row-denominated:
+        // `rows:{consumed}/{extent}` plus a rows/s rate — NOT the
+        // op-denominated `cycles:` chip which would read N× low.
+        // Here 7 ops @ stride 100 = 700 ordinals of a 1000-row cursor.
+        let ctx = TestCtx {
+            phase_name: "ann".into(),
+            activity_name: "ann".into(),
+            phase_seq: Some((1, 1)),
+            cycles_completed: 7,
+            cycles_total: 1000,
+            ops_started: 7,
+            ops_finished: 7,
+            ops_ok: 7,
+            attempt_ok: 7,
+            concurrency: 1,
+            elapsed_secs: 1.0,
+            consumed: 7,
+            rows_consumed: 700,
+            rows_total: 1000,
+            ..Default::default()
+        };
+        let out = render(&ctx, Lod::Labeled);
+        assert!(out.contains("rows:700/1000"),
+            "cursor phase must show row-denominated progress: {out:?}");
+        // rows/s = consumed/elapsed = 700/1.0, format_rate → "700/s".
+        assert!(out.contains("rows:700/1000 700/s"),
+            "cursor phase must show a rows/s rate beside the fraction: {out:?}");
+        // The op-denominated cycles chip must be GONE for cursor phases.
+        assert!(!out.contains("cycles:"),
+            "cursor phase must NOT emit the cycles: chip: {out:?}");
+    }
+
+    #[test]
+    fn non_cursor_phase_keeps_cycles_chip() {
+        // A plain `cycles:` phase (rows_total == 0) has no declared
+        // cursor — ops advance the cycle counter one-for-one — so it
+        // keeps the op-denominated `cycles:{completed}/{total}` chip
+        // and emits no `rows:` chip. Byte-identical to pre-change output.
+        let ctx = TestCtx {
+            phase_name: "run".into(),
+            activity_name: "run".into(),
+            phase_seq: Some((1, 1)),
+            cycles_completed: 50,
+            cycles_total: 100,
+            ops_started: 50,
+            ops_finished: 50,
+            ops_ok: 50,
+            attempt_ok: 50,
+            concurrency: 1,
+            elapsed_secs: 1.0,
+            consumed: 50,
+            // rows_consumed / rows_total default to 0 → non-cursor.
+            ..Default::default()
+        };
+        let out = render(&ctx, Lod::Labeled);
+        assert!(out.contains("cycles:50/100"),
+            "non-cursor phase must keep the cycles: chip: {out:?}");
+        assert!(!out.contains("rows:"),
+            "non-cursor phase must NOT emit a rows: chip: {out:?}");
     }
 
     #[test]

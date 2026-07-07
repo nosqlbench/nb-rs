@@ -197,6 +197,14 @@ pub struct InlineRefreshContext {
     pub concurrency: usize,
     pub elapsed_secs: f64,
     pub consumed: u64,
+    /// Cursor ordinals consumed / cursor extent for a data-driven
+    /// phase (polydat `global_consumed()` / `global_extent()`).
+    /// Both `0` for non-cursor phases (plain `cycles:`), where the
+    /// display keeps the op-denominated `cycles:` chip. `rows_total
+    /// > 0` selects the row-denominated `rows:{consumed}/{total}`
+    /// chip + rows/s rate.
+    pub rows_consumed: u64,
+    pub rows_total: u64,
     pub status_metric_chips: String,
     pub adapter_counters_text: String,
     pub batch_info_text: String,
@@ -226,6 +234,8 @@ impl ReadoutContext for InlineRefreshContext {
     fn concurrency(&self) -> usize { self.concurrency }
     fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
     fn consumed(&self) -> u64 { self.consumed }
+    fn rows_consumed(&self) -> u64 { self.rows_consumed }
+    fn rows_total(&self) -> u64 { self.rows_total }
     fn status_metric_chips(&self) -> String { self.status_metric_chips.clone() }
     fn adapter_counters_text(&self) -> String { self.adapter_counters_text.clone() }
     fn batch_info_text(&self) -> String { self.batch_info_text.clone() }
@@ -394,6 +404,11 @@ pub fn build_inline_refresh_context(
     activity_name: &str,
     concurrency: usize,
     total_extent: u64,
+    // Row-level cursor progress for a data-driven phase
+    // (`global_consumed()` / `global_extent()`); both `0` for
+    // non-cursor phases so the readout keeps the `cycles:` chip.
+    rows_consumed: u64,
+    rows_total: u64,
     elapsed_secs: f64,
     refresh_tick: u64,
     status_metrics: &[String],
@@ -507,6 +522,8 @@ pub fn build_inline_refresh_context(
         concurrency,
         elapsed_secs,
         consumed,
+        rows_consumed,
+        rows_total,
         status_metric_chips,
         adapter_counters_text,
         batch_info_text,

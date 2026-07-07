@@ -216,6 +216,19 @@ pub struct PhaseProgressUpdate {
     pub labels: String,
     pub cursor_name: String,
     pub cursor_extent: u64,
+    /// Cursor ordinals CONSUMED so far for a data-driven phase
+    /// (polydat `DataSourceFactory::global_consumed()`) — the
+    /// authoritative row-level progress. `0` for non-cursor phases
+    /// (plain `cycles:`), where the display keeps the op-denominated
+    /// `cycles:` chip.
+    pub rows_consumed: u64,
+    /// Cursor ordinal EXTENT for a data-driven phase
+    /// (`global_extent()`). `0` for non-cursor phases — distinct from
+    /// `cursor_extent`, which falls back to the phase's `cycles:`
+    /// bound for sourceless phases; this stays `0` so the display can
+    /// tell a declared cursor from the synthesized `range(0, cycles)`
+    /// every phase gets. `rows_total > 0` is the "show `rows:`" signal.
+    pub rows_total: u64,
     pub fibers: usize,
     pub ops_started: u64,
     pub ops_finished: u64,

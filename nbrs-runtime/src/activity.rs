@@ -2532,11 +2532,26 @@ impl Activity {
             {
                 let (final_seq, final_depth) =
                     crate::readout_context::resolve_phase_coord_by_name(&activity.config.name);
+                // Row-level cursor progress — only for a DECLARED cursor
+                // (`config.source_factory` present). Plain `cycles:` phases
+                // get a synthesized `range(0, cycles)` factory, so gate on
+                // the config Option, not the resolved factory, to keep them
+                // on the op-denominated `cycles:` chip.
+                let (final_rows_consumed, final_rows_total) =
+                    match &activity.config.source_factory {
+                        Some(_) => (
+                            activity.source_factory.global_consumed(),
+                            activity.source_factory.global_extent().unwrap_or(0),
+                        ),
+                        None => (0, 0),
+                    };
                 let final_ctx = crate::readout_context::build_inline_refresh_context(
                     &activity.metrics,
                     &activity.config.name,
                     activity.config.concurrency,
                     total_extent,
+                    final_rows_consumed,
+                    final_rows_total,
                     elapsed,
                     u64::MAX,  // sentinel: spinner frame doesn't matter at end-of-phase
                     &activity.config.status_metrics,

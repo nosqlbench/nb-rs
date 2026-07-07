@@ -300,6 +300,8 @@ mod tests {
             labels: String::new(),
             cursor_name: "cycle".into(),
             cursor_extent: 100,
+            rows_consumed: 0,
+            rows_total: 0,
             fibers: 4,
             started_at: Instant::now() - std::time::Duration::from_millis(500),
             ops_started: 50,

@@ -188,6 +188,22 @@ pub trait ReadoutContext {
     /// Default 0.
     fn consumed(&self) -> u64 { 0 }
 
+    /// Cursor ordinals CONSUMED (row-level progress) for a
+    /// data-driven phase — polydat `global_consumed()`. Distinct
+    /// from [`consumed`](Self::consumed) / ops-finished: one op can
+    /// stride N ordinals, so this is the authoritative row count.
+    /// `0` for non-cursor phases. Drives the numerator of the
+    /// `rows:{consumed}/{total}` progress chip. Default 0.
+    fn rows_consumed(&self) -> u64 { 0 }
+
+    /// Cursor ordinal EXTENT for a data-driven phase
+    /// (`global_extent()`). `0` for non-cursor phases (plain
+    /// `cycles:`) — the phase-status readout uses `rows_total() > 0`
+    /// to pick the row-denominated `rows:` chip over the
+    /// op-denominated `cycles:` chip, so a stride-driven phase's
+    /// progress and its rows/s rate agree. Default 0.
+    fn rows_total(&self) -> u64 { 0 }
+
     /// Ops dispatched to the adapter. Distinct from
     /// `consumed`: ops_started increments at dispatch,
     /// `consumed` increments at the source pull. The inline

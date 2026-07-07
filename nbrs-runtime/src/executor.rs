@@ -4491,6 +4491,25 @@ async fn run_phase_inner(
         factory.as_ref().and_then(|f| f.global_extent()).unwrap_or(fallback)
     }
 
+    // Row-level cursor progress for a DATA-DRIVEN phase — returns
+    // `(consumed, extent)` straight from the source factory. `(0, 0)`
+    // for sourceless phases (plain `cycles:`, where `config.source_factory`
+    // is `None`): `rows:` has no meaning there since ops advance the
+    // cycle counter one-for-one, so the display keeps the op-denominated
+    // `cycles:` chip. When a real cursor is declared the numerator is
+    // ordinals consumed (`global_consumed()`) and the denominator the
+    // (possibly grown) extent, so the fraction is row-denominated and
+    // agrees with the rows/s rate — unlike `cycles:{ops}/{cursor_extent}`
+    // which mixes op-count against ordinals when one op strides N rows.
+    fn live_rows_of(
+        factory: &Option<Arc<dyn polydat::iteration::source::DataSourceFactory>>,
+    ) -> (u64, u64) {
+        match factory {
+            Some(f) => (f.global_consumed(), f.global_extent().unwrap_or(0)),
+            None => (0, 0),
+        }
+    }
+
     // Stride-alignment warning: when stanza_len doesn't evenly
     // divide the cursor's extent, the boundary stanza is
     // partial (shorter than stanza_len) — which is fine for
@@ -5043,12 +5062,15 @@ async fn run_phase_inner(
 
     // Send initial progress to set cursor info on the observer
     if observer_for_progress.suppresses_stderr() {
+        let (rows_consumed, rows_total) = live_rows_of(&progress_source_factory);
         observer_for_progress.phase_progress(&crate::observer::PhaseProgressUpdate {
             exec_id: crate::execution_context::current_exec_id(),
             name: phase_name.to_string(),
             labels: phase_labels.clone(),
             cursor_name: progress_cursor_name.clone(),
             cursor_extent: live_extent_of(&progress_source_factory, progress_extent),
+            rows_consumed,
+            rows_total,
             fibers: progress_fibers,
             ops_started: 0,
             ops_finished: 0,
@@ -5111,12 +5133,18 @@ async fn run_phase_inner(
 
                 let relevancy = progress_metrics.collect_relevancy_live();
 
+                // Re-read each tick: an extending cursor grows its extent
+                // and consumed climbs, so `rows:` tracks live progress.
+                let (rows_consumed, rows_total) = live_rows_of(&factory_for_thread);
+
                 obs.phase_progress(&crate::observer::PhaseProgressUpdate {
                     exec_id: crate::execution_context::current_exec_id(),
                     name: phase_name.clone(),
                     labels: phase_labels.clone(),
                     cursor_name: progress_cursor_name.clone(),
                     cursor_extent: live_extent_of(&factory_for_thread, progress_extent),
+                    rows_consumed,
+                    rows_total,
                     fibers: progress_fibers,
                     ops_started: started,
                     ops_finished: finished,
@@ -5348,12 +5376,15 @@ async fn run_phase_inner(
             rows_total as f64 / stanzas as f64
         } else { 0.0 };
         let relevancy = progress_metrics.collect_relevancy_live();
+        let (rows_consumed, rows_total) = live_rows_of(&progress_source_factory);
         ctx.observer.phase_progress(&crate::observer::PhaseProgressUpdate {
             exec_id: crate::execution_context::current_exec_id(),
             name: phase_name.to_string(),
             labels: phase_labels.clone(),
             cursor_name: progress_cursor_name.clone(),
             cursor_extent: live_extent_of(&progress_source_factory, progress_extent),
+            rows_consumed,
+            rows_total,
             fibers: progress_fibers,
             ops_started: started_total,
             ops_finished: finished_total,

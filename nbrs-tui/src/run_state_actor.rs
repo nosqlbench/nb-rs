@@ -482,6 +482,8 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
                 labels,
                 cursor_name: "?".into(),
                 cursor_extent: 0,
+                rows_consumed: 0,
+                rows_total: 0,
                 fibers: concurrency,
                 started_at: Instant::now(),
                 ops_started: 0,
@@ -550,6 +552,8 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             if let Some(active) = state.active_phase_mut(update.exec_id, &update.name, &update.labels) {
                 active.cursor_name = update.cursor_name.clone();
                 active.cursor_extent = update.cursor_extent;
+                active.rows_consumed = update.rows_consumed;
+                active.rows_total = update.rows_total;
                 active.fibers = update.fibers;
                 active.ops_started = update.ops_started;
                 active.ops_finished = update.ops_finished;

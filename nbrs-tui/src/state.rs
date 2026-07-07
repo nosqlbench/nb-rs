@@ -159,6 +159,13 @@ pub struct ActivePhase {
     pub labels: String,
     pub cursor_name: String,
     pub cursor_extent: u64,
+    /// Cursor ordinals consumed / cursor extent for a data-driven
+    /// phase (polydat `global_consumed()` / `global_extent()`). Both
+    /// `0` for non-cursor phases (plain `cycles:`). `rows_total > 0`
+    /// drives the row-denominated `rows:{consumed}/{total}` status
+    /// chip in place of the op-denominated `cycles:` chip.
+    pub rows_consumed: u64,
+    pub rows_total: u64,
     pub fibers: usize,
     pub started_at: Instant,
 
