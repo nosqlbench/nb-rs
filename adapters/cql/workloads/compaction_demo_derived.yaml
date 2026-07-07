@@ -121,6 +121,18 @@ params:
   profile_pattern: "*"
   max_size: 0
 
+  # ── Insert batch-stride probe ────────────────────────────────
+  # `measure_probe_rows`: the size of the leading base-vector slice the
+  # one-shot `measure_batch` phase inserts to characterise the insert
+  # batch stride. It writes this many rows (keys [0, measure_probe_rows))
+  # as a byte-budgeted UNLOGGED batch and reads back the rows the batch
+  # actually wrote (`count`) — floored to a round number and frozen as
+  # the main loader's `batch: stride`. Kept small (a single probe batch);
+  # the rows it writes are re-inserted idempotently by tier 1's load, so
+  # the probe does not perturb the data. Numeric so it accepts magnitude
+  # suffixes on the CLI.
+  measure_probe_rows: 2000
+
   # ── Post-load step toggles (1 = enabled, 0 = skipped) ────────
   # Independently enable/disable each post-load step per tier. All OFF by
   # default — the base sweep just loads each tier with no post-load work;
@@ -145,6 +157,16 @@ bindings: |
   # scope init), read by the `continue_if: "end_of(p) <=
   # effective_max_size"` sweep gate on the tier loop below (SRD-101).
   const effective_max_size := if(max_size > 0, max_size, vector_count("{dataset}:{profile}"))
+  # Workload-root SHARED cell for the measured insert batch stride
+  # (SRD-66/67). The early `measure_batch` phase writes THROUGH to this
+  # cell its byte-budgeted batch's rows-written `count` (Change 1: a CQL
+  # write now reports the rows it wrote as `count`), floored to a round
+  # number. The tier loop then FREEZES it as `const stride` (below) and
+  # the main `load_increment` insert drives `batch: stride` off it, so
+  # the loader's cursor stride is one measured batch-worth instead of a
+  # single row. Literal-initialised to 1 so a run that skips the measure
+  # phase still has a valid (single-row) stride.
+  shared measured := 1
 
 scenarios:
   # Default: the incremental size-tier sweep.
@@ -155,6 +177,11 @@ scenarios:
     - teardown
     - schema
     - tune_cluster
+    # One-shot insert-batch-stride probe: write one byte-budgeted batch and
+    # read back its rows-written `count` into the `shared measured` cell,
+    # BEFORE the tier loop freezes it as `const stride`. Runs after `schema`
+    # (the table exists) and before any tier load.
+    - measure_batch
     # Walk the masked profiles smallest-first as cumulative size tiers.
     # `profile_partitions` yields one partition per matching profile;
     # partition `p` spans `[previous tier size, this tier size)` — the
@@ -193,7 +220,18 @@ scenarios:
   # `idx_of(p)` / `start_of(p)` / `end_of(p)` unchanged.
   tier_build:
     - concurrent_query
-    - load_increment
+    # Freeze the measured batch stride for THIS tier's load. `const stride`
+    # is an extern-no-default freeze of the workload-root `shared measured`
+    # cell AT SCOPE ACTIVATION (SRD-67 Phase 5) — the value the early
+    # `measure_batch` phase wrote. Scoped to its `phases:` child, so
+    # `load_increment`'s `batch: stride` resolves it. The `concurrent_query`
+    # daemon (spawned above) still shadows the whole foreground of this
+    # scope — this inner bindings layer only wraps the loader, it does not
+    # change when the daemon stops (still at `finalize_index` completion).
+    - bindings: |
+        const stride := measured
+      phases:
+        - load_increment
     - flush
     - finalize_index
 
@@ -339,6 +377,57 @@ phases:
             kind: gauge
             value: count
 
+  # One-shot insert-batch-stride probe (SRD-103 / Change 1). Insert a
+  # byte-budgeted UNLOGGED batch over a small leading slice of the base
+  # facet and read back the rows it wrote as `count` — a CQL write now
+  # reports its rows-written count just as a SELECT reports rows returned.
+  # `floor_decade` rounds that to a round number and writes it THROUGH to
+  # the workload-root `shared measured` cell (SRD-66/67), which the tier
+  # loop later freezes as `const stride`. `concurrency: 1` so the probe is
+  # a single deterministic write path. NOTE: with `max_batch_size` and no
+  # `batch:`, one invocation writes one byte-budget-worth of rows; `count`
+  # equals the SERVER batch capacity only when the phase runs a single
+  # full-budget invocation (probe slice ≤ that capacity). Tune
+  # `measure_probe_rows` to the target's row width, or run against a live
+  # cluster to confirm the derived stride. The rows it writes (keys
+  # [0, measure_probe_rows)) are re-inserted idempotently by tier 1's load.
+  measure_batch:
+    concurrency: 1
+    # ONE op only: it reserves rows_per_op (= one byte-budget-worth of rows,
+    # capped at MAX_PREDICTED_ROWS) and reports the count it wrote. Without
+    # this the phase would run to cursor exhaustion (many ops), and the
+    # last-write-wins `measured` cell would end up holding a short-tail
+    # count instead of a full budget batch.
+    cycles: 1
+    bindings: |
+      # The first matching profile's own vectors — representative of the
+      # dataset's vector WIDTH, which is what sizes a byte-budgeted batch.
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', 0)
+      const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
+      # A small leading slice of the base facet. The cursor value `row` is
+      # the absolute base-vector ordinal (the range starts at 0), so keys
+      # and vectors span [0, measure_probe_rows) — the same keys tier 1's
+      # `load_increment` re-inserts idempotently.
+      cursor row = range(0, measure_probe_rows)
+      id := format_u64(row, 10)
+      train_vector := vector_at(prebuffered, row)
+    ops:
+      measure_insert:
+        # Byte-budgeted UNLOGGED batch sized to the cluster's OWN limit,
+        # with NO `batch:` row cap — one invocation packs a full
+        # byte-budget-worth of rows and reports the count it wrote.
+        max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
+        batchtype: unlogged
+        timeout: 60s
+        prepared: |
+          INSERT INTO {keyspace}.{table} (key, value)
+          VALUES ('{id}', {train_vector})
+        # SRD-66 result-binding: write floor_decade(count) THROUGH to the
+        # workload-root `shared measured` cell — `count` is the rows this
+        # byte-budgeted write actually wrote (Change 1).
+        result: |
+          measured := floor_decade(count)
+
   # Incremental load: insert ONLY the vectors new to this size tier —
   # the absolute range [prev_count, this_count) of the profile's base
   # facet, where `this_count` is this tier's cumulative size and
@@ -380,13 +469,21 @@ phases:
       train_vector := vector_at(prebuffered, ord)
     ops:
       insert:
+        # FIXED cursor stride per invocation (SRD-22 cover-once), frozen from
+        # the `measure_batch` probe via the enclosing `const stride := measured`
+        # scope: one invocation reads AND advances `stride` ordinals — a
+        # measured batch-worth instead of a single row. `stride` defaults to 1
+        # (the root `shared measured` literal) if the probe was skipped.
+        batch: stride
         # Byte-bounded batch sized to the cluster's OWN configured limit
         # (SRD-103): reads `batch_size_fail_threshold` from
         # system_views.settings, backs off 10%, and fills each UNLOGGED batch
-        # up to that many encoded bytes (dynamic row count by vector dim). If
-        # the server doesn't expose it (older C* / permissions), this resolves
-        # to 0 = no byte cap = single-row inserts — safe: never exceeds the
-        # server's reject threshold.
+        # up to that many encoded bytes (dynamic row count by vector dim). KEPT
+        # alongside `batch: stride` as the byte-fill safety valve: the `stride`
+        # rows are packed into sub-batches each held under this budget, so an
+        # over-large stride can never exceed the server's reject threshold. If
+        # the server doesn't expose the limit (older C* / permissions), this
+        # resolves to 0 = no byte cap.
         max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
         batchtype: unlogged
         timeout: 60s   # 60s per write; retried up to `retries` (20) on a CQL timeout
