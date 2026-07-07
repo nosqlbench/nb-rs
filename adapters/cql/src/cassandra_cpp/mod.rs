@@ -852,17 +852,20 @@ impl DriverAdapter for CqlAdapter {
         // batch executor; `max_batch_size` alone byte-bounds a dynamically-sized batch.
         let has_batch = template.params.contains_key("batch")
             || template.params.contains_key("max_batch_size");
-        // Raw `batch: N` row cap (0 = unset → the byte budget drives the row count).
-        let batch_n: usize = template.params.get("batch")
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-            .unwrap_or(0) as usize;
-        // SRD-103 §3 — `max_batch_size` is a GK-resolved field. A literal
-        // magnitude (`64KB`) resolves directly; an expression referencing the
+        // SRD-103 §3 — both `batch:` (cursor stride / row cap) and
+        // `max_batch_size:` (byte budget) are GK-resolved op fields. A literal
+        // (`batch: 8`, `64KB`) resolves directly; an expression referencing the
         // CQL session nodes is evaluated against a subscope with this phase's
         // own `cql_session_key` bound, after the referenced settings are
         // pre-read (async) into the session memo. The phase's session is
         // pre-attached before op fields resolve, so `render_key` is a sync hit.
         let session_key = self.config.to_resource_key("cassandra-cpp").render_key();
+        // Workload-authored `batch:` cursor stride (0 = unset → the byte budget,
+        // if any, drives the row count). Used directly, unfloored downstream.
+        let batch_n: usize = crate::common::session_handle::resolve_batch_count(
+            &parent, &session_key, template.params.get("batch"),
+        ).await.map_err(|e| format!("op '{}': {e}", template.name))?
+            .unwrap_or(0);
         let max_batch_bytes = crate::common::session_handle::resolve_max_batch_bytes(
             &parent, &session_key, template.params.get("max_batch_size"),
         ).await.map_err(|e| format!("op '{}': {e}", template.name))?;

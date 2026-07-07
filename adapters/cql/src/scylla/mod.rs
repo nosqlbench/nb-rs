@@ -372,19 +372,24 @@ impl DriverAdapter for ScyllaCqlAdapter {
                                 _         => scylla::statement::batch::BatchType::Unlogged,
                             })
                             .unwrap_or(scylla::statement::batch::BatchType::Unlogged);
-                        // Raw `batch: N` row cap (0 = unset → the byte
-                        // budget, if any, drives the row count).
-                        let batch_n: usize = template.params.get("batch")
-                            .or_else(|| template.params.get("batch-size"))
-                            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
-                            .unwrap_or(0) as usize;
-                        // SRD-103 §3 — `max_batch_size` is GK-resolved. A
-                        // literal magnitude (`64KB`) resolves directly; an
-                        // expression referencing the CQL session nodes is
-                        // evaluated against a subscope with this phase's own
-                        // `cql_session_key` bound, after the referenced
-                        // settings are pre-read into the session memo.
+                        // SRD-103 §3 — both `batch:` (cursor stride / row cap)
+                        // and `max_batch_size:` (byte budget) are GK-resolved op
+                        // fields. A literal (`batch: 8`, `64KB`) resolves
+                        // directly; an expression referencing the CQL session
+                        // nodes is evaluated against a subscope with this
+                        // phase's own `cql_session_key` bound, after the
+                        // referenced settings are pre-read into the session memo.
                         let session_key = self.config.to_resource_key("scylla").render_key();
+                        // Workload-authored `batch:` cursor stride (0 = unset →
+                        // the byte budget, if any, drives the row count). Used
+                        // directly, unfloored downstream. `batch-size` is the
+                        // accepted alias key.
+                        let batch_n: usize = crate::common::session_handle::resolve_batch_count(
+                            &parent, &session_key,
+                            template.params.get("batch")
+                                .or_else(|| template.params.get("batch-size")),
+                        ).await.map_err(|e| format!("op '{}': {e}", template.name))?
+                            .unwrap_or(0);
                         let max_batch_bytes = crate::common::session_handle::resolve_max_batch_bytes(
                             &parent, &session_key, template.params.get("max_batch_size"),
                         ).await.map_err(|e| format!("op '{}': {e}", template.name))?;

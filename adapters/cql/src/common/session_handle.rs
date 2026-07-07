@@ -217,6 +217,57 @@ fn nonzero(bytes: u64) -> Option<u64> {
     (bytes > 0).then_some(bytes)
 }
 
+/// Resolve the `batch:` op field to a fixed cursor stride (row count).
+///
+/// - A **bare integer / numeric-string literal** (`batch: 8`, `"8"`) parses
+///   directly — no kernel, no session, no pre-read.
+/// - Anything else is a **GK expression** evaluated against a subscope of
+///   `parent` with the phase's own `cql_session_key` bound, after the settings
+///   it references are pre-read into the session memo — the SAME plumbing as
+///   [`resolve_max_batch_bytes`]. The resulting numeric [`Value`] is rounded
+///   to a `usize`, clamped to `≥ 1` (a workload-authored stride is at least one
+///   row).
+///
+/// Returns `Ok(None)` for an absent field or a literal count of `0`, so the
+/// caller's `batch_n` stays `0` (byte-budget / single-row paths unchanged).
+/// The count is used **directly, unfloored** by
+/// [`crate::common::size_estimator::fixed_batch_stride`] — the workload authors
+/// the cursor stride; the adapter does not cap it against the byte budget.
+pub async fn resolve_batch_count(
+    parent: &PolydatKernel,
+    session_key: &str,
+    param: Option<&serde_json::Value>,
+) -> Result<Option<usize>, String> {
+    let Some(param) = param else { return Ok(None); };
+
+    // 1. Bare integer / numeric-string literal fast path.
+    if let Some(n) = literal_batch_count(param) {
+        return Ok((n > 0).then_some(n));
+    }
+
+    // 2. GK expression path — same subscope plumbing as `max_batch_size`.
+    let Some(expr) = param.as_str() else {
+        return Err(format!(
+            "batch: expected an integer or a GK expression, got {param}"
+        ));
+    };
+    prime_referenced_settings(session_key, expr).await;
+    let value = eval_batch_field_expr(parent, session_key, expr, "batch")?;
+    let n = value_to_u64(&value).ok_or_else(|| format!(
+        "batch '{expr}' did not resolve to a non-negative number (got {value:?})"
+    ))?;
+    Ok(Some((n as usize).max(1)))
+}
+
+/// Parse a bare integer JSON number (`8`) or numeric string (`"8"`) `batch:`
+/// literal to a row count. `None` for any non-numeric value — that value is
+/// then treated as a GK expression.
+fn literal_batch_count(param: &serde_json::Value) -> Option<usize> {
+    param.as_u64()
+        .or_else(|| param.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+        .map(|n| n as usize)
+}
+
 /// Look up the pooled [`CqlSessionHandle`] for `session_key` through the
 /// SRD-104 accessor and downcast it. `None` when the fingerprint isn't
 /// attached (the miss is handled upstream — the expression's `cql_session`
@@ -257,6 +308,25 @@ async fn prime_referenced_settings(session_key: &str, expr: &str) {
 
 /// Evaluate the `max_batch_size` GK expression to a byte count.
 ///
+/// Thin numeric wrapper over the shared [`eval_batch_field_expr`] plumbing;
+/// the expression may reference the CQL session nodes and is evaluated against
+/// a subscope with `cql_session_key` bound by value.
+fn eval_batch_expr(
+    parent: &PolydatKernel,
+    session_key: &str,
+    expr: &str,
+) -> Result<u64, String> {
+    let value = eval_batch_field_expr(parent, session_key, expr, "max_batch_size")?;
+    value_to_u64(&value).ok_or_else(|| format!(
+        "max_batch_size '{expr}' did not resolve to a non-negative number (got {value:?})"
+    ))
+}
+
+/// Compile and evaluate a CQL batch op-field GK expression to a raw [`Value`],
+/// against a subscope of `parent` with `cql_session_key` bound. Shared plumbing
+/// behind [`resolve_max_batch_bytes`] and [`resolve_batch_count`]; `label`
+/// names the field for the subscope output wire and error messages.
+///
 /// The phase's `cql_session_key` is injected as a typed `Value::Str` through
 /// the program-form subscope's `iter_bindings` — NOT as a source string
 /// literal. The render-key contains `{…}` braces, which polydat's string-
@@ -264,35 +334,32 @@ async fn prime_referenced_settings(session_key: &str, expr: &str) {
 /// (turning the key into a spurious per-cycle wire); a value-level binding
 /// side-steps interpolation entirely. The expression may still reference
 /// parent-scope wires, which cascade in through `build_subscope`.
-fn eval_batch_expr(
+fn eval_batch_field_expr(
     parent: &PolydatKernel,
     session_key: &str,
     expr: &str,
-) -> Result<u64, String> {
+    label: &str,
+) -> Result<Value, String> {
     use polydat::dsl::compile::compile_polydat;
     // `extern cql_session_key: str` makes the key a named `str` input the
     // subscope can inject by value; the nodes are inventory-registered so the
     // expression's `cql_session(...)` / `cql_server_batch_limit(...)` resolve.
-    let source = format!(
-        "extern cql_session_key: str\n__nbrs_max_batch_size := {expr}\n"
-    );
+    let output = format!("__nbrs_{label}");
+    let source = format!("extern cql_session_key: str\n{output} := {expr}\n");
     let program = compile_polydat(&source)
-        .map_err(|e| format!("max_batch_size '{expr}': {e}"))?
+        .map_err(|e| format!("{label} '{expr}': {e}"))?
         .program()
         .clone();
     let bindings = [("cql_session_key".to_string(), Value::Str(session_key.into()))];
     let matter = PolydatMatter::builder()
-        .label("cql_max_batch_size")
+        .label(format!("cql_{label}"))
         .program(program)
         .iter_bindings(&bindings)
         .build()
-        .map_err(|e| format!("max_batch_size '{expr}': {e}"))?;
+        .map_err(|e| format!("{label} '{expr}': {e}"))?;
     let mut child = parent.build_subscope(matter)
-        .map_err(|e| format!("max_batch_size '{expr}': {e:?}"))?;
-    let value = child.pull("__nbrs_max_batch_size").clone();
-    value_to_u64(&value).ok_or_else(|| format!(
-        "max_batch_size '{expr}' did not resolve to a non-negative number (got {value:?})"
-    ))
+        .map_err(|e| format!("{label} '{expr}': {e:?}"))?;
+    Ok(child.pull(&output).clone())
 }
 
 /// Extract the raw contents of every double-quoted string literal in a GK
@@ -458,5 +525,49 @@ mod tests {
 
         // Absent field → no byte cap.
         assert_eq!(resolve_max_batch_bytes(&parent, key, None).await.unwrap(), None);
+    }
+
+    /// `batch:` resolution mirrors `max_batch_size`: bare integers / numeric
+    /// strings take the literal fast path, while anything else is a GK
+    /// expression compiled + evaluated against a subscope with `cql_session_key`
+    /// bound. No accessor is installed here — the literal-bearing expression
+    /// references no session nodes, so `prime_referenced_settings` no-ops and
+    /// the resolution is fully local (test-order independent).
+    #[tokio::test]
+    async fn batch_count_resolves_literal_and_expression() {
+        use polydat::dsl::compile::compile_polydat;
+
+        // A key that never matches an installed accessor → lookup_handle None.
+        let key = "cql{driver=scylla,hosts=batchtest,keyspace=,port=9042}";
+        let parent = compile_polydat("__seed := 0").expect("compile parent kernel");
+
+        // Bare integer literal → no kernel, no session read.
+        let lit = resolve_batch_count(&parent, key, Some(&serde_json::json!(8)))
+            .await.expect("integer literal resolve");
+        assert_eq!(lit, Some(8));
+
+        // Numeric-string literal → same fast path.
+        let lit_str = resolve_batch_count(&parent, key, Some(&serde_json::json!("8")))
+            .await.expect("numeric-string literal resolve");
+        assert_eq!(lit_str, Some(8));
+
+        // GK expression (literal-bearing, no session nodes): floor_decade(292)
+        // → base 100, floor(292/100)*100 = 200 → rounded to usize 200. The
+        // stride is workload-authored, resolved through the GK kernel.
+        let expr = serde_json::json!("floor_decade(292)");
+        let resolved = resolve_batch_count(&parent, key, Some(&expr))
+            .await.expect("expression resolve");
+        assert_eq!(resolved, Some(200),
+            "workload-authored batch stride resolves through the GK kernel");
+
+        // A second expression form (min over literals) → 8.
+        let expr2 = serde_json::json!("min(8, 100)");
+        assert_eq!(
+            resolve_batch_count(&parent, key, Some(&expr2)).await.expect("min resolve"),
+            Some(8),
+        );
+
+        // Absent field → no stride (byte budget / single-row drives).
+        assert_eq!(resolve_batch_count(&parent, key, None).await.unwrap(), None);
     }
 }

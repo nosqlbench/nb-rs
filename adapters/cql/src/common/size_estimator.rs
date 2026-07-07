@@ -165,13 +165,16 @@ pub fn parse_byte_magnitude(raw: &str) -> Option<u64> {
 /// the executor drives the phase cursor with `Σ rows_per_op` (SRD-22
 /// cover-once: fetch N, advance N — no over-insert).
 ///
-/// - `batch: N` alone → exactly `N` (an explicit literal, never floored).
-/// - `max_batch_size` alone → `floor_base10(budget / row_size)` — one
-///   budget-worth floored to a round power of ten — clamped to
+/// - `batch: N` (with OR without `max_batch_size`) → exactly `N`, used
+///   **directly and unfloored**. The `batch:` field is workload-authored
+///   (GK-resolved upstream), so the workload owns the cursor stride; the
+///   adapter never caps it against the byte budget. When a `max_batch_size`
+///   byte budget is also set it governs only the dynamic byte-fill in
+///   `execute`, not this fixed stride.
+/// - `max_batch_size` alone (no `batch:`) → `floor_base10(budget / row_size)`
+///   — one budget-worth floored to a round power of ten — clamped to
 ///   `1..=`[`MAX_PREDICTED_ROWS`]. A round `N` keeps the cursor stride
 ///   legible and stable against row-size jitter.
-/// - both → `min(batch_n, floor_base10(budget / row_size))`: the byte
-///   budget drives the fill, `batch` caps the row count (SRD-22).
 /// - neither → a single row (unchanged single-op behavior).
 ///
 /// Reuses the `round_numbers::floor_base10` formula
@@ -186,8 +189,10 @@ pub fn fixed_batch_stride(row_size: u64, batch_n: usize, budget: Option<u64>) ->
         floored.clamp(1, MAX_PREDICTED_ROWS)
     };
     match (batch_n, budget) {
-        (n, None) if n > 0 => n,
-        (n, Some(b)) if n > 0 => n.min(budget_rows(b)),
+        // A workload-authored `batch:` count is the stride, verbatim and
+        // unfloored — never capped against the byte budget.
+        (n, _) if n > 0 => n,
+        // `max_batch_size` alone → one budget-worth, floored to base-10.
         (0, Some(b)) => budget_rows(b),
         _ => 1,
     }
@@ -331,11 +336,12 @@ mod tests {
         // `max_batch_size` alone → one budget-worth, floored to base-10.
         // 64_000 / 6_148 = 10.4 → floor_base10 = 10.
         assert_eq!(fixed_batch_stride(6148, 0, Some(64_000)), 10);
-        // both → min(batch_n, floored budget rows). 128_000 / 6_148 =
-        // 20.8 → floor_base10 = 10; min(200, 10) = 10 (budget drives).
-        assert_eq!(fixed_batch_stride(6148, 200, Some(128_000)), 10);
-        // both, budget generous → batch caps. floor_base10(10M/6148 =
-        // 1626) = 1000 (clamped); min(200, 1000) = 200.
+        // both → `batch_n` used directly, unfloored: the workload authors the
+        // stride and the byte budget no longer caps it (it drives only the
+        // dynamic byte-fill in execute). 128_000/6_148=20.8 would floor to 10,
+        // but batch: 200 wins verbatim.
+        assert_eq!(fixed_batch_stride(6148, 200, Some(128_000)), 200);
+        // both, generous budget → still `batch_n` verbatim.
         assert_eq!(fixed_batch_stride(6148, 200, Some(10_000_000)), 200);
         // tiny rows: floor_base10(1e7) = 1e7 clamps to the 1000-row cap.
         assert_eq!(fixed_batch_stride(1, 0, Some(10_000_000)), MAX_PREDICTED_ROWS);
