@@ -142,6 +142,13 @@ params:
   enable_finalize: 0   # the finalize_index phase (flush + sstable read + compaction)
   enable_compact: 0    # the forced major compaction (inside finalize_index)
 
+  # When set (=1), pin the table's STCS min/max thresholds to 100000 in
+  # the CREATE TABLE DDL so the size-tier compactor never fires
+  # spontaneously mid-load — the test owns compaction timing explicitly.
+  # When unset (default 0), no compaction clause is emitted and the
+  # server's default STCS behaviour applies (background compactions run).
+  disable_auto_compaction: 0
+
 # Derived identifiers, visible to every phase's op text. The CQL table
 # holds the cumulative vectors for this dataset+profile, so its name is
 # sanitized from them (every character outside [a-zA-Z0-9_] → '_')
@@ -265,10 +272,24 @@ phases:
         raw: |
           CREATE KEYSPACE IF NOT EXISTS {keyspace}
           WITH replication = {replication} AND durable_writes = true
-      create_table:
-        # STCS thresholds pinned high (100000) so the size-tier
-        # compactor never fires spontaneously mid-load — the test
-        # owns compaction timing via `finalize_index`.
+      # Table DDL in two mutually-exclusive forms selected by
+      # `disable_auto_compaction`. Exactly one runs per schema pass; the
+      # other is skipped by its `if:` guard.
+      #   pinned  — STCS min/max thresholds pinned high (100000) so the
+      #             size-tier compactor never fires spontaneously
+      #             mid-load; the test owns compaction timing via
+      #             `finalize_index`.
+      #   default — no compaction clause emitted; the server's default
+      #             STCS behaviour applies (background compactions run).
+      create_table_pinned:
+        if: "disable_auto_compaction != 0"
+        raw: |
+          CREATE TABLE IF NOT EXISTS {keyspace}.{table}
+          (key text PRIMARY KEY, value vector<float, {dim}>)
+          WITH compaction = {'class': 'SizeTieredCompactionStrategy', 'min_threshold': '100000', 'max_threshold': '100000'}
+          AND compression = {'enabled': 'false'}
+      create_table_default:
+        if: "disable_auto_compaction == 0"
         raw: |
           CREATE TABLE IF NOT EXISTS {keyspace}.{table}
           (key text PRIMARY KEY, value vector<float, {dim}>)
