@@ -2028,7 +2028,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // `compile_from_scope` (and its callers in
     // `executor.rs::run_phase`) for the cascade-copy plumbing.
     // No eager pull at workload-root construction: that would
-    // (a) fire side-effecting nodes like `throw_at` outside the
+    // (a) fire side-effecting nodes like `testkit_throw_at` outside the
     // phase cascade context, and (b) cache stale values for
     // cycle-dependent bindings.
     let workload_canonical_kernel: std::sync::Arc<polydat::kernel::PolydatKernel> =
@@ -2735,6 +2735,11 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 }
             };
         let resource_pool = Arc::new(crate::resource_pool::ResourcePool::new());
+        // SRD-104 — install the process-global resource-accessor bridge and
+        // point it at this session's pool, so kernel nodes can reach a live
+        // pool-owned resource (e.g. a CQL session handle) by fingerprint via
+        // `polydat::resource_lookup`. The pool stays the definitive owner.
+        crate::resource_pool::install_accessor(&resource_pool);
         let initial_scene_tree_path = vec![crate::checkpoint::PathSegment::Scenario(
             scenario_name.to_string(),
         )];

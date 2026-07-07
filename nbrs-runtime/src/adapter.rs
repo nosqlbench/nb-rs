@@ -371,6 +371,17 @@ pub trait DriverAdapter: Send + Sync + 'static {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
+
+    /// SRD-104 — the adapter's **accessor payload**: a type-erased handle
+    /// (`Arc<dyn Any + Send + Sync>`) a kernel node can obtain by fingerprint
+    /// via [`polydat::resource_lookup`]. The resource pool surfaces this
+    /// through [`crate::resource_pool::SharedResource::accessor_payload`]
+    /// (the pool-shared wrapper delegates here) and stores it on the entry at
+    /// init. Default `None` — an adapter opts in only when it wants kernels
+    /// to reach a live handle (the first consumer is the CQL session handle,
+    /// SRD-103). Built over the adapter's own connected session, so the
+    /// payload and the op-execution path share one resource.
+    fn accessor_payload(&self) -> Option<std::sync::Arc<dyn Any + Send + Sync>> { None }
 }
 
 /// Adapter display preference for TUI activation.

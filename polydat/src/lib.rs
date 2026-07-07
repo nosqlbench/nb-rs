@@ -130,6 +130,12 @@ pub mod library;
 pub mod dsl;
 pub mod viz;
 
+// SRD-104 — dependency-inverted resource-accessor bridge. A
+// type-erased trait + process-global install point by which a
+// kernel node reaches a live, host-owned resource by fingerprint,
+// without polydat depending on the host runtime.
+pub mod resource;
+
 // SRD-80 — proc-macro trait surface. The `polydat-derive`
 // crate emits paths like `polydat::derive_support::FromValue` /
 // `IntoValue` that resolve here.
@@ -155,6 +161,12 @@ pub use inventory;
 /// `polydat::half::f16`, which `extern crate self as polydat`
 /// resolves inside this crate too).
 pub use half;
+
+/// SRD-104 — the resource-accessor bridge at the crate root so the
+/// host installs via `polydat::RESOURCE_ACCESSOR` and nodes resolve
+/// via `polydat::resource_lookup`, without reaching a deep module
+/// path (D6).
+pub use resource::{RESOURCE_ACCESSOR, ResourceAccessor, resource_lookup};
 
 /// Host-log sink bridge — the sanctioned public path for installing
 /// a leveled log sink into the kernel (`set_log_fn`) and for emitting

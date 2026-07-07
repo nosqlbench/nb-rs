@@ -50,10 +50,11 @@
 //! multi-generation machinery is in place but exercised
 //! only by the synthetic mock resource in tests until then.
 
+use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -125,6 +126,35 @@ impl ResourceKey {
             } else {
                 s.push_str(v);
             }
+        }
+        s.push('}');
+        s
+    }
+
+    /// SRD-104 — the **canonical fingerprint rendering** of this key to a
+    /// stable string, used as the accessor lookup key
+    /// ([`polydat::ResourceAccessor::lookup`]). Unlike [`Self::fmt_for_log`]
+    /// this rendering is **identity-preserving** — it does NOT redact
+    /// secrets — because two keys that differ only in an identity-bearing
+    /// field (e.g. `password`) MUST render to different strings or they
+    /// would collide in the accessor. The `BTreeMap` makes the field order
+    /// deterministic, so equal keys always render identically.
+    ///
+    /// This is the single rendering shared by both sides of the SRD-104
+    /// bridge: the resource pool renders each live entry's key with it when
+    /// resolving a lookup, and a consumer node builds the same string from
+    /// the fingerprint in scope. Shape: `adapter{k1=v1,k2=v2}`.
+    pub fn render_key(&self) -> String {
+        let mut s = String::with_capacity(64);
+        s.push_str(&self.adapter);
+        s.push('{');
+        let mut first = true;
+        for (k, v) in &self.fields {
+            if !first { s.push(','); }
+            first = false;
+            s.push_str(k);
+            s.push('=');
+            s.push_str(v);
         }
         s.push('}');
         s
@@ -312,6 +342,16 @@ pub trait SharedResource: Send + Sync + 'static {
     /// place to surface domain-specific handles, not the
     /// trait surface.
     fn as_legacy_adapter(&self) -> Option<Arc<dyn DriverAdapter>> { None }
+
+    /// SRD-104 — the resource's **accessor payload**: a type-erased handle
+    /// (`Arc<dyn Any + Send + Sync>`) a kernel node can obtain by
+    /// fingerprint via [`polydat::resource_lookup`]. The pool stores it on
+    /// the entry right after a successful init, and its
+    /// [`polydat::ResourceAccessor`] impl hands out clones. Default `None`
+    /// — a resource opts in only when it wants kernels to reach a live
+    /// handle (the first consumer is a CQL session handle, SRD-103); no
+    /// existing adapter is affected.
+    fn accessor_payload(&self) -> Option<Arc<dyn Any + Send + Sync>> { None }
 }
 
 // =================================================================
@@ -356,6 +396,14 @@ struct Entry {
     /// to compute `elapsed_ms` on `init.completed` /
     /// `init.failed` events.
     init_started_at: Mutex<Option<Instant>>,
+
+    /// SRD-104 — the resource's type-erased **accessor payload**, populated
+    /// right after a successful init from [`SharedResource::accessor_payload`]
+    /// and returned by the pool's [`polydat::ResourceAccessor`] impl. `None`
+    /// until init succeeds, and `None` for resources that don't opt in (the
+    /// trait default). The payload lives and dies with the entry — no second
+    /// store.
+    accessor_payload: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Entry {
@@ -368,6 +416,7 @@ impl Entry {
             pending_uses: AtomicUsize::new(0),
             live_attaches: AtomicUsize::new(0),
             init_started_at: Mutex::new(None),
+            accessor_payload: Mutex::new(None),
         }
     }
 }
@@ -660,6 +709,24 @@ impl ResourcePool {
         inner.entries_by_key.remove(&(key.clone(), generation));
     }
 
+    /// SRD-104 — resolve the accessor payload for the live entry whose
+    /// [`ResourceKey`] renders (via [`ResourceKey::render_key`]) to `key`.
+    /// Returns a clone of the stored `Arc<dyn Any>`, or `None` when no live
+    /// entry matches the fingerprint or the matched entry has no payload
+    /// (not opted in, or not yet initialised). This is the pool's half of
+    /// the [`polydat::ResourceAccessor`] bridge; see [`install_accessor`].
+    fn lookup_accessor_payload(&self, key: &str) -> Option<Arc<dyn Any + Send + Sync>> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        for entry in inner.entries_by_key.values() {
+            if entry.key.render_key() == key {
+                return entry.accessor_payload.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+            }
+        }
+        None
+    }
+
     /// Lazily realise the resource for an entry, emitting
     /// `resource.init.{started,completed,failed}` events
     /// around the call. Subsequent calls observe the
@@ -705,6 +772,12 @@ impl ResourcePool {
             Ok(resource) => {
                 *entry.resource.lock().unwrap_or_else(|e| e.into_inner()) =
                     Some(resource.clone());
+                // SRD-104: capture the resource's accessor payload (if any)
+                // onto the entry so the pool's ResourceAccessor impl can hand
+                // it to kernel nodes by fingerprint. `None` for resources that
+                // don't opt in (the trait default) — no-op then.
+                *entry.accessor_payload.lock().unwrap_or_else(|e| e.into_inner()) =
+                    resource.accessor_payload();
                 emit_event(LogLevel::Debug, "init.completed", entry,
                     &format!("elapsed_ms={elapsed_ms}"));
                 Ok(resource)
@@ -1159,6 +1232,16 @@ impl SharedResource for SharedAdapterResource {
     fn as_legacy_adapter(&self) -> Option<Arc<dyn DriverAdapter>> {
         self.adapter()
     }
+
+    /// SRD-104 — surface the wrapped adapter's accessor payload (SRD-103's
+    /// CQL session handle for the `cql` adapter). The pool captures this
+    /// right after init and hands clones to kernel nodes by fingerprint. The
+    /// pool-shared wrapper owns no payload itself; it delegates to the
+    /// adapter, which builds one over its connected session. `None` for
+    /// adapters that don't opt in (the trait default).
+    fn accessor_payload(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.adapter().and_then(|a| a.accessor_payload())
+    }
 }
 
 /// Push B high-level helper: attach a shareable adapter
@@ -1315,6 +1398,49 @@ pub fn pre_map_pending_uses(
         pool.declare_pending_use(key, default_policy_for(reg.share_capability));
     }
     Ok(())
+}
+
+// =================================================================
+// SRD-104 — resource-accessor bridge (pool ⇄ polydat)
+// =================================================================
+
+/// The pool the process-global [`polydat::ResourceAccessor`] currently
+/// resolves against, held as a `Weak` so the process-lifetime bridge never
+/// keeps a finished session's pool (and its live network resources) alive.
+/// Re-pointed each session by [`install_accessor`]; empty until the first
+/// install.
+static ACTIVE_POOL: Mutex<Weak<ResourcePool>> = Mutex::new(Weak::new());
+
+/// The stable bridge object installed once into
+/// [`polydat::RESOURCE_ACCESSOR`]. It carries no state itself — it resolves
+/// against the swappable [`ACTIVE_POOL`] — so a host process that runs
+/// several sessions (TUI, `metrics watch`) re-points the pool without
+/// re-installing (the `OnceLock` accepts only one object).
+struct PoolAccessorView;
+
+impl polydat::ResourceAccessor for PoolAccessorView {
+    fn lookup(&self, key: &str) -> Option<Arc<dyn Any + Send + Sync>> {
+        let pool = ACTIVE_POOL.lock().unwrap_or_else(|e| e.into_inner()).upgrade()?;
+        pool.lookup_accessor_payload(key)
+    }
+}
+
+/// SRD-104 — install the process-global resource-accessor bridge and point
+/// it at `pool`. Called once at session start where the [`ResourcePool`] is
+/// created.
+///
+/// The bridge *object* is installed exactly once into polydat's `OnceLock`;
+/// the pool it resolves against is swappable ([`ACTIVE_POOL`]), so a second
+/// session in the same host process re-points the SAME bridge at its own
+/// pool rather than stranding on the first session's (now-closed) one —
+/// avoiding the silent-miss a plain one-shot `set` would cause across
+/// sessions. Idempotent per session.
+pub fn install_accessor(pool: &Arc<ResourcePool>) {
+    *ACTIVE_POOL.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(pool);
+    // First session installs the bridge object; later sessions' `set`
+    // returns Err (already installed) — expected, the swappable ACTIVE_POOL
+    // above already re-pointed it.
+    let _ = polydat::RESOURCE_ACCESSOR.set(Arc::new(PoolAccessorView));
 }
 
 // =================================================================
@@ -1911,6 +2037,88 @@ mod tests {
             "Push D: close fires the moment the last predicted \
              phase detaches — not at session shutdown");
         assert_eq!(pool.live_entries(), 0);
+    }
+
+    #[test]
+    fn render_key_is_identity_preserving_unlike_log_format() {
+        // SRD-104: `render_key()` is the accessor fingerprint — it must be
+        // identity-preserving (NOT redact secrets), because two keys that
+        // differ only in an identity-bearing field would otherwise collide
+        // in the accessor. `fmt_for_log()` redacts (safe for logs) and so
+        // deliberately collides; `render_key()` must not.
+        let a = ResourceKey::new("cql").with("hosts", "h1").with("password", "p1");
+        let b = ResourceKey::new("cql").with("hosts", "h1").with("password", "p2");
+        assert_eq!(a.fmt_for_log(), b.fmt_for_log(),
+            "log format redacts password → collides (expected)");
+        assert_ne!(a.render_key(), b.render_key(),
+            "render_key must distinguish identity-bearing password");
+        assert!(a.render_key().contains("password=p1"), "got: {}", a.render_key());
+        // BTreeMap makes field order irrelevant to the rendering.
+        let c = ResourceKey::new("cql").with("password", "p1").with("hosts", "h1");
+        assert_eq!(a.render_key(), c.render_key(),
+            "render_key is field-order independent");
+    }
+
+    #[tokio::test]
+    async fn accessor_payload_populates_and_looks_up_by_render_key() {
+        // SRD-104 pool-side round-trip: a resource that opts into an
+        // accessor payload has it captured onto its entry at init, and the
+        // pool resolves it by the key's canonical `render_key()` rendering
+        // — the same string a consumer node builds from the fingerprint in
+        // scope. Exercises the pool half of the bridge directly, without the
+        // process-global (which would race across parallel tests).
+        struct WithPayload { key: ResourceKey }
+        impl SharedResource for WithPayload {
+            fn resource_key(&self) -> &ResourceKey { &self.key }
+            fn accessor_payload(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+                Some(Arc::new(4242u64) as Arc<dyn Any + Send + Sync>)
+            }
+        }
+
+        let pool = Arc::new(ResourcePool::new());
+        let key = ResourceKey::new("cql").with("hosts", "h1").with("keyspace", "ks");
+        let rendered = key.render_key();
+
+        // No entry yet → miss.
+        assert!(pool.lookup_accessor_payload(&rendered).is_none(),
+            "no live entry ⇒ None");
+
+        let key_for_factory = key.clone();
+        let guard = attach(&pool, key.clone(), ResourceSharePolicy::Shared, "phase_A",
+            ResourceFactory::new(move || async move {
+                Ok(Arc::new(WithPayload { key: key_for_factory }) as Arc<dyn SharedResource>)
+            }),
+        ).await.unwrap();
+
+        // Hit by the canonical rendering; downcast to the concrete payload.
+        let payload = pool.lookup_accessor_payload(&rendered)
+            .expect("payload present after successful init");
+        let n = payload.downcast_ref::<u64>().expect("payload downcasts to u64");
+        assert_eq!(*n, 4242);
+
+        // Detach with no pending uses drains the entry → miss again.
+        guard.detach().await.unwrap();
+        assert!(pool.lookup_accessor_payload(&rendered).is_none(),
+            "closed entry ⇒ None");
+    }
+
+    #[tokio::test]
+    async fn default_resource_has_no_accessor_payload() {
+        // A resource that doesn't override `accessor_payload` (the trait
+        // default) contributes no payload — the miss policy of the bridge.
+        let pool = Arc::new(ResourcePool::new());
+        let mock = MockResource::new(key("cql", "cassandra-cpp"));
+        let rendered = mock.resource_key().render_key();
+        let mock_for_factory = Arc::clone(&mock);
+        let guard = attach(&pool, mock.resource_key().clone(),
+            ResourceSharePolicy::Shared, "phase_A",
+            ResourceFactory::new(move || async move {
+                Ok(mock_for_factory as Arc<dyn SharedResource>)
+            }),
+        ).await.unwrap();
+        assert!(pool.lookup_accessor_payload(&rendered).is_none(),
+            "default accessor_payload() ⇒ None even for a live entry");
+        guard.detach().await.unwrap();
     }
 
     #[tokio::test]
