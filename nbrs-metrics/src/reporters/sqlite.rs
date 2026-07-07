@@ -665,14 +665,25 @@ mod inner {
             }
         }
 
-        /// SRD-77 — insert the in-flight execution row at session
+        /// SRD-77 — record the in-flight execution row at session
         /// open. `ended_at_nanos` / `disposition` stay `NULL`
         /// until the matching [`Self::update_execution_end`]
-        /// call at shutdown. The `(session, exec_id)` PK is
-        /// strict: a duplicate insert (same session + exec_id)
-        /// returns Err verbatim from sqlite so the runner can
-        /// surface "this exec_id is already taken" rather than
-        /// silently overwriting prior history.
+        /// call at shutdown.
+        ///
+        /// This is an UPSERT that **completes a placeholder** without
+        /// clobbering a real row. A metric write may have already
+        /// created a minimal FK-parent placeholder for this
+        /// `(session, exec_id)` — `(verb='pending', started_at_nanos=0)`
+        /// — because the deferred `metric_instance → executions` FK
+        /// must be satisfiable at the snapshot COMMIT even when a metric
+        /// races ahead of this call (see the guard in
+        /// [`Self::upsert_instance`]). When such a placeholder is
+        /// present the real verb/started_at/snapshots overwrite it;
+        /// when a **completed** row already exists (a genuine duplicate
+        /// `exec_id`, e.g. a resume that reuses an id) the
+        /// `WHERE …='pending'` guard makes the update abstain, the prior
+        /// row is preserved verbatim, and a WARN is emitted — keeping
+        /// the SRD-77 "this exec_id is already taken" signal.
         // Args map 1:1 to the `executions` table columns written in
         // one statement; bundling them into a struct would only
         // shuffle the same fields across a call boundary.
@@ -691,16 +702,31 @@ mod inner {
                 "INSERT INTO executions \
                  (session, exec_id, verb, scope, started_at_nanos, \
                   workload_yaml_snapshot, cli_params_snapshot) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT(session, exec_id) DO UPDATE SET \
+                     verb                   = excluded.verb, \
+                     scope                  = excluded.scope, \
+                     started_at_nanos       = excluded.started_at_nanos, \
+                     workload_yaml_snapshot = excluded.workload_yaml_snapshot, \
+                     cli_params_snapshot    = excluded.cli_params_snapshot \
+                 WHERE executions.verb = 'pending'",
                 params![
                     session, exec_id as i64, verb, scope,
                     started_at_nanos, workload_yaml_snapshot, cli_params_snapshot,
                 ],
             );
-            if let Err(e) = res {
-                crate::diag::warn(&format!(
+            match res {
+                // Zero rows changed = the conflict hit a completed row
+                // whose `WHERE …='pending'` guard abstained: a genuine
+                // duplicate exec_id. Surface it (matching the prior
+                // strict-INSERT behaviour) without overwriting history.
+                Ok(0) => crate::diag::warn(&format!(
+                    "sqlite executions insert skipped: (session={session}, \
+                     exec_id={exec_id}) already records a completed execution")),
+                Ok(_) => {}
+                Err(e) => crate::diag::warn(&format!(
                     "sqlite executions insert failed (session={session}, \
-                     exec_id={exec_id}): {e}"));
+                     exec_id={exec_id}): {e}")),
             }
         }
 
@@ -1106,6 +1132,40 @@ mod inner {
                 return 0;
             }
             let exec_id: i64 = exec_id_raw.parse::<i64>().unwrap_or(0);
+            // SRD-77 FK-parent guard. The deferred FK
+            // `metric_instance(session, exec_id) → executions` is
+            // verified at the snapshot COMMIT (`Reporter::report`),
+            // NOT at this insert. A metric can reach the reporter for
+            // a `(session, exec_id)` whose `executions` row is not
+            // present yet:
+            //   - the cadence scheduler starts (runner.rs:680) before
+            //     `insert_execution_start` runs (runner.rs:1850), so
+            //     an early tick can commit a metric first;
+            //   - SRD-88 concurrent executions share one connection and
+            //     stagger, so one execution's metric can be captured
+            //     while another still holds the write path;
+            //   - session-tier metrics carry `session` but no `exec_id`
+            //     label, so `exec_id` falls back to the sentinel 0,
+            //     which never gets an `insert_execution_start` row;
+            //   - a skipped/failed `insert_execution_start` (its block
+            //     only warns) leaves the row absent entirely.
+            // Any of these made the deferred FK fail at COMMIT, which
+            // rolled back and DROPPED THE WHOLE SNAPSHOT. Write a
+            // minimal idempotent placeholder so the parent always
+            // exists at commit; `insert_execution_start` upserts the
+            // real verb/started_at/snapshots over the `pending`/0
+            // placeholder (INSERT OR IGNORE never clobbers a row that
+            // is already present, so a real row is left untouched).
+            self.conn.execute(
+                "INSERT OR IGNORE INTO executions \
+                 (session, exec_id, verb, started_at_nanos) \
+                 VALUES (?1, ?2, 'pending', 0)",
+                params![session, exec_id],
+            ).unwrap_or_else(|e| {
+                crate::diag::warn(&format!(
+                    "warning: executions FK-parent placeholder insert failed: {e}"));
+                0
+            });
             self.conn.execute(
                 "INSERT OR IGNORE INTO metric_instance \
                  (family_id, spec, session, exec_id) VALUES (?1, ?2, ?3, ?4)",
@@ -3679,6 +3739,92 @@ mod inner {
                 "prior workload yaml must remain intact");
         }
 
+        /// SRD-77 FK regression — a snapshot whose metrics reference a
+        /// `(session, exec_id)` with **no** `executions` row must still
+        /// commit. The deferred `metric_instance(session, exec_id) →
+        /// executions` FK is checked at `Reporter::report`'s COMMIT; a
+        /// metric can reach the reporter before/without its
+        /// `insert_execution_start` (the scheduler's first ticks race
+        /// session-open at runner.rs:680 vs :1850; concurrent SRD-88
+        /// executions stagger; session-tier metrics carry `session` but
+        /// no `exec_id` → exec_id 0, which never gets a start row). Before
+        /// the FK-parent guard in `upsert_instance` this dropped the WHOLE
+        /// snapshot (COMMIT → "FOREIGN KEY constraint failed" → ROLLBACK).
+        #[test]
+        fn snapshot_commits_when_execution_row_is_absent() {
+            // (a)/(c)/(d): a concrete exec_id whose executions row was
+            // never written (skipped/raced insert_execution_start).
+            let mut r = SqliteReporter::in_memory().unwrap();
+            let mut snap = MetricSet::new(Duration::from_secs(1));
+            snap.insert_counter(
+                "ops_total",
+                Labels::of("session", "no_exec_row")
+                    .with("exec_id", "7")
+                    .with("activity", "write"),
+                42,
+                Instant::now(),
+            );
+            r.report(&snap);
+            let samples: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM sample_value", [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(samples, 1,
+                "metric for an execution with no start row MUST still commit \
+                 (FK-parent placeholder), not be dropped by a failed COMMIT");
+            // A minimal placeholder executions row now backs the FK.
+            let placeholder: (String, i64, String, i64) = r.conn.query_row(
+                "SELECT session, exec_id, verb, started_at_nanos FROM executions \
+                 WHERE session = 'no_exec_row' AND exec_id = 7",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).unwrap();
+            assert_eq!(placeholder, ("no_exec_row".into(), 7, "pending".into(), 0));
+
+            // (b): a session-tier metric carrying `session` but NO
+            // `exec_id` label — exec_id resolves to the sentinel 0.
+            let mut r2 = SqliteReporter::in_memory().unwrap();
+            let mut snap2 = MetricSet::new(Duration::from_secs(1));
+            snap2.insert_gauge(
+                "control_rate",
+                Labels::of("session", "session_tier"),
+                1.0,
+                Instant::now(),
+            );
+            r2.report(&snap2);
+            let samples2: i64 = r2.conn.query_row(
+                "SELECT COUNT(*) FROM sample_value", [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(samples2, 1,
+                "session-tier metric (exec_id 0) MUST still commit");
+        }
+
+        /// The FK-parent placeholder is COMPLETED — not collided-with —
+        /// when `insert_execution_start` arrives afterward (the raced
+        /// ordering: metric first, start second). The real
+        /// verb/started_at/snapshots overwrite the `pending`/0 placeholder,
+        /// and no spurious duplicate warning is raised.
+        #[test]
+        fn insert_execution_start_completes_a_metric_written_placeholder() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            // Metric arrives first → creates placeholder (verb='pending').
+            let mut snap = MetricSet::new(Duration::from_secs(1));
+            snap.insert_counter(
+                "ops_total",
+                Labels::of("session", "raced").with("exec_id", "2"),
+                5, Instant::now(),
+            );
+            r.report(&snap);
+            // Now the real start record lands and completes the row.
+            r.insert_execution_start(
+                "raced", 2, "run", None, 1_234, "yaml", "cli",
+            );
+            let rows = r.read_executions(Some(2));
+            assert_eq!(rows.len(), 1, "placeholder must be completed in place, not duplicated");
+            assert_eq!(rows[0].verb, "run", "placeholder verb must be overwritten by the real one");
+            assert_eq!(rows[0].started_at_nanos, 1_234);
+            assert_eq!(rows[0].workload_yaml_snapshot, "yaml");
+            assert_eq!(rows[0].cli_params_snapshot, "cli");
+        }
+
         /// `update_execution_end` is idempotent — calling it
         /// twice doesn't reopen the row or stamp a different
         /// disposition. The `WHERE ended_at_nanos IS NULL`
@@ -3836,18 +3982,23 @@ mod inner {
                 "metric_instance MUST refuse `exec_id=\"latest\"`");
         }
 
-        /// SRD-77 — metric_instance FK enforces every metric is
-        /// tied to a real execution row. An attempt to insert a
-        /// metric whose `(session, exec_id)` labels don't match
-        /// any executions row MUST fail and produce no
-        /// metric_instance row. This is the "schema-enforced
-        /// execution qualification" promise — operators (and
-        /// tests) can't accidentally drift outside a session.
+        /// SRD-77 — the metric_instance FK stays ENFORCED
+        /// (`foreign_keys=ON`, FK not dropped): a metric_instance
+        /// row can NEVER exist without an `executions` parent. But
+        /// the "schema-enforced execution qualification" promise is
+        /// kept by PROVISIONING the parent, not by dropping the
+        /// metric: when a metric's `(session, exec_id)` labels don't
+        /// match any executions row, `upsert_instance` writes a
+        /// minimal `pending` placeholder so the deferred FK is
+        /// satisfiable at COMMIT and the sample is captured rather
+        /// than silently rolled back with the whole snapshot. (Before
+        /// this guard the COMMIT raised "FOREIGN KEY constraint
+        /// failed" and dropped every metric in the tick.)
         #[test]
-        fn metric_write_without_matching_executions_row_fails_fk() {
+        fn metric_write_without_start_row_provisions_fk_parent() {
             // NOTE: this test bypasses `in_memory()`'s bootstrap
             // helper deliberately — we open a raw connection,
-            // run create_schema, and verify the FK fires.
+            // run create_schema, and verify the FK-parent guard.
             let conn = rusqlite::Connection::open_in_memory().unwrap();
             conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
             let mut r = super::SqliteReporter {
@@ -3856,9 +4007,8 @@ mod inner {
                 instance_cache: std::collections::HashMap::new(),
             };
             r.create_schema().unwrap();
-            // No executions row! Attempt a metric write —
-            // upsert_instance should log a WARN and produce no
-            // row because the FK rejects the INSERT.
+            // No executions row up front. The metric write must
+            // provision a placeholder parent and commit the sample.
             let mut snapshot = MetricSet::new(Duration::from_secs(1));
             snapshot.insert_counter(
                 "ops_total",
@@ -3872,11 +4022,20 @@ mod inner {
                 "SELECT COUNT(*) FROM metric_instance",
                 [], |row| row.get(0),
             ).unwrap();
-            assert_eq!(n_instances, 0,
-                "metric_instance MUST NOT have a row when its \
-                 (session, exec_id) doesn't reference any \
-                 executions row — FK constraint should have \
-                 rejected the insert.");
+            assert_eq!(n_instances, 1,
+                "metric_instance MUST be captured — the reporter \
+                 provisions the FK parent rather than dropping the \
+                 metric.");
+            // The FK is intact: every metric_instance references a
+            // present executions row (the placeholder just created).
+            let orphans: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_instance mi \
+                 WHERE NOT EXISTS (SELECT 1 FROM executions e \
+                     WHERE e.session = mi.session AND e.exec_id = mi.exec_id)",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(orphans, 0,
+                "no metric_instance may reference a missing executions row");
         }
 
         /// Mirror: when the executions row IS present, the
