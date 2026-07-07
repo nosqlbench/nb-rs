@@ -47,6 +47,7 @@ pub mod realer;
 pub mod probability;
 pub mod pcg;
 pub mod math;
+pub mod round_numbers;
 pub mod datafile;
 pub mod param_helpers;
 pub mod assertions;
