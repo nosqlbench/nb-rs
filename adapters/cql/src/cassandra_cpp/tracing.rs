@@ -185,6 +185,64 @@ struct TraceLogInner {
     dropped: AtomicU64,
 }
 
+/// Lazily-initialised [`TraceLog`] shared by every dispenser of an adapter.
+///
+/// Tracing is OFF by default (`cql_trace_rate == 0`), so opening the log at
+/// adapter connect touched the cluster (preparing `system_traces` queries)
+/// and the filesystem (creating the JSONL artifact) for a feature nobody had
+/// asked for — and that prepare, issued over the just-connected main session
+/// against a cold/remote node, is exactly where a `LIB_REQUEST_TIMED_OUT`
+/// surfaces. Worse, a failed startup prepare was cached forever, silently
+/// disabling server-side enrichment even if the operator later raised
+/// `cql_trace_rate`.
+///
+/// This defers ALL of that — file open, worker spawn, and the
+/// `system_traces` prepare — to the FIRST op that is actually traced. With
+/// tracing off nothing is opened, spawned, or prepared; when it is turned on,
+/// init happens against a warmed-up session at the moment traces are wanted.
+pub(super) struct LazyTraceLog {
+    path: PathBuf,
+    session: cass::Session,
+    /// `None` inside the cell = init ran but failed (logged once); the outer
+    /// `OnceCell` distinguishes "not yet initialised" from "initialised".
+    cell: tokio::sync::OnceCell<Option<TraceLog>>,
+}
+
+impl LazyTraceLog {
+    /// Record the inputs; do NOT touch the cluster or filesystem. Cheap and
+    /// side-effect-free — safe to build at connect regardless of trace rate.
+    pub(super) fn new(path: PathBuf, session: cass::Session) -> Self {
+        Self { path, session, cell: tokio::sync::OnceCell::new() }
+    }
+
+    /// The initialised [`TraceLog`], creating it on first call: open the
+    /// append file and spawn the retirement worker (which prepares the
+    /// `system_traces` queries in the background). Returns `None` when init
+    /// failed — the file couldn't be opened — after logging once. The
+    /// per-op hot path is one `OnceCell` load once initialised.
+    pub(super) async fn get(&self) -> Option<&TraceLog> {
+        self.cell
+            .get_or_init(|| async {
+                match TraceLog::open(self.path.clone(), self.session.clone()) {
+                    Ok(log) => Some(log),
+                    Err(e) => {
+                        nbrs_runtime::observer::log(
+                            nbrs_runtime::observer::LogLevel::Warn,
+                            &format!(
+                                "cql tracing log unavailable at {}: {} \
+                                 — traces for this run will be dropped",
+                                self.path.display(), e,
+                            ),
+                        );
+                        None
+                    }
+                }
+            })
+            .await
+            .as_ref()
+    }
+}
+
 impl TraceLog {
     /// Bounded queue size. Five matches the SRD-23 spec: above
     /// this, the producer escalates from a saturation warning

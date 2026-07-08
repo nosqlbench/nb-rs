@@ -25,7 +25,7 @@ mod binder_meta;
 mod op_modifier;
 mod settings;
 mod tracing;
-use tracing::{TraceLog, TraceRecord};
+use tracing::{LazyTraceLog, TraceRecord};
 
 /// One-shot guard for the cpp-driver's process-global log level.
 /// The driver requires `cass_log_set_level` to fire **before** any
@@ -304,7 +304,7 @@ pub struct CqlAdapter {
     /// configured) — but in practice we always allocate one
     /// because the rate is a live dynamic control and we
     /// don't want to require a process restart to enable it.
-    trace_log: Option<TraceLog>,
+    trace_log: std::sync::Arc<LazyTraceLog>,
 }
 
 unsafe impl Send for CqlAdapter {}
@@ -665,20 +665,14 @@ impl CqlAdapter {
         // artifacts; explicit override via `trace_log=` lets
         // operators redirect to a known stable path.
         let trace_log_path = resolve_trace_log_path(config);
-        let trace_log = match TraceLog::open(trace_log_path.clone(), session.clone()) {
-            Ok(log) => Some(log),
-            Err(e) => {
-                nbrs_runtime::observer::log(
-                    nbrs_runtime::observer::LogLevel::Warn,
-                    &format!(
-                        "cql tracing log unavailable at {}: {} \
-                         — `cql_trace_rate` writes will succeed but no \
-                         records will be retired",
-                        trace_log_path.display(), e,
-                    ));
-                None
-            }
-        };
+        // Lazy: resolve the path but open NOTHING here. The file, the
+        // retirement worker, and the `system_traces` prepare are all deferred
+        // to the first op that is actually traced (`cql_trace_rate > 0`). With
+        // tracing off — the default — the cluster is never touched for tracing
+        // and no artifact file is created. See [`LazyTraceLog`].
+        let trace_log = std::sync::Arc::new(
+            LazyTraceLog::new(trace_log_path, session.clone()),
+        );
 
         Ok(Self {
             session,
@@ -1278,7 +1272,7 @@ struct CqlRawDispenser {
     /// adapter init — dispenser still respects the rate
     /// (sets the tracing flag on the statement) but skips the
     /// post-execute submit.
-    trace_log: Option<TraceLog>,
+    trace_log: std::sync::Arc<LazyTraceLog>,
     /// SRD 73 universal per-op field overrides applied per
     /// execute. Empty chain → execute() takes the existing
     /// string fast-path. Non-empty chain → execute() builds
@@ -1385,7 +1379,7 @@ impl OpDispenser for CqlRawDispenser {
             let exec_result = match exec_outcome {
                 Ok((result, trace_id)) => {
                     if trace_this
-                        && let Some(log) = self.trace_log.as_ref()
+                        && let Some(log) = self.trace_log.get().await
                     {
                         log.submit(TraceRecord {
                             cycle,
@@ -1413,7 +1407,7 @@ impl OpDispenser for CqlRawDispenser {
                         stmt_text.to_string()
                     };
                     if trace_this
-                        && let Some(log) = self.trace_log.as_ref()
+                        && let Some(log) = self.trace_log.get().await
                     {
                         log.submit(TraceRecord {
                             cycle,
@@ -1489,7 +1483,7 @@ struct CqlPreparedDispenser {
     /// adapter init — dispenser still respects the rate
     /// (sets the tracing flag on the statement) but skips the
     /// post-execute submit.
-    trace_log: Option<TraceLog>,
+    trace_log: std::sync::Arc<LazyTraceLog>,
     /// SRD 73 universal per-op field overrides applied per
     /// execute after the session-level consistency is set.
     /// Empty chain is a hot-path no-op.
@@ -1614,7 +1608,7 @@ impl OpDispenser for CqlPreparedDispenser {
             let exec_result = match exec_outcome {
                 Ok((result, trace_id)) => {
                     if trace_this {
-                        if let Some(log) = self.trace_log.as_ref() {
+                        if let Some(log) = self.trace_log.get().await {
                             let binds = self.bind_names.iter()
                                 .map(|name| match wires.get(name) {
                                     Some(v) => tracing::format_bind_value(name, &v),
@@ -1645,7 +1639,7 @@ impl OpDispenser for CqlPreparedDispenser {
                         self.stmt_text.clone()
                     };
                     if trace_this
-                        && let Some(log) = self.trace_log.as_ref()
+                        && let Some(log) = self.trace_log.get().await
                     {
                         let binds = self.bind_names.iter()
                             .map(|name| match wires.get(name) {
@@ -1768,7 +1762,7 @@ struct CqlBatchDispenser {
     /// adapter init — dispenser still respects the rate
     /// (sets the tracing flag on each statement) but skips
     /// the post-execute submit.
-    trace_log: Option<TraceLog>,
+    trace_log: std::sync::Arc<LazyTraceLog>,
     /// SRD 73 universal per-op field overrides. A batch is a statement too,
     /// so these target the `cass::Batch` itself — the driver reads the batch's
     /// own aspects (consistency, request timeout, tracing), NOT those of the
@@ -2055,7 +2049,7 @@ impl CqlBatchDispenser {
         match exec_outcome {
             Ok((_result, trace_id)) => {
                 if trace_this
-                    && let Some(log) = self.trace_log.as_ref()
+                    && let Some(log) = self.trace_log.get().await
                 {
                     log.submit(TraceRecord {
                         cycle,
@@ -2078,7 +2072,7 @@ impl CqlBatchDispenser {
             }
             Err(e) => {
                 if trace_this
-                    && let Some(log) = self.trace_log.as_ref()
+                    && let Some(log) = self.trace_log.get().await
                 {
                     log.submit(TraceRecord {
                         cycle,
