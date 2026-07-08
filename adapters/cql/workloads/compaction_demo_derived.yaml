@@ -248,15 +248,20 @@ scenarios:
   compact: [finalize_index]
 
 phases:
-  # Anti-DDL teardown: drop the index, then the table. Per-statement
-  # timeout floor — a DROP on a populated SAI index can take tens of
-  # seconds. Runs ONCE before the sweep (the table accumulates vectors
-  # incrementally across tiers; it is NOT reset between profiles).
+  # Anti-DDL teardown: clear rows, then drop the index and the table.
+  # Per-statement timeout floor — a DROP on a populated SAI index can take
+  # tens of seconds. Runs ONCE before the sweep (the table accumulates
+  # vectors incrementally across tiers; it is NOT reset between profiles).
   teardown:
     concurrency: 1
     bindings: |
       const request_timeout_ms := 300000
     ops:
+      # Clear any rows a prior run left behind before the schema teardown.
+      # IF EXISTS makes a first run (no table yet) a clean no-op, and keeps
+      # the truncate ahead of the DROP so it actually takes effect.
+      truncate_table:
+        raw: "TRUNCATE TABLE IF EXISTS {keyspace}.{table}"
       drop_vector_index:
         raw: "DROP INDEX IF EXISTS {keyspace}.{table}{vector_idx_suffix}"
       drop_table:
