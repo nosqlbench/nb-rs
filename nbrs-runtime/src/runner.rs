@@ -1128,7 +1128,7 @@ impl SessionHost {
         if let Some(mut profiler) = self.profiler {
             profiler.finish();
         }
-        self.stop_handle.stop();
+        self.stop_handle.stop().await;
         let _teardown_t = std::time::Instant::now();
         self.cadence_reporter.shutdown().await;
         crate::diag!(crate::observer::LogLevel::Debug,

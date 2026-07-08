@@ -544,13 +544,34 @@ impl StopHandle {
     /// `Arc<StopHandle>` can stop it without sole ownership.
     /// Idempotent — a second call (or `drop` after) sees `thread`
     /// already taken and no-ops.
-    pub fn stop(&self) {
+    ///
+    /// ASYNC on purpose — the wait must YIELD to the runtime, never
+    /// block it. The timing thread's final flush `block_on`s
+    /// `CadenceReporter::shutdown_flush`, whose ack comes from the
+    /// reporter's OWNER — a tokio task on the caller's runtime. A
+    /// blocking wait here deadlocked a CURRENT-THREAD runtime three
+    /// ways: this (the only runtime) thread parked in `recv()`, the
+    /// timing thread parked awaiting the owner's ack, and the owner
+    /// task unable to run on the parked runtime. Multi-thread runtimes
+    /// escaped via `block_in_place` + spare workers, which is why only
+    /// single-threaded harnesses hung. The yield-poll below lets
+    /// same-runtime tasks progress on every flavor; this is a
+    /// session-end one-shot, so the 2 ms poll cadence touches no hot
+    /// path.
+    pub async fn stop(&self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
         self.stop_cv.notify_all(); // wake the inter-tick wait
         // Wait for the task's final flush to land (the trailing window).
         let done = self.done_rx.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(done) = done {
-            wait_for_done(done);
+            loop {
+                match done.try_recv() {
+                    Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    }
+                }
+            }
         }
         // The task has finished; drop its handle (no abort needed).
         let _ = self.task.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -579,38 +600,25 @@ impl Drop for StopHandle {
         self.stop_cv.notify_all(); // wake the inter-tick wait
         let done = self.done_rx.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(done) = done {
-            wait_for_done(done);
+            // Drop is sync, so it can only WAIT where blocking is safe:
+            // OUTSIDE any tokio runtime, a plain blocking recv (the timing
+            // thread's `done` needs no progress from this thread — except
+            // through the CadenceReporter owner task, which lives on a
+            // runtime this thread is not part of). INSIDE a runtime,
+            // blocking would starve exactly the task the timing thread's
+            // final flush awaits (see `stop`'s doc), so DETACH instead:
+            // the timing thread completes its flush on its own; only the
+            // ordering guarantee ("flush landed before return") is
+            // forfeited, and a caller that needs that guarantee uses the
+            // async `stop()`.
+            if tokio::runtime::Handle::try_current().is_err() {
+                let _ = done.recv();
+            }
         }
         // The timing thread signals `done` as its last act, then returns —
         // drop the join handle (detach); no abort exists for an OS thread and
         // none is needed.
         let _ = self.task.lock().unwrap_or_else(|e| e.into_inner()).take();
-    }
-}
-
-/// Wait (best-effort) for the scheduler thread to signal its final flush is
-/// done, from `stop()` / the `StopHandle`'s `Drop` (a sync context — can't
-/// `.await`).
-///
-/// The scheduler now runs on an independent `timing`-pool OS thread
-/// (SRD-102), so the `done` signal is fired without needing the calling
-/// runtime thread to make progress — a blocking `recv` can neither deadlock
-/// nor starve it, whatever the runtime flavour.
-///
-/// - **Multi-threaded runtime**: `block_in_place` so tokio spins a
-///   replacement worker and this brief session-end wait doesn't hold a
-///   runtime worker.
-/// - **Current-thread runtime / outside a runtime**: a plain blocking `recv`
-///   (`block_in_place` would panic on a current-thread runtime).
-///
-/// A disconnected channel (thread panicked) returns immediately.
-fn wait_for_done(done: std::sync::mpsc::Receiver<()>) {
-    use tokio::runtime::{Handle, RuntimeFlavor};
-    match Handle::try_current() {
-        Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(|| { let _ = done.recv(); });
-        }
-        _ => { let _ = done.recv(); }
     }
 }
 
@@ -704,7 +712,7 @@ mod tests {
 
         let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(350)).await;
-        stop.stop();
+        stop.stop().await;
 
         let c = count.load(Ordering::Relaxed);
         assert!((2..=5).contains(&c), "expected ~3 reports, got {c}");
@@ -725,7 +733,7 @@ mod tests {
 
         let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(350)).await;
-        stop.stop();
+        stop.stop().await;
 
         // Reporter received ingests — has the component tracked.
         let components = reporter.component_labels();
@@ -760,7 +768,7 @@ mod tests {
 
         let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(450)).await;
-        stop.stop();
+        stop.stop().await;
 
         let fast = fast_count.load(Ordering::Relaxed);
         let slow = slow_count.load(Ordering::Relaxed);
@@ -805,7 +813,7 @@ mod tests {
 
         let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(900)).await;
-        stop.stop();
+        stop.stop().await;
 
         let small = small_count.load(Ordering::Relaxed);
         let large = large_count.load(Ordering::Relaxed);
@@ -851,7 +859,7 @@ mod tests {
 
         let stop = handle.start();
         tokio::time::sleep(Duration::from_millis(3300)).await;
-        stop.stop();
+        stop.stop().await;
 
         let large = large_count.load(Ordering::Relaxed);
         assert!(large >= 1, "largest reporter saw 0 frames — chain broken");

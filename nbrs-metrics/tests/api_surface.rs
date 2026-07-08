@@ -606,7 +606,7 @@ async fn scheduler_feeds_cadence_reporter_and_delivers_to_external_reporter() {
 
     let stop = handle.start();
     std::thread::sleep(Duration::from_millis(350));
-    stop.stop();
+    stop.stop().await;
 
     // External reporter saw several ticks.
     assert!(external_count.load(Ordering::Relaxed) >= 2);
