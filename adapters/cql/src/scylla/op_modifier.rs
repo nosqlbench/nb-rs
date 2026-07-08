@@ -6,12 +6,13 @@
 //!
 //! Each modifier captures the resolved value at dispenser-
 //! initializer time and applies it via the engine's per-statement
-//! setter at execute time. Scylla's `Statement` (unprepared) and
-//! `PreparedStatement` share the same setter surface for the
-//! universal fields, so a small marker trait [`ScyllaStmt`]
-//! abstracts both. `Batch` is intentionally NOT covered here —
-//! it lacks `set_page_size` (see scylla 1.6 batch.rs); page-size
-//! support for batch is a future follow-up if/when needed.
+//! setter at execute time. A **batch is a statement too**: scylla's
+//! `Statement` (unprepared), `PreparedStatement`, AND `Batch` share the
+//! same aspect setters (bar `set_page_size`, which is meaningless for a
+//! batch of writes), so the marker trait [`ScyllaStmt`] abstracts all
+//! three and one modifier chain governs every executable op uniformly.
+//! `page_size` on a `Batch` is an intentional no-op — the only aspect that
+//! does not apply to a batch — so no aspect can silently skip a batch.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +20,7 @@ use std::time::Duration;
 use nbrs_runtime::op_modifier::OpFieldModifier;
 use polydat::ast::Value;
 use scylla::statement::{Consistency, SerialConsistency, Statement};
+use scylla::statement::batch::Batch;
 use scylla::statement::prepared::PreparedStatement;
 
 use crate::common::op_modifier::{CqlModifierFactory, parse_consistency};
@@ -49,6 +51,16 @@ impl ScyllaStmt for PreparedStatement {
     fn set_request_timeout(&mut self, t: Option<Duration>) { PreparedStatement::set_request_timeout(self, t); }
     fn set_page_size(&mut self, n: i32) { PreparedStatement::set_page_size(self, n); }
     fn set_tracing(&mut self, b: bool) { PreparedStatement::set_tracing(self, b); }
+}
+
+impl ScyllaStmt for Batch {
+    fn set_consistency(&mut self, c: Consistency) { Batch::set_consistency(self, c); }
+    fn set_serial_consistency(&mut self, sc: Option<SerialConsistency>) { Batch::set_serial_consistency(self, sc); }
+    fn set_request_timeout(&mut self, t: Option<Duration>) { Batch::set_request_timeout(self, t); }
+    // A batch is a set of writes; CQL paging applies to reads, so page size is
+    // inert for a batch. The one aspect that does not map — an explicit no-op.
+    fn set_page_size(&mut self, _n: i32) {}
+    fn set_tracing(&mut self, b: bool) { Batch::set_tracing(self, b); }
 }
 
 // =========================================================================
@@ -354,5 +366,20 @@ mod tests {
             let _: Box<dyn OpFieldModifier<PreparedStatement>> =
                 Box::new(RequestTimeoutMod { timeout: Duration::from_millis(1) });
         }
+    }
+
+    /// A batch is a statement too: the SAME factory resolves a
+    /// batch-targeted modifier, and it applies to a real `Batch` — so the
+    /// request timeout (and every other universal field) reaches the batch
+    /// itself, not just its member statements.
+    #[test]
+    fn modifier_apply_compiles_against_batch() {
+        use scylla::statement::batch::{Batch, BatchType};
+        let m: Box<dyn OpFieldModifier<Batch>> = ScyllaModifierFactory::<Batch>::modifier_for(
+            "request_timeout_ms",
+            Value::U64(60_000),
+        ).unwrap().unwrap();
+        let mut batch = Batch::new(BatchType::Unlogged);
+        m.apply(&mut batch); // should not panic
     }
 }

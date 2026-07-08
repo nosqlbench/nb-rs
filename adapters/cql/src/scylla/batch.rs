@@ -81,6 +81,11 @@ pub(super) struct ScyllaBatchDispenser {
     /// instead of `rows_inserted / stanzas_total`, whose denominator
     /// counts every op attempt (retries, failures, non-inserting ops).
     batch_writes: AtomicU64,
+    /// SRD 73 universal per-op field overrides, resolved once at `map_op`.
+    /// A batch is a statement too, so these apply to the [`Batch`] itself
+    /// (consistency / serial / request timeout / tracing) — the aspects
+    /// that govern batch execution, uniform with the single-statement path.
+    modifiers: nbrs_runtime::op_modifier::ModifierChain<Batch>,
 }
 
 impl ScyllaBatchDispenser {
@@ -94,6 +99,7 @@ impl ScyllaBatchDispenser {
         max_batch_bytes: Option<u64>,
         batch_type: BatchType,
         consistency: Consistency,
+        modifiers: nbrs_runtime::op_modifier::ModifierChain<Batch>,
     ) -> Self {
         Self {
             session,
@@ -107,6 +113,7 @@ impl ScyllaBatchDispenser {
             oversize_warned: AtomicBool::new(false),
             rows_total: AtomicU64::new(0),
             batch_writes: AtomicU64::new(0),
+            modifiers,
         }
     }
 
@@ -131,6 +138,8 @@ impl ScyllaBatchDispenser {
 
         let mut batch = Batch::new(self.batch_type);
         batch.set_consistency(self.consistency);
+        // SRD 73 aspects govern the batch itself — uniform with statements.
+        self.modifiers.apply(&mut batch);
         for _ in 0..row_count {
             batch.append_statement((*self.prepared).clone());
         }

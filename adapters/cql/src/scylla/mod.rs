@@ -404,6 +404,14 @@ impl DriverAdapter for ScyllaCqlAdapter {
                         };
                         let stride_n = crate::common::size_estimator::fixed_batch_stride(
                             row_size, batch_n, max_batch_bytes);
+                        // A batch is a statement too — resolve the SAME universal
+                        // fields into a batch-targeted chain so consistency /
+                        // serial / request timeout / tracing all reach the batch
+                        // itself, uniform with the single-statement path.
+                        let modifiers_for_batch =
+                            crate::common::op_modifier::build_cql_modifier_chain::<
+                                op_modifier::ScyllaModifierFactory<scylla::statement::batch::Batch>
+                            >(&parent, template.name.clone())?;
                         Ok(Box::new(batch::ScyllaBatchDispenser::new(
                             self.session.clone(),
                             prepared_arc,
@@ -413,6 +421,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
                             max_batch_bytes,
                             batch_type,
                             self.consistency,
+                            modifiers_for_batch,
                         )) as Box<dyn OpDispenser>)
                     }
                     OpMode::Raw => unreachable!(

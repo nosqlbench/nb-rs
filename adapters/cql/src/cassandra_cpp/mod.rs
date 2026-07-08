@@ -930,8 +930,20 @@ impl DriverAdapter for CqlAdapter {
         // `chain.apply`. Only one match arm below moves `modifiers`
         // into its dispenser.
         let modifiers = crate::common::op_modifier::build_cql_modifier_chain::<
-            op_modifier::CassModifierFactory,
+            op_modifier::CassModifierFactory<cass::Statement>,
         >(&parent, template.name.clone())?;
+        // A batch is a statement too — resolve the SAME universal fields into a
+        // batch-targeted chain so consistency / serial / request timeout /
+        // tracing all reach the batch itself (the driver ignores member-
+        // statement aspects for batch execution). Built only when this op is a
+        // batch; drops out of the hot path otherwise.
+        let batch_modifiers = if has_batch {
+            Some(crate::common::op_modifier::build_cql_modifier_chain::<
+                op_modifier::CassModifierFactory<cass::Batch>,
+            >(&parent, template.name.clone())?)
+        } else {
+            None
+        };
         let canonical_kernel = parent;
 
         match mode {
@@ -1141,7 +1153,10 @@ impl DriverAdapter for CqlAdapter {
                             batch_writes: std::sync::atomic::AtomicU64::new(0),
                             trace_rate_bits: self.trace_rate_bits.clone(),
                             trace_log: self.trace_log.clone(),
-                            modifiers,
+                            // The batch-targeted chain — applied to the batch
+                            // itself, not its member statements.
+                            modifiers: batch_modifiers
+                                .expect("batch modifier chain is built when has_batch"),
                         }) as Box<dyn OpDispenser>)
                     } else {
                         Ok(Box::new(CqlPreparedDispenser {
@@ -1754,9 +1769,11 @@ struct CqlBatchDispenser {
     /// (sets the tracing flag on each statement) but skips
     /// the post-execute submit.
     trace_log: Option<TraceLog>,
-    /// SRD 73 universal per-op field overrides applied to each
-    /// bound statement before it's added to the batch.
-    modifiers: nbrs_runtime::op_modifier::ModifierChain<cass::Statement>,
+    /// SRD 73 universal per-op field overrides. A batch is a statement too,
+    /// so these target the `cass::Batch` itself — the driver reads the batch's
+    /// own aspects (consistency, request timeout, tracing), NOT those of the
+    /// member statements added to it.
+    modifiers: nbrs_runtime::op_modifier::ModifierChain<cass::Batch>,
 }
 
 
@@ -1984,20 +2001,24 @@ impl CqlBatchDispenser {
         trace_this: bool,
     ) -> Result<u64, ExecutionError> {
         let mut batch = self.session.get().batch(self.batch_type);
+        // Aspects govern the BATCH itself — a batch is a statement too, and
+        // `cass_session_execute_batch` reads the batch's own consistency,
+        // request timeout, and tracing, IGNORING those of the member
+        // statements. Set them once here (session consistency + the SRD-73
+        // universal-field chain + trace flag); the member statements below
+        // carry only their bound values.
+        let _ = batch.set_consistency(self.consistency)
+            .map_err(|e| ExecutionError::Op(AdapterError {
+                error_name: "batch_error".into(),
+                message: format!("set batch consistency: {e}"),
+                retryable: false,
+            }))?;
+        self.modifiers.apply(&mut batch);
+        if trace_this {
+            let _ = batch.set_tracing(true);
+        }
         for (row_idx, row) in rows.iter().enumerate() {
             let mut stmt = self.prepared.bind();
-            let _ = stmt.set_consistency(self.consistency)
-                .map_err(|e| ExecutionError::Op(AdapterError {
-                    error_name: "bind_error".into(),
-                    message: format!("set consistency: {e}"),
-                    retryable: false,
-                }))?;
-            // SRD 73: per-op universal-field overrides on top of the
-            // session-level consistency, before tracing is layered.
-            self.modifiers.apply(&mut stmt);
-            if trace_this {
-                let _ = stmt.set_tracing(true);
-            }
             for (idx, value_opt) in row.iter().enumerate() {
                 if let Some(value) = value_opt {
                     self.binders[idx](&mut stmt, idx, value)

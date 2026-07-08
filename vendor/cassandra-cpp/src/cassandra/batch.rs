@@ -13,11 +13,16 @@ use crate::cassandra_sys::cass_batch_free;
 use crate::cassandra_sys::cass_batch_new;
 use crate::cassandra_sys::cass_batch_set_consistency;
 use crate::cassandra_sys::cass_batch_set_custom_payload;
+use crate::cassandra_sys::cass_batch_set_request_timeout;
 use crate::cassandra_sys::cass_batch_set_retry_policy;
+use crate::cassandra_sys::cass_batch_set_tracing;
+use crate::cassandra_sys::{cass_false, cass_true};
 use crate::cassandra_sys::cass_batch_set_serial_consistency;
 use crate::cassandra_sys::cass_batch_set_timestamp;
 use crate::cassandra_sys::CassBatch as _Batch;
 use crate::cassandra_sys::CassBatchType_;
+use crate::cassandra_sys::CASS_UINT64_MAX;
+use std::time::Duration;
 
 #[derive(Debug)]
 struct BatchInner(*mut _Batch);
@@ -115,6 +120,34 @@ impl Batch {
     /// Sets the batch's timestamp.
     pub fn set_timestamp(&mut self, timestamp: i64) -> Result<&Self> {
         unsafe { cass_batch_set_timestamp(self.inner(), timestamp).to_result(self) }
+    }
+
+    /// Sets the batch's request timeout — how long the driver waits for a
+    /// response before failing the batch with `LIB_REQUEST_TIMED_OUT`.
+    /// `Some(Duration::from_millis(0))` means no timeout; `None` disables the
+    /// per-batch override so the cluster-level request timeout applies.
+    ///
+    /// This is the ONLY timeout that governs batch execution: the DataStax
+    /// C++ driver ignores the per-statement request timeouts set on the
+    /// statements added to a batch — `cass_session_execute_batch` reads the
+    /// timeout from the batch itself. Without this, a batch always uses the
+    /// cluster default (12s) regardless of any member-statement timeout. See
+    /// CHANGES.local.md.
+    pub fn set_request_timeout(&mut self, timeout: Option<Duration>) -> Result<&mut Self> {
+        let timeout_millis = match timeout {
+            None => CASS_UINT64_MAX as u64,
+            Some(time) => time.as_millis() as u64,
+        };
+        unsafe { cass_batch_set_request_timeout(self.inner(), timeout_millis).to_result(self) }
+    }
+
+    /// Enables or disables server-side query tracing for this batch
+    /// (`cass_batch_set_tracing`). The batch is a statement type like any
+    /// other, so it carries the same tracing aspect a single statement does.
+    /// See CHANGES.local.md.
+    pub fn set_tracing(&mut self, enabled: bool) -> Result<&mut Self> {
+        let flag = if enabled { cass_true } else { cass_false };
+        unsafe { cass_batch_set_tracing(self.inner(), flag).to_result(self) }
     }
 
     /// Sets the batch's retry policy.

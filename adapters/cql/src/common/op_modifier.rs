@@ -102,23 +102,19 @@ where
 {
     let mut active: Vec<Box<dyn OpFieldModifier<F::Statement>>> = Vec::new();
 
-    // `timeout` is the canonical request-timeout knob: a duration spec-string
-    // or bare fractional-seconds. It normalises to `request_timeout_ms` in
-    // milliseconds RIGHT HERE (parse once, shared) and reuses each engine's
-    // existing request-timeout modifier — so cassandra-cpp and scylla behave
-    // identically with no per-engine parsing. When set it WINS over an
-    // explicit `request_timeout_ms` (the ms escape hatch).
-    let timeout_ms: Option<u64> = match parent.lookup("timeout") {
-        Some(v) => Some(cql_timeout_value_to_ms(&v)
-            .map_err(|e| format!("CQL universal field 'timeout': {e}"))?),
-        None => None,
-    };
+    // `timeout` / `request_timeout_ms` collapse to ONE effective request
+    // timeout via the shared precedence resolver (`timeout` wins). Parse once
+    // here and reuse each engine's existing request-timeout modifier — so
+    // cassandra-cpp and scylla behave identically with no per-engine parsing.
+    // The SAME resolver drives the batch path (which sets the timeout on the
+    // batch, not its member statements), so statement and batch never diverge.
+    let timeout_ms: Option<u64> = resolve_cql_request_timeout_ms(parent)?;
 
     for &field in CQL_UNIVERSAL_FIELDS {
-        // `timeout` is normalised below, not a modifier of its own.
-        if field == "timeout" { continue; }
-        // A bound `timeout` overrides an explicit `request_timeout_ms`.
-        if field == "request_timeout_ms" && timeout_ms.is_some() { continue; }
+        // Both timeout knobs are normalised into one modifier below.
+        if field == "timeout" || field == "request_timeout_ms" {
+            continue;
+        }
         let Some(value) = parent.lookup(field) else {
             continue; // user did not bind this field — driver default in force
         };
@@ -143,6 +139,33 @@ where
         active,
         nbrs_runtime::op_modifier::session_sink(),
     ))
+}
+
+/// Resolve the effective CQL request timeout (whole milliseconds) from a bound
+/// op-template kernel, applying the canonical precedence: a bound `timeout`
+/// WINS over an explicit `request_timeout_ms` (the ms escape hatch); `None`
+/// when neither is bound (the cluster/driver default is in force).
+///
+/// Factored out so the ONE precedence rule is shared by
+/// [`build_cql_modifier_chain`] and any caller that needs the resolved value
+/// directly — a batch is a statement too, so the batch path builds its chain
+/// through the very same builder and never re-derives this independently.
+pub fn resolve_cql_request_timeout_ms(parent: &PolydatKernel) -> Result<Option<u64>, String> {
+    if let Some(v) = parent.lookup("timeout") {
+        return cql_timeout_value_to_ms(&v)
+            .map(Some)
+            .map_err(|e| format!("CQL universal field 'timeout': {e}"));
+    }
+    if let Some(v) = parent.lookup("request_timeout_ms") {
+        return match &v {
+            Value::U64(ms) => Ok(Some(*ms)),
+            other => Err(format!(
+                "CQL universal field 'request_timeout_ms': expected u64, got {:?}",
+                other.port_type()
+            )),
+        };
+    }
+    Ok(None)
 }
 
 /// Convert a bound `timeout` [`Value`] to whole milliseconds.
