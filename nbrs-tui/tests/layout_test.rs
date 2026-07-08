@@ -55,6 +55,8 @@ fn make_test_state() -> (RunStateHandle, JoinHandle<()>) {
         labels: "optimize_for=RECALL".into(),
         cursor_name: "row".into(),
         cursor_extent: 5000,
+        rows_consumed: 2500,
+        rows_total: 5000,
         fibers: 100,
         started_at: Instant::now(),
         ops_started: 2600,

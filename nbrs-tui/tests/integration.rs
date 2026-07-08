@@ -71,6 +71,8 @@ fn progress(exec_id: u64, name: &str, labels: &str, ops_finished: u64)
         labels: labels.into(),
         cursor_name: "cycle".into(),
         cursor_extent: ops_finished,
+        rows_consumed: 0,
+        rows_total: 0,
         fibers: 1,
         ops_started: ops_finished,
         ops_finished,
