@@ -5073,6 +5073,7 @@ async fn run_phase_inner(
             labels: phase_labels.clone(),
             cursor_name: progress_cursor_name.clone(),
             cursor_extent: live_extent_of(&progress_source_factory, progress_extent),
+            daemon: phase.daemon,
             rows_consumed,
             rows_total,
             fibers: progress_fibers,
@@ -5101,6 +5102,7 @@ async fn run_phase_inner(
         // SRD-100 P2 — clone the source-factory handle so the thread can
         // re-read the live (growing) extent each tick.
         let factory_for_thread = progress_source_factory.clone();
+        let daemon_for_thread = phase.daemon;
         Some(std::thread::spawn(move || {
             let progress_cursor_name = cursor_name_for_thread;
             let progress_fibers = fibers_for_thread;
@@ -5147,6 +5149,7 @@ async fn run_phase_inner(
                     labels: phase_labels.clone(),
                     cursor_name: progress_cursor_name.clone(),
                     cursor_extent: live_extent_of(&factory_for_thread, progress_extent),
+                    daemon: daemon_for_thread,
                     rows_consumed,
                     rows_total,
                     fibers: progress_fibers,
@@ -5387,6 +5390,7 @@ async fn run_phase_inner(
             labels: phase_labels.clone(),
             cursor_name: progress_cursor_name.clone(),
             cursor_extent: live_extent_of(&progress_source_factory, progress_extent),
+            daemon: phase.daemon,
             rows_consumed,
             rows_total,
             fibers: progress_fibers,

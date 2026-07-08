@@ -216,6 +216,13 @@ pub struct PhaseProgressUpdate {
     pub labels: String,
     pub cursor_name: String,
     pub cursor_extent: u64,
+    /// SRD-82 Part 6 — whether this phase runs as a DAEMON (off the
+    /// foreground budget, open-extent cursor, stopped by its group's
+    /// foreground completing). Display consumers exclude daemon phases
+    /// from AGGREGATE progress — the shared footer gutter bar averages
+    /// the non-daemon phases — since a daemon's percent-of-budget is
+    /// not meaningful progress toward the run.
+    pub daemon: bool,
     /// Cursor ordinals CONSUMED so far for a data-driven phase
     /// (polydat `DataSourceFactory::global_consumed()`) — the
     /// authoritative row-level progress. `0` for non-cursor phases

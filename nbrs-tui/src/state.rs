@@ -159,6 +159,11 @@ pub struct ActivePhase {
     pub labels: String,
     pub cursor_name: String,
     pub cursor_extent: u64,
+    /// SRD-82 Part 6 — this phase runs as a DAEMON (off the foreground
+    /// budget, open-extent cursor). Excluded from AGGREGATE progress:
+    /// the footer gutter bar averages the NON-daemon phases, since a
+    /// daemon's percent-of-budget is not meaningful run progress.
+    pub daemon: bool,
     /// Cursor ordinals consumed / cursor extent for a data-driven
     /// phase (polydat `global_consumed()` / `global_extent()`). Both
     /// `0` for non-cursor phases (plain `cycles:`). `rows_total > 0`

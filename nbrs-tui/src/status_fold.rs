@@ -148,6 +148,7 @@ mod tests {
             name: name.to_string(),
             labels: String::new(),
             cursor_name: "c".into(),
+            daemon: false,
             cursor_extent: 100,
             rows_consumed: 0,
             rows_total: 0,

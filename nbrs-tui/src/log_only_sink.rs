@@ -1081,6 +1081,15 @@ fn redraw_console_altscreen<W: Write>(
 /// margin width — making the divider columns line up
 /// vertically across rows.
 ///
+/// With MULTIPLE phases running, the bar is the AVERAGE of the
+/// NON-daemon phases' progress (a daemon's percent-of-budget on an
+/// open-extent cursor is not meaningful run progress — and the old
+/// `values().next()` pick was HashMap-ordered, so the gutter could
+/// arbitrarily track the daemon). The ETA is the LONGEST remaining
+/// across the same set — time until all of them finish. When only
+/// daemons are running (a foreground gap), they stand in so the
+/// gutter doesn't flicker out.
+///
 /// Returns an empty string when no phase is currently running
 /// — the caller falls back to the standard margin.
 fn format_running_phase_row2_margin(
@@ -1091,20 +1100,42 @@ fn format_running_phase_row2_margin(
     use nbrs_runtime::readouts::format::{
         braille_bar, format_eta, spinner_frame,
     };
-    let Some(active) = snap.active_phases.values().next() else {
+    if snap.active_phases.is_empty() {
         return String::new();
+    }
+    let foreground: Vec<&crate::state::ActivePhase> = snap.active_phases.values()
+        .filter(|p| !p.daemon)
+        .collect();
+    let phases: Vec<&crate::state::ActivePhase> = if foreground.is_empty() {
+        snap.active_phases.values().collect()
+    } else {
+        foreground
     };
     let dim   = if color { "\x1b[2m"  } else { "" };
     let cyan  = if color { "\x1b[36m" } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
-    let elapsed = active.started_at.elapsed().as_secs_f64();
-    let pct = if active.cursor_extent > 0 {
-        (active.ops_finished as f64) * 100.0 / (active.cursor_extent as f64)
-    } else { 0.0 };
+    // Spinner cadence follows the longest-running phase so the frame
+    // doesn't jump when a sibling phase starts or finishes.
+    let elapsed = phases.iter()
+        .map(|p| p.started_at.elapsed().as_secs_f64())
+        .fold(0.0_f64, f64::max);
+    // Average percent over the phases with a known extent; a phase
+    // whose extent is still unknown contributes nothing rather than
+    // dragging the mean to zero.
+    let pcts: Vec<f64> = phases.iter()
+        .filter(|p| p.cursor_extent > 0)
+        .map(|p| (p.ops_finished as f64) * 100.0 / (p.cursor_extent as f64))
+        .collect();
+    let pct = if pcts.is_empty() { 0.0 }
+              else { pcts.iter().sum::<f64>() / pcts.len() as f64 };
     let bar = braille_bar(pct, 10);
-    let eta_str = if active.cursor_extent > 0 && active.ops_per_sec > 0.0 {
-        let remaining = active.cursor_extent.saturating_sub(active.ops_finished) as f64;
-        format_eta(remaining / active.ops_per_sec)
+    // Longest remaining across the set = time until ALL finish.
+    let max_remaining = phases.iter()
+        .filter(|p| p.cursor_extent > 0 && p.ops_per_sec > 0.0)
+        .map(|p| p.cursor_extent.saturating_sub(p.ops_finished) as f64 / p.ops_per_sec)
+        .fold(f64::NAN, f64::max);
+    let eta_str = if max_remaining.is_finite() {
+        format_eta(max_remaining)
     } else {
         format_eta(elapsed)
     };
@@ -1199,6 +1230,75 @@ mod redraw_tests {
     //! the absolute-positioning invariants that produced the
     //! "stacked status snapshots" bug.
     use super::*;
+
+    /// The gutter bar AVERAGES the non-daemon phases' progress; a
+    /// daemon's open-extent percent must not drag (or arbitrarily
+    /// replace) it. Two foreground phases at 20% and 40% average to
+    /// 30% regardless of a daemon sitting at ~0%.
+    #[test]
+    fn row2_bar_averages_non_daemon_phases() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use nbrs_metrics::summaries::binomial_summary::BinomialSummary;
+        use nbrs_metrics::summaries::ewma::Ewma;
+        use nbrs_metrics::summaries::peak_tracker::PeakTracker;
+        use nbrs_runtime::readouts::format::braille_bar;
+        use crate::state::{ActivePhase, ActivePhaseId, RunState};
+
+        fn phase(name: &str, daemon: bool, done: u64, extent: u64) -> ActivePhase {
+            ActivePhase {
+                name: name.into(),
+                labels: String::new(),
+                cursor_name: "row".into(),
+                cursor_extent: extent,
+                daemon,
+                rows_consumed: 0,
+                rows_total: 0,
+                fibers: 1,
+                started_at: Instant::now(),
+                ops_started: done,
+                ops_finished: done,
+                ops_ok: done,
+                skips: 0,
+                errors: 0,
+                retries: 0,
+                ops_per_sec: 100.0,
+                adapter_counters: Vec::new(),
+                rows_per_batch: 0.0,
+                relevancy: Vec::new(),
+                throughput_summary: Arc::new(BinomialSummary::new(60)),
+                rate_ewma: Arc::new(Ewma::new(Duration::from_secs(5))),
+                latency_peak_5s: Arc::new(PeakTracker::max(Duration::from_secs(5))),
+                latency_peak_10s: Arc::new(PeakTracker::max(Duration::from_secs(10))),
+                render: None,
+            }
+        }
+
+        let mut state = RunState::new("w.yaml", "s", "cql");
+        state.active_phases.insert(
+            ActivePhaseId::new(1, "load", "t=1"), phase("load", false, 20, 100));
+        state.active_phases.insert(
+            ActivePhaseId::new(1, "recall", "t=1"), phase("recall", false, 40, 100));
+        // Daemon at ~0% of a huge open-extent budget.
+        state.active_phases.insert(
+            ActivePhaseId::new(1, "probe", "t=1"), phase("probe", true, 3, 1_000_000));
+        let snap = Arc::new(state);
+
+        let margin = format_running_phase_row2_margin(&snap, 30, false);
+        assert!(margin.contains(&braille_bar(30.0, 10)),
+            "bar must be the 30% average of the two foreground phases \
+             (20% + 40%), daemon excluded: {margin:?}");
+
+        // Daemon-only interval: the daemon stands in rather than the
+        // gutter flickering out.
+        let mut state = RunState::new("w.yaml", "s", "cql");
+        state.active_phases.insert(
+            ActivePhaseId::new(1, "probe", "t=1"), phase("probe", true, 500_000, 1_000_000));
+        let snap = Arc::new(state);
+        let margin = format_running_phase_row2_margin(&snap, 30, false);
+        assert!(margin.contains(&braille_bar(50.0, 10)),
+            "daemon-only fallback shows the daemon's progress: {margin:?}");
+    }
 
     /// One simulated render tick with a left margin: draw the footer
     /// at the cursor and capture the bytes. 80-col terminal; the

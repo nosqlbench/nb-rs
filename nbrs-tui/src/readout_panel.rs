@@ -299,6 +299,7 @@ mod tests {
             name: "run".into(),
             labels: String::new(),
             cursor_name: "cycle".into(),
+            daemon: false,
             cursor_extent: 100,
             rows_consumed: 0,
             rows_total: 0,
