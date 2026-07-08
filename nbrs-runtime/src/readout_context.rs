@@ -418,6 +418,19 @@ pub fn resolve_phase_coord_by_id(
 /// display paths that render this chip — the inline refresh here and
 /// the two TUI progress-thread snapshots in `executor.rs` — share one
 /// formula, and so the formula is unit-testable in isolation.
+/// Whether a dispenser status counter is INTERNAL — published only to feed a
+/// derived display metric, never rendered as its own `<name>/s` throughput
+/// chip. The convention is a **leading underscore**: `_batch_writes` backs the
+/// `rows/batch` average (see [`rows_per_batch`]) but must not clutter the
+/// operator-facing chip row as `_batch_writes/s`. Every surface that turns a
+/// dispenser counter into a chip filters on this one predicate, so the
+/// convention has a single point of truth. `find_counter`-style lookups pass
+/// the underscore name explicitly, so the counter stays available to the
+/// derived metric it exists for.
+pub fn is_internal_counter(name: &str) -> bool {
+    name.starts_with('_')
+}
+
 pub(crate) fn rows_per_batch(
     rows_inserted: Option<u64>,
     batch_writes: Option<u64>,
@@ -501,6 +514,11 @@ pub fn build_inline_refresh_context(
     let mut adapter_counters_text = String::new();
     let counters = progress_metrics.collect_status_counters();
     for (name, total) in &counters {
+        // Internal counters (`_batch_writes`) feed derived metrics only —
+        // never their own chip. See `is_internal_counter`.
+        if is_internal_counter(name) {
+            continue;
+        }
         let item_rate = if elapsed_secs > 0.0 {
             *total as f64 / elapsed_secs
         } else { 0.0 };
@@ -523,7 +541,7 @@ pub fn build_inline_refresh_context(
     let find_counter =
         |want: &str| counters.iter().find(|(n, _)| n == want).map(|(_, t)| *t);
     let batch_info_text =
-        rows_per_batch(find_counter("rows_inserted"), find_counter("batch_writes"), stanzas)
+        rows_per_batch(find_counter("rows_inserted"), find_counter("_batch_writes"), stanzas)
             .map(|avg| format!(" rows/batch:{avg:.1}"))
             .unwrap_or_default();
 
@@ -573,7 +591,18 @@ pub fn build_inline_refresh_context(
 
 #[cfg(test)]
 mod tests {
-    use super::rows_per_batch;
+    use super::{is_internal_counter, rows_per_batch};
+
+    /// The leading-underscore convention: `_batch_writes` is an internal
+    /// denominator (hidden from the chip row), while a plain counter like
+    /// `rows_inserted` is a visible throughput chip. The chip-render loops
+    /// filter on exactly this predicate.
+    #[test]
+    fn internal_counter_is_underscore_prefixed() {
+        assert!(is_internal_counter("_batch_writes"));
+        assert!(!is_internal_counter("rows_inserted"));
+        assert!(!is_internal_counter("queries"));
+    }
 
     /// With a `batch_writes` counter present, `rows/batch` is the true
     /// average batch size (`rows_inserted / batch_writes`), NOT the

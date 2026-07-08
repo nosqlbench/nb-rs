@@ -145,5 +145,5 @@ pub(crate) mod readout_context;
 /// SRD-100 P2 — the per-phase status builder, re-exported for the display
 /// consumer (nbrs-tui) that now folds `active_phases` and renders each
 /// phase's status line itself (the module otherwise stays crate-private).
-pub use readout_context::build_inline_refresh_context;
+pub use readout_context::{build_inline_refresh_context, is_internal_counter};
 pub mod report_anchor;

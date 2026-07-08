@@ -164,17 +164,19 @@ impl OpDispenser for ScyllaBatchDispenser {
         self.n
     }
 
-    /// Surface the cumulative `rows_inserted` and `batch_writes`
-    /// counters for the live status display (rows/s chip and true
-    /// average batch size). Mirrors the cassandra-cpp batch
-    /// dispenser's counter contract.
+    /// Surface the cumulative `rows_inserted` and `_batch_writes`
+    /// counters for the live status display. `rows_inserted` drives the
+    /// visible rows/s chip; `_batch_writes` is INTERNAL (leading underscore)
+    /// — the denominator for the derived `rows/batch` average, filtered out
+    /// of the visible chip row. Mirrors the cassandra-cpp batch dispenser's
+    /// counter contract.
     fn status_counters(&self) -> Vec<(&str, u64)> {
         let total = self.rows_total.load(Ordering::Relaxed);
         if total == 0 { return Vec::new(); }
         let batches = self.batch_writes.load(Ordering::Relaxed);
         let mut out = vec![("rows_inserted", total)];
         if batches > 0 {
-            out.push(("batch_writes", batches));
+            out.push(("_batch_writes", batches));
         }
         out
     }

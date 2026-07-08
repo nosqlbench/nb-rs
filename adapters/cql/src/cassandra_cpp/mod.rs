@@ -1811,12 +1811,14 @@ impl OpDispenser for CqlBatchDispenser {
         let total = self.rows_total.load(std::sync::atomic::Ordering::Relaxed);
         if total == 0 { return Vec::new(); }
         let batches = self.batch_writes.load(std::sync::atomic::Ordering::Relaxed);
-        // Publish `batch_writes` alongside `rows_inserted` through the
-        // same status-counter surface so the display can derive the
-        // true average batch size (`rows_inserted / batch_writes`).
+        // Publish `_batch_writes` (INTERNAL, leading underscore) alongside
+        // `rows_inserted` through the same status-counter surface so the
+        // display can derive the true average batch size
+        // (`rows_inserted / _batch_writes`). The underscore keeps it out of
+        // the visible rows/s chip row — it exists only as that denominator.
         let mut out = vec![("rows_inserted", total)];
         if batches > 0 {
-            out.push(("batch_writes", batches));
+            out.push(("_batch_writes", batches));
         }
         out
     }

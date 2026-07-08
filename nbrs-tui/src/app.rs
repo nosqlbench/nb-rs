@@ -2034,6 +2034,9 @@ impl App {
             if !s.adapter_counters.is_empty() {
                 let mut parts: Vec<String> = Vec::new();
                 for (name, total, rate) in &s.adapter_counters {
+                    // Internal counters (`_batch_writes`) back a derived metric
+                    // only — never their own chip. See `is_internal_counter`.
+                    if nbrs_runtime::is_internal_counter(name) { continue; }
                     parts.push(format!("{name}: {} @ {}/s",
                         widgets::format_count(*total),
                         widgets::format_rate(*rate)));
@@ -2570,6 +2573,9 @@ impl App {
                         // "queries/s" for search workloads, etc.
                         for (name, total, rate) in &sm.adapter_counters {
                             if *total == 0 { continue; }
+                            // `_batch_writes` and friends are derived-metric
+                            // denominators — hidden from the chip row.
+                            if nbrs_runtime::is_internal_counter(name) { continue; }
                             spans.push(Span::styled(
                                 format!("  {name}:{}@{}/s",
                                     widgets::format_count(*total),

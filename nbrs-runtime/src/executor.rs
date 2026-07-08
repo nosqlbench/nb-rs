@@ -5126,9 +5126,9 @@ async fn run_phase_inner(
                 let find_counter = |want: &str| adapter_counters.iter()
                     .find(|(n, _, _)| n == want).map(|(_, t, _)| *t);
                 // True average batch size when the CQL batch dispensers
-                // publish `batch_writes`; attempt-based fallback otherwise.
+                // publish `_batch_writes`; attempt-based fallback otherwise.
                 let rows_per_batch = crate::readout_context::rows_per_batch(
-                    find_counter("rows_inserted"), find_counter("batch_writes"), stanzas,
+                    find_counter("rows_inserted"), find_counter("_batch_writes"), stanzas,
                 ).unwrap_or(0.0);
 
                 let relevancy = progress_metrics.collect_relevancy_live();
@@ -5371,9 +5371,9 @@ async fn run_phase_inner(
         let find_counter = |want: &str| adapter_counters.iter()
             .find(|(n, _, _)| n == want).map(|(_, t, _)| *t);
         // True average batch size when the CQL batch dispensers publish
-        // `batch_writes`; attempt-based fallback otherwise.
+        // `_batch_writes`; attempt-based fallback otherwise.
         let rows_per_batch = crate::readout_context::rows_per_batch(
-            find_counter("rows_inserted"), find_counter("batch_writes"), stanzas,
+            find_counter("rows_inserted"), find_counter("_batch_writes"), stanzas,
         ).unwrap_or(0.0);
         let relevancy = progress_metrics.collect_relevancy_live();
         let (rows_consumed, rows_total) = live_rows_of(&progress_source_factory);

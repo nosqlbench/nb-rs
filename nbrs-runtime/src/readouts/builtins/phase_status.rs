@@ -352,6 +352,23 @@ fn render_labeled(
         labels, color, head_consumed, &continuation_indent,
         /* summarize_changed_only */ false,
     );
+    // Third row — the KEY-METRICS line. The domain metrics an operator
+    // actually watches (adapter throughput chips like rows/s, the derived
+    // rows/batch chip, and the workload's emphasised `status_metrics:` chips
+    // such as recall) get their OWN indented line below the operational
+    // counters, and ONLY when at least one is present. Packed onto the
+    // counters row, a busy phase (CQL batch load + recall) overran the
+    // terminal width and wrapped mid-chip; a dedicated line keeps each row
+    // scannable. Chips each carry a leading space, so the row is trimmed once
+    // and re-indented to align under the counters row above it.
+    let key_metrics = format!("{adapter_status}{batch_info}{chips}");
+    let key_line = if key_metrics.trim().is_empty() {
+        String::new()
+    } else {
+        // Natural color — `status_metrics:` chips are opt-in EMPHASIS metrics
+        // (recall, …), so this row is NOT dimmed like the counters row.
+        format!("\n{depth_indent}    {}", key_metrics.trim_start())
+    };
     let mut tmp = String::with_capacity(320);
     let _ = write!(
         &mut tmp,
@@ -359,8 +376,8 @@ fn render_labeled(
 {depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{bold}{blue}{activity_name}{reset}{coords_part} {pct:.0}%\n\
 {depth_indent}    {dim}{rate_str}{reset} {ok_tone}ok:{ok_pct:.0}%{reset} \
 {att_tone}att:{att_pct:.0}%{reset} \
-{err_tone}e:{errors} r:{retries}{reset} {dim}c:{concurrency}{reset}{cycles_chip}\
-{adapter_status}{batch_info}{chips}{eta}",
+{err_tone}e:{errors} r:{retries}{reset} {dim}c:{concurrency}{reset}{cycles_chip}{eta}\
+{key_line}",
     );
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -827,8 +844,41 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
-        assert!(out.contains(" rows/s=12.5K r/b=12.5 recall_at_10:80.00%"),
+        // Ordering preserved: adapter → batch → chips.
+        assert!(out.contains("rows/s=12.5K r/b=12.5 recall_at_10:80.00%"),
             "adapter / batch / chips ordering wrong: {out}");
+        // …but on their OWN indented line below the counters row, not packed
+        // onto it (which overran the width and wrapped on a busy phase).
+        assert!(out.contains("\n    rows/s=12.5K r/b=12.5 recall_at_10:80.00%"),
+            "key metrics should sit on a dedicated indented line: {out:?}");
+        // The counters row (e:/r:/c:) stays a separate line ABOVE the key row.
+        let counters_line_idx = out.find("c:4").expect("counters row present");
+        let key_line_idx = out.find("rows/s=12.5K").expect("key row present");
+        assert!(counters_line_idx < key_line_idx,
+            "counters row must precede the key-metrics row: {out:?}");
+    }
+
+    #[test]
+    fn labeled_omits_key_line_when_no_key_metrics() {
+        // A plain phase (no adapter chips, no batch info, no status_metrics)
+        // must NOT grow a third line — the key-metrics row is conditional.
+        let ctx = TestCtx {
+            phase_name: "run".into(),
+            activity_name: "run".into(),
+            cycles_completed: 10,
+            cycles_total: 10,
+            ops_started: 10,
+            ops_finished: 10,
+            ops_ok: 10,
+            concurrency: 4,
+            elapsed_secs: 1.0,
+            consumed: 10,
+            ..Default::default()
+        };
+        let out = render(&ctx, Lod::Labeled);
+        // Exactly two lines: header + counters (one embedded '\n').
+        assert_eq!(out.matches('\n').count(), 1,
+            "plain phase must stay two lines (no empty key row): {out:?}");
     }
 
     #[test]

@@ -539,6 +539,14 @@ pub trait OpDispenser: Send + Sync {
     /// returns cumulative counters safe to read from the progress thread
     /// without interfering with the metrics pipeline.
     /// Returns `(display_name, cumulative_count)` pairs.
+    ///
+    /// A name with a **leading underscore** (`_batch_writes`) is an INTERNAL
+    /// counter: published only to back a derived display metric (the
+    /// `rows/batch` average divides `rows_inserted` by `_batch_writes`), it is
+    /// looked up by name for that computation but never rendered as its own
+    /// `<name>/s` throughput chip. See
+    /// [`crate::readout_context::is_internal_counter`] — the single predicate
+    /// every chip-rendering surface filters on.
     /// Default: delegates to inner dispenser (for wrapper chains).
     fn status_counters(&self) -> Vec<(&str, u64)> {
         if let Some(inner) = self.inner_dispenser() {
