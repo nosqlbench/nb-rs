@@ -901,14 +901,22 @@ impl DriverAdapter for CqlAdapter {
         let max_batch_bytes = crate::common::session_handle::resolve_max_batch_bytes(
             &parent, &session_key, template.params.get("max_batch_size"),
         ).await.map_err(|e| format!("op '{}': {e}", template.name))?;
-        let batch_type = template.params.get("batchtype")
+        let batch_type_name = template.params.get("batchtype")
             .and_then(|v| v.as_str())
-            .map(|s| match s.to_lowercase().as_str() {
-                "logged" => cass::BatchType::LOGGED,
-                "counter" => cass::BatchType::COUNTER,
-                _ => cass::BatchType::UNLOGGED,
-            })
-            .unwrap_or(cass::BatchType::UNLOGGED);
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+        let batch_type = match batch_type_name.as_str() {
+            "logged" => cass::BatchType::LOGGED,
+            "counter" => cass::BatchType::COUNTER,
+            _ => cass::BatchType::UNLOGGED,
+        };
+        // A batch DERIVES its retry-safety from its inner statements —
+        // uniform template with stride, so computed ONCE here, never per
+        // stanza: counter batches (increments are not idempotent) and LWT
+        // statements are not retry-safe; plain PK-keyed upserts are. Gates
+        // the transient-error retry classification at the execute site.
+        let batch_retry_safe = batch_type_name != "counter"
+            && crate::common::cql_statement_retry_safe(&stmt_text);
 
         // SRD-68 invariant I-3: dispenser owns its canonical kernel.
         // For Push 2b, no op-level Polydat matter is assembled here yet —
@@ -1140,6 +1148,7 @@ impl DriverAdapter for CqlAdapter {
                             prepared: prepared_arc,
                             binders,
                             batch_type,
+                            retry_safe: batch_retry_safe,
                             rows_timer: nbrs_metrics::instruments::timer::Timer::new(
                                 nbrs_metrics::labels::Labels::of("name", "rows_inserted"),
                             ),
@@ -1740,6 +1749,13 @@ struct CqlBatchDispenser {
     /// from the prepared statement's metadata. One per `?`.
     binders: Vec<BinderFn>,
     batch_type: cass::BatchType,
+    /// Derived ONCE at dispenser init from the batch's inner statements
+    /// (uniform template with stride ⇒ one prepared statement): `false` for
+    /// counter batches and LWT statements, `true` for plain PK-keyed
+    /// upserts. Gates the transient-error retry classification — an
+    /// execute failure is `retryable` only when the batch is retry-safe
+    /// AND the error is transient. See `cql_statement_retry_safe`.
+    retry_safe: bool,
     /// Per-row timer: records amortized latency (batch_nanos / row_count)
     /// for each row in the batch. Enables rows/s throughput in the summary.
     rows_timer: nbrs_metrics::instruments::timer::Timer,
@@ -2081,14 +2097,26 @@ impl CqlBatchDispenser {
                         binds: vec![format!("batch of {row_count} rows")],
                         latency_nanos: batch_nanos,
                         ok: false,
-                        error_name: Some("batch_error".into()),
+                        error_name: Some("cql_error".into()),
                         trace_id: None,
                     });
                 }
+                // A batch is a statement too: the execute failure carries the
+                // SAME class ("cql_error") as a single statement's, so
+                // `errors:` routing patterns treat batch timeouts / overloads
+                // uniformly. Retryability = the batch's DERIVED retry-safety
+                // (from its inner statements, computed once at init) AND the
+                // error's transience. (Previously hardcoded
+                // `batch_error`/retryable:false — a batch LIB_REQUEST_TIMED_OUT
+                // never retried, silently defeating the op's tries budget.)
+                // `batch_error` remains the class for STRUCTURAL failures
+                // (set-consistency / add_statement), which genuinely aren't
+                // retryable requests.
                 Err(ExecutionError::Op(AdapterError {
-                    error_name: "batch_error".into(),
+                    error_name: "cql_error".into(),
                     message: format!("execute_batch ({row_count} statements): {e}"),
-                    retryable: false,
+                    retryable: self.retry_safe
+                        && crate::common::cql_error_is_retryable(&e.to_string()),
                 }))
             }
         }

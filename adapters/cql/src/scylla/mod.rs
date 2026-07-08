@@ -364,14 +364,22 @@ impl DriverAdapter for ScyllaCqlAdapter {
                         bind_names,
                     )) as Box<dyn OpDispenser>),
                     OpMode::Batch => {
-                        let batch_type = template.params.get("batchtype")
+                        let batch_type_name = template.params.get("batchtype")
                             .and_then(|v| v.as_str())
-                            .map(|s| match s.to_lowercase().as_str() {
-                                "logged"  => scylla::statement::batch::BatchType::Logged,
-                                "counter" => scylla::statement::batch::BatchType::Counter,
-                                _         => scylla::statement::batch::BatchType::Unlogged,
-                            })
-                            .unwrap_or(scylla::statement::batch::BatchType::Unlogged);
+                            .map(|s| s.to_lowercase())
+                            .unwrap_or_default();
+                        let batch_type = match batch_type_name.as_str() {
+                            "logged"  => scylla::statement::batch::BatchType::Logged,
+                            "counter" => scylla::statement::batch::BatchType::Counter,
+                            _         => scylla::statement::batch::BatchType::Unlogged,
+                        };
+                        // A batch DERIVES its retry-safety from its inner
+                        // statements — uniform template with stride, computed
+                        // ONCE here, never per stanza: counter batches and LWT
+                        // statements are not retry-safe; plain PK-keyed
+                        // upserts are.
+                        let batch_retry_safe = batch_type_name != "counter"
+                            && crate::common::cql_statement_retry_safe(&prepared_text);
                         // SRD-103 §3 — both `batch:` (cursor stride / row cap)
                         // and `max_batch_size:` (byte budget) are GK-resolved op
                         // fields. A literal (`batch: 8`, `64KB`) resolves
@@ -422,6 +430,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
                             batch_type,
                             self.consistency,
                             modifiers_for_batch,
+                            batch_retry_safe,
                         )) as Box<dyn OpDispenser>)
                     }
                     OpMode::Raw => unreachable!(

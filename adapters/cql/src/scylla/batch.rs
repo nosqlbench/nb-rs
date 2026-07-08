@@ -86,6 +86,12 @@ pub(super) struct ScyllaBatchDispenser {
     /// (consistency / serial / request timeout / tracing) — the aspects
     /// that govern batch execution, uniform with the single-statement path.
     modifiers: nbrs_runtime::op_modifier::ModifierChain<Batch>,
+    /// Derived ONCE at dispenser init from the batch's inner statements
+    /// (uniform template with stride ⇒ one prepared statement): `false` for
+    /// counter batches and LWT statements, `true` for plain PK-keyed
+    /// upserts. Gates the transient-error retry classification. See
+    /// `cql_statement_retry_safe`.
+    retry_safe: bool,
 }
 
 impl ScyllaBatchDispenser {
@@ -100,6 +106,7 @@ impl ScyllaBatchDispenser {
         batch_type: BatchType,
         consistency: Consistency,
         modifiers: nbrs_runtime::op_modifier::ModifierChain<Batch>,
+        retry_safe: bool,
     ) -> Self {
         Self {
             session,
@@ -114,6 +121,7 @@ impl ScyllaBatchDispenser {
             rows_total: AtomicU64::new(0),
             batch_writes: AtomicU64::new(0),
             modifiers,
+            retry_safe,
         }
     }
 
@@ -151,7 +159,9 @@ impl ScyllaBatchDispenser {
                     "batch ({row_count} rows): {}",
                     format_cql_error(&e.to_string(), &self.stmt_text),
                 ),
-                crate::common::cql_error_is_retryable(&e.to_string()),
+                // Retryable = the batch's derived retry-safety (inner
+                // statements, computed once at init) AND error transience.
+                self.retry_safe && crate::common::cql_error_is_retryable(&e.to_string()),
             ))?;
 
         let body = ScyllaResultBody::from_query_result(result);

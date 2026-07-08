@@ -62,9 +62,36 @@ pub fn cql_error_is_retryable(raw: &str) -> bool {
         || u.contains("UNAVAILABLE") // not enough replicas — a retry may find them
 }
 
+/// Whether a CQL statement is RETRY-SAFE — re-executing it after an
+/// ambiguous failure (a timeout whose write may or may not have landed)
+/// cannot change the outcome. This is the STATEMENT's property, orthogonal
+/// to the error's transience ([`cql_error_is_retryable`]): an op retries
+/// only when the statement is retry-safe AND the error is transient.
+///
+/// - Plain upserts / deletes keyed by primary key are idempotent —
+///   re-applying converges to the same row state. Retry-safe.
+/// - LWT / conditional statements (`IF EXISTS`, `IF NOT EXISTS`,
+///   `IF col = …`) are NOT: the condition may observe the first attempt's
+///   applied-but-unacked effect and resolve differently on replay.
+///
+/// Counter mutations are the other non-idempotent class; the batch
+/// dispensers exclude them by TYPE (`batchtype: counter`), not by text.
+///
+/// A batch DERIVES its retry-safety from its inner statements. The batch
+/// dispensers carry ONE uniform prepared statement (SRD-22 stride), so the
+/// derivation is computed ONCE at dispenser init — never per stanza or per
+/// cycle.
+pub fn cql_statement_retry_safe(stmt: &str) -> bool {
+    // Word-ish LWT detection: ` IF ` as a token covers `IF EXISTS`,
+    // `IF NOT EXISTS`, and `IF col = …`. A false NEGATIVE here only
+    // disables retries for that statement; it can never cause a
+    // non-idempotent statement to be retried.
+    !stmt.to_ascii_uppercase().contains(" IF ")
+}
+
 #[cfg(test)]
 mod retryable_tests {
-    use super::cql_error_is_retryable;
+    use super::{cql_error_is_retryable, cql_statement_retry_safe};
     #[test]
     fn transient_errors_retry_permanent_do_not() {
         assert!(cql_error_is_retryable("LIB_REQUEST_TIMED_OUT: Request timed out"));
@@ -74,5 +101,19 @@ mod retryable_tests {
         assert!(cql_error_is_retryable("Not enough replicas available: UNAVAILABLE"));
         assert!(!cql_error_is_retryable("Invalid query: unconfigured table foo"));
         assert!(!cql_error_is_retryable("Syntax error at line 1"));
+    }
+
+    #[test]
+    fn plain_upserts_are_retry_safe_lwt_is_not() {
+        assert!(cql_statement_retry_safe(
+            "INSERT INTO ks.t (key, value) VALUES (?, ?)"));
+        assert!(cql_statement_retry_safe(
+            "UPDATE ks.t SET value = ? WHERE key = ?"));
+        assert!(!cql_statement_retry_safe(
+            "INSERT INTO ks.t (key, value) VALUES (?, ?) IF NOT EXISTS"));
+        assert!(!cql_statement_retry_safe(
+            "UPDATE ks.t SET value = ? WHERE key = ? IF value = ?"));
+        assert!(!cql_statement_retry_safe(
+            "DELETE FROM ks.t WHERE key = ? IF EXISTS"));
     }
 }
