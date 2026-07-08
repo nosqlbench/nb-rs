@@ -1,22 +1,32 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! Session-wide signal handling.
+//! Session-wide signal handling — the THREE-LEVEL shutdown ladder.
 //!
-//! Installs a `tokio::signal::ctrl_c` watcher that translates
-//! SIGINT into a cooperative shutdown:
+//! A Ctrl-C (SIGINT, or the raw-mode key-watcher's translated
+//! keystroke) advances one rung at a time:
 //!
-//! - **First Ctrl-C** sets the session-stop flag. Active fiber
-//!   loops observe the flag at their cycle boundary (alongside
-//!   the existing per-activity `stop_flag`) and exit cleanly.
-//!   Control returns up the runner stack so end-of-run cleanup
-//!   runs in the normal order: profiler flush, cadence reporter
-//!   shutdown, summary writes.
-//! - **Second Ctrl-C** within the active session forces an
-//!   immediate `process::exit(130)` — the operator has decided
-//!   they don't want to wait for graceful shutdown.
+//! - **Level 1 — graceful, cooperative.** The session-stop flag is
+//!   set; active fiber loops observe it at their cycle boundary and
+//!   exit cleanly; end-of-run cleanup runs in the normal order
+//!   (profiler flush, cadence reporter shutdown, metrics.db WAL
+//!   consolidation, summary writes). A visible 10-second countdown
+//!   starts: if the drain hasn't finished when it expires, the
+//!   ladder advances to level 2 automatically.
+//! - **Level 2 — cancel in-flight ops, keep process cleanup.**
+//!   Entered by the countdown expiring or a second Ctrl-C. Ops
+//!   parked inside a hung adapter call (a request that will only
+//!   ever end by client timeout) are CANCELLED — their futures are
+//!   dropped at the fiber's dispatch point — so the drain completes
+//!   and the process-level graceful shutdown (WAL consolidation,
+//!   summaries) still runs. This is the rung that used to not
+//!   exist: previously a second Ctrl-C hard-exited, skipping WAL
+//!   cleanup exactly when hung ops made it matter.
+//! - **Level 3 — force-exit.** A further Ctrl-C once level 2 is in
+//!   force exits immediately (`process::exit(130)`); metrics and
+//!   profiler output may be incomplete.
 //!
-//! The flag is intentionally a global: there is one session per
+//! The state is intentionally global: there is one session per
 //! process by construction. Tests shouldn't need to install or
 //! consult it (no `RunObserver` test sets up signals).
 
@@ -57,6 +67,172 @@ pub fn stop_requested() -> bool {
 /// that wants to short-circuit the run.
 pub fn request_stop() {
     flag().store(true, Ordering::Relaxed);
+}
+
+// ─── The shutdown ladder (module doc) ────────────────────────────────
+
+/// Countdown from level 1 (graceful) to level 2 (cancel in-flight ops).
+const SHUTDOWN_COUNTDOWN_SECS: u64 = 10;
+
+/// Ladder level, published through a `watch` channel so per-fiber op
+/// dispatch can race a pending adapter call against the cancel rung
+/// without polling. 0 = running, 1 = graceful, 2 = cancel-ops.
+/// (Level 3 — force-exit — never publishes; it exits.)
+static SHUTDOWN: OnceLock<tokio::sync::watch::Sender<u8>> = OnceLock::new();
+
+/// Set once the runner's process-level shutdown has completed — the
+/// countdown thread goes quiet instead of announcing op cancellation
+/// for a run that has already drained.
+static SHUTDOWN_DONE: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+
+fn shutdown_tx() -> &'static tokio::sync::watch::Sender<u8> {
+    SHUTDOWN.get_or_init(|| tokio::sync::watch::channel(0u8).0)
+}
+
+fn done_flag() -> &'static Arc<AtomicBool> {
+    SHUTDOWN_DONE.get_or_init(|| Arc::new(AtomicBool::new(false)))
+}
+
+/// The ladder level currently in force.
+#[inline]
+pub fn shutdown_level() -> u8 {
+    SHUTDOWN.get().map(|tx| *tx.borrow()).unwrap_or(0)
+}
+
+/// True once level 2 has been entered — in-flight ops should cancel.
+#[inline]
+pub fn cancel_ops_requested() -> bool {
+    shutdown_level() >= 2
+}
+
+/// Subscribe to ladder-level changes. Each fiber holds one receiver
+/// and races its op dispatch against [`ops_cancelled`].
+pub fn subscribe_shutdown() -> tokio::sync::watch::Receiver<u8> {
+    shutdown_tx().subscribe()
+}
+
+/// Resolves when the cancel rung (level ≥ 2) is in force. Ready
+/// immediately if it already is. Used in a `select!` against the op
+/// future at the fiber's dispatch point — dropping the op future is
+/// the cancellation.
+pub async fn ops_cancelled(rx: &mut tokio::sync::watch::Receiver<u8>) {
+    loop {
+        if *rx.borrow() >= 2 {
+            return;
+        }
+        if rx.changed().await.is_err() {
+            // Sender can't drop (static), but never spin if it did.
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// Mark the runner's process-level shutdown complete: the countdown
+/// (if still running) goes quiet, and further escalations are moot.
+pub fn mark_shutdown_complete() {
+    done_flag().store(true, Ordering::Relaxed);
+}
+
+/// Advance the ladder ONE rung: 0 → 1 (graceful + countdown),
+/// 1 → 2 (cancel in-flight ops). At ≥ 2 this is a no-op returning the
+/// current level — the FORCE-EXIT decision (level 3) stays with the
+/// caller, which owns its own terminal hygiene (the raw-mode
+/// key-watcher must restore the terminal before exiting; the SIGINT
+/// watcher just exits). Returns the level now in force.
+pub fn escalate_shutdown() -> u8 {
+    let tx = shutdown_tx();
+    let mut entered: u8 = 0;
+    tx.send_if_modified(|level| {
+        if *level >= 2 {
+            entered = *level;
+            false
+        } else {
+            *level += 1;
+            entered = *level;
+            true
+        }
+    });
+    match entered {
+        1 => {
+            request_stop();
+            crate::diag!(
+                crate::observer::LogLevel::Info,
+                "session: graceful shutdown requested (Ctrl-C). Active \
+                 fibers exit at the next cycle boundary; profiler / \
+                 metrics / summaries will flush. In-flight ops will be \
+                 CANCELLED in {SHUTDOWN_COUNTDOWN_SECS}s (Ctrl-C: cancel \
+                 them now; a further Ctrl-C force-exits)."
+            );
+            // Not under `cfg(test)`: the in-crate unit tests exercise the
+            // ladder's transitions against process-global state; a live
+            // countdown escalating that state seconds later would race
+            // every concurrently-running test. Integration tests (their
+            // own processes) compile the lib without `test` and get the
+            // real countdown.
+            #[cfg(not(test))]
+            spawn_cancel_countdown();
+        }
+        2 => announce_cancel_ops(),
+        _ => {}
+    }
+    entered
+}
+
+/// Enter the cancel rung directly (countdown expiry). Idempotent.
+/// (Only the countdown calls this, and the countdown is compiled out
+/// of the in-crate unit-test build — see `escalate_shutdown`.)
+#[cfg_attr(test, allow(dead_code))]
+fn escalate_cancel_ops() {
+    let tx = shutdown_tx();
+    let modified = tx.send_if_modified(|level| {
+        if *level < 2 {
+            *level = 2;
+            true
+        } else {
+            false
+        }
+    });
+    if modified {
+        announce_cancel_ops();
+    }
+}
+
+fn announce_cancel_ops() {
+    crate::diag!(
+        crate::observer::LogLevel::Warn,
+        "session: cancelling in-flight ops — process-level cleanup \
+         (metrics flush, WAL consolidation, summaries) continues. \
+         Ctrl-C again to force-exit."
+    );
+}
+
+/// The visible level-1 → level-2 countdown. A plain thread (both
+/// entry points can spawn it — the raw-mode key-watcher runs outside
+/// the tokio runtime): one line per second, silenced the moment the
+/// run drains ([`mark_shutdown_complete`]) or the ladder advances by
+/// keypress; escalates to the cancel rung on expiry.
+#[cfg_attr(test, allow(dead_code))]
+fn spawn_cancel_countdown() {
+    let done = done_flag().clone();
+    std::thread::Builder::new()
+        .name("shutdown-countdown".into())
+        .spawn(move || {
+            for remaining in (1..=SHUTDOWN_COUNTDOWN_SECS).rev() {
+                if done.load(Ordering::Relaxed) || shutdown_level() >= 2 {
+                    return;
+                }
+                crate::diag!(
+                    crate::observer::LogLevel::Info,
+                    "session: cancelling in-flight ops in {remaining}s \
+                     (Ctrl-C to cancel now)"
+                );
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            if !done.load(Ordering::Relaxed) {
+                escalate_cancel_ops();
+            }
+        })
+        .expect("spawn shutdown-countdown thread");
 }
 
 /// Shared "a stop condition gracefully halted the walk" flag. Distinct
@@ -196,11 +372,10 @@ impl StopView {
     }
 }
 
-/// Install a tokio task that watches `ctrl_c()` and translates
-/// SIGINT into the two-stage shutdown described in the module
-/// doc. Idempotent — only the first call wins; subsequent calls
-/// are no-ops. Must be called from inside a tokio runtime
-/// context.
+/// Install a tokio task that watches `ctrl_c()` and drives SIGINT
+/// through the three-level ladder described in the module doc.
+/// Idempotent — only the first call wins; subsequent calls are
+/// no-ops. Must be called from inside a tokio runtime context.
 pub fn install_signal_handler() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     if INSTALLED.set(()).is_err() {
@@ -208,57 +383,31 @@ pub fn install_signal_handler() {
     }
     // Touch the flag to ensure it's initialized before any
     // observer or fiber checks `stop_requested()`.
-    let stop = flag().clone();
+    let _ = flag();
     tokio::spawn(async move {
-        // First Ctrl-C: set the flag, log, return. Routed
-        // through `crate::diag!` so the message reaches every
-        // sink the rest of the runtime uses (session.log via
-        // the async sink, plus the registered RunObserver — the
-        // TUI log panel in TUI mode, the stderr fallback
-        // otherwise). The leading-newline cosmetics for the
-        // terminal-echoed `^C` live in [`StderrObserver::log`]
+        // Every Ctrl-C advances one rung. The messages route through
+        // `crate::diag!` so they reach every sink the rest of the
+        // runtime uses (session.log via the async sink, plus the
+        // registered RunObserver — the TUI log panel in TUI mode, the
+        // stderr fallback otherwise). The leading-newline cosmetics
+        // for the terminal-echoed `^C` live in [`StderrObserver::log`]
         // so the structured log isn't littered with blank lines.
-        if tokio::signal::ctrl_c().await.is_ok() {
-            stop.store(true, Ordering::Relaxed);
-            crate::diag!(
-                crate::observer::LogLevel::Info,
-                "session: graceful shutdown requested (Ctrl-C). \
-                 Active fibers will exit at the next cycle \
-                 boundary; profiler / metrics / summaries will \
-                 flush. Press Ctrl-C again to force-exit."
-            );
-        }
-        // Second Ctrl-C: hard exit.
-        if tokio::signal::ctrl_c().await.is_ok() {
-            crate::diag!(
-                crate::observer::LogLevel::Warn,
-                "session: force-exit on second Ctrl-C — \
-                 profiler output and metrics may be incomplete."
-            );
-            std::process::exit(130);
+        loop {
+            if tokio::signal::ctrl_c().await.is_err() {
+                return;
+            }
+            if shutdown_level() >= 2 {
+                // Level 3: force-exit.
+                crate::diag!(
+                    crate::observer::LogLevel::Warn,
+                    "session: force-exit (Ctrl-C past the cancel rung) — \
+                     profiler output and metrics may be incomplete."
+                );
+                std::process::exit(130);
+            }
+            escalate_shutdown();
         }
     });
-}
-
-/// Drive the graceful-shutdown stage directly — for callers that detect a
-/// Ctrl-C WITHOUT a SIGINT. In the interactive raw-mode key-watcher the
-/// terminal's Ctrl-C→SIGINT translation is OFF, so the keystroke never
-/// becomes a signal; and re-raising SIGINT there is unreliable because the
-/// TUI's `install_signal_terminal_restore` sigaction handler intercepts
-/// SIGINT and hard-terminates before tokio's graceful handler can run. The
-/// key-watcher supervisor calls this instead, setting the same stop flag the
-/// SIGINT handler sets and emitting the same operator notice. Idempotent:
-/// only the first call (flag false→true) sets the flag and logs; the caller
-/// escalates a subsequent Ctrl-C to a force-exit itself.
-pub fn trigger_graceful_stop() {
-    if !flag().swap(true, Ordering::Relaxed) {
-        crate::diag!(
-            crate::observer::LogLevel::Info,
-            "session: graceful shutdown requested (Ctrl-C). Active fibers \
-             will exit at the next cycle boundary; profiler / metrics / \
-             summaries will flush. Press Ctrl-C again to force-exit."
-        );
-    }
 }
 
 /// Test-only: serialize the tests that touch the process-global
@@ -280,6 +429,15 @@ pub(crate) fn clear_session_stop_for_test() {
     flag().store(false, Ordering::Relaxed);
 }
 
+/// Test-only: reset the shutdown ladder to level 0 (and clear the
+/// done flag). Same locking discipline as
+/// [`clear_session_stop_for_test`].
+#[cfg(test)]
+pub(crate) fn reset_shutdown_ladder_for_test() {
+    let _ = shutdown_tx().send_replace(0);
+    done_flag().store(false, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +453,67 @@ mod tests {
         request_stop();
         assert!(stop_requested());
         clear_session_stop_for_test();
+    }
+
+    /// The ladder advances one rung per escalation — 0 → 1 (graceful,
+    /// session stop set) → 2 (cancel ops) — and holds at 2:
+    /// `escalate_shutdown` never enters level 3 itself (force-exit is
+    /// the CALLER's decision, with its own terminal hygiene).
+    #[test]
+    fn ladder_advances_one_rung_per_escalation_and_holds_at_cancel() {
+        let _guard = STOP_GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_session_stop_for_test();
+        reset_shutdown_ladder_for_test();
+
+        assert_eq!(shutdown_level(), 0);
+        assert!(!cancel_ops_requested());
+
+        assert_eq!(escalate_shutdown(), 1, "first rung: graceful");
+        assert!(stop_requested(), "graceful rung sets the session stop");
+        assert!(!cancel_ops_requested());
+
+        assert_eq!(escalate_shutdown(), 2, "second rung: cancel ops");
+        assert!(cancel_ops_requested());
+
+        assert_eq!(escalate_shutdown(), 2, "ladder holds at cancel");
+        assert!(cancel_ops_requested());
+
+        clear_session_stop_for_test();
+        reset_shutdown_ladder_for_test();
+    }
+
+    /// `ops_cancelled` resolves the moment the cancel rung is in force
+    /// — including when it already was at subscribe time — and does
+    /// NOT resolve for the graceful rung alone.
+    #[tokio::test]
+    async fn ops_cancelled_resolves_at_cancel_rung_only() {
+        let _guard = STOP_GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_session_stop_for_test();
+        reset_shutdown_ladder_for_test();
+
+        // Graceful rung alone must NOT resolve the cancel future.
+        let mut rx = subscribe_shutdown();
+        escalate_shutdown(); // → 1
+        let pending = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            ops_cancelled(&mut rx),
+        ).await;
+        assert!(pending.is_err(), "graceful rung must not cancel ops");
+
+        // Cancel rung resolves it — and resolves immediately for a
+        // subscriber that arrives after the fact.
+        escalate_shutdown(); // → 2
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            ops_cancelled(&mut rx),
+        ).await.expect("cancel rung resolves the in-flight race");
+        let mut late = subscribe_shutdown();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            ops_cancelled(&mut late),
+        ).await.expect("already-cancelled resolves immediately");
+
+        clear_session_stop_for_test();
+        reset_shutdown_ladder_for_test();
     }
 }

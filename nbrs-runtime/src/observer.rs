@@ -735,7 +735,7 @@ impl RunObserver for StderrObserver {
             // structured session.log (which never sees this
             // path). Same idea for force-exit on second Ctrl-C.
             if message.starts_with("session: graceful shutdown requested")
-                || message.starts_with("session: force-exit on second")
+                || message.starts_with("session: force-exit")
             {
                 eprintln!();
             }

@@ -3102,6 +3102,14 @@ async fn executor_task(
     // current iteration's value.
     let mut fiber = op_builder.create_fiber_builder();
 
+    // Shutdown-ladder subscription (session_signals module doc): the op
+    // dispatch below races the adapter call against the CANCEL rung
+    // (level 2) so a hung request — one that will only ever end by
+    // client timeout — can be dropped mid-flight, letting the drain and
+    // the process-level cleanup (WAL consolidation, summaries) proceed.
+    // One receiver per fiber; the race is a `select!` per dispatch.
+    let mut shutdown_rx = crate::session_signals::subscribe_shutdown();
+
     // SRD-68 Push 3 — materialise per-fiber subscope kernels from
     // each dispenser's canonical kernel. The fiber holds them as
     // `Vec<Option<PolydatKernel>>` indexed parallel to the dispenser
@@ -3535,11 +3543,33 @@ async fn executor_task(
             // failure): keep the fiber alive, mark the phase stopped.
             let outcome: Result<crate::adapter::OpResult, crate::adapter::ExecutionError> = {
                 use futures::FutureExt as _;
-                match std::panic::AssertUnwindSafe(
+                let op_fut = std::panic::AssertUnwindSafe(
                     dispenser.execute(cycle, &exec_ctx),
-                ).catch_unwind().await {
-                    Ok(r) => r,
-                    Err(payload) => {
+                ).catch_unwind();
+                // Race the whole op stack against the shutdown ladder's
+                // CANCEL rung. `biased` polls the op first, so the cancel
+                // branch costs one extra poll per dispatch on the happy
+                // path. On cancellation the stack's future is DROPPED —
+                // that is the cancel — and a synthesised non-retryable
+                // error stands in as the terminal outcome (the errors
+                // wrapper was inside the dropped future, so result-level
+                // accounting below is all that records it).
+                let raced = tokio::select! {
+                    biased;
+                    r = op_fut => Some(r),
+                    _ = crate::session_signals::ops_cancelled(&mut shutdown_rx) => None,
+                };
+                match raced {
+                    None => Err(crate::adapter::ExecutionError::Op(
+                        crate::adapter::AdapterError {
+                            error_name: "cancelled".into(),
+                            message: "in-flight op cancelled by shutdown \
+                                      escalation (Ctrl-C)".into(),
+                            retryable: false,
+                        },
+                    )),
+                    Some(Ok(r)) => r,
+                    Some(Err(payload)) => {
                         let msg = payload
                             .downcast_ref::<&'static str>()
                             .map(|s| (*s).to_string())

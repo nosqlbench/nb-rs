@@ -187,21 +187,24 @@ fn run_supervision(
                         WatcherSignal::Interrupt => {
                             // In raw mode the terminal's Ctrl-C→SIGINT
                             // translation is OFF, so this keystroke is NOT a
-                            // signal. Drive the graceful-stop flag DIRECTLY
+                            // signal. Drive the shutdown LADDER directly
                             // rather than re-raising SIGINT: the TUI's
                             // `install_signal_terminal_restore` sigaction
                             // handler intercepts SIGINT and hard-terminates
                             // (restoring the terminal) before the runtime's
                             // graceful handler can run — so a re-raise here
                             // loses both the operator notice and the metrics
-                            // flush. A SECOND Ctrl-C while a stop is already
-                            // pending is the force-exit escape hatch: restore
-                            // the terminal, then exit.
-                            if nbrs_runtime::session_signals::stop_requested() {
+                            // flush. Each keystroke advances one rung:
+                            // graceful → cancel in-flight ops (process
+                            // cleanup continues) → force-exit. Only the
+                            // force-exit rung is handled here (it owns the
+                            // terminal restore); the first two rungs are the
+                            // shared `escalate_shutdown` ladder.
+                            if nbrs_runtime::session_signals::shutdown_level() >= 2 {
                                 let _ = crossterm::terminal::disable_raw_mode();
                                 std::process::exit(130);
                             } else {
-                                nbrs_runtime::session_signals::trigger_graceful_stop();
+                                nbrs_runtime::session_signals::escalate_shutdown();
                             }
                         }
                         WatcherSignal::Suspend => {

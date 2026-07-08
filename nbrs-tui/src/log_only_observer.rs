@@ -485,7 +485,7 @@ impl RunObserver for LogOnlyObserver {
         // duplicate is rendered.
         if !self.sink_active.load(Ordering::Acquire) && level >= self.min_level {
             if message.starts_with("session: graceful shutdown requested")
-                || message.starts_with("session: force-exit on second")
+                || message.starts_with("session: force-exit")
             {
                 eprintln!();
             }

@@ -1145,6 +1145,11 @@ impl SessionHost {
         self.sqlite_guard.consume();
         crate::diag!(crate::observer::LogLevel::Info,
             "shutdown complete");
+        // Shutdown-ladder bookkeeping: the run drained through the full
+        // process-level cleanup, so a still-ticking level-1 countdown
+        // (Ctrl-C during the final drain) goes quiet instead of
+        // announcing op cancellation for a run that no longer has ops.
+        crate::session_signals::mark_shutdown_complete();
     }
 }
 

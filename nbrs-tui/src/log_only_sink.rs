@@ -735,7 +735,7 @@ fn run_render_loop(
                     // Match the observer's cosmetic blank line before
                     // the Ctrl-C / force-exit banners.
                     if entry.message.starts_with("session: graceful shutdown requested")
-                        || entry.message.starts_with("session: force-exit on second")
+                        || entry.message.starts_with("session: force-exit")
                     {
                         let _ = write!(stderr, "\r\n");
                     }
