@@ -138,6 +138,12 @@ params:
   # the probe does not perturb the data. Numeric so it accepts magnitude
   # suffixes on the CLI.
   measure_probe_rows: 2000
+  # `batch_size`: EXPLICIT insert batch stride (rows per batch op). `0`
+  # (the default) = auto: run the one-shot `measure_batch` probe and use
+  # its measured stride. A positive value takes precedence over the
+  # measured stride AND bypasses the probe entirely (its op no-ops via
+  # `if:`). Numeric, so CLI magnitude suffixes work (`batch_size=2k`).
+  batch_size: 0
 
   # ── Post-load step toggles (1 = enabled, 0 = skipped) ────────
   # Independently enable/disable each post-load step per tier. All OFF by
@@ -242,7 +248,8 @@ scenarios:
     # scope — this inner bindings layer only wraps the loader, it does not
     # change when the daemon stops (still at `finalize_index` completion).
     - bindings: |
-        const stride := measured
+        # Explicit `batch_size` param wins; else the probe's measurement.
+        const stride := if(batch_size > 0, batch_size, measured)
       phases:
         - load_increment
     - flush
@@ -457,6 +464,10 @@ phases:
       train_vector := vector_at(prebuffered, row)
     ops:
       measure_insert:
+        # Bypassed entirely when an explicit `batch_size` is provided —
+        # the stride freeze below prefers the param, so measuring would
+        # be wasted work (and a wasted probe write).
+        if: "batch_size == 0"
         # Byte-budgeted UNLOGGED batch sized to the cluster's OWN limit,
         # with NO `batch:` row cap — one invocation packs a full
         # byte-budget-worth of rows and reports the count it wrote.
