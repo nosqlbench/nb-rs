@@ -183,9 +183,14 @@ bindings: |
   # number. The tier loop then FREEZES it as `const stride` (below) and
   # the main `load_increment` insert drives `batch: stride` off it, so
   # the loader's cursor stride is one measured batch-worth instead of a
-  # single row. Literal-initialised to 1 so a run that skips the measure
-  # phase still has a valid (single-row) stride.
-  shared measured := 1
+  # single row. Literal-initialised to 1.0 — F64 ON PURPOSE: the probe
+  # writes `floor_decade(...)`, which is F64, and a shared cell must keep
+  # ONE type for its whole life (the `if()` in the stride freeze compiles
+  # typed bridges against the cell's declared type; a runtime U64→F64
+  # flip would trap on that bridge). A run that skips the measure phase
+  # still has a valid (single-row) stride; the `batch:` resolution
+  # coerces the F64 stride to a row count.
+  shared measured := 1.0
 
 scenarios:
   # Default: the incremental size-tier sweep.
@@ -281,6 +286,13 @@ phases:
       # so it takes effect while the table still exists.
       truncate_table:
         errors: ".*:warn,counter"
+        # 60s cap (NOT the phase's 300s request_timeout_ms): on a large
+        # table a truncate against a busy coordinator often gets NO
+        # response at all — waiting the full 5-minute phase budget for a
+        # statement that is tolerated-on-failure (and followed by DROP
+        # TABLE anyway) is pure teardown delay. 60s stays cohesively
+        # above the 30s server-side timeout.
+        timeout: 60s
         raw: "TRUNCATE TABLE {keyspace}.{table}"
       drop_vector_index:
         raw: "DROP INDEX IF EXISTS {keyspace}.{table}{vector_idx_suffix}"
