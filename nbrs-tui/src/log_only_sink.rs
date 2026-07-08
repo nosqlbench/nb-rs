@@ -950,7 +950,6 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
     margin_width: u16,
     row2_margin: &str,
 ) -> (u16, u16) {
-    let _ = term_cols;
     let status_lines: Vec<&str> = status_text
         .map(|s| s.split('\n').collect())
         .unwrap_or_default();
@@ -960,6 +959,17 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
     if total == 0 {
         return (0, 0);
     }
+
+    // The return contract (`cursor_below_top`) counts LOGICAL rows, and
+    // the next tick's climb-back (`\x1b[{n}A`) trusts it. A status row
+    // wider than the terminal WRAPS into extra physical rows the count
+    // doesn't see — the climb-back then lands mid-footer, the `\x1b[J`
+    // clear starts too low, and footer rows flicker in and out as log
+    // emits reclaim the difference. Truncate every status row to the
+    // width budget so one logical row is always exactly one physical
+    // row. (Prompt rows already render width-aware via
+    // `PromptState::render(cols)`.)
+    let avail = (term_cols as usize).saturating_sub(margin_width as usize);
 
     let mut first = true;
     for (i, row) in status_lines.iter().enumerate() {
@@ -972,7 +982,12 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
         } else {
             row2_margin
         };
-        let _ = write!(out, "\r\x1b[K{margin}{row}");
+        let fitted = nbrs_runtime::activity::truncate_to_width(row, avail);
+        // A truncation can strand an open SGR (the reset was past the
+        // cut) — close it so the tint can't bleed into the margin of
+        // the next row.
+        let reset_tail = if fitted.len() != row.len() { "\x1b[0m" } else { "" };
+        let _ = write!(out, "\r\x1b[K{margin}{fitted}{reset_tail}");
     }
     // Prompt rows — present only for the inline console bar (the full
     // console renders on the alternate screen, not here). The prompt's
@@ -1277,6 +1292,43 @@ mod redraw_tests {
             "line 0 MUST carry row1 margin: {out:?}");
         assert!(out.contains(&format!("\r\x1b[K{row2}stats line")),
             "line 1 MUST carry row2 margin: {out:?}");
+    }
+
+    /// A status row wider than the terminal is TRUNCATED to one
+    /// physical row. The climb-back contract (`cursor_below_top`)
+    /// counts logical rows — a wrapped row would desync it, making the
+    /// next tick's `\x1b[{n}A` land mid-footer and the `\x1b[J` clear
+    /// clip footer rows (the "key-metrics line pops in and out"
+    /// symptom). Also: a truncation that strands an open SGR must be
+    /// closed with a reset so the tint can't bleed into the next row.
+    #[test]
+    fn overwide_status_row_truncates_to_one_physical_row() {
+        let margin = "12.34s 5/9 │ ";           // 13 visible cols
+        let wide = "x".repeat(200);              // ≫ 80-col terminal
+        let status = format!("head\n{wide}");
+        let mut out: Vec<u8> = Vec::new();
+        let (rows, below) = draw_footer_at_cursor(
+            &mut out, Some(&status), None,
+            80, margin, super::visible_width(margin) as u16, "");
+        assert_eq!((rows, below), (2, 1));
+        let out = String::from_utf8(out).expect("utf-8");
+        for line in out.split("\r\n") {
+            assert!(super::visible_width(line) <= 80,
+                "footer row must fit the terminal width ({}): {line:?}",
+                super::visible_width(line));
+        }
+        assert!(out.contains('…'), "truncation marker expected: {out:?}");
+
+        // Open-SGR guard: a colored row cut before its reset gets one
+        // appended so the style can't leak into the following row.
+        let colored = format!("\x1b[31m{}\x1b[0m", "y".repeat(200));
+        let mut out2: Vec<u8> = Vec::new();
+        draw_footer_at_cursor(
+            &mut out2, Some(&colored), None,
+            80, margin, super::visible_width(margin) as u16, "");
+        let out2 = String::from_utf8(out2).expect("utf-8");
+        assert!(out2.ends_with("\x1b[0m"),
+            "truncated colored row must close its SGR: {out2:?}");
     }
 
     /// Empty row2 margin → every line falls back to row1 (the
