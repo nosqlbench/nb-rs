@@ -1844,7 +1844,12 @@ fn normalize_op_object(
     // separately below.
     let activity_params = ["ratio", "adapter", "driver", "space", "instrument", "start-timers", "stop-timers",
         "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms", "poll_metric_name", "emit",
-        "batch", "max_batch_size", "batchtype", "memo"];
+        "batch", "max_batch_size", "batchtype", "memo",
+        // SRD-82 op shell — a per-op error-routing override (`errors:
+        // "<pattern>:<actions>"`), resolved into a child of the phase policy
+        // and pinned to this op's dispenser. Excised from op fields so it
+        // never reaches the adapter as an op-payload key.
+        "errors"];
 
     let mut op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))

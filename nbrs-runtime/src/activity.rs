@@ -1290,6 +1290,14 @@ impl Activity {
         };
 
         let mut dispensers: Vec<Arc<dyn OpDispenser>> = Vec::new();
+        // SRD-82 op shell — one resolved error handler per op dispenser,
+        // index-aligned with `dispensers`. Each entry is the op-template's
+        // own `errors:` override (a child of the phase policy) or the phase
+        // policy itself, shared by reference, when the op declares none. The
+        // op's terminal error is ALWAYS routed through its own entry, so an
+        // op can be lenient (`errors: ".*:warn,counter"`) without loosening
+        // its siblings.
+        let mut op_error_policies: Vec<Arc<crate::error_policy::ErrorPolicy>> = Vec::new();
         let mut validation_metrics: Vec<Arc<validation::ValidationMetrics>> = Vec::new();
         // SRD-40b §6/§7 — one `Component` per **op dispenser**
         // (= per op template), not per op execution. Op
@@ -1935,6 +1943,25 @@ impl Activity {
                     // is short-circuited.
                     dispensers.push(current);
 
+                    // SRD-82 — resolve THIS op's error handler and pin it
+                    // alongside the dispenser. An op-template `errors:` derives
+                    // a child policy from the phase policy (value-equality
+                    // shared across ops that declare the same spec); no
+                    // override inherits the phase policy by reference. Only the
+                    // op-error ROUTER is per-op — the aggregate rate breach
+                    // stays the phase shell's `error_policy.guard`.
+                    let op_error_policy = match template.params.get("errors")
+                        .and_then(|v| v.as_str())
+                    {
+                        Some(spec) => activity.error_policy.resolve_child(Some(
+                            crate::error_policy::PolicyConfig::new(
+                                spec, activity.config.error_rate_max,
+                            ),
+                        )),
+                        None => activity.error_policy.clone(),
+                    };
+                    op_error_policies.push(op_error_policy);
+
                     // Seal the per-template fixture. The PullPlan
                     // drives cycle-time reads for every wrapper that
                     // registered (validation ground truth, conditional
@@ -1951,6 +1978,9 @@ impl Activity {
         let dispensers = Arc::new(dispensers);
         // Register dispensers for adapter-specific metrics capture
         activity.metrics.set_dispensers(dispensers.clone());
+        // SRD-82 — the per-op error handlers travel with the dispensers into
+        // the fiber pool (index-aligned; one entry per op template).
+        let op_error_policies = Arc::new(op_error_policies);
         let pull_plans_per_template = Arc::new(pull_plans_per_template);
 
         // `dryrun=dispenser` exit point. Every op template's
@@ -2038,6 +2068,7 @@ impl Activity {
         let pool_spawner: crate::fiber_pool::FiberSpawner = {
             let activity = activity.clone();
             let dispensers_outer = dispensers.clone();
+            let op_error_policies_outer = op_error_policies.clone();
             let pull_plans_outer = pull_plans_per_template.clone();
             let op_builder_outer = op_builder.clone();
             let rate_limiter_outer = rate_limiter.clone();
@@ -2052,6 +2083,7 @@ impl Activity {
             Box::new(move |stop: crate::fiber_pool::StopFlag| {
                 let activity = activity.clone();
                 let dispensers = dispensers_outer.clone();
+                let op_error_policies = op_error_policies_outer.clone();
                 let pull_plans = pull_plans_outer.clone();
                 let op_builder = op_builder_outer.clone();
                 let rate_limiter = rate_limiter_outer.clone();
@@ -2082,7 +2114,7 @@ impl Activity {
                         phase_controls,
                         async move {
                             executor_task(
-                                activity, dispensers, pull_plans,
+                                activity, dispensers, op_error_policies, pull_plans,
                                 op_builder, rate_limiter, stop,
                                 daemon_pool, phase_arc_for_exec,
                             ).await;
@@ -2963,6 +2995,11 @@ async fn poll_daemon_stop(
 async fn executor_task(
     activity: Arc<Activity>,
     dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
+    // SRD-82 — per-op error handlers, index-aligned with `dispensers`. The
+    // terminal error of the op at `template_idx` is routed through
+    // `op_error_policies[template_idx]` (its own `errors:` override or the
+    // inherited phase policy).
+    op_error_policies: Arc<Vec<Arc<crate::error_policy::ErrorPolicy>>>,
     pull_plans: Arc<Vec<crate::fixture::PullPlan>>,
     op_builder: Arc<crate::synthesis::OpBuilder>,
     // Optional activity-level rate limiter. `acquire` fires
@@ -3468,7 +3505,13 @@ async fn executor_task(
                 Ok(result) => (true, result.skipped),
                 Err(e) => {
                     let inner = e.error();
-                    let detail = activity.error_policy.router.handle_error(
+                    // SRD-82 — route the terminal error through the handler
+                    // pinned to THIS op's dispenser (its own `errors:` override
+                    // or the inherited phase policy), never a phase-global one,
+                    // so a lenient op (`.*:warn,counter`) doesn't soften its
+                    // siblings and a strict one doesn't harden them.
+                    let op_error_policy = &op_error_policies[template_idx];
+                    let detail = op_error_policy.router.handle_error(
                         &inner.error_name, &inner.message, cycle, service_nanos,
                     );
                     activity.metrics.errors_total.inc();

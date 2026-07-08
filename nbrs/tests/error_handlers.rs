@@ -283,6 +283,72 @@ fn overload_warned_other_errors_stopped() {
         "at least one Overload error expected in error_readout: {stderr}");
 }
 
+/// SRD-82 op shell — an op-template's own `errors:` overrides the
+/// enclosing scope's policy for THAT op. The global policy is
+/// `errors=stop` (a single error aborts), but the `lenient` op pins
+/// `.*:warn,counter`, so its 100%-error stream is logged + counted and
+/// the run completes. This is the per-op handler pinned to the op
+/// dispenser: the terminal error is routed through it, not the phase
+/// policy.
+#[test]
+fn op_level_errors_overrides_scope_policy() {
+    let wl = write_workload("op_lenient", r#"
+blocks:
+  main:
+    ops:
+      lenient:
+        stmt: "lenient"
+        result-error-rate: 1.0
+        result-error-name: "ModelError"
+        errors: ".*:warn,counter"
+"#);
+    let (_stdout, stderr, ok) = run(&wl, &[
+        "adapter=testkit",
+        "cycles=20",
+        "concurrency=1",
+        // Global policy says stop-on-first-error; the op overrides it.
+        "errors=stop",
+    ]);
+    assert!(ok,
+        "op-scoped `.*:warn,counter` should tolerate the errors despite the \
+         global `errors=stop`, stderr={stderr}");
+    assert!(stderr.contains("[ModelError]"),
+        "the op DID error (and was tolerated) — its class should surface in \
+         the error_readout block: {stderr}");
+}
+
+/// SRD-82 op shell — one op's leniency does NOT leak to its siblings.
+/// `lenient` pins `.*:warn,counter`; `strict` declares no `errors:` and
+/// so inherits the global `errors=stop`. `strict`'s error must still
+/// abort the run — proving each dispenser routes through its OWN handler,
+/// not a shared phase-wide one softened by a neighbor.
+#[test]
+fn op_level_errors_does_not_leak_to_siblings() {
+    let wl = write_workload("op_sibling", r#"
+blocks:
+  main:
+    ops:
+      lenient:
+        stmt: "lenient"
+        result-error-rate: 1.0
+        result-error-name: "ModelError"
+        errors: ".*:warn,counter"
+      strict:
+        stmt: "strict"
+        result-error-rate: 1.0
+        result-error-name: "ModelError"
+"#);
+    let (_stdout, stderr, ok) = run(&wl, &[
+        "adapter=testkit",
+        "cycles=20",
+        "concurrency=1",
+        "errors=stop",
+    ]);
+    assert!(!ok,
+        "the `strict` sibling inherits the global `errors=stop` and must \
+         abort — `lenient`'s override must not soften it, stderr={stderr}");
+}
+
 /// Two-class routing: `flaky` errors (ModelError) get ignored,
 /// `heavy` errors (Overload) get warned. Run completes. Used to
 /// prove the router actually classifies by `error-name`, not by

@@ -258,10 +258,14 @@ phases:
       const request_timeout_ms := 300000
     ops:
       # Clear any rows a prior run left behind before the schema teardown.
-      # IF EXISTS makes a first run (no table yet) a clean no-op, and keeps
-      # the truncate ahead of the DROP so it actually takes effect.
+      # No IF EXISTS: on a first run the table is absent and this errors — the
+      # op-scoped `errors: ".*:warn,counter"` (SRD-82 op shell) logs+counts
+      # that error and moves on WITHOUT aborting the run, while the sibling
+      # DROPs keep the default stop-on-error handling. Kept ahead of the DROP
+      # so it takes effect while the table still exists.
       truncate_table:
-        raw: "TRUNCATE TABLE IF EXISTS {keyspace}.{table}"
+        errors: ".*:warn,counter"
+        raw: "TRUNCATE TABLE {keyspace}.{table}"
       drop_vector_index:
         raw: "DROP INDEX IF EXISTS {keyspace}.{table}{vector_idx_suffix}"
       drop_table:

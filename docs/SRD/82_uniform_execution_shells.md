@@ -385,6 +385,23 @@ Incremental; each step compiles and is independently testable.
    concurrent with a fast-failing `boom` runs 1 of 20 ops, not 20).
 5. **Stanza shell.** ⏳ PENDING. Fold the per-cycle stanza error
    handling into the same shape so the stanza's `errors:` configures it.
+5a. **Op handler (per-op `errors:`).** ✅ DONE. Each op dispenser carries
+   its own resolved `ErrorPolicy`. At activity build every op template's
+   `errors:` override resolves a child of the phase policy (`activity.rs`,
+   `op_error_policies` index-aligned with `dispensers`): value-equality
+   shared across ops that declare the same spec, inherited *by reference*
+   (the phase policy `Arc` itself) when the op declares none. The terminal
+   error of an op is ALWAYS routed through ITS entry's router
+   (`executor_task`), so a lenient op (`errors: ".*:warn,counter"`) never
+   softens its siblings and a strict one never hardens them. Only the
+   op-error ROUTER is per-op; the aggregate rate breach
+   (`error_policy.guard`) stays the phase shell's. The op-level `errors:`
+   surface parses as a per-op activity-param (`nbrs-workload` `parse.rs`),
+   excised from op fields so it never reaches the adapter. Tested:
+   `nbrs/tests/error_handlers.rs::op_level_errors_overrides_scope_policy`
+   + `…::op_level_errors_does_not_leak_to_siblings`. (The op-*daemon* path
+   keeps its Part 6 daemon-outcome lifecycle — a `Failed` bubbles to the
+   parent handler — rather than the op router.)
 1. **`Outcome` type.** ⏳ PENDING. Two-axis `(Disposition, Validity)`
    not yet landed; until it does, a guard `fail` is subsumed by the
    `stop → run_phase Err → PhaseOutcome::failed` path (which already
