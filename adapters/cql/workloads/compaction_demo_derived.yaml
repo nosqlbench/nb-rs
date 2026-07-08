@@ -51,14 +51,20 @@ description: |
   vector dataset catalog.
 
 params:
-  # `retries` = the retry budget for retryable errors (e.g. CQL request
-  # timeouts) before a failure reaches the result level. Root-level so every
-  # phase inherits it. `timeout` is NOT set at the root: a root timeout would
-  # override each op's own request timeout, clobbering the long-running
-  # orchestration ops (flush / compaction). Instead the read/write ops set
-  # `timeout: 60s` themselves (below); the orchestration ops keep their own
-  # longer request_timeout_ms.
-  retries: 20
+  # `tries` = TOTAL attempts per op on retryable errors (SRD-82: the sigil
+  # for the conditional tries wrapper). Root default 10 — inherited by the
+  # data-plane and orchestration phases. The non-iterative setup phases
+  # (teardown / schema / tune_cluster) pin `tries: 1` explicitly: their
+  # statements are one-shot DDL / control calls where a retry burns minutes
+  # on something that will never succeed (the teardown truncate on a first
+  # run) or is simply pointless to repeat.
+  #
+  # `timeout` is NOT set at the root: a root timeout would override each
+  # op's own request timeout, clobbering the long-running orchestration ops
+  # (flush / compaction). Instead the read/write ops set `timeout: 60s`
+  # themselves (below); the orchestration ops keep their own longer
+  # request_timeout_ms.
+  tries: 10
   # `connect_timeout` = how long the driver waits to ESTABLISH a connection
   # (the control connection + each per-host connect). The cassandra-cpp default
   # (5s) is too short for a distant / cold / slow-to-accept cluster — a control-
@@ -254,6 +260,9 @@ phases:
   # vectors incrementally across tiers; it is NOT reset between profiles).
   teardown:
     concurrency: 1
+    # One-shot anti-DDL: never retry (the truncate is EXPECTED to fail on a
+    # first run and is tolerated by its op-scoped errors policy).
+    tries: 1
     bindings: |
       const request_timeout_ms := 300000
     ops:
@@ -273,6 +282,8 @@ phases:
 
   schema:
     concurrency: 1
+    # One-shot idempotent DDL: single attempt.
+    tries: 1
     bindings: |
       dim := vector_dim("{dataset}:{profile}")
       similarity_function := dataset_distance_function("{dataset}:{profile}")
@@ -320,6 +331,8 @@ phases:
     adapter: http
     concurrency: 1
     cycles: 1
+    # One-shot JMX writes: single attempt.
+    tries: 1
     ops:
       set_compaction_throughput:
         adapter: http
@@ -396,7 +409,7 @@ phases:
       query_vector := query_vector_at(prebuffered, q % base)
     ops:
       probe_ann:
-        timeout: 60s   # 60s per read; retried up to `retries` (20) on a CQL timeout
+        timeout: 60s   # 60s per read; retried up to the phase `tries` budget on a CQL timeout
         prepared: |
           SELECT [key] FROM {keyspace}.{table}
           ORDER BY value
@@ -429,6 +442,7 @@ phases:
     # last-write-wins `measured` cell would end up holding a short-tail
     # count instead of a full budget batch.
     cycles: 1
+    tries: 1
     bindings: |
       # The first matching profile's own vectors — representative of the
       # dataset's vector WIDTH, which is what sizes a byte-budgeted batch.
@@ -516,7 +530,7 @@ phases:
         # resolves to 0 = no byte cap.
         max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
         batchtype: unlogged
-        timeout: 60s   # 60s per write; retried up to `retries` (20) on a CQL timeout
+        timeout: 60s   # 60s per write; retried up to the phase `tries` budget on a CQL timeout
         prepared: |
           INSERT INTO {keyspace}.{table} (key, value)
           VALUES ('{id}', {train_vector})
@@ -528,6 +542,7 @@ phases:
     adapter: http
     concurrency: 1
     cycles: 1
+    tries: 1
     ops:
       flush:
         adapter: http
@@ -536,7 +551,7 @@ phases:
         # 15s TCP-connect budget to the Jolokia agent (distinct from the
         # request_timeout_ms response deadline): a connect that hangs — e.g.
         # the agent busy on another in-flight JMX call — fails fast and
-        # retries (root `retries: 20`) instead of stalling on the OS default.
+        # retries (inherited root `tries: 10`) instead of stalling on the OS default.
         connect_timeout: 15s
         uri: "http://{host}:8778/jolokia/"
         method: POST
@@ -565,6 +580,7 @@ phases:
     adapter: cql
     concurrency: 1
     cycles: 1
+    tries: 1
     bindings: |
       # Cross-op cell: `read_sstables` writes it, `trigger_compact`'s
       # `if:` reads it. `shared` so the write-through propagates across
@@ -580,7 +596,7 @@ phases:
         # Part of finalize: gated by the finalize toggle.
         if: "enable_finalize != 0"
         # 15s connect budget to the Jolokia agent (see the standalone `flush`
-        # phase): fail fast + retry (root retries:20) rather than hang.
+        # phase): fail fast + retry (inherited root tries: 10) rather than hang.
         connect_timeout: 15s
         uri: "http://{host}:8778/jolokia/"
         method: POST
@@ -702,7 +718,7 @@ phases:
       ground_truth := neighbor_indices_at(prebuffered, q % base)
     ops:
       select_ann:
-        timeout: 60s   # 60s per read; retried up to `retries` (20) on a CQL timeout
+        timeout: 60s   # 60s per read; retried up to the phase `tries` budget on a CQL timeout
         prepared: |
           SELECT [key] FROM {keyspace}.{table}
           ORDER BY value
