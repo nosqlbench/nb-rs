@@ -1262,8 +1262,10 @@ fn parse_phases(
         let error_rate_max = phase_obj.get("error_rate_max")
             .and_then(|v| v.as_f64());
 
-        // Per-phase retry budget override (root `retries` param otherwise).
-        let retries = phase_obj.get("retries")
+        // Per-phase total-attempts budget — the phase-level surface of the
+        // `tries` sigil (SRD-82 Part 3b). Inherits down to the phase's ops;
+        // absent everywhere → no tries wrapper (single attempt).
+        let tries = phase_obj.get("tries")
             .and_then(|v| v.as_u64())
             .map(|n| n as u32);
 
@@ -1515,7 +1517,7 @@ fn parse_phases(
             daemon,
             adapter,
             errors,
-            retries,
+            tries,
             error_rate_max,
             stop_when,
             tags,
@@ -1847,9 +1849,11 @@ fn normalize_op_object(
         "batch", "max_batch_size", "batchtype", "memo",
         // SRD-82 op shell — a per-op error-routing override (`errors:
         // "<pattern>:<actions>"`), resolved into a child of the phase policy
-        // and pinned to this op's dispenser. Excised from op fields so it
-        // never reaches the adapter as an op-payload key.
-        "errors"];
+        // and pinned to this op's dispenser, and the op-level `tries:`
+        // total-attempts sigil for the conditional tries wrapper. Both are
+        // excised from op fields so they never reach the adapter as
+        // op-payload keys.
+        "errors", "tries"];
 
     let mut op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))

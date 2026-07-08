@@ -1266,14 +1266,15 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         Some(s) => Some(s.parse().map_err(|_| format!("rate value '{s}' is not a valid number"))?),
         None => None,
     };
-    // Workload-root retry budget for the innermost RetryDispenser. `0` (the
-    // default) preserves the prior effective behaviour — a single attempt, no
-    // retry unless explicitly asked for. A positive value retries
-    // adapter-retryable op errors (CQL timeouts/overloads) up to N times
-    // before the failure propagates to the result level.
-    let retries: u32 = match merged_params.get("retries") {
-        Some(s) => s.parse().map_err(|_| format!("retries value '{s}' is not a valid integer"))?,
-        None => 0,
+    // Workload-root total-attempts budget — the `tries` sigil for the
+    // conditional TriesDispenser (SRD-82 Part 3b). Absent = ops without
+    // their own `tries:` run single-attempt with no retry wrapper. `N ≥ 2`
+    // retries adapter-retryable op errors (CQL timeouts/overloads) up to N
+    // total attempts before the failure propagates to the result level;
+    // `1` = explicit single-attempt; `0` = ops fail without executing.
+    let tries: Option<u32> = match merged_params.get("tries") {
+        Some(s) => Some(s.parse().map_err(|_| format!("tries value '{s}' is not a valid integer"))?),
+        None => None,
     };
     let tag_filter = merged_params.get("tags").cloned();
     let seq_type = merged_params.get("seq")
@@ -2865,7 +2866,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             concurrency,
             rate,
             error_spec: error_spec.clone(),
-            retries,
+            tries,
             error_rate_max,
             error_policy: root_error_policy,
             session_id: session_id.clone(),
@@ -5680,7 +5681,7 @@ mod tests {
 
         let phase = WorkloadPhase {
             cycles: None, concurrency: None, rate: None, daemon: false,
-            adapter: None, errors: None, retries: None, error_rate_max: None, stop_when: Vec::new(), continue_if: None, tags: None,
+            adapter: None, errors: None, tries: None, error_rate_max: None, stop_when: Vec::new(), continue_if: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),

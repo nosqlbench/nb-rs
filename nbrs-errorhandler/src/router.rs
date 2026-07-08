@@ -43,12 +43,42 @@ pub struct ErrorRouter {
     mappings: Vec<HandlerMapping>,
     /// Cache: error name → handler chain (lazily populated).
     cache: std::sync::Mutex<HashMap<String, Vec<Arc<dyn ErrorHandler>>>>,
+    /// The retry BUDGET implied by the spec's `retry` / `retry(N)` verbs, if
+    /// any rule carries one — the largest `N` across rules (a bare `retry`
+    /// contributes [`DEFAULT_RETRY_VERB_BUDGET`]). Consumed by the SRD-82
+    /// Part 3b injection bridge: an op whose policy carries a retry verb and
+    /// that declares no `retry:` of its own gets this budget injected, so
+    /// `errors: "Timeout:retry,warn"` still activates the (conditional)
+    /// retry wrapper while the two config surfaces stay orthogonal.
+    retry_budget: Option<u32>,
+}
+
+/// Additional attempts a bare `retry` verb (no `(N)`) implies. Small on
+/// purpose — an operator who wants a deep budget writes `retry(N)` or sets
+/// the orthogonal `tries:` property directly.
+pub const DEFAULT_RETRY_VERB_BUDGET: u32 = 3;
+
+/// Split a handler token into its verb name and, for `retry` / `retry(N)`,
+/// the retry budget it implies (`retry` → the default; `retry(N)` → `N`
+/// additional attempts). Every other verb passes through with no budget.
+/// A malformed `retry(...)` argument is a parse error, not a silent default.
+fn parse_retry_verb(token: &str) -> Result<(&str, Option<u32>), String> {
+    if token == "retry" {
+        return Ok(("retry", Some(DEFAULT_RETRY_VERB_BUDGET)));
+    }
+    if let Some(arg) = token.strip_prefix("retry(").and_then(|r| r.strip_suffix(')')) {
+        let n: u32 = arg.trim().parse()
+            .map_err(|_| format!("invalid retry budget in '{token}': expected retry(N)"))?;
+        return Ok(("retry", Some(n)));
+    }
+    Ok((token, None))
 }
 
 impl ErrorRouter {
     /// Parse a config spec into a router.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let mut mappings = Vec::new();
+        let mut retry_budget: Option<u32> = None;
 
         for rule in spec.split(';') {
             let rule = rule.trim();
@@ -73,7 +103,14 @@ impl ErrorRouter {
                 .map(|h| h.trim())
                 .filter(|h| !h.is_empty())
                 .map(|h| {
-                    builtin_handler(h)
+                    // `retry` / `retry(N)` — the verb resolves to the same
+                    // RetryHandler; the budget is recorded on the router for
+                    // the injection bridge (largest across rules wins).
+                    let (name, budget) = parse_retry_verb(h)?;
+                    if let Some(b) = budget {
+                        retry_budget = Some(retry_budget.map_or(b, |cur| cur.max(b)));
+                    }
+                    builtin_handler(name)
                         .map(|bh| Arc::from(bh) as Arc<dyn ErrorHandler>)
                         .ok_or_else(|| format!("unknown error handler: '{h}'"))
                 })
@@ -89,7 +126,14 @@ impl ErrorRouter {
         Ok(Self {
             mappings,
             cache: std::sync::Mutex::new(HashMap::new()),
+            retry_budget,
         })
+    }
+
+    /// The retry budget implied by the spec's `retry` / `retry(N)` verbs;
+    /// `None` when no rule carries a retry verb. See the field doc.
+    pub fn retry_verb_budget(&self) -> Option<u32> {
+        self.retry_budget
     }
 
     /// Create a simple router with a default handler for all errors.
@@ -234,5 +278,35 @@ mod tests {
         let r = ErrorRouter::default_warn_count();
         let d = r.handle_error("test", "msg", 0, 0);
         assert!(!d.is_retryable());
+    }
+
+    /// A bare `retry` verb implies the default injection budget; specs
+    /// without a retry verb imply none.
+    #[test]
+    fn bare_retry_verb_implies_default_budget() {
+        let r = ErrorRouter::parse("Timeout:retry,warn;.*:stop").unwrap();
+        assert_eq!(r.retry_verb_budget(), Some(DEFAULT_RETRY_VERB_BUDGET));
+        let r = ErrorRouter::parse(".*:warn,counter").unwrap();
+        assert_eq!(r.retry_verb_budget(), None);
+    }
+
+    /// `retry(N)` carries an explicit budget; the largest across rules wins.
+    #[test]
+    fn parenthesised_retry_budget_wins_max() {
+        let r = ErrorRouter::parse("Timeout:retry(5),warn;Overload:retry(9);.*:stop").unwrap();
+        assert_eq!(r.retry_verb_budget(), Some(9));
+        // Behaviour: retry(N) still routes through the RetryHandler.
+        let d = r.handle_error("Timeout", "t", 0, 0);
+        assert!(d.is_retryable());
+    }
+
+    /// A malformed `retry(...)` argument is a parse error, not a silent
+    /// default.
+    #[test]
+    fn malformed_retry_budget_rejected() {
+        match ErrorRouter::parse(".*:retry(lots)") {
+            Err(err) => assert!(err.contains("retry(N)"), "diagnostic: {err}"),
+            Ok(_) => panic!("retry(lots) must be a parse error"),
+        }
     }
 }

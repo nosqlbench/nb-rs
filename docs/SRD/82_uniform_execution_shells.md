@@ -299,6 +299,104 @@ session root  ── resolve_child ─▶  scenario policy  ── resolve_child
 
 ---
 
+## Part 3b — Op-shell handler: verbs as aspects, not layers
+
+*(Feasibility study, resolved 2026-07-08. Governs how the op-level
+handler is implemented; SRD-32a owns the wrapper machinery it rides.)*
+
+The op shell's handler lives in the op wrapper system — but the
+question of **altitude** had to be settled: is each router verb
+(`count`, `warn`, `ignore`, `retry`, `stop`, `fail`) its own wrapper,
+or is the handler one wrapper with the verbs inside it?
+
+### The measured cost of a wrapper layer
+
+`OpDispenser::execute` returns `Pin<Box<dyn Future>>`. Every layer
+therefore costs, per cycle, **on the happy path**: one vtable hop, one
+heap-allocated future, one extra poll frame. Tens of nanoseconds
+against ops costing 100µs–100ms — but it is *per layer*, so the design
+question reduces to how many layers uniformity costs.
+
+### Why per-verb wrappers are rejected
+
+1. **Verb activation is a runtime decision.** Whether `warn` fires for
+   a given failure depends on which *pattern* matched the error name
+   (`Timeout:retry,warn;.*:stop`). A static `warn` layer would have to
+   re-run the cascade match itself — N layers × pattern match per
+   error.
+2. **Verb order is per-rule; wrapper order is per-op.** The same verbs
+   appear in different orders in different rules. A fixed stack cannot
+   express rule-relative ordering.
+3. **Happy-path cost scales with verb count** — every verb layer is a
+   pure passthrough for the ~99.9% of ops that succeed.
+
+Per-verb wrappers are both semantically wrong and slow. Rejected.
+
+### The resolving taxonomy
+
+| Kind | Verbs | Mechanism |
+|---|---|---|
+| **Control-flow** | `retry` / `retry(N)` | Must *re-invoke inner* — a loop around the call. Genuinely a wrapper (the only one): the **`tries` wrapper**, innermost. |
+| **Terminal** | `count`, `warn`, `errlog`, `ignore` + effects `stop`, `fail` | A fold over the terminal outcome, in matched-rule order. Exactly ONE observation point — never on the call path. |
+
+### The shape
+
+1. **One `errors` wrapper, OUTERMOST**, registered in the SRD-32a
+   registry (`owned_fields: ["errors"]`; activation = field present or
+   an `errors` policy in scope — the session root's default seeds one
+   everywhere, so stop-on-error stays the universal default). Full
+   aspect citizenship: `nbrs describe`, composition telemetry, per-op
+   override.
+2. **Its happy path is one branch**: `match inner.execute(..).await`
+   — `Ok` passes through untouched; the pattern match, verb chain,
+   tallies, error capture, and stop/fail effects run only in the `Err`
+   arm. The verbs never needed to be on the call path: they consume a
+   discriminant (`Result`) the caller already branches on.
+3. **Verbs stay uniform INSIDE the compiled policy.** The
+   `nbrs-errorhandler` `ErrorHandler` chain is already the uniform verb
+   abstraction at the correct altitude — pattern-routed, in-rule-order,
+   extensible by registering one handler impl. Same precedent as the
+   CQL `ModifierChain` (SRD 73): many uniform aspects, ONE applied
+   object, no nested layers.
+4. **`tries` is its own conditional wrapper** (innermost). `tries:` is
+   its sigil — the TOTAL attempts an op may make — resolved in order
+   from the op's `tries:` field, the inherited phase/root `tries` (the
+   phase FIELD beats a scope wire: a root param also lands in GK scope
+   as a constant and must not shadow an explicit phase pin), then an
+   in-scope `tries` wire; never unconditionally. Absent or `tries: 1` →
+   no wrapper (single attempt; the `errors` wrapper records the
+   single-attempt `attempt_*` tallies). `tries: 0` → the op FAILS
+   WITHOUT EXECUTING (a synthesised `tries_zero` error, routed like
+   any terminal failure). `tries: N ≥ 2` → up to N total attempts.
+   `errors:` and `tries:` are **orthogonal configuration surfaces**.
+5. **The injection bridge**: the `errors` wrapper resolves *before*
+   the tries wrapper's activation is evaluated. A `retry` / `retry(N)`
+   verb in the compiled spec injects a `tries` budget (`N` additional
+   → `N+1` total; bare `retry` → a small default) when the op declares
+   none — so `errors: "Timeout:retry,warn"` still activates retries
+   without coupling the surfaces. An explicit `tries` anywhere in
+   scope WINS over the verb's budget.
+6. **The AggregateGuard (`rate>N`) stays at the phase shell** — it is
+   an aggregate over the body, not an op-terminal observation.
+7. **Shell-level handler wiring is UNCHANGED.** This part governs only
+   how the OP-level handler stacks into op dispatch. The
+   `ErrorPolicy::resolve_child` chain (session → scenario → phase, Part
+   3a), the phase shell's guard-driven drain decision, and the scenario
+   shell's `ShellHandler` all keep their existing wiring; the op wrapper
+   *consumes* the phase policy from that chain as its inheritance
+   parent. Promoting a SHELL's handler into a wrapper-like layer is a
+   separate, future exercise (the SRD-32a `WrapperLevel` metadata is the
+   hook), not implied here.
+
+### Cost accounting
+
+Non-retrying op: `errors` (+1) replaces the previously-unconditional
+retry wrapper (−1) — net zero layers; the fiber-loop inline error
+block relocates, not duplicates. Retrying op (`tries ≥ 2`): +1 layer,
+only where retries were asked for.
+
+---
+
 ## Part 4 — Stop propagation and abort
 
 When a handler emits `stop`/`fail`, the shell must (a) stop dispatching
@@ -385,19 +483,25 @@ Incremental; each step compiles and is independently testable.
    concurrent with a fast-failing `boom` runs 1 of 20 ops, not 20).
 5. **Stanza shell.** ⏳ PENDING. Fold the per-cycle stanza error
    handling into the same shape so the stanza's `errors:` configures it.
-5a. **Op handler (per-op `errors:`).** ✅ DONE. Each op dispenser carries
-   its own resolved `ErrorPolicy`. At activity build every op template's
-   `errors:` override resolves a child of the phase policy (`activity.rs`,
-   `op_error_policies` index-aligned with `dispensers`): value-equality
-   shared across ops that declare the same spec, inherited *by reference*
-   (the phase policy `Arc` itself) when the op declares none. The terminal
-   error of an op is ALWAYS routed through ITS entry's router
-   (`executor_task`), so a lenient op (`errors: ".*:warn,counter"`) never
-   softens its siblings and a strict one never hardens them. Only the
-   op-error ROUTER is per-op; the aggregate rate breach
-   (`error_policy.guard`) stays the phase shell's. The op-level `errors:`
-   surface parses as a per-op activity-param (`nbrs-workload` `parse.rs`),
-   excised from op fields so it never reaches the adapter. Tested:
+5a. **Op handler (per-op `errors:`).** ✅ DONE, WRAPPER FORM (Part 3b)
+   ✅ DONE. Each op dispenser carries its own resolved `ErrorPolicy`:
+   at activity build every op template's `errors:` override resolves a
+   child of the phase policy — value-equality shared across ops that
+   declare the same spec, inherited *by reference* (the phase policy
+   `Arc` itself) when the op declares none. The terminal error of an op
+   is ALWAYS routed through ITS OWN policy, so a lenient op
+   (`errors: ".*:warn,counter"`) never softens its siblings and a strict
+   one never hardens them. Only the op-error ROUTER is per-op; the
+   aggregate rate breach (`error_policy.guard`) stays the phase
+   shell's. The op-level `errors:` surface parses as a per-op
+   activity-param (`nbrs-workload` `parse.rs`), excised from op fields
+   so it never reaches the adapter. Per Part 3b the handler is the
+   OUTERMOST `ErrorHandlerDispenser` wrapper
+   (`nbrs-runtime/src/wrappers/errors.rs`, replacing the fiber
+   loop's inline block), and the retry wrapper is the CONDITIONAL
+   `tries` wrapper (`wrappers/tries.rs` — total-attempts sigil,
+   orthogonal to `errors:`, bridged by `retry`/`retry(N)` verb
+   injection; `nbrs-runtime/tests/tries_wrapper.rs`). Tested:
    `nbrs/tests/error_handlers.rs::op_level_errors_overrides_scope_policy`
    + `…::op_level_errors_does_not_leak_to_siblings`. (The op-*daemon* path
    keeps its Part 6 daemon-outcome lifecycle — a `Failed` bubbles to the

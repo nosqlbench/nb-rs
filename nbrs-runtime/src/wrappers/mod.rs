@@ -32,8 +32,10 @@ pub mod metrics;
 pub use metrics::MetricsDispenser;
 pub mod traverse;
 pub use traverse::{TraversingDispenser, TraversalStats};
-pub mod retry;
-pub use retry::RetryDispenser;
+pub mod tries;
+pub use tries::TriesDispenser;
+pub mod errors;
+pub use errors::ErrorHandlerDispenser;
 
 // All wrappers now live in their own submodules:
 //   if / throttle.rs / poll / result.rs /

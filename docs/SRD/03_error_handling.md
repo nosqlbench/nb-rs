@@ -83,20 +83,28 @@ errors="HttpStatus404:ignore;HttpStatus503:retry,warn;.*:warn,count"
 
 ## Retry Semantics
 
+> **Superseded surface (SRD-82 Part 3b):** retries are now owned by the
+> CONDITIONAL `tries` wrapper — `tries:` (op field / scope wire / phase
+> / root param) is the TOTAL attempts an op may make, and with no
+> budget in scope the wrapper is not constructed (single attempt). The
+> `errors:` spec's `retry` / `retry(N)` verb participates only by
+> injecting a `tries` budget at dispenser build. The flow below is the
+> original per-attempt narrative, kept for the invariants that still
+> hold.
+
 ```
 execute(cycle, fields) → Err(Op(AdapterError))
-  → router.handle_error(error_name, ...) → retryable?
-    → YES and retries < max_retries: retry with SAME fields
-    → NO or max_retries exceeded: record failure, continue
-
+  → adapter marked retryable?
+    → YES and attempts < tries: retry with SAME fields
+    → NO or tries exhausted: record failure, route via errors: policy
 execute(cycle, fields) → Err(Adapter(AdapterError))
-  → router.handle_error(...) → NEVER retry
+  → NEVER retry
 ```
 
 Key properties:
 - Same fields: Polydat state not re-evaluated on retry
 - Same dispenser: same prepared statement, same bind plan
-- Bounded: `max_retries` default 3
+- Bounded: `tries` = total attempts; absent → single attempt
 - Scope-gated: only Op errors retryable
 
 ---

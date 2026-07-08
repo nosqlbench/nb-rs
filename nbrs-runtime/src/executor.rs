@@ -118,10 +118,13 @@ pub struct ExecCtx {
     pub concurrency: usize,
     pub rate: Option<f64>,
     pub error_spec: String,
-    /// Workload-root retry budget (the `retries` param) — additional attempts
-    /// beyond the first on an adapter-retryable op error. Each phase resolves
-    /// its effective budget as its own `retries:` over this. `0` = no retry.
-    pub retries: u32,
+    /// Workload-root total-attempts budget (the `tries` param). Each phase
+    /// resolves its effective budget as its own `tries:` over this; ops may
+    /// override with their own `tries:` field. `None` = no budget anywhere →
+    /// the conditional tries wrapper is not constructed (single attempt,
+    /// SRD-82 Part 3b). `Some(0)` = ops fail without executing; `Some(1)` =
+    /// explicit single-attempt.
+    pub tries: Option<u32>,
     /// Session-wide error-rate circuit-breaker default (Feature B).
     /// Each phase resolves its effective threshold as its own
     /// `error_rate_max:` over this. `None` = disabled by default.
@@ -4718,10 +4721,11 @@ async fn run_phase_inner(
                 }
             })
             .collect(),
-        // Retry budget for the innermost RetryDispenser: the phase's own
-        // `retries:` wins, else the workload-root `retries` param (0 = no
-        // retry). `retries` retries adapter-retryable op errors (timeouts).
-        max_retries: phase.retries.unwrap_or(ctx.retries),
+        // Total-attempts budget inherited by this phase's ops: the phase's
+        // own `tries:` wins, else the workload-root `tries` param. `None`
+        // when neither is set — an op without its own `tries:` field then
+        // runs WITHOUT the tries wrapper (single attempt, SRD-82 Part 3b).
+        tries: phase.tries.or(ctx.tries),
         stanza_concurrency: 1,
         source_factory,
         // Same plumbing as the workload-level activity build —

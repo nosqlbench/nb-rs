@@ -187,6 +187,12 @@ impl std::error::Error for ResolveError {}
 /// tests pin this exact sequence to keep the migration
 /// byte-identical.
 pub const DEFAULT_ORDER: &[&str] = &[
+    // `tries` is the ABSOLUTE INNERMOST layer (SRD-82 Part 3b): it wraps the
+    // raw adapter dispenser directly, owning the attempt loop + per-attempt
+    // panic catch. Hand-placed in the cascade (before the plan loop); this
+    // slot keeps the PLAN's order aligned with the runtime truth when an
+    // op's `tries:` field puts it in the plan.
+    "tries",
     "traverse",
     "delay",
     "validate",
@@ -222,7 +228,7 @@ pub const DEFAULT_ORDER: &[&str] = &[
     // explicit slot here is the resolver's tiebreaker for any
     // future wrapper that DRYRUN doesn't yet forbid.
     "dryrun",
-    // `fields` is intentionally LAST — outer of everything
+    // `fields` is intentionally outer of everything
     // including dryrun — so under `dryrun=fields` the fields
     // wrapper's pre-execute render runs BEFORE DRYRUN's
     // short-circuit (the fields render+println is the surface
@@ -230,6 +236,15 @@ pub const DEFAULT_ORDER: &[&str] = &[
     // been sent" output). Innermost-first list ordering
     // means later index = outer position at execute time.
     "fields",
+    // `errors` is the ABSOLUTE OUTERMOST layer (SRD-82 Part 3b):
+    // it observes the stack's one terminal outcome, routes it
+    // through the op's resolved ErrorPolicy, and applies the
+    // stop/fail effects. Hand-placed in the cascade (after the
+    // plan loop, mirroring the hand-placed innermost retry); this
+    // slot keeps the PLAN's order — telemetry, describe, override
+    // validation — aligned with the runtime truth. Outside dryrun
+    // / fields it is inert on their Ok short-circuits.
+    "errors",
 ];
 
 /// Resolves a [`WrapperPlan`] for a parsed op template.

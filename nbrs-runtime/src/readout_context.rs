@@ -486,7 +486,8 @@ pub fn build_inline_refresh_context(
         .saturating_sub(progress_metrics.skips_total.get());
     let consumed = finished;
     // SRD-91 attempt-level tallies, owned by the innermost
-    // `RetryDispenser` (always present). Both counters are
+    // `TriesDispenser` (or the error-handler wrapper for
+    // single-attempt ops). Both counters are
     // observed when an attempt RETURNS, so their sum is the
     // resolved-attempt count (in-flight attempts excluded) —
     // `attempt_ok / (attempt_ok + attempt_failed)` is the
@@ -497,7 +498,7 @@ pub fn build_inline_refresh_context(
     let attempt_ok = progress_metrics.attempt_success.count();
     let attempt_failed = progress_metrics.attempt_failure.count();
     // Retries = failed attempts that were NOT the terminal outcome.
-    // `errors_total` went RESULT-level with the RetryDispenser
+    // `errors_total` went RESULT-level with the TriesDispenser
     // refactor, so the old `errors - failed_ops` derivation
     // collapsed to ~0; the per-attempt failure count now lives in
     // `attempt_failure`, and `attempt_failed - failed_ops` is the

@@ -49,7 +49,13 @@ pub struct ActivityConfig {
     /// `ScopedExpr`s alongside the default error-rate condition and
     /// evaluated per tick.
     pub stop_when: Vec<crate::stop_conditions::StopConditionDecl>,
-    pub max_retries: u32,
+    /// Inherited total-attempts budget for this activity's ops (phase
+    /// `tries:` or the workload-root `tries` param). An op's own `tries:`
+    /// field overrides it. `None` = no budget in scope → ops WITHOUT their
+    /// own `tries:` run single-attempt with no tries wrapper (SRD-82 Part 3b
+    /// sigil). `0` = ops fail without executing; `1` = explicit
+    /// single-attempt.
+    pub tries: Option<u32>,
     /// Maximum number of ops within a stanza that execute concurrently.
     pub stanza_concurrency: usize,
     /// Source factory for data-driven phases. When present, fibers pull
@@ -147,7 +153,7 @@ impl Default for ActivityConfig {
             // (runner default is also 0). Matches the effective pre-wrapper
             // behaviour (retries previously required a policy `retry`
             // classification, off by default).
-            max_retries: 0,
+            tries: None,
             stanza_concurrency: 1,
             source_factory: None,
             suppress_status_line: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1290,14 +1296,6 @@ impl Activity {
         };
 
         let mut dispensers: Vec<Arc<dyn OpDispenser>> = Vec::new();
-        // SRD-82 op shell — one resolved error handler per op dispenser,
-        // index-aligned with `dispensers`. Each entry is the op-template's
-        // own `errors:` override (a child of the phase policy) or the phase
-        // policy itself, shared by reference, when the op declares none. The
-        // op's terminal error is ALWAYS routed through its own entry, so an
-        // op can be lenient (`errors: ".*:warn,counter"`) without loosening
-        // its siblings.
-        let mut op_error_policies: Vec<Arc<crate::error_policy::ErrorPolicy>> = Vec::new();
         let mut validation_metrics: Vec<Arc<validation::ValidationMetrics>> = Vec::new();
         // SRD-40b §6/§7 — one `Component` per **op dispenser**
         // (= per op template), not per op execution. Op
@@ -1481,7 +1479,7 @@ impl Activity {
             // map_op return signals the result.
             match adapter.map_op(template, op_builder.canonical_kernel_for_op(&template.name)).await {
                 Ok(d) => {
-                    let raw = Arc::from(d);
+                    let raw: Arc<dyn OpDispenser> = Arc::from(d);
 
                     // Open the per-template scope fixture (SRD 32
                     // §"Init-Time Fixture and Consumer Self-
@@ -1567,16 +1565,64 @@ impl Activity {
                         }
                     }
 
-                    // Retry wrapper — THE innermost wrapper, wrapping the raw
-                    // adapter dispenser directly. It owns the attempt loop, the
-                    // `attempt_*` counters, the per-attempt panic catch, and the
-                    // retry budget (`retries` = config.max_retries). Everything
-                    // above it (traversal, result, metrics, the fiber loop's
-                    // result-level accounting) sees ONE terminal outcome. See
-                    // `crate::wrappers::retry`.
-                    let raw = crate::wrappers::RetryDispenser::wrap(
-                        raw, activity.config.max_retries, activity.metrics.clone(),
-                    );
+                    // SRD-82 Part 3b — resolve THIS op's error policy BEFORE
+                    // the retry activation check, so the policy's `retry` verb
+                    // can inject a retry budget (the errors→retry bridge). An
+                    // op-template `errors:` derives a child of the phase
+                    // policy (value-equality shared across ops declaring the
+                    // same spec); no override inherits the phase policy by
+                    // reference. The policy drives the OUTERMOST error-handler
+                    // wrapper placed after the plan cascade below.
+                    let op_error_policy = match template.params.get("errors")
+                        .and_then(|v| v.as_str())
+                    {
+                        Some(spec) => activity.error_policy.resolve_child(Some(
+                            crate::error_policy::PolicyConfig::new(
+                                spec, activity.config.error_rate_max,
+                            ),
+                        )),
+                        None => activity.error_policy.clone(),
+                    };
+
+                    // Tries wrapper — CONDITIONAL innermost wrapper (SRD-82
+                    // Part 3b): `tries:` is its sigil, the TOTAL attempts the
+                    // op may make. A budget resolves from, in order: the op's
+                    // own `tries:` field; the inherited phase/root `tries`
+                    // (config — the phase FIELD must beat a scope wire, since
+                    // a workload-root `tries` param also lands in GK scope as
+                    // a constant and would otherwise shadow an explicit
+                    // phase-level `tries: 1` pin); a `tries` wire defined in
+                    // the op's scope (bindings); or a `retry`/`retry(N)` verb
+                    // in the op's error policy (the injection bridge — N
+                    // additional attempts → N+1 total; `errors:` and `tries:`
+                    // stay orthogonal surfaces). No budget anywhere OR
+                    // `tries: 1` → NO wrapper → single attempt (the
+                    // error-handler wrapper records the tallies). `tries: 0`
+                    // constructs the wrapper in its fail-without-executing
+                    // mode. When constructed it owns the attempt loop, the
+                    // `attempt_*` counters, and the per-attempt panic catch.
+                    let op_tries: Option<u32> = template.params.get("tries")
+                        .and_then(|v| match v {
+                            serde_json::Value::Number(n) => n.as_u64().map(|n| n as u32),
+                            serde_json::Value::String(s) => s.trim().parse::<u32>().ok(),
+                            _ => None,
+                        })
+                        .or(activity.config.tries)
+                        .or_else(|| raw.canonical_kernel()
+                            .and_then(|k| k.lookup("tries"))
+                            .and_then(|v| match v {
+                                polydat::ast::Value::U64(n) => Some(n as u32),
+                                _ => None,
+                            }))
+                        .or_else(|| op_error_policy.router.retry_verb_budget()
+                            .map(|additional| additional.saturating_add(1)));
+                    let has_tries_wrapper = matches!(op_tries, Some(n) if n != 1);
+                    let raw = match op_tries {
+                        Some(n) if n != 1 => crate::wrappers::TriesDispenser::wrap(
+                            raw, n, activity.metrics.clone(),
+                        ),
+                        _ => raw,
+                    };
 
                     // Wrap with traversal. Traversal does not read Polydat
                     // values; no fixture registration needed. Always present per
@@ -1917,6 +1963,20 @@ impl Activity {
                                     false
                                 }
                             }
+                            crate::wrappers::errors::NAME => {
+                                // SRD-82 Part 3b — hand-placed OUTERMOST after
+                                // this loop (mirrors the hand-placed innermost
+                                // tries). The plan entry records presence for
+                                // telemetry / describe only.
+                                false
+                            }
+                            crate::wrappers::tries::NAME => {
+                                // SRD-82 Part 3b — hand-placed INNERMOST before
+                                // this loop (the sigil resolution above). The
+                                // plan entry records presence for telemetry /
+                                // describe only.
+                                false
+                            }
                             other => {
                                 crate::diag!(crate::observer::LogLevel::Error,
                                     "error: op '{}': resolver returned wrapper `{}` \
@@ -1941,26 +2001,29 @@ impl Activity {
                     // constructs in full (connect, prepare, gather
                     // metadata); only the per-cycle outbound call
                     // is short-circuited.
-                    dispensers.push(current);
-
-                    // SRD-82 — resolve THIS op's error handler and pin it
-                    // alongside the dispenser. An op-template `errors:` derives
-                    // a child policy from the phase policy (value-equality
-                    // shared across ops that declare the same spec); no
-                    // override inherits the phase policy by reference. Only the
+                    // SRD-82 Part 3b — the error handler is the OUTERMOST
+                    // wrapper, hand-placed after the plan cascade (mirroring
+                    // the hand-placed innermost retry wrapper), driven by the
+                    // policy resolved BEFORE the retry check above. Only the
                     // op-error ROUTER is per-op — the aggregate rate breach
-                    // stays the phase shell's `error_policy.guard`.
-                    let op_error_policy = match template.params.get("errors")
-                        .and_then(|v| v.as_str())
-                    {
-                        Some(spec) => activity.error_policy.resolve_child(Some(
-                            crate::error_policy::PolicyConfig::new(
-                                spec, activity.config.error_rate_max,
-                            ),
-                        )),
-                        None => activity.error_policy.clone(),
-                    };
-                    op_error_policies.push(op_error_policy);
+                    // stays the phase shell's `error_policy.guard`. The
+                    // wrapper observes the stack's ONE terminal outcome per
+                    // cycle: routes it, tallies result-level error counters,
+                    // captures phase errors, and applies stop/fail effects.
+                    // Its happy path is a single branch. When no retry
+                    // wrapper is present it also records the single-attempt
+                    // `attempt_*` tallies (`records_attempts`).
+                    let current = crate::wrappers::ErrorHandlerDispenser::wrap(
+                        current,
+                        op_error_policy,
+                        activity.metrics.clone(),
+                        activity.phase_errors.clone(),
+                        activity.stop_flag.clone(),
+                        activity.stop_reason.clone(),
+                        template.name.clone(),
+                        /* records_attempts */ !has_tries_wrapper,
+                    );
+                    dispensers.push(current);
 
                     // Seal the per-template fixture. The PullPlan
                     // drives cycle-time reads for every wrapper that
@@ -1978,9 +2041,6 @@ impl Activity {
         let dispensers = Arc::new(dispensers);
         // Register dispensers for adapter-specific metrics capture
         activity.metrics.set_dispensers(dispensers.clone());
-        // SRD-82 — the per-op error handlers travel with the dispensers into
-        // the fiber pool (index-aligned; one entry per op template).
-        let op_error_policies = Arc::new(op_error_policies);
         let pull_plans_per_template = Arc::new(pull_plans_per_template);
 
         // `dryrun=dispenser` exit point. Every op template's
@@ -2068,7 +2128,6 @@ impl Activity {
         let pool_spawner: crate::fiber_pool::FiberSpawner = {
             let activity = activity.clone();
             let dispensers_outer = dispensers.clone();
-            let op_error_policies_outer = op_error_policies.clone();
             let pull_plans_outer = pull_plans_per_template.clone();
             let op_builder_outer = op_builder.clone();
             let rate_limiter_outer = rate_limiter.clone();
@@ -2083,7 +2142,6 @@ impl Activity {
             Box::new(move |stop: crate::fiber_pool::StopFlag| {
                 let activity = activity.clone();
                 let dispensers = dispensers_outer.clone();
-                let op_error_policies = op_error_policies_outer.clone();
                 let pull_plans = pull_plans_outer.clone();
                 let op_builder = op_builder_outer.clone();
                 let rate_limiter = rate_limiter_outer.clone();
@@ -2114,7 +2172,7 @@ impl Activity {
                         phase_controls,
                         async move {
                             executor_task(
-                                activity, dispensers, op_error_policies, pull_plans,
+                                activity, dispensers, pull_plans,
                                 op_builder, rate_limiter, stop,
                                 daemon_pool, phase_arc_for_exec,
                             ).await;
@@ -2466,7 +2524,7 @@ impl Activity {
             // attempts that were NOT terminal, i.e. `attempt_failure
             // - failed_ops`; the old `errors_total - failed_ops`
             // collapsed to ~0 once `errors_total` went result-level
-            // with the RetryDispenser refactor.
+            // with the TriesDispenser refactor.
             let successes = activity.metrics.result_success.count();
             let errors = activity.metrics.errors_total.get();
             let elapsed = start_time.elapsed().as_secs_f64();
@@ -2941,7 +2999,7 @@ async fn daemon_dispatch(
     activity.metrics.service_time.record(service_nanos);
     activity.metrics.response_time.record(service_nanos);
     // SRD-91 op-outcome taxonomy for daemon dispatch. The `attempt_*`
-    // counters are owned by the innermost `RetryDispenser` in the op's
+    // counters are owned by the innermost `TriesDispenser` in the op's
     // wrapper stack (which this daemon op runs through, same as a foreground
     // op), so only the RESULT-level tallies are recorded here — no
     // double-count. Cancelled / TimedOut are shutdown outcomes tracked via
@@ -2951,9 +3009,11 @@ async fn daemon_dispatch(
             activity.metrics.result_total.inc();
             activity.metrics.result_success.observe(service_nanos);
         }
-        crate::daemon_pool::DaemonExit::Errored(e) => {
-            activity.metrics.errors_total.inc();
-            activity.metrics.count_error_type(&e.error().error_name);
+        crate::daemon_pool::DaemonExit::Errored(_) => {
+            // `errors_total` / per-type tallies + policy effects already
+            // ran in the OUTERMOST `ErrorHandlerDispenser` of the daemon
+            // op's own stack (SRD-82 Part 3b) — only the result-level
+            // outcome is recorded here.
             activity.metrics.result_total.inc();
             activity.metrics.result_failure.observe(service_nanos);
         }
@@ -2995,11 +3055,6 @@ async fn poll_daemon_stop(
 async fn executor_task(
     activity: Arc<Activity>,
     dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
-    // SRD-82 — per-op error handlers, index-aligned with `dispensers`. The
-    // terminal error of the op at `template_idx` is routed through
-    // `op_error_policies[template_idx]` (its own `errors:` override or the
-    // inherited phase policy).
-    op_error_policies: Arc<Vec<Arc<crate::error_policy::ErrorPolicy>>>,
     pull_plans: Arc<Vec<crate::fixture::PullPlan>>,
     op_builder: Arc<crate::synthesis::OpBuilder>,
     // Optional activity-level rate limiter. `acquire` fires
@@ -3467,11 +3522,17 @@ async fn executor_task(
             exec_ctx.run_len = run_len;
             let service_start = Instant::now();
             // The op runs through the wrapper stack ONCE. The innermost
-            // `RetryDispenser` owns the attempt loop, the `attempt_*` counters,
-            // the retry budget, and the per-attempt panic catch, and hands back
-            // exactly ONE terminal outcome. A BACKSTOP `catch_unwind` here
-            // guards a panic in an OUTER wrapper (traverse / result / metrics),
-            // so a panic can never escape the fiber wherever it originates.
+            // `TriesDispenser` (when the op has a `tries` budget) owns the
+            // attempt loop, `attempt_*` counters,
+            // and the per-attempt panic catch; the OUTERMOST
+            // `ErrorHandlerDispenser` (SRD-82 Part 3b) owns the whole-stack
+            // panic backstop and the terminal-error handling — policy
+            // routing, `errors_total` / per-type tallies, phase-error
+            // capture, and the stop/fail effects. This loop sees exactly ONE
+            // terminal outcome per cycle and keeps only the result-level
+            // accounting. The residual `catch_unwind` guards a panic in the
+            // error wrapper's OWN routing code (a runtime bug, not an op
+            // failure): keep the fiber alive, mark the phase stopped.
             let outcome: Result<crate::adapter::OpResult, crate::adapter::ExecutionError> = {
                 use futures::FutureExt as _;
                 match std::panic::AssertUnwindSafe(
@@ -3484,6 +3545,17 @@ async fn executor_task(
                             .map(|s| (*s).to_string())
                             .or_else(|| payload.downcast_ref::<String>().cloned())
                             .unwrap_or_else(|| "<non-string panic payload>".into());
+                        activity.metrics.errors_total.inc();
+                        activity.metrics.count_error_type("panic");
+                        activity.stop_flag.store(true, Ordering::Relaxed);
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(format!(
+                                "[panic] op '{}' at cycle {}: {msg}",
+                                template.name, cycle,
+                            ));
+                        }
                         Err(crate::adapter::ExecutionError::Op(
                             crate::adapter::AdapterError {
                                 error_name: "panic".into(),
@@ -3495,82 +3567,9 @@ async fn executor_task(
                 }
             };
             let service_nanos = service_start.elapsed().as_nanos() as u64;
-            // RESULT-level handling — ONCE, on the terminal outcome. Attempt
-            // accounting (including any retries) already happened inside the
-            // wrapper; here we classify the terminal failure through the error
-            // policy and tally the per-OP result. `errors_total` /
-            // `count_error_type` are now RESULT-level (one per terminal
-            // failure), not per-attempt.
             let (success, skipped) = match outcome {
                 Ok(result) => (true, result.skipped),
-                Err(e) => {
-                    let inner = e.error();
-                    // SRD-82 — route the terminal error through the handler
-                    // pinned to THIS op's dispenser (its own `errors:` override
-                    // or the inherited phase policy), never a phase-global one,
-                    // so a lenient op (`.*:warn,counter`) doesn't soften its
-                    // siblings and a strict one doesn't harden them.
-                    let op_error_policy = &op_error_policies[template_idx];
-                    let detail = op_error_policy.router.handle_error(
-                        &inner.error_name, &inner.message, cycle, service_nanos,
-                    );
-                    activity.metrics.errors_total.inc();
-                    activity.metrics.count_error_type(&detail.name);
-
-                    // Capture the terminal error into the phase's structured
-                    // error buffer so the `error_readout` (default phase-end
-                    // body alongside `phase_outcome`) can render them as one
-                    // block. Cap at PHASE_ERROR_CAPTURE_CAP so a runaway phase
-                    // doesn't unbound the buffer.
-                    if let Ok(mut errs) = activity.phase_errors.lock() {
-                        const PHASE_ERROR_CAPTURE_CAP: usize = 64;
-                        if errs.len() < PHASE_ERROR_CAPTURE_CAP {
-                            let op_template = dispenser.describe();
-                            let op_resolved = dispenser.describe_resolved(exec_ctx.wires);
-                            errs.push(crate::phase_outcome::PhaseErrorDetail {
-                                class: inner.error_name.clone(),
-                                message: inner.message.clone(),
-                                op_name: Some(template.name.clone()),
-                                cycle: Some(cycle),
-                                op_template,
-                                op_resolved,
-                                at_nanos: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_nanos() as u64)
-                                    .unwrap_or(0),
-                                retryable: detail.is_retryable(),
-                            });
-                        }
-                    }
-
-                    if detail.should_stop {
-                        activity.stop_flag.store(true, Ordering::Relaxed);
-                        // Capture the first stopping error so the phase-level
-                        // error surfaces a real diagnostic — op-template name,
-                        // cycle, and the dispenser's `describe()` (the actual
-                        // statement/request). Lock-and-set-once; later fibers'
-                        // errors don't overwrite.
-                        if let Ok(mut slot) = activity.stop_reason.lock()
-                            && slot.is_none()
-                        {
-                            let op_shape = dispenser.describe()
-                                .map(|d| format!("\n    op-template: {d}"))
-                                .unwrap_or_default();
-                            let op_resolved = dispenser
-                                .describe_resolved(exec_ctx.wires)
-                                .map(|d| format!("\n    op-resolved: {d}"))
-                                .unwrap_or_default();
-                            *slot = Some(format!(
-                                "[{}] op '{}' at cycle {}: {}{op_shape}{op_resolved}",
-                                inner.error_name,
-                                template.name,
-                                cycle,
-                                inner.message,
-                            ));
-                        }
-                    }
-                    (false, false)
-                }
+                Err(_) => (false, false),
             };
 
             // Per-OP totals (SRD-91): `cycles_total` counts every op
@@ -3587,7 +3586,7 @@ async fn executor_task(
                 activity.metrics.service_time.record(service_nanos);
                 activity.metrics.wait_time.record(wait_nanos);
                 activity.metrics.response_time.record(service_nanos + wait_nanos);
-                // `tries_histogram` is recorded by the RetryDispenser (it owns
+                // `tries_histogram` is recorded by the TriesDispenser (it owns
                 // the attempt count).
                 if success {
                     activity.metrics.result_success.observe(service_nanos);
@@ -3856,7 +3855,9 @@ mod tests {
             cycles: 1,
             concurrency: 1,
             error_spec: "TransientError:retry,warn;.*:stop".into(),
-            max_retries: 5,
+            // Total-attempts budget (the `tries` sigil): 6 total ≈ the old
+            // `retries: 5` additional-attempts budget.
+            tries: Some(6),
             ..Default::default()
         };
         let ops = vec![nbrs_workload::model::ParsedOp::simple("op1", "test")];

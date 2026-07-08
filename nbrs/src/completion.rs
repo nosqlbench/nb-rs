@@ -165,6 +165,9 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
     crate::cli_spec::KvParam { key: "concurrency=", provider: free_form },
     crate::cli_spec::KvParam { key: "rate=", provider: free_form },
     crate::cli_spec::KvParam { key: "errors=", provider: free_form },
+    // SRD-82 Part 3b — workload-root total-attempts budget (the `tries`
+    // sigil for the conditional tries wrapper). Absent → single attempt.
+    crate::cli_spec::KvParam { key: "tries=", provider: free_form },
     crate::cli_spec::KvParam { key: "error_rate_max=", provider: free_form },
     crate::cli_spec::KvParam { key: "tags=", provider: free_form },
     crate::cli_spec::KvParam { key: "filename=", provider: free_form },
