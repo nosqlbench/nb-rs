@@ -348,6 +348,9 @@ struct BenchArgs {
     cycles: u64,
     thread_counts: Vec<u64>,
     explain: bool,
+    /// Print the SRD-105 lattice report (cones formed, residue,
+    /// P2 headroom) for the production (jit=auto) compile.
+    cones: bool,
     engine: Option<String>,
     iters: usize,
     provenance: bool,
@@ -362,6 +365,7 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
         cycles: 100_000,
         thread_counts: vec![1],
         explain: false,
+        cones: false,
         engine: None,
         iters: 5,
         provenance: true,
@@ -388,6 +392,8 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
             ba.thread_counts = parse_range(rest);
         } else if arg == "--explain" {
             ba.explain = true;
+        } else if arg == "--cones" {
+            ba.cones = true;
         } else if let Some(val) = arg.strip_prefix("--engine=") {
             ba.engine = Some(val.to_string());
         } else if let Some(val) = arg.strip_prefix("engine=") {
@@ -412,7 +418,7 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
             eprintln!("  Then:     perf script | inferno-collapse-perf | inferno-flamegraph > flame.svg");
         } else if arg.starts_with('-') {
             eprintln!("error: unrecognized option '{arg}'");
-            eprintln!("  Valid options: cycles=N, threads=RANGE, --cycles N, --threads RANGE, --explain, --engine=NAME");
+            eprintln!("  Valid options: cycles=N, threads=RANGE, --cycles N, --threads RANGE, --explain, --cones, --engine=NAME");
             std::process::exit(1);
         } else {
             ba.exprs.push(arg.clone());
@@ -652,6 +658,29 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
         explain_source(&source);
     }
 
+    // SRD-105 lattice report: what extraction actually did for the
+    // production (jit=auto) form of this expression — cones formed,
+    // interpreter residue, and P2 headroom (the standing evidence
+    // feed for the P2-at-cone-boundaries decision).
+    if args.cones {
+        let mut asm = match compile_polydat_to_assembler(&source) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return None;
+            }
+        };
+        asm.set_jit_mode(polydat::JitMode::Auto);
+        match asm.compile() {
+            Ok(kernel) => {
+                println!("{bold}Lattice (jit=auto){reset}");
+                print!("{}", polydat::compile::lattice::lattice_report(kernel.program()));
+                println!();
+            }
+            Err(e) => eprintln!("error: {e:?}"),
+        }
+    }
+
     let scenario = parse_bench_annotations(&source);
 
     let mut bench_node_count = 0usize;
@@ -660,9 +689,13 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
     let mut bench_hybrid_ns = 0.0f64;
     let mut bench_p3_ns = 0.0f64;
 
-    // Compact graph summary
-    if let Ok(asm) = compile_polydat_to_assembler(&source)
-        && let Ok(kernel) = asm.compile() {
+    // Compact graph summary — structural (jit=off) shape; the
+    // --cones lattice section reports the fused production view.
+    if let Ok(mut asm) = compile_polydat_to_assembler(&source)
+        && let Ok(kernel) = {
+            asm.set_jit_mode(polydat::JitMode::Off);
+            asm.compile()
+        } {
             let program = kernel.program();
             bench_node_count = program.node_count();
             let n_inputs = program.input_names().len();
@@ -734,7 +767,10 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
                 eprintln!("  {bold}compile error:{reset} {e}");
                 return None;
             }
-            Ok(asm) => if let Ok(kernel) = asm.compile() {
+            Ok(mut asm) => if let Ok(kernel) = {
+                asm.set_jit_mode(polydat::JitMode::Off);
+                asm.compile()
+            } {
                 let program = kernel.program().clone();
                 let output_name = program.output_names().first()
                     .map(|s| s.to_string()).unwrap_or_else(|| "out".to_string());
@@ -1123,7 +1159,7 @@ fn print_comparison_table(results: &[ExprResult]) {
 pub fn bench_command(args: &[String]) {
     let topic = args.first().map(|s| s.as_str()).unwrap_or("");
     if topic != "wiring" {
-        eprintln!("Usage: nbrs bench wiring <expr> [cycles=N] [threads=RANGE]");
+        eprintln!("Usage: nbrs bench wiring <expr> [cycles=N] [threads=RANGE] [--explain] [--cones]");
         eprintln!("  Example: nbrs bench wiring \"hash_range(hash(cycle), 1000)\"");
         eprintln!("  Example: nbrs bench wiring \"weighted_pick(hash(cycle), \\\"10:0.5;20:0.3\\\")\" threads=1:8*2");
         eprintln!();
@@ -1134,7 +1170,7 @@ pub fn bench_command(args: &[String]) {
     let ba = parse_bench_args(&args[1..]);
 
     if ba.exprs.is_empty() {
-        eprintln!("Usage: nbrs bench Polydat <expr|file.polydat ...> [cycles=N] [threads=RANGE] [--explain]");
+        eprintln!("Usage: nbrs bench Polydat <expr|file.polydat ...> [cycles=N] [threads=RANGE] [--explain] [--cones]");
         eprintln!("  Example: nbrs bench Polydat \"hash_range(hash(cycle), 1000)\"");
         eprintln!("  Example: nbrs bench Polydat tests/bench_graphs/*.polydat --engine=all");
         return;
