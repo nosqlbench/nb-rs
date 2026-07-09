@@ -364,7 +364,19 @@ mod jit_impl {
                 continue;
             };
             match build_cone(dag, &plan, &mut nodes_opt) {
-                Ok(cone) => cones.push((plan, cone)),
+                Ok(cone) => {
+                    // Formation is diagnosable state too — the B2
+                    // sweep and cone-aware bench reporting key on
+                    // this line to verify extraction actually ran.
+                    crate::library::support::audit::debug(&format!(
+                        "jit cone: fused {} members ({} boundary in, {} out): {}",
+                        plan.members.len(),
+                        plan.boundary_in.len(),
+                        plan.boundary_out.len(),
+                        cone.meta().name,
+                    ));
+                    cones.push((plan, cone));
+                }
                 // Members were restored by build_cone; the cone
                 // stays on the interpreter (SRD-105 fallback rule:
                 // a JIT failure never fails a compile). Eligibility

@@ -261,6 +261,22 @@ Decisions, each from the numbers:
 - **U128 two-slot ABI: PARKED.** No workload demand; U128 nodes are
   interpreter-only and ineligible, which is correct and safe.
 
+## Scale characteristics (measured 2026-07-09, catchup B1/B2)
+
+- **Compile cost**: end-to-end `dryrun=cycle` wall time, `jit=off`
+  vs `auto`, min of 5 runs — extraction + Cranelift codegen adds at
+  most ~4 ms per workload (math_and_bitwise, 10 cones ≈ 0.4 ms per
+  cone) and is within noise (±1 ms) for larger workloads
+  (scope_coverage, full_cql_vector). **No cone-compile cache is
+  warranted.**
+- **Oversized components**: a force-mode sweep of all 58 example +
+  bundled workloads formed 100 cones with ZERO skip events — the
+  >64-boundary-input case never fires in the corpus, so the
+  re-split remains unimplemented by evidence, not neglect.
+  Formation and skip events are session-log debug lines
+  (`jit cone: fused …` / `jit cone: leaving …`), so the sweep is
+  repeatable as workloads evolve.
+
 ## Rejected alternatives
 
 - **Whole-kernel P2/P3 selection** (`auto_compile_p2/p3` promoted to the
