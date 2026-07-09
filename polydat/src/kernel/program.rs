@@ -1226,6 +1226,21 @@ impl PolydatProgram {
     /// §"Init Binding Contract" Plan A) is violated; non-fatal
     /// warnings (config-wire / non-determinism / implicit coercion)
     /// continue to be log-emitted and don't surface here.
+    /// True when no node declares `Purity::Nondeterministic`: the
+    /// program's outputs are a pure function of its inputs, so two
+    /// kernels compiled from the same source produce bit-identical
+    /// pulls. The SRD-105 differential battery keys on this to
+    /// decide whether a force-compiled twin can be compared
+    /// value-for-value against the interpreter form.
+    pub fn is_deterministic(&self) -> bool {
+        !self.nodes.iter().any(|n| {
+            matches!(
+                n.purity(),
+                crate::ast::Purity::Nondeterministic { .. }
+            )
+        })
+    }
+
     pub fn fold_init_constants(&mut self) -> Result<usize, String> {
         self.fold_init_constants_impl(None, false)
     }

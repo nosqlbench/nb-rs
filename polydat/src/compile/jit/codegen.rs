@@ -230,9 +230,23 @@ pub(crate) fn invoke_with_catch<F: FnOnce()>(f: F) {
 /// Extern function: longjmp back to the enclosing wrapper with
 /// an `is_positive` violation message. Called from JIT code on
 /// the predicate-fail path.
-extern "C" fn jit_is_positive_fail(value: u64) -> u64 {
+extern "C" fn jit_is_positive_fail(value: u64, name_ptr: u64, name_len: u64) -> u64 {
+    // The pointer targets the `name` const in the node's NodeMeta;
+    // the node is kept alive for the life of the compiled code by
+    // `JitCore::_nodes` / the cone node's `_members`, so the str
+    // data is stable. (ptr, len) == (0, 0) means the default name.
+    let name = if name_ptr != 0 {
+        unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                name_ptr as *const u8,
+                name_len as usize,
+            ))
+        }
+    } else {
+        "value"
+    };
     jit_violation_longjmp(
-        format!("is_positive: value must be > 0, got {value}"),
+        format!("is_positive({name}): value must be > 0, got {value}"),
     );
 }
 
@@ -387,8 +401,12 @@ pub(crate) enum JitOp {
     F64Mod,
 
     /// Parameter predicate: pass input[0] through to output[0];
-    /// if input[0] == 0, call `jit_is_positive_fail` (panics).
-    IsPositiveCheck,
+    /// if input[0] == 0, call `jit_is_positive_fail` (panics)
+    /// with the configured predicate name — (ptr, len) into the
+    /// node's meta const, (0, 0) for the default. Message parity
+    /// with the interpreter's `is_positive({name}): …` is asserted
+    /// by the SRD-105 battery.
+    IsPositiveCheck { name_ptr: u64, name_len: u64 },
     /// Parameter predicate: pass input[0] through to output[0];
     /// if input[0] < lo or input[0] > hi, call
     /// `jit_in_range_fail` (panics). Stored as (lo, hi).
@@ -610,7 +628,20 @@ pub(crate) fn classify_node(node: &dyn PolydatNode) -> JitOp {
         // comparison on the happy path, an extern call on the
         // fail path (which panics). The pass-through is a plain
         // store, no function call overhead on the typical cycle.
-        "is_positive" => JitOp::IsPositiveCheck,
+        "is_positive" => {
+            let name = node.meta().ins.iter().find_map(|slot| match slot {
+                crate::ast::Slot::Const { name, value: crate::ast::ConstValue::Str(v) }
+                    if name == "name" => Some(v),
+                _ => None,
+            });
+            match name {
+                Some(v) => JitOp::IsPositiveCheck {
+                    name_ptr: v.as_ptr() as u64,
+                    name_len: v.len() as u64,
+                },
+                None => JitOp::IsPositiveCheck { name_ptr: 0, name_len: 0 },
+            }
+        }
         "in_range" => {
             if consts.len() >= 2 {
                 JitOp::InRangeCheck(consts[0], consts[1])
@@ -861,10 +892,13 @@ fn compile_jit_impl(
         );
     }
 
-    // Declare param-helper extern: jit_is_positive_fail(u64) -> u64
+    // Declare param-helper extern:
+    // jit_is_positive_fail(u64, name_ptr, name_len) -> u64
     // (never returns, but the ABI requires a return type).
     let is_positive_fail_id = {
         let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
         module.declare_function("jit_is_positive_fail", Linkage::Import, &sig)
@@ -1367,7 +1401,7 @@ fn compile_jit_impl(
                     store_slot_f64(&mut builder, buffer_ptr, output_slots[0], result);
                 }
 
-                JitOp::IsPositiveCheck => {
+                JitOp::IsPositiveCheck { name_ptr, name_len } => {
                     // if input == 0: call jit_is_positive_fail (panics);
                     // else: store input → output.
                     // The branch splits to a fail block for the
@@ -1384,7 +1418,9 @@ fn compile_jit_impl(
 
                     builder.switch_to_block(fail_block);
                     builder.seal_block(fail_block);
-                    let _ = builder.ins().call(is_positive_fail_ref, &[val]);
+                    let np = builder.ins().iconst(types::I64, *name_ptr as i64);
+                    let nl = builder.ins().iconst(types::I64, *name_len as i64);
+                    let _ = builder.ins().call(is_positive_fail_ref, &[val, np, nl]);
                     // Extern panics — this is unreachable. Jump to
                     // ok_block to keep the IR well-formed; the
                     // branch never runs in practice.
@@ -2006,7 +2042,7 @@ mod tests {
     #[test]
     fn jit_is_positive_check_passes_positive() {
         let steps = vec![
-            (JitOp::IsPositiveCheck, vec![0], vec![1]),
+            (JitOp::IsPositiveCheck { name_ptr: 0, name_len: 0 }, vec![0], vec![1]),
         ];
         let mut output_map = HashMap::new();
         output_map.insert("out".into(), 1);
@@ -2052,7 +2088,7 @@ mod tests {
         // predicate nodes and return the JIT-lowered op variants
         // rather than falling through to Fallback.
         let p = IsPositive::new("rate".to_string());
-        assert!(matches!(classify_node(&p), JitOp::IsPositiveCheck));
+        assert!(matches!(classify_node(&p), JitOp::IsPositiveCheck { .. }));
 
         let r = InRange::new(1, 100);
         assert!(matches!(classify_node(&r), JitOp::InRangeCheck(1, 100)));
@@ -2134,7 +2170,7 @@ mod tests {
     #[test]
     fn jit_is_positive_violation_is_catchable() {
         let steps = vec![
-            (JitOp::IsPositiveCheck, vec![0], vec![1]),
+            (JitOp::IsPositiveCheck { name_ptr: 0, name_len: 0 }, vec![0], vec![1]),
         ];
         let mut output_map = HashMap::new();
         output_map.insert("out".into(), 1);
@@ -2195,7 +2231,7 @@ mod tests {
 
         // Subsequent legitimate JIT violation is still caught.
         let steps = vec![
-            (JitOp::IsPositiveCheck, vec![0], vec![1]),
+            (JitOp::IsPositiveCheck { name_ptr: 0, name_len: 0 }, vec![0], vec![1]),
         ];
         let mut output_map = HashMap::new();
         output_map.insert("out".into(), 1);
@@ -2216,7 +2252,7 @@ mod tests {
         // the jmp_buf slot is correctly cleared and a
         // subsequent happy-path eval returns normally.
         let steps = vec![
-            (JitOp::IsPositiveCheck, vec![0], vec![1]),
+            (JitOp::IsPositiveCheck { name_ptr: 0, name_len: 0 }, vec![0], vec![1]),
         ];
         let mut output_map = HashMap::new();
         output_map.insert("out".into(), 1);

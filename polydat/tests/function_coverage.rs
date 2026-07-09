@@ -5,40 +5,99 @@
 //! for every registered Polydat function. Tests go through the full DSL
 //! compiler pipeline: source -> assembler -> kernel -> eval.
 
-use polydat::dsl::compile::compile_polydat;
+use polydat::ast::Value;
+use polydat::dsl::compile::{compile_polydat, compile_polydat_to_assembler};
 use polydat::kernel::PolydatKernel;
 
 // ---------------------------------------------------------------------------
 // Helper functions
+//
+// SRD-105 differential harness: every coverage expression compiles
+// TWICE — once on the interpreter (jit=off) and once with forced
+// cone extraction (jit=force) — and every pull is asserted
+// bit-identical across the two. This makes the whole function
+// coverage suite the permanent force-vs-off battery: any new
+// function test is differential by construction. Nondeterministic
+// programs (per `PolydatProgram::is_deterministic`) skip the
+// comparison — two kernel instances legitimately diverge.
 // ---------------------------------------------------------------------------
 
-fn polydat(bindings: &str) -> PolydatKernel {
-    let src = format!("input cycle: u64\n{bindings}");
-    compile_polydat(&src).unwrap_or_else(|e| panic!("failed to compile: {e}\nsource:\n{src}"))
+struct DiffKernel {
+    base: PolydatKernel,
+    forced: Option<PolydatKernel>,
+    coords: Vec<u64>,
 }
 
-fn polydat2(bindings: &str) -> PolydatKernel {
-    let src = format!("input (x: u64, y: u64)\n{bindings}");
-    compile_polydat(&src).unwrap_or_else(|e| panic!("failed to compile: {e}\nsource:\n{src}"))
+impl DiffKernel {
+    fn compile(src: &str) -> Self {
+        let base = compile_polydat(src)
+            .unwrap_or_else(|e| panic!("failed to compile: {e}\nsource:\n{src}"));
+        let forced = {
+            let mut asm = compile_polydat_to_assembler(src)
+                .unwrap_or_else(|e| panic!("failed to re-assemble: {e}\nsource:\n{src}"));
+            asm.set_jit_mode(polydat::JitMode::Force);
+            let k = asm.compile().unwrap_or_else(|e| {
+                panic!("jit=force compile failed: {e:?}\nsource:\n{src}")
+            });
+            k.program().is_deterministic().then_some(k)
+        };
+        Self { base, forced, coords: Vec::new() }
+    }
+
+    fn set_inputs(&mut self, coords: &[u64]) {
+        self.coords = coords.to_vec();
+        self.base.set_inputs(coords);
+    }
+
+    fn pull(&mut self, name: &str) -> Value {
+        let v = self.base.pull(name).clone();
+        if let Some(forced) = &mut self.forced {
+            forced.set_inputs(&self.coords);
+            let fv = forced.pull(name).clone();
+            assert!(
+                value_bits_eq(&v, &fv),
+                "SRD-105 differential: jit=force diverged from the \
+                 interpreter for '{name}': off={v:?} force={fv:?}"
+            );
+        }
+        v
+    }
 }
 
-fn eval_u64(k: &mut PolydatKernel, cycle: u64) -> u64 {
+/// Bit-level Value equality: F64 compares by bits so a NaN
+/// produced identically by both engines counts as equal.
+fn value_bits_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::F64(x), Value::F64(y)) => x.to_bits() == y.to_bits(),
+        _ => a == b,
+    }
+}
+
+fn polydat(bindings: &str) -> DiffKernel {
+    DiffKernel::compile(&format!("input cycle: u64\n{bindings}"))
+}
+
+fn polydat2(bindings: &str) -> DiffKernel {
+    DiffKernel::compile(&format!("input (x: u64, y: u64)\n{bindings}"))
+}
+
+fn eval_u64(k: &mut DiffKernel, cycle: u64) -> u64 {
     k.set_inputs(&[cycle]);
     k.pull("out").as_u64()
 }
 
-fn eval_f64(k: &mut PolydatKernel, cycle: u64) -> f64 {
+fn eval_f64(k: &mut DiffKernel, cycle: u64) -> f64 {
     k.set_inputs(&[cycle]);
     k.pull("out").as_f64()
 }
 
-fn eval_str(k: &mut PolydatKernel, cycle: u64) -> String {
+fn eval_str(k: &mut DiffKernel, cycle: u64) -> String {
     k.set_inputs(&[cycle]);
     k.pull("out").as_str().to_string()
 }
 
 #[allow(dead_code)]
-fn eval_val(k: &mut PolydatKernel, cycle: u64) -> String {
+fn eval_val(k: &mut DiffKernel, cycle: u64) -> String {
     k.set_inputs(&[cycle]);
     k.pull("out").to_display_string()
 }
@@ -807,7 +866,8 @@ fn simplex_2d_deterministic() {
 fn to_json_wraps() {
     let mut k = polydat("out := to_json(cycle)");
     k.set_inputs(&[42]);
-    let j = k.pull("out").as_json();
+    let pulled = k.pull("out");
+    let j = pulled.as_json();
     assert_eq!(j.as_u64(), Some(42));
 }
 
@@ -896,7 +956,8 @@ fn country_names_nonempty() {
 fn u64_to_bytes_length() {
     let mut k = polydat("out := u64_to_bytes(cycle)");
     k.set_inputs(&[42]);
-    let b = k.pull("out").as_bytes();
+    let pulled = k.pull("out");
+    let b = pulled.as_bytes();
     assert_eq!(b.len(), 8, "u64_to_bytes should produce 8 bytes");
 }
 

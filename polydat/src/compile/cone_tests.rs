@@ -208,3 +208,35 @@ fn scope_init_chains_stay_on_the_fold_path() {
     let forced = with_mode(JitMode::Force, || sweep(src, "w", &xs));
     assert_eq!(baseline, forced);
 }
+
+/// SRD-105 panic parity: a predicate violation reports the same
+/// actionable core — predicate name and violation text — whether it
+/// fires on the interpreter or inside a fused cone. The cone adds
+/// its member attribution; it never obscures the original message.
+#[test]
+fn violation_message_parity_between_engines() {
+    let src = "input (x: u64)\n\
+               checked := is_positive(mul(x, 0))\n";
+    let capture = |mode: JitMode| -> String {
+        with_mode(mode, || {
+            let mut k = compile(src);
+            let idx = k.program().find_input("x").expect("input x");
+            k.state().set_input(idx, Value::U64(5));
+            let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                k.pull("checked");
+            }))
+            .expect_err("violation must panic");
+            err.downcast_ref::<String>()
+                .cloned()
+                .or_else(|| err.downcast_ref::<&'static str>().map(|s| (*s).to_string()))
+                .expect("string payload")
+        })
+    };
+    let off = capture(JitMode::Off);
+    let force = capture(JitMode::Force);
+    let core = "is_positive(value): value must be > 0, got 0";
+    assert!(off.contains(core), "interpreter message carries the core: {off}");
+    assert!(force.contains(core), "cone message carries the same core: {force}");
+    assert!(off.contains("in node"), "interpreter enriches: {off}");
+    assert!(force.contains("in node"), "cone enriches: {force}");
+}
