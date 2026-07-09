@@ -1973,6 +1973,31 @@ pub trait PolydatNode: Send + Sync {
         Purity::Pure
     }
 
+    /// A synthetic fusion node's view of the subgraph it stands in
+    /// for (SRD-105 cone extraction). Program-identity hashing
+    /// (`PolydatProgram::canonical_hash`) walks THROUGH fusion
+    /// nodes into this subgraph, so identity is invariant to the
+    /// engine mix: `jit=off` and `jit=auto` compiles of the same
+    /// source hash identically, and resume-skip matching survives
+    /// mode changes. Default `None`: ordinary nodes hash as
+    /// themselves.
+    fn fusion_subgraph(&self) -> Option<FusionSubgraph<'_>> {
+        None
+    }
+}
+
+/// Borrowed view of the subgraph a fusion node replaced. Local
+/// wiring convention: `WireSource::Input(i)` refers to the fusion
+/// node's i-th input wire in the OUTER graph; `NodeOutput(j, p)`
+/// refers to member `j`'s port `p`.
+pub struct FusionSubgraph<'a> {
+    /// The original member nodes, verbatim.
+    pub members: &'a [Box<dyn PolydatNode>],
+    /// Per-member local wiring (see convention above).
+    pub wiring: &'a [Vec<crate::kernel::WireSource>],
+    /// Per fusion output port: `(member index, member port)` —
+    /// the original producer behind that port.
+    pub out_ports: &'a [(usize, usize)],
 }
 
 /// Determine the compile level of a node (works on trait objects).

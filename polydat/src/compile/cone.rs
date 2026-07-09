@@ -31,10 +31,13 @@ pub enum JitMode {
     Force,
 }
 
-/// Process default for [`JitMode`]. SRD-105 Push 3 flips this to
-/// `Auto` once the differential battery gates it in CI; until then
-/// the default engine mix is interpreter-only.
-static DEFAULT_JIT_MODE: AtomicU8 = AtomicU8::new(0);
+/// Process default for [`JitMode`]: `Auto` — polydat compiles
+/// every program with the mixed engine by default (SRD-105 Push 3,
+/// gated on the differential battery: expression-level in
+/// `function_coverage`, workload-level in nbrs `jit_differential`,
+/// identity invariance in `cone_tests`). `jit=off` remains the
+/// escape hatch and differential baseline.
+static DEFAULT_JIT_MODE: AtomicU8 = AtomicU8::new(1);
 
 /// Set the process-default JIT mode used by kernel compiles that
 /// carry no per-assembler override.
@@ -106,15 +109,30 @@ mod jit_impl {
         out_slots: Vec<usize>,
         in_types: Vec<PortType>,
         out_types: Vec<PortType>,
-        /// Keeps LUT/constant memory referenced by the native code
-        /// alive (the members' owned state).
-        _members: Vec<Box<dyn PolydatNode>>,
+        /// The original member nodes — kept alive for the LUT /
+        /// constant memory the native code references, and walked
+        /// by identity hashing (`fusion_subgraph`).
+        members: Vec<Box<dyn PolydatNode>>,
+        /// Local member wiring (`Input(i)` = this node's i-th
+        /// outer input; `NodeOutput(j, p)` = member j) — the
+        /// stored subgraph identity hashing recurses through.
+        sub_wiring: Vec<Vec<WireSource>>,
+        /// Per output port: (local member index, member port).
+        out_ports: Vec<(usize, usize)>,
         _module: ModuleHolder,
     }
 
     impl PolydatNode for JitConeNode {
         fn meta(&self) -> &NodeMeta {
             &self.meta
+        }
+
+        fn fusion_subgraph(&self) -> Option<crate::ast::FusionSubgraph<'_>> {
+            Some(crate::ast::FusionSubgraph {
+                members: &self.members,
+                wiring: &self.sub_wiring,
+                out_ports: &self.out_ports,
+            })
         }
 
         fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
@@ -592,6 +610,11 @@ mod jit_impl {
                 })
                 .collect(),
         };
+        let out_ports: Vec<(usize, usize)> = plan
+            .boundary_out
+            .iter()
+            .map(|(j, p)| (local[j], *p))
+            .collect();
         Ok(JitConeNode {
             meta,
             code_fn,
@@ -599,7 +622,9 @@ mod jit_impl {
             out_slots,
             in_types: plan.in_types.clone(),
             out_types: plan.out_types.clone(),
-            _members: sub.nodes,
+            members: sub.nodes,
+            sub_wiring: sub.wiring,
+            out_ports,
             _module: ModuleHolder(module),
         })
     }

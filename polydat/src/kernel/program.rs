@@ -1040,11 +1040,11 @@ impl PolydatProgram {
         outputs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut node_hashes: HashMap<usize, [u8; 32]> = HashMap::new();
         for (name, ni, pi) in &outputs {
-            let nh = self.node_canonical_hash(*ni, &mut node_hashes);
+            let (nh, pi_eff) = self.port_identity(*ni, *pi, &mut node_hashes);
             h.update(b"out:");
             h.update(name.as_bytes());
             h.update(b":port:");
-            h.update(pi.to_le_bytes().as_ref());
+            h.update(pi_eff.to_le_bytes().as_ref());
             h.update(b":");
             h.update(nh);
             h.update(b"\n");
@@ -1177,6 +1177,103 @@ impl PolydatProgram {
         let result: [u8; 32] = h.finalize().into();
         memo.insert(ni, result);
         result
+    }
+
+    /// Resolve the canonical identity behind `(ni, pi)`. For
+    /// ordinary nodes this is the node's own hash and port; for
+    /// fusion nodes (SRD-105 cones) it is the ORIGINAL member's
+    /// hash and port, computed by walking the stored subgraph —
+    /// so program identity is extraction-invariant.
+    fn port_identity(
+        &self,
+        ni: usize,
+        pi: usize,
+        memo: &mut HashMap<usize, [u8; 32]>,
+    ) -> ([u8; 32], usize) {
+        if let Some(sub) = self.nodes[ni].fusion_subgraph() {
+            let (m, p) = sub.out_ports[pi];
+            (self.fusion_member_hash(ni, &sub, m, memo), p)
+        } else {
+            (self.node_canonical_hash(ni, memo), pi)
+        }
+    }
+
+    /// Hash one member of a fusion node's subgraph exactly as
+    /// `node_canonical_hash` would have hashed it before
+    /// extraction. Local `Input(i)` boundary references resolve
+    /// through the fusion node's OUTER wiring, so upstream
+    /// producers — including const-folded literals — hash in
+    /// their post-fold form, byte-identical to the unextracted
+    /// program's walk. Members form a small acyclic subgraph;
+    /// recursion is bounded and unmemoised.
+    fn fusion_member_hash(
+        &self,
+        fusion_ni: usize,
+        sub: &crate::ast::FusionSubgraph<'_>,
+        m: usize,
+        memo: &mut HashMap<usize, [u8; 32]>,
+    ) -> [u8; 32] {
+        use sha2::{Sha256, Digest};
+        let mut h = Sha256::new();
+        let meta = sub.members[m].meta();
+        h.update(b"node:");
+        h.update(meta.name.as_bytes());
+        h.update(b"\n");
+        for port in &meta.outs {
+            h.update(b"  outp:");
+            h.update(port.name.as_bytes());
+            h.update(b":");
+            h.update(format!("{:?}", port.typ).as_bytes());
+            h.update(b"\n");
+        }
+        let wires = &sub.wiring[m];
+        let mut wire_idx = 0;
+        for slot in &meta.ins {
+            match slot {
+                crate::ast::Slot::Wire(port) => {
+                    h.update(b"  wirep:");
+                    h.update(port.name.as_bytes());
+                    h.update(b":");
+                    h.update(format!("{:?}", port.typ).as_bytes());
+                    h.update(b":");
+                    match wires.get(wire_idx) {
+                        Some(super::WireSource::NodeOutput(j, p)) => {
+                            h.update(b"node:");
+                            let nh = self.fusion_member_hash(fusion_ni, sub, *j, memo);
+                            h.update(nh);
+                            h.update(b":port:");
+                            h.update(p.to_le_bytes().as_ref());
+                        }
+                        Some(super::WireSource::Input(i)) => {
+                            match self.wiring[fusion_ni].get(*i) {
+                                Some(super::WireSource::NodeOutput(oj, op)) => {
+                                    h.update(b"node:");
+                                    let (nh, p_eff) = self.port_identity(*oj, *op, memo);
+                                    h.update(nh);
+                                    h.update(b":port:");
+                                    h.update(p_eff.to_le_bytes().as_ref());
+                                }
+                                Some(outer_input @ super::WireSource::Input(_)) => {
+                                    canonical_wire_source(outer_input, self, memo, &mut h);
+                                }
+                                None => h.update(b"unwired"),
+                            }
+                        }
+                        None => h.update(b"unwired"),
+                    }
+                    h.update(b"\n");
+                    wire_idx += 1;
+                }
+                crate::ast::Slot::Const { name, value } => {
+                    h.update(b"  const:");
+                    h.update(name.as_bytes());
+                    h.update(b":");
+                    canonical_const_value(value, &mut h);
+                    h.update(b"\n");
+                }
+            }
+        }
+        h.finalize().into()
     }
 
     /// Number of nodes in the program.
@@ -1640,10 +1737,10 @@ fn canonical_wire_source(
         }
         super::WireSource::NodeOutput(ni, pi) => {
             h.update(b"node:");
-            let nh = program.node_canonical_hash(*ni, memo);
+            let (nh, pi_eff) = program.port_identity(*ni, *pi, memo);
             h.update(nh);
             h.update(b":port:");
-            h.update(pi.to_le_bytes().as_ref());
+            h.update(pi_eff.to_le_bytes().as_ref());
         }
     }
 }

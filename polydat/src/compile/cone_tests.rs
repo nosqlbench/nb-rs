@@ -26,7 +26,7 @@ fn with_mode<T>(mode: JitMode, f: impl FnOnce() -> T) -> T {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
-            set_default_jit_mode(JitMode::Off);
+            set_default_jit_mode(JitMode::Auto);
         }
     }
     let _reset = Reset;
@@ -60,14 +60,12 @@ const U64_CHAIN: &str = "input (x: u64)\n\
                          w := add(v, 7)\n";
 
 #[test]
-fn default_mode_is_off() {
-    // SRD-105 Push 3 flips this to Auto behind the differential
-    // battery; until then the shipped default is interpreter-only.
-    // Serialize with the other tests: parallel with_mode holders
-    // legitimately have the global set; under the lock it is
-    // always the restored (= shipped) default.
+fn default_mode_is_auto() {
+    // SRD-105 Push 3: JIT is the default engine mix. Serialize
+    // with the other tests: parallel with_mode holders temporarily
+    // set the global; under the lock it is the shipped default.
     let _guard = MODE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    assert_eq!(crate::compile::cone::default_jit_mode(), JitMode::Off);
+    assert_eq!(crate::compile::cone::default_jit_mode(), JitMode::Auto);
 }
 
 #[test]
@@ -239,4 +237,24 @@ fn violation_message_parity_between_engines() {
     assert!(force.contains(core), "cone message carries the same core: {force}");
     assert!(off.contains("in node"), "interpreter enriches: {off}");
     assert!(force.contains("in node"), "cone enriches: {force}");
+}
+
+/// SRD-105 Push 3 — program identity is engine-mix invariant.
+/// Identity hashing walks THROUGH fusion nodes into their stored
+/// subgraph, so `jit=off` / `auto` / `force` compiles of the same
+/// source hash identically and resume-skip matching survives mode
+/// changes. The shape here stresses the walk: a multi-output cone
+/// (v is both fused-interior and a named output), a const-folded
+/// upstream (hashes post-fold in both forms), and a graph input.
+#[test]
+fn canonical_hash_is_extraction_invariant() {
+    let src = "input (x: u64)\n\
+               const c := 42\n\
+               v := mul(x, 3)\n\
+               w := (v + c)\n";
+    let off = with_mode(JitMode::Off, || compile(src).program().canonical_hash());
+    let force = with_mode(JitMode::Force, || compile(src).program().canonical_hash());
+    let auto = with_mode(JitMode::Auto, || compile(src).program().canonical_hash());
+    assert_eq!(off, force, "off vs force identity must match");
+    assert_eq!(off, auto, "off vs auto identity must match");
 }

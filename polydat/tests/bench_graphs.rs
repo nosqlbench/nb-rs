@@ -189,8 +189,17 @@ mod tests {
     use super::*;
 
     fn compile_and_verify(src: &str, expected_min_nodes: usize) {
-        let k = polydat::dsl::compile::compile_polydat(src)
-            .unwrap_or_else(|e| panic!("compile failed: {e}"));
+        // These tests pin the GENERATED graph's structure — the
+        // benchmark generators must produce N-node DAGs. Compile
+        // with jit=off so SRD-105 cone extraction (default auto)
+        // doesn't fuse the chain into a single cone node; the
+        // engine mix is exactly what these graphs exist to
+        // benchmark, not a given.
+        let mut asm = polydat::dsl::compile::compile_polydat_to_assembler(src)
+            .unwrap_or_else(|e| panic!("assemble failed: {e}"));
+        asm.set_jit_mode(polydat::JitMode::Off);
+        let k = asm.compile()
+            .unwrap_or_else(|e| panic!("compile failed: {e:?}"));
         let p = k.program();
         assert!(p.output_names().contains(&"out"),
             "missing 'out' output");

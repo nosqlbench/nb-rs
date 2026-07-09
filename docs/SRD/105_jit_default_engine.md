@@ -1,8 +1,10 @@
 # SRD-105 — JIT as the Default Engine: Auto-Mixed Cone Compilation
 
-**Status:** Pushes 1-2 implemented 2026-07-09 (extraction + cone node
-  + `JitMode` config, default `off`; differential battery + panic
-  parity + `jit=` session param); Pushes 3-4 pending
+**Status:** Pushes 1-3 implemented 2026-07-09 — **`Auto` is the
+  shipped default**: extraction + cone node + `JitMode` config;
+  differential battery + panic parity + `jit=` session param;
+  identity invariance + default flip. Push 4 (measured extensions)
+  pending
 **Owner:** polydat (cone extraction, cone node, config surface)
 **Implementation target:** `polydat/src/compile/assembly.rs` (cone
   extraction pass), a new `polydat/src/compile/cone.rs` (cone node +
@@ -142,7 +144,8 @@ parity for the predicate-violation cases.
 
 ### Config surface
 
-`kernel.jit: auto | off | force`, default **`auto`**.
+`jit: auto | off | force` (session param / `--jit=`), default
+**`auto`**.
 - `auto` — cone extraction with the cost model. The default; no user
   action required.
 - `off` — pure interpreter. Escape hatch and the differential baseline.
@@ -201,16 +204,21 @@ start; unknown values are routed configuration errors.
    extern-param slots (avoid cone rebuild on dynamic-control change);
    U128 two-slot ABI.
 
-## Known consequence: program identity across modes
+## Program identity across modes (resolved, Push 3)
 
-Extraction rewrites the node list, so `canonical_hash` differs
-between a `jit: off` and `jit: auto` compile of the same source.
-Within one process configuration the hash is deterministic (same
-mode → same cones → same hash), but resume-skip identity matching
-across mode changes will see distinct programs. Before the Push 3
-default flip, either compute program identity from the
-pre-extraction graph or accept and document the mode-change
-boundary.
+Identity is **extraction-invariant by construction**: the identity
+hash walks THROUGH fusion nodes. `PolydatNode::fusion_subgraph`
+exposes the cone's stored member nodes, local wiring, and per-port
+original producers; `canonical_hash` / `canonical_wire_source`
+resolve any reference to a cone port into the ORIGINAL member's
+node hash and port via `port_identity`, recursing through the
+stored subgraph with boundary references resolved against the live
+outer graph — so const-folded upstream producers hash in their
+post-fold form, byte-identical to an unextracted compile. `off`,
+`auto`, and `force` compiles of the same source produce the same
+`canonical_hash` (pinned by
+`cone_tests::canonical_hash_is_extraction_invariant`), and
+resume-skip matching survives engine-mix changes.
 
 ## Rejected alternatives
 
