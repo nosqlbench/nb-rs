@@ -182,6 +182,22 @@ mod jit_impl {
         }
     }
 
+    /// A planned-but-rejected cone is diagnosable state, never
+    /// silent (audit channel, Debug level — rejections are normal
+    /// cost-model outcomes, not user-facing failures).
+    fn audit_skip(member_count: usize, reason: &str) {
+        crate::library::support::audit::debug(&format!(
+            "jit cone: leaving a {member_count}-member component on              the interpreter: {reason}"));
+    }
+
+    /// Marshalable boundary scalars. U64/F64/Bool covers every
+    /// port type the P3 classifier currently lowers — the narrow
+    /// scalar bridges (`__u32_to_u64`, `__f32_to_f64`, …) classify
+    /// Fallback, so no fusable node carries I64/I32/U32/F32 ports
+    /// today (verified 2026-07-09, catchup item A3). WIDEN THIS
+    /// (encode/decode + the jit_boundary.md slot conventions) when
+    /// a narrow-typed node gains a JIT lowering; until then extra
+    /// arms would be dead, untested marshalling.
     fn scalar_ok(ty: PortType) -> bool {
         matches!(ty, PortType::U64 | PortType::F64 | PortType::Bool)
             && ty.slot_width() == 1
@@ -343,15 +359,23 @@ mod jit_impl {
                 continue;
             }
             let Some(plan) = plan_cone(dag, members, &nodes_opt) else {
+                // plan_cone audit-logs its own rejection reason;
+                // the component stays on the interpreter.
                 continue;
             };
             match build_cone(dag, &plan, &mut nodes_opt) {
                 Ok(cone) => cones.push((plan, cone)),
                 // Members were restored by build_cone; the cone
-                // simply stays on the interpreter. Not silent:
-                // rejected work is a routed compile event, not a
-                // user-facing failure (SRD-105 fallback rule).
-                Err(_e) => {}
+                // stays on the interpreter (SRD-105 fallback rule:
+                // a JIT failure never fails a compile). Eligibility
+                // prescreens classification, so a codegen error
+                // here is unexpected — surface it.
+                Err(e) => {
+                    crate::library::support::audit::warn(&format!(
+                        "jit cone: codegen failed for a {}-member                          cone — staying on the interpreter: {e}",
+                        plan.members.len(),
+                    ));
+                }
             }
         }
 
@@ -391,6 +415,8 @@ mod jit_impl {
                     }
                 };
                 if !scalar_ok(ty) {
+                    audit_skip(members.len(), &format!(
+                        "boundary input of type {ty:?} is not marshalable"));
                     return None;
                 }
                 seen_in.insert(key, boundary_in.len());
@@ -402,6 +428,9 @@ mod jit_impl {
         // provenance word) so Pull-variant cones remain reachable
         // without a re-split.
         if boundary_in.len() > 64 {
+            audit_skip(members.len(), &format!(
+                "{} boundary inputs exceeds the 64-input bound (no                  re-split implemented — catchup item B2)",
+                boundary_in.len()));
             return None;
         }
         // A cone with no boundary inputs is a compile-time
@@ -410,6 +439,8 @@ mod jit_impl {
         // It also breaks lifecycle analysis (a no-input node
         // claiming per-cycle outputs). Leave it interpreted.
         if boundary_in.is_empty() {
+            // Normal outcome for const subgraphs — the fold passes
+            // own them; not worth an audit line.
             return None;
         }
 
@@ -439,6 +470,8 @@ mod jit_impl {
             }
         }
         if boundary_out.is_empty() {
+            // Dead subgraph (no observable outputs) — DCE
+            // territory, not worth an audit line.
             return None;
         }
         let out_types: Vec<PortType> = boundary_out
@@ -446,6 +479,7 @@ mod jit_impl {
             .map(|(j, p)| nodes[*j].as_ref().map(|nd| nd.meta().outs[*p].typ))
             .collect::<Option<_>>()?;
         if out_types.iter().any(|t| !scalar_ok(*t)) {
+            audit_skip(members.len(), "a boundary output type is not marshalable");
             return None;
         }
 
