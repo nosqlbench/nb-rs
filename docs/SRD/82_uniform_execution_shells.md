@@ -736,6 +736,37 @@ budget."
 
 ---
 
+## Panic reporting: one full render (2026-07-09, catchup C3)
+
+A per-cycle panic used to print its full enriched diagnostic
+(violation + original location + node + inputs) up to four times:
+the std panic hook, the phase footer row, the `errors:` block, and
+the `stopped by error handler:` headline. Every layer was correct
+in isolation; together they made one root cause read as four.
+
+The contract now:
+
+- **The `errors:` block owns the full render.** The
+  `PhaseErrorDetail.message` carries the complete enriched text,
+  unconditionally on the failure path — it is the one place the
+  full diagnostic is guaranteed to appear.
+- **Headlines are first-line short form.** `stop_reason`
+  composition (the per-op panic catcher, the fiber-boundary
+  catcher) and the phase footer row render only the first line of
+  the message. Multi-line text in a status row was a display bug
+  in its own right.
+- **The panic hook degrades to one short line when a downstream
+  reporter exists.** The runtime declares
+  `polydat::set_panic_reporting_downstream(true)` when it installs
+  its fiber machinery; the enrich-and-re-raise hook then prints a
+  single first-line notice instead of the full body + backtrace
+  pointer. Bare polydat consumers (tools, tests, library callers)
+  never set the hint, so the hook's full print — the guarantee
+  that a panic is never invisible — is unchanged for them. The
+  hint means "a reporter exists", not "suppress": the full text
+  still travels in the panic payload, and the errors block renders
+  it regardless of what the hook printed.
+
 ## Invariants (axioms this SRD adds)
 
 - **Every execution level is the same shell.** Scenario, phase,

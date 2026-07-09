@@ -214,6 +214,21 @@ pub struct SharedCellEntry {
     pub cell: SharedCell,
 }
 
+/// SRD-82 §"Panic reporting: one full render" — set by a host
+/// runtime that catches worker panics and renders the full
+/// enriched diagnostic itself (the `errors:` block). When set,
+/// the re-raise hook below prints a single first-line notice
+/// instead of the full body; bare polydat consumers never set it
+/// and keep the full print.
+static PANIC_REPORTING_DOWNSTREAM: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Declare that a downstream reporter will render eval-panic
+/// diagnostics in full (see [`PANIC_REPORTING_DOWNSTREAM`]).
+pub fn set_panic_reporting_downstream(on: bool) {
+    PANIC_REPORTING_DOWNSTREAM.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 thread_local! {
     /// True while a node eval runs inside the enrichment
     /// catch_unwind in `eval_node`. The suppression hook checks
@@ -232,6 +247,11 @@ thread_local! {
     /// re-raise site, which is useless).
     static EVAL_PANIC_LOCATION: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
+    /// One-shot marker armed just before the enriched re-raise
+    /// when a downstream reporter exists: the hook prints a short
+    /// first-line notice for that panic instead of the full body.
+    static RERAISE_SHORT: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 /// Install (once, process-wide) a panic hook that chains to the
@@ -246,6 +266,18 @@ fn install_eval_panic_hook() {
             if EVAL_PANIC_CAPTURE.with(|c| c.get()) {
                 let loc = info.location().map(|l| l.to_string());
                 EVAL_PANIC_LOCATION.with(|slot| *slot.borrow_mut() = loc);
+            } else if RERAISE_SHORT.with(|c| c.replace(false)) {
+                // The runtime will render the full enriched
+                // diagnostic in the phase error list; one short
+                // line keeps the terminal signal without the
+                // four-fold repeat (SRD-82 §one full render).
+                let first = info
+                    .payload()
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .and_then(|m| m.lines().next())
+                    .unwrap_or("<non-string panic payload>");
+                eprintln!("op eval panic (detail in phase errors): {first}");
             } else {
                 prev(info);
             }
@@ -706,6 +738,9 @@ impl EngineCore {
                 e, program, node_idx,
                 &self.input_scratch[..input_count],
             );
+            if PANIC_REPORTING_DOWNSTREAM.load(std::sync::atomic::Ordering::Relaxed) {
+                RERAISE_SHORT.with(|c| c.set(true));
+            }
             std::panic::panic_any(enriched);
         }
         self.node_clean[node_idx] = true;

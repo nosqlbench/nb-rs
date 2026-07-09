@@ -149,6 +149,11 @@ pub use derive_support::Const;
 // its accessors. `kernel.jit: auto|off|force` maps here.
 pub use compile::cone::{default_jit_mode, set_default_jit_mode, JitMode};
 
+// SRD-82 §"Panic reporting: one full render" — host runtimes with
+// their own panic reporting declare it so the eval-panic hook
+// prints a short notice instead of the full diagnostic.
+pub use kernel::set_panic_reporting_downstream;
+
 // SRD-80 — re-export the `#[polydat_node]` attribute so
 // library callers can write `#[polydat::polydat_node]` without
 // a separate `use polydat_derive::polydat_node;` line.
