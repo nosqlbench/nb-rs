@@ -37,6 +37,9 @@ pub mod closures;
 pub mod hybrid;
 #[cfg(feature = "jit")]
 pub mod jit;
+pub mod cone;
+#[cfg(all(test, feature = "jit"))]
+mod cone_tests;
 
 /// Axiom S2 typed accessors, shared by the P2 and hybrid kernel
 /// types (both expose `self.core.ref_entry(slot)`). Each returns

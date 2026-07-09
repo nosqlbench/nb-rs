@@ -662,6 +662,16 @@ pub(crate) fn compile_jit_raw(
     })
 }
 
+/// SRD-105 cone entry: codegen only, no kernel wrapper — the cone
+/// node owns the function pointer and module directly and provides
+/// its own buffer per eval.
+pub(crate) fn compile_jit_entry(
+    steps: &[(JitOp, Vec<usize>, Vec<usize>)],
+) -> Result<(unsafe fn(*const u64, *mut u64), JITModule), String> {
+    let (raw_fn, _, module) = compile_jit_impl(steps, false)?;
+    Ok((raw_fn, module))
+}
+
 /// Compile a set of JIT steps into a push (per-node dirty tracking) native kernel.
 pub(crate) fn compile_jit_push(
     coord_count: usize,

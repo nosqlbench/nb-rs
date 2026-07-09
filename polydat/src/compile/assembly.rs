@@ -131,27 +131,27 @@ impl std::fmt::Display for AssemblyError {
 impl std::error::Error for AssemblyError {}
 
 /// Validated, topologically sorted intermediate form.
-struct ResolvedDag {
+pub(crate) struct ResolvedDag {
     /// Nodes in topological order.
-    nodes: Vec<Box<dyn PolydatNode>>,
+    pub(crate) nodes: Vec<Box<dyn PolydatNode>>,
     /// Per-node wiring (in topological order).
-    wiring: Vec<Vec<WireSource>>,
+    pub(crate) wiring: Vec<Vec<WireSource>>,
     /// All input definitions (coordinates + captures).
-    input_defs: Vec<crate::kernel::InputDef>,
+    pub(crate) input_defs: Vec<crate::kernel::InputDef>,
     /// Number of coordinate inputs.
-    coord_count: usize,
+    pub(crate) coord_count: usize,
     /// Output name → (node_index_in_sorted, output_port_index).
-    output_map: HashMap<String, (usize, usize)>,
+    pub(crate) output_map: HashMap<String, (usize, usize)>,
     /// Output names in declaration order.
-    output_order: Vec<String>,
+    pub(crate) output_order: Vec<String>,
     /// Source text for diagnostics.
-    source: String,
+    pub(crate) source: String,
     /// Diagnostic context.
-    context: String,
+    pub(crate) context: String,
     /// Output binding modifiers.
-    output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
+    pub(crate) output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
     /// Names declared with `init` (SRD 11 §"Init Binding Contract").
-    const_outputs: std::collections::HashSet<String>,
+    pub(crate) const_outputs: std::collections::HashSet<String>,
 }
 
 impl ResolvedDag {
@@ -346,6 +346,9 @@ pub struct PolydatAssembler {
     /// the flag exists for forward compatibility with dynamic
     /// JSON navigation, `Ext` unwraps, and cross-adapter values.
     pub(crate) strict_types: bool,
+    /// SRD-105 per-assembler engine-mix override. `None` defers to
+    /// the process default ([`crate::compile::cone::default_jit_mode`]).
+    pub(crate) jit_mode: Option<crate::compile::cone::JitMode>,
 }
 
 /// `(coord_slots, total_slots, steps, named outputs, ref-slot
@@ -393,6 +396,7 @@ impl PolydatAssembler {
             const_outputs: std::collections::HashSet::new(),
             strict_values: false,
             strict_types: false,
+            jit_mode: None,
         }
     }
 
@@ -402,6 +406,12 @@ impl PolydatAssembler {
     pub fn set_strict_wires(&mut self, strict_types: bool, strict_values: bool) {
         self.strict_types = strict_types;
         self.strict_values = strict_values;
+    }
+
+    /// Override the engine-mix mode for this compile (SRD-105).
+    /// Unset assemblers defer to the process default.
+    pub fn set_jit_mode(&mut self, mode: crate::compile::cone::JitMode) {
+        self.jit_mode = Some(mode);
     }
 
     /// Set the source text and diagnostic context for this assembler.
@@ -539,7 +549,10 @@ impl PolydatAssembler {
 
     /// Compile with diagnostic event logging.
     pub fn compile_with_log(self, mut log: Option<&mut crate::dsl::events::CompileEventLog>) -> Result<PolydatKernel, AssemblyError> {
-        let resolved = self.resolve_with_log(log.as_deref_mut())?;
+        let jit_mode = self.jit_mode
+            .unwrap_or_else(crate::compile::cone::default_jit_mode);
+        let mut resolved = self.resolve_with_log(log.as_deref_mut())?;
+        crate::compile::cone::extract_jit_cones(&mut resolved, jit_mode);
         let _coord_names = resolved.input_names();
         let modifiers = resolved.output_modifiers.clone();
         let kernel = PolydatKernel::new_with_inputs(
@@ -565,7 +578,9 @@ impl PolydatAssembler {
         if !strict {
             return self.compile();
         }
-        let resolved = self.resolve()?;
+        let jit_mode = self.jit_mode
+            .unwrap_or_else(crate::compile::cone::default_jit_mode);
+        let mut resolved = self.resolve()?;
         let _coord_names = resolved.input_names();
 
         // Strict: reject implicit type coercions (auto-inserted adapter nodes)
@@ -584,6 +599,7 @@ impl PolydatAssembler {
             )));
         }
 
+        crate::compile::cone::extract_jit_cones(&mut resolved, jit_mode);
         let modifiers = resolved.output_modifiers.clone();
         let kernel = PolydatKernel::new_with_inputs(
             resolved.nodes,
@@ -797,7 +813,7 @@ impl PolydatAssembler {
 
     /// Shared: resolve nodes to JIT steps + slot layout.
     #[cfg(feature = "jit")]
-    fn build_jit_layout(resolved: &ResolvedDag)
+    pub(crate) fn build_jit_layout(resolved: &ResolvedDag)
         -> Result<JitLayout, String>
     {
         let layout = slot_layout(resolved);

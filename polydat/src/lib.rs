@@ -145,6 +145,10 @@ pub mod derive_support;
 // for ergonomic use in `#[polydat_node]` function signatures.
 pub use derive_support::Const;
 
+// SRD-105 — engine-mix surface: the process-default JIT mode and
+// its accessors. `kernel.jit: auto|off|force` maps here.
+pub use compile::cone::{default_jit_mode, set_default_jit_mode, JitMode};
+
 // SRD-80 — re-export the `#[polydat_node]` attribute so
 // library callers can write `#[polydat::polydat_node]` without
 // a separate `use polydat_derive::polydat_node;` line.
