@@ -285,6 +285,18 @@ Decisions, each from the numbers:
   bench-only entry points remain for measurement.
 - **Hybrid kernels owning the graph** (`compile_hybrid`): benchmarked as
   strictly dominated by P3 segments, and it constitutes a second walker.
+
+Rejecting these as graph OWNERS does not retire the tiers (decision
+2026-07-09, catchup C1): the incremental-compilation lattice
+(P1 typed eval ⊂ P2 `compiled_u64` closures ⊂ P3 native) is a core
+polydat feature. P2 is the executable middle rung — the cross-tier
+equivalence oracle, the ref-slot axioms' host, and the mechanism for
+the lattice's next step: a node that is u64-capable but not
+JIT-classifiable currently drops from cone eligibility all the way
+to P1 dyn dispatch, when its P2 closure could run instead. Fusing
+P2 closures at cone boundaries (hybrid's mixing, hosted inside the
+interpreter-owned graph like cones are) is the candidate extension —
+measured, like everything else in this SRD, before it is built.
 - **Runtime Value↔u64 funnel at every port**: defeats the JIT's purpose
   and violates the type-stability decision (no dynamic coercion
   surface).

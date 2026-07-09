@@ -18,6 +18,24 @@ Related axioms:
 [runtime_model.md R1 clean-flag memoization + R2 invalidation + D-axioms](runtime_model.md),
 [grammar.md §3 type system](grammar.md).
 
+## Production status (SRD-105, 2026-07-09)
+
+The production execution form is the **interpreter-hosted mixed
+kernel**: P1 owns the graph, and Dynamic-lifecycle cones of
+JIT-classifiable nodes run as embedded P3 native segments
+(docs/SRD/105_jit_default_engine.md — `jit: auto` is the default).
+The whole-kernel selection heuristics below are exercised by
+`nbrs bench` and the equivalence suites rather than the production
+compile path.
+
+The incremental-compilation lattice (P1 ⊂ P2 ⊂ P3) is a core
+feature, not a historical artifact: P2 is the executable middle
+rung — the cross-tier equivalence oracle, the ref-slot axioms'
+host (slot_state_axioms.rs), and the mechanism for the lattice's
+next production step (P2 closures for u64-capable nodes that the
+P3 classifier can't lower, at cone boundaries — parked in SRD-105
+pending measurement).
+
 ---
 
 ## Compilation Levels
