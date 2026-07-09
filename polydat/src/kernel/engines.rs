@@ -214,11 +214,74 @@ pub struct SharedCellEntry {
     pub cell: SharedCell,
 }
 
+thread_local! {
+    /// True while a node eval runs inside the enrichment
+    /// catch_unwind in `eval_node`. The suppression hook checks
+    /// this to swallow the raw std panic-hook print (bare payload
+    /// + backtrace pointer at the original panic site) — that
+    /// same panic is about to be caught, enriched with
+    /// node/output/input context, and re-raised via `panic_any`,
+    /// which fires the hook again with this flag clear. Net
+    /// effect: exactly ONE hook print, and it's the enriched one.
+    static EVAL_PANIC_CAPTURE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    /// Original panic location captured by the suppression hook
+    /// while the flag above is set. Folded into the enriched
+    /// message so the true `file:line` survives the re-raise
+    /// (the re-raised panic's own location points at the
+    /// re-raise site, which is useless).
+    static EVAL_PANIC_LOCATION: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install (once, process-wide) a panic hook that chains to the
+/// previously installed hook unless the current thread is inside
+/// the wrapped node eval, in which case it records the panic
+/// location and stays quiet.
+fn install_eval_panic_hook() {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if EVAL_PANIC_CAPTURE.with(|c| c.get()) {
+                let loc = info.location().map(|l| l.to_string());
+                EVAL_PANIC_LOCATION.with(|slot| *slot.borrow_mut() = loc);
+            } else {
+                prev(info);
+            }
+        }));
+    });
+}
+
+/// RAII guard arming the suppression hook for one wrapped eval.
+/// Saves and restores the previous flag value: nodes that drive
+/// sub-kernels (comprehensions, gk-call) nest evals, and each
+/// level's catch_unwind must see its own panics suppressed.
+struct EvalPanicCaptureGuard {
+    prev: bool,
+}
+
+impl EvalPanicCaptureGuard {
+    fn arm() -> Self {
+        install_eval_panic_hook();
+        let prev = EVAL_PANIC_CAPTURE.with(|c| c.replace(true));
+        EVAL_PANIC_LOCATION.with(|slot| slot.borrow_mut().take());
+        Self { prev }
+    }
+}
+
+impl Drop for EvalPanicCaptureGuard {
+    fn drop(&mut self) {
+        EVAL_PANIC_CAPTURE.with(|c| c.set(self.prev));
+    }
+}
+
 /// Build the rich diagnostic message for a node-level eval panic.
 /// Includes the node's function name, every output it feeds, the
-/// input values it was called with, and the program's diagnostic
-/// context (typically the source path / scope label). This is
-/// what the user sees instead of the bare panic payload.
+/// input values it was called with, the original panic location
+/// (captured by the suppression hook), and the program's
+/// diagnostic context (typically the source path / scope label).
+/// This is what the user sees instead of the bare panic payload.
 fn enrich_eval_panic(
     payload: Box<dyn std::any::Any + Send>,
     program: &PolydatProgram,
@@ -229,6 +292,17 @@ fn enrich_eval_panic(
         .downcast_ref::<&'static str>().map(|s| (*s).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "<non-string panic payload>".into());
+    // A payload that already carries node context came from a
+    // nested wrapped eval's re-raise; its captured "location" is
+    // the re-raise site, not the original panic — skip it.
+    let location_line = if original.contains("↳ in node") {
+        String::new()
+    } else {
+        EVAL_PANIC_LOCATION
+            .with(|slot| slot.borrow_mut().take())
+            .map(|loc| format!("\n  ↳ panicked at {loc}"))
+            .unwrap_or_default()
+    };
     let node_name = program.nodes.get(node_idx)
         .map(|n| n.meta().name.to_string())
         .unwrap_or_else(|| format!("<unknown node #{node_idx}>"));
@@ -251,7 +325,7 @@ fn enrich_eval_panic(
         input_label.push_str(&format!("[{i}]={}", format_value_for_diag(v)));
     }
     format!(
-        "{original}\n  ↳ in node `{node_name}` ({outputs_label}) \
+        "{original}{location_line}\n  ↳ in node `{node_name}` ({outputs_label}) \
          while evaluating {context}\n  \
          ↳ inputs: [{input_label}]",
         context = program.context(),
@@ -608,6 +682,16 @@ impl EngineCore {
         // path the frame is a few stack words; on the panic
         // path it's strictly an improvement over what the
         // user sees today.
+        //
+        // The capture guard suppresses the std panic hook for
+        // the duration: without it, the hook prints the BARE
+        // payload ("expected U64, got F64" + backtrace) at the
+        // original panic site, before enrichment exists, and
+        // that raw print is the loudest thing the user sees.
+        // Re-raising with `panic_any` (not `resume_unwind`)
+        // fires the hook again — now unsuppressed — so the one
+        // message that prints is the enriched one.
+        let guard = EvalPanicCaptureGuard::arm();
         let payload = std::panic::catch_unwind(
             std::panic::AssertUnwindSafe(|| {
                 program.nodes[node_idx].eval(
@@ -616,12 +700,13 @@ impl EngineCore {
                 );
             })
         );
+        drop(guard);
         if let Err(e) = payload {
             let enriched = enrich_eval_panic(
                 e, program, node_idx,
                 &self.input_scratch[..input_count],
             );
-            std::panic::resume_unwind(Box::new(enriched));
+            std::panic::panic_any(enriched);
         }
         self.node_clean[node_idx] = true;
     }
@@ -1115,6 +1200,11 @@ mod panic_enrichment_tests {
             "missing program context in enriched message: {msg}");
         assert!(msg.contains("\"oops\""),
             "missing input snapshot in enriched message: {msg}");
+        // The suppression hook must have captured the ORIGINAL
+        // panic site (Value::as_u64 in ast.rs) — not the
+        // re-raise site in engines.rs.
+        assert!(msg.contains("panicked at") && msg.contains("ast.rs"),
+            "missing original panic location in enriched message: {msg}");
         // Surface the full enriched message in `cargo test --
         // --nocapture` runs so the format is easy to eyeball.
         eprintln!("== enriched message ==\n{msg}\n======================");

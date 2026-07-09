@@ -306,10 +306,20 @@ JIT slots stay unguarded and fast):
 4. **Typed-port extraction hardening (defense in depth)**: any
    residual type mismatch reaching a typed node port produces a
    diagnostic naming the node, port, and expected/actual types — not
-   a bare `Value::as_u64` panic. STATUS: the interpreter path already
-   enriches (`enrich_eval_panic` wraps `eval_node`); the JIT path does
-   not — a mismatch panicking in JIT slot marshalling still surfaces
-   bare. JIT-path enrichment is the remaining follow-up.
+   a bare `Value::as_u64` panic. STATUS: done for everything that
+   runs today. The interpreter path enriches (`enrich_eval_panic`
+   wraps `eval_node`), the std panic hook is suppressed during the
+   wrapped eval and the enriched message is re-raised via
+   `panic_any` — so the ONE message that prints is the enriched one,
+   carrying the original panic location, node, outputs, and inputs.
+   The runtime's fiber boundary turns the payload into a
+   `[panic]` stop_reason plus a structured PhaseOutcome error. The
+   earlier framing of this point as "JIT-path enrichment" was a
+   misdiagnosis: the JIT engines (`auto_compile_p3`) have no
+   production consumer, so the incident's raw print was the panic
+   HOOK firing before enrichment, not an unwrapped JIT path. If a
+   P3 engine gains a per-cycle consumer, its marshalling boundary
+   must adopt the same enrich-and-re-raise contract.
 5. **DSL surface**: `shared name: type := expr` declares the cell
    type explicitly; the annotation wins over literal inference, and a
    mismatched initializer is a compile error. Inferring U64-vs-F64
