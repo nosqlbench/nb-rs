@@ -38,6 +38,7 @@ pub mod hybrid;
 #[cfg(feature = "jit")]
 pub mod jit;
 pub mod cone;
+pub mod lattice;
 #[cfg(all(test, feature = "jit"))]
 mod cone_tests;
 

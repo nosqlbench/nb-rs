@@ -1293,6 +1293,13 @@ impl PolydatProgram {
         self.wire_count() as f64 / n as f64
     }
 
+    /// Access a node by index (trait object). Read-only
+    /// introspection surface for reporting (SRD-105 lattice
+    /// report) — evaluation stays behind the kernel APIs.
+    pub fn node_ref(&self, idx: usize) -> &dyn crate::ast::PolydatNode {
+        self.nodes[idx].as_ref()
+    }
+
     /// Access a node's metadata by index.
     pub fn node_meta(&self, idx: usize) -> &crate::ast::NodeMeta {
         self.nodes[idx].meta()
