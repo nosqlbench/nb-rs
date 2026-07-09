@@ -83,11 +83,31 @@ impl ScyllaCqlAdapter {
             builder = builder.user(u, p);
         }
         // Connection ESTABLISHMENT timeout (was conflated with the per-request
-        // timeout before `connect_timeout` existed). scylla manages
-        // reconnection internally, so the `reconnect_*` knobs are inert here.
+        // timeout before `connect_timeout` existed).
         builder = builder.connection_timeout(std::time::Duration::from_millis(
             config.connect_timeout_ms,
         ));
+        // Connect-survival knobs (catchup D2): map to the driver's
+        // CQL-layer keepalives — `heartbeat_interval` paces the
+        // keepalive requests, `connection_idle_timeout` bounds how
+        // long an unanswered keepalive is tolerated before the
+        // connection is declared dead. Same survive-the-stall
+        // intent as cassandra-cpp's heartbeat/idle machinery.
+        builder = builder.keepalive_interval(std::time::Duration::from_millis(
+            config.heartbeat_interval_ms,
+        ));
+        builder = builder.keepalive_timeout(std::time::Duration::from_millis(
+            config.connection_idle_timeout_ms,
+        ));
+        // scylla manages reconnection internally — the `reconnect_*`
+        // knobs have no equivalent. Accepting them silently would be
+        // a lie; say so once at connect.
+        if config.reconnect_params_explicit {
+            nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Warn,
+                "cql(scylla): reconnect_base_delay / reconnect_max_delay have \
+                 no scylla-driver equivalent and are ignored — the driver \
+                 manages reconnection internally");
+        }
         if !config.keyspace.is_empty() {
             builder = builder.use_keyspace(config.keyspace.clone(), false);
         }

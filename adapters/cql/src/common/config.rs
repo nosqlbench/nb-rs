@@ -45,6 +45,11 @@ pub struct CqlConfig {
     /// internally and leaves these declared-but-inert (see `known_params`).
     pub reconnect_base_delay_ms: u64,
     pub reconnect_max_delay_ms: u64,
+    /// True when the operator explicitly set either `reconnect_*`
+    /// param. The scylla engine manages reconnection internally and
+    /// cannot honor them — it warns visibly instead of accepting
+    /// silently (catchup D2, "never ignore silently").
+    pub reconnect_params_explicit: bool,
     /// Connection-survival knobs (SRD-103 §"session tuning"). During a
     /// server stall (GC pause, compaction storm) heartbeats go
     /// unanswered; once a connection passes `connection_idle_timeout`
@@ -56,9 +61,10 @@ pub struct CqlConfig {
     /// still honour their own request timeouts — these knobs govern the
     /// CONNECTION's survival, not the requests'). Driver defaults:
     /// heartbeat 30s, idle timeout 60s. Set via `heartbeat_interval` /
-    /// `connection_idle_timeout` (duration strings). Honored by the
-    /// cassandra-cpp engine; the scylla engine manages connection
-    /// liveness internally and leaves these declared-but-inert.
+    /// `connection_idle_timeout` (duration strings). cassandra-cpp maps
+    /// them to its heartbeat/idle machinery; scylla maps them to the
+    /// driver's CQL-layer `keepalive_interval` / `keepalive_timeout`
+    /// (nearest equivalents: same survive-the-stall intent).
     pub heartbeat_interval_ms: u64,
     pub connection_idle_timeout_ms: u64,
     /// Initial value of the per-execute tracing probability
@@ -93,6 +99,7 @@ impl Default for CqlConfig {
             connect_timeout_ms: 5_000,
             reconnect_base_delay_ms: 2_000,
             reconnect_max_delay_ms: 600_000,
+            reconnect_params_explicit: false,
             // Driver defaults — see the field doc.
             heartbeat_interval_ms: 30_000,
             connection_idle_timeout_ms: 60_000,
@@ -226,10 +233,12 @@ impl CqlConfig {
         if let Some(v) = params.get("reconnect_base_delay") {
             config.reconnect_base_delay_ms = nbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid reconnect_base_delay value '{v}': {e}"))?;
+            config.reconnect_params_explicit = true;
         }
         if let Some(v) = params.get("reconnect_max_delay") {
             config.reconnect_max_delay_ms = nbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid reconnect_max_delay value '{v}': {e}"))?;
+            config.reconnect_params_explicit = true;
         }
         if let Some(v) = params.get("heartbeat_interval") {
             config.heartbeat_interval_ms = nbrs_runtime::timeval::parse_time_ms(v)
@@ -357,6 +366,8 @@ mod tests {
         assert_eq!(cfg.request_timeout_ms, 12_000);
         assert_eq!(cfg.reconnect_base_delay_ms, 2_000);
         assert_eq!(cfg.reconnect_max_delay_ms, 600_000);
+        assert!(!cfg.reconnect_params_explicit,
+            "defaults are not explicit — no scylla warn");
     }
 
     #[test]
@@ -372,6 +383,9 @@ mod tests {
         assert_eq!(cfg.request_timeout_ms, 45_000);
         assert_eq!(cfg.reconnect_base_delay_ms, 500);
         assert_eq!(cfg.reconnect_max_delay_ms, 120_000);
+        assert!(cfg.reconnect_params_explicit,
+            "explicit reconnect params must be marked so the scylla \
+             engine can warn instead of ignoring silently");
     }
 
     #[test]
