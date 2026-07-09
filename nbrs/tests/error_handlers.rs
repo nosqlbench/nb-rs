@@ -402,11 +402,20 @@ phases:
     // The suppression hook must have eaten the raw pre-enrichment
     // print. A raw hook line reads `thread '…' panicked at
     // polydat/src/library/param_helpers.rs:…` — pointing at the
-    // ORIGINAL panic site with no node context. The one hook print
-    // allowed is the enriched re-raise (it points at the re-raise
-    // site in engines.rs and carries the full diagnostic body);
-    // the original location appears only in `↳ panicked at` lines.
+    // ORIGINAL panic site with no node context.
     assert!(!stderr.lines().any(|l|
         l.contains("thread '") && l.contains("polydat/src/library")),
         "raw un-enriched hook print leaked through: {stderr}");
+    // SRD-82 §"Panic reporting: one full render" (catchup C3):
+    // the runtime declares downstream reporting, so the hook
+    // prints ONE short first-line notice; headlines (stop_reason,
+    // footer) are first-line short form; the `errors:` block owns
+    // the full multi-line render.
+    assert!(stderr.contains("op eval panic (detail in phase errors)"),
+        "hook prints the short notice: {stderr}");
+    assert!(!stderr.lines().any(|l|
+        l.contains("stopped by error handler") && l.contains("in node")),
+        "headline must be first-line short form: {stderr}");
+    assert!(stderr.contains("errors:"),
+        "the errors block is present: {stderr}");
 }

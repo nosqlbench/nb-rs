@@ -1080,7 +1080,12 @@ fn render_labeled_value_failed(
     let errors = ctx.outcome_errors();
     let first = errors.first();
     let class_label = first.map(|e| e.class.as_str()).unwrap_or("phase_failed");
-    let message = first.map(|e| e.message.as_str()).unwrap_or("unknown error");
+    // First line only: the footer is a status row, and the full
+    // enriched text renders once in the `errors:` block (SRD-82
+    // §one full render).
+    let message = first
+        .map(|e| e.message.lines().next().unwrap_or(e.message.as_str()))
+        .unwrap_or("unknown error");
     let elapsed = ctx.elapsed_secs();
     // `+N more` is relative to the TRUE error count (`err_count =
     // ctx.errors()`, the uncapped `errors_total`), not the capped

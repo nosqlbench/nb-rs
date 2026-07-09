@@ -972,6 +972,12 @@ impl SessionHost {
     // out if they're noisy. Replaces the standalone
     // `<session>/audit.log` file — same content, one fewer
     // place to look.
+    // SRD-82 §"Panic reporting: one full render" — the runtime's
+    // fiber/op catchers render eval-panic diagnostics in full via
+    // the phase error list, so the polydat hook degrades to a
+    // one-line notice instead of the full body + backtrace hint.
+    polydat::set_panic_reporting_downstream(true);
+
     polydat::audit::set_log_fn(|level, msg| {
         use polydat::audit::LogLevel as AuditLevel;
         let mapped = match level {

@@ -181,12 +181,18 @@ impl ErrorHandlerDispenser {
                     .describe_resolved(wires)
                     .map(|d| format!("\n    op-resolved: {d}"))
                     .unwrap_or_default();
+                // Headline = first line of the message; the full
+                // enriched text (multi-line panic diagnostics)
+                // was captured verbatim into phase_errors above
+                // and renders once in the `errors:` block
+                // (SRD-82 §"Panic reporting: one full render").
+                let first = inner_err.message.lines().next()
+                    .unwrap_or(&inner_err.message);
                 *slot = Some(format!(
-                    "[{}] op '{}' at cycle {}: {}{op_shape}{op_resolved}",
+                    "[{}] op '{}' at cycle {}: {first}{op_shape}{op_resolved}",
                     inner_err.error_name,
                     self.op_name,
                     cycle,
-                    inner_err.message,
                 ));
             }
         }

@@ -2212,8 +2212,11 @@ impl Activity {
                             if let Ok(mut slot) = activity_for_panic.stop_reason.lock()
                                 && slot.is_none()
                             {
+                                // Headline = first line; the full
+                                // text lands in phase_errors below.
+                                let first = msg.lines().next().unwrap_or(&msg);
                                 *slot = Some(format!(
-                                    "[panic] fiber panic in activity '{activity_name_for_log}': {msg}"));
+                                    "[panic] fiber panic in activity '{activity_name_for_log}': {first}"));
                             }
                             if let Ok(mut errs) = activity_for_panic.phase_errors.lock() {
                                 errs.push(crate::phase_outcome::PhaseErrorDetail {
@@ -3609,8 +3612,14 @@ async fn executor_task(
                         if let Ok(mut slot) = activity.stop_reason.lock()
                             && slot.is_none()
                         {
+                            // Headline = first line; the full
+                            // enriched text travels in the
+                            // AdapterError message and renders
+                            // once in the phase error list
+                            // (SRD-82 §one full render).
+                            let first = msg.lines().next().unwrap_or(&msg);
                             *slot = Some(format!(
-                                "[panic] op '{}' at cycle {}: {msg}",
+                                "[panic] op '{}' at cycle {}: {first}",
                                 template.name, cycle,
                             ));
                         }
