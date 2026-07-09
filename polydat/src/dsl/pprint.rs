@@ -84,11 +84,16 @@ pub fn pp_expr(expr: &Expr) -> String {
 }
 
 fn pp_binding(b: &Binding) -> String {
-    let target = if b.targets.len() == 1 {
+    let mut target = if b.targets.len() == 1 {
         b.targets[0].clone()
     } else {
         format!("({})", b.targets.join(", "))
     };
+    // `shared name: type := …` — cell type annotation
+    // (scope_model.md §"Type stability").
+    if let Some(ty) = &b.type_annotation {
+        target = format!("{target}: {ty}");
+    }
     let prefix = pp_modifier_prefix(b.modifier);
     if prefix.is_empty() {
         format!("{} := {}", target, pp_expr(&b.value))

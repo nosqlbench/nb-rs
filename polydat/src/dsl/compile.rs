@@ -1087,6 +1087,45 @@ fn try_fold_shared_init(
     }
 }
 
+/// Apply the optional `shared name: type := …` annotation
+/// (scope_model.md §"Type stability") to the folded `(value, type)`:
+/// the annotation PINS the cell's type for life, winning over literal
+/// inference. An integer literal widens to an f64-annotated cell (the
+/// natural authoring, `shared m: f64 := 1`); any other mismatch is a
+/// compile error at the declaration — not a runtime surprise.
+fn apply_shared_type_annotation(
+    name: &str,
+    annotation: Option<&String>,
+    init_value: crate::ast::Value,
+    port_type: crate::ast::PortType,
+) -> Result<(crate::ast::Value, crate::ast::PortType), String> {
+    let Some(t) = annotation else {
+        return Ok((init_value, port_type));
+    };
+    let annotated = crate::ast::PortType::from_keyword(t)
+        .ok_or_else(|| format!(
+            "shared binding '{name}': unknown type `{t}` in annotation. \
+             Recognised types: u64, f64, str, bool."
+        ))?;
+    if annotated == port_type {
+        Ok((init_value, annotated))
+    } else if port_type == crate::ast::PortType::U64
+        && annotated == crate::ast::PortType::F64
+    {
+        let widened = match init_value {
+            crate::ast::Value::U64(v) => crate::ast::Value::F64(v as f64),
+            other => other,
+        };
+        Ok((widened, annotated))
+    } else {
+        Err(format!(
+            "shared binding '{name}: {t}': the initializer is {port_type:?}, \
+             which doesn't match the annotated type. A cell keeps ONE type \
+             for life — make the initializer match the annotation."
+        ))
+    }
+}
+
 /// Extract an integer literal from a positional argument. Returns None
 /// for named args, non-int-literal positional args, or any other form.
 fn positional_int_lit(arg: &crate::dsl::ast::Arg) -> Option<u64> {
@@ -1813,6 +1852,9 @@ impl Compiler {
                                  expressions don't have a well-defined single init for the \
                                  shared cell. See SRD-16 §\"Non-literal `shared` initializers\"."
                             ))?;
+                        let (init_value, port_type) = apply_shared_type_annotation(
+                            name, b.type_annotation.as_ref(), init_value, port_type,
+                        )?;
                         // `shared X := <literal>` cells: dynamic for
                         // init-contract purposes — the cell can be
                         // written by inner scopes between scope-init
@@ -2225,6 +2267,9 @@ impl Compiler {
                             try_fold_shared_init(&b.value)
                     {
                         let name = &b.targets[0];
+                        let (init_value, port_type) = apply_shared_type_annotation(
+                            name, b.type_annotation.as_ref(), init_value, port_type,
+                        )?;
                         asm.add_input(name, init_value, port_type, crate::kernel::InputKind::ExternalWrite);
                         self.input_names.push(name.clone());
                         let passthrough = Box::new(

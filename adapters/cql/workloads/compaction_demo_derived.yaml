@@ -207,7 +207,7 @@ bindings: |
   # flip would trap on that bridge). A run that skips the measure phase
   # still has a valid (single-row) stride; the `batch:` resolution
   # coerces the F64 stride to a row count.
-  shared measured := 1.0
+  shared measured: f64 := 1.0
 
 scenarios:
   # Default: the incremental size-tier sweep.

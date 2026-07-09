@@ -245,6 +245,12 @@ pub struct Binding {
     pub targets: Vec<String>,
     pub value: Expr,
     pub modifier: BindingModifier,
+    /// Optional explicit type annotation — `shared name: f64 := 1`.
+    /// Only meaningful on `shared` bindings (scope_model.md §"Type
+    /// stability"): it pins the CELL's PortType for life, winning over
+    /// literal inference (so `1` vs `1.0` stops being load-bearing).
+    /// The parser rejects annotations on non-shared bindings.
+    pub type_annotation: Option<String>,
     pub span: Span,
 }
 

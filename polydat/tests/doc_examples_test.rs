@@ -241,6 +241,7 @@ fn bind(target: &str, value: Expr) -> Statement {
         targets: vec![target.into()],
         value,
         modifier: BindingModifier::NONE,
+        type_annotation: None,
         span: sp(),
     })
 }
@@ -249,6 +250,7 @@ fn bind_multi(targets: &[&str], value: Expr) -> Statement {
         targets: targets.iter().map(|s| s.to_string()).collect(),
         value,
         modifier: BindingModifier::NONE,
+        type_annotation: None,
         span: sp(),
     })
 }

@@ -432,6 +432,24 @@ fn parse_cycle_binding(p: &mut Parser) -> Result<Statement, String> {
 fn parse_cycle_binding_with_modifier(p: &mut Parser, modifier: BindingModifier) -> Result<Statement, String> {
     let span = p.span();
     let name = p.expect_ident()?;
+    // Optional type annotation — `shared name: f64 := expr`. Pins the
+    // shared CELL's type for life (scope_model.md §"Type stability");
+    // literal inference (`1` vs `1.0`) stops being load-bearing. Only
+    // `shared` bindings carry a cell whose type the annotation can pin,
+    // so it is rejected elsewhere rather than silently ignored.
+    let type_annotation = if matches!(p.peek(), TokenKind::Colon) {
+        p.advance(); // consume ':'
+        let typ = p.expect_ident()?;
+        if !modifier.is_shared() {
+            return Err(format!(
+                "type annotation `{name}: {typ}` is only supported on `shared`                  bindings (it pins the shared cell's type). For a plain typed                  slot use `extern {name}: {typ} = …` at line {}, col {}",
+                span.line, span.col,
+            ));
+        }
+        Some(typ)
+    } else {
+        None
+    };
     p.expect(&TokenKind::ColonEq)?;
     let value = parse_expr(p)?;
 
@@ -439,6 +457,7 @@ fn parse_cycle_binding_with_modifier(p: &mut Parser, modifier: BindingModifier) 
         targets: vec![name],
         value,
         modifier,
+        type_annotation,
         span,
     }))
 }
@@ -464,6 +483,7 @@ fn parse_destructuring_binding(p: &mut Parser) -> Result<Statement, String> {
         targets,
         value,
         modifier: BindingModifier::NONE,
+        type_annotation: None,
         span,
     }))
 }

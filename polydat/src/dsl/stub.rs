@@ -81,6 +81,7 @@ impl ExprStub {
             targets: vec![self.name],
             value: self.expr,
             modifier: self.modifier,
+            type_annotation: None,
             span: Span { line: 0, col: 0 },
         })
     }
