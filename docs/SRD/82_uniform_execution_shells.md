@@ -736,6 +736,23 @@ budget."
 
 ---
 
+## Error-rate guard: visible synthesis (2026-07-09, catchup D1)
+
+The future shape recorded in §"AggregateGuard retired as a default"
+is implemented. An opted-in `error_rate_max` no longer routes through
+a hidden expression inlined in `build_for_phase`; it becomes a
+first-class `StopConditionDecl` via the ONE canonical constructor
+(`StopConditionDecl::error_rate_guard`), inserted at the head of the
+phase's `stop_when` list during config assembly and announced at
+INFO like every synthesized layer:
+
+    phase 'X': error_rate_max=0.2 → stop_when: op_count >= 50 && error_rate > 0.2 (synthesized)
+
+`build_for_phase` is one uniform loop over declared conditions —
+no special-cased first arm, no condition the operator can't see
+before it trips. The trip keeps its established
+`error_rate_exceeded` class via the decl's `reason` override.
+
 ## Panic reporting: one full render (2026-07-09, catchup C3)
 
 A per-cycle panic used to print its full enriched diagnostic

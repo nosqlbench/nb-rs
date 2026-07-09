@@ -419,3 +419,35 @@ phases:
     assert!(stderr.contains("errors:"),
         "the errors block is present: {stderr}");
 }
+
+/// Attempt-level stop wires (compaction-demo diagnosis: the result-
+/// level error_rate is blind behind retries). `attempt_count` /
+/// `attempt_error_rate` are declarable stop_when wires; with a 100%
+/// deterministic error rate the guard trips at the 50-attempt floor.
+#[test]
+fn attempt_level_guard_is_declarable() {
+    // `rate:` paces the phase so it stays alive across
+    // stop-condition evaluation ticks — instant failing ops would
+    // otherwise drain all cycles before the first tick. (testkit
+    // injects the error before its latency await, so
+    // result-latency can't provide the pacing.)
+    let wl = write_workload("attempt_guard", r#"
+phases:
+  probe:
+    adapter: testkit
+    cycles: 2000
+    rate: 500
+    stop_when:
+      - when: "attempt_count >= 50 && attempt_error_rate > 0.5"
+    ops:
+      insert:
+        stmt: "op"
+        result-error-rate: 1.0
+"#);
+    let (_stdout, stderr, ok) = run(&wl, &["errors=warn", "concurrency=4"]);
+    assert!(!ok, "attempt guard must fail the phase: {stderr}");
+    assert!(stderr.contains("attempt_error_rate"),
+        "trip names the attempt wire: {stderr}");
+    assert!(stderr.contains("attempts="),
+        "actual attempt values reported: {stderr}");
+}

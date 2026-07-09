@@ -2816,6 +2816,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 crate::stop_conditions::StopConditionDecl {
                     when: "children_failed > 0".to_string(),
                     effect: crate::phase_outcome::Outcome::failed(),
+                    reason: None,
                 },
             ];
             // Declared workload-level conditions (`each ∋ self|workload`).
@@ -2834,11 +2835,12 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                         c.effect.as_deref(),
                         crate::phase_outcome::Outcome::interrupted(),
                     ),
+                    reason: None,
                 }));
             let set = match scope_tree.nodes[scope_tree.workload_root_idx()].cached_kernel.get() {
                 Some(root_kernel) => {
                     crate::stop_conditions::StopConditionSet::build_for_phase(
-                        root_kernel, None, &conditions,
+                        root_kernel, &conditions,
                     ).unwrap_or_else(|e| {
                         crate::diag!(crate::observer::LogLevel::Error,
                             "workload stop-condition compile failed: {e}");

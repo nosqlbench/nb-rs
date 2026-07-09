@@ -46,6 +46,18 @@ pub mod wire {
     pub const ERROR_RATE: &str = "error_rate";
     /// Wall time since the shell started (`u64`, milliseconds).
     pub const ELAPSED_MS: &str = "elapsed_ms";
+    /// Resolved attempts so far (`u64`) — attempt_success +
+    /// attempt_failure, in-flight excluded. Exceeds `op_count`
+    /// exactly when retries are burning attempts.
+    pub const ATTEMPT_COUNT: &str = "attempt_count";
+    /// Failed attempts so far (`u64`), terminal or not.
+    pub const ATTEMPT_FAILURES: &str = "attempt_failures";
+    /// Failed fraction of resolved attempts (`f64`). The
+    /// see-through-retries rate: result-level `error_rate` stays
+    /// ~0 while retries absorb failures (the compaction-demo
+    /// "silent stall"); this one climbs immediately. Declare
+    /// `stop_when: attempt_error_rate > X` to guard on it.
+    pub const ATTEMPT_ERROR_RATE: &str = "attempt_error_rate";
     /// Scenario shells — child phases declared / failed / finished.
     pub const CHILDREN_TOTAL: &str = "children_total";
     pub const CHILDREN_FAILED: &str = "children_failed";
@@ -62,6 +74,8 @@ pub struct RuntimeState {
     pub op_count: u64,
     pub error_count: u64,
     pub elapsed_ms: u64,
+    pub attempt_count: u64,
+    pub attempt_failures: u64,
     pub children_total: u64,
     pub children_failed: u64,
     pub children_done: u64,
@@ -88,6 +102,19 @@ impl RuntimeState {
         }
     }
 
+    /// Failed fraction of RESOLVED attempts; `0.0` before any attempt
+    /// resolves. Unlike [`Self::error_rate`], this sees failures that
+    /// retries later absorb — the guard-visibility answer to the
+    /// compaction-demo diagnosis, where 20,315 retry attempts kept the
+    /// result-level rate at ~0 while the server drowned.
+    pub fn attempt_error_rate(&self) -> f64 {
+        if self.attempt_count == 0 {
+            0.0
+        } else {
+            self.attempt_failures as f64 / self.attempt_count as f64
+        }
+    }
+
     /// Human-readable snapshot of the live wires at evaluation time, for a
     /// tripped condition's message — so the failure reports the ACTUAL
     /// values (`op_count=523, errors=22, error_rate=4.21%`) that crossed the
@@ -105,6 +132,14 @@ impl RuntimeState {
             parts.push(format!("op_count={}", self.op_count));
             parts.push(format!("errors={}", self.error_count));
             parts.push(format!("error_rate={:.2}%", self.error_rate() * 100.0));
+            // Attempts earn a mention when they carry signal: retries
+            // active (attempts exceed ops — the rates diverge) or any
+            // attempt failed (an attempt-wire guard may have tripped).
+            if self.attempt_count > self.op_count || self.attempt_failures > 0 {
+                parts.push(format!("attempts={}", self.attempt_count));
+                parts.push(format!(
+                    "attempt_error_rate={:.2}%", self.attempt_error_rate() * 100.0));
+            }
         }
         parts.push(format!("elapsed={:.1}s", self.elapsed_ms as f64 / 1000.0));
         parts.join(", ")
@@ -113,12 +148,15 @@ impl RuntimeState {
     /// The `(wire, value)` pairs this snapshot supplies. The single
     /// source for the wire→`Value` mapping, so the injector and any
     /// extern-declaration list stay in agreement.
-    fn wires(&self) -> [(&'static str, Value); 7] {
+    fn wires(&self) -> [(&'static str, Value); 10] {
         [
             (wire::OP_COUNT, Value::U64(self.op_count)),
             (wire::ERROR_COUNT, Value::U64(self.error_count)),
             (wire::ERROR_RATE, Value::F64(self.error_rate())),
             (wire::ELAPSED_MS, Value::U64(self.elapsed_ms)),
+            (wire::ATTEMPT_COUNT, Value::U64(self.attempt_count)),
+            (wire::ATTEMPT_FAILURES, Value::U64(self.attempt_failures)),
+            (wire::ATTEMPT_ERROR_RATE, Value::F64(self.attempt_error_rate())),
             (wire::CHILDREN_TOTAL, Value::U64(self.children_total)),
             (wire::CHILDREN_FAILED, Value::U64(self.children_failed)),
             (wire::CHILDREN_DONE, Value::U64(self.children_done)),
@@ -159,6 +197,9 @@ pub fn extern_matter() -> GraphMatter {
         .extern_wire::<u64>(wire::ERROR_COUNT)
         .extern_wire::<f64>(wire::ERROR_RATE)
         .extern_wire::<u64>(wire::ELAPSED_MS)
+        .extern_wire::<u64>(wire::ATTEMPT_COUNT)
+        .extern_wire::<u64>(wire::ATTEMPT_FAILURES)
+        .extern_wire::<f64>(wire::ATTEMPT_ERROR_RATE)
         .extern_wire::<u64>(wire::CHILDREN_TOTAL)
         .extern_wire::<u64>(wire::CHILDREN_FAILED)
         .extern_wire::<u64>(wire::CHILDREN_DONE);
@@ -257,9 +298,34 @@ pub struct StopConditionDecl {
     pub when: String,
     /// The Outcome the shell adopts when `when` trips.
     pub effect: Outcome,
+    /// Reason class recorded when the condition trips. `None` →
+    /// the default `stop_condition: {when}`. Synthesized guards
+    /// set an explicit class (e.g. `error_rate_exceeded`) so trip
+    /// reporting keeps its established vocabulary.
+    pub reason: Option<String>,
 }
 
 impl StopConditionDecl {
+    /// SRD-82 §"AggregateGuard retired as a default" — the visible
+    /// synthesized guard an opted-in `error_rate_max` becomes. ONE
+    /// canonical construction: the expression string exists here
+    /// and nowhere else, and the caller logs it at synthesis so
+    /// the operator sees the condition before it can trip.
+    ///
+    /// `error_rate` is a PROPORTION in [0,1] (terminal errors over
+    /// ops), so a bound of 1.0 simply never fires — a Control-class
+    /// phase that deliberately dwells at a saturating setting uses
+    /// `error_rate_max: 1.0` to opt out with no special-casing. The
+    /// 50-op floor keeps a single early error from aborting a phase
+    /// before the rate is meaningful.
+    pub fn error_rate_guard(max: f64) -> Self {
+        Self {
+            when: format!("op_count >= 50 && error_rate > {max}"),
+            effect: Outcome::failed(),
+            reason: Some("error_rate_exceeded".to_string()),
+        }
+    }
+
     /// Map an SRD-83 `effect:` string to its [`Outcome`]. `"stop"` is a
     /// clean halt (`Interrupted + Succeeded`, keep the partial result);
     /// `"fail"` is the failure halt (`Interrupted + Failed`). `None` —
@@ -297,47 +363,27 @@ struct StopCondition {
 }
 
 impl StopConditionSet {
-    /// Build the set for a shell whose kernel is `phase_kernel`. The
-    /// default error-rate condition (if `error_rate_max` is set) is
-    /// installed first, then each declared `when` predicate. A predicate
-    /// that fails to compile is a hard error (surfaced at build time,
-    /// not swallowed per [`crate::feedback`] "never ignore silently").
+    /// Build the set for a shell whose kernel is `phase_kernel`: one
+    /// uniform loop over the declared conditions — synthesized guards
+    /// (e.g. [`StopConditionDecl::error_rate_guard`]) arrive in the
+    /// SAME list as author-declared predicates, inserted at config
+    /// assembly where they are logged (SRD-82 §"AggregateGuard
+    /// retired as a default": no hidden conditions). A predicate that
+    /// fails to compile is a hard error (surfaced at build time, not
+    /// swallowed per "never ignore silently").
     pub fn build_for_phase(
         phase_kernel: &PolydatKernel,
-        error_rate_max: Option<f64>,
         declared: &[StopConditionDecl],
     ) -> Result<Self, String> {
         let mut conditions = Vec::new();
-        let mut idx = 0;
-        // `error_rate` is a PROPORTION in [0,1] (terminal errors over ops, kept
-        // ≤ 1.0 by the read-order at the snapshot site), so a bound of 1.0
-        // simply never fires — a Control-class phase that deliberately dwells at
-        // a saturating setting uses `error_rate_max: 1.0` to opt out, and it
-        // "just won't trigger" with no special-casing. A real guard uses a
-        // fraction < 1.0 (e.g. `0.5` = "fail past 50% errored ops").
-        if let Some(max) = error_rate_max {
-            // Preserve the interim `AggregateGuard`'s 50-op floor: don't
-            // judge the error rate until enough ops have run for it to be
-            // meaningful (a single early error must not abort the phase).
-            // The rate breach is a `fail` effect — the result is not
-            // trustworthy once the error rate is over the bound.
-            let expr = compile_stop_condition(
-                phase_kernel, idx, &format!("op_count >= 50 && error_rate > {max}"))?;
-            conditions.push(StopCondition {
-                expr,
-                effect: Outcome::failed(),
-                reason: "error_rate_exceeded".into(),
-            });
-            idx += 1;
-        }
-        for decl in declared {
+        for (idx, decl) in declared.iter().enumerate() {
             let expr = compile_stop_condition(phase_kernel, idx, &decl.when)?;
             conditions.push(StopCondition {
                 expr,
                 effect: decl.effect.clone(),   // Outcome no longer Copy (SRD-92 reason field)
-                reason: format!("stop_condition: {}", decl.when),
+                reason: decl.reason.clone()
+                    .unwrap_or_else(|| format!("stop_condition: {}", decl.when)),
             });
-            idx += 1;
         }
         Ok(Self { conditions })
     }
@@ -450,10 +496,15 @@ mod tests {
     fn stop_condition_set_installs_default_error_rate_and_declared_predicates() {
         let phase_kernel = polydat::dsl::compile_polydat("input cycle: u64\nx := 5")
             .expect("phase kernel");
-        // Default error-rate (0.1) + a declared op-count predicate.
+        // The synthesized error-rate guard (0.1) rides the SAME list
+        // as the declared op-count predicate — one uniform path
+        // (SRD-82: no hidden conditions).
         let mut set = StopConditionSet::build_for_phase(
-            &phase_kernel, Some(0.1),
-            &[StopConditionDecl { when: "op_count > 1000".to_string(), effect: Outcome::failed() }])
+            &phase_kernel,
+            &[
+                StopConditionDecl::error_rate_guard(0.1),
+                StopConditionDecl { when: "op_count > 1000".to_string(), effect: Outcome::failed(), reason: None },
+            ])
             .expect("build set");
         // The compiled set is independent of the parent kernel — drop it
         // and evaluation still works (each predicate is its own

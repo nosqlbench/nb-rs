@@ -4693,7 +4693,23 @@ async fn run_phase_inner(
         //      (a workload declaration fanned out to every phase shell;
         //      a workload `each: self`/`workload` stays at the workload
         //      shell and is compiled into `ctx.workload_shell` instead).
-        stop_when: phase.stop_when.iter()
+        // Plus, FIRST: the synthesized error-rate guard when
+        // `error_rate_max` is opted in — a first-class visible
+        // condition in the same list, announced at INFO the way
+        // every synthesized layer is (SRD-82 §"AggregateGuard
+        // retired as a default"; no hidden conditions).
+        stop_when: phase.error_rate_max.or(ctx.error_rate_max)
+            .map(|max| {
+                let guard =
+                    crate::stop_conditions::StopConditionDecl::error_rate_guard(max);
+                crate::diag!(crate::observer::LogLevel::Info,
+                    "phase '{phase_name}': error_rate_max={max} → stop_when: {} \
+                     (synthesized)",
+                    guard.when);
+                guard
+            })
+            .into_iter()
+            .chain(phase.stop_when.iter()
             .filter(|c| c.each.iter().any(|l| matches!(l,
                 nbrs_workload::model::ScopeLevel::SelfScope
                 | nbrs_workload::model::ScopeLevel::Phase)))
@@ -4718,8 +4734,9 @@ async fn run_phase_inner(
                         c.effect.as_deref(),
                         crate::phase_outcome::Outcome::failed(),
                     ),
+                    reason: None,
                 }
-            })
+            }))
             .collect(),
         // Total-attempts budget inherited by this phase's ops: the phase's
         // own `tries:` wins, else the workload-root `tries` param. `None`

@@ -79,17 +79,53 @@ pub struct TriesDispenser {
     /// Activity-level metrics — the attempt tallies live here so the whole
     /// phase shares one attempt counter regardless of which op path ran.
     metrics: Arc<ActivityMetrics>,
+    /// Backoff pacing between retryable attempts (compaction-demo
+    /// diagnosis: an immediate-`continue` retry loop hammers a dying
+    /// server, and `tries: 20 × timeout: 60s` makes it look like a
+    /// silent stall). Exponential from `backoff_base_ms`, capped at
+    /// `backoff_max_ms`, with deterministic jitter in [50%, 100%]
+    /// derived from (cycle, attempt) so runs stay replayable.
+    /// `base == 0` disables pacing. Set per op via `retry_backoff` /
+    /// `retry_backoff_max` (duration strings; defaults 100ms / 10s).
+    backoff_base_ms: u64,
+    backoff_max_ms: u64,
 }
 
 impl TriesDispenser {
-    /// Wrap `inner` with a total-attempts budget.
+    /// Wrap `inner` with a total-attempts budget and retry pacing.
     pub fn wrap(
         inner: Arc<dyn OpDispenser>,
         tries: u32,
         metrics: Arc<ActivityMetrics>,
+        backoff_base_ms: u64,
+        backoff_max_ms: u64,
     ) -> Arc<dyn OpDispenser> {
-        Arc::new(Self { inner, tries, metrics })
+        Arc::new(Self { inner, tries, metrics, backoff_base_ms, backoff_max_ms })
     }
+}
+
+/// Runtime-agnostic async sleep. `tokio::time::sleep` binds its
+/// timer to the runtime owning the current thread — fibers run on
+/// shared pool threads, so under multiple runtimes (the lib-test
+/// harness; any embedder) the timer can land on a runtime that
+/// shuts down mid-sleep. A detached sleeper thread + oneshot has
+/// no such coupling, and backoff is the degraded path — a
+/// short-lived thread is noise next to the ≥50ms wait it serves.
+async fn portable_sleep_ms(ms: u64) {
+    let (tx, rx) = futures::channel::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        let _ = tx.send(());
+    });
+    let _ = rx.await;
+}
+
+/// splitmix64 — cheap deterministic hash for replayable retry jitter.
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 impl WrappingDispenser for TriesDispenser {}
@@ -167,6 +203,14 @@ impl OpDispenser for TriesDispenser {
                         // per-op).
                         let retryable = matches!(&e, ExecutionError::Op(ad) if ad.retryable);
                         if retryable && attempt_no < self.tries {
+                            if self.backoff_base_ms > 0 {
+                                let exp = self.backoff_base_ms
+                                    .saturating_mul(1u64 << (attempt_no - 1).min(20));
+                                let capped = exp.min(self.backoff_max_ms).max(1);
+                                let h = splitmix64(cycle ^ ((attempt_no as u64) << 48));
+                                let jittered = capped / 2 + (h % (capped / 2 + 1));
+                                portable_sleep_ms(jittered).await;
+                            }
                             continue;
                         }
                         // Terminal: hand the failure up to the result level.
@@ -230,7 +274,7 @@ mod tests {
     async fn tries_zero_fails_without_executing() {
         let inner = Arc::new(FlakyInner { fail_first: 0, calls: AtomicU32::new(0) });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 0, metrics);
+        let d = TriesDispenser::wrap(inner.clone(), 0, metrics, 0, 0);
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let err = d.execute(0, &ctx).await.expect_err("tries:0 must fail");
@@ -245,7 +289,7 @@ mod tests {
     async fn tries_is_a_total_attempt_budget() {
         let inner = Arc::new(FlakyInner { fail_first: 2, calls: AtomicU32::new(0) });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 3, metrics.clone());
+        let d = TriesDispenser::wrap(inner.clone(), 3, metrics.clone(), 0, 0);
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         d.execute(0, &ctx).await.expect("third attempt succeeds");
@@ -259,7 +303,7 @@ mod tests {
     async fn budget_exhaustion_is_terminal() {
         let inner = Arc::new(FlakyInner { fail_first: 5, calls: AtomicU32::new(0) });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 2, metrics);
+        let d = TriesDispenser::wrap(inner.clone(), 2, metrics, 0, 0);
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let err = d.execute(0, &ctx).await.expect_err("budget spent");

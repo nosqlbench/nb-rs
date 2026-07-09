@@ -110,6 +110,9 @@ kernel (SRD-11):
 | `error_count` | errors recorded so far |
 | `error_rate` | `error_count / op_count` (0 when no ops) |
 | `elapsed_ms` / `elapsed_s` | wall time since the shell started |
+| `attempt_count` | resolved attempts (attempt_success + attempt_failure; in-flight excluded) — exceeds `op_count` exactly when retries burn attempts |
+| `attempt_failures` | failed attempts, terminal or not |
+| `attempt_error_rate` | `attempt_failures / attempt_count` — the see-through-retries rate (2026-07-09, compaction-demo diagnosis): result-level `error_rate` stays ~0 while a `tries:` budget absorbs failures; this one climbs immediately, so `attempt_error_rate > X` guards a phase that would otherwise look like a silent stall |
 | `children_total` / `children_failed` / `children_done` | child-shell outcomes (scenario/scope shells) |
 
 So the example predicate is literally:

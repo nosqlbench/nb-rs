@@ -1617,9 +1617,25 @@ impl Activity {
                         .or_else(|| op_error_policy.router.retry_verb_budget()
                             .map(|additional| additional.saturating_add(1)));
                     let has_tries_wrapper = matches!(op_tries, Some(n) if n != 1);
+                    // Retry pacing (compaction-demo diagnosis): op-level
+                    // `retry_backoff` / `retry_backoff_max` duration
+                    // strings; defaults 100ms base doubling to a 10s cap,
+                    // `retry_backoff: 0` disables.
+                    let backoff_param = |key: &str, default_ms: u64| -> u64 {
+                        template.params.get(key)
+                            .and_then(|v| match v {
+                                serde_json::Value::Number(n) => n.as_u64().map(|n| n.to_string()),
+                                serde_json::Value::String(s) => Some(s.clone()),
+                                _ => None,
+                            })
+                            .and_then(|s| crate::timeval::parse_time_ms(&s).ok())
+                            .unwrap_or(default_ms)
+                    };
                     let raw = match op_tries {
                         Some(n) if n != 1 => crate::wrappers::TriesDispenser::wrap(
                             raw, n, activity.metrics.clone(),
+                            backoff_param("retry_backoff", 100),
+                            backoff_param("retry_backoff_max", 10_000),
                         ),
                         _ => raw,
                     };
@@ -2289,7 +2305,6 @@ impl Activity {
         let mut stop_conditions = match &activity.phase_kernel {
             Some(kernel) => crate::stop_conditions::StopConditionSet::build_for_phase(
                 kernel,
-                activity.config.error_rate_max,
                 &activity.config.stop_when,
             )
             .unwrap_or_else(|e| {
@@ -2344,10 +2359,18 @@ impl Activity {
                 // `errors_total` (which can exceed op_count under retries).
                 let error_count = activity.metrics.result_failure.count();
                 let op_count = activity.metrics.cycles_completed();
+                // Attempt-level tallies (resolved attempts only, per the
+                // SRD-91 counters): the see-through-retries wires, so a
+                // `stop_when: attempt_error_rate > X` fires while retries
+                // keep the result-level rate green.
+                let attempt_ok = activity.metrics.attempt_success.count();
+                let attempt_failures = activity.metrics.attempt_failure.count();
                 let state = crate::stop_conditions::RuntimeState {
                     op_count,
                     error_count,
                     elapsed_ms: phase_start.elapsed().as_millis() as u64,
+                    attempt_count: attempt_ok + attempt_failures,
+                    attempt_failures,
                     ..Default::default()
                 };
                 if let Some((outcome, reason)) = stop_conditions.evaluate(&state) {
@@ -3936,6 +3959,14 @@ mod tests {
 
     #[tokio::test]
     async fn activity_retries_on_error() {
+        // Retry backoff keeps this test's op IN FLIGHT for a few
+        // hundred ms — long enough to overlap the session_signals
+        // tests, whose bodies legitimately hold the process-global
+        // cancel rung in force (the raced in-flight cancel would
+        // kill attempt 3). Serialize with them, same discipline as
+        // every global-flag test.
+        let _signals = crate::session_signals::STOP_GLOBAL_TEST_LOCK
+            .lock().unwrap_or_else(|e| e.into_inner());
         let config = ActivityConfig {
             name: "retrytest".into(),
             cycles: 1,

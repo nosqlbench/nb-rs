@@ -148,6 +148,11 @@ impl WorkloadShell {
             op_count: self.op_count.load(Ordering::Relaxed),
             error_count: self.error_count.load(Ordering::Relaxed),
             elapsed_ms: self.start.elapsed().as_millis() as u64,
+            // Workload-shell aggregates fold per-phase RESULTS; the
+            // attempt-level wires are phase-shell state (retries are
+            // an op-loop concern) and stay zero here.
+            attempt_count: 0,
+            attempt_failures: 0,
             children_total: self.children_total.load(Ordering::Relaxed),
             children_failed: self.children_failed.load(Ordering::Relaxed),
             children_done: self.children_done.load(Ordering::Relaxed),
@@ -241,10 +246,11 @@ mod tests {
         let root = polydat::dsl::compile_polydat("input cycle: u64\nx := 5")
             .expect("root kernel");
         let set = StopConditionSet::build_for_phase(
-            &root, None,
+            &root,
             &[crate::stop_conditions::StopConditionDecl {
                 when: "children_failed > 0".to_string(),
                 effect: Outcome::failed(),
+                reason: None,
             }])
             .expect("build set");
         let shell = WorkloadShell::new(set);
@@ -272,10 +278,11 @@ mod tests {
         let root = polydat::dsl::compile_polydat("input cycle: u64")
             .expect("root kernel");
         let set = StopConditionSet::build_for_phase(
-            &root, None,
+            &root,
             &[crate::stop_conditions::StopConditionDecl {
                 when: "op_count > 1000".to_string(),
                 effect: Outcome::interrupted(),
+                reason: None,
             }])
             .expect("build set");
         let shell = WorkloadShell::new(set);
