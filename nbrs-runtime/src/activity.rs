@@ -3632,8 +3632,27 @@ async fn executor_task(
                     //    the cell-bound input slot for `<X>`,
                     //    propagating result-binding LHS values up
                     //    to parent `shared` cells. No-op when the
-                    //    kernel carries no write-throughs.
-                    fiber.commit_op_template_write_throughs_for_idx(template_idx);
+                    //    kernel carries no write-throughs. A
+                    //    type-stability violation (scope_model.md
+                    //    §"Type stability") is a DETERMINISTIC
+                    //    workload bug — every cycle would repeat it —
+                    //    so it stops the phase with the write-site
+                    //    diagnostic (same treatment as the panic arm).
+                    if let Err(e) = fiber
+                        .commit_op_template_write_throughs_for_idx(template_idx)
+                    {
+                        activity.metrics.errors_total.inc();
+                        activity.metrics.count_error_type("type_mismatch");
+                        activity.stop_flag.store(true, Ordering::Relaxed);
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(format!(
+                                "[type_mismatch] op '{}' at cycle {}: {e}",
+                                template.name, cycle,
+                            ));
+                        }
+                    }
                     // 2. Pull every output of the op-template
                     //    kernel so side-effecting nodes (log_info,
                     //    log_debug) inside result-binding compute

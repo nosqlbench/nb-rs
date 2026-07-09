@@ -824,7 +824,14 @@ impl FiberBuilder {
     /// there to any sibling phase that imports the same name).
     /// No-op when the kernel carries no write-throughs (typical
     /// for ops without `result:`).
-    pub fn commit_op_template_write_throughs_for_idx(&mut self, template_idx: usize) {
+    /// Errors when a write-through violates cell type stability
+    /// (scope_model.md §"Type stability") — surfaced by the fiber
+    /// loop as a phase-stopping workload bug (it is deterministic:
+    /// every subsequent cycle would repeat it).
+    pub fn commit_op_template_write_throughs_for_idx(
+        &mut self,
+        template_idx: usize,
+    ) -> Result<(), String> {
         let debug = polydat::library::debug_nodes_enabled();
         let Some(kernel) = self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) else {
             if debug {
@@ -836,7 +843,7 @@ impl FiberBuilder {
                     ),
                 );
             }
-            return;
+            return Ok(());
         };
         if debug {
             crate::observer::log(
@@ -844,7 +851,7 @@ impl FiberBuilder {
                 &format!("commit_op_template_write_throughs_for_idx: idx {template_idx} kernel found"),
             );
         }
-        kernel.commit_write_throughs();
+        kernel.commit_write_throughs()
     }
 
     /// Per-cycle: pull the op-template kernel's **side-effecting**
