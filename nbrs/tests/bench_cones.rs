@@ -40,3 +40,16 @@ fn tier_table_p1_row_stays_interpreter() {
     assert!(text.contains("4 nodes"), "structural summary: {text}");
     assert!(text.contains("1 cone (4 nodes fused)"), "lattice view: {text}");
 }
+
+#[test]
+fn infix_star_is_an_expression_not_a_glob() {
+    // `cycle * 3` used to be eaten by glob expansion ("matched no
+    // files"); only `.polydat` path patterns glob now.
+    let text = bench("hash((cycle * 3) + 7)");
+    assert!(
+        !text.contains("matched no files"),
+        "infix multiply must not glob: {text}"
+    );
+    assert!(text.contains("Lattice (jit=auto)"), "expr benched: {text}");
+    assert!(text.contains("jit_cone["), "and fused: {text}");
+}

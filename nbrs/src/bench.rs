@@ -426,10 +426,14 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
         i += 1;
     }
 
-    // Glob expansion
+    // Glob expansion — only for `.polydat` path patterns. A bare
+    // `*` or `?` is NOT enough: polydat expressions legitimately
+    // contain `*` (`cycle * 3`), and files are recognized by their
+    // `.polydat` suffix everywhere else (normalize_source), so the
+    // same suffix gates globbing.
     let mut expanded: Vec<String> = Vec::new();
     for expr in &ba.exprs {
-        if expr.contains('*') || expr.contains('?') {
+        if (expr.contains('*') || expr.contains('?')) && expr.ends_with(".polydat") {
             match glob::glob(expr) {
                 Ok(paths) => {
                     let mut found = false;
