@@ -1637,6 +1637,28 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         }
     };
 
+    // SRD-105 — session-wide engine mix: `jit=off|auto|force` (or
+    // `--jit=`). Off is the shipped default until the Push 3 flip;
+    // `force` drives the differential battery, `off` is the
+    // interpreter baseline / escape hatch.
+    {
+        let raw = args.iter()
+            .find_map(|a| a.strip_prefix("--jit="))
+            .map(|s| s.to_string())
+            .or_else(|| params.get("jit").cloned());
+        if let Some(s) = raw {
+            let mode = match s.trim() {
+                "off" => Ok(polydat::JitMode::Off),
+                "auto" => Ok(polydat::JitMode::Auto),
+                "force" => Ok(polydat::JitMode::Force),
+                bad => Err(format!(
+                    "unknown jit value '{bad}' — use 'off', 'auto', or 'force'"
+                )),
+            }?;
+            polydat::set_default_jit_mode(mode);
+        }
+    }
+
     // Parse dryrun= param into diagnostic config
     if let Some(spec) = params.get("dryrun") {
         diag = DiagnosticConfig::parse(spec);

@@ -1,7 +1,8 @@
 # SRD-105 — JIT as the Default Engine: Auto-Mixed Cone Compilation
 
-**Status:** Push 1 implemented 2026-07-09 (extraction + cone node +
-  `JitMode` config, default `off`); Pushes 2-4 pending
+**Status:** Pushes 1-2 implemented 2026-07-09 (extraction + cone node
+  + `JitMode` config, default `off`; differential battery + panic
+  parity + `jit=` session param); Pushes 3-4 pending
 **Owner:** polydat (cone extraction, cone node, config surface)
 **Implementation target:** `polydat/src/compile/assembly.rs` (cone
   extraction pass), a new `polydat/src/compile/cone.rs` (cone node +
@@ -160,6 +161,30 @@ determinism makes the comparison exact, including F64 (transcendentals
 call the same Rust functions via extern symbols; Cranelift scalar ops
 are IEEE-identical). Predicate-violation workloads assert panic-message
 parity. The battery is a permanent suite, not a one-time check.
+
+Implemented (Push 2) at two levels:
+
+- **Expression level** — polydat's `function_coverage` suite IS the
+  battery: its harness compiles every coverage expression on both
+  engines and asserts every pull bit-identical (F64 by bits, so
+  engine-identical NaNs count as equal). Any new function test is
+  differential by construction. Nondeterministic programs
+  (`PolydatProgram::is_deterministic`) skip the cross-kernel
+  comparison — two instances legitimately diverge.
+- **Workload level** — `nbrs/tests/jit_differential.rs` runs every
+  stdlib-coverage scenario (plus expression examples) through the
+  real binary under `jit=off` and `jit=force` and byte-compares the
+  op output, covering op-template synthesis, scope chains, and the
+  dispenser path.
+- **Panic parity** — `is_positive` violations carry the configured
+  predicate name through the JIT fail extern ((ptr, len) into the
+  node's meta const, node kept alive by the kernel), so the cone
+  message matches the interpreter's `is_positive({name}): …` format
+  exactly; asserted by `violation_message_parity_between_engines`.
+
+The `jit=off|auto|force` session param (front-loaded from Push 3's
+config surface) maps to `polydat::set_default_jit_mode` at session
+start; unknown values are routed configuration errors.
 
 ## Pushes
 
