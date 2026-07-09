@@ -480,6 +480,7 @@ inventory::submit! {
             // (it manages reconnection internally and doesn't yet honor
             // per-statement tracing) — declared until wired.
             "reconnect_base_delay", "reconnect_max_delay",
+            "heartbeat_interval", "connection_idle_timeout",
             "trace_rate", "trace_log",
         ],
     }

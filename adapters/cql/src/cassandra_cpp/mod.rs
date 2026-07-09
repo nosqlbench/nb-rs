@@ -616,6 +616,18 @@ impl CqlAdapter {
             std::time::Duration::from_millis(config.reconnect_base_delay_ms),
             std::time::Duration::from_millis(config.reconnect_max_delay_ms),
         );
+        // Connection-survival knobs (see `CqlConfig`): the idle timeout is the
+        // host-ejection trigger during server stalls — a connection that goes
+        // this long without a successful heartbeat response is terminated, and
+        // with no live connections the host leaves the policy
+        // (LIB_NO_HOSTS_AVAILABLE bursts until reconnect). Raise
+        // `connection_idle_timeout` past the longest expected stall to ride
+        // through it; in-flight requests still honour their own request
+        // timeouts.
+        cluster.set_connection_heartbeat_interval(
+            std::time::Duration::from_millis(config.heartbeat_interval_ms));
+        cluster.set_connection_idle_timeout(
+            std::time::Duration::from_millis(config.connection_idle_timeout_ms));
 
         // `common::CqlConfig::from_params` already validated the
         // consistency string at parse time, so this conversion is
@@ -2163,6 +2175,7 @@ inventory::submit! {
             "username", "password", "timeout", "request_timeout_ms",
             "connect_timeout", "request_timeout",
             "reconnect_base_delay", "reconnect_max_delay",
+            "heartbeat_interval", "connection_idle_timeout",
             "cassandra_log_level",
             "trace_rate", "trace_log",
         ],

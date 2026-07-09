@@ -45,6 +45,22 @@ pub struct CqlConfig {
     /// internally and leaves these declared-but-inert (see `known_params`).
     pub reconnect_base_delay_ms: u64,
     pub reconnect_max_delay_ms: u64,
+    /// Connection-survival knobs (SRD-103 §"session tuning"). During a
+    /// server stall (GC pause, compaction storm) heartbeats go
+    /// unanswered; once a connection passes `connection_idle_timeout`
+    /// without a successful heartbeat response the driver terminates it,
+    /// and with no live connections the host is ejected from the policy —
+    /// every request then fails instantly with `LIB_NO_HOSTS_AVAILABLE`
+    /// until reconnect. Raising the idle timeout well past the longest
+    /// expected stall keeps the host in the policy (in-flight requests
+    /// still honour their own request timeouts — these knobs govern the
+    /// CONNECTION's survival, not the requests'). Driver defaults:
+    /// heartbeat 30s, idle timeout 60s. Set via `heartbeat_interval` /
+    /// `connection_idle_timeout` (duration strings). Honored by the
+    /// cassandra-cpp engine; the scylla engine manages connection
+    /// liveness internally and leaves these declared-but-inert.
+    pub heartbeat_interval_ms: u64,
+    pub connection_idle_timeout_ms: u64,
     /// Initial value of the per-execute tracing probability
     /// (0.0–1.0). Engine-specific dispenser code seeds the
     /// `cql_trace_rate` dynamic control with this value, then
@@ -77,6 +93,9 @@ impl Default for CqlConfig {
             connect_timeout_ms: 5_000,
             reconnect_base_delay_ms: 2_000,
             reconnect_max_delay_ms: 600_000,
+            // Driver defaults — see the field doc.
+            heartbeat_interval_ms: 30_000,
+            connection_idle_timeout_ms: 60_000,
             trace_rate: None,
             trace_log_path: None,
         }
@@ -211,6 +230,14 @@ impl CqlConfig {
         if let Some(v) = params.get("reconnect_max_delay") {
             config.reconnect_max_delay_ms = nbrs_runtime::timeval::parse_time_ms(v)
                 .map_err(|e| format!("invalid reconnect_max_delay value '{v}': {e}"))?;
+        }
+        if let Some(v) = params.get("heartbeat_interval") {
+            config.heartbeat_interval_ms = nbrs_runtime::timeval::parse_time_ms(v)
+                .map_err(|e| format!("invalid heartbeat_interval value '{v}': {e}"))?;
+        }
+        if let Some(v) = params.get("connection_idle_timeout") {
+            config.connection_idle_timeout_ms = nbrs_runtime::timeval::parse_time_ms(v)
+                .map_err(|e| format!("invalid connection_idle_timeout value '{v}': {e}"))?;
         }
         if let Some(v) = params.get("trace_rate") {
             let parsed: f64 = v.parse()

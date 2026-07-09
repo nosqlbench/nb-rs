@@ -72,6 +72,23 @@ params:
   # is deliberately generous so a loaded or just-starting cluster still connects;
   # drop it on the CLI (`connect_timeout=30s`) for a nearby cluster.
   connect_timeout: 5m
+  # ── Connection-survival knobs (cassandra-cpp engine) ─────────
+  # During a server stall (GC pause / compaction storm) heartbeats go
+  # unanswered; once a connection exceeds `connection_idle_timeout`
+  # without a successful heartbeat response the driver kills it, the
+  # host leaves the policy, and EVERYTHING fails instantly with
+  # LIB_NO_HOSTS_AVAILABLE until reconnect. Relaxed timings so the
+  # client rides THROUGH node stalls instead of ejecting the host:
+  # heartbeats keep probing every 30s (driver default), but a
+  # connection is only declared dead after 5 MINUTES without a
+  # response (driver default: 60s). In-flight requests still honour
+  # their own `timeout:` — these govern the connection, not requests.
+  # If a stall outlasts even that, reconnect promptly (1s..10s
+  # backoff) rather than the driver's default 2s..10m crawl.
+  heartbeat_interval: 30s
+  connection_idle_timeout: 5m
+  reconnect_base_delay: 1s
+  reconnect_max_delay: 10s
   # `error_rate_backstop` = the SANITY-BACKSTOP error rate (a proportion in
   # [0,1]). It is a PLAIN WORKLOAD PARAM consumed by the data-plane phases'
   # `stop_when` (load_increment / recall_check) — a modular, workload-expressed
