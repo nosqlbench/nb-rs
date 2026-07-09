@@ -103,9 +103,10 @@ fn in_range(
 
 /// Assert that a u64 value is one of an enumerated allow-list.
 /// SRD-80b Phase C migration via `Const<Vec<C>>` combinator.
-/// JIT-ineligible by virtue of the variable-length allow-list
-/// (the JIT u64 buffer has no slot shape for it); the body
-/// runs on the typed-eval path.
+/// JIT-lowered as unrolled inline comparisons
+/// (`JitOp::IsOneOfCheck`); the fail path calls an extern that
+/// carries the allow-list contents for message parity with this
+/// body's panic.
 #[crate::polydat_node(category = Arithmetic)]
 fn is_one_of(input: u64, allowed: crate::derive_support::Const<Vec<u64>>) -> u64 {
     if !allowed.contains(&input) {

@@ -208,35 +208,62 @@ fn scope_init_chains_stay_on_the_fold_path() {
 }
 
 /// SRD-105 panic parity: a predicate violation reports the same
-/// actionable core — predicate name and violation text — whether it
-/// fires on the interpreter or inside a fused cone. The cone adds
-/// its member attribution; it never obscures the original message.
-#[test]
-fn violation_message_parity_between_engines() {
-    let src = "input (x: u64)\n\
-               checked := is_positive(mul(x, 0))\n";
-    let capture = |mode: JitMode| -> String {
-        with_mode(mode, || {
-            let mut k = compile(src);
-            let idx = k.program().find_input("x").expect("input x");
-            k.state().set_input(idx, Value::U64(5));
-            let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                k.pull("checked");
-            }))
-            .expect_err("violation must panic");
-            err.downcast_ref::<String>()
-                .cloned()
-                .or_else(|| err.downcast_ref::<&'static str>().map(|s| (*s).to_string()))
-                .expect("string payload")
-        })
-    };
-    let off = capture(JitMode::Off);
-    let force = capture(JitMode::Force);
-    let core = "is_positive(value): value must be > 0, got 0";
+/// actionable core — predicate name, violation text, and for
+/// is_one_of the allow-list contents — whether it fires on the
+/// interpreter or inside a fused cone. The cone adds its member
+/// attribution; it never obscures the original message.
+fn capture_violation(src: &str, mode: JitMode, x: u64) -> String {
+    with_mode(mode, || {
+        let mut k = compile(src);
+        let idx = k.program().find_input("x").expect("input x");
+        k.state().set_input(idx, Value::U64(x));
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            k.pull("checked");
+        }))
+        .expect_err("violation must panic");
+        err.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| err.downcast_ref::<&'static str>().map(|s| (*s).to_string()))
+            .expect("string payload")
+    })
+}
+
+fn assert_parity(src: &str, x: u64, core: &str) {
+    let off = capture_violation(src, JitMode::Off, x);
+    let force = capture_violation(src, JitMode::Force, x);
     assert!(off.contains(core), "interpreter message carries the core: {off}");
     assert!(force.contains(core), "cone message carries the same core: {force}");
     assert!(off.contains("in node"), "interpreter enriches: {off}");
     assert!(force.contains("in node"), "cone enriches: {force}");
+}
+
+#[test]
+fn violation_message_parity_between_engines() {
+    assert_parity(
+        "input (x: u64)\nchecked := is_positive(mul(x, 0))\n",
+        5,
+        "is_positive(value): value must be > 0, got 0",
+    );
+}
+
+#[test]
+fn in_range_violation_parity() {
+    assert_parity(
+        "input (x: u64)\nchecked := in_range(add(x, 100), 1, 10)\n",
+        5,
+        "in_range: value 105 outside [1, 10]",
+    );
+}
+
+#[test]
+fn is_one_of_violation_parity() {
+    // The allow-list contents must appear in BOTH messages —
+    // catchup A2: the JIT fail extern used to elide them.
+    assert_parity(
+        "input (x: u64)\nchecked := is_one_of(add(x, 100), 1, 3, 7)\n",
+        5,
+        "is_one_of: value 105 not in allowed set [1, 3, 7]",
+    );
 }
 
 /// SRD-105 Push 3 — program identity is engine-mix invariant.

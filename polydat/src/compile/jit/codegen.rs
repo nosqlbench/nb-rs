@@ -259,14 +259,22 @@ extern "C" fn jit_in_range_fail(value: u64, lo: u64, hi: u64) -> u64 {
 }
 
 /// Extern function: longjmp back to the enclosing wrapper with
-/// an `is_one_of` violation message. The allow-list isn't
-/// threaded through the call (it would bloat the ABI); the
-/// Phase-1 closure path retains the full list in its message
-/// when callers need maximum detail.
-extern "C" fn jit_is_one_of_fail(value: u64) -> u64 {
-    jit_violation_longjmp(
-        format!("is_one_of: value {value} not in configured allow-list"),
-    );
+/// an `is_one_of` violation message, carrying the allow-list
+/// contents so the message matches the interpreter's byte for
+/// byte. The pointer targets the node's meta VecU64 const; the
+/// node is kept alive for the life of the compiled code by
+/// `JitCore::_nodes` / the cone node's members, so the data is
+/// stable. (ptr, len) == (0, 0) degrades to an elided set.
+extern "C" fn jit_is_one_of_fail(value: u64, set_ptr: u64, set_len: u64) -> u64 {
+    let msg = if set_ptr != 0 {
+        let set = unsafe {
+            std::slice::from_raw_parts(set_ptr as *const u64, set_len as usize)
+        };
+        format!("is_one_of: value {value} not in allowed set {set:?}")
+    } else {
+        format!("is_one_of: value {value} not in allowed set [..]")
+    };
+    jit_violation_longjmp(msg);
 }
 
 /// Extern function: weighted pick via alias table (called from JIT code).
@@ -413,9 +421,16 @@ pub(crate) enum JitOp {
     InRangeCheck(u64, u64),
     /// Parameter predicate: pass input[0] through to output[0];
     /// if input[0] is not in the allow-list, call
-    /// `jit_is_one_of_fail` (aborts). Allow-list baked as a
-    /// vector of u64 constants.
-    IsOneOfCheck(Vec<u64>),
+    /// `jit_is_one_of_fail` (panics) with the allow-list contents
+    /// — (ptr, len) into the node's meta VecU64 const, (0, 0)
+    /// when unavailable. Message parity with the interpreter's
+    /// `is_one_of: … not in allowed set […]` is asserted by the
+    /// SRD-105 battery. Inline comparisons use the baked vector.
+    IsOneOfCheck {
+        allowed: Vec<u64>,
+        set_ptr: u64,
+        set_len: u64,
+    },
 
     // --- Register-plane ops (§8.4 layer 2: native SIMD) ---
     // A register value occupies two consecutive u64 slots; the
@@ -653,7 +668,18 @@ pub(crate) fn classify_node(node: &dyn PolydatNode) -> JitOp {
             if consts.is_empty() {
                 JitOp::Fallback
             } else {
-                JitOp::IsOneOfCheck(consts)
+                let set = node.meta().ins.iter().find_map(|slot| match slot {
+                    crate::ast::Slot::Const {
+                        name,
+                        value: crate::ast::ConstValue::VecU64(v),
+                    } if name == "allowed" => Some(v),
+                    _ => None,
+                });
+                let (set_ptr, set_len) = match set {
+                    Some(v) => (v.as_ptr() as u64, v.len() as u64),
+                    None => (0, 0),
+                };
+                JitOp::IsOneOfCheck { allowed: consts, set_ptr, set_len }
             }
         }
         // The remaining param helpers stay on the Phase-2
@@ -914,9 +940,12 @@ fn compile_jit_impl(
             .map_err(|e| format!("declare in_range_fail: {e}"))?
     };
 
-    // Declare param-helper extern: jit_is_one_of_fail(u64) -> u64
+    // Declare param-helper extern:
+    // jit_is_one_of_fail(u64, set_ptr, set_len) -> u64
     let is_one_of_fail_id = {
         let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
         module.declare_function("jit_is_one_of_fail", Linkage::Import, &sig)
@@ -1462,7 +1491,7 @@ fn compile_jit_impl(
                     store_slot(&mut builder, buffer_ptr, output_slots[0], val);
                 }
 
-                JitOp::IsOneOfCheck(allowed) => {
+                JitOp::IsOneOfCheck { allowed, set_ptr, set_len } => {
                     // Unroll the allow-list as N inline eq
                     // comparisons OR'd together. Fast-path is
                     // 1–8 values (the common case); pathologically
@@ -1486,7 +1515,9 @@ fn compile_jit_impl(
 
                     builder.switch_to_block(fail_block);
                     builder.seal_block(fail_block);
-                    let _ = builder.ins().call(is_one_of_fail_ref, &[val]);
+                    let sp = builder.ins().iconst(types::I64, *set_ptr as i64);
+                    let sl = builder.ins().iconst(types::I64, *set_len as i64);
+                    let _ = builder.ins().call(is_one_of_fail_ref, &[val, sp, sl]);
                     builder.ins().jump(ok_block, &[]);
 
                     builder.switch_to_block(ok_block);
@@ -2123,7 +2154,7 @@ mod tests {
     #[test]
     fn jit_is_one_of_check_passes_allowed_values() {
         let steps = vec![
-            (JitOp::IsOneOfCheck(vec![1, 2, 3, 5, 8]), vec![0], vec![1]),
+            (JitOp::IsOneOfCheck { allowed: vec![1, 2, 3, 5, 8], set_ptr: 0, set_len: 0 }, vec![0], vec![1]),
         ];
         let mut output_map = HashMap::new();
         output_map.insert("out".into(), 1);
@@ -2140,7 +2171,7 @@ mod tests {
         // Degenerate case — one-value allow-list reduces to an
         // equality check with panic on mismatch.
         let steps = vec![
-            (JitOp::IsOneOfCheck(vec![42]), vec![0], vec![1]),
+            (JitOp::IsOneOfCheck { allowed: vec![42], set_ptr: 0, set_len: 0 }, vec![0], vec![1]),
         ];
         let mut output_map = HashMap::new();
         output_map.insert("out".into(), 1);
@@ -2204,7 +2235,7 @@ mod tests {
     #[test]
     fn jit_is_one_of_violation_is_catchable() {
         let steps = vec![
-            (JitOp::IsOneOfCheck(vec![1, 3, 5]), vec![0], vec![1]),
+            (JitOp::IsOneOfCheck { allowed: vec![1, 3, 5], set_ptr: 0, set_len: 0 }, vec![0], vec![1]),
         ];
         let mut output_map = HashMap::new();
         output_map.insert("out".into(), 1);
@@ -2212,7 +2243,7 @@ mod tests {
         let err = std::panic::catch_unwind(
             std::panic::AssertUnwindSafe(|| kernel.eval(&[2])),
         ).expect_err("disallowed value should panic");
-        assert!(extract_panic_msg(err).contains("not in configured allow-list"));
+        assert!(extract_panic_msg(err).contains("not in allowed set"));
     }
 
     #[test]
