@@ -82,6 +82,32 @@ fn __f32_to_string(input: f32) -> String { input.to_string() }
 fn __u32_to_string(input: u32) -> String { input.to_string() }
 
 // =================================================================
+// Explicit narrowing casts (F64→U64) — workload-callable
+// =================================================================
+//
+// Narrowing is never automatic (scope_model.md §"Type stability"):
+// a shared cell keeps ONE type for life, and a lossy f64→u64
+// conversion changes semantics, so it must be the author's explicit
+// act. Both casts SATURATE — negative / NaN → 0, above u64::MAX →
+// u64::MAX — so a workload expression can never panic on range;
+// an out-of-range input is a workload-logic question, not a crash.
+
+/// Truncate an `f64` toward zero into a `u64` (saturating; NaN → 0).
+/// The explicit escape hatch for writing an f64 expression (e.g.
+/// `floor_decade(...)`) into a u64-typed cell or port.
+#[crate::polydat_node(category = Conversions)]
+fn trunc_u64(input: f64) -> u64 {
+    if input.is_nan() { 0 } else { input.trunc().max(0.0).min(u64::MAX as f64) as u64 }
+}
+
+/// Round an `f64` half-away-from-zero into a `u64` (saturating;
+/// NaN → 0). Rounding twin of [`trunc_u64`].
+#[crate::polydat_node(category = Conversions)]
+fn round_u64(input: f64) -> u64 {
+    if input.is_nan() { 0 } else { input.round().max(0.0).min(u64::MAX as f64) as u64 }
+}
+
+// =================================================================
 // String parse adapters (Str→X) — workload-param polyfill
 // =================================================================
 //
@@ -674,5 +700,25 @@ mod tests {
         let node = StrToF64::new();
         let mut out = [Value::None];
         node.eval(&[Value::Str("not-a-number".into())], &mut out);
+    }
+
+    /// The explicit narrowing casts saturate instead of panicking:
+    /// NaN / negatives → 0, above-range → u64::MAX, and the two
+    /// differ only in truncation vs rounding.
+    #[test]
+    fn narrowing_casts_saturate() {
+        let t = TruncU64::new();
+        let r = RoundU64::new();
+        let mut out = [Value::None];
+        t.eval(&[Value::F64(900.9)], &mut out);
+        assert_eq!(out[0].as_u64(), 900, "trunc drops the fraction");
+        r.eval(&[Value::F64(900.9)], &mut out);
+        assert_eq!(out[0].as_u64(), 901, "round goes to nearest");
+        t.eval(&[Value::F64(-5.0)], &mut out);
+        assert_eq!(out[0].as_u64(), 0, "negative saturates to 0");
+        r.eval(&[Value::F64(f64::NAN)], &mut out);
+        assert_eq!(out[0].as_u64(), 0, "NaN saturates to 0");
+        t.eval(&[Value::F64(f64::INFINITY)], &mut out);
+        assert_eq!(out[0].as_u64(), u64::MAX, "overflow saturates to MAX");
     }
 }

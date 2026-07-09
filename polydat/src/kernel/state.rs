@@ -186,6 +186,66 @@ pub(crate) struct KernelWriteThrough {
     pub source_output: String,
 }
 
+/// Type-stability boundary for shared-cell WRITE-THROUGHS
+/// (scope_model.md §"Type stability: a cell keeps ONE type for
+/// life"). A matching type passes; a catalog adapter heals (the
+/// lossless U64→F64 widening, the Str→number parses); an
+/// UNHEALABLE mismatch — narrowing, kind change — is an `Err` AT
+/// THE WRITE naming the cell, its declared type, the incoming
+/// type, and the producing binding. Without this, a result-binding
+/// writing (say) an F64 into a U64-declared cell silently flipped
+/// the cell's runtime type, and a bridge compiled against the
+/// declared type panicked `expected U64, got F64` at a READ tiers
+/// away from the cause. Shared by both write-through commit paths
+/// ([`PolydatKernel::commit_write_throughs`] and the subcontext
+/// `ScopeKernel` variant).
+pub(crate) fn check_write_through_type(
+    export_name: &str,
+    source_output: &str,
+    slot_type: crate::ast::PortType,
+    value: Value,
+) -> Result<Value, String> {
+    use crate::ast::PortType as P;
+    let got = value.port_type();
+    if got == slot_type || matches!(value, Value::None) {
+        return Ok(value);
+    }
+    // Only LOSSLESS conversions may heal automatically at the CELL
+    // boundary: numeric widenings, plus the Bool↔U64 0/1 convention
+    // (GK comparisons and predicates produce U64 0/1, so a predicate
+    // result written into a Bool cell is natural authoring). The
+    // general auto-adapter catalog also carries narrowing entries
+    // (F64→U64 truncation) for other boundaries — deliberately NOT
+    // consulted here: a narrowing write silently changes semantics,
+    // so it must be the author's explicit `trunc_u64(...)` /
+    // `round_u64(...)`.
+    let widening = matches!(
+        (got, slot_type),
+        (P::U64, P::F64) | (P::I64, P::F64) | (P::U32, P::F64)
+            | (P::I32, P::F64) | (P::F32, P::F64)
+            | (P::U32, P::U64) | (P::U32, P::I64) | (P::I32, P::I64)
+            | (P::U64, P::Bool) | (P::Bool, P::U64),
+    );
+    if widening
+        && let Some(adapter) = crate::compile::assembly::boundary_adapter(got, slot_type)
+    {
+        let inputs = vec![value];
+        let mut outputs = vec![Value::None];
+        adapter.eval(&inputs, &mut outputs);
+        return Ok(outputs.remove(0));
+    }
+    Err(format!(
+        "type-stable cell violation: shared cell `{export_name}` is \
+         declared {slot_type:?}, but the result binding \
+         `{export_name} := …` (via `{source_output}`) produced a \
+         {got:?} value ({val}). A cell keeps ONE type for life — \
+         declare the cell with a matching initializer (e.g. \
+         `shared {export_name} := 1.0` for f64), or narrow \
+         explicitly with `trunc_u64(...)` / `round_u64(...)`.",
+        val = value.to_display_string(),
+    ))
+}
+
 impl std::fmt::Debug for PolydatKernel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PolydatKernel")
@@ -435,14 +495,25 @@ impl PolydatKernel {
     /// in sibling kernels share the same cell and observe the
     /// write on the next read.
     ///
+    /// TYPE-STABLE (scope_model.md §"Type stability"): a cell keeps
+    /// ONE type for life. Each pending value passes the same typed
+    /// boundary the named-write path (`set_wire`) already enforces —
+    /// matching types pass, a catalog adapter heals (e.g. the lossless
+    /// U64→F64 widening), and an UNHEALABLE mismatch (narrowing, kind
+    /// change) is an `Err` at THIS write site naming the cell, its
+    /// declared type, the incoming type, and the producing binding —
+    /// never a silent type flip that a compile-time-typed bridge trips
+    /// over tiers later. Explicit narrowing is the author's job via
+    /// `trunc_u64(...)` / `round_u64(...)`.
+    ///
     /// No-op when the kernel carries no write-throughs.
-    pub fn commit_write_throughs(&mut self) {
+    pub fn commit_write_throughs(&mut self) -> Result<(), String> {
         let debug = crate::library::debug_nodes_enabled();
         if self.write_throughs.is_empty() {
             if debug {
                 crate::library::support::audit::debug("commit_write_throughs: kernel has zero bindings — no-op");
             }
-            return;
+            return Ok(());
         }
         // Two-pass: pull each value first (each pull mutates the
         // state), collect, then write to the slot. Avoids
@@ -476,11 +547,20 @@ impl PolydatKernel {
                     value.to_display_string()
                 ));
             }
+            // Type-stability boundary (doc above): match passes,
+            // catalog adapters heal (widening), anything else errors
+            // HERE — at the write, with the full story.
+            let slot_type = self.program.input_port_type_by_idx(idx)
+                .expect("write-through idx resolved from find_input");
+            let value = check_write_through_type(
+                &wt.export_name, &wt.source_output, slot_type, value,
+            )?;
             pending.push((idx, value));
         }
         for (idx, value) in pending {
             self.state.set_input(idx, value);
         }
+        Ok(())
     }
 
     /// Set source schemas on the program (called by the compiler).
@@ -1250,5 +1330,43 @@ impl PolydatKernel {
     /// Extract the program for concurrent use.
     pub fn into_program(self) -> Arc<PolydatProgram> {
         self.program
+    }
+}
+
+#[cfg(test)]
+mod type_stability_tests {
+    use super::*;
+    use crate::ast::PortType;
+
+    /// scope_model.md §"Type stability" — the write-through boundary:
+    /// matching types pass untouched, the catalog heals lossless
+    /// widening (U64 → F64 slot), and an unhealable mismatch (the
+    /// incident shape: F64 into a U64 cell) errors AT THE WRITE with
+    /// the cell name, both types, and the narrowing-cast guidance.
+    #[test]
+    fn write_through_boundary_matches_widens_and_rejects() {
+        // Match: passes through untouched.
+        let v = check_write_through_type("m", "__write_m", PortType::U64, Value::U64(7))
+            .expect("matching type passes");
+        assert_eq!(v.as_u64(), 7);
+
+        // Widening: U64 value into an F64 cell heals via the catalog.
+        let v = check_write_through_type("m", "__write_m", PortType::F64, Value::U64(900))
+            .expect("u64→f64 widens");
+        assert_eq!(v.as_f64(), 900.0);
+
+        // None sentinel passes (SRD-74 None-propagation handles it).
+        let v = check_write_through_type("m", "__write_m", PortType::U64, Value::None)
+            .expect("None passes through");
+        assert!(matches!(v, Value::None));
+
+        // Narrowing: F64 into a U64 cell is the incident shape — an
+        // error at the write, naming everything the author needs.
+        let err = check_write_through_type(
+            "measured", "__write_measured", PortType::U64, Value::F64(900.0),
+        ).expect_err("f64→u64 narrowing must be rejected");
+        assert!(err.contains("measured"), "names the cell: {err}");
+        assert!(err.contains("U64") && err.contains("F64"), "names both types: {err}");
+        assert!(err.contains("trunc_u64"), "points at the explicit cast: {err}");
     }
 }

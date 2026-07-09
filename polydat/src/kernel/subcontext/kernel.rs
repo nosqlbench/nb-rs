@@ -322,9 +322,15 @@ impl<M> ScopeKernel<M> {
     /// sibling that shares the same cell.
     ///
     /// No-op for kernels with no write-throughs.
-    pub fn commit_write_throughs(&self) {
+    ///
+    /// TYPE-STABLE (scope_model.md §"Type stability"): each pending
+    /// value passes the same boundary as
+    /// [`crate::kernel::PolydatKernel::commit_write_throughs`] —
+    /// matching types pass, catalog adapters heal (widening), and an
+    /// unhealable mismatch is an `Err` at the write site.
+    pub fn commit_write_throughs(&self) -> Result<(), String> {
         if self.write_throughs.is_empty() {
-            return;
+            return Ok(());
         }
         let mut inner = self.lock_inner();
         // Two-pass to avoid holding two mutable borrows of the
@@ -337,11 +343,17 @@ impl<M> ScopeKernel<M> {
                 continue;
             };
             let value = inner.pull(&wt.source_output).clone();
+            let slot_type = inner.program().input_port_type_by_idx(idx)
+                .expect("write-through idx resolved from find_input");
+            let value = crate::kernel::state::check_write_through_type(
+                &wt.export_name, &wt.source_output, slot_type, value,
+            )?;
             pending.push((idx, value));
         }
         for (idx, value) in pending {
             inner.state().set_input(idx, value);
         }
+        Ok(())
     }
 }
 

@@ -274,6 +274,56 @@ This is the documented contract for now. Templated patterns
 are the path to atomic counters, sum-reduction, set-merge,
 and other semantics that this baseline doesn't deliver.
 
+#### Type stability: a cell keeps ONE type for life (decision 2026-07-09)
+
+The value layer is dynamically typed (`Value` carries U64/F64/Str/…),
+but the node layer is compile-time typed: `#[polydat_node]` ports
+declare concrete types, and the assembler inserts conversion bridges
+from types inferred ONCE, at compile. Shared cells were the one place
+a runtime write could invalidate that inference: a result-binding
+writing an F64 into a cell declared `shared measured := 1` (U64)
+silently flipped the cell's runtime type, and a bridge compiled
+against the declared type (`__u64_to_f64(measured)`) later panicked
+`expected U64, got F64` at a READ — tiers away from the write, with
+no wire name, killing the worker.
+
+The contract, so the compile-time inference stays TRUE (and bridges /
+JIT slots stay unguarded and fast):
+
+1. **The cell's `PortType` is fixed at declaration** — by the
+   annotated type (`shared x: f64 := 1`, see below) or, absent an
+   annotation, by the initializer literal's type.
+2. **Writes validate at the WRITE site**: same type publishes;
+   a lossless numeric WIDENING (U64 value into an F64 cell) and the
+   Bool↔U64 0/1 convention (GK predicates produce U64 0/1) convert
+   and publish; anything else — narrowing, kind change — is an
+   ERROR raised where the write happens, naming the cell, its
+   declared type, the incoming type, and the writing binding. It
+   surfaces as a routed op failure through the standard error path,
+   never a panic.
+3. **Narrowing is the author's explicit act** via the stdlib casts
+   `trunc_u64(f64)` / `round_u64(f64)` (saturating; NaN → 0).
+4. **Typed-port extraction hardening (defense in depth)**: any
+   residual type mismatch reaching a typed node port produces a
+   diagnostic naming the node, port, and expected/actual types — not
+   a bare `Value::as_u64` panic. STATUS: the interpreter path already
+   enriches (`enrich_eval_panic` wraps `eval_node`); the JIT path does
+   not — a mismatch panicking in JIT slot marshalling still surfaces
+   bare. JIT-path enrichment is the remaining follow-up.
+5. **DSL surface**: `shared name: type := expr` declares the cell
+   type explicitly; the annotation wins over literal inference, and a
+   mismatched initializer is a compile error. Inferring U64-vs-F64
+   from whether the author typed `1` or `1.0` is exactly the
+   subtlety that caused the incident — annotate load-bearing cells.
+
+**Deferred: read-side coercing bridges.** Making typed ports coerce
+numerics on every extraction was considered and rejected for now: it
+puts a checked branch on the hot path of every typed pull, requires
+matching guards in JIT codegen (complicating the slot ABI), demotes
+compile-time inference to advisory, and still reports the failure at
+the read — far from the causing write. Revisit only if a qualified
+case for a runtime type funnel emerges.
+
 #### Open: per-binding sharing pattern templates
 
 The shipped `SharedCell` mechanism delivers **last-write-wins**

@@ -341,7 +341,7 @@ fn parent_shared_export_collision_rewrites_to_cell_write() {
     // Pre-commit: parent's cell still carries the literal init.
     assert_eq!(parent.lock_inner().lookup("X"), Some(Value::U64(0)));
 
-    child.commit_write_throughs();
+    child.commit_write_throughs().expect("type-stable write-through");
 
     // Post-commit: the parent's `lookup("X")` reads through the
     // shared cell (cell-aware) and surfaces `42`.
@@ -385,7 +385,7 @@ fn parent_shared_export_collision_propagates_through_siblings() {
 
     // Writer fires; cell now carries 7. Reader observes it
     // via its own cell-bound input slot.
-    writer.commit_write_throughs();
+    writer.commit_write_throughs().expect("type-stable write-through");
 
     // Reader's `flag` slot is bound to the same cell; pulling
     // `seen` resolves to the cell value.
@@ -624,7 +624,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     //    writes Bool through the cell-bound input slot for
     //    `has_match`. Single-register semantics: the cell IS
     //    the slot's register.
-    detect_fiber.commit_write_throughs();
+    detect_fiber.commit_write_throughs().expect("type-stable write-through");
 
     // 5. Verify the cell observed the write — root reads via
     //    its own input slot, which is the same Arc<Mutex<…>>
@@ -770,7 +770,7 @@ fn log_info_preserves_bool_type_through_result_binding_cell() {
         body_idx,
         Value::Json(std::sync::Arc::new(serde_json::json!([{"col": "hello world"}]))),
     );
-    kernel.commit_write_throughs();
+    kernel.commit_write_throughs().expect("type-stable write-through");
 
     // The cell value must be Bool, not Str — the type the
     // shared declaration uses and the type downstream `pick`
@@ -854,7 +854,7 @@ fn build_kernel_under_parent_full_sees_live_parents_cells() {
     // back through the cell. Root observes the write — proves
     // Rule 2 saw the transitively-inherited shared cell at
     // finalize and baked the write-through onto the program.
-    kernel.commit_write_throughs();
+    kernel.commit_write_throughs().expect("type-stable write-through");
     // Polydat comparison ops produce U64(1) for true; the cell-
     // bound input slot snapshots whatever the source pulled.
     // The assertion is "cell observed a non-init write" — the
@@ -919,7 +919,7 @@ fn shared_cell_cascade_survives_for_iteration_through_silent_intermediates() {
         export_name: "flag".to_string(),
         source_output: "__write_flag".to_string(),
     }]);
-    leaf.commit_write_throughs();
+    leaf.commit_write_throughs().expect("type-stable write-through");
 
     assert_eq!(
         leaf.get_input("flag"),
@@ -988,7 +988,7 @@ fn shared_cell_cascade_survives_legacy_bind_program_under_parent_chain() {
         export_name: "counter".to_string(),
         source_output: "__write_counter".to_string(),
     }]);
-    leaf.commit_write_throughs();
+    leaf.commit_write_throughs().expect("type-stable write-through");
 
     assert_eq!(
         root_kernel.lookup("counter"),
@@ -1054,7 +1054,7 @@ fn parent_shared_cell_cascades_to_grandchild_through_silent_intermediate() {
     // Pre-commit: root's cell still carries the literal init.
     assert_eq!(root.lock_inner().lookup("flag"), Some(Value::U64(0)));
 
-    leaf.commit_write_throughs();
+    leaf.commit_write_throughs().expect("type-stable write-through");
 
     // Post-commit: leaf wrote through the cell handle that
     // ultimately lives at root. Root observes the value.
