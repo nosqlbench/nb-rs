@@ -1,10 +1,11 @@
 # SRD-105 — JIT as the Default Engine: Auto-Mixed Cone Compilation
 
-**Status:** Pushes 1-3 implemented 2026-07-09 — **`Auto` is the
+**Status:** Pushes 1-4 complete 2026-07-09 — **`Auto` is the
   shipped default**: extraction + cone node + `JitMode` config;
   differential battery + panic parity + `jit=` session param;
-  identity invariance + default flip. Push 4 (measured extensions)
-  pending
+  identity invariance + default flip; Push 4 measurements taken and
+  all candidate extensions PARKED on the evidence (see §"Push 4:
+  measured decisions")
 **Owner:** polydat (cone extraction, cone node, config surface)
 **Implementation target:** `polydat/src/compile/assembly.rs` (cone
   extraction pass), a new `polydat/src/compile/cone.rs` (cone node +
@@ -219,6 +220,46 @@ post-fold form, byte-identical to an unextracted compile. `off`,
 `canonical_hash` (pinned by
 `cone_tests::canonical_hash_is_extraction_invariant`), and
 resume-skip matching survives engine-mix changes.
+
+## Push 4: measured decisions (2026-07-09)
+
+Cone-mode benchmarks (`polydat/benches/polydat_throughput.rs`,
+`cone/` groups — DSL-compiled kernels, `jit=off` vs `auto`,
+per-cycle pull throughput):
+
+| graph | off | auto | speedup |
+|---|---|---|---|
+| hash-mod chain, depth 4 | 231 ns | 162 ns | 1.42× |
+| hash-mod chain, depth 16 | 968 ns | 448 ns | 2.16× |
+| hash-mod chain, depth 64 | 4398 ns | 1679 ns | 2.62× |
+| workload-shaped bindings (uid/bucket/ratio/gate) | 383 ns | 267 ns | 1.43× |
+| vector pipeline (2× hash_vec + vec_dot), 128-dim | 944 ns | 944 ns | 1.00× |
+| vector pipeline, 768-dim | 4358 ns | 4357 ns | 1.00× |
+
+Single-node interpreter eval overhead (set_inputs + pull + dispatch)
+measures ~70 ns; cones cut the per-node cost to ~26 ns at depth 64.
+The shipped auto default captures a 1.4-2.6× win on scalar binding
+graphs — the shapes real op templates take.
+
+Decisions, each from the numbers:
+
+- **Slice-slot vector ABI: PARKED.** Vector pipelines show a 1.00×
+  cone delta: vector nodes already run SIMD kernels internally, and
+  per-node dispatch (~70 ns) is noise against per-eval vector work
+  (~4.4 µs at 768-dim). Moving vector ops into cones bounds the win
+  at ~1-3% — not worth the (ptr, len) transport ABI. Revisit only
+  if a workload shape emerges where vector values must cross INTO
+  hot fused scalar cones.
+- **Pull/PushPull cone variants: PARKED.** The interpreter already
+  dirty-guards at cone granularity, and per-cycle graphs change
+  `cycle` every eval — the whole cone is legitimately dirty every
+  time. There is nothing for interior provenance to skip.
+- **Extern-param slots: CLOSED (already satisfied).** Externs and
+  dynamic controls are boundary wires, never baked immediates —
+  only assembler-literal consts bake. No rebuild-on-change problem
+  exists.
+- **U128 two-slot ABI: PARKED.** No workload demand; U128 nodes are
+  interpreter-only and ineligible, which is correct and safe.
 
 ## Rejected alternatives
 
