@@ -1288,10 +1288,15 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     let mut error_spec = merged_params.get("errors")
         .cloned()
         .unwrap_or_else(|| ".*:warn,stop".to_string());
-    // Feature B — session-wide error-rate circuit-breaker default.
-    // A phase fails once >this share of its ops error (after a
-    // minimum op count). Per-phase `error_rate_max:` overrides it;
-    // set `error_rate_max=1` (or higher) to disable. Default 0.1.
+    // `error_rate_max` — the OPT-IN session-wide error-rate circuit
+    // breaker. When set, a phase fails once >this share of its ops error
+    // (after a 50-op floor); per-phase `error_rate_max:` overrides it.
+    // NO default (SRD-82 §"AggregateGuard retired as a default"): the
+    // former silent 0.1 default was hidden, non-optional, and possibly
+    // not what the operator wanted — operators built duplicate
+    // `stop_when` backstops precisely because this one was invisible.
+    // Aggregate health belongs to visible, workload-authored `stop_when`
+    // conditions (SRD-83); this knob remains only as an explicit opt-in.
     let error_rate_max: Option<f64> = match merged_params.get("error_rate_max") {
         Some(s) => match s.trim().parse::<f64>() {
             Ok(v) if v >= 0.0 => Some(v),
@@ -1301,7 +1306,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 std::process::exit(2);
             }
         },
-        None => Some(0.1),
+        None => None,
     };
     // SRD-44 §"--force-retry-failed": when set on a resume
     // invocation, prepend a `.*:retry,warn` rule to the errors

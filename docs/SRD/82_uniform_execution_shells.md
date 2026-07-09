@@ -231,10 +231,10 @@ interrupt); `fail,stop` is the common "this is broken, abandon it."
   Interrupts it — *stop on error is the default scenario-graph
   behaviour*, expressed as one rule, not special-cased walker code.
 - **Phase handler default** keeps SRD-03's op cascade
-  (`.*:warn,stop`) *plus* an aggregate breach rule
-  `rate>{error_rate_max} : fail,stop` (default `error_rate_max=0.1`,
-  evaluated after a minimum op count). The error-rate circuit breaker
-  is therefore one phase-handler rule.
+  (`.*:warn,stop`). The aggregate breach rule
+  (`rate>{error_rate_max} : fail,stop`) is **OPT-IN ONLY** — see
+  §"AggregateGuard retired as a default" below; it originally shipped
+  with a silent `error_rate_max=0.1` default, which is withdrawn.
 - **Stanza handler default** is the SRD-02 linearization response: an
   op error fails the dependent chain (`.*:fail` for the chain),
   surfaced to the phase handler.
@@ -243,12 +243,50 @@ interrupt); `fail,stop` is the common "this is broken, abandon it."
 Both features the design started from collapse into the grammar:
 
 ```
-# error-rate circuit breaker  →  a phase rule
+# error-rate circuit breaker  →  a phase rule (opt-in)
 phase.errors = "rate>0.1:fail,stop"
 
 # stop-on-error                →  the scenario-graph default
 scenario.errors = "*Failed:stop"        # implicit unless overridden
 ```
+
+### AggregateGuard retired as a default (decision, 2026-07-09)
+
+The aggregate error-rate breaker (`error_rate_max`, synthesized into
+each phase's stop-condition set as
+`op_count >= 50 && error_rate > {max}` with a `fail` effect) shipped
+DEFAULTED ON at `0.1`. In practice the default was:
+
+1. **Hidden** — nothing in the workload text, the startup output, or
+   `describe` said it existed; it surfaced only when it tripped.
+2. **Not optional in perception** — disabling required knowing the
+   magic `error_rate_max=1` incantation for a knob the operator had
+   never seen.
+3. **Presumptive** — 10% is somebody's threshold, not necessarily the
+   workload's. A probe phase that MEASURES query behaviour during
+   ingest (expected-high error rates; its errors are data) was failed
+   by a guard it never asked for.
+
+The observed failure mode was the decisive one: **operators built
+duplicate `stop_when` rate backstops because the built-in was
+invisible** — the hidden default caused the very proliferation it was
+meant to prevent. Per "no presumed features" and "never ignore
+silently" (defaults must be visible), the DEFAULT is withdrawn:
+
+- `error_rate_max` (session param / phase field) remains as an
+  **explicit opt-in shorthand** that synthesizes the same stop
+  condition. Setting it is visible in the workload/CLI by definition.
+- Aggregate shell health canonically belongs to **workload-authored
+  `stop_when:` conditions (SRD-83)** — visible, self-documenting,
+  arbitrary predicates.
+- The garbage-run protection story this default carried (the
+  all-errors-completed-green incident above) is NOT abandoned: the
+  agreed future shape is a **synthesized, VISIBLE default `stop_when`
+  condition** — announced at phase start like other synthesized layers
+  (the auto-cadence-logging discipline), shown in `describe`, and
+  SUPERSEDED whenever the workload declares its own `error_rate`
+  condition on that shell. That reintroduction is deliberate future
+  work, not part of this decision.
 
 ---
 

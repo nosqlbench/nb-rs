@@ -801,10 +801,12 @@ pub struct WorkloadPhase {
     /// `None` = inherit.
     #[serde(default)]
     pub tries: Option<u32>,
-    /// Error-rate circuit breaker override (e.g. `0.1` = fail this
-    /// phase once >10% of its ops error). Overrides the session-wide
-    /// `error_rate_max=` default. A value `>= 1.0` disables it for
-    /// this phase.
+    /// OPT-IN error-rate circuit breaker (e.g. `0.1` = fail this phase
+    /// once >10% of its ops error, after a 50-op floor). Overrides a
+    /// session-wide `error_rate_max=` param when one was set. There is
+    /// NO built-in default (SRD-82 §"AggregateGuard retired as a
+    /// default") — aggregate health belongs to visible `stop_when:`
+    /// conditions; this field exists as an explicit shorthand only.
     #[serde(default)]
     pub error_rate_max: Option<f64>,
     /// SRD-83 — stop conditions for this phase shell. Each is a polydat

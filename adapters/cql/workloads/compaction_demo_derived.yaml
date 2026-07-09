@@ -412,7 +412,9 @@ phases:
     # genuinely unhealthy run.
     errors: ".*:warn,counter"
     # No `stop_when` here on purpose (see comment above): this probe's errors
-    # are DATA, not a failure signal — it must not carry the data-plane backstop.
+    # are DATA, not a failure signal — it must not carry the data-plane
+    # backstop. (There is no hidden error-rate default to disable either:
+    # `error_rate_max` is opt-in only — SRD-82.)
     # 1 query/s — numeric so it builds the activity RateLimiter (a string
     # like "1/s" would not parse as f64 and would be ignored).
     rate: 1
