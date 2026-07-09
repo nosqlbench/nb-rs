@@ -2201,6 +2201,34 @@ impl Activity {
                         crate::diag!(crate::observer::LogLevel::Error,
                             "fiber panic in activity '{}': {}",
                             activity_name_for_log, msg);
+                            // A panic is a first-class failure:
+                            // give the run a headline cause
+                            // (stop_reason) and a structured
+                            // PhaseOutcome error, same as the
+                            // stop-condition failure path.
+                            // Without these the run dies with
+                            // only a session-log line and no
+                            // visible "why" at phase level.
+                            if let Ok(mut slot) = activity_for_panic.stop_reason.lock()
+                                && slot.is_none()
+                            {
+                                *slot = Some(format!(
+                                    "[panic] fiber panic in activity '{activity_name_for_log}': {msg}"));
+                            }
+                            if let Ok(mut errs) = activity_for_panic.phase_errors.lock() {
+                                errs.push(crate::phase_outcome::PhaseErrorDetail {
+                                    class: "panic".into(),
+                                    message: msg,
+                                    op_name: None,
+                                    cycle: None,
+                                    op_template: None,
+                                    op_resolved: None,
+                                    at_nanos: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_nanos() as u64).unwrap_or(0),
+                                    retryable: false,
+                                });
+                            }
                             // Mark stop_flag so other fibers and the
                             // executor's main loop see that something
                             // went wrong; the run will terminate at

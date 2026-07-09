@@ -373,3 +373,40 @@ fn two_class_routing() {
         .count();
     assert_eq!(model_warns, 0);
 }
+
+/// A per-cycle binding panic (predicate violation) must surface as
+/// a first-class failure: the enriched diagnostic — node name,
+/// original panic location, inputs — plus a `[panic]` headline,
+/// with NO raw un-enriched hook print drowning it out.
+#[test]
+fn binding_panic_surfaces_enriched_headline() {
+    let wl = write_workload("panic_headline", r#"
+phases:
+  probe:
+    adapter: stdout
+    cycles: 1
+    bindings: |
+      checked := is_positive(mul(cycle, 0))
+    ops:
+      o:
+        op: "c={checked}"
+"#);
+    let (_stdout, stderr, ok) = run(&wl, &[]);
+    assert!(!ok, "a panicking binding must fail the run, stderr={stderr}");
+    assert!(stderr.contains("is_positive"),
+        "original panic body names the violated predicate: {stderr}");
+    assert!(stderr.contains("in node"),
+        "enriched context (node name) expected: {stderr}");
+    assert!(stderr.contains("[panic]"),
+        "headline stop_reason expected: {stderr}");
+    // The suppression hook must have eaten the raw pre-enrichment
+    // print. A raw hook line reads `thread '…' panicked at
+    // polydat/src/library/param_helpers.rs:…` — pointing at the
+    // ORIGINAL panic site with no node context. The one hook print
+    // allowed is the enriched re-raise (it points at the re-raise
+    // site in engines.rs and carries the full diagnostic body);
+    // the original location appears only in `↳ panicked at` lines.
+    assert!(!stderr.lines().any(|l|
+        l.contains("thread '") && l.contains("polydat/src/library")),
+        "raw un-enriched hook print leaked through: {stderr}");
+}

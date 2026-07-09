@@ -524,9 +524,27 @@ impl FiberBuilder {
                     let const_outputs: Vec<String> = op_kernel.program()
                         .const_outputs().iter().map(|s| s.to_string()).collect();
                     for init_name in &const_outputs {
-                        let _ = std::panic::catch_unwind(
+                        // Const warmup is best-effort: a const
+                        // whose freeze fails here stays dirty
+                        // and re-evals (or fails visibly) at
+                        // its first per-cycle use. But the
+                        // failure is never discarded silently —
+                        // the enriched payload goes to the
+                        // session log so a broken const is
+                        // diagnosable before the per-cycle
+                        // path trips over it.
+                        if let Err(payload) = std::panic::catch_unwind(
                             std::panic::AssertUnwindSafe(|| { op_kernel.pull(init_name); })
-                        );
+                        ) {
+                            let msg = payload
+                                .downcast_ref::<&'static str>().map(|s| (*s).to_string())
+                                .or_else(|| payload.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "<non-string panic payload>".into());
+                            crate::diag!(crate::observer::LogLevel::Warn,
+                                "const warmup pull '{init_name}' panicked during \
+                                 op-template kernel init (deferring to first \
+                                 per-cycle use): {msg}");
+                        }
                     }
                     let side_effecting = op_kernel.program().outputs_with_side_effects();
                     per_op_kernels.push(Some(op_kernel));
