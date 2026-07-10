@@ -62,6 +62,12 @@ impl Selection {
         Self { family: Some(name.into()), ..Default::default() }
     }
 
+    /// Builder form: constrain this selection to the named family.
+    pub fn with_family(mut self, name: impl Into<String>) -> Self {
+        self.family = Some(name.into());
+        self
+    }
+
     /// Restrict to series whose `LabelSet` contains `key=value`.
     pub fn with_label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.label_eq.push((key.into(), value.into()));
