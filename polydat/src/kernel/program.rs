@@ -1559,17 +1559,44 @@ impl PolydatProgram {
         // non-deterministic node consumed directly by an
         // author-declared `volatile` output? If yes, suppress the
         // warning.
+        // Volatility acknowledgment is TRANSITIVE for suppression,
+        // matching the lifecycle classifier's contagion: a
+        // nondeterministic node feeding a volatile-marked output
+        // through any expression chain (a stop-condition predicate's
+        // `metric(...) > 3.0` puts a comparison between the reader
+        // and the volatile output) is acknowledged. Reverse-reach:
+        // seed the producing node of every volatile output, walk
+        // producer edges to fixpoint.
+        let mut feeds_volatile = vec![false; n];
+        for (out_name, node_idx, _port) in self.output_list.iter() {
+            if self.output_modifiers.get(out_name)
+                .map(|m| m.is_volatile())
+                .unwrap_or(false)
+            {
+                feeds_volatile[*node_idx] = true;
+            }
+        }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for i in 0..n {
+                if !feeds_volatile[i] { continue; }
+                for source in &self.wiring[i] {
+                    if let WireSource::NodeOutput(upstream, _) = source
+                        && !feeds_volatile[*upstream]
+                    {
+                        feeds_volatile[*upstream] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
         for i in 0..n {
             let name = &self.nodes[i].meta().name;
             let is_nondeterministic = self.wiring[i].is_empty() && !is_init[i]
                 && !name.starts_with("__");
             if !is_nondeterministic { continue; }
-            let consumed_by_volatile = self.output_list.iter().any(|(out_name, node_idx, _port)| {
-                *node_idx == i
-                    && self.output_modifiers.get(out_name)
-                        .map(|m| m.is_volatile())
-                        .unwrap_or(false)
-            });
+            let consumed_by_volatile = feeds_volatile[i];
             if consumed_by_volatile {
                 continue;
             }
