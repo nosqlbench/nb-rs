@@ -484,14 +484,15 @@ pub fn build_inline_refresh_context(
     let consumed = finished;
     // SRD-91 attempt-level tallies, owned by the innermost
     // `TriesDispenser` (or the error-handler wrapper for
-    // single-attempt ops). Both counters are
-    // observed when an attempt RETURNS, so their sum is the
-    // resolved-attempt count (in-flight attempts excluded) —
-    // `attempt_ok / (attempt_ok + attempt_failed)` is the
-    // attempt success rate, dropping below the result-level
+    // single-attempt ops). ALL attempt instruments count when an
+    // attempt RETURNS (2026-07-10 — attempt_total moved from
+    // dispatch to resolution, same discipline as the result
+    // instruments), so `attempt_total == attempt_success +
+    // attempt_failure` holds at every read and
+    // `attempt_ok / (attempt_ok + attempt_failed)` is the exact
+    // attempt success rate — dropping below the result-level
     // `ok%` exactly when retries burn attempts to keep results
-    // green. Using the dispatch-time `attempt_total` counter
-    // here would skew the rate low by the in-flight count.
+    // green.
     let attempt_ok = progress_metrics.attempt_success.count();
     let attempt_failed = progress_metrics.attempt_failure.count();
     // Retries = failed attempts that were NOT the terminal outcome.

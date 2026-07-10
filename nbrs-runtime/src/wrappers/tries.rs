@@ -157,7 +157,6 @@ impl OpDispenser for TriesDispenser {
             let mut attempt_no: u32 = 0;
             loop {
                 attempt_no += 1;
-                self.metrics.attempt_total.inc();
                 let attempt_start = Instant::now();
 
                 // Per-attempt panic catch: an adapter that unwinds out of
@@ -190,12 +189,20 @@ impl OpDispenser for TriesDispenser {
                 let dt = attempt_start.elapsed().as_nanos() as u64;
 
                 match outcome {
+                    // Attempt instruments count at RESOLUTION, same
+                    // discipline as the result instruments: an attempt
+                    // exists in the tallies only once it has returned,
+                    // so `attempt_total == attempt_success +
+                    // attempt_failure` holds at every read and a rate
+                    // over `attempt_total` carries no in-flight skew.
                     Ok(result) => {
+                        self.metrics.attempt_total.inc();
                         self.metrics.attempt_success.observe(dt);
                         self.metrics.tries_histogram.record(attempt_no as u64);
                         return Ok(result);
                     }
                     Err(e) => {
+                        self.metrics.attempt_total.inc();
                         self.metrics.attempt_failure.observe(dt);
                         // Retry only an adapter-retryable OP error, within
                         // the total-attempts budget. Adapter-level errors are

@@ -99,7 +99,7 @@ validation and user trust"), not incidental.
 
 | metric | layer | when | instrument | meaning |
 |---|---|---|---|---|
-| `attempt_total` | executor | every attempt | counter | total tries (incl. retries) |
+| `attempt_total` | executor | per RESOLVED attempt | counter | total tries (incl. retries); counted when the attempt returns, same discipline as the result instruments (2026-07-10 — the original dispatch-time increment made invariant 1 hold only at quiescence) |
 | `attempt_success` | executor | per successful attempt | **outcome** (counter/timer) | succeeding attempts (+ attempt latency if Timed) |
 | `attempt_failure` | executor | per failed attempt | **outcome** | failing attempts (+ latency) |
 | `result_total` | executor | per executed op | counter | terminal results = success + failure (**excludes skips**) |
@@ -127,6 +127,9 @@ Let `X_count` denote an outcome instrument's observation count
 (identical whether Counted or Timed). At any snapshot instant:
 
 1. `attempt_total == attempt_success_count + attempt_failure_count`
+   — holds at EVERY read (all three count at attempt resolution;
+   in-flight attempts are in none of them), so `attempt_failure /
+   attempt_total` is an exact rate with no in-flight skew.
 2. `result_total  == result_success_count + result_failure_count`
 3. `cycles_total  == result_total + skips_total`
 4. `errors_total  == Σ errors_total{type=…}` (both handler-layer)
