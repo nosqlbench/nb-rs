@@ -93,16 +93,17 @@ params:
   # (a proportion in [0,1]) for `recall_check` — a modular,
   # workload-expressed breaker, NOT the machine's built-in
   # `error_rate_max`. The rate is DERIVED IN THE PREDICATE from the base
-  # counters (`error_count` terminal failed ops / `op_count` completed
-  # ops), never read from a precomputed rate wire. Set it LOOSER than
+  # counters (`result_failure` terminal failed ops / `cycles_total`
+  # completed ops — the instrument names), never a precomputed rate wire. Set it LOOSER than
   # the adaptive rate servo's operating margin so the servo throttles
   # first and this only trips on a genuine runaway. Tune on the CLI
   # (`error_rate_backstop=0.02`).
   error_rate_backstop: 0.05
   # `attempt_failure_backstop` = the ATTEMPT-level sickness threshold for
   # `load_increment` (a proportion in [0,1]), likewise derived in the
-  # predicate from the base counters (`attempt_failures` failed attempts /
-  # `attempt_count` resolved attempts). Attempts see THROUGH retries: the
+  # predicate from the base counters (`attempt_failure` failed attempts /
+  # `attempt_total` resolved attempts — the instrument names; both count
+  # at attempt resolution). Attempts see THROUGH retries: the
   # result-level rate stays green while a `tries:` budget absorbs
   # failures (r: climbing, att:% sinking), so this is the breaker that
   # catches a drowning server early. Tune on the CLI
@@ -538,15 +539,17 @@ phases:
     # errors (timeouts under load): the `tries:` budget retries them and the
     # load keeps going. The guards below are SANITY BACKSTOPS, each derived IN
     # THE PREDICATE from base counters — never a precomputed rate wire:
-    #   result-specific:  error_count / op_count            (terminal failed ops / completed ops)
-    #   attempt-specific: attempt_failures / attempt_count  (failed attempts / resolved attempts)
+    # Every name is a registered INSTRUMENT (what metrics.db carries):
+    #   result-specific:  result_failure / cycles_total  (terminal failed ops / completed ops)
+    #   attempt-specific: attempt_failure / attempt_total (both counted at
+    #                     attempt RESOLUTION, so the ratio is exact)
     #
     # 1. Coverage invariant. This phase's contract is "the table ends the tier
     #    holding exactly [prev_count, this_count)". A TERMINAL insert failure
     #    (an op that exhausted its whole `tries` budget) is missing rows — the
     #    tier is invalid regardless of proportion, so a single one fails the
     #    phase. Transients never trip this: they resolve inside the budget and
-    #    never reach `error_count`.
+    #    never reach `result_failure`.
     # 2. Attempt-level sickness. Retries absorb failures, so the result-level
     #    rate stays green while the server drowns (r: climbing, att:% sinking).
     #    Failed attempts crossing `attempt_failure_backstop` of resolved
@@ -555,8 +558,8 @@ phases:
     # polydat predicates use `&`, not `&&`.
     errors: ".*:warn,counter"
     stop_when:
-      - when: "error_count > 0"
-      - when: "(attempt_count > 200) & (to_f64(attempt_failures) > (to_f64(attempt_count) * {attempt_failure_backstop}))"
+      - when: "result_failure > 0"
+      - when: "(attempt_total > 200) & (to_f64(attempt_failure) > (to_f64(attempt_total) * {attempt_failure_backstop}))"
     bindings: |
       # `p` is the active masked profile tier from `profile_partitions`:
       # `[start_of(p), end_of(p))` is the incremental delta since the
@@ -770,9 +773,9 @@ phases:
     # untrustworthy.
     errors: ".*:warn,counter"
     # Result-specific backstop, derived from base counters in the predicate
-    # (error_count terminal failed ops / op_count completed ops).
+    # (result_failure terminal failed ops / cycles_total completed ops).
     stop_when:
-      - when: "(op_count > 100) & (to_f64(error_count) > (to_f64(op_count) * {error_rate_backstop}))"
+      - when: "(cycles_total > 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {error_rate_backstop}))"
     bindings: |
       # Same masked tier as the load: name it by its masked position
       # idx_of(p), prebuffer the tier's own ground-truth facets.

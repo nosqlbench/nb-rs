@@ -748,7 +748,7 @@ first-class `StopConditionDecl` via the ONE canonical constructor
 phase's `stop_when` list during config assembly and announced at
 INFO like every synthesized layer:
 
-    phase 'X': error_rate_max=0.2 → stop_when: op_count >= 50 && error_rate > 0.2 (synthesized)
+    phase 'X': error_rate_max=0.2 → stop_when: cycles_total >= 50 && to_f64(result_failure) > (to_f64(cycles_total) * 0.2) (synthesized)
 
 `build_for_phase` is one uniform loop over declared conditions —
 no special-cased first arm, no condition the operator can't see

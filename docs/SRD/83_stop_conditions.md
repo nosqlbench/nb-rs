@@ -101,31 +101,54 @@ compile.
 > (This supersedes the interim `volatile __stop_cond_<i>` matter
 > synthesis.) Tested: `compiles_and_trips_a_scoped_stop_condition`.
 
-The runtime-state wires are injected as volatile externs on that same
-kernel (SRD-11):
+## The predicate vocabulary IS the instrument namespace (2026-07-10)
 
-| Wire | Meaning |
+No magic variables. Every counter wire is named EXACTLY as its
+registered instrument (`ActivityMetrics::register_on` — the same
+names metrics.db and the status line carry), no derived
+pseudo-counters exist, and no precomputed rates: a rate is written
+in the predicate from the base counters, explicitly result- or
+attempt-specific. The injected fast-path wires:
+
+| Wire | Instrument / meaning |
 |------|---------|
-| `op_count` / `cycle_count` | ops dispatched / cycles completed so far |
-| `error_count` | errors recorded so far |
-| `error_rate` | `error_count / op_count` (0 when no ops) |
-| `elapsed_ms` / `elapsed_s` | wall time since the shell started |
-| `attempt_count` | resolved attempts (attempt_success + attempt_failure; in-flight excluded) — exceeds `op_count` exactly when retries burn attempts |
-| `attempt_failures` | failed attempts, terminal or not |
-| `attempt_error_rate` | `attempt_failures / attempt_count` — the see-through-retries rate (2026-07-09, compaction-demo diagnosis): result-level `error_rate` stays ~0 while a `tries:` budget absorbs failures; this one climbs immediately, so `attempt_error_rate > X` guards a phase that would otherwise look like a silent stall |
-| `children_total` / `children_failed` / `children_done` | child-shell outcomes (scenario/scope shells) |
+| `cycles_total` | the `cycles_total` counter — cycles completed so far |
+| `result_failure` | the `result_failure` counter — TERMINAL failed ops (an op that exhausts its whole `tries` budget counts once; absorbed transients never do) |
+| `attempt_total` / `attempt_success` / `attempt_failure` | the attempt counters (SRD-91), ALL counted at attempt resolution — `attempt_total == attempt_success + attempt_failure` at every read, so `attempt_failure / attempt_total` is exact. In-flight attempts are deliberately unrepresented |
+| `elapsed_ms` | wall time since the shell started (shell state, not an instrument) |
+| `children_total` / `children_failed` / `children_done` | child-shell outcomes (shell state; scenario/workload shells) |
 
-So the example predicate is literally:
+Derived-in-the-predicate rates:
 
 ```text
-op_count > 50 && error_rate > 0.1
+# result-specific backstop
+(cycles_total > 100) & (to_f64(result_failure) > (to_f64(cycles_total) * 0.05))
+# attempt-specific sickness (sees through retries)
+(attempt_total > 200) & (to_f64(attempt_failure) > (to_f64(attempt_total) * 0.10))
 ```
 
+**Everything beyond the fast path reads through the metric reader
+nodes** — predicates are full polydat, and `metric(...)` /
+`metric_window(...)` (nbrs-metrics polydat nodes, Nondeterministic,
+never folded) reach ANY registered instrument by its own family
+name: `metric('result_failure', 'count') > 3.0` is a valid guard.
+The selection grammar is `"family, key=value, key~substring"` — a
+bare token names the instrument family; labeled parts narrow the
+series. Stats: `count` (counter/histogram), `value` (gauge),
+`mean`/`p50`/`p99` (histograms — e.g.
+`metric_window('cycles_servicetime', 'p99') > 50000000.0` guards a
+latency collapse). Two consistency notes: the injected wires are
+read directly from the live counters at the firing event
+(result-before-cycles ordering keeps the derived fraction ≤ 1),
+while the reader nodes go through the cadence pipeline's framed
+views — coarser, potentially one frame stale, fine for backstops;
+and reader selections are session-scoped, so multi-phase sessions
+should narrow by label where families collide.
+
 Authors get the full polydat surface — arithmetic, comparison,
-`if(...)`, named intermediate consts — so conditions like
-`elapsed_s > 30 && recall_mean < 0.8` or `children_failed > 0` are just
-expressions. The wire set is extensible; new shell state becomes a new
-volatile extern, no predicate-language change.
+`if(...)`, named intermediate consts. New shell state becomes a new
+instrument (readable by name immediately) — never a new bespoke
+wire vocabulary.
 
 ### Distribution — the `each:` selector (declared, never inferred)
 

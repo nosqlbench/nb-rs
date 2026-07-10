@@ -5,7 +5,7 @@
 # A stop condition is a polydat `when:` predicate over the shell's
 # live runtime-state wires. Those wires are INJECTED by the executor
 # each evaluation tick — the activity drain loop re-snapshots
-# `op_count` / `error_count` / `error_rate` / `elapsed_ms` every ~5 ms
+# `cycles_total` / `error_count` / `error_rate` / `elapsed_ms` every ~5 ms
 # at the PHASE shell, and the walker re-snapshots `children_*` once per
 # finished phase at the WORKLOAD shell. So a threshold predicate trips
 # deterministically the moment the live (time-evolving) value crosses
@@ -14,7 +14,7 @@
 #
 # Each scenario isolates ONE time-evolving wire at ONE shell level:
 #
-#   phase_op_count    — PHASE shell, `op_count`     (climbs 1 per op)
+#   phase_cycles_total    — PHASE shell, `cycles_total`     (climbs 1 per op)
 #   phase_elapsed_ms  — PHASE shell, `elapsed_ms`   (wall clock, ms)
 #   workload_children — WORKLOAD shell, `children_done` (1 per phase)
 #
@@ -44,12 +44,12 @@ stop_when:
 
 scenarios:
 
-  # ── PHASE shell — op_count wire ──────────────────────────────
-  # op_count climbs one per finished op. `op_count > 25` trips at
+  # ── PHASE shell — cycles_total wire ──────────────────────────────
+  # cycles_total climbs one per finished op. `cycles_total > 25` trips at
   # ~op 26; `cycles: 600` is far beyond that, so a run that reaches
   # 600 ops is the regression signal (bounded ~2.4 s at 4 ms/op, so a
   # broken predicate can't hang the suite).
-  phase_op_count:
+  phase_cycles_total:
     - phase_op_trip
 
   # ── PHASE shell — elapsed_ms wire (time-based) ───────────────
@@ -66,19 +66,19 @@ scenarios:
 
 phases:
 
-  # `op_count > 25` over a 600-cycle phase. Each op echoes OP_TICK,
-  # so the count of OP_TICK lines in stdout is the op_count at stop.
+  # `cycles_total > 25` over a 600-cycle phase. Each op echoes OP_TICK,
+  # so the count of OP_TICK lines in stdout is the cycles_total at stop.
   # `rate: 250` (ops/sec) paces dispatch at ~4 ms/op with the generic
   # activity rate limiter — adapter-agnostic, so this runs as-is on the
   # default adapter (no `result-latency`, no `adapter=` needed). The
   # pacing gives the drain loop's ~5 ms stop-condition checks time to
-  # observe op_count cross the threshold before the 600 cycles drain.
+  # observe cycles_total cross the threshold before the 600 cycles drain.
   phase_op_trip:
     cycles: 600
     concurrency: 1
     rate: 250
     stop_when:
-      - when: "op_count > 25"
+      - when: "cycles_total > 25"
     ops:
       tick:
         stmt: "OP_TICK"
@@ -119,5 +119,5 @@ phases:
         stmt: "STEP_C"
 
 # ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
-#@ run scenario=phase_op_count
+#@ run scenario=phase_cycles_total
 #@ expect-fail stop condition tripped

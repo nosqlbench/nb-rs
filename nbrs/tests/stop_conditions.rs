@@ -92,18 +92,18 @@ fn count_lines(stdout: &str, needle: &str) -> usize {
 /// phase far short of 600. The op-count at stop equals the number of
 /// `OP_TICK` lines emitted.
 #[test]
-fn phase_op_count_trips_and_fails() {
-    let (stdout, stderr, ok) = run_scenario("phase_op_count");
+fn phase_cycles_total_trips_and_fails() {
+    let (stdout, stderr, ok) = run_scenario("phase_cycles_total");
     assert!(!ok, "a tripped phase stop condition must fail the run; stderr:\n{stderr}");
     let ticks = count_lines(&stdout, "OP_TICK");
     // Crossed the threshold (> 25 ⇒ at least 26 ops ran) but stopped
     // far short of the 600-cycle ceiling. The loose upper bound
     // absorbs drain-loop timing slop without flaking.
-    assert!(ticks > 25, "expected the phase to pass op_count=25 before stopping, got {ticks}");
+    assert!(ticks > 25, "expected the phase to pass cycles_total=25 before stopping, got {ticks}");
     assert!(ticks < 300, "expected an early stop, not ~600 ops; got {ticks}\nstderr:\n{stderr}");
     assert!(stderr.contains("stop condition tripped"),
         "expected the stop-condition reason on stderr:\n{stderr}");
-    assert!(stderr.contains("op_count > 25"),
+    assert!(stderr.contains("cycles_total > 25"),
         "expected the tripping predicate in the reason:\n{stderr}");
 }
 

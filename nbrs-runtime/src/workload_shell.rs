@@ -26,7 +26,7 @@
 //! anywhere in the scenario tree feeds the *same* accumulator. As each
 //! phase produces its [`crate::phase_outcome::PhaseOutcome`] the
 //! executor calls [`WorkloadShell::record_phase`], which folds the
-//! outcome into the [`RuntimeState`] wires (`children_*`, `op_count`,
+//! outcome into the [`RuntimeState`] wires (`children_*`, `cycles_total`,
 //! `error_count`) and evaluates the shell's stop conditions against the
 //! new snapshot. The first trip latches `walk_stop`; every dispatch
 //! loop consults [`WorkloadShell::should_stop`] before starting the
@@ -145,14 +145,15 @@ impl WorkloadShell {
     /// The current aggregate as a [`RuntimeState`] snapshot.
     fn snapshot(&self) -> RuntimeState {
         RuntimeState {
-            op_count: self.op_count.load(Ordering::Relaxed),
-            error_count: self.error_count.load(Ordering::Relaxed),
+            cycles_total: self.op_count.load(Ordering::Relaxed),
+            result_failure: self.error_count.load(Ordering::Relaxed),
             elapsed_ms: self.start.elapsed().as_millis() as u64,
             // Workload-shell aggregates fold per-phase RESULTS; the
             // attempt-level wires are phase-shell state (retries are
             // an op-loop concern) and stay zero here.
-            attempt_count: 0,
-            attempt_failures: 0,
+            attempt_total: 0,
+            attempt_success: 0,
+            attempt_failure: 0,
             children_total: self.children_total.load(Ordering::Relaxed),
             children_failed: self.children_failed.load(Ordering::Relaxed),
             children_done: self.children_done.load(Ordering::Relaxed),
@@ -280,7 +281,7 @@ mod tests {
         let set = StopConditionSet::build_for_phase(
             &root,
             &[crate::stop_conditions::StopConditionDecl {
-                when: "op_count > 1000".to_string(),
+                when: "cycles_total > 1000".to_string(),
                 effect: Outcome::interrupted(),
                 reason: None,
             }])
@@ -292,7 +293,7 @@ mod tests {
         // Cumulative op_count is now 1200 > 1000 → trips (graceful stop effect).
         assert_eq!(
             shell.record_phase(false, 600, 0),
-            Some((Outcome::interrupted(), "stop_condition: op_count > 1000".to_string())));
+            Some((Outcome::interrupted(), "stop_condition: cycles_total > 1000".to_string())));
         assert!(shell.should_stop());
     }
 

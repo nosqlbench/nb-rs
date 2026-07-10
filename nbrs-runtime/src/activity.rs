@@ -2357,20 +2357,24 @@ impl Activity {
                 // proportion in [0,1], so it reads the per-op terminal
                 // failure count (`result_failure`), not the per-attempt
                 // `errors_total` (which can exceed op_count under retries).
-                let error_count = activity.metrics.result_failure.count();
-                let op_count = activity.metrics.cycles_completed();
+                let result_failure = activity.metrics.result_failure.count();
+                let cycles_total = activity.metrics.cycles_completed();
                 // Attempt-level tallies (resolved attempts only, per the
-                // SRD-91 counters): the see-through-retries wires, so a
-                // `stop_when: attempt_error_rate > X` fires while retries
-                // keep the result-level rate green.
-                let attempt_ok = activity.metrics.attempt_success.count();
-                let attempt_failures = activity.metrics.attempt_failure.count();
+                // SRD-91 counters): the see-through-retries wires. Each
+                // wire carries its instrument's name and raw count; any
+                // rate is derived in the predicate text.
+                let attempt_success = activity.metrics.attempt_success.count();
+                let attempt_failure = activity.metrics.attempt_failure.count();
                 let state = crate::stop_conditions::RuntimeState {
-                    op_count,
-                    error_count,
+                    cycles_total,
+                    result_failure,
                     elapsed_ms: phase_start.elapsed().as_millis() as u64,
-                    attempt_count: attempt_ok + attempt_failures,
-                    attempt_failures,
+                    // attempt_total counts at RESOLUTION (tries.rs), so
+                    // the invariant total == success + failure holds;
+                    // reading the two parts keeps one consistent view.
+                    attempt_total: attempt_success + attempt_failure,
+                    attempt_success,
+                    attempt_failure,
                     ..Default::default()
                 };
                 if let Some((outcome, reason)) = stop_conditions.evaluate(&state) {

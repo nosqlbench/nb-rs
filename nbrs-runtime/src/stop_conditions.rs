@@ -38,27 +38,42 @@ use crate::phase_outcome::Outcome;
 /// read. A predicate references the ones it needs; the rest are absent
 /// from its kernel and skipped at injection.
 pub mod wire {
-    /// Ops dispatched / cycles completed so far (`u64`).
-    pub const OP_COUNT: &str = "op_count";
-    /// Errors recorded so far (`u64`).
-    pub const ERROR_COUNT: &str = "error_count";
-    /// Errored fraction of ops, `error_count / op_count` (`f64`).
-    pub const ERROR_RATE: &str = "error_rate";
+    //! Predicate vocabulary. Every counter wire is named EXACTLY as
+    //! its registered instrument (`ActivityMetrics::register_on`), so
+    //! the guard language and the metric namespace are one vocabulary
+    //! — what you see in metrics.db / the status line is what you can
+    //! guard on. No derived pseudo-counters and no precomputed rates:
+    //! a rate is written in the predicate from these base counters
+    //! (e.g. `to_f64(result_failure) > to_f64(cycles_total) * 0.05`).
+    //! Anything beyond this per-shell fast path (timers, windows,
+    //! other phases) reads through the `metric(...)` /
+    //! `metric_window(...)` reader nodes — predicates are full
+    //! polydat.
+
+    /// Cycles completed so far — the `cycles_total` instrument.
+    pub const CYCLES_TOTAL: &str = "cycles_total";
+    /// Terminal failed ops so far — the `result_failure` instrument.
+    /// An op that exhausts its whole `tries` budget counts once here;
+    /// transient failures that a retry absorbs never do.
+    pub const RESULT_FAILURE: &str = "result_failure";
+    /// Resolved attempts — the `attempt_total` instrument. Counted at
+    /// RESOLUTION (same discipline as the result instruments), so
+    /// `attempt_total == attempt_success + attempt_failure` at every
+    /// read and it is the exact denominator for attempt rates.
+    pub const ATTEMPT_TOTAL: &str = "attempt_total";
+    /// Resolved successful attempts — the `attempt_success` instrument.
+    pub const ATTEMPT_SUCCESS: &str = "attempt_success";
+    /// Resolved failed attempts (terminal or not) — the
+    /// `attempt_failure` instrument. `attempt_success +
+    /// attempt_failure` is the resolved-attempt denominator;
+    /// in-flight attempts are deliberately not represented (a rate
+    /// over dispatch-time counts skews low by the in-flight window).
+    pub const ATTEMPT_FAILURE: &str = "attempt_failure";
     /// Wall time since the shell started (`u64`, milliseconds).
+    /// Shell state, not an instrument.
     pub const ELAPSED_MS: &str = "elapsed_ms";
-    /// Resolved attempts so far (`u64`) — attempt_success +
-    /// attempt_failure, in-flight excluded. Exceeds `op_count`
-    /// exactly when retries are burning attempts.
-    pub const ATTEMPT_COUNT: &str = "attempt_count";
-    /// Failed attempts so far (`u64`), terminal or not.
-    pub const ATTEMPT_FAILURES: &str = "attempt_failures";
-    /// Failed fraction of resolved attempts (`f64`). The
-    /// see-through-retries rate: result-level `error_rate` stays
-    /// ~0 while retries absorb failures (the compaction-demo
-    /// "silent stall"); this one climbs immediately. Declare
-    /// `stop_when: attempt_error_rate > X` to guard on it.
-    pub const ATTEMPT_ERROR_RATE: &str = "attempt_error_rate";
     /// Scenario shells — child phases declared / failed / finished.
+    /// Shell state, not instruments.
     pub const CHILDREN_TOTAL: &str = "children_total";
     pub const CHILDREN_FAILED: &str = "children_failed";
     pub const CHILDREN_DONE: &str = "children_done";
@@ -71,47 +86,39 @@ pub mod wire {
 /// phase clock, and from child outcomes for a scenario shell.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RuntimeState {
-    pub op_count: u64,
-    pub error_count: u64,
+    pub cycles_total: u64,
+    pub result_failure: u64,
     pub elapsed_ms: u64,
-    pub attempt_count: u64,
-    pub attempt_failures: u64,
+    pub attempt_total: u64,
+    pub attempt_success: u64,
+    pub attempt_failure: u64,
     pub children_total: u64,
     pub children_failed: u64,
     pub children_done: u64,
 }
 
 impl RuntimeState {
-    /// Errored fraction of ops; `0.0` before any op completes (so an
-    /// `error_rate > X` predicate never trips on an empty phase).
-    ///
-    /// This is a faithful `error_count / op_count` — no clamp. The result
-    /// is in `[0,1]` because `error_count` is the count of ops that
-    /// **terminally** failed (one per op, mutually exclusive with success),
-    /// NOT the count of error *attempts*: non-terminal retries are tallied
-    /// separately (`attempt_failure` / `attempt_success`) and never inflate
-    /// the per-op disposition. The numerator can therefore never exceed the
-    /// denominator. (Before that upstream split, `error_count` came from a
-    /// per-attempt counter and could exceed `op_count` under retries —
-    /// fixed at the source rather than masked here.)
-    pub fn error_rate(&self) -> f64 {
-        if self.op_count == 0 {
+    /// Terminal-failure fraction for the human trip message ONLY —
+    /// derived here exactly as a predicate would derive it
+    /// (`result_failure / cycles_total`). Predicates never read a
+    /// precomputed rate: they write the division themselves from the
+    /// instrument-named wires.
+    fn result_failure_fraction(&self) -> f64 {
+        if self.cycles_total == 0 {
             0.0
         } else {
-            self.error_count as f64 / self.op_count as f64
+            self.result_failure as f64 / self.cycles_total as f64
         }
     }
 
-    /// Failed fraction of RESOLVED attempts; `0.0` before any attempt
-    /// resolves. Unlike [`Self::error_rate`], this sees failures that
-    /// retries later absorb — the guard-visibility answer to the
-    /// compaction-demo diagnosis, where 20,315 retry attempts kept the
-    /// result-level rate at ~0 while the server drowned.
-    pub fn attempt_error_rate(&self) -> f64 {
-        if self.attempt_count == 0 {
+    /// Attempt-failure fraction for the trip message — failed over
+    /// resolved attempts (`attempt_failure / (attempt_success +
+    /// attempt_failure)`), the see-through-retries view.
+    fn attempt_failure_fraction(&self) -> f64 {
+        if self.attempt_total == 0 {
             0.0
         } else {
-            self.attempt_failures as f64 / self.attempt_count as f64
+            self.attempt_failure as f64 / self.attempt_total as f64
         }
     }
 
@@ -129,16 +136,20 @@ impl RuntimeState {
                 parts.push(format!("children_failed={}", self.children_failed));
             }
         } else {
-            parts.push(format!("op_count={}", self.op_count));
-            parts.push(format!("errors={}", self.error_count));
-            parts.push(format!("error_rate={:.2}%", self.error_rate() * 100.0));
+            parts.push(format!("cycles_total={}", self.cycles_total));
+            parts.push(format!("result_failure={}", self.result_failure));
+            parts.push(format!(
+                "result_failure/cycles_total={:.2}%",
+                self.result_failure_fraction() * 100.0));
             // Attempts earn a mention when they carry signal: retries
-            // active (attempts exceed ops — the rates diverge) or any
-            // attempt failed (an attempt-wire guard may have tripped).
-            if self.attempt_count > self.op_count || self.attempt_failures > 0 {
-                parts.push(format!("attempts={}", self.attempt_count));
+            // active (resolved attempts exceed cycles) or any attempt
+            // failed (an attempt-wire guard may have tripped).
+            if self.attempt_total > self.cycles_total || self.attempt_failure > 0 {
                 parts.push(format!(
-                    "attempt_error_rate={:.2}%", self.attempt_error_rate() * 100.0));
+                    "attempt_failure={}/{}", self.attempt_failure, self.attempt_total));
+                parts.push(format!(
+                    "attempt_failure_fraction={:.2}%",
+                    self.attempt_failure_fraction() * 100.0));
             }
         }
         parts.push(format!("elapsed={:.1}s", self.elapsed_ms as f64 / 1000.0));
@@ -148,15 +159,14 @@ impl RuntimeState {
     /// The `(wire, value)` pairs this snapshot supplies. The single
     /// source for the wire→`Value` mapping, so the injector and any
     /// extern-declaration list stay in agreement.
-    fn wires(&self) -> [(&'static str, Value); 10] {
+    fn wires(&self) -> [(&'static str, Value); 9] {
         [
-            (wire::OP_COUNT, Value::U64(self.op_count)),
-            (wire::ERROR_COUNT, Value::U64(self.error_count)),
-            (wire::ERROR_RATE, Value::F64(self.error_rate())),
+            (wire::CYCLES_TOTAL, Value::U64(self.cycles_total)),
+            (wire::RESULT_FAILURE, Value::U64(self.result_failure)),
             (wire::ELAPSED_MS, Value::U64(self.elapsed_ms)),
-            (wire::ATTEMPT_COUNT, Value::U64(self.attempt_count)),
-            (wire::ATTEMPT_FAILURES, Value::U64(self.attempt_failures)),
-            (wire::ATTEMPT_ERROR_RATE, Value::F64(self.attempt_error_rate())),
+            (wire::ATTEMPT_TOTAL, Value::U64(self.attempt_total)),
+            (wire::ATTEMPT_SUCCESS, Value::U64(self.attempt_success)),
+            (wire::ATTEMPT_FAILURE, Value::U64(self.attempt_failure)),
             (wire::CHILDREN_TOTAL, Value::U64(self.children_total)),
             (wire::CHILDREN_FAILED, Value::U64(self.children_failed)),
             (wire::CHILDREN_DONE, Value::U64(self.children_done)),
@@ -193,13 +203,12 @@ impl RuntimeState {
 /// `inject_into` / `trips` then populate the ones it actually uses.
 pub fn extern_matter() -> GraphMatter {
     let mut m = GraphMatter::new();
-    m.extern_wire::<u64>(wire::OP_COUNT)
-        .extern_wire::<u64>(wire::ERROR_COUNT)
-        .extern_wire::<f64>(wire::ERROR_RATE)
+    m.extern_wire::<u64>(wire::CYCLES_TOTAL)
+        .extern_wire::<u64>(wire::RESULT_FAILURE)
         .extern_wire::<u64>(wire::ELAPSED_MS)
-        .extern_wire::<u64>(wire::ATTEMPT_COUNT)
-        .extern_wire::<u64>(wire::ATTEMPT_FAILURES)
-        .extern_wire::<f64>(wire::ATTEMPT_ERROR_RATE)
+        .extern_wire::<u64>(wire::ATTEMPT_TOTAL)
+        .extern_wire::<u64>(wire::ATTEMPT_SUCCESS)
+        .extern_wire::<u64>(wire::ATTEMPT_FAILURE)
         .extern_wire::<u64>(wire::CHILDREN_TOTAL)
         .extern_wire::<u64>(wire::CHILDREN_FAILED)
         .extern_wire::<u64>(wire::CHILDREN_DONE);
@@ -320,7 +329,9 @@ impl StopConditionDecl {
     /// before the rate is meaningful.
     pub fn error_rate_guard(max: f64) -> Self {
         Self {
-            when: format!("op_count >= 50 && error_rate > {max}"),
+            when: format!(
+                "cycles_total >= 50 && \
+                 to_f64(result_failure) > (to_f64(cycles_total) * {max})"),
             effect: Outcome::failed(),
             reason: Some("error_rate_exceeded".to_string()),
         }
@@ -417,12 +428,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn error_rate_is_safe_at_zero_ops() {
-        assert_eq!(RuntimeState::default().error_rate(), 0.0);
-        let s = RuntimeState { op_count: 100, error_count: 10, ..Default::default() };
-        assert_eq!(s.error_rate(), 0.1);
-        let s = RuntimeState { op_count: 50, error_count: 50, ..Default::default() };
-        assert_eq!(s.error_rate(), 1.0);
+    fn failure_fraction_is_safe_at_zero_cycles() {
+        assert_eq!(RuntimeState::default().result_failure_fraction(), 0.0);
+        let s = RuntimeState { cycles_total: 100, result_failure: 10, ..Default::default() };
+        assert_eq!(s.result_failure_fraction(), 0.1);
+        let s = RuntimeState { cycles_total: 50, result_failure: 50, ..Default::default() };
+        assert_eq!(s.result_failure_fraction(), 1.0);
     }
 
     #[test]
@@ -433,18 +444,18 @@ mod tests {
         // never above. The default `error_rate_max: 1.0` guard
         // (`op_count >= 50 && error_rate > 1.0`) therefore never trips, as
         // documented ("allow 100% — never trip") — without clamping.
-        let all_fail = RuntimeState { op_count: 100, error_count: 100, ..Default::default() };
-        assert_eq!(all_fail.error_rate(), 1.0);
+        let all_fail = RuntimeState { cycles_total: 100, result_failure: 100, ..Default::default() };
+        assert_eq!(all_fail.result_failure_fraction(), 1.0);
         let phase_kernel = polydat::dsl::compile_polydat("input cycle: u64\nx := 5")
             .expect("phase kernel");
         let mut cond = compile_stop_condition(
-            &phase_kernel, 0, "op_count >= 50 && error_rate > 1.0")
+            &phase_kernel, 0, "cycles_total >= 50 && to_f64(result_failure) > (to_f64(cycles_total) * 1.0)")
             .expect("compile scoped stop condition");
         assert!(!all_fail.trips(&mut cond), "error_rate_max:1.0 must never trip");
         // A 0.5 guard still trips at >50% terminal failures.
         let mut half = compile_stop_condition(
-            &phase_kernel, 0, "op_count >= 50 && error_rate > 0.5").unwrap();
-        assert!(RuntimeState { op_count: 100, error_count: 60, ..Default::default() }
+            &phase_kernel, 0, "cycles_total >= 50 && to_f64(result_failure) > (to_f64(cycles_total) * 0.5)").unwrap();
+        assert!(RuntimeState { cycles_total: 100, result_failure: 60, ..Default::default() }
             .trips(&mut half));
     }
 
@@ -455,16 +466,16 @@ mod tests {
         // evaluation on each pull (as a stop-condition predicate does
         // per trigger).
         let src = "\
-            extern op_count: u64 = 0\n\
-            extern error_count: u64 = 0\n\
-            volatile sum := op_count + error_count";
+            extern cycles_total: u64 = 0\n\
+            extern result_failure: u64 = 0\n\
+            volatile sum := cycles_total + result_failure";
         let mut k = polydat::dsl::compile_polydat(src).expect("compile predicate kernel");
 
-        RuntimeState { op_count: 10, error_count: 5, ..Default::default() }
+        RuntimeState { cycles_total: 10, result_failure: 5, ..Default::default() }
             .inject_into(&mut k);
         assert_eq!(*k.pull("sum"), Value::U64(15));
 
-        RuntimeState { op_count: 40, error_count: 2, ..Default::default() }
+        RuntimeState { cycles_total: 40, result_failure: 2, ..Default::default() }
             .inject_into(&mut k);
         assert_eq!(*k.pull("sum"), Value::U64(42));
     }
@@ -478,17 +489,17 @@ mod tests {
         let phase_kernel = polydat::dsl::compile_polydat("input cycle: u64\nx := 5")
             .expect("phase kernel");
         let mut cond = compile_stop_condition(
-            &phase_kernel, 0, "op_count > 50 && error_rate > 0.1")
+            &phase_kernel, 0, "cycles_total > 50 && to_f64(result_failure) > (to_f64(cycles_total) * 0.1)")
             .expect("compile scoped stop condition");
         // op_count under threshold → does not trip (error_rate is 0.5
         // here, but the `&&` short of op_count > 50 fails).
-        assert!(!RuntimeState { op_count: 40, error_count: 20, ..Default::default() }
+        assert!(!RuntimeState { cycles_total: 40, result_failure: 20, ..Default::default() }
             .trips(&mut cond));
         // op_count 100 (> 50) and error_rate 0.2 (> 0.1) → trips.
-        assert!(RuntimeState { op_count: 100, error_count: 20, ..Default::default() }
+        assert!(RuntimeState { cycles_total: 100, result_failure: 20, ..Default::default() }
             .trips(&mut cond));
         // op_count over but error_rate 0.01 under → does not trip.
-        assert!(!RuntimeState { op_count: 100, error_count: 1, ..Default::default() }
+        assert!(!RuntimeState { cycles_total: 100, result_failure: 1, ..Default::default() }
             .trips(&mut cond));
     }
 
@@ -503,7 +514,7 @@ mod tests {
             &phase_kernel,
             &[
                 StopConditionDecl::error_rate_guard(0.1),
-                StopConditionDecl { when: "op_count > 1000".to_string(), effect: Outcome::failed(), reason: None },
+                StopConditionDecl { when: "cycles_total > 1000".to_string(), effect: Outcome::failed(), reason: None },
             ])
             .expect("build set");
         // The compiled set is independent of the parent kernel — drop it
@@ -514,17 +525,17 @@ mod tests {
         assert!(!set.is_empty());
         // Below the 50-op floor: even 100% errors does not trip yet.
         assert!(set.evaluate(
-            &RuntimeState { op_count: 10, error_count: 10, ..Default::default() }).is_none());
+            &RuntimeState { cycles_total: 10, result_failure: 10, ..Default::default() }).is_none());
         // 5% errors, 100 ops → neither trips.
         assert!(set.evaluate(
-            &RuntimeState { op_count: 100, error_count: 5, ..Default::default() }).is_none());
+            &RuntimeState { cycles_total: 100, result_failure: 5, ..Default::default() }).is_none());
         // 20% errors → the default error-rate condition trips.
         assert_eq!(
-            set.evaluate(&RuntimeState { op_count: 100, error_count: 20, ..Default::default() }),
+            set.evaluate(&RuntimeState { cycles_total: 100, result_failure: 20, ..Default::default() }),
             Some((Outcome::failed(), "error_rate_exceeded".to_string())));
         // Low errors but op_count over 1000 → the declared predicate trips.
         assert_eq!(
-            set.evaluate(&RuntimeState { op_count: 2000, error_count: 1, ..Default::default() }),
-            Some((Outcome::failed(), "stop_condition: op_count > 1000".to_string())));
+            set.evaluate(&RuntimeState { cycles_total: 2000, result_failure: 1, ..Default::default() }),
+            Some((Outcome::failed(), "stop_condition: cycles_total > 1000".to_string())));
     }
 }

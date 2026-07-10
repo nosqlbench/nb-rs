@@ -438,7 +438,7 @@ phases:
     cycles: 2000
     rate: 500
     stop_when:
-      - when: "attempt_count >= 50 && attempt_error_rate > 0.5"
+      - when: "attempt_total >= 50 && to_f64(attempt_failure) > (to_f64(attempt_total) * 0.5)"
     ops:
       insert:
         stmt: "op"
@@ -446,8 +446,8 @@ phases:
 "#);
     let (_stdout, stderr, ok) = run(&wl, &["errors=warn", "concurrency=4"]);
     assert!(!ok, "attempt guard must fail the phase: {stderr}");
-    assert!(stderr.contains("attempt_error_rate"),
-        "trip names the attempt wire: {stderr}");
-    assert!(stderr.contains("attempts="),
-        "actual attempt values reported: {stderr}");
+    assert!(stderr.contains("attempt_failure"),
+        "trip names the attempt instrument: {stderr}");
+    assert!(stderr.contains("attempt_failure_fraction="),
+        "derived attempt fraction reported in the actuals: {stderr}");
 }

@@ -88,7 +88,7 @@ fn run(workload: &Path, extra: &[&str]) -> (String, String, bool) {
 fn workload_stop_when_halts_later_phase() {
     let wl = write_workload("opcount", r#"
 stop_when:
-  - when: "op_count > 5"
+  - when: "cycles_total > 5"
     each: workload
 phases:
   phase_one:
@@ -125,7 +125,7 @@ scenarios:
 fn no_trip_runs_all_phases() {
     let wl = write_workload("notrip", r#"
 stop_when:
-  - when: "op_count > 1000000"
+  - when: "cycles_total > 1000000"
     each: workload
 phases:
   phase_one:
