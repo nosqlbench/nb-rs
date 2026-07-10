@@ -3454,11 +3454,93 @@ async fn run_phase(
     phase_name: &str,
     scene_node_id: crate::scene_tree::SceneNodeId,
 ) -> crate::phase_outcome::Outcome {
-    crate::execution_context::with_current_phase(
+    let outcome = crate::execution_context::with_current_phase(
         scene_node_id,
         run_phase_inner(ctx, phase_name, scene_node_id),
     )
-    .await
+    .await;
+    // Early config-resolution failures (`return Outcome::failed()`
+    // before the failure epilogue — an unresolvable `concurrency:`,
+    // a missing kernel, a bad cycles expression) used to leave the
+    // walk blind: no observer event, no scene-tree outcome, no
+    // workload-shell fold — so scenario stop-on-error never tripped,
+    // sibling tiers raced on, and the reason surfaced exactly once
+    // at process exit. This chokepoint (ONE place, covering every
+    // early-return site) detects a failed Outcome that never got
+    // recorded and routes it through the same visible surfaces as a
+    // runtime failure.
+    if outcome.is_failure() {
+        let recorded = crate::scene_tree::with_global(
+            |t| t.phase_outcome_present_at(scene_node_id)).unwrap_or(false);
+        if !recorded {
+            record_early_phase_failure(ctx, scene_node_id, phase_name, &outcome);
+        }
+    }
+    outcome
+}
+
+/// Route an early (pre-epilogue) phase failure through the visible
+/// surfaces: loud ERR line, observer, scene tree, checkpoint,
+/// sqlite, and the workload-shell child fold so stop-on-error halts
+/// the walk. Labels/duration are unavailable this early — the
+/// identity is the phase name and the duration is zero.
+fn record_early_phase_failure(
+    ctx: &mut ExecCtx,
+    scene_node_id: crate::scene_tree::SceneNodeId,
+    phase_name: &str,
+    outcome: &crate::phase_outcome::Outcome,
+) {
+    let reason = outcome.reason.clone()
+        .unwrap_or_else(|| "phase configuration failed".to_string());
+    crate::diag!(crate::observer::LogLevel::Error,
+        "phase '{phase_name}': {reason} — failing phase (config)");
+    ctx.observer.phase_failed(scene_node_id, phase_name, "", &reason);
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let phase_outcome = crate::phase_outcome::PhaseOutcome::failed(
+        crate::phase_outcome::PhaseIdentity::new(phase_name, ""),
+        0.0,
+        vec![crate::phase_outcome::PhaseErrorDetail {
+            class: "config".into(),
+            message: reason.clone(),
+            op_name: None,
+            cycle: None,
+            op_template: None,
+            op_resolved: None,
+            at_nanos: now_nanos,
+            retryable: false,
+        }],
+    );
+    if let Ok(mut guard) = ctx.sqlite_reporter.lock()
+        && let Some(reporter) = guard.as_mut() {
+            let row = phase_outcome.to_sqlite_row(
+                &ctx.session_id, ctx.exec_id, now_nanos as i64,
+            );
+            reporter.write_phase_outcome(&row);
+        }
+    crate::scene_tree::with_global_mut(|t| {
+        t.set_phase_failed_at(scene_node_id, &reason);
+        t.set_phase_outcome_at(scene_node_id, phase_outcome);
+    });
+    if let Some(writer) = ctx.checkpoint_writer.as_ref() {
+        let identity = phase_identity_for(phase_name, "");
+        writer.phase_failed(&identity, &reason);
+        let _ = writer.flush();
+    }
+    if let Some((trip_outcome, trip_reason)) = ctx.workload_shell
+        .record_phase(true, 0, 0)
+    {
+        let cause = if trip_outcome.is_failure() {
+            crate::session_signals::StopCause::Fault
+        } else {
+            crate::session_signals::StopCause::Interrupt
+        };
+        crate::session_signals::request_shell_stop(cause);
+        crate::diag!(crate::observer::LogLevel::Warn,
+            "scenario stop-on-error ({trip_reason}) after phase              '{phase_name}' — halting remaining walk");
+    }
 }
 
 async fn run_phase_inner(
@@ -4291,15 +4373,41 @@ async fn run_phase_inner(
     // without spinning up the fiber pool / progress thread / or
     // running any cycles.
 
-    // Resolve concurrency
+    // Resolve concurrency: `{param}` / `{iter_var}` interpolation,
+    // a literal integer, or a BARE NAME resolved scope-aware — an
+    // iteration variable, a parent-kernel wire/const (which covers
+    // cascaded workload params and scope consts), or a raw workload
+    // param, in shadowing order (SRD-16: inner scope wins). "cycle
+    // is just a wire name" applies to config scalars too:
+    // `concurrency: concurrency` reads the workload's `concurrency`
+    // param the same way `batch: stride` reads a scope const.
     let phase_concurrency = match phase.concurrency.as_ref() {
         Some(s) => {
             let mut exp = crate::runner::expand_workload_params(s, &ctx.workload_params);
             for (v, val) in &iter_var_values { exp = exp.replace(&format!("{{{v}}}"), val); }
-            match exp.parse::<usize>().map_err(|_| format!(
-                "phase '{phase_name}': concurrency '{exp}' not a valid integer")) {
-                Ok(v) => v,
-                Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
+            let parsed = exp.parse::<usize>().ok().or_else(|| {
+                let bare = exp.trim();
+                iter_var_values.get(bare).cloned()
+                    .or_else(|| ctx.current_parent_kernel.as_ref()
+                        .and_then(|k| k.lookup(bare))
+                        .map(|v| match v {
+                            polydat::ast::Value::U64(n) => n.to_string(),
+                            polydat::ast::Value::F64(f) => (f as u64).to_string(),
+                            polydat::ast::Value::Str(s) => s.to_string(),
+                            other => other.to_display_string(),
+                        }))
+                    .or_else(|| ctx.workload_params.get(bare).cloned())
+                    .and_then(|resolved| resolved.trim().parse::<usize>().ok())
+            });
+            match parsed {
+                Some(v) => v,
+                // No `phase 'X':` prefix here — the recording
+                // chokepoint and the runner's final error line each
+                // add phase context; embedding it doubles it.
+                None => return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                    "concurrency '{exp}' is neither an integer nor a resolvable \
+                     name (checked iteration variables, the parent scope, and \
+                     workload params)")),
             }
         }
         None => ctx.concurrency,

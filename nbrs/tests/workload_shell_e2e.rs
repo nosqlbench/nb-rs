@@ -354,3 +354,66 @@ scenarios:
     assert!(!ok,
         "a failing daemon phase must fail the run; stderr:\n{stderr}");
 }
+
+/// Bare-name config scalars resolve scope-aware: `concurrency:
+/// concurrency` reads the workload param the same way `batch: stride`
+/// reads a scope const (regression: the bare form failed the phase —
+/// invisibly — while braces worked).
+#[test]
+fn bare_name_concurrency_resolves() {
+    let wl = write_workload("bare_conc", r#"
+params:
+  concurrency: 3
+scenarios:
+  default:
+    - for: "i in 1, 2"
+      phases:
+        - loader
+phases:
+  loader:
+    adapter: testkit
+    concurrency: concurrency
+    cycles: 20
+    ops:
+      insert:
+        stmt: "load i={i}"
+"#);
+    let (_stdout, stderr, ok) = run(&wl, &[]);
+    assert!(ok, "bare-name concurrency must resolve: {stderr}");
+    let loads = stderr.lines().filter(|l| l.contains("[loader]") && l.contains("✓")).count();
+    assert!(loads >= 2, "loader runs every iteration ({loads}): {stderr}");
+}
+
+/// An early CONFIG failure (pre-activity: unresolvable concurrency,
+/// bad cycles, missing kernel) must be loud and counted — regression:
+/// it returned a bare failed Outcome with no observer event, no
+/// scene-tree outcome, and no workload-shell fold, so the walk raced
+/// through every remaining iteration and the reason surfaced once at
+/// process exit.
+#[test]
+fn early_config_failure_is_loud_and_halts_the_walk() {
+    let wl = write_workload("bad_conc", r#"
+scenarios:
+  default:
+    - for: "i in 1, 2, 3"
+      phases:
+        - loader
+phases:
+  loader:
+    adapter: testkit
+    concurrency: bogus_name
+    cycles: 20
+    ops:
+      insert:
+        stmt: "load i={i}"
+"#);
+    let (_stdout, stderr, ok) = run(&wl, &[]);
+    assert!(!ok, "invalid concurrency must fail the run: {stderr}");
+    assert!(stderr.contains("failing phase (config)"),
+        "mid-run ERR line expected: {stderr}");
+    assert!(stderr.contains("halting remaining walk"),
+        "stop-on-error must trip on the config failure: {stderr}");
+    let tiers = stderr.lines().filter(|l| l.contains("· i=")).count();
+    assert!(tiers <= 2,
+        "the walk must halt at the first failed iteration          (live + log-tail replay = at most 2 mentions), saw {tiers}: {stderr}");
+}

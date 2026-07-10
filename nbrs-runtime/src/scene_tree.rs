@@ -653,6 +653,16 @@ impl SceneTree {
     /// outcome in DFS order. Used by the (Push 3) sqlite
     /// persister and the (Push 5) replay rehydrator. Skips
     /// phases that never reached terminal state.
+    /// True when the phase node already carries a recorded
+    /// [`crate::phase_outcome::PhaseOutcome`]. The `run_phase`
+    /// chokepoint uses this to detect an early config-resolution
+    /// failure (an `Outcome::failed()` returned before the failure
+    /// epilogue ran) so it can route it through the visible
+    /// surfaces exactly once.
+    pub fn phase_outcome_present_at(&self, id: SceneNodeId) -> bool {
+        self.nodes.get(id).map(|n| n.outcome.is_some()).unwrap_or(false)
+    }
+
     pub fn iter_phase_outcomes(&self)
         -> impl Iterator<Item = &crate::phase_outcome::PhaseOutcome>
     {
