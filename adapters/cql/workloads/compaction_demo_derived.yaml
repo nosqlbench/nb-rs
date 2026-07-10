@@ -89,14 +89,25 @@ params:
   connection_idle_timeout: 5m
   reconnect_base_delay: 1s
   reconnect_max_delay: 10s
-  # `error_rate_backstop` = the SANITY-BACKSTOP error rate (a proportion in
-  # [0,1]). It is a PLAIN WORKLOAD PARAM consumed by the data-plane phases'
-  # `stop_when` (load_increment / recall_check) — a modular, workload-expressed
-  # breaker, NOT the machine's built-in error_rate_max. Set it LOOSER than the
-  # adaptive rate servo's operating margin so the servo throttles first and
-  # this only trips on a genuine runaway. Tune on the CLI
+  # `error_rate_backstop` = the SANITY-BACKSTOP result-level error rate
+  # (a proportion in [0,1]) for `recall_check` — a modular,
+  # workload-expressed breaker, NOT the machine's built-in
+  # `error_rate_max`. The rate is DERIVED IN THE PREDICATE from the base
+  # counters (`error_count` terminal failed ops / `op_count` completed
+  # ops), never read from a precomputed rate wire. Set it LOOSER than
+  # the adaptive rate servo's operating margin so the servo throttles
+  # first and this only trips on a genuine runaway. Tune on the CLI
   # (`error_rate_backstop=0.02`).
   error_rate_backstop: 0.05
+  # `attempt_failure_backstop` = the ATTEMPT-level sickness threshold for
+  # `load_increment` (a proportion in [0,1]), likewise derived in the
+  # predicate from the base counters (`attempt_failures` failed attempts /
+  # `attempt_count` resolved attempts). Attempts see THROUGH retries: the
+  # result-level rate stays green while a `tries:` budget absorbs
+  # failures (r: climbing, att:% sinking), so this is the breaker that
+  # catches a drowning server early. Tune on the CLI
+  # (`attempt_failure_backstop=0.25`).
+  attempt_failure_backstop: 0.10
   adapter: cql
   host: 18.215.16.255
   dataset: changeme
@@ -522,19 +533,30 @@ phases:
   # and the table ends each tier holding exactly [0, this_count).
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   load_increment:
-    concurrency: "{concurrency}"
-    # SRD-82 ErrorPolicy + SRD-83 stop conditions — tolerate transient insert
-    # errors (timeouts under load) instead of aborting on the first one: every
-    # error is logged + tallied and the load keeps going. The `stop_when` below
-    # is a SANITY BACKSTOP: it fails the phase only if the error rate blows past
-    # `error_rate_backstop` — a threshold deliberately set LOOSER than the
-    # adaptive rate servo's operating margin, so the servo has room to throttle
-    # before this last-resort trips (the servo, not the breaker, is the primary
-    # control). `op_count > 100` holds it off until the rate is measured over a
-    # real sample. polydat predicates use `&`, not `&&`.
+    concurrency: concurrency
+    # SRD-82 ErrorPolicy + SRD-83 stop conditions — tolerate TRANSIENT insert
+    # errors (timeouts under load): the `tries:` budget retries them and the
+    # load keeps going. The guards below are SANITY BACKSTOPS, each derived IN
+    # THE PREDICATE from base counters — never a precomputed rate wire:
+    #   result-specific:  error_count / op_count            (terminal failed ops / completed ops)
+    #   attempt-specific: attempt_failures / attempt_count  (failed attempts / resolved attempts)
+    #
+    # 1. Coverage invariant. This phase's contract is "the table ends the tier
+    #    holding exactly [prev_count, this_count)". A TERMINAL insert failure
+    #    (an op that exhausted its whole `tries` budget) is missing rows — the
+    #    tier is invalid regardless of proportion, so a single one fails the
+    #    phase. Transients never trip this: they resolve inside the budget and
+    #    never reach `error_count`.
+    # 2. Attempt-level sickness. Retries absorb failures, so the result-level
+    #    rate stays green while the server drowns (r: climbing, att:% sinking).
+    #    Failed attempts crossing `attempt_failure_backstop` of resolved
+    #    attempts — past a 200-attempt sample — fails the phase while the rate
+    #    servo still has operating room below it.
+    # polydat predicates use `&`, not `&&`.
     errors: ".*:warn,counter"
     stop_when:
-      - when: "(op_count > 100) & (error_rate > {error_rate_backstop})"
+      - when: "error_count > 0"
+      - when: "(attempt_count > 200) & (to_f64(attempt_failures) > (to_f64(attempt_count) * {attempt_failure_backstop}))"
     bindings: |
       # `p` is the active masked profile tier from `profile_partitions`:
       # `[start_of(p), end_of(p))` is the incremental delta since the
@@ -747,8 +769,10 @@ phases:
     # set outside the servo margin) — meaning the recall measurement is
     # untrustworthy.
     errors: ".*:warn,counter"
+    # Result-specific backstop, derived from base counters in the predicate
+    # (error_count terminal failed ops / op_count completed ops).
     stop_when:
-      - when: "(op_count > 100) & (error_rate > {error_rate_backstop})"
+      - when: "(op_count > 100) & (to_f64(error_count) > (to_f64(op_count) * {error_rate_backstop}))"
     bindings: |
       # Same masked tier as the load: name it by its masked position
       # idx_of(p), prebuffer the tier's own ground-truth facets.
