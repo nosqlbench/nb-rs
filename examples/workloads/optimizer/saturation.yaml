@@ -30,7 +30,7 @@ description: |
 # Sub-second metrics cadence: the SRD-86 settle detector samples the objective
 # on the finest cadence pulse, so a 50ms cadence (vs the 1s default) settles
 # each coordinate's run-produced error rate in a fraction of the wall-clock.
-# (This objective is the cumulative `metric("errors","rate")` — no rate() window
+# (This objective is the cumulative `metric("errors_total","rate")` — no rate() window
 # to shrink, so the cadence alone does the work.)
 params:
   metrics_cadence: 50ms
@@ -62,7 +62,7 @@ phases:
     bindings: |
       input cycle: u64
       # The run-produced signal: the testkit backend's overload error rate.
-      err_rate := metric("errors", "rate")
+      err_rate := metric("errors_total", "rate")
       # Maximize -err_rate: the concurrency with fewest overloads wins.
       score := 0 - err_rate
     ops:

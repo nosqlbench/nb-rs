@@ -81,7 +81,7 @@ blocks:
   feedback_loop:
     bindings: |
       input cycle: u64
-      err_rate := metric("errors", "rate")
+      err_rate := metric("errors_total", "rate")
       // Step throttle: above a 5%-error threshold the multiplier
       // drops to 0.5 (rate halves); below it sits at 1.05 (rate
       // ramps up). `control_set` is non-blocking — the spawn is

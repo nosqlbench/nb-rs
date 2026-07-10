@@ -99,12 +99,13 @@ fn selection_from_pattern(pattern: &str) -> (Selection, Option<String>) {
 )]
 fn metric(label_pattern: Const<&str>, stat: Const<&str>) -> f64 {
     let (sel, family) = selection_from_pattern(label_pattern.0);
+    let Some(fam) = family else {
+        warn_family_required("metric", label_pattern.0);
+        return 0.0;
+    };
     get_query()
         .map(|q| q.session_lifetime(&sel))
-        .and_then(|snap| match &family {
-            Some(fam) => extract_family_stat(&snap, fam, stat.0),
-            None => extract_stat(&snap, stat.0),
-        })
+        .and_then(|snap| extract_family_stat(&snap, &fam, stat.0))
         .unwrap_or(0.0)
 }
 
@@ -123,6 +124,10 @@ fn metric(label_pattern: Const<&str>, stat: Const<&str>) -> f64 {
 )]
 fn metric_window(label_pattern: Const<&str>, stat: Const<&str>) -> f64 {
     let (sel, family) = selection_from_pattern(label_pattern.0);
+    let Some(family) = family else {
+        warn_family_required("metric_window", label_pattern.0);
+        return 0.0;
+    };
     get_query()
         .and_then(|q| {
             let smallest = q.reporter().declared_cadences().smallest();
@@ -131,63 +136,48 @@ fn metric_window(label_pattern: Const<&str>, stat: Const<&str>) -> f64 {
                 "p50" | "p99" | "mean" => q.distribution_over(smallest, &sel),
                 _ => q.increase_over(smallest, &sel),
             };
-            match &family {
-                Some(fam) => extract_family_stat(&snap, fam, stat.0),
-                None => extract_stat(&snap, stat.0),
-            }
+            extract_family_stat(&snap, &family, stat.0)
         })
         .unwrap_or(0.0)
 }
 
 /// Extract a named stat from a [`MetricSet`].
-fn extract_stat(snapshot: &MetricSet, stat: &str) -> Option<f64> {
-    fn counter_total(snapshot: &MetricSet, name: &str) -> Option<u64> {
-        let f = snapshot.family(name)?;
-        let m = f.metrics().next()?;
-        match m.point()?.value() {
-            MetricValue::Counter(c) => Some(c.cumulative),
-            _ => None,
-        }
-    }
-
-    match stat {
-        "cycles" => counter_total(snapshot, "cycles_total").map(|v| v as f64),
-        "errors" => counter_total(snapshot, "errors_total").map(|v| v as f64),
-        "rate" => {
-            let cycles = counter_total(snapshot, "cycles_total")? as f64;
-            let secs = snapshot.interval().as_secs_f64().max(0.001);
-            Some(cycles / secs)
-        }
-        "p50" | "p99" | "mean" => {
-            let f = snapshot.family("cycles_servicetime")?;
-            let m = f.metrics().next()?;
-            match m.point()?.value() {
-                MetricValue::Histogram(h) if h.count > 0 => Some(match stat {
-                    "p50" => h.reservoir.value_at_quantile(0.50) as f64,
-                    "p99" => h.reservoir.value_at_quantile(0.99) as f64,
-                    "mean" => h.reservoir.mean(),
-                    _ => 0.0,
-                }),
-                _ => None,
-            }
-        }
-        _ => None,
+/// A family-less pattern has nothing to read since the canned stat
+/// vocabulary was retired (2026-07-10): warn ONCE per distinct
+/// pattern — visible, never silent, and not per-eval spam on the
+/// objective/guard evaluation paths — and let the reader yield 0.0.
+fn warn_family_required(node: &str, pattern: &str) {
+    static WARNED: LazyLock<Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+    let key = format!("{node}:{pattern}");
+    let mut warned = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+    if warned.insert(key) {
+        crate::diag::warn(&format!(
+            "{node}('{pattern}', …): no metric family named — the first \
+             bare token in the pattern must be an instrument name (e.g. \
+             {node}('errors_total', 'rate')); reading 0.0"));
     }
 }
 
-/// Read `stat` from the NAMED family's first series — the general
-/// instrument-reader arm: any registered counter / gauge / histogram
-/// is readable by its own name, no canned vocabulary. Stats:
-/// `count` (counter cumulative or histogram count), `value` (gauge,
-/// falling back to counter cumulative), `mean` / `p50` / `p99`
-/// (histograms). Returns `None` — surfaced as `0.0` by the reader
-/// nodes — when the family is absent from the snapshot or the stat
-/// doesn't apply to its type.
+/// Read `stat` from the NAMED family's first series — the ONE
+/// vocabulary: any registered counter / gauge / histogram is
+/// readable by its own name. Stats: `count` (counter cumulative or
+/// histogram count), `value` (gauge, falling back to counter
+/// cumulative), `rate` (counter cumulative over the snapshot's
+/// interval — the session average for `metric`, the window rate for
+/// `metric_window`), `mean` / `p50` / `p99` (histograms). Returns
+/// `None` — surfaced as `0.0` by the reader nodes — when the family
+/// is absent from the snapshot or the stat doesn't apply to its
+/// type.
 fn extract_family_stat(snapshot: &MetricSet, family: &str, stat: &str) -> Option<f64> {
     let f = snapshot.family(family)?;
     let m = f.metrics().next()?;
     match (m.point()?.value(), stat) {
         (MetricValue::Counter(c), "count" | "value") => Some(c.cumulative as f64),
+        (MetricValue::Counter(c), "rate") => {
+            let secs = snapshot.interval().as_secs_f64().max(0.001);
+            Some(c.cumulative as f64 / secs)
+        }
         (MetricValue::Gauge(g), "value") => Some(g.value),
         (MetricValue::Histogram(h), "count") => Some(h.count as f64),
         (MetricValue::Histogram(h), "mean") if h.count > 0 => Some(h.reservoir.mean()),

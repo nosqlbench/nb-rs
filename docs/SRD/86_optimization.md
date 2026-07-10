@@ -691,11 +691,14 @@ fits. They are **not** unified — one is a cheap fixed-vocabulary stat reader, 
 other a full query language — and neither is re-platformed onto the other.
 
 **1. MetricSet stat-readers — `metric(...)` / `metric_window(...)` (kept).**
-Fixed-vocabulary readers over the in-process `MetricSet`
+Family-named readers over the in-process `MetricSet`
 (`nbrs-metrics::polydat_nodes`). `metric(pattern, stat)` reads
 `MetricsQuery::session_lifetime` (session-wide cumulative); `metric_window(pattern,
-stat)` reads the smallest cadence's last closed window. Both return `f64` over a
-fixed stat set (`cycles`/`errors`/`rate`/`p50`/`p99`/`mean`) and resolve a
+stat)` reads the smallest cadence's last closed window. The pattern names the
+instrument FAMILY (a bare token; `key=value`/`key~sub` parts narrow the series —
+2026-07-10, the canned `cycles`/`errors` stat vocabulary is retired), and both
+return `f64` over the family's own point: `count`/`value`/`rate` (counters,
+gauges), `mean`/`p50`/`p99` (histograms). They resolve a
 **global** query handle set once by the runner — they are *not* component-bound,
 so the kernel they are read from never changes their value. `metric` is monotonic
 session-cumulative; `metric_window` is the per-eval-isolated but **volatile**

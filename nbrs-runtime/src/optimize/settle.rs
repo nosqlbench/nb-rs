@@ -542,11 +542,11 @@ mod tests {
         // coordinates) → flagged as un-gateable. `metric_window(...)` is
         // a bounded windowed reader, and a plain objective reads nothing
         // → neither is flagged.
-        let cum = compile_polydat(r#"obj := metric("phase=p", "rate")"#)
+        let cum = compile_polydat(r#"obj := metric("cycles_total, phase=p", "rate")"#)
             .expect("metric node compiles");
         assert!(program_reads_session_cumulative_metrics(cum.program()));
 
-        let win = compile_polydat(r#"obj := metric_window("phase=p", "rate")"#)
+        let win = compile_polydat(r#"obj := metric_window("cycles_total, phase=p", "rate")"#)
             .expect("metric_window node compiles");
         assert!(
             !program_reads_session_cumulative_metrics(win.program()),
