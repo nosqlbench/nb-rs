@@ -386,14 +386,14 @@ fn render_outcome(
     use nbrs_runtime::lifecycle::EventType;
     use nbrs_runtime::readouts::buf::StringBuf;
     use nbrs_runtime::phase_outcome::{
-        PhaseStatus, PhaseErrorDetail, ResumeCursor,
+        Outcome, PhaseErrorDetail, ResumeCursor,
     };
 
     struct ReplayCtx<'a> {
         name: &'a str,
         labels: &'a str,
         elapsed_secs: f64,
-        status: PhaseStatus,
+        outcome: Outcome,
         errors: Vec<PhaseErrorDetail>,
         use_color: bool,
     }
@@ -404,12 +404,12 @@ fn render_outcome(
         fn elapsed_secs(&self) -> f64 { self.elapsed_secs }
         fn use_color(&self) -> bool { self.use_color }
         fn event(&self) -> EventType { EventType::PhaseEnd }
-        fn outcome_status(&self) -> PhaseStatus { self.status }
+        fn outcome(&self) -> Outcome { self.outcome.clone() }
         fn outcome_errors(&self) -> &[PhaseErrorDetail] { &self.errors }
         fn outcome_resume_cursor(&self) -> Option<&ResumeCursor> { None }
     }
 
-    let status = parse_status(&row.status);
+    let outcome = parse_status(&row.status);
     let errors: Vec<PhaseErrorDetail> = row.errors.iter().map(|e| PhaseErrorDetail {
         class: e.class.clone(),
         message: e.message.clone(),
@@ -425,7 +425,7 @@ fn render_outcome(
         name: &row.phase_name,
         labels: &row.phase_labels,
         elapsed_secs: row.duration_secs,
-        status,
+        outcome,
         errors,
         use_color: !plain,
     };
@@ -440,17 +440,23 @@ fn render_outcome(
     s
 }
 
-fn parse_status(label: &str) -> nbrs_runtime::phase_outcome::PhaseStatus {
-    use nbrs_runtime::phase_outcome::PhaseStatus;
+/// Parse a sqlite `status` label into the two-axis [`Outcome`].
+/// Accepts both the current axis labels and the retired legacy set
+/// (`cursor_suspended` collapses to Interrupted+Succeeded — the
+/// stored rows are never rewritten, so old sessions must replay).
+fn parse_status(label: &str) -> nbrs_runtime::phase_outcome::Outcome {
+    use nbrs_runtime::phase_outcome::Outcome;
     match label {
-        "completed"        => PhaseStatus::Completed,
-        "failed"           => PhaseStatus::Failed,
-        "skipped"          => PhaseStatus::Skipped,
-        "cursor_suspended" => PhaseStatus::CursorSuspended,
+        "completed"        => Outcome::completed(),
+        "failed"           => Outcome::failed(),
+        "completed_failed" => Outcome::completed_failed(),
+        "skipped"          => Outcome::skipped(),
+        "interrupted"
+        | "cursor_suspended" => Outcome::interrupted(),
         // Defensive: unrecognised statuses render as Failed
         // so the operator notices instead of seeing a silent
         // ✓ for an unknown state.
-        _                  => PhaseStatus::Failed,
+        _                  => Outcome::failed(),
     }
 }
 

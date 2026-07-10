@@ -2623,14 +2623,14 @@ impl Activity {
             // Skipped decision. The activity knows only what it
             // measured: a clean completion if it ran to extent,
             // a stop-flag trip if the error router fired. Mirror
-            // the stop_flag into PhaseStatus so the readout
-            // doesn't render ✓ on a stopped phase. The executor
-            // records the canonical outcome on the scene tree;
-            // this surface is the realtime display projection.
-            let outcome_status = if activity.stop_flag.load(Ordering::Relaxed) {
-                crate::phase_outcome::PhaseStatus::Failed
+            // the stop_flag into the two-axis Outcome so the
+            // readout doesn't render ✓ on a stopped phase. The
+            // executor records the canonical outcome on the scene
+            // tree; this surface is the realtime display projection.
+            let outcome = if activity.stop_flag.load(Ordering::Relaxed) {
+                crate::phase_outcome::Outcome::failed()
             } else {
-                crate::phase_outcome::PhaseStatus::Completed
+                crate::phase_outcome::Outcome::completed()
             };
             let outcome_errors: Vec<crate::phase_outcome::PhaseErrorDetail> =
                 activity.phase_errors.lock().ok()
@@ -2653,7 +2653,7 @@ impl Activity {
                 depth_indent: crate::scene_tree::running_phase_indent(),
                 use_color: crate::observer::use_color(),
                 memo: activity.memo.load().as_str().to_string(),
-                outcome_status,
+                outcome,
                 outcome_errors,
                 outcome_resume_cursor: None,
             };

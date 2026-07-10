@@ -306,12 +306,12 @@ pub trait ReadoutContext {
     /// SRD-76 — the terminal disposition of the phase. Drives
     /// the [`phase_outcome`](crate::readouts::builtins::phase_outcome)
     /// readout's status glyph and rendering branch. Defaults
-    /// to [`crate::phase_outcome::PhaseStatus::Completed`]
+    /// to a Completed+Succeeded outcome
     /// for `on_update` fires (which never terminate the
     /// phase) and for any context that doesn't carry a
     /// distinct outcome.
-    fn outcome_status(&self) -> crate::phase_outcome::PhaseStatus {
-        crate::phase_outcome::PhaseStatus::Completed
+    fn outcome(&self) -> crate::phase_outcome::Outcome {
+        crate::phase_outcome::Outcome::completed()
     }
 
     /// SRD-76 — the error list collected during the phase.

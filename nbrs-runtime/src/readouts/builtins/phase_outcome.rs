@@ -467,15 +467,15 @@ impl Readout for PhaseOutcomeReadout {
 /// Returns empty strings when colour is off so the same
 /// format template covers both colour and no-colour modes.
 fn status_color(
-    status: crate::phase_outcome::PhaseStatus, color: bool,
+    outcome: &crate::phase_outcome::Outcome, color: bool,
 ) -> &'static str {
     if !color { return ""; }
-    use crate::phase_outcome::PhaseStatus;
-    match status {
-        PhaseStatus::Completed       => "\x1b[32m", // green
-        PhaseStatus::Failed          => "\x1b[31m", // red
-        PhaseStatus::Skipped         => "\x1b[2m",  // dim
-        PhaseStatus::CursorSuspended => "\x1b[33m", // yellow
+    use crate::phase_outcome::{Disposition, Validity};
+    match (outcome.disposition, outcome.validity) {
+        (_, Validity::Failed)                            => "\x1b[31m", // red
+        (Disposition::Skipped, _)                        => "\x1b[2m",  // dim
+        (Disposition::Interrupted, Validity::Succeeded)  => "\x1b[33m", // yellow (re-usable partial)
+        _                                                => "\x1b[32m", // green
     }
 }
 
@@ -498,9 +498,9 @@ fn render_compact_value(
     let blue   = if color { "\x1b[34m" } else { "" };
     let reset  = if color { "\x1b[0m"  } else { "" };
 
-    let status = ctx.outcome_status();
-    let glyph_color = status_color(status, color);
-    let glyph = status.glyph();
+    let outcome = ctx.outcome();
+    let glyph_color = status_color(&outcome, color);
+    let glyph = outcome.glyph();
 
     let cycles = ctx.cycles_completed();
     let total_extent = ctx.cycles_total();
@@ -565,9 +565,9 @@ fn render_expanded_value(
     let blue   = if color { "\x1b[34m" } else { "" };
     let red    = if color { "\x1b[31m" } else { "" };
     let reset  = if color { "\x1b[0m"  } else { "" };
-    let status = ctx.outcome_status();
-    let glyph_color = status_color(status, color);
-    let glyph = status.glyph();
+    let outcome = ctx.outcome();
+    let glyph_color = status_color(&outcome, color);
+    let glyph = outcome.glyph();
     // SRD-76 — when the phase has recorded errors, append a
     // per-error block at the bottom of the Expanded LOD. This
     // gives operators full per-error detail without leaving
@@ -659,7 +659,7 @@ fn render_expanded_value(
         coords = coords_line,
         chips = chips_block,
         total = total_extent,
-        status_label = status.label(),
+        status_label = outcome.label(),
         errors_block = errors_block,
     );
     let len = tmp.len();
@@ -848,14 +848,14 @@ fn render_labeled_value(
     // SRD-76 — branch on terminal status. Failed phases
     // render the error-flavoured line (glyph + class + first
     // message + elapsed) instead of the success summary.
-    // Skipped / CursorSuspended fall through the same
+    // Skipped / interrupted-but-usable fall through the same
     // success-flavoured layout because the throughput /
-    // ok-pct / counters telemetry is still meaningful (a
-    // cursor-suspended phase ran SOMETHING) and the glyph
-    // alone communicates the non-Completed status.
-    use crate::phase_outcome::PhaseStatus;
-    let status = ctx.outcome_status();
-    if matches!(status, PhaseStatus::Failed) {
+    // ok-pct / counters telemetry is still meaningful (an
+    // interrupted phase ran SOMETHING) and the glyph alone
+    // communicates the non-Completed disposition. Only an
+    // untrustworthy result gets the failure layout.
+    let outcome = ctx.outcome();
+    if outcome.is_failure() {
         return render_labeled_value_failed(ctx, out);
     }
     let color = ctx.use_color();
@@ -864,8 +864,8 @@ fn render_labeled_value(
     let yellow = if color { "\x1b[33m" } else { "" };
     let blue   = if color { "\x1b[34m" } else { "" };
     let reset  = if color { "\x1b[0m"  } else { "" };
-    let glyph_color = status_color(status, color);
-    let glyph = status.glyph();
+    let glyph_color = status_color(&outcome, color);
+    let glyph = outcome.glyph();
 
     let cycles = ctx.cycles_completed();
     let errors = ctx.errors();
@@ -1371,7 +1371,7 @@ mod tests {
         chips: String,
         depth_indent: String,
         use_color: bool,
-        outcome_status: crate::phase_outcome::PhaseStatus,
+        outcome: crate::phase_outcome::Outcome,
         outcome_errors: Vec<crate::phase_outcome::PhaseErrorDetail>,
     }
 
@@ -1392,7 +1392,7 @@ mod tests {
                 chips: String::new(),
                 depth_indent: String::new(),
                 use_color: false,
-                outcome_status: crate::phase_outcome::PhaseStatus::Completed,
+                outcome: crate::phase_outcome::Outcome::completed(),
                 outcome_errors: Vec::new(),
             }
         }
@@ -1414,8 +1414,8 @@ mod tests {
         fn depth_indent(&self) -> &str { &self.depth_indent }
         fn use_color(&self) -> bool { self.use_color }
         fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::PhaseEnd }
-        fn outcome_status(&self) -> crate::phase_outcome::PhaseStatus {
-            self.outcome_status
+        fn outcome(&self) -> crate::phase_outcome::Outcome {
+            self.outcome.clone()
         }
         fn outcome_errors(&self) -> &[crate::phase_outcome::PhaseErrorDetail] {
             &self.outcome_errors
@@ -1786,7 +1786,7 @@ mod tests {
             phase_name: "ensure_compacted".into(),
             phase_labels: String::new(),
             elapsed_secs: 14400.0,
-            outcome_status: crate::phase_outcome::PhaseStatus::Failed,
+            outcome: crate::phase_outcome::Outcome::failed(),
             outcome_errors: vec![crate::phase_outcome::PhaseErrorDetail {
                 class: "poll_timeout".into(),
                 message: "phase-poll deadline reached after 14441.3s".into(),
@@ -1828,7 +1828,7 @@ mod tests {
             // derived from the true `errors()` counter, not the
             // captured-buffer length.
             errors: 3,
-            outcome_status: crate::phase_outcome::PhaseStatus::Failed,
+            outcome: crate::phase_outcome::Outcome::failed(),
             outcome_errors: vec![
                 mk_err("A", "msg-a"),
                 mk_err("B", "msg-b"),
@@ -1848,7 +1848,7 @@ mod tests {
     fn labeled_skipped_uses_tilde_glyph() {
         let ctx = TestCtx {
             phase_name: "rampup".into(),
-            outcome_status: crate::phase_outcome::PhaseStatus::Skipped,
+            outcome: crate::phase_outcome::Outcome::skipped(),
             cycles_completed: 0,
             cycles_total: 0,
             elapsed_secs: 0.0,
@@ -1871,7 +1871,7 @@ mod tests {
             phase_name: "ann_query".into(),
             cycles_completed: 5, cycles_total: 10,
             elapsed_secs: 1.5,
-            outcome_status: crate::phase_outcome::PhaseStatus::Failed,
+            outcome: crate::phase_outcome::Outcome::failed(),
             outcome_errors: vec![
                 crate::phase_outcome::PhaseErrorDetail {
                     class: "Timeout".into(),
@@ -1899,26 +1899,28 @@ mod tests {
         assert!(s.contains("op-resolved:"), "op-resolved row present: {s}");
     }
 
-    /// Compact LOD glyph is driven by outcome_status — Failed
-    /// → ✗, Skipped → ~, CursorSuspended → …, Completed → ✓.
+    /// Compact LOD glyph is driven by the two-axis outcome —
+    /// untrustworthy → ✗, skipped → ~, re-usable partial → …,
+    /// completed-and-trustworthy → ✓.
     #[test]
     fn compact_glyph_tracks_outcome_status() {
-        use crate::phase_outcome::PhaseStatus;
-        for (status, want) in [
-            (PhaseStatus::Completed,       '✓'),
-            (PhaseStatus::Failed,          '✗'),
-            (PhaseStatus::Skipped,         '~'),
-            (PhaseStatus::CursorSuspended, '…'),
+        use crate::phase_outcome::Outcome;
+        for (outcome, want) in [
+            (Outcome::completed(),        '✓'),
+            (Outcome::failed(),           '✗'),
+            (Outcome::completed_failed(), '✗'),
+            (Outcome::skipped(),          '~'),
+            (Outcome::interrupted(),      '…'),
         ] {
             let ctx = TestCtx {
                 phase_name: "x".into(),
                 elapsed_secs: 0.1,
-                outcome_status: status,
+                outcome,
                 ..Default::default()
             };
             let s = render_at(&ctx, Lod::Compact, ContentMode::Value);
             assert!(s.starts_with(want),
-                "compact glyph for {status:?} should be {want:?}: {s:?}");
+                "compact glyph for {want:?} missing: {s:?}");
         }
     }
 
@@ -1934,7 +1936,7 @@ mod tests {
             ops_ok: 3,
             errors: 2,
             elapsed_secs: 0.5,
-            outcome_status: crate::phase_outcome::PhaseStatus::Failed,
+            outcome: crate::phase_outcome::Outcome::failed(),
             outcome_errors: vec![crate::phase_outcome::PhaseErrorDetail {
                 class: "Timeout".into(),
                 message: "deadline exceeded".into(),

@@ -74,8 +74,7 @@ impl Readout for ErrorReadout {
         // `phase_errors` rows (`nbrs replay`).
         let failed_ops = ctx.errors().saturating_sub(ctx.retries());
         let phase_failed = failed_ops > 0
-            || matches!(ctx.outcome_status(),
-                        crate::phase_outcome::PhaseStatus::Failed);
+            || ctx.outcome().is_failure();
         if !phase_failed {
             return 0;
         }
@@ -290,11 +289,11 @@ mod tests {
         fn use_color(&self) -> bool { self.color }
         fn event(&self) -> crate::lifecycle::EventType { crate::lifecycle::EventType::PhaseEnd }
         fn outcome_errors(&self) -> &[PhaseErrorDetail] { &self.errors }
-        fn outcome_status(&self) -> crate::phase_outcome::PhaseStatus {
+        fn outcome(&self) -> crate::phase_outcome::Outcome {
             if self.failed {
-                crate::phase_outcome::PhaseStatus::Failed
+                crate::phase_outcome::Outcome::failed()
             } else {
-                crate::phase_outcome::PhaseStatus::Completed
+                crate::phase_outcome::Outcome::completed()
             }
         }
     }

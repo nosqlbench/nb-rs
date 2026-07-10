@@ -5714,7 +5714,8 @@ async fn run_phase_inner(
         phase_id: crate::phase_outcome::PhaseIdentity::new(
             phase_name, phase_labels.as_str(),
         ),
-        status: crate::phase_outcome::PhaseStatus::Completed,
+        disposition: crate::phase_outcome::Disposition::Completed,
+        validity: crate::phase_outcome::Validity::Succeeded,
         duration_secs: phase_duration,
         errors: success_errors,
         resume_cursor: None,

@@ -47,12 +47,11 @@ pub struct ActivityReadoutContext {
     /// Snapshot of the activity's memo at context-build time.
     /// Empty when no `memo:` wrapper is active on any op.
     pub memo: String,
-    /// SRD-76 — terminal phase status. The executor sets this
-    /// when it installs the [`crate::phase_outcome::PhaseOutcome`]
-    /// on the scene tree, before firing the on_phase_end
-    /// binder. Defaults to `Completed` so legacy call sites
-    /// that haven't migrated still render the success branch.
-    pub outcome_status: crate::phase_outcome::PhaseStatus,
+    /// SRD-76 / SRD-82 Part 1 — the terminal two-axis outcome. The
+    /// executor sets this when it installs the
+    /// [`crate::phase_outcome::PhaseOutcome`] on the scene tree,
+    /// before firing the on_phase_end binder.
+    pub outcome: crate::phase_outcome::Outcome,
     /// SRD-76 — chronologically ordered error list. Empty
     /// for `Completed`/`Skipped`; non-empty for `Failed`.
     /// Drives the failure-flavoured rendering of the
@@ -87,12 +86,10 @@ impl ReadoutContext for ActivityReadoutContext {
         // Completed because the binder fired before the
         // executor recorded the failure). SRD-76 unifies
         // the two surfaces.
-        match self.outcome_status {
-            crate::phase_outcome::PhaseStatus::Completed
-            | crate::phase_outcome::PhaseStatus::Skipped
-            | crate::phase_outcome::PhaseStatus::CursorSuspended
+        match self.outcome.validity {
+            crate::phase_outcome::Validity::Succeeded
                 => LifecycleState::Completed,
-            crate::phase_outcome::PhaseStatus::Failed
+            crate::phase_outcome::Validity::Failed
                 => LifecycleState::Failed(
                     self.outcome_errors.first()
                         .map(|e| e.message.clone())
@@ -101,8 +98,8 @@ impl ReadoutContext for ActivityReadoutContext {
         }
     }
     fn phase_memo(&self) -> &str { &self.memo }
-    fn outcome_status(&self) -> crate::phase_outcome::PhaseStatus {
-        self.outcome_status
+    fn outcome(&self) -> crate::phase_outcome::Outcome {
+        self.outcome.clone()
     }
     fn outcome_errors(&self) -> &[crate::phase_outcome::PhaseErrorDetail] {
         &self.outcome_errors

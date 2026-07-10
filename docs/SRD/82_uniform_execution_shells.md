@@ -134,6 +134,19 @@ Consequences the single status couldn't express:
 trust/re-use and off **`Disposition`** to decide completeness — never
 a single overloaded enum.
 
+> **Implemented in full 2026-07-10.** The axes are the STORED
+> canonical on `PhaseOutcome` (`disposition` + `validity` fields);
+> the conflated `PhaseStatus` enum is deleted. Display projections
+> (`glyph` / `label` / `is_failure`) live on `Outcome`;
+> `is_failure` keys on Validity alone, and `Interrupted+Succeeded`
+> renders `…`/yellow (re-usable partial). `cursor_suspended` is
+> retired — a resume cursor on the outcome carries the signal, and
+> `PhaseOutcome::interrupted(...)` constructs that shape. Legacy
+> compatibility is read-only: checkpoint JSONL records and sqlite
+> rows written with the old single `status` string still
+> deserialize/replay (`PhaseOutcomeWire` fallback; `nbrs replay`
+> accepts both label sets); new records write the axes only.
+
 ---
 
 ## Part 2 — One execution shell, recursively composed

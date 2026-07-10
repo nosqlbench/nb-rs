@@ -603,26 +603,23 @@ impl SceneTree {
         // full history is preserved in the structured
         // store; the in-memory carrier is the most-recent
         // snapshot only.
-        // Keep the legacy status field in sync so renderers
-        // that haven't migrated to read `outcome` still see
-        // consistent state. The mapping is:
-        //   PhaseStatus::Completed       → status=Completed
-        //   PhaseStatus::Skipped         → status=Completed (operator-visible "this phase ran cleanly")
-        //   PhaseStatus::CursorSuspended → status=Completed (partial progress preserved)
-        //   PhaseStatus::Failed          → status=Failed(first error message)
-        let legacy_status = match outcome.status {
-            crate::phase_outcome::PhaseStatus::Completed
-            | crate::phase_outcome::PhaseStatus::Skipped
-            | crate::phase_outcome::PhaseStatus::CursorSuspended =>
+        // Keep the tree's lifecycle field in sync so renderers
+        // reading it see consistent state. Validity is the axis
+        // that matters here (SRD-82 Part 1): a trustworthy result
+        // — completed, skipped, or re-usable partial progress —
+        // renders Completed; an untrustworthy one renders Failed
+        // with the first error message.
+        let lifecycle = match outcome.validity {
+            crate::phase_outcome::Validity::Succeeded =>
                 PhaseStatus::Completed,
-            crate::phase_outcome::PhaseStatus::Failed => {
+            crate::phase_outcome::Validity::Failed => {
                 let msg = outcome.first_error_message()
                     .unwrap_or("unknown error")
                     .to_string();
                 PhaseStatus::Failed(msg)
             }
         };
-        n.status = legacy_status;
+        n.status = lifecycle;
         if outcome.duration_secs > 0.0 {
             n.duration_secs = Some(outcome.duration_secs);
         }
@@ -633,7 +630,7 @@ impl SceneTree {
     /// session-wide pass/fail axis. Walks every phase node
     /// that has been populated with a `PhaseOutcome`;
     /// returns [`SessionDisposition::Failure`] when any
-    /// phase has [`crate::phase_outcome::PhaseStatus::Failed`],
+    /// phase's outcome carries `Validity::Failed`,
     /// [`SessionDisposition::Success`] otherwise. Phases
     /// that never ran (still Pending at session end)
     /// contribute nothing — interrupted-mid-run is not a
@@ -644,7 +641,7 @@ impl SceneTree {
         let any_failed = self.nodes.iter()
             .filter(|n| matches!(n.kind, NodeKind::Phase))
             .filter_map(|n| n.outcome.as_ref())
-            .any(|o| o.status.is_failure());
+            .any(|o| o.is_failure());
         if any_failed {
             crate::phase_outcome::SessionDisposition::Failure
         } else {
@@ -1049,23 +1046,17 @@ mod tests {
     #[test]
     fn session_disposition_skipped_and_cursor_suspended_are_success() {
         use crate::phase_outcome::{PhaseIdentity, PhaseOutcome,
-            PhaseStatus as POStatus, SessionDisposition};
+            SessionDisposition};
         let mut t = build_simple();
         t.set_phase_outcome("p", "x=1",
             PhaseOutcome::skipped(PhaseIdentity::new("p", "x=1")),
         );
-        // CursorSuspended built ad-hoc (no constructor
-        // helper for it yet — Push 1 intentionally
-        // narrow).
+        // Interrupted+Succeeded — re-usable partial progress (the
+        // retired CursorSuspended collapses here, SRD-82 Part 1).
         t.set_phase_outcome("q", "x=1",
-            PhaseOutcome {
-                phase_id: PhaseIdentity::new("q", "x=1"),
-                status: POStatus::CursorSuspended,
-                duration_secs: 0.5,
-                errors: Vec::new(),
-                resume_cursor: None,
-                phase_hash: None,
-            },
+            PhaseOutcome::interrupted(
+                PhaseIdentity::new("q", "x=1"), 0.5, None,
+            ),
         );
         assert_eq!(t.session_disposition(), SessionDisposition::Success);
     }
