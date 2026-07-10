@@ -480,18 +480,12 @@ after the stop report `Interrupted`.
 
 Incremental; each step compiles and is independently testable.
 
-1. **`Outcome` type.** ✅ TYPES DONE; ⏳ storage swap pending.
-   `Disposition` + `Validity` + `Outcome` landed in `phase_outcome.rs`
-   with the bidirectional projection (`Outcome::to_status` /
-   `PhaseStatus::to_outcome`) and `PhaseOutcome::outcome()`. The axes
-   are the canonical *type*; the **storage swap** — making
-   `disposition`/`validity` the stored fields on `PhaseOutcome` and
-   demoting `status` to a derived projection (so producers can set
-   `Completed+Failed` vs `Interrupted+Failed` distinctly) — is the
-   mechanical follow-up (~73 `.status` sites). Until then every
-   producer goes through the standard mapping
-   (`Completed→Completed+Succeeded`, `Failed→Interrupted+Failed`,
-   `Skipped→Skipped`, `CursorSuspended→Interrupted+Succeeded`).
+1. **`Outcome` type.** ✅ DONE IN FULL (storage swap 2026-07-10).
+   `disposition`/`validity` ARE the stored fields on `PhaseOutcome`;
+   the conflated `PhaseStatus` and both bridge projections are
+   deleted. Producers set the axes directly (`Completed+Failed` is
+   expressible); legacy single-`status` records deserialize via the
+   `PhaseOutcomeWire` fallback. See the Part 1 implementation note.
 2. **Generalise the router.** Extend `nbrs_errorhandler::ErrorRouter`
    to match `child validity` and `aggregate` keys and to emit `fail` /
    `stop` actions, alongside the existing op verbs. Keep first-match
@@ -557,11 +551,6 @@ Incremental; each step compiles and is independently testable.
    + `…::op_level_errors_does_not_leak_to_siblings`. (The op-*daemon* path
    keeps its Part 6 daemon-outcome lifecycle — a `Failed` bubbles to the
    parent handler — rather than the op router.)
-1. **`Outcome` type.** ⏳ PENDING. Two-axis `(Disposition, Validity)`
-   not yet landed; until it does, a guard `fail` is subsumed by the
-   `stop → run_phase Err → PhaseOutcome::failed` path (which already
-   stops *serial* successor phases).
-
 6. **Daemon phase (Part 6).** ✅ DONE 2026-06-25 (phase-level; op-daemon
    collapse + `daemon: <N>` cap still pending). A phase `daemon: true`
    (`WorkloadPhase.daemon`, parsed bool/0|1/on|off) runs concurrently
