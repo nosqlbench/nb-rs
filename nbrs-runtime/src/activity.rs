@@ -2377,7 +2377,7 @@ impl Activity {
                     attempt_failure,
                     ..Default::default()
                 };
-                if let Some((outcome, reason, target)) = stop_conditions.evaluate(&state) {
+                if let Some((outcome, reason, target, cancel_ops)) = stop_conditions.evaluate(&state) {
                     policy_tripped = true;
                     // SRD-83 Part 5 — honour the condition's effect. A
                     // `fail` effect records a phase error (the phase ends
@@ -2458,12 +2458,28 @@ impl Activity {
                             // shutdown guard runs the metrics/WAL/summary
                             // teardown. `Scenario` scope stays walk-local — it
                             // must halt only its own scenario, not the session.
+                            // `abort` (cancel_ops) is handled below and
+                            // supersedes this cooperative global stop.
                             if matches!(target,
                                 crate::stop_conditions::StopScope::Workload)
+                                && !cancel_ops
                             {
                                 crate::session_signals::request_stop();
                             }
                         }
+                    }
+                    // SRD-83 follow-up — `action: abort`. Beyond the
+                    // cooperative halt above, escalate the session shutdown
+                    // ladder: `escalate_shutdown()` raises the global session
+                    // stop AND arms the 10s countdown that force-drops hung
+                    // in-flight ops (Ctrl-C level 1→2). This is the "cancel the
+                    // work, don't wait for it to drain" action — for a server
+                    // sick enough that in-flight ops will only ever end by
+                    // client timeout. Cleanup is still guaranteed: the walk
+                    // unwinds normally and the runner's RAII shutdown guard
+                    // runs the metrics/WAL/summary teardown.
+                    if cancel_ops {
+                        crate::session_signals::escalate_shutdown();
                     }
                 }
             }

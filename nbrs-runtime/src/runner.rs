@@ -2818,6 +2818,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                     effect: crate::phase_outcome::Outcome::failed(),
                     reason: None,
                     target: crate::stop_conditions::StopScope::Workload,
+                    // The default stop-on-error drains cooperatively.
+                    cancel_ops: false,
                 },
             ];
             // Declared workload-level conditions (`each ∋ self|workload`).
@@ -2841,6 +2843,9 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                     // innermost of `per:`/`each:`, here `workload`) selects
                     // the action scope.
                     target: crate::executor::resolve_stop_scope(c.at, &c.each),
+                    // `action: abort` → cancel in-flight ops at the trip site.
+                    cancel_ops: crate::stop_conditions::StopConditionDecl
+                        ::action_cancels_ops(c.effect.as_deref()),
                 }));
             let set = match scope_tree.nodes[scope_tree.workload_root_idx()].cached_kernel.get() {
                 Some(root_kernel) => {

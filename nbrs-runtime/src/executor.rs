@@ -4869,6 +4869,10 @@ async fn run_phase_inner(
                     // gather); `at:` (default = innermost of `per:`/`each:`)
                     // selects where the action lands. No `at:` ⇒ phase.
                     target: resolve_stop_scope(c.at, &c.each),
+                    // `action: abort` escalates the halt to cancelling
+                    // in-flight ops at the trip site.
+                    cancel_ops: crate::stop_conditions::StopConditionDecl
+                        ::action_cancels_ops(c.effect.as_deref()),
                 }
             }))
             .collect(),

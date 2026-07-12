@@ -172,8 +172,10 @@ impl WorkloadShell {
         }
         let state = self.snapshot();
         // Workload-shell trips act on the workload shell itself (`walk_stop`),
-        // so the per-condition action `target` is not re-routed here.
-        let (outcome, reason, _target) = set.evaluate(&state)?;
+        // so the per-condition action `target` is not re-routed here. The
+        // `cancel_ops` (abort) escalation is likewise a trip-site concern
+        // (session ladder), not the phase-end aggregation path — ignored here.
+        let (outcome, reason, _target, _cancel_ops) = set.evaluate(&state)?;
         self.walk_stop.store(true, Ordering::Relaxed);
         if let Ok(mut slot) = self.stop_reason.lock() {
             *slot = Some(reason.clone());
@@ -255,6 +257,7 @@ mod tests {
                 effect: Outcome::failed(),
                 reason: None,
                 target: crate::stop_conditions::StopScope::Workload,
+                cancel_ops: false,
             }])
             .expect("build set");
         let shell = WorkloadShell::new(set);
@@ -288,6 +291,7 @@ mod tests {
                 effect: Outcome::interrupted(),
                 reason: None,
                 target: crate::stop_conditions::StopScope::Workload,
+                cancel_ops: false,
             }])
             .expect("build set");
         let shell = WorkloadShell::new(set);

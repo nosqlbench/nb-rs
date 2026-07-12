@@ -337,6 +337,11 @@ pub struct StopConditionDecl {
     /// stays at the gather scope; this is where the *action* is routed.
     /// Defaults to `Phase` (act in place = historical behaviour).
     pub target: StopScope,
+    /// SRD-83 follow-up — `action: abort`. When set, the halt escalates to
+    /// CANCELLING in-flight ops (arms the session cancel-ops countdown at
+    /// the trip site), not just cooperatively draining them. `false` for
+    /// the cooperative `stop`/`fail` actions.
+    pub cancel_ops: bool,
 }
 
 impl StopConditionDecl {
@@ -360,22 +365,34 @@ impl StopConditionDecl {
             effect: Outcome::failed(),
             reason: Some("error_rate_exceeded".to_string()),
             target: StopScope::Phase,
+            cancel_ops: false,
         }
     }
 
-    /// Map an SRD-83 `effect:` string to its [`Outcome`]. `"stop"` is a
-    /// clean halt (`Interrupted + Succeeded`, keep the partial result);
-    /// `"fail"` is the failure halt (`Interrupted + Failed`). `None` —
-    /// and any unrecognized value — resolves to `default`, which the
-    /// caller sets per shell level (phase trips default to `fail`,
-    /// workload trips default to a graceful `stop`). Effect-string
+    /// Map an SRD-83 `action:`/`effect:` string to its [`Outcome`]. `"stop"`
+    /// is a clean halt (`Interrupted + Succeeded`, keep the partial result);
+    /// `"fail"` and `"abort"` are failure halts (`Interrupted + Failed`).
+    /// `None` — and any unrecognized value — resolves to `default`, which the
+    /// caller sets per shell level (phase trips default to `fail`, workload
+    /// trips default to a graceful `stop`). `abort` differs from `fail` only
+    /// in its aggression — same failing `Outcome`, but it also cancels
+    /// in-flight ops (see [`action_cancels_ops`]); the split is carried
+    /// separately so this stays a pure verb→outcome map. Action-string
     /// validation proper belongs to workload load (dryrun).
     pub fn effect_from_str(effect: Option<&str>, default: Outcome) -> Outcome {
         match effect {
             Some("stop") => Outcome::interrupted(),
-            Some("fail") => Outcome::failed(),
+            Some("fail") | Some("abort") => Outcome::failed(),
             _ => default,
         }
+    }
+
+    /// SRD-83 follow-up — does this `action:` verb escalate to cancelling
+    /// in-flight ops? Only `abort` does; `stop`/`fail` (and the default)
+    /// drain cooperatively. One canonical predicate so every gather site
+    /// classifies the verb identically.
+    pub fn action_cancels_ops(action: Option<&str>) -> bool {
+        matches!(action, Some("abort"))
     }
 }
 
@@ -399,6 +416,9 @@ struct StopCondition {
     reason: String,
     /// SRD-83 follow-up — the action scope the effect is routed to.
     target: StopScope,
+    /// SRD-83 follow-up — `action: abort` escalates to cancelling in-flight
+    /// ops at the trip site (not just cooperative drain).
+    cancel_ops: bool,
 }
 
 impl StopConditionSet {
@@ -423,6 +443,7 @@ impl StopConditionSet {
                 reason: decl.reason.clone()
                     .unwrap_or_else(|| format!("stop_condition: {}", decl.when)),
                 target: decl.target,
+                cancel_ops: decl.cancel_ops,
             });
         }
         Ok(Self { conditions })
@@ -442,10 +463,13 @@ impl StopConditionSet {
     /// Evaluate every condition against `state`; return the error class
     /// of the first that trips, or `None`. (First-match: any trip stops
     /// the shell, so the order only affects which reason is recorded.)
-    pub fn evaluate(&mut self, state: &RuntimeState) -> Option<(Outcome, String, StopScope)> {
+    pub fn evaluate(&mut self, state: &RuntimeState)
+        -> Option<(Outcome, String, StopScope, bool)>
+    {
         for cond in &mut self.conditions {
             if state.trips(&mut cond.expr) {
-                return Some((cond.effect.clone(), cond.reason.clone(), cond.target));
+                return Some((cond.effect.clone(), cond.reason.clone(),
+                    cond.target, cond.cancel_ops));
             }
         }
         None
@@ -543,7 +567,7 @@ mod tests {
             &phase_kernel,
             &[
                 StopConditionDecl::error_rate_guard(0.1),
-                StopConditionDecl { when: "cycles_total > 1000".to_string(), effect: Outcome::failed(), reason: None, target: StopScope::Phase },
+                StopConditionDecl { when: "cycles_total > 1000".to_string(), effect: Outcome::failed(), reason: None, target: StopScope::Phase, cancel_ops: false },
             ])
             .expect("build set");
         // The compiled set is independent of the parent kernel — drop it
@@ -561,10 +585,48 @@ mod tests {
         // 20% errors → the default error-rate condition trips.
         assert_eq!(
             set.evaluate(&RuntimeState { cycles_total: 100, result_failure: 20, ..Default::default() }),
-            Some((Outcome::failed(), "error_rate_exceeded".to_string(), StopScope::Phase)));
+            Some((Outcome::failed(), "error_rate_exceeded".to_string(), StopScope::Phase, false)));
         // Low errors but op_count over 1000 → the declared predicate trips.
         assert_eq!(
             set.evaluate(&RuntimeState { cycles_total: 2000, result_failure: 1, ..Default::default() }),
-            Some((Outcome::failed(), "stop_condition: cycles_total > 1000".to_string(), StopScope::Phase)));
+            Some((Outcome::failed(), "stop_condition: cycles_total > 1000".to_string(), StopScope::Phase, false)));
+    }
+
+    /// SRD-83 follow-up — `action: abort` classifies as a FAILED outcome
+    /// (same validity as `fail`) but carries the `cancel_ops` escalation
+    /// bit; `stop`/`fail`/default do not. The verb→outcome map and the
+    /// cancel-ops classifier are the two halves the gather sites compose.
+    #[test]
+    fn abort_action_is_failed_and_cancels_ops() {
+        // Verb → outcome: abort shares fail's failing outcome.
+        assert_eq!(
+            StopConditionDecl::effect_from_str(Some("abort"), Outcome::interrupted()),
+            Outcome::failed());
+        assert_eq!(
+            StopConditionDecl::effect_from_str(Some("fail"), Outcome::interrupted()),
+            Outcome::failed());
+        // Cancel-ops classifier: only abort escalates.
+        assert!(StopConditionDecl::action_cancels_ops(Some("abort")));
+        assert!(!StopConditionDecl::action_cancels_ops(Some("fail")));
+        assert!(!StopConditionDecl::action_cancels_ops(Some("stop")));
+        assert!(!StopConditionDecl::action_cancels_ops(None));
+
+        // A compiled abort decl surfaces cancel_ops=true through evaluate.
+        let root = polydat::dsl::compile_polydat("input cycle: u64")
+            .expect("root kernel");
+        let mut set = StopConditionSet::build_for_phase(
+            &root,
+            &[StopConditionDecl {
+                when: "result_failure > 0".to_string(),
+                effect: Outcome::failed(),
+                reason: Some("terminal_failure".to_string()),
+                target: StopScope::Workload,
+                cancel_ops: true,
+            }])
+            .expect("build set");
+        assert_eq!(
+            set.evaluate(&RuntimeState { result_failure: 1, ..Default::default() }),
+            Some((Outcome::failed(), "terminal_failure".to_string(),
+                  StopScope::Workload, true)));
     }
 }
