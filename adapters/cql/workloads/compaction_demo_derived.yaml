@@ -144,6 +144,23 @@ params:
   #   glob / regex promotion (`pattern_match`). `*` = all profiles; `*m`
   #   vs `*mi` selects one suffix series so progressions aren't mixed;
   #   `^vec_(1|2|4)m$` for an explicit regex set.
+  #
+  #   DEFAULT here = the DECADE profiles only: the single-significant-digit
+  #   sizes 100k..900k, 1m..9m, 10m..90m, 100m..900m (36 tiers). A dataset
+  #   like ibm-datapile-1b ships a dense "detent" zoo — decade steps PLUS
+  #   Fibonacci (13m,21m,34m,55m,89m,…), power-of-two `…mi` (16mi,64mi,…),
+  #   and interior 10m splits (110m,120m,…). Recall verification at a fine
+  #   interior tier (e.g. 340m) runs against that many base vectors and is
+  #   slow while adding little to the characterization curve, so the sweep
+  #   condenses to decades. This ONE pattern drives EVERY profile sequence
+  #   in the workload — `profile_partitions` and `matching_profile_name_at`
+  #   both mask through `masked_profile_tiers`, so the increments follow the
+  #   filtered set: after 500m the next tier is 600m (a 100m load), with no
+  #   interior 510m..590m tiers between them.
+  #
+  #   The alternation is anchored per-branch by `promote_pattern`'s
+  #   `^(?:…)$` wrap, so `[1-9]m` matches `1m`..`9m` but NOT `1mi`, `10m`,
+  #   or `21m`. Set `*` to restore the full dense sweep.
   # `max_size`: stop once a tier's cumulative base-vector count would
   #   exceed this; the last loaded tier is the largest matching profile
   #   that fits (or the last matching profile, whichever comes first).
@@ -153,7 +170,7 @@ params:
   #   dataset. Set a positive value to cap; accepts magnitude suffixes on
   #   the CLI (decimal `10m`/`2b`, binary `4Gi`) since the default is
   #   numeric. See `effective_max_size` in the top-level `bindings:`.
-  profile_pattern: "*"
+  profile_pattern: "^([1-9]00k|[1-9]m|[1-9]0m|[1-9]00m)$"
   max_size: 0
 
   # ── Insert batch-stride probe ────────────────────────────────
