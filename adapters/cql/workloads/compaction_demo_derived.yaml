@@ -557,14 +557,34 @@ phases:
     #    servo still has operating room below it.
     # polydat predicates use `&`, not `&&`.
     errors: ".*:warn,counter"
-    # `at: workload` — a sanity backstop tripping here means the server is
-    # sick; route the halt out to the workload root so the WHOLE run stops,
-    # not just this tier's load phase (SRD-83 action-scope split).
+    # SRD-83 stop conditions, written in the NON-SUGARED canonical form
+    # (five explicit axes: condition/pulse/per/action/at; no aliases, no
+    # defaults) so the routing is legible at a glance. `at: workload` sends
+    # a tripped backstop out to the workload root — the WHOLE run stops, not
+    # just this tier's load phase.
+    #
+    #   pulse:  continuous  — evaluated inline, per drain-loop turn
+    #   per:    self        — detected at this (phase) scope
+    #   action: fail        — cooperative halt: drain in-flight ops
+    #   action: abort       — same failing outcome, but CANCEL in-flight ops
+    #                         (arms the session cancel-ops countdown), for a
+    #                         server sick enough that parked ops will only
+    #                         ever end by client timeout
     stop_when:
-      - when: "result_failure > 0"
-        at: workload
-      - when: "(attempt_total > 200) & (to_f64(attempt_failure) > (to_f64(attempt_total) * {attempt_failure_backstop}))"
-        at: workload
+      # Any TERMINAL insert failure → abort: a data-level failure is not
+      # something to keep draining toward, so cancel in-flight ops.
+      - condition: "result_failure > 0"
+        pulse:   continuous
+        per:     self
+        action:  abort
+        at:      workload
+      # Attempt-level sickness (retry churn) → cooperative fail: retries may
+      # still be absorbing transient timeouts, so drain rather than cancel.
+      - condition: "(attempt_total > 200) & (to_f64(attempt_failure) > (to_f64(attempt_total) * {attempt_failure_backstop}))"
+        pulse:   continuous
+        per:     self
+        action:  fail
+        at:      workload
     bindings: |
       # `p` is the active masked profile tier from `profile_partitions`:
       # `[start_of(p), end_of(p))` is the incremental delta since the
@@ -779,12 +799,15 @@ phases:
     errors: ".*:warn,counter"
     # Result-specific backstop, derived from base counters in the predicate
     # (result_failure terminal failed ops / cycles_total completed ops).
-    # `at: workload` — the recall error-rate backstop routes its halt to the
-    # workload root so a sick tier stops the WHOLE run, not just this recall
-    # phase (SRD-83 action-scope split).
+    # Non-sugared canonical form (see load_increment for the axis key). The
+    # query error-rate crossing the backstop means the recall measurement is
+    # untrustworthy → abort: cancel in-flight queries and stop the WHOLE run.
     stop_when:
-      - when: "(cycles_total > 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {error_rate_backstop}))"
-        at: workload
+      - condition: "(cycles_total > 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {error_rate_backstop}))"
+        pulse:   continuous
+        per:     self
+        action:  abort
+        at:      workload
     bindings: |
       # Same masked tier as the load: name it by its masked position
       # idx_of(p), prebuffer the tier's own ground-truth facets.
