@@ -204,7 +204,8 @@ fn run_supervision(
                                 let _ = crossterm::terminal::disable_raw_mode();
                                 std::process::exit(130);
                             } else {
-                                nbrs_runtime::session_signals::escalate_shutdown();
+                                nbrs_runtime::session_signals::escalate_shutdown(
+                                    nbrs_runtime::session_signals::ShutdownOrigin::CtrlC);
                             }
                         }
                         WatcherSignal::Suspend => {

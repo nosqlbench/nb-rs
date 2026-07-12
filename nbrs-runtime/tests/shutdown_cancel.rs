@@ -111,8 +111,10 @@ async fn cancel_rung_releases_hung_ops_so_the_drain_completes() {
     // hung op's future is dropped at the fiber's dispatch point and the
     // drain completes — WITHOUT this, only a force-exit would end the
     // process, skipping cleanup.
-    nbrs_runtime::session_signals::escalate_shutdown();
-    nbrs_runtime::session_signals::escalate_shutdown();
+    nbrs_runtime::session_signals::escalate_shutdown(
+        nbrs_runtime::session_signals::ShutdownOrigin::CtrlC);
+    nbrs_runtime::session_signals::escalate_shutdown(
+        nbrs_runtime::session_signals::ShutdownOrigin::CtrlC);
 
     tokio::time::timeout(std::time::Duration::from_secs(10), run)
         .await
