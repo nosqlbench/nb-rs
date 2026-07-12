@@ -2479,7 +2479,8 @@ impl Activity {
                     // unwinds normally and the runner's RAII shutdown guard
                     // runs the metrics/WAL/summary teardown.
                     if cancel_ops {
-                        crate::session_signals::escalate_shutdown();
+                        crate::session_signals::escalate_shutdown(
+                            crate::session_signals::ShutdownOrigin::StopAction);
                     }
                 }
             }

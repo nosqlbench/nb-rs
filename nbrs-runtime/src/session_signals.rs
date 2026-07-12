@@ -133,13 +133,39 @@ pub fn mark_shutdown_complete() {
     done_flag().store(true, Ordering::Relaxed);
 }
 
+/// What advanced the shutdown ladder — used only to phrase the level-1
+/// announcement accurately. A programmatic `action: abort` trip drives the
+/// SAME ladder as Ctrl-C, so it must not be reported as a Ctrl-C.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownOrigin {
+    /// The SIGINT / Ctrl-C watcher (`install_signal_handler`).
+    CtrlC,
+    /// A `stop_when` condition with `action: abort` (SRD-83 follow-up).
+    StopAction,
+}
+
+impl ShutdownOrigin {
+    /// The leading clause of the level-1 log line, naming the trigger. The
+    /// trailing `(Ctrl-C: cancel them now …)` guidance stays fixed — Ctrl-C
+    /// escalates the ladder regardless of what first advanced it.
+    fn lead(self) -> &'static str {
+        match self {
+            ShutdownOrigin::CtrlC =>
+                "session: graceful shutdown requested (Ctrl-C).",
+            ShutdownOrigin::StopAction =>
+                "session: shutdown requested by stop action `abort`.",
+        }
+    }
+}
+
 /// Advance the ladder ONE rung: 0 → 1 (graceful + countdown),
 /// 1 → 2 (cancel in-flight ops). At ≥ 2 this is a no-op returning the
 /// current level — the FORCE-EXIT decision (level 3) stays with the
 /// caller, which owns its own terminal hygiene (the raw-mode
 /// key-watcher must restore the terminal before exiting; the SIGINT
-/// watcher just exits). Returns the level now in force.
-pub fn escalate_shutdown() -> u8 {
+/// watcher just exits). `origin` phrases the level-1 line only. Returns
+/// the level now in force.
+pub fn escalate_shutdown(origin: ShutdownOrigin) -> u8 {
     let tx = shutdown_tx();
     let mut entered: u8 = 0;
     tx.send_if_modified(|level| {
@@ -157,11 +183,11 @@ pub fn escalate_shutdown() -> u8 {
             request_stop();
             crate::diag!(
                 crate::observer::LogLevel::Info,
-                "session: graceful shutdown requested (Ctrl-C). Active \
-                 fibers exit at the next cycle boundary; profiler / \
+                "{} Active fibers exit at the next cycle boundary; profiler / \
                  metrics / summaries will flush. In-flight ops will be \
                  CANCELLED in {SHUTDOWN_COUNTDOWN_SECS}s (Ctrl-C: cancel \
-                 them now; a further Ctrl-C force-exits)."
+                 them now; a further Ctrl-C force-exits).",
+                origin.lead()
             );
             // Not under `cfg(test)`: the in-crate unit tests exercise the
             // ladder's transitions against process-global state; a live
@@ -405,7 +431,7 @@ pub fn install_signal_handler() {
                 );
                 std::process::exit(130);
             }
-            escalate_shutdown();
+            escalate_shutdown(ShutdownOrigin::CtrlC);
         }
     });
 }
@@ -468,14 +494,14 @@ mod tests {
         assert_eq!(shutdown_level(), 0);
         assert!(!cancel_ops_requested());
 
-        assert_eq!(escalate_shutdown(), 1, "first rung: graceful");
+        assert_eq!(escalate_shutdown(ShutdownOrigin::CtrlC), 1, "first rung: graceful");
         assert!(stop_requested(), "graceful rung sets the session stop");
         assert!(!cancel_ops_requested());
 
-        assert_eq!(escalate_shutdown(), 2, "second rung: cancel ops");
+        assert_eq!(escalate_shutdown(ShutdownOrigin::CtrlC), 2, "second rung: cancel ops");
         assert!(cancel_ops_requested());
 
-        assert_eq!(escalate_shutdown(), 2, "ladder holds at cancel");
+        assert_eq!(escalate_shutdown(ShutdownOrigin::CtrlC), 2, "ladder holds at cancel");
         assert!(cancel_ops_requested());
 
         clear_session_stop_for_test();
@@ -493,7 +519,7 @@ mod tests {
 
         // Graceful rung alone must NOT resolve the cancel future.
         let mut rx = subscribe_shutdown();
-        escalate_shutdown(); // → 1
+        escalate_shutdown(ShutdownOrigin::CtrlC); // → 1
         let pending = tokio::time::timeout(
             std::time::Duration::from_millis(50),
             ops_cancelled(&mut rx),
@@ -502,7 +528,7 @@ mod tests {
 
         // Cancel rung resolves it — and resolves immediately for a
         // subscriber that arrives after the fact.
-        escalate_shutdown(); // → 2
+        escalate_shutdown(ShutdownOrigin::CtrlC); // → 2
         tokio::time::timeout(
             std::time::Duration::from_millis(200),
             ops_cancelled(&mut rx),
