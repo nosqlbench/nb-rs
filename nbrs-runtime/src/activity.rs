@@ -2469,17 +2469,18 @@ impl Activity {
                         }
                     }
                     // SRD-83 follow-up — `action: abort`. Beyond the
-                    // cooperative halt above, escalate the session shutdown
-                    // ladder: `escalate_shutdown()` raises the global session
-                    // stop AND arms the 10s countdown that force-drops hung
-                    // in-flight ops (Ctrl-C level 1→2). This is the "cancel the
-                    // work, don't wait for it to drain" action — for a server
-                    // sick enough that in-flight ops will only ever end by
-                    // client timeout. Cleanup is still guaranteed: the walk
-                    // unwinds normally and the runner's RAII shutdown guard
-                    // runs the metrics/WAL/summary teardown.
+                    // cooperative halt above, jump STRAIGHT to the cancel-ops
+                    // rung: `abort_shutdown()` raises the global session stop
+                    // and drops in-flight op futures NOW — no cooperative
+                    // drain, no 10s countdown. A stop driven by errors should
+                    // not wait for doomed ops/phases to finish (a server sick
+                    // enough to trip this will only ever end them by client
+                    // timeout). Cleanup is still guaranteed: the walk unwinds
+                    // normally into the runner's RAII shutdown guard, which
+                    // runs the metrics/WAL/summary teardown (graceful SESSION
+                    // shutdown). Not a force-exit — a further Ctrl-C is.
                     if cancel_ops {
-                        crate::session_signals::escalate_shutdown(
+                        crate::session_signals::abort_shutdown(
                             crate::session_signals::ShutdownOrigin::StopAction);
                     }
                 }

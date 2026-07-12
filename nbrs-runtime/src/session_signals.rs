@@ -156,6 +156,47 @@ impl ShutdownOrigin {
                 "session: shutdown requested by stop action `abort`.",
         }
     }
+
+    /// Short noun phrase naming the trigger, for inline use in a sentence.
+    fn trigger(self) -> &'static str {
+        match self {
+            ShutdownOrigin::CtrlC => "Ctrl-C",
+            ShutdownOrigin::StopAction => "stop action `abort`",
+        }
+    }
+}
+
+/// `action: abort` (SRD-83 follow-up) — jump the shutdown ladder STRAIGHT
+/// to the cancel-ops rung (level 2), skipping the level-1 cooperative-drain
+/// countdown. A stop driven by errors must not wait for in-flight ops or
+/// remaining phases: their futures are dropped at the fiber dispatch point
+/// NOW, the walk unwinds, and control passes straight to the runner's
+/// graceful SESSION shutdown. Cleanup still runs (metrics flush, WAL
+/// consolidation, summaries via the RAII guard) — this is NOT a force-exit;
+/// a further Ctrl-C is. Also raises the global session stop so the walk
+/// halts and no new phase starts. Idempotent; a no-op if the ladder is
+/// already at level ≥ 2. Returns the level now in force.
+pub fn abort_shutdown(origin: ShutdownOrigin) -> u8 {
+    request_stop();
+    let modified = shutdown_tx().send_if_modified(|level| {
+        if *level < 2 {
+            *level = 2;
+            true
+        } else {
+            false
+        }
+    });
+    if modified {
+        crate::diag!(
+            crate::observer::LogLevel::Warn,
+            "session: aborting on {} — cancelling in-flight ops now \
+             (skipping the cooperative drain); remaining phases skipped. \
+             Process-level cleanup (metrics flush, WAL consolidation, \
+             summaries) still runs. Ctrl-C to force-exit.",
+            origin.trigger()
+        );
+    }
+    2
 }
 
 /// Advance the ladder ONE rung: 0 → 1 (graceful + countdown),
@@ -503,6 +544,31 @@ mod tests {
 
         assert_eq!(escalate_shutdown(ShutdownOrigin::CtrlC), 2, "ladder holds at cancel");
         assert!(cancel_ops_requested());
+
+        clear_session_stop_for_test();
+        reset_shutdown_ladder_for_test();
+    }
+
+    /// `abort_shutdown` jumps STRAIGHT from level 0 to the cancel-ops
+    /// rung (level 2) — no intermediate graceful rung — and raises the
+    /// session stop, so an `action: abort` trip cancels in-flight ops
+    /// without the cooperative-drain wait.
+    #[test]
+    fn abort_jumps_straight_to_cancel_rung() {
+        let _guard = STOP_GLOBAL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_session_stop_for_test();
+        reset_shutdown_ladder_for_test();
+
+        assert_eq!(shutdown_level(), 0);
+        assert!(!stop_requested());
+
+        assert_eq!(abort_shutdown(ShutdownOrigin::StopAction), 2,
+            "abort skips the graceful rung and lands on cancel-ops");
+        assert!(cancel_ops_requested(), "in-flight ops cancel immediately");
+        assert!(stop_requested(), "abort also raises the session stop");
+
+        // Idempotent, and never regresses the rung.
+        assert_eq!(abort_shutdown(ShutdownOrigin::StopAction), 2);
 
         clear_session_stop_for_test();
         reset_shutdown_ladder_for_test();
