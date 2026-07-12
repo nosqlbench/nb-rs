@@ -578,12 +578,14 @@ phases:
         per:     self
         action:  abort
         at:      workload
-      # Attempt-level sickness (retry churn) → cooperative fail: retries may
-      # still be absorbing transient timeouts, so drain rather than cancel.
+      # Attempt-level sickness (retry churn) → abort: once the attempt-failure
+      # rate is this high the server is drowning and the in-flight ops will
+      # only ever end by client timeout, so cancel them now rather than wait
+      # out a ~minute drain of work the aborted run will discard anyway.
       - condition: "(attempt_total > 200) & (to_f64(attempt_failure) > (to_f64(attempt_total) * {attempt_failure_backstop}))"
         pulse:   continuous
         per:     self
-        action:  fail
+        action:  abort
         at:      workload
     bindings: |
       # `p` is the active masked profile tier from `profile_partitions`:
