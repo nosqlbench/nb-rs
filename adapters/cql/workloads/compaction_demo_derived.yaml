@@ -557,9 +557,14 @@ phases:
     #    servo still has operating room below it.
     # polydat predicates use `&`, not `&&`.
     errors: ".*:warn,counter"
+    # `at: workload` — a sanity backstop tripping here means the server is
+    # sick; route the halt out to the workload root so the WHOLE run stops,
+    # not just this tier's load phase (SRD-83 action-scope split).
     stop_when:
       - when: "result_failure > 0"
+        at: workload
       - when: "(attempt_total > 200) & (to_f64(attempt_failure) > (to_f64(attempt_total) * {attempt_failure_backstop}))"
+        at: workload
     bindings: |
       # `p` is the active masked profile tier from `profile_partitions`:
       # `[start_of(p), end_of(p))` is the incremental delta since the
@@ -774,8 +779,12 @@ phases:
     errors: ".*:warn,counter"
     # Result-specific backstop, derived from base counters in the predicate
     # (result_failure terminal failed ops / cycles_total completed ops).
+    # `at: workload` — the recall error-rate backstop routes its halt to the
+    # workload root so a sick tier stops the WHOLE run, not just this recall
+    # phase (SRD-83 action-scope split).
     stop_when:
       - when: "(cycles_total > 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {error_rate_backstop}))"
+        at: workload
     bindings: |
       # Same masked tier as the load: name it by its masked position
       # idx_of(p), prebuffer the tier's own ground-truth facets.
