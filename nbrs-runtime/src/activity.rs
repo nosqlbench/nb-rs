@@ -2444,6 +2444,25 @@ impl Activity {
                                 Some(walk) => walk.store(true, Ordering::Relaxed),
                                 None => activity.stop_flag.store(true, Ordering::Relaxed),
                             }
+                            // SRD-83 follow-up — a `Workload`-scope halt means
+                            // "stop the whole run", exactly like a graceful
+                            // (first) Ctrl-C. Latching `walk_stop` alone only
+                            // retreats the scope walk lazily, so concurrent
+                            // siblings (other scenarios, daemon probes, an
+                            // already-dispatched phase) keep draining until the
+                            // walk structurally unwinds them. Raising the global
+                            // session stop makes every live fiber exit at its
+                            // next cycle boundary — the same cooperative signal
+                            // Ctrl-C level 1 raises. Cleanup is unchanged: the
+                            // walk still returns normally and the runner's RAII
+                            // shutdown guard runs the metrics/WAL/summary
+                            // teardown. `Scenario` scope stays walk-local — it
+                            // must halt only its own scenario, not the session.
+                            if matches!(target,
+                                crate::stop_conditions::StopScope::Workload)
+                            {
+                                crate::session_signals::request_stop();
+                            }
                         }
                     }
                 }
