@@ -301,6 +301,27 @@ pub fn eval_continue_if(
 /// when the predicate trips. Built from a `StopConditionSpec` at the
 /// gather sites (executor / runner), so this module need not depend on
 /// the workload model's spec shape.
+/// SRD-83 follow-up — WHERE a tripped stop condition's effect lands
+/// (its action scope), decoupled from WHERE it was detected. Resolved at
+/// the gather sites from the spec's `at:` (default = the innermost, most
+/// specific level of `per:`), and consumed at the trip site to pick the
+/// cooperative stop handle. This is the runtime "sink level"; the
+/// gather sites map the workload-model `ScopeLevel` onto it, so this
+/// module stays free of the model's spec shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StopScope {
+    /// Act on the declaring / phase scope (the historical default): halt
+    /// just this phase's drain loop (the activity `stop_flag`).
+    #[default]
+    Phase,
+    /// Halt the enclosing scenario sweep. (In C this reuses the workload
+    /// `walk_stop` latch — a scenario-only handle is a later refinement.)
+    Scenario,
+    /// Halt the enclosing workload shell (its `walk_stop`), leaving the
+    /// process/session running.
+    Workload,
+}
+
 #[derive(Debug, Clone)]
 pub struct StopConditionDecl {
     /// The polydat predicate over runtime-state wires.
@@ -312,6 +333,10 @@ pub struct StopConditionDecl {
     /// set an explicit class (e.g. `error_rate_exceeded`) so trip
     /// reporting keeps its established vocabulary.
     pub reason: Option<String>,
+    /// SRD-83 follow-up — the action scope the effect lands on. Detection
+    /// stays at the gather scope; this is where the *action* is routed.
+    /// Defaults to `Phase` (act in place = historical behaviour).
+    pub target: StopScope,
 }
 
 impl StopConditionDecl {
@@ -334,6 +359,7 @@ impl StopConditionDecl {
                  to_f64(result_failure) > (to_f64(cycles_total) * {max})"),
             effect: Outcome::failed(),
             reason: Some("error_rate_exceeded".to_string()),
+            target: StopScope::Phase,
         }
     }
 
@@ -371,6 +397,8 @@ struct StopCondition {
     effect: Outcome,
     /// The error/reason class recorded when this condition trips.
     reason: String,
+    /// SRD-83 follow-up — the action scope the effect is routed to.
+    target: StopScope,
 }
 
 impl StopConditionSet {
@@ -394,6 +422,7 @@ impl StopConditionSet {
                 effect: decl.effect.clone(),   // Outcome no longer Copy (SRD-92 reason field)
                 reason: decl.reason.clone()
                     .unwrap_or_else(|| format!("stop_condition: {}", decl.when)),
+                target: decl.target,
             });
         }
         Ok(Self { conditions })
@@ -413,10 +442,10 @@ impl StopConditionSet {
     /// Evaluate every condition against `state`; return the error class
     /// of the first that trips, or `None`. (First-match: any trip stops
     /// the shell, so the order only affects which reason is recorded.)
-    pub fn evaluate(&mut self, state: &RuntimeState) -> Option<(Outcome, String)> {
+    pub fn evaluate(&mut self, state: &RuntimeState) -> Option<(Outcome, String, StopScope)> {
         for cond in &mut self.conditions {
             if state.trips(&mut cond.expr) {
-                return Some((cond.effect.clone(), cond.reason.clone()));
+                return Some((cond.effect.clone(), cond.reason.clone(), cond.target));
             }
         }
         None
@@ -514,7 +543,7 @@ mod tests {
             &phase_kernel,
             &[
                 StopConditionDecl::error_rate_guard(0.1),
-                StopConditionDecl { when: "cycles_total > 1000".to_string(), effect: Outcome::failed(), reason: None },
+                StopConditionDecl { when: "cycles_total > 1000".to_string(), effect: Outcome::failed(), reason: None, target: StopScope::Phase },
             ])
             .expect("build set");
         // The compiled set is independent of the parent kernel — drop it
@@ -532,10 +561,10 @@ mod tests {
         // 20% errors → the default error-rate condition trips.
         assert_eq!(
             set.evaluate(&RuntimeState { cycles_total: 100, result_failure: 20, ..Default::default() }),
-            Some((Outcome::failed(), "error_rate_exceeded".to_string())));
+            Some((Outcome::failed(), "error_rate_exceeded".to_string(), StopScope::Phase)));
         // Low errors but op_count over 1000 → the declared predicate trips.
         assert_eq!(
             set.evaluate(&RuntimeState { cycles_total: 2000, result_failure: 1, ..Default::default() }),
-            Some((Outcome::failed(), "stop_condition: cycles_total > 1000".to_string())));
+            Some((Outcome::failed(), "stop_condition: cycles_total > 1000".to_string(), StopScope::Phase)));
     }
 }

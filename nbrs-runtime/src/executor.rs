@@ -24,6 +24,28 @@ use nbrs_metrics::labels::Labels;
 use polydat::kernel::{format_scope_coordinate_path, ScopeCoord};
 use nbrs_workload::model::{ScenarioNode, WorkloadPhase};
 
+/// SRD-83 follow-up — resolve a stop condition's action scope from its
+/// explicit `at:` target and its `per:`/`each:` detection levels. `at`
+/// wins; otherwise the innermost (most specific) detection level is used,
+/// so a rule with no `at:` acts exactly where it is detected (the
+/// historical behaviour, preserved for backward compatibility).
+pub(crate) fn resolve_stop_scope(
+    at: Option<nbrs_workload::model::ScopeLevel>,
+    each: &[nbrs_workload::model::ScopeLevel],
+) -> crate::stop_conditions::StopScope {
+    use crate::stop_conditions::StopScope as S;
+    use nbrs_workload::model::ScopeLevel as L;
+    fn rank(l: L) -> u8 {
+        match l { L::SelfScope => 0, L::Op => 1, L::Phase => 2, L::Scenario => 3, L::Workload => 4 }
+    }
+    let level = at.or_else(|| each.iter().copied().min_by_key(|l| rank(*l)));
+    match level {
+        Some(L::Scenario) => S::Scenario,
+        Some(L::Workload) => S::Workload,
+        _ => S::Phase,
+    }
+}
+
 /// Shared context for the recursive executor.
 ///
 /// `Clone` is derived so the concurrent scheduler can fork per-task
@@ -4843,6 +4865,10 @@ async fn run_phase_inner(
                         crate::phase_outcome::Outcome::failed(),
                     ),
                     reason: None,
+                    // SRD-83 follow-up — detection stays at the phase (this
+                    // gather); `at:` (default = innermost of `per:`/`each:`)
+                    // selects where the action lands. No `at:` ⇒ phase.
+                    target: resolve_stop_scope(c.at, &c.each),
                 }
             }))
             .collect(),

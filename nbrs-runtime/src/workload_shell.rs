@@ -171,7 +171,9 @@ impl WorkloadShell {
             return None;
         }
         let state = self.snapshot();
-        let (outcome, reason) = set.evaluate(&state)?;
+        // Workload-shell trips act on the workload shell itself (`walk_stop`),
+        // so the per-condition action `target` is not re-routed here.
+        let (outcome, reason, _target) = set.evaluate(&state)?;
         self.walk_stop.store(true, Ordering::Relaxed);
         if let Ok(mut slot) = self.stop_reason.lock() {
             *slot = Some(reason.clone());
@@ -252,6 +254,7 @@ mod tests {
                 when: "children_failed > 0".to_string(),
                 effect: Outcome::failed(),
                 reason: None,
+                target: crate::stop_conditions::StopScope::Workload,
             }])
             .expect("build set");
         let shell = WorkloadShell::new(set);
@@ -284,6 +287,7 @@ mod tests {
                 when: "cycles_total > 1000".to_string(),
                 effect: Outcome::interrupted(),
                 reason: None,
+                target: crate::stop_conditions::StopScope::Workload,
             }])
             .expect("build set");
         let shell = WorkloadShell::new(set);

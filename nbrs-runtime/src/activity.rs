@@ -2377,7 +2377,7 @@ impl Activity {
                     attempt_failure,
                     ..Default::default()
                 };
-                if let Some((outcome, reason)) = stop_conditions.evaluate(&state) {
+                if let Some((outcome, reason, target)) = stop_conditions.evaluate(&state) {
                     policy_tripped = true;
                     // SRD-83 Part 5 — honour the condition's effect. A
                     // `fail` effect records a phase error (the phase ends
@@ -2425,7 +2425,27 @@ impl Activity {
                             *slot = Some(format!("[{reason}] {msg}"));
                         }
                     }
-                    activity.stop_flag.store(true, Ordering::Relaxed);
+                    // SRD-83 follow-up — route the action to its target scope.
+                    // Detection happened here (phase); `target` (from `at:`,
+                    // default = innermost of `per:`) says WHERE the stop lands.
+                    // `Phase` halts just this phase (`stop_flag`); `Scenario`/
+                    // `Workload` latch the workload `walk_stop` so the enclosing
+                    // shell halts (which also drains this phase via
+                    // `should_stop()`), leaving the session running. If no
+                    // workload handle is wired (a standalone phase), fall back
+                    // to the phase stop.
+                    match target {
+                        crate::stop_conditions::StopScope::Phase => {
+                            activity.stop_flag.store(true, Ordering::Relaxed);
+                        }
+                        crate::stop_conditions::StopScope::Scenario
+                        | crate::stop_conditions::StopScope::Workload => {
+                            match &activity.walk_stop {
+                                Some(walk) => walk.store(true, Ordering::Relaxed),
+                                None => activity.stop_flag.store(true, Ordering::Relaxed),
+                            }
+                        }
+                    }
                 }
             }
             let count_changed = n != last_seen_count;

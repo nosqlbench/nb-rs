@@ -706,29 +706,64 @@ where
     })
 }
 
+/// SRD-83 follow-up — the FIRING axis (when a condition is evaluated),
+/// as a tagged-union *value* so the field name can't overclaim
+/// periodicity. `continuous` names the existing inline (per drain-loop
+/// turn) evaluation; `phase_end` names the phase-completion aggregation.
+/// A cadence value (`{every: <duration>}`) driving the metrics
+/// `CadenceReporter` registry is a later step and is intentionally NOT
+/// accepted here yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PulseSpec {
+    /// Evaluate inline, once per drain-loop turn (fine-grained; the only
+    /// scope with attempt-level wires).
+    Continuous,
+    /// Evaluate at phase-completion aggregation.
+    PhaseEnd,
+}
+
 /// SRD-83 — one stop condition declared on a shell. A polydat
-/// `when:` predicate over runtime-state wires (`op_count`,
-/// `error_rate`, `elapsed_ms`, `children_failed`, …), an `each:`
-/// distribution selector (which scope levels it rides along with), a
-/// `trigger:` (a firing event or named backoff — step 3), and an
-/// `effect:` (`fail` → Interrupted+Failed, `stop` →
-/// Interrupted+Succeeded — step 4). When the predicate is true at its
-/// trigger, the shell stops with the effect.
+/// `condition:`/`when:` predicate over runtime-state wires (`op_count`,
+/// `error_rate`, `elapsed_ms`, `children_failed`, …); a `per:`/`each:`
+/// **detection** distribution selector (which scope levels it is
+/// evaluated at); a `pulse:` firing axis; an `action:`/`effect:`
+/// (`fail` → Interrupted+Failed, `stop` → Interrupted+Succeeded); and an
+/// `at:` **action** target scope (default = the innermost level of
+/// `per:`). When the predicate trips it stops the `at:` scope with the
+/// effect. Detection scope (`per:`) and action scope (`at:`) are
+/// independent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StopConditionSpec {
     /// Polydat predicate over runtime-state wires, evaluating to bool.
+    /// Canonical key `condition:`; `when:` accepted as an alias.
+    #[serde(alias = "condition")]
     pub when: String,
-    /// Scope levels this predicate distributes to (the declared fan-out;
-    /// see [`ScopeLevel`]). Defaults to the declaring scope (`self`).
-    #[serde(default = "default_each", deserialize_with = "de_each")]
+    /// Scope levels this predicate is DETECTED/evaluated at (the declared
+    /// fan-out; see [`ScopeLevel`]). Canonical key `per:`; `each:` accepted
+    /// as an alias. Defaults to the declaring scope (`self`).
+    #[serde(default = "default_each", deserialize_with = "de_each", alias = "per")]
     pub each: Vec<ScopeLevel>,
-    /// Firing trigger. `None` → a sensible default per condition kind
-    /// (rate predicates → settle backoff; `children_*` → phase-end).
+    /// Firing trigger (legacy string form). `None` → a sensible default per
+    /// condition kind. Superseded by `pulse:`; retained for compatibility.
     #[serde(default)]
     pub trigger: Option<String>,
-    /// Effect on fire: `"fail"` or `"stop"`. `None` → `fail`.
+    /// Firing pulse — WHEN the predicate is evaluated. `None` → default per
+    /// condition kind (attempt/rate wires → `continuous`; `children_*` →
+    /// `phase_end`).
     #[serde(default)]
+    pub pulse: Option<PulseSpec>,
+    /// Effect on fire: `"fail"` or `"stop"`. Canonical key `action:`;
+    /// `effect:` accepted as an alias. `None` → `fail`.
+    #[serde(default, alias = "action")]
     pub effect: Option<String>,
+    /// The ACTION target scope — where the effect lands, independent of
+    /// where it is detected (`per:`). `None` → the innermost (most
+    /// specific) level of `per:`, i.e. act in place (historical
+    /// behaviour). Set e.g. `at: workload` to route a phase-detected stop
+    /// out to the enclosing workload shell.
+    #[serde(default)]
+    pub at: Option<ScopeLevel>,
 }
 
 fn default_continue_if_each() -> Vec<ScopeLevel> {
@@ -755,7 +790,10 @@ pub struct ContinueIfSpec {
     pub when: String,
     /// Scope level whose sweep ends on a false predicate. Defaults to
     /// `scenario` (the enclosing comprehension); `workload` halts the run.
-    #[serde(default = "default_continue_if_each", deserialize_with = "de_each")]
+    /// Canonical key `per:`; `each:` accepted as an alias. (For a
+    /// `continue_if` gate this level is both detection and action — the
+    /// full `per:`/`at:` split for gates is a later step.)
+    #[serde(default = "default_continue_if_each", deserialize_with = "de_each", alias = "per")]
     pub each: Vec<ScopeLevel>,
 }
 

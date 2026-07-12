@@ -2817,6 +2817,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                     when: "children_failed > 0".to_string(),
                     effect: crate::phase_outcome::Outcome::failed(),
                     reason: None,
+                    target: crate::stop_conditions::StopScope::Workload,
                 },
             ];
             // Declared workload-level conditions (`each ∋ self|workload`).
@@ -2836,6 +2837,10 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                         crate::phase_outcome::Outcome::interrupted(),
                     ),
                     reason: None,
+                    // Detected at the workload shell; `at:` (default =
+                    // innermost of `per:`/`each:`, here `workload`) selects
+                    // the action scope.
+                    target: crate::executor::resolve_stop_scope(c.at, &c.each),
                 }));
             let set = match scope_tree.nodes[scope_tree.workload_root_idx()].cached_kernel.get() {
                 Some(root_kernel) => {
