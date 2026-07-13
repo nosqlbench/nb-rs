@@ -52,7 +52,7 @@ description: |
 
 params:
   # `tries` = TOTAL attempts per op on retryable errors (SRD-82: the sigil
-  # for the conditional tries wrapper). Root default 10 — inherited by the
+  # for the conditional tries wrapper). Root 20 — inherited by the
   # data-plane and orchestration phases. The non-iterative setup phases
   # (teardown / schema / tune_cluster) pin `tries: 1` explicitly: their
   # statements are one-shot DDL / control calls where a retry burns minutes
@@ -64,7 +64,7 @@ params:
   # (flush / compaction). Instead the read/write ops set `timeout: 60s`
   # themselves (below); the orchestration ops keep their own longer
   # request_timeout_ms.
-  tries: 10
+  tries: 20
   # `connect_timeout` = how long the driver waits to ESTABLISH a connection
   # (the control connection + each per-host connect). The cassandra-cpp default
   # (5s) is too short for a distant / cold / slow-to-accept cluster — a control-
@@ -109,6 +109,13 @@ params:
   # catches a drowning server early. Tune on the CLI
   # (`attempt_failure_backstop=0.25`).
   attempt_failure_backstop: 0.10
+  # `result_failure_backstop` = the RESULT-level terminal-failure rate for
+  # `load_increment` (a proportion in [0,1]), derived in the predicate from
+  # `result_failure` (terminal failed ops) / `cycles_total` (completed ops).
+  # Paired with a 100-failure floor so a stray failure deep into a load does
+  # not kill the run — only a sustained terminal-failure rate does. Tune on
+  # the CLI (`result_failure_backstop=0.05`).
+  result_failure_backstop: 0.025
   adapter: cql
   host: 18.215.16.255
   dataset: changeme
@@ -552,6 +559,19 @@ phases:
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   load_increment:
     concurrency: concurrency
+    # `tries:` MAP FORM (SRD-82 Part 3b) — the load is where a drowning
+    # server triggers retry storms, so pace retries explicitly here. `count`
+    # is the total-attempts budget (inherits the root 20 otherwise); the
+    # `backoff` grows the inter-retry wait geometrically by `ratio` from
+    # `min`, capped at `max`, so 20 fast retries don't hammer a sick server.
+    # These values equal the built-in defaults — spelled out as documentation
+    # and to exercise the map form. The sugared `tries: 20` remains valid.
+    tries:
+      count: 20
+      backoff:
+        ratio: 2.0
+        min: 100ms
+        max: 10s
     # SRD-82 ErrorPolicy + SRD-83 stop conditions — tolerate TRANSIENT insert
     # errors (timeouts under load): the `tries:` budget retries them and the
     # load keeps going. The guards below are SANITY BACKSTOPS, each derived IN
@@ -588,9 +608,14 @@ phases:
     #                         server sick enough that parked ops will only
     #                         ever end by client timeout
     stop_when:
-      # Any TERMINAL insert failure → abort: a data-level failure is not
-      # something to keep draining toward, so cancel in-flight ops.
-      - condition: "result_failure > 0"
+      # Result-level failure rate → abort. A single stray terminal failure
+      # (e.g. one op exhausting its tries budget deep into a multi-hour load)
+      # is NOT a reason to kill a whole run, so this is a RATE backstop, not a
+      # zero-tolerance guard: it trips only once terminal failures cross
+      # `result_failure_backstop` (2.5%) AND there are at least 100 of them
+      # (the floor keeps a handful of early failures from tripping a
+      # not-yet-meaningful rate). Both halves must hold.
+      - condition: "(result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {result_failure_backstop}))"
         pulse:   continuous
         per:     self
         action:  abort
