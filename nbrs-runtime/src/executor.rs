@@ -4881,6 +4881,10 @@ async fn run_phase_inner(
         // when neither is set — an op without its own `tries:` field then
         // runs WITHOUT the tries wrapper (single attempt, SRD-82 Part 3b).
         tries: phase.tries.or(ctx.tries),
+        // Phase-level `tries:` map-form backoff (root stays numeric, so no
+        // ctx fallback); op-level `tries:` maps and standalone
+        // `retry_backoff*` params layer on top of this at wrapper build.
+        tries_backoff: phase.tries_backoff.clone(),
         stanza_concurrency: 1,
         source_factory,
         // Same plumbing as the workload-level activity build —

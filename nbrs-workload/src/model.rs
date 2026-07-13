@@ -797,6 +797,29 @@ pub struct ContinueIfSpec {
     pub each: Vec<ScopeLevel>,
 }
 
+/// Retry-backoff settings carried by the map form of `tries:`
+/// (`tries: {count: N, backoff: {ratio, min, max}}`). Each field is
+/// optional — a missing key falls back to the op's standalone
+/// `retry_backoff*` param, then the built-in default. Durations are kept
+/// as raw strings (e.g. `"100ms"`, `"10s"`) and parsed at wrap time by the
+/// runtime, so this crate needs no time parser.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct BackoffSpec {
+    /// Geometric growth factor applied per retry: attempt `k`'s wait is
+    /// `min * ratio^(k-1)`, capped at `max`. `2.0` (the default) doubles;
+    /// `1.0` holds the wait constant at `min`. `None` = default.
+    #[serde(default)]
+    pub ratio: Option<f64>,
+    /// Backoff floor — the first retry's wait (a duration string).
+    /// `None` = default (`100ms`). `"0"` disables pacing entirely.
+    #[serde(default)]
+    pub min: Option<String>,
+    /// Backoff ceiling — the wait never exceeds this (a duration string).
+    /// `None` = default (`10s`).
+    #[serde(default)]
+    pub max: Option<String>,
+}
+
 /// A workload phase: runs as a separate Activity with its own
 /// cycle count, concurrency, rate limit, and op selection.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -839,6 +862,14 @@ pub struct WorkloadPhase {
     /// `None` = inherit.
     #[serde(default)]
     pub tries: Option<u32>,
+    /// Retry-backoff overrides parsed from the map form of `tries:`
+    /// (`tries: {count: N, backoff: {ratio, min, max}}`). `None` when the
+    /// sugared numeric form was used (or `tries` absent) — the wrapper then
+    /// falls back to the op's standalone `retry_backoff*` params or the
+    /// built-in defaults (ratio 2.0, min 100ms, max 10s). See
+    /// [`BackoffSpec`].
+    #[serde(default)]
+    pub tries_backoff: Option<BackoffSpec>,
     /// OPT-IN error-rate circuit breaker (e.g. `0.1` = fail this phase
     /// once >10% of its ops error, after a 50-op floor). Overrides a
     /// session-wide `error_rate_max=` param when one was set. There is

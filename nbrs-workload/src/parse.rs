@@ -661,6 +661,18 @@ fn parse_scope_level(s: &str) -> Option<ScopeLevel> {
 /// the short string form (`continue_if: "end_of(p) <= max"` → `each: scenario`)
 /// and the long map form (`{ when, each }`, where `each` is a single level or a
 /// list). `each` defaults to `scenario` (the enclosing sweep).
+/// Render a JSON scalar (string or number) as a duration string for the
+/// `tries: {backoff: {min, max}}` map. A string passes through (`"100ms"`);
+/// a bare number becomes its decimal text (`100` → `"100"`, taken as ms by
+/// the runtime's duration parser). Non-scalars yield `None`.
+fn json_scalar_to_dur_string(v: &JVal) -> Option<String> {
+    match v {
+        JVal::String(s) => Some(s.clone()),
+        JVal::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
 fn parse_continue_if(val: Option<&JVal>) -> Option<ContinueIfSpec> {
     match val? {
         JVal::String(when) => Some(ContinueIfSpec {
@@ -1264,10 +1276,27 @@ fn parse_phases(
 
         // Per-phase total-attempts budget — the phase-level surface of the
         // `tries` sigil (SRD-82 Part 3b). Inherits down to the phase's ops;
-        // absent everywhere → no tries wrapper (single attempt).
-        let tries = phase_obj.get("tries")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as u32);
+        // absent everywhere → no tries wrapper (single attempt). Two forms:
+        // the sugared number (`tries: 20`) and the map form carrying retry
+        // backoff (`tries: {count: 20, backoff: {ratio, min, max}}`).
+        let (tries, tries_backoff) = match phase_obj.get("tries") {
+            None => (None, None),
+            Some(v) if v.is_u64() || v.is_i64() => (v.as_u64().map(|n| n as u32), None),
+            Some(serde_json::Value::Object(m)) => {
+                let count = m.get("count").and_then(|c| c.as_u64()).map(|n| n as u32);
+                let backoff = m.get("backoff")
+                    .and_then(|b| b.as_object())
+                    .map(|bo| crate::model::BackoffSpec {
+                        ratio: bo.get("ratio").and_then(|r| r.as_f64()),
+                        min: bo.get("min").and_then(json_scalar_to_dur_string),
+                        max: bo.get("max").and_then(json_scalar_to_dur_string),
+                    });
+                (count, backoff)
+            }
+            Some(other) => return Err(format!(
+                "phase '{phase_name}': `tries` must be a number or a map \
+                 {{count, backoff: {{ratio, min, max}}}}, got {other}")),
+        };
 
         // SRD-83 — `stop_when:` is a list of {when, trigger?, effect?}.
         // StopConditionSpec derives Deserialize, so deserialize the
@@ -1518,6 +1547,7 @@ fn parse_phases(
             adapter,
             errors,
             tries,
+            tries_backoff,
             error_rate_max,
             stop_when,
             tags,
@@ -2774,6 +2804,51 @@ scenarios:
         assert_eq!(m.kind, Some(crate::model::MetricKind::Gauge));
         assert!(phase.bindings.is_empty(),
             "phase metrics must NOT auto-inject into bindings: {:?}", phase.bindings);
+    }
+
+    #[test]
+    fn tries_accepts_sugared_number_and_map_form() {
+        // Sugared: a bare number sets the count, no backoff overrides.
+        let sugar = r#"
+phases:
+  load:
+    tries: 20
+    ops: { work: { stmt: "op" } }
+scenarios: { default: [load] }
+"#;
+        let wl = parse_workload(sugar, &HashMap::new()).expect("parse sugar");
+        let p = wl.phases.get("load").unwrap();
+        assert_eq!(p.tries, Some(20));
+        assert_eq!(p.tries_backoff, None);
+
+        // Map form: `count` + nested `backoff` (durations kept as strings).
+        let map = r#"
+phases:
+  load:
+    tries:
+      count: 20
+      backoff:
+        ratio: 2.0
+        min: 100ms
+        max: 10s
+    ops: { work: { stmt: "op" } }
+scenarios: { default: [load] }
+"#;
+        let wl = parse_workload(map, &HashMap::new()).expect("parse map");
+        let p = wl.phases.get("load").unwrap();
+        assert_eq!(p.tries, Some(20));
+        let bo = p.tries_backoff.as_ref().expect("backoff parsed");
+        assert_eq!(bo.ratio, Some(2.0));
+        assert_eq!(bo.min.as_deref(), Some("100ms"));
+        assert_eq!(bo.max.as_deref(), Some("10s"));
+
+        // A bad shape (string) is a loud parse error, not a silent drop.
+        let bad = r#"
+phases: { load: { tries: "lots", ops: { w: { stmt: "op" } } } }
+scenarios: { default: [load] }
+"#;
+        assert!(parse_workload(bad, &HashMap::new()).is_err(),
+            "non-number, non-map tries must fail to parse");
     }
 
     #[test]

@@ -56,6 +56,11 @@ pub struct ActivityConfig {
     /// sigil). `0` = ops fail without executing; `1` = explicit
     /// single-attempt.
     pub tries: Option<u32>,
+    /// Retry-backoff overrides from the phase-level `tries:` map form
+    /// (`tries: {count, backoff: {ratio, min, max}}`). `None` = none
+    /// declared at the phase → the tries wrapper falls back to the op's
+    /// standalone `retry_backoff*` params, then the built-in defaults.
+    pub tries_backoff: Option<nbrs_workload::model::BackoffSpec>,
     /// Maximum number of ops within a stanza that execute concurrently.
     pub stanza_concurrency: usize,
     /// Source factory for data-driven phases. When present, fibers pull
@@ -154,6 +159,7 @@ impl Default for ActivityConfig {
             // behaviour (retries previously required a policy `retry`
             // classification, off by default).
             tries: None,
+            tries_backoff: None,
             stanza_concurrency: 1,
             source_factory: None,
             suppress_status_line: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1601,10 +1607,17 @@ impl Activity {
                     // constructs the wrapper in its fail-without-executing
                     // mode. When constructed it owns the attempt loop, the
                     // `attempt_*` counters, and the per-attempt panic catch.
+                    // Op `tries:` accepts the sugared number/string AND the
+                    // map form `{count: N, backoff: {...}}` — read `count`
+                    // from the map. Falls back to the phase/root `tries`, an
+                    // in-scope `tries` wire, then an `errors:` retry-verb
+                    // budget.
                     let op_tries: Option<u32> = template.params.get("tries")
                         .and_then(|v| match v {
                             serde_json::Value::Number(n) => n.as_u64().map(|n| n as u32),
                             serde_json::Value::String(s) => s.trim().parse::<u32>().ok(),
+                            serde_json::Value::Object(m) => m.get("count")
+                                .and_then(|c| c.as_u64()).map(|n| n as u32),
                             _ => None,
                         })
                         .or(activity.config.tries)
@@ -1617,25 +1630,57 @@ impl Activity {
                         .or_else(|| op_error_policy.router.retry_verb_budget()
                             .map(|additional| additional.saturating_add(1)));
                     let has_tries_wrapper = matches!(op_tries, Some(n) if n != 1);
-                    // Retry pacing (compaction-demo diagnosis): op-level
-                    // `retry_backoff` / `retry_backoff_max` duration
-                    // strings; defaults 100ms base doubling to a 10s cap,
-                    // `retry_backoff: 0` disables.
-                    let backoff_param = |key: &str, default_ms: u64| -> u64 {
-                        template.params.get(key)
-                            .and_then(|v| match v {
-                                serde_json::Value::Number(n) => n.as_u64().map(|n| n.to_string()),
-                                serde_json::Value::String(s) => Some(s.clone()),
-                                _ => None,
-                            })
-                            .and_then(|s| crate::timeval::parse_time_ms(&s).ok())
-                            .unwrap_or(default_ms)
+                    // Retry pacing (compaction-demo diagnosis: an immediate
+                    // `continue` retry loop hammers a dying server). Resolve
+                    // (min, max, ratio) by precedence, highest first:
+                    //   1. op `tries:` map `backoff: {ratio, min, max}`
+                    //   2. op standalone `retry_backoff*` params (back-compat)
+                    //   3. phase `tries:` map backoff (activity config)
+                    //   4. built-in defaults: 100ms base, 10s cap, 2.0 ratio.
+                    // `retry_backoff: 0` (base == 0) disables pacing.
+                    let json_to_ms = |v: &serde_json::Value| -> Option<u64> {
+                        match v {
+                            serde_json::Value::Number(n) => n.as_u64().map(|n| n.to_string()),
+                            serde_json::Value::String(s) => Some(s.clone()),
+                            _ => None,
+                        }.and_then(|s| crate::timeval::parse_time_ms(&s).ok())
                     };
+                    let mut backoff_base_ms: u64 = 100;
+                    let mut backoff_max_ms: u64 = 10_000;
+                    let mut backoff_ratio: f64 = 2.0;
+                    // (3) phase-level map backoff
+                    if let Some(bo) = activity.config.tries_backoff.as_ref() {
+                        if let Some(r) = bo.ratio { backoff_ratio = r; }
+                        if let Some(m) = bo.min.as_deref()
+                            .and_then(|s| crate::timeval::parse_time_ms(s).ok()) { backoff_base_ms = m; }
+                        if let Some(m) = bo.max.as_deref()
+                            .and_then(|s| crate::timeval::parse_time_ms(s).ok()) { backoff_max_ms = m; }
+                    }
+                    // (1)/(2) op-level: the `tries:` map backoff wins; absent
+                    // that, the standalone `retry_backoff*` params.
+                    let op_map_backoff = template.params.get("tries")
+                        .and_then(|v| v.as_object())
+                        .and_then(|m| m.get("backoff"))
+                        .and_then(|v| v.as_object());
+                    if let Some(bo) = op_map_backoff {
+                        if let Some(r) = bo.get("ratio").and_then(|v| v.as_f64()) { backoff_ratio = r; }
+                        if let Some(m) = bo.get("min").and_then(&json_to_ms) { backoff_base_ms = m; }
+                        if let Some(m) = bo.get("max").and_then(&json_to_ms) { backoff_max_ms = m; }
+                    } else {
+                        if let Some(m) = template.params.get("retry_backoff").and_then(&json_to_ms) {
+                            backoff_base_ms = m;
+                        }
+                        if let Some(m) = template.params.get("retry_backoff_max").and_then(&json_to_ms) {
+                            backoff_max_ms = m;
+                        }
+                        if let Some(r) = template.params.get("retry_backoff_ratio").and_then(|v| v.as_f64()) {
+                            backoff_ratio = r;
+                        }
+                    }
                     let raw = match op_tries {
                         Some(n) if n != 1 => crate::wrappers::TriesDispenser::wrap(
                             raw, n, activity.metrics.clone(),
-                            backoff_param("retry_backoff", 100),
-                            backoff_param("retry_backoff_max", 10_000),
+                            backoff_base_ms, backoff_max_ms, backoff_ratio,
                         ),
                         _ => raw,
                     };

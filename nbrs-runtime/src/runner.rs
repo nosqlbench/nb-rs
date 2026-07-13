@@ -5731,7 +5731,7 @@ mod tests {
 
         let phase = WorkloadPhase {
             cycles: None, concurrency: None, rate: None, daemon: false,
-            adapter: None, errors: None, tries: None, error_rate_max: None, stop_when: Vec::new(), continue_if: None, tags: None,
+            adapter: None, errors: None, tries: None, tries_backoff: None, error_rate_max: None, stop_when: Vec::new(), continue_if: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),

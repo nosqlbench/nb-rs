@@ -82,13 +82,19 @@ pub struct TriesDispenser {
     /// Backoff pacing between retryable attempts (compaction-demo
     /// diagnosis: an immediate-`continue` retry loop hammers a dying
     /// server, and `tries: 20 × timeout: 60s` makes it look like a
-    /// silent stall). Exponential from `backoff_base_ms`, capped at
-    /// `backoff_max_ms`, with deterministic jitter in [50%, 100%]
-    /// derived from (cycle, attempt) so runs stay replayable.
-    /// `base == 0` disables pacing. Set per op via `retry_backoff` /
-    /// `retry_backoff_max` (duration strings; defaults 100ms / 10s).
+    /// silent stall). Attempt `k`'s wait is `backoff_base_ms *
+    /// backoff_ratio^(k-1)`, capped at `backoff_max_ms`, with
+    /// deterministic jitter in [50%, 100%] derived from (cycle, attempt)
+    /// so runs stay replayable. `base == 0` disables pacing. Set per op
+    /// via the `tries:` map form (`backoff: {ratio, min, max}`) or the
+    /// standalone `retry_backoff` / `retry_backoff_max` /
+    /// `retry_backoff_ratio` params (defaults 100ms / 10s / 2.0).
     backoff_base_ms: u64,
     backoff_max_ms: u64,
+    /// Geometric growth factor per retry. `2.0` doubles each wait; `1.0`
+    /// holds it constant at the floor. Clamped to `>= 1.0` at use so a
+    /// misconfigured ratio never shrinks the backoff.
+    backoff_ratio: f64,
 }
 
 impl TriesDispenser {
@@ -99,8 +105,12 @@ impl TriesDispenser {
         metrics: Arc<ActivityMetrics>,
         backoff_base_ms: u64,
         backoff_max_ms: u64,
+        backoff_ratio: f64,
     ) -> Arc<dyn OpDispenser> {
-        Arc::new(Self { inner, tries, metrics, backoff_base_ms, backoff_max_ms })
+        Arc::new(Self {
+            inner, tries, metrics,
+            backoff_base_ms, backoff_max_ms, backoff_ratio,
+        })
     }
 }
 
@@ -126,6 +136,24 @@ fn splitmix64(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
+}
+
+/// The jittered wait (ms) before retry `attempt_no` (1-based). Geometric
+/// growth `base * ratio^(attempt-1)`, capped at `max`, then deterministic
+/// jitter into `[50%, 100%]` of the capped value keyed on `(cycle,
+/// attempt)` so a replay reproduces the same schedule. `base == 0` disables
+/// pacing (returns 0). `ratio` is clamped to `>= 1.0` so a misconfigured
+/// value never shrinks the wait; a huge exponent saturates `powi` to +inf,
+/// which the `.min(max)` folds to the cap (no integer overflow).
+fn backoff_wait_ms(base_ms: u64, max_ms: u64, ratio: f64, attempt_no: u32, cycle: u64) -> u64 {
+    if base_ms == 0 {
+        return 0;
+    }
+    let mult = ratio.max(1.0).powi((attempt_no.saturating_sub(1)) as i32);
+    let raw = base_ms as f64 * mult;
+    let capped = raw.min(max_ms as f64).max(1.0) as u64;
+    let h = splitmix64(cycle ^ ((attempt_no as u64) << 48));
+    capped / 2 + (h % (capped / 2 + 1))
 }
 
 impl WrappingDispenser for TriesDispenser {}
@@ -210,13 +238,12 @@ impl OpDispenser for TriesDispenser {
                         // per-op).
                         let retryable = matches!(&e, ExecutionError::Op(ad) if ad.retryable);
                         if retryable && attempt_no < self.tries {
-                            if self.backoff_base_ms > 0 {
-                                let exp = self.backoff_base_ms
-                                    .saturating_mul(1u64 << (attempt_no - 1).min(20));
-                                let capped = exp.min(self.backoff_max_ms).max(1);
-                                let h = splitmix64(cycle ^ ((attempt_no as u64) << 48));
-                                let jittered = capped / 2 + (h % (capped / 2 + 1));
-                                portable_sleep_ms(jittered).await;
+                            let wait = backoff_wait_ms(
+                                self.backoff_base_ms, self.backoff_max_ms,
+                                self.backoff_ratio, attempt_no, cycle,
+                            );
+                            if wait > 0 {
+                                portable_sleep_ms(wait).await;
                             }
                             continue;
                         }
@@ -276,12 +303,42 @@ mod tests {
         (fields, pulls)
     }
 
+    /// The backoff schedule grows geometrically by `ratio`, stays within
+    /// `[50%, 100%]` of the capped value, honours the `max` cap, holds
+    /// constant at `ratio == 1.0`, and disables at `base == 0`.
+    #[test]
+    fn backoff_is_geometric_capped_and_jittered() {
+        // ratio 2.0, base 100, max 10s: the CAP for attempt k is
+        // 100 * 2^(k-1) until it hits 10_000, and the wait lands in
+        // [cap/2, cap].
+        let caps = [100u64, 200, 400, 800, 1600, 3200, 6400, 10_000, 10_000];
+        for (i, &cap) in caps.iter().enumerate() {
+            let attempt = (i + 1) as u32;
+            let w = backoff_wait_ms(100, 10_000, 2.0, attempt, 42);
+            assert!(w >= cap / 2 && w <= cap,
+                "attempt {attempt}: wait {w} out of [{},{cap}]", cap / 2);
+        }
+        // ratio 1.0 holds the wait at the floor every attempt.
+        for attempt in 1..=5u32 {
+            let w = backoff_wait_ms(200, 10_000, 1.0, attempt, 7);
+            assert!(w >= 100 && w <= 200, "constant backoff drifted: {w}");
+        }
+        // base 0 disables pacing entirely.
+        assert_eq!(backoff_wait_ms(0, 10_000, 2.0, 3, 1), 0);
+        // Deterministic: same (cycle, attempt) → same wait (replayable).
+        assert_eq!(backoff_wait_ms(100, 10_000, 2.0, 4, 99),
+                   backoff_wait_ms(100, 10_000, 2.0, 4, 99));
+        // A misconfigured ratio < 1.0 is clamped, never shrinks the wait.
+        let w = backoff_wait_ms(100, 10_000, 0.1, 5, 3);
+        assert!(w >= 50 && w <= 100, "sub-1.0 ratio should hold at floor: {w}");
+    }
+
     /// `tries: 0` fails WITHOUT invoking the inner op.
     #[tokio::test]
     async fn tries_zero_fails_without_executing() {
         let inner = Arc::new(FlakyInner { fail_first: 0, calls: AtomicU32::new(0) });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 0, metrics, 0, 0);
+        let d = TriesDispenser::wrap(inner.clone(), 0, metrics, 0, 0, 2.0);
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let err = d.execute(0, &ctx).await.expect_err("tries:0 must fail");
@@ -296,7 +353,7 @@ mod tests {
     async fn tries_is_a_total_attempt_budget() {
         let inner = Arc::new(FlakyInner { fail_first: 2, calls: AtomicU32::new(0) });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 3, metrics.clone(), 0, 0);
+        let d = TriesDispenser::wrap(inner.clone(), 3, metrics.clone(), 0, 0, 2.0);
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         d.execute(0, &ctx).await.expect("third attempt succeeds");
@@ -310,7 +367,7 @@ mod tests {
     async fn budget_exhaustion_is_terminal() {
         let inner = Arc::new(FlakyInner { fail_first: 5, calls: AtomicU32::new(0) });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 2, metrics, 0, 0);
+        let d = TriesDispenser::wrap(inner.clone(), 2, metrics, 0, 0, 2.0);
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let err = d.execute(0, &ctx).await.expect_err("budget spent");
