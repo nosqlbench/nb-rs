@@ -710,14 +710,21 @@ fn fold_aggregate(
 /// phase call sites propagates the failure message, which the bare two-axis
 /// `Outcome` cannot). Once enriched, `execute_node` calls this directly and
 /// `join_outcome` goes away.
-#[allow(dead_code)] // WIP SRD-92 — wired by the enrich-Outcome + flow-Outcome-up steps.
 struct PhaseShell<'p> {
     name: &'p str,
+    /// The phase's dispatch-time scene-tree row key. Carried explicitly
+    /// (not read off `ctx.scene_tree_parent_id`) because the two dispatch
+    /// sites differ: `execute_node` pushes a FRESH child node for the phase
+    /// (distinct from its parent), while the comprehension/optimize path
+    /// pre-sets `scene_tree_parent_id` to the per-iter phase node itself.
+    /// The shell records whichever its caller resolved.
+    node_id: crate::scene_tree::SceneNodeId,
 }
 
-#[allow(dead_code)]
 impl<'p> PhaseShell<'p> {
-    fn new(name: &'p str) -> Self { Self { name } }
+    fn new(name: &'p str, node_id: crate::scene_tree::SceneNodeId) -> Self {
+        Self { name, node_id }
+    }
 }
 
 impl<'p> ExecShell for PhaseShell<'p> {
@@ -725,14 +732,10 @@ impl<'p> ExecShell for PhaseShell<'p> {
         &'a self,
         ctx: &'a mut ExecCtx,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
-        // SRD-92 — run_phase now returns the two-axis Outcome directly; the
-        // PhaseShell leaf forwards it (no Result re-derive).
-        Box::pin(async move {
-            // SRD-100 P1c — this WIP shell carries the phase's scene
-            // node as the ctx's current parent.
-            let phase_node_id = ctx.scene_tree_parent_id;
-            run_phase(ctx, self.name, phase_node_id).await
-        })
+        // SRD-92 — run_phase returns the two-axis Outcome directly; the
+        // PhaseShell leaf forwards it (no Result re-derive). This is the
+        // per-phase seam a `WrapperLevel::Phase` cascade will wrap.
+        Box::pin(async move { run_phase(ctx, self.name, self.node_id).await })
     }
     fn shell_kind(&self) -> ShellKind { ShellKind::Phase }
 }
@@ -1590,7 +1593,7 @@ fn execute_node<'a>(
                         // Falls through for `scope=changed` (needs
                         // the hash, computed inside run_phase) and
                         // for non-refine runs.
-                        let __o = run_phase(ctx, name, phase_node_id).await;
+                        let __o = PhaseShell::new(name, phase_node_id).run(ctx).await;
                         if __o.is_failure() {
                             return __o;   // SRD-92: propagate the phase's REAL Outcome (no round-trip)
                         }
@@ -3369,7 +3372,7 @@ async fn run_one_iteration(
                 // itself before spawning the iteration, so it IS this
                 // phase's dispatch-time row key.
                 let phase_node_id = ctx.scene_tree_parent_id;
-                run_phase(ctx, name, phase_node_id).await
+                PhaseShell::new(name, phase_node_id).run(ctx).await
             } else {
                 crate::phase_outcome::Outcome::skipped()
             }
