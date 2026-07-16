@@ -1548,6 +1548,9 @@ fn parse_phases(
             errors,
             tries,
             tries_backoff,
+            interval: phase_obj.get("interval")
+                .and_then(|v| v.as_str().map(str::to_string)),
+            repeat: phase_obj.get("repeat").and_then(|v| v.as_u64()),
             error_rate_max,
             stop_when,
             tags,

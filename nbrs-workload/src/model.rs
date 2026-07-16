@@ -870,6 +870,18 @@ pub struct WorkloadPhase {
     /// [`BackoffSpec`].
     #[serde(default)]
     pub tries_backoff: Option<BackoffSpec>,
+    /// SRD-82/92 cross-level wrapper (scoping P0) — phase-execution pacing.
+    /// `interval:` is the discriminator for a future `WrapperLevel::Phase`
+    /// interval wrapper: re-run this phase, sleeping `interval` between runs.
+    /// A raw duration string (e.g. `"5m"`), parsed at wrap time by the
+    /// runtime. Declarative today — the phase-level cascade that consumes it
+    /// is not built yet (see `docs/cross-level-wrapper-cascade-scope.md`).
+    #[serde(default)]
+    pub interval: Option<String>,
+    /// Bound for [`interval`](Self::interval) — how many times to run the
+    /// phase. `None` alongside `interval` = repeat until the session stops.
+    #[serde(default)]
+    pub repeat: Option<u64>,
     /// OPT-IN error-rate circuit breaker (e.g. `0.1` = fail this phase
     /// once >10% of its ops error, after a 50-op floor). Overrides a
     /// session-wide `error_rate_max=` param when one was set. There is
