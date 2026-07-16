@@ -318,6 +318,26 @@ scenarios:
   ddl:     [schema]
   compact: [finalize_index]
 
+  # Recall-only against an ALREADY-LOADED tier — no teardown / schema /
+  # load / compact, so the data in the table is untouched. `recall_check`
+  # resolves its tier from the loop variable `p` (its `idx_of(p)` ground
+  # truth), so it CANNOT run as a bare single-phase scenario; the single-
+  # element `for:` binds the `p` it needs. `profile_pattern` picks the tier:
+  # filter it to one profile (`profile_pattern='^900m$'`) so the loop yields
+  # exactly that tier and recall runs at 900M against the existing table.
+  # For a periodic measurement, drive it from a shell loop (nbrs runs a
+  # scenario once and exits):
+  #   while true; do
+  #     nbrs run workload=compaction_demo_derived scenario=recall \
+  #       profile_pattern='^900m$' dataset=… cqldriver=… host=… ; sleep 300
+  #   done
+  # (Without the `profile_pattern` override this runs a recall pass for
+  # every decade tier in sequence — the `^900m$` filter pins it to 900M.)
+  recall:
+    - for: "p in profile_partitions('{dataset}', '{profile_pattern}')"
+      phases:
+        - recall_check
+
 phases:
   # Anti-DDL teardown: clear rows, then drop the index and the table.
   # Per-statement timeout floor — a DROP on a populated SAI index can take
