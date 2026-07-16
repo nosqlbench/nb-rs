@@ -156,7 +156,7 @@ pub struct WrapperRegistration {
     /// Wrappers with no owned fields (e.g. `result`, which
     /// applies whenever the op has any `result:` wires)
     /// override this.
-    pub triggers: fn(&ParsedOp) -> bool,
+    pub triggers: fn(WrapperSubject) -> bool,
 
     // ── Constraint surface — see "Vocabulary" ───────────
     /// Wrappers that MUST sit inside this one (closer to
@@ -251,8 +251,8 @@ Read the table relationally:
 - **`dryrun`** activates on the injected `dryrun:` op-
   template parameter (per §"Session-injected template
   parameters" below). The trigger is the standard
-  `fn(&ParsedOp) -> bool` reading `template.params`
-  exactly like every other wrapper — no session context
+  `fn(WrapperSubject) -> bool` reading `template.params`
+  (via `s.op()`) exactly like every other wrapper — no session context
   enters the wrapping subsystem. `forbids_outer: <every
   other wrapper>` pins it as the absolute outermost so
   its short-circuit fires before any inner wrapper
@@ -263,6 +263,88 @@ Adding a new wrapper is a single `inventory::submit!` block:
 declare the name, the owned fields, the trigger, and the
 relationships. No rank to negotiate, no renumbering to
 ripple through.
+
+---
+
+## Wrapper subjects and levels (cross-level — SRD-82/92)
+
+Every wrapper declares the execution level(s) it is legal at
+(`WrapperLevel`), and the resolver only offers each wrapper the
+*subject* of a matching level. This is the cross-level generalisation
+of the registry (SRD-82 "Uniform Execution Shells", step 5): the same
+registry + resolver machinery that stacks op wrappers around op
+dispatch places phase — and, later, scenario/session — wrappers around
+the corresponding execution shell (`ExecShell::run`). See
+`docs/cross-level-wrapper-cascade-scope.md` for the phasing.
+
+### The subject
+
+A wrapper's `triggers` and `describe_assignment` inspect a
+`WrapperSubject`, not a bare `ParsedOp`:
+
+```rust
+enum WrapperSubject<'a> {
+    Op(&'a ParsedOp),
+    Phase(&'a WorkloadPhase),
+    // Scenario / Session variants join as those levels wire up.
+}
+// .op() / .phase()       — the typed unit; Some only for a matching subject
+// .level()               — the WrapperLevel this subject sits at
+// .has_owned_field(name) — uniform "is this field present?" for the
+//                          parse-time misplaced-field guard, abstracting
+//                          each unit's storage (op fields span
+//                          params/condition/delay/rate; phase fields are
+//                          typed slots).
+```
+
+The trigger signature is therefore `fn(WrapperSubject) -> bool` (was
+`fn(&ParsedOp) -> bool`); `describe_assignment` likewise. An op wrapper
+guards its body on `.op()`, a phase wrapper on `.phase()`. **The
+resolver's Pass 1 filters by `reg.applies_at(subject.level())` BEFORE
+calling the trigger**, so a well-formed wrapper never sees a foreign
+subject — the `.op()?` / `.phase()?` guard is belt-and-braces.
+
+### Subject × wrapper support matrix
+
+The level(s) each registered wrapper is legal at (its `levels:`
+declaration). The matrix is the join of two independently-declared
+facts: a wrapper's `levels:` (what it supports) and a subject's
+`.level()` (what is being wrapped); `applies_at` is the predicate the
+resolver enforces per level. Today every *shipped* wrapper is op-level
+— the phase rung is the first cross-level consumer.
+
+| wrapper | Op | Stanza | Phase | Scenario | Session |
+|---|:--:|:--:|:--:|:--:|:--:|
+| `tries` | ✓ | | | | |
+| `traverse` | ✓ | | | | |
+| `delay` | ✓ | | | | |
+| `validate` | ✓ | | | | |
+| `poll` | ✓ | | | | |
+| `if` | ✓ | | | | |
+| `while` | ✓ | | | | |
+| `op_rate` | ✓ | | | | |
+| `result` | ✓ | | | | |
+| `metrics` | ✓ | | | | |
+| `memo` | ✓ | | | | |
+| `dryrun` | ✓ | | | | |
+| `fields` | ✓ | | | | |
+| `errors` | ✓ | | | | |
+| `interval` *(planned, P3)* | | | ✓ | | |
+
+Reading the matrix:
+
+- **Op** — the composition documented above; unchanged by the
+  cross-level work. All 14 shipped wrappers declare `&[WrapperLevel::Op]`.
+- **Phase** — the target of the phase cascade (P3). `interval` (re-run a
+  phase, sleeping `interval` between runs, bounded by `repeat`) is the
+  first `WrapperLevel::Phase` wrapper. Foundation landed: the model
+  fields (`interval`, `repeat`) exist, `PhaseShell` is the live seam, and
+  the registry is level-aware; the remaining step is the phase-level
+  resolve + dispatch cascade and the wrapper itself.
+- **Stanza / Scenario / Session** — reserved. `ScenarioShell` is already
+  live, so scenario/session wrappers are follow-on work; **stanza-level
+  wrapping is a non-goal** (the per-cycle op chain folds inside the
+  activity, not as a walker shell — SRD-82 Decision B).
 
 ---
 
@@ -766,7 +848,7 @@ These follow from the split above:
    startup to carry a logical marker parameter (see
    §"Session-injected template parameters"). The
    trigger remains the standard
-   `fn(&ParsedOp) -> bool` reading `template.params`;
+   `fn(WrapperSubject) -> bool` reading `template.params`;
    the resolver remains session-agnostic; the cascade
    arm has nothing to decide beyond constructing the
    wrapper. Adding a new `fn(...)` signature shape to
@@ -1033,7 +1115,7 @@ pub struct WrapperRegistration {
     /// dumps. `describe_assignment` describes the
     /// *wrapper's contribution* for init-time
     /// diagnostics.
-    pub describe_assignment: fn(&ParsedOp) -> Option<String>,
+    pub describe_assignment: fn(WrapperSubject) -> Option<String>,
 }
 ```
 
@@ -1088,7 +1170,7 @@ post-hoc inspection matches what operators saw at start.
   adapter boundary. Adapter-internal composition is each
   adapter's concern.
 - **Cross-field trigger validation** — dropped from open
-  questions. The `triggers: fn(&ParsedOp) -> bool`
+  questions. The `triggers: fn(WrapperSubject) -> bool`
   predicate already handles "this wrapper fires when any
   of its owned fields are present"; the speculative
   failure mode (a triggered owned field but the wrapper
