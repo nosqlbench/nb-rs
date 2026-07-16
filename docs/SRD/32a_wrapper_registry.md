@@ -201,18 +201,27 @@ handle) that the executor needs to retain.
 
 ## Default registry contents
 
+The 14 registered wrappers, in the default innermost→outermost order
+(`DEFAULT_ORDER`). This table is the authoritative list — kept in step
+with the `inventory::submit!` blocks in `wrappers/*.rs` and
+`validation.rs`:
+
 | name | owned fields | trigger | requires_inner | forbids_outer | mutually_exclusive_with |
 |------|--------------|---------|----------------|---------------|-------------------------|
+| `tries` | `tries` | `tries:` set | — | — | — |
 | `traverse` | (none) | always | — | — | — |
-| `throttle` | `rate`, `rate_limiter` | rate set | `traverse` | — | — |
-| `validate` | `verify`, `relevancy`, `strict` | any owned field present | `traverse` | — | — |
-| `poll` | `poll`, `poll_interval_ms`, `timeout_ms`, `poll_max_error_retries`, `poll_metric_name` | `poll:` set | `traverse` | — | — |
+| `delay` | `delay` | `delay:` set | `traverse` | — | — |
+| `validate` | `verify`, `relevancy`, `strict` | `verify`/`relevancy` set | `traverse` | — | — |
+| `poll` | `poll` | `poll:` set | `traverse` | — | — |
 | `if` | `if` | `if:` set | — | — | — |
-| `emit` | `emit` | `emit: true` | — | — | — |
-| `result` | (none — reads `result:` wires) | template has `result:` wires | `traverse` | — | — |
-| `metrics` | (none) | always | — | (everything else) | — |
+| `result` | (none — reads `result:` wires) | always (no-op when empty) | `traverse` | — | — |
+| `metrics` | (none) | op declares `metrics:` | — | (inner wrappers) | — |
 | `memo` | `memo` | `memo:` set | `traverse` | — | — |
-| `dryrun` | `dryrun` | `dryrun:` set (injected by session, see §"Session-injected template parameters") | — | (everything else) | — |
+| `op_rate` | `rate` | `rate:` set | — | — | — |
+| `while` | `while` | `while:` set | — | — | — |
+| `dryrun` | `dryrun` | injected `dryrun:` param (see §"Session-injected template parameters") | — | (everything else — absolute outermost) | — |
+| `fields` | `fields` | `fields: true` | — | — | — |
+| `errors` | `errors` | always (outermost error handler) | — | — | — |
 
 Read the table relationally:
 
@@ -231,16 +240,15 @@ Read the table relationally:
   hand-coded "must_be_innermost: true". A future wrapper
   that doesn't need traverse can sit inside it without
   surgery on traverse's record.
-- **`emit`** declares no `requires_inner`. The cascade
-  composes `result` *outside* `emit` (innermost-first list
-  ends `..., emit, result, metrics`), so an
-  `emit.requires_inner = [result]` declaration would
-  invert the cascade and break the byte-identical-output
-  bar in §"Migration". `result` is always-on (wraps
-  unconditionally, no-op when its wire map is empty), so
-  emit can rely on its presence without an explicit
-  constraint. Pre-`result` emit (raw adapter output) is
-  reserved as a future variant (`emit.raw`) if needed.
+- **`tries` and `errors` are hand-placed bookends** (SRD-82 Part 3b),
+  not resolved into the plan loop: `tries` is the CONDITIONAL innermost
+  layer (constructed only for a `tries` budget of `0` or `≥ 2`), and
+  `errors` is the absolute outermost handler that routes the terminal
+  outcome through the op's `ErrorPolicy`. Both still carry registry
+  entries — for field validation, telemetry, and the level metadata — but
+  their `match` arms in the cascade are inert; the construction is
+  hand-placed in `activity.rs`. Any cross-level generalization (SRD-82/92)
+  must preserve those two placements.
 - **`if`** has no `requires_inner`. A false condition
   short-circuits before any inner wrapper fires; that's
   load-bearing for the recent fix that pulled `poll` to
