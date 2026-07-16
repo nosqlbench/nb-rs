@@ -32,14 +32,13 @@ those facts live as inline if-let chains inside
 sequence of `let varname = if … wrap … else …` clauses:
 
 ```rust
-let traversed   = TraversingDispenser::wrap(adapter_dispenser, …);
-let throttled   = ThrottleDispenser::wrap(traversed, …);
-let validated   = ValidatingDispenser::wrap(throttled, …);
-let polled      = PollingDispenser::wrap(validated, …);
-let conditional = ConditionalDispenser::wrap(polled, …);
-let emitted     = EmitDispenser::wrap(conditional, …);
-let with_result = ResultDispenser::wrap(emitted, …);
-let final_disp  = MetricsDispenser::wrap(with_result, …);
+let traversed    = TraversingDispenser::wrap(adapter_dispenser, …);
+let rate_limited = OpRateWrapper::wrap(traversed, …);
+let validated    = ValidatingDispenser::wrap(rate_limited, …);
+let polled       = PollingDispenser::wrap(validated, …);
+let conditional  = ConditionalDispenser::wrap(polled, …);
+let with_result  = ResultDispenser::wrap(conditional, …);
+let final_disp   = MetricsDispenser::wrap(with_result, …);
 ```
 
 Three problems:
@@ -58,7 +57,7 @@ Three problems:
    "swap polling and conditional" (the recent fix) is a code
    change, not a config knob.
 3. **Order is non-discoverable.** A user who wants
-   "throttle outside the conditional" has no surface to
+   "op_rate outside the conditional" has no surface to
    configure that, and no way to inspect the current order
    from `nbrs describe`.
 
@@ -86,7 +85,7 @@ The load-bearing rule:
   "decorator."
 - **Trigger.** A predicate over an op template's fields that
   decides whether the wrapper applies to that op. Typically
-  "presence of a marker field" (`if`/`poll`/`emit`) but can
+  "presence of a marker field" (`if`/`poll`) but can
   be richer (e.g. `verify` + nested predicates).
 - **Owned field.** An op-template field whose only legitimate
   consumer is one specific wrapper. Misplaced fields (e.g.
@@ -142,8 +141,8 @@ they own, when they apply, and where they stack."
 pub struct WrapperName(&'static str);
 
 pub struct WrapperRegistration {
-    /// Stable name (`"validate"`, `"poll"`, `"throttle"`,
-    /// `"if"`, `"emit"`, `"result"`, `"metrics"`).
+    /// Stable name (`"tries"`, `"validate"`, `"poll"`,
+    /// `"op_rate"`, `"if"`, `"result"`, `"errors"`).
     pub name: WrapperName,
     /// Op-template field names this wrapper exclusively
     /// owns. Listed for parse-time validation: a misplaced
@@ -368,11 +367,10 @@ op template
 ├── adapter fields     → DriverAdapter::map_op (SRD-30)
 └── core fields
     ├── traverse fields → unowned (always-on)
-    ├── throttle fields → ThrottleDispenser
+    ├── op_rate fields  → OpRateWrapper
     ├── validate fields → ValidatingDispenser
     ├── poll fields     → PollingDispenser
     ├── if fields       → ConditionalDispenser
-    ├── emit fields     → EmitDispenser
     ├── result fields   → ResultDispenser
     └── metrics fields  → MetricsDispenser
 ```
@@ -531,7 +529,7 @@ leave a choice. The runtime ships a built-in default that
 matches today's behaviour:
 
 ```
-[traverse, throttle, validate, poll, if, emit, result, metrics, memo, dryrun]
+[tries, traverse, delay, validate, poll, if, result, metrics, memo, op_rate, while, dryrun, fields, errors]
 ```
 
 `dryrun` is the absolute outermost so its short-circuit
@@ -569,7 +567,7 @@ at startup** before any phase runs:
     but the configured order places 'result' after 'metrics'.
   Suggested fix: ensure 'metrics' is the last entry in the
   list, e.g.
-    [traverse, throttle, validate, poll, if, emit, result, metrics]
+    [traverse, validate, poll, if, result, metrics]
   ```
 
 The validator runs against the registry's constraint graph,
@@ -591,13 +589,12 @@ same chain as the current hand-rolled if-let cascade:
 ```text
 Adapter base
   └─ traverse (always)
-     └─ throttle  (when rate set)
+     └─ op_rate  (when rate set)
         └─ validate (when verify/relevancy)
            └─ poll      (when poll: set)
               └─ if      (when if: set)
-                 └─ emit  (when emit: true)
-                    └─ result  (always; no-op without wires)
-                       └─ metrics (always)
+                 └─ result  (always; no-op without wires)
+                    └─ metrics (always)
 ```
 
 Read top-to-bottom for execute-time call order: `metrics` is
@@ -612,7 +609,7 @@ root or at an op-template level:
 ```yaml
 # Workload root: applies to every op template.
 wrappers:
-  order: [traverse, throttle, validate, poll, if, emit, result, metrics]
+  order: [traverse, validate, poll, if, result, metrics]
 
 phases:
   await_index:
@@ -711,7 +708,7 @@ the outermost wrapper. Each wrapper:
 either return a result (success, skip, or failure) or
 propagate the inner result unchanged. Wrappers that need
 to *replace* the inner result (e.g. `result` capturing
-fields, `emit` adding side-effects) do so by mutating the
+fields, `memo` rendering before/after templates) do so by mutating the
 returned `OpResult` before returning it upward.
 
 ### 3. Side-effect emission (during invoke)
@@ -911,7 +908,7 @@ cascade arm declines to install on the same template,
 that is a design bug. The cascade arm exists to
 *construct* the wrapper, not to *re-decide* its
 applicability. Existing precedent that violated this
-(`ThrottleDispenser::wrap` returning `Err` on
+(`OpRateWrapper::wrap` returning `Err` on
 binding-resolution failure, treated as a stop signal
 in the cascade) is an error path, not a routine
 decline; the cascade arm should always either install
@@ -935,11 +932,10 @@ the mistake if they try.
 $ nbrs describe wrappers
 NAME       RANK  OWNED FIELDS                                                                        TRIGGER
 traverse   -100  (none — always-on)                                                                  always
-throttle      0  rate, rate_limiter                                                                  rate set
+op_rate       0  rate                                                                                rate set
 validate    100  verify, relevancy, strict                                                           verify/relevancy
 poll        200  poll, poll_interval_ms, timeout_ms, poll_max_error_retries, poll_metric_name        poll: set
 if          300  if                                                                                  if: set
-emit        400  emit                                                                                emit: true
 result      500  (none — reads result: wires)                                                        always (no-op when empty)
 metrics     600  (none — applies to every op)                                                        always
 ```
@@ -998,7 +994,7 @@ the shape concrete:
   flips) overrides per-op with `wrappers: { order:
   [traverse, if, poll, …] }`. Both orders are valid
   topologically; the override picks.
-- **`validate` outside `throttle` (default, not
+- **`validate` outside `op_rate` (default, not
   constraint).** Same shape — independent triggers, the
   default order is the tiebreaker, and the override
   surface lets users invert it.
