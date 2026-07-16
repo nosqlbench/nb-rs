@@ -12,8 +12,7 @@ use std::sync::Arc;
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use nbrs_workload::bindpoints;
 use crate::adapter::WrappingDispenser;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
-use nbrs_workload::model::ParsedOp;
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name. Innermost layer; always present.
 pub const NAME: WrapperName = WrapperName::new("traverse");
@@ -21,11 +20,11 @@ pub const NAME: WrapperName = WrapperName::new("traverse");
 /// Trigger: always — every op gets a traversal layer so result
 /// bodies are consumed (and per-row metrics record element /
 /// byte counts) even if the workload didn't ask for anything.
-fn triggers(_: &ParsedOp) -> bool { true }
+fn triggers(s: WrapperSubject) -> bool { s.op().is_some() }
 
 /// No per-op assignment text — the wrapper has no operator-
 /// configurable knobs.
-fn describe_assignment(_: &ParsedOp) -> Option<String> { None }
+fn describe_assignment(_: WrapperSubject) -> Option<String> { None }
 
 inventory::submit! {
     WrapperRegistration {

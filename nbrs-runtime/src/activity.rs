@@ -1456,8 +1456,7 @@ impl Activity {
             // helper.
             {
                 let violations = wrapper_registry.misplaced_fields(
-                    template,
-                    |field| template.params.contains_key(field),
+                    crate::wrapper_registry::WrapperSubject::Op(template),
                 );
                 if !violations.is_empty() {
                     for (wrapper, field) in &violations {
@@ -1529,9 +1528,12 @@ impl Activity {
                             let order_strs: Vec<&str> = order.iter()
                                 .map(|s| s.as_str()).collect();
                             wrapper_resolver.resolve_with_order(
-                                template, &wrapper_registry, &order_strs)
+                                crate::wrapper_registry::WrapperSubject::Op(template),
+                                &wrapper_registry, &order_strs)
                         }
-                        None => wrapper_resolver.resolve(template, &wrapper_registry),
+                        None => wrapper_resolver.resolve(
+                            crate::wrapper_registry::WrapperSubject::Op(template),
+                            &wrapper_registry),
                     };
                     let plan = match plan {
                         Ok(p) => p,
@@ -1553,7 +1555,9 @@ impl Activity {
                     let assignments: Vec<(crate::wrapper_registry::WrapperName, String)> = plan
                         .iter_innermost_first()
                         .filter_map(|reg| {
-                            (reg.describe_assignment)(template).map(|s| (reg.name, s))
+                            (reg.describe_assignment)(
+                                crate::wrapper_registry::WrapperSubject::Op(template)
+                            ).map(|s| (reg.name, s))
                         })
                         .collect();
                     if !assignments.is_empty() {

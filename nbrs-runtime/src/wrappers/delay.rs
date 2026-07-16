@@ -14,19 +14,21 @@ use std::sync::Arc;
 
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
-use nbrs_workload::model::{DelaySpec, ParsedOp};
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
+use nbrs_workload::model::DelaySpec;
 
 /// SRD-32a wrapper name.
 pub const NAME: WrapperName = WrapperName::new("delay");
 
 /// Trigger: an op declares any `delay:` spec.
-fn triggers(template: &ParsedOp) -> bool {
+fn triggers(s: WrapperSubject) -> bool {
+    let Some(template) = s.op() else { return false; };
     template.delay.is_some()
 }
 
 /// One-line assignment summary for init-time diagnostics.
-fn describe_assignment(template: &ParsedOp) -> Option<String> {
+fn describe_assignment(s: WrapperSubject) -> Option<String> {
+    let template = s.op()?;
     template.delay.as_ref().map(|spec| match spec {
         DelaySpec::Before(name) => {
             let trimmed = crate::wrapper_registrations::trim_braces(name);

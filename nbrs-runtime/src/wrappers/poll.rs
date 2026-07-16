@@ -11,8 +11,7 @@ use std::sync::Arc;
 
 use crate::adapter::{AdapterError, ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
-use nbrs_workload::model::ParsedOp;
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
 pub const NAME: WrapperName = WrapperName::new("poll");
@@ -20,7 +19,8 @@ pub const NAME: WrapperName = WrapperName::new("poll");
 /// Trigger: `poll:` may be a bare string (mode only, defaults
 /// for everything else) or a map carrying the full config —
 /// either form turns the wrapper on.
-fn triggers(template: &ParsedOp) -> bool {
+fn triggers(s: WrapperSubject) -> bool {
+    let Some(template) = s.op() else { return false; };
     template
         .params
         .get("poll")
@@ -28,7 +28,8 @@ fn triggers(template: &ParsedOp) -> bool {
         .unwrap_or(false)
 }
 
-fn describe_assignment(template: &ParsedOp) -> Option<String> {
+fn describe_assignment(s: WrapperSubject) -> Option<String> {
+    let template = s.op()?;
     let poll_val = template.params.get("poll")?;
     let (mode, interval, timeout): (String, u64, u64) = match poll_val {
         v if v.is_string() => (

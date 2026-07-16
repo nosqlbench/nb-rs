@@ -21,14 +21,14 @@ use std::sync::Arc;
 
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
-use nbrs_workload::model::ParsedOp;
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
 pub const NAME: WrapperName = WrapperName::new("fields");
 
 /// Trigger: op carries `fields: true` (bool, or string "true").
-fn triggers(template: &ParsedOp) -> bool {
+fn triggers(s: WrapperSubject) -> bool {
+    let Some(template) = s.op() else { return false; };
     template
         .params
         .get("fields")
@@ -40,7 +40,7 @@ fn triggers(template: &ParsedOp) -> bool {
         .unwrap_or(false)
 }
 
-fn describe_assignment(_: &ParsedOp) -> Option<String> {
+fn describe_assignment(_: WrapperSubject) -> Option<String> {
     Some("fields: rendered op text to stdout".into())
 }
 

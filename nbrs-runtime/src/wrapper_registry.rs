@@ -14,7 +14,7 @@
 //! themselves live in [`crate::wrappers`] and
 //! [`crate::validation`] — this module is data, not code.
 
-use nbrs_workload::model::ParsedOp;
+use nbrs_workload::model::{ParsedOp, WorkloadPhase};
 
 /// Stable identifier for a wrapper. Used in workload override
 /// directives, CLI flags, and registry lookups. Wrapped around a
@@ -52,6 +52,66 @@ pub enum WrapperLevel {
     Session,
 }
 
+/// SRD-82/92 — the execution unit a wrapper's trigger inspects, generalising
+/// the registry across levels. An op wrapper reads the `Op` variant; a phase
+/// wrapper the `Phase` variant (scenario/session variants join when those
+/// levels wire up). Op-level wrappers guard with [`Self::op`]; the resolver
+/// only offers a wrapper subjects of the level it declares (`applies_at`), so
+/// a well-formed wrapper never sees a foreign subject — the guard is a
+/// belt-and-braces `None` return.
+#[derive(Clone, Copy)]
+pub enum WrapperSubject<'a> {
+    Op(&'a ParsedOp),
+    Phase(&'a WorkloadPhase),
+}
+
+impl<'a> WrapperSubject<'a> {
+    /// The execution level of this subject; pairs with [`WrapperRegistration::applies_at`].
+    pub fn level(&self) -> WrapperLevel {
+        match self {
+            WrapperSubject::Op(_) => WrapperLevel::Op,
+            WrapperSubject::Phase(_) => WrapperLevel::Phase,
+        }
+    }
+
+    /// The op template, if this is an op subject (op-wrapper triggers guard on it).
+    pub fn op(&self) -> Option<&'a ParsedOp> {
+        match self {
+            WrapperSubject::Op(op) => Some(op),
+            _ => None,
+        }
+    }
+
+    /// The phase, if this is a phase subject (phase-wrapper triggers guard on it).
+    pub fn phase(&self) -> Option<&'a WorkloadPhase> {
+        match self {
+            WrapperSubject::Phase(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Uniform "is this wrapper-owned field present?" — the canonical field
+    /// names mapped to each unit's actual storage. Op fields are spread
+    /// across `params`/`condition`/`delay`/`rate`; phase fields are typed
+    /// slots. Used by the parse-time misplaced-field guard.
+    pub fn has_owned_field(&self, field: &str) -> bool {
+        match self {
+            WrapperSubject::Op(op) => match field {
+                "if" => op.condition.is_some(),
+                "delay" => op.delay.is_some(),
+                "while" => op.while_cond.is_some(),
+                "rate" => op.rate.is_some(),
+                _ => op.params.contains_key(field),
+            },
+            WrapperSubject::Phase(p) => match field {
+                "interval" => p.interval.is_some(),
+                "repeat" => p.repeat.is_some(),
+                _ => false,
+            },
+        }
+    }
+}
+
 /// One entry per registered wrapper. Entries are submitted at
 /// link time via `inventory::submit!` and collected at startup
 /// into the [`WrapperRegistry`] view.
@@ -85,7 +145,7 @@ pub struct WrapperRegistration {
     /// Wrappers with no owned fields (e.g. `result`, which fires
     /// whenever the op declares any `result:` wires) override
     /// this with their own logic.
-    pub triggers: fn(&ParsedOp) -> bool,
+    pub triggers: fn(WrapperSubject) -> bool,
 
     /// Wrappers that MUST sit inside this one (closer to the
     /// adapter, called *after* this one per cycle).
@@ -121,7 +181,7 @@ pub struct WrapperRegistration {
     /// the *runtime op* — e.g. the CQL statement text — for
     /// error-context dumps. This describes the *wrapper's
     /// contribution* for init-time diagnostics.
-    pub describe_assignment: fn(&ParsedOp) -> Option<String>,
+    pub describe_assignment: fn(WrapperSubject) -> Option<String>,
 
     /// SRD-92 / ExecUnification — the execution-graph level(s) this wrapper is
     /// legal at. Every current wrapper is `&[WrapperLevel::Op]`; the unified
@@ -143,8 +203,8 @@ impl WrapperRegistration {
 mod level_tests {
     use super::*;
 
-    fn no_trigger(_: &ParsedOp) -> bool { false }
-    fn no_describe(_: &ParsedOp) -> Option<String> { None }
+    fn no_trigger(_: WrapperSubject) -> bool { false }
+    fn no_describe(_: WrapperSubject) -> Option<String> { None }
 
     #[test]
     fn applies_at_reads_declared_levels() {
@@ -233,21 +293,19 @@ impl WrapperRegistry {
     /// wrapper's trigger always live under `params:`, so a
     /// caller can pass a closure over `template.params
     /// .contains_key`.
-    pub fn misplaced_fields<F>(
+    pub fn misplaced_fields(
         &self,
-        template: &nbrs_workload::model::ParsedOp,
-        field_present_on_template: F,
-    ) -> Vec<(WrapperName, &'static str)>
-    where
-        F: Fn(&str) -> bool,
-    {
+        subject: WrapperSubject,
+    ) -> Vec<(WrapperName, &'static str)> {
         let mut out: Vec<(WrapperName, &'static str)> = Vec::new();
         for reg in self.iter() {
-            if (reg.triggers)(template) {
+            // Only wrappers legal at this subject's level can claim its
+            // fields; and a triggered wrapper's fields are correctly placed.
+            if !reg.applies_at(subject.level()) || (reg.triggers)(subject) {
                 continue;
             }
             for &field in reg.owned_fields {
-                if field_present_on_template(field) {
+                if subject.has_owned_field(field) {
                     out.push((reg.name, field));
                 }
             }

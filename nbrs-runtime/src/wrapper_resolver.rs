@@ -22,9 +22,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nbrs_workload::model::ParsedOp;
 
-use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperRegistry};
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperRegistry, WrapperSubject};
 
 /// Resolved wrapper composition for one op template.
 pub struct WrapperPlan {
@@ -292,14 +291,16 @@ impl WrapperResolver {
     /// Resolve the wrapper plan for one op template.
     pub fn resolve(
         &self,
-        template: &ParsedOp,
+        subject: WrapperSubject,
         registry: &WrapperRegistry,
     ) -> Result<WrapperPlan, ResolveError> {
-        // Pass 1 — trigger fan-out.
+        // Pass 1 — trigger fan-out. Only wrappers legal at this subject's
+        // level are eligible (SRD-82/92 cross-level: an op resolve sees op
+        // wrappers, a phase resolve sees phase wrappers).
         let mut activations: HashMap<WrapperName, WrapperActivation> = HashMap::new();
         for reg in registry.iter() {
-            if (reg.triggers)(template) {
-                let activation = first_owned_field(reg, template)
+            if reg.applies_at(subject.level()) && (reg.triggers)(subject) {
+                let activation = first_owned_field(reg, subject)
                     .map(|f| WrapperActivation::OwnedField { wrapper: reg.name, field: f })
                     .unwrap_or(WrapperActivation::AlwaysOn { wrapper: reg.name });
                 activations.insert(reg.name, activation);
@@ -394,7 +395,7 @@ impl WrapperResolver {
     /// same error shapes.
     pub fn resolve_with_order(
         &self,
-        template: &ParsedOp,
+        subject: WrapperSubject,
         registry: &WrapperRegistry,
         order: &[&str],
     ) -> Result<WrapperPlan, ResolveError> {
@@ -404,8 +405,8 @@ impl WrapperResolver {
         // triggers.
         let mut activations: HashMap<WrapperName, WrapperActivation> = HashMap::new();
         for reg in registry.iter() {
-            if (reg.triggers)(template) {
-                let activation = first_owned_field(reg, template)
+            if reg.applies_at(subject.level()) && (reg.triggers)(subject) {
+                let activation = first_owned_field(reg, subject)
                     .map(|f| WrapperActivation::OwnedField { wrapper: reg.name, field: f })
                     .unwrap_or(WrapperActivation::AlwaysOn { wrapper: reg.name });
                 activations.insert(reg.name, activation);
@@ -531,27 +532,14 @@ impl WrapperResolver {
 /// falls back to `AlwaysOn`.
 fn first_owned_field(
     reg: &'static WrapperRegistration,
-    template: &ParsedOp,
+    subject: WrapperSubject,
 ) -> Option<&'static str> {
     for field in reg.owned_fields {
-        if op_has_field(template, field) {
+        if subject.has_owned_field(field) {
             return Some(*field);
         }
     }
     None
-}
-
-fn op_has_field(template: &ParsedOp, field: &str) -> bool {
-    // ParsedOp's "fields" are spread across `params`,
-    // `condition`, `delay`, `metrics`, `result`. Map the
-    // canonical names to their actual storage.
-    match field {
-        "if" => template.condition.is_some(),
-        "delay" => template.delay.is_some(),
-        "while" => template.while_cond.is_some(),
-        "rate" => template.rate.is_some(),
-        _ => template.params.contains_key(field),
-    }
 }
 
 fn detect_cycle(

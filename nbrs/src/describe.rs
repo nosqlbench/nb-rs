@@ -2079,7 +2079,7 @@ pub fn render_op_description(workload_path: &str, op_name: &str) -> Result<Strin
     let registry = WrapperRegistry::from_inventory();
     let resolver = WrapperResolver::with_default_order(&registry).map_err(|e| e.to_string())?;
     let plan = resolver
-        .resolve(template, &registry)
+        .resolve(nbrs_runtime::wrapper_registry::WrapperSubject::Op(*template), &registry)
         .map_err(|e| e.to_string())?;
 
     let mut out = String::new();
@@ -2093,7 +2093,8 @@ pub fn render_op_description(workload_path: &str, op_name: &str) -> Result<Strin
     }
     out.push_str("  wrapper stack (innermost -> outermost):\n");
     for (i, reg) in plan.iter_innermost_first().enumerate() {
-        let line = (reg.describe_assignment)(template)
+        let line = (reg.describe_assignment)(
+                nbrs_runtime::wrapper_registry::WrapperSubject::Op(*template))
             .unwrap_or_else(|| reg.name.as_str().to_string());
         // Prepend the wrapper name to assignments that don't
         // already start with it — `describe_assignment` lines

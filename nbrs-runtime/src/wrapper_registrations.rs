@@ -62,7 +62,7 @@ pub(crate) fn short_value(v: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::wrapper_registry::WrapperRegistry;
+    use crate::wrapper_registry::{WrapperRegistry, WrapperSubject};
     use crate::wrapper_resolver::{WrapperResolver, WrapperActivation};
     use nbrs_workload::model::ParsedOp;
 
@@ -97,7 +97,7 @@ mod tests {
     fn empty_template_resolves_to_always_on_set() {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
-        let plan = resolver.resolve(&empty_template("noop"), &r).unwrap();
+        let plan = resolver.resolve(WrapperSubject::Op(&empty_template("noop")), &r).unwrap();
         let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
         // The three always-on wrappers in innermost→outermost order:
         // traverse (innermost; reads body to count rows / extract
@@ -118,7 +118,7 @@ mod tests {
         let mut t = empty_template("noop");
         t.params.insert("dryrun".into(),
             serde_json::Value::String("silent".into()));
-        let plan = resolver.resolve(&t, &r).unwrap();
+        let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
         let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
         // `errors` sits outside even dryrun (it is inert on the
         // short-circuit's Ok) — dryrun is the outermost DISPATCHED
@@ -134,7 +134,7 @@ mod tests {
         let mut t = empty_template("v_op");
         t.params.insert("verify".into(),
             serde_json::Value::String("min_rows >= 1".into()));
-        let plan = resolver.resolve(&t, &r).unwrap();
+        let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
 
         // Traverse must be present and must precede validate.
         let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
@@ -157,7 +157,7 @@ mod tests {
         let mut t = empty_template("v_op");
         t.params.insert("verify".into(),
             serde_json::Value::String("min_rows >= 1".into()));
-        match resolver.resolve_with_order(&t, &r, &["validate", "result"]) {
+        match resolver.resolve_with_order(WrapperSubject::Op(&t), &r, &["validate", "result"]) {
             Err(crate::wrapper_resolver::ResolveError::OverridePermutationMismatch { missing: Some(_), .. }) => {}
             Err(other) => panic!("expected missing-wrapper error; got {other:?}"),
             Ok(_) => panic!("override missing a triggered wrapper must error"),
@@ -169,7 +169,7 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let t = empty_template("noop");
-        match resolver.resolve_with_order(&t, &r,
+        match resolver.resolve_with_order(WrapperSubject::Op(&t), &r,
             &["traverse", "poll", "result", "errors"])
         {
             Err(crate::wrapper_resolver::ResolveError::OverridePermutationMismatch { extra: Some(_), .. }) => {}
@@ -183,7 +183,7 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
         let t = empty_template("noop");
-        match resolver.resolve_with_order(&t, &r,
+        match resolver.resolve_with_order(WrapperSubject::Op(&t), &r,
             &["traverse", "validatte", "result"])
         {
             Err(crate::wrapper_resolver::ResolveError::UnknownWrapper { name, suggestion }) => {
@@ -207,7 +207,7 @@ mod tests {
         t.params.insert("poll".into(),
             serde_json::Value::String("await_empty".into()));
         t.condition = Some("flag".into());
-        let plan = resolver.resolve(&t, &r).unwrap();
+        let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
         let names: Vec<&str> = plan.stack.iter()
             .map(|reg| reg.name.as_str()).collect();
         let i_if = names.iter().position(|n| *n == "if").unwrap();
@@ -225,7 +225,7 @@ mod tests {
             serde_json::Value::String("ok".into()));
         t.params.insert("poll".into(),
             serde_json::Value::String("await_empty".into()));
-        let plan = resolver.resolve_with_order(&t, &r,
+        let plan = resolver.resolve_with_order(WrapperSubject::Op(&t), &r,
             &["traverse", "poll", "validate", "result", "errors"]).unwrap();
         let names: Vec<&str> = plan.stack.iter()
             .map(|reg| reg.name.as_str()).collect();
@@ -237,8 +237,7 @@ mod tests {
         let r = WrapperRegistry::from_inventory();
         let mut t = empty_template("noop");
         t.params.insert("strict".into(), serde_json::Value::Bool(true));
-        let violations = r.misplaced_fields(&t,
-            |f| t.params.contains_key(f));
+        let violations = r.misplaced_fields(WrapperSubject::Op(&t));
         let names: Vec<(&str, &str)> = violations.iter()
             .map(|(w, f)| (w.as_str(), *f))
             .collect();
@@ -257,14 +256,13 @@ mod tests {
         t.params.insert("poll".into(), serde_json::Value::Object(cfg));
         // poll: <map> triggers the wrapper through the registry.
         let resolver = WrapperResolver::with_default_order(&r).unwrap();
-        let plan = resolver.resolve(&t, &r).unwrap();
+        let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
         let names: Vec<&str> = plan.stack.iter()
             .map(|reg| reg.name.as_str()).collect();
         assert!(names.contains(&"poll"), "poll wrapper should activate: {names:?}");
         // And `poll:` is the wrapper's only owned field, so it's
         // never misplaced.
-        let violations = r.misplaced_fields(&t,
-            |f| t.params.contains_key(f));
+        let violations = r.misplaced_fields(WrapperSubject::Op(&t));
         assert!(violations.is_empty(), "got {violations:?}");
     }
 
@@ -288,7 +286,7 @@ mod tests {
                 unit: None,
                 format: None,
             });
-        let plan = resolver.resolve(&t, &r).unwrap();
+        let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
         let names: Vec<&str> = plan.stack.iter().map(|reg| reg.name.as_str()).collect();
         // `fields` sits outer of dryrun to support `dryrun=fields`
         // semantics — the pre-execute render must fire BEFORE
@@ -314,7 +312,7 @@ mod tests {
             serde_json::Value::String("dropping keyspace".into()));
         t.params.insert("dryrun".into(),
             serde_json::Value::String("silent".into()));
-        let plan = resolver.resolve(&t, &r).unwrap();
+        let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
         let names: Vec<&str> = plan.stack.iter()
             .map(|reg| reg.name.as_str()).collect();
         let i_memo = names.iter().position(|n| *n == "memo")
@@ -355,7 +353,7 @@ mod tests {
                 unit: None,
                 format: None,
             });
-        let plan = resolver.resolve(&t, &r).unwrap();
+        let plan = resolver.resolve(WrapperSubject::Op(&t), &r).unwrap();
         let names: Vec<&str> = plan.stack.iter()
             .map(|reg| reg.name.as_str()).collect();
         // `errors` (SRD-82 Part 3b) is the absolute outermost slot —

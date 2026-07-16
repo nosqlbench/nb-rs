@@ -21,7 +21,7 @@ use crate::adapter::{
     ExecutionError, OpDispenser, OpResult, WrappingDispenser,
 };
 use crate::relevancy::{self, RelevancyFn};
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name for the validation layer. Exposed at
 /// the module level so other wrappers' `forbids_outer` /
@@ -30,14 +30,16 @@ use crate::wrapper_registry::{WrapperName, WrapperRegistration};
 pub const WRAPPER_NAME: WrapperName = WrapperName::new("validate");
 
 /// Trigger: op carries `verify:` or `relevancy:`.
-fn wrapper_triggers(template: &nbrs_workload::model::ParsedOp) -> bool {
+fn wrapper_triggers(s: WrapperSubject) -> bool {
+    let Some(template) = s.op() else { return false; };
     template.params.contains_key("verify")
         || template.params.contains_key("relevancy")
 }
 
 fn wrapper_describe_assignment(
-    template: &nbrs_workload::model::ParsedOp,
+    s: WrapperSubject,
 ) -> Option<String> {
+    let template = s.op()?;
     let strict = template
         .params
         .get("strict")

@@ -10,18 +10,19 @@ use std::sync::Arc;
 
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
-use nbrs_workload::model::ParsedOp;
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
 pub const NAME: WrapperName = WrapperName::new("if");
 
 /// Trigger: op declares an `if:` condition.
-fn triggers(template: &ParsedOp) -> bool {
+fn triggers(s: WrapperSubject) -> bool {
+    let Some(template) = s.op() else { return false; };
     template.condition.is_some()
 }
 
-fn describe_assignment(template: &ParsedOp) -> Option<String> {
+fn describe_assignment(s: WrapperSubject) -> Option<String> {
+    let template = s.op()?;
     template.condition.as_ref().map(|cond| {
         let trimmed = crate::wrapper_registrations::trim_braces(cond);
         format!("if: {trimmed}")

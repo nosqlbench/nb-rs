@@ -32,11 +32,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use nbrs_workload::model::ParsedOp;
 
 use crate::activity::ActivityMetrics;
 use crate::adapter::{AdapterError, ExecutionError, OpDispenser, OpResult, WrappingDispenser};
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 pub const NAME: WrapperName = WrapperName::new("tries");
 
@@ -46,11 +45,13 @@ pub const NAME: WrapperName = WrapperName::new("tries");
 /// config at dispenser build (the cascade), which a `ParsedOp` predicate
 /// cannot see. The registry entry drives field validation + telemetry; the
 /// hand-placed innermost construction is authoritative.
-fn triggers(op: &ParsedOp) -> bool {
+fn triggers(s: WrapperSubject) -> bool {
+    let Some(op) = s.op() else { return false; };
     op.params.contains_key("tries")
 }
 
-fn describe_assignment(op: &ParsedOp) -> Option<String> {
+fn describe_assignment(s: WrapperSubject) -> Option<String> {
+    let op = s.op()?;
     op.params.get("tries").map(|v| format!("tries: {v}"))
 }
 

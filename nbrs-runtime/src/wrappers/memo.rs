@@ -8,15 +8,15 @@ use std::sync::Arc;
 
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
-use nbrs_workload::model::ParsedOp;
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
 pub const NAME: WrapperName = WrapperName::new("memo");
 
 /// Trigger: `memo:` is either a bare string (shorthand) or a
 /// map with `before:` / `after:` keys.
-fn triggers(template: &ParsedOp) -> bool {
+fn triggers(s: WrapperSubject) -> bool {
+    let Some(template) = s.op() else { return false; };
     template
         .params
         .get("memo")
@@ -24,7 +24,8 @@ fn triggers(template: &ParsedOp) -> bool {
         .unwrap_or(false)
 }
 
-fn describe_assignment(template: &ParsedOp) -> Option<String> {
+fn describe_assignment(s: WrapperSubject) -> Option<String> {
+    let template = s.op()?;
     let v = template.params.get("memo")?;
     if let Some(s) = v.as_str() {
         if s.is_empty() { return None; }

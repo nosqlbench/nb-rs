@@ -29,19 +29,20 @@ use std::sync::Arc;
 
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 use nbrs_rate::{RateLimiter, RateSpec};
-use nbrs_workload::model::ParsedOp;
 
 /// Wrapper name.
 pub const NAME: WrapperName = WrapperName::new("op_rate");
 
 /// Trigger: op declares a `rate:` field.
-fn triggers(template: &ParsedOp) -> bool {
+fn triggers(s: WrapperSubject) -> bool {
+    let Some(template) = s.op() else { return false; };
     template.rate.is_some()
 }
 
-fn describe_assignment(template: &ParsedOp) -> Option<String> {
+fn describe_assignment(s: WrapperSubject) -> Option<String> {
+    let template = s.op()?;
     template.rate.as_ref().map(|spec| format!("rate: {spec}"))
 }
 

@@ -30,8 +30,7 @@ use std::sync::Arc;
 
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
-use nbrs_workload::model::ParsedOp;
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// Wrapper name.
 pub const NAME: WrapperName = WrapperName::new("while");
@@ -43,11 +42,13 @@ pub const NAME: WrapperName = WrapperName::new("while");
 pub const BINDING_NAME: &str = "__while";
 
 /// Trigger: op declares a `while:` expression.
-fn triggers(template: &ParsedOp) -> bool {
+fn triggers(s: WrapperSubject) -> bool {
+    let Some(template) = s.op() else { return false; };
     template.while_cond.is_some()
 }
 
-fn describe_assignment(template: &ParsedOp) -> Option<String> {
+fn describe_assignment(s: WrapperSubject) -> Option<String> {
+    let template = s.op()?;
     template.while_cond.as_ref().map(|expr| {
         format!("while: {}", expr.trim())
     })

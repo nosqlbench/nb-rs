@@ -33,13 +33,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use nbrs_workload::model::ParsedOp;
 
 use crate::activity::ActivityMetrics;
 use crate::adapter::{AdapterError, ExecutionError, OpDispenser, OpResult, WrappingDispenser};
 use crate::error_policy::ErrorPolicy;
 use crate::phase_outcome::PhaseErrorDetail;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 pub const NAME: WrapperName = WrapperName::new("errors");
 
@@ -50,11 +49,12 @@ const PHASE_ERROR_CAPTURE_CAP: usize = 64;
 
 /// Every op has an effective error policy (the session root seeds the
 /// `.*:warn,stop` default), so the handler applies to every op.
-fn triggers(_: &ParsedOp) -> bool { true }
+fn triggers(s: WrapperSubject) -> bool { s.op().is_some() }
 
 /// Show the op-level `errors:` override when one is declared; the
 /// inherited default is boilerplate (every op has it) and stays quiet.
-fn describe_assignment(op: &ParsedOp) -> Option<String> {
+fn describe_assignment(s: WrapperSubject) -> Option<String> {
+    let op = s.op()?;
     op.params.get("errors")
         .and_then(|v| v.as_str())
         .map(|spec| format!("errors: {spec}"))

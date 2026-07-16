@@ -21,8 +21,7 @@ use std::sync::Arc;
 
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
-use nbrs_workload::model::ParsedOp;
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name.
 pub const NAME: WrapperName = WrapperName::new("dryrun");
@@ -30,13 +29,15 @@ pub const NAME: WrapperName = WrapperName::new("dryrun");
 /// Trigger: op carries the injected `dryrun:` parameter (a
 /// session-originated marker, NOT something workload authors
 /// write by hand — see `inject_dryrun_intent`).
-fn triggers(template: &ParsedOp) -> bool {
+fn triggers(s: WrapperSubject) -> bool {
+    let Some(template) = s.op() else { return false; };
     template.params.contains_key("dryrun")
 }
 
 /// Reports the mode (`emit` / `silent` / `json`) from the
 /// injected `dryrun:` parameter.
-fn describe_assignment(template: &ParsedOp) -> Option<String> {
+fn describe_assignment(s: WrapperSubject) -> Option<String> {
+    let template = s.op()?;
     let v = template.params.get("dryrun")?;
     let mode = v.as_str().unwrap_or("silent");
     Some(format!("dryrun: short-circuit (mode={mode})"))

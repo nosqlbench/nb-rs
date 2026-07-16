@@ -13,16 +13,16 @@ use std::sync::Arc;
 use crate::adapter::{ExecutionError, OpDispenser, OpResult};
 use crate::adapter::WrappingDispenser;
 use super::traverse::json_to_value;
-use crate::wrapper_registry::{WrapperName, WrapperRegistration};
-use nbrs_workload::model::ParsedOp;
+use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 
 /// SRD-32a wrapper name. Always present — no-op when the op
 /// declares no `result:` wires.
 pub const NAME: WrapperName = WrapperName::new("result");
 
-fn triggers(_: &ParsedOp) -> bool { true }
+fn triggers(s: WrapperSubject) -> bool { s.op().is_some() }
 
-fn describe_assignment(template: &ParsedOp) -> Option<String> {
+fn describe_assignment(s: WrapperSubject) -> Option<String> {
+    let template = s.op()?;
     let spec = template.result.as_ref()?;
     if spec.is_empty() {
         return None;
