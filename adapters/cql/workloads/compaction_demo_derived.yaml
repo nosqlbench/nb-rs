@@ -133,6 +133,17 @@ params:
   k: 10
   limit: 100
   min_query_ms: 10000
+  # `recall_interval`: how often to RE-RUN `recall_check` within the SAME
+  # session (the SRD-82/92 `interval:` phase wrapper). `0` (the default)
+  # disables scheduling — recall runs once per tier, which is what the
+  # `incremental` sweep wants. Set it to a duration to turn the `recall`
+  # scenario into a periodic monitor whose measurements all land in ONE
+  # session / one metrics timeline (an external shell loop cannot do that —
+  # each `nbrs run` is its own session). With no `repeat:` bound it runs
+  # until the session is stopped (Ctrl-C). E.g. recall at 900M every 5min:
+  #   nbrs run workload=compaction_demo_derived scenario=recall \
+  #     profile_pattern='^900m$' recall_interval=5m dataset=… host=…
+  recall_interval: 0
   # Open-extent budget for the `concurrent_query` daemon's cursor. The
   # daemon is cut short by the foreground's completion (its `daemon_stop`),
   # so this only needs to exceed the longest tier's ingest+index time —
@@ -854,6 +865,14 @@ phases:
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   recall_check:
     concurrency: "{query_concurrency}"
+    # SRD-82/92 phase-level `interval:` wrapper — re-run THIS PHASE every
+    # `recall_interval`, in the same session. Disabled (`0`) by default so
+    # the `incremental` sweep measures each tier exactly once; the `recall`
+    # scenario opts in with `recall_interval=5m` for a periodic monitor.
+    # Note this paces the PHASE (one whole recall measurement per tick), not
+    # the queries inside it — a per-query `rate:` would just trickle one
+    # query per tick and never complete a measurement.
+    interval: "{recall_interval}"
     # SRD-82 ErrorPolicy — recall queries run AFTER compaction, so they should
     # mostly succeed; a transient timeout is counted (not fatal). The `stop_when`
     # sanity backstop fails the phase only if the error rate exceeds

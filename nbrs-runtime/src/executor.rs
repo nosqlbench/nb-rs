@@ -514,8 +514,11 @@ impl ShellHandler {
 /// and level-intrinsic state (the child-set generator, the concurrency
 /// category, the lateral results carrier, daemon, rate, all world/state)
 /// stay OUT — they are not trait members.
-#[allow(dead_code)] // WIP SRD-92 — leaf shells (phase/stanza/op) + the universal `run` seam consume it next.
-trait ExecShell: Send + Sync {
+// `run` is LIVE (the phase/scenario shells + the generic wrapper layers drive
+// it). `poll_stop` / `shell_kind` are the contract's other two aspects, still
+// awaiting their consumers as the unification lands — hence the allow.
+#[allow(dead_code)]
+pub(crate) trait ExecShell: Send + Sync {
     /// OUTCOME. Run this shell to a terminal `Outcome`. The shell value
     /// carries whatever its body needs (a composite holds its node-set; a
     /// phase its name; an op its dispenser), so the universal signature
@@ -546,9 +549,9 @@ trait ExecShell: Send + Sync {
 }
 
 /// SRD-92 — which level a shell sits at (for EMIT / dryrun / per-level knobs).
-#[allow(dead_code)] // WIP SRD-92.
+#[allow(dead_code)] // WIP SRD-92 — Stanza/Session variants land with their shells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShellKind {
+pub(crate) enum ShellKind {
     Session,
     Scenario,
     Phase,
@@ -734,10 +737,37 @@ impl<'p> ExecShell for PhaseShell<'p> {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::phase_outcome::Outcome> + Send + 'a>> {
         // SRD-92 — run_phase returns the two-axis Outcome directly; the
         // PhaseShell leaf forwards it (no Result re-derive). This is the
-        // per-phase seam a `WrapperLevel::Phase` cascade will wrap.
+        // per-phase seam the `WrapperLevel::Phase` layers wrap.
         Box::pin(async move { run_phase(ctx, self.name, self.node_id).await })
     }
     fn shell_kind(&self) -> ShellKind { ShellKind::Phase }
+}
+
+/// SRD-82/92 — run a phase through its shell, with the phase-level wrapper
+/// LAYERS applied around it. This is the single placement point for
+/// `WrapperLevel::Phase` layers (the embryo of the per-level cascade): the
+/// layers are generic `ExecShell` decorators, so the same types will wrap a
+/// `ScenarioShell` here's-a-scenario-subject once scenario-level sources
+/// land — no change to the layer itself.
+///
+/// Both phase dispatch sites (`execute_node`'s leaf and the comprehension's
+/// `TerminalAction::Phase`) go through here so a layer can never be applied
+/// at one site and missed at the other.
+async fn run_phase_layered(
+    ctx: &mut ExecCtx,
+    name: &str,
+    node_id: crate::scene_tree::SceneNodeId,
+) -> crate::phase_outcome::Outcome {
+    let leaf = PhaseShell::new(name, node_id);
+    // `interval:` — resolve the schedule from the phase subject. `None` (the
+    // default) means unscheduled: the leaf runs once, byte-for-byte as before.
+    match crate::wrappers::interval::for_phase(&ctx.phases, &ctx.workload_params, name) {
+        Some(spec) => {
+            crate::wrappers::interval::IntervalShell::new(&leaf, spec, name)
+                .run(ctx).await
+        }
+        None => leaf.run(ctx).await,
+    }
 }
 
 /// SRD-92 — the OP-leaf projection façade. The op leaf is an owned
@@ -1593,7 +1623,7 @@ fn execute_node<'a>(
                         // Falls through for `scope=changed` (needs
                         // the hash, computed inside run_phase) and
                         // for non-refine runs.
-                        let __o = PhaseShell::new(name, phase_node_id).run(ctx).await;
+                        let __o = run_phase_layered(ctx, name, phase_node_id).await;
                         if __o.is_failure() {
                             return __o;   // SRD-92: propagate the phase's REAL Outcome (no round-trip)
                         }
@@ -3372,7 +3402,7 @@ async fn run_one_iteration(
                 // itself before spawning the iteration, so it IS this
                 // phase's dispatch-time row key.
                 let phase_node_id = ctx.scene_tree_parent_id;
-                PhaseShell::new(name, phase_node_id).run(ctx).await
+                run_phase_layered(ctx, name, phase_node_id).await
             } else {
                 crate::phase_outcome::Outcome::skipped()
             }

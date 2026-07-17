@@ -311,14 +311,40 @@ resolver's Pass 1 filters by `reg.applies_at(subject.level())` BEFORE
 calling the trigger**, so a well-formed wrapper never sees a foreign
 subject — the `.op()?` / `.phase()?` guard is belt-and-braces.
 
+### `levels:` is a type filter, not an implementation limit
+
+**A wrapper is implemented GENERICALLY over the shell it decorates.** The
+`levels:` list is a *type filter* over which subjects may trigger it — it
+does not constrain what the layer is capable of wrapping. The default
+posture is permissive: **a wrapper that works over an op or a phase should
+also be allowed over a scenario**, because re-running / gating / pacing a
+scenario is the same operation as doing it to a phase, and any execution
+shell level should be wrappable by any generically-implemented wrapper.
+
+Concretely, a shell-level layer decorates `dyn ExecShell`:
+
+```rust
+struct IntervalShell<'i> { inner: &'i dyn ExecShell, spec: IntervalSpec, label: &'i str }
+impl<'i> ExecShell for IntervalShell<'i> {
+    fn run<'a>(&'a self, ctx: &'a mut ExecCtx) -> …Outcome… { /* re-run self.inner */ }
+    fn shell_kind(&self) -> ShellKind { self.inner.shell_kind() }  // a layer decorates a
+                                                                   // level; it never
+                                                                   // changes what it IS
+}
+```
+
+There is no phase in that type. Placing it around a `ScenarioShell`
+instead of a `PhaseShell` needs **no change to the layer** — only a
+subject at that level to resolve its config from. Narrow a wrapper's
+`levels` only when the level genuinely cannot carry it (see `Op`/`Stanza`
+below), never because the implementation happens to be written for one.
+
 ### Subject × wrapper support matrix
 
-The level(s) each registered wrapper is legal at (its `levels:`
-declaration). The matrix is the join of two independently-declared
-facts: a wrapper's `levels:` (what it supports) and a subject's
-`.level()` (what is being wrapped); `applies_at` is the predicate the
-resolver enforces per level. Today every *shipped* wrapper is op-level
-— the phase rung is the first cross-level consumer.
+The level(s) each registered wrapper *admits* (its `levels:` filter). The
+matrix is the join of two independently-declared facts: a wrapper's
+`levels:` and a subject's `.level()`; `applies_at` is the predicate the
+resolver enforces per level.
 
 | wrapper | Op | Stanza | Phase | Scenario | Session |
 |---|:--:|:--:|:--:|:--:|:--:|
@@ -336,22 +362,28 @@ resolver enforces per level. Today every *shipped* wrapper is op-level
 | `dryrun` | ✓ | | | | |
 | `fields` | ✓ | | | | |
 | `errors` | ✓ | | | | |
-| `interval` *(planned, P3)* | | | ✓ | | |
+| `interval` | | | ✓ | ✓ | ✓ |
 
 Reading the matrix:
 
-- **Op** — the composition documented above; unchanged by the
-  cross-level work. All 14 shipped wrappers declare `&[WrapperLevel::Op]`.
-- **Phase** — the target of the phase cascade (P3). `interval` (re-run a
-  phase, sleeping `interval` between runs, bounded by `repeat`) is the
-  first `WrapperLevel::Phase` wrapper. Foundation landed: the model
-  fields (`interval`, `repeat`) exist, `PhaseShell` is the live seam, and
-  the registry is level-aware; the remaining step is the phase-level
-  resolve + dispatch cascade and the wrapper itself.
-- **Stanza / Scenario / Session** — reserved. `ScenarioShell` is already
-  live, so scenario/session wrappers are follow-on work; **stanza-level
-  wrapping is a non-goal** (the per-cycle op chain folds inside the
-  activity, not as a walker shell — SRD-82 Decision B).
+- **Op** — the composition documented above. The 14 op wrappers are
+  `OpDispenser` decorators; the op leaf is deliberately **not** an
+  `ExecShell` (it runs per-cycle under a borrowed cycle ctx, below the
+  `Outcome` projection boundary — SRD-82 Decision B), so op wrappers and
+  shell layers are different decorator kinds. That is a genuine structural
+  reason for the narrow filter, not an implementation shortcut.
+- **Stanza** — no shell exists to decorate: the per-cycle op chain folds
+  inside the activity rather than as a walker shell. **Stanza-level
+  wrapping is a non-goal.**
+- **`interval`** — the first shell-level layer, and generic: it admits
+  Phase, Scenario **and** Session. Its *placement* is currently wired at
+  the phase seam (`run_phase_layered`); wrapping a `ScenarioShell` needs
+  only a scenario-level subject to read the schedule from — the layer
+  itself is already level-agnostic (`shell_kind` delegates to the inner
+  shell).
+- **Scenario / Session** — `ScenarioShell` is live and admits layers today;
+  a `SessionShell` lands with the remaining unification. Both are
+  placement work, not layer work.
 
 ---
 
