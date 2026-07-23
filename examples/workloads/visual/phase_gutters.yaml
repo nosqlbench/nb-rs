@@ -1,0 +1,118 @@
+#!/usr/bin/env nbrs
+# phase_gutters.yaml — per-phase contextual gutter cells
+#
+# Each phase owns the compact cell to the LEFT of its detail row
+# (the stats line under the phase header). Without a declaration
+# the display derives it automatically:
+#
+#   - metered phases  → braille completion bar
+#   - daemon phases   → service-time latency sparkline (p50∕p99)
+#
+# The `gutter:` op wrapper overrides that derivation with a
+# workload-computed value, published after each successful op:
+#
+#   gutter: "<layout template>"     printf-style polydat layout
+#                                   string, shown verbatim
+#   gutter: { bar: "<template>" }   renders to an f64 in 0..=1,
+#                                   shown as the house braille bar
+#   gutter: { spark: "<template>" } renders to an f64 sample,
+#                                   shown as a sparkline trend +
+#                                   current value
+#
+# Usage:
+#   nbrs run workload=examples/workloads/visual/phase_gutters.yaml
+
+scenarios:
+  default:
+    - auto_latency
+    - auto_bar
+    - custom_bar
+    - custom_spark
+    - custom_text
+
+phases:
+  # Daemon phase, no gutter declaration → automatic latency trend
+  # in the cell; the header meter slot stays empty (open-ended).
+  auto_latency:
+    adapter: testkit
+    daemon: true
+    concurrency: 2
+    # Open-ended cursor — the daemon runs until the scenario's
+    # foreground phases finish (its stop signal cuts it), with a
+    # wall-clock ceiling as the backstop. No fixed cycle target
+    # means no progress meter — the latency cell takes that space.
+    bindings: |
+      cursor c = until_elapsed(1000, 600000)
+    ops:
+      probe:
+        readout: visible
+        result-latency: 20ms
+        result-body:
+          - value: 1
+
+  # Metered phase, no gutter declaration → automatic completion
+  # bar (cycles basis).
+  auto_bar:
+    adapter: testkit
+    cycles: 1500
+    concurrency: 4
+    ops:
+      work:
+        readout: visible
+        result-latency: 10ms
+        result-body:
+          - value: 1
+
+  # Custom BAR: the fraction is computed by polydat, not by the
+  # cycle counter — here a deliberately non-linear ease-out curve,
+  # the shape a byte-drain or backlog meter would have.
+  custom_bar:
+    adapter: testkit
+    cycles: 1000
+    concurrency: 4
+    bindings: |
+      input cycle: u64
+      remain := 1.0 - to_f64(cycle) / 1000.0
+      eased := 1.0 - remain * remain * remain
+    ops:
+      drain:
+        readout: visible
+        result-latency: 10ms
+        result-body:
+          - value: 1
+        gutter: { bar: "{eased}" }
+
+  # Custom SPARK: each op publishes one computed sample; the cell
+  # shows the trend ring + current value. Any measured quantity
+  # works — queue depth, hit ratio, rows/s.
+  custom_spark:
+    adapter: testkit
+    cycles: 1000
+    concurrency: 4
+    bindings: |
+      input cycle: u64
+      wave := 50.0 + 40.0 * sin(to_f64(cycle) * 0.02)
+    ops:
+      sample:
+        readout: visible
+        result-latency: 10ms
+        result-body:
+          - value: 1
+        gutter: { spark: "{wave}" }
+
+  # Custom TEXT: a printf-style layout string fills the cell
+  # verbatim — compose your own glyphs and values.
+  custom_text:
+    adapter: testkit
+    cycles: 800
+    concurrency: 4
+    bindings: |
+      input cycle: u64
+      lap := cycle % 100
+    ops:
+      step:
+        readout: visible
+        result-latency: 10ms
+        result-body:
+          - value: 1
+        gutter: "lap {lap}∙c {cycle}"

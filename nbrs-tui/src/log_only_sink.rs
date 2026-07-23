@@ -314,6 +314,11 @@ fn run_render_loop(
     // excursion. Opening / closing the console can't scroll the
     // primary or leave a residual gap.
     let mut console_alt = false;
+    // Per-phase gutter display state (rolling sample rings + lifetime
+    // decimating trend buffers). Keyed by phase name@labels; sink-local
+    // so no actor/state plumbing is needed. One p50 sample per footer
+    // redraw tick.
+    let mut gutter_state = GutterState::default();
     // Force a fresh REPL paint on the alt-screen (set on enter and
     // on a Bar<->Window change).
     let mut repl_alt_dirty = false;
@@ -357,6 +362,34 @@ fn run_render_loop(
             loop {
                 match rx.try_recv() {
                     Ok(WatcherSignal::Key(ke)) => {
+                        // Bare `p` with the console hidden toggles the
+                        // readout pause (copy support): the drain/redraw
+                        // below freezes so a text selection isn't
+                        // repainted out from under the operator. Only
+                        // intercepted while the REPL is Hidden — with a
+                        // visible prompt, `p` is a letter being typed.
+                        if matches!(ke.code,
+                                crossterm::event::KeyCode::Char('p')
+                                | crossterm::event::KeyCode::Char('P'))
+                            && ke.modifiers.is_empty()
+                            && matches!(crate::repl_state::current(),
+                                crate::repl_state::ReplVisibility::Hidden)
+                        {
+                            let paused =
+                                nbrs_runtime::observer::toggle_readout_pause();
+                            // Raw mode needs explicit `\r\n`. The notice
+                            // itself is the one write allowed while
+                            // paused — it tells the operator how to get
+                            // their readout back.
+                            let _ = write!(stderr, "\r\n{}\r\n",
+                                if paused {
+                                    "⏸ readout paused for copy — press 'p' to resume"
+                                } else {
+                                    "▶ readout resumed"
+                                });
+                            let _ = stderr.flush();
+                            continue;
+                        }
                         match p.handle_key(ke) {
                             PromptAction::Continue => {}
                             PromptAction::Submit(line) => submitted_commands.push(line),
@@ -395,6 +428,17 @@ fn run_render_loop(
             }
         }
 
+        // Readout pause (`p`, copy support): freeze every terminal
+        // write — log drain, status fold, footer redraw — while the
+        // operator selects text. Mirrors the console-on-alt-screen
+        // freeze below: `last_seen` stays put so lines buffered in
+        // the durable stream flush in order on resume. The key drain
+        // above stays live so the resume keystroke is seen.
+        if nbrs_runtime::observer::readouts_paused() {
+            std::thread::sleep(POLL_INTERVAL);
+            continue;
+        }
+
         // Load the latest snapshot for the STATUS footer only
         // (latest-wins ArcSwap — only the newest status matters). Log
         // scrollback is DATA (every line, in order, exactly once) and
@@ -407,7 +451,10 @@ fn run_render_loop(
         // pre-rendered scalar that N producer threads stomped. Single-phase
         // output is byte-identical (same builder + bodies); multi-phase
         // stacks per-phase renders (P3 adds the cap / multi-running counter).
-        let next_status: Option<String> = crate::status_fold::render_active_status(&snap);
+        let folded = crate::status_fold::render_active_status_with_gutters(&snap);
+        let next_status: Option<String> = folded.as_ref().map(|(t, _)| t.clone());
+        let status_gutters: Vec<crate::status_fold::RowGutter> =
+            folded.map(|(_, g)| g).unwrap_or_default();
         let status_changed = next_status != status_published;
 
         // Console (REPL) output is CONTAINED in the frame: it
@@ -510,11 +557,11 @@ fn run_render_loop(
         // and on a swap re-entry from the prior sink's final cursor
         // (its scrollback). Both are `seq <= last_seen` and dropped
         // from re-emission here; everything newer is emitted below.
-        let mut new_logs: Vec<crate::state::LogEntry> = Vec::new();
+        let mut new_logs: Vec<(crate::state::LogEntry, String)> = Vec::new();
         while let Some(line) = scrollback.try_next() {
             if line.seq > last_seen {
                 last_seen = line.seq;
-                new_logs.push(line.entry);
+                new_logs.push((line.entry, line.margin_body));
             }
             // else: already on the surface (pre-handoff stderr / prior
             // sink) — skip re-emitting, matching the old seq-cursor.
@@ -573,11 +620,9 @@ fn run_render_loop(
             // progress bar + ETA + spinner replacing the `│`
             // divider, padded to the row-1 margin width so the
             // divider columns align. Empty when no phase runs.
-            let row2_margin = format_running_phase_row2_margin(
-                &snap,
-                margin_visible_width,
-                nbrs_runtime::observer::use_color(),
-            );
+            // (contextual gutters now arrive per-row from status_fold —
+            // see `status_gutters`; the old single row-2 bar margin is
+            // retired.)
             let status_cols = (cols as usize)
                 .saturating_sub(margin_visible_width as usize);
 
@@ -715,9 +760,15 @@ fn run_render_loop(
                 // is emitted — no cap, no drop. The stream carries them
                 // in order, exactly once; a slow renderer simply drains
                 // a longer burst on this tick.
-                let margin = format_margin_prefix(&snap,
-                    nbrs_runtime::observer::use_color());
-                for entry in &new_logs {
+                // Each line carries its actor-stamped margin body —
+                // exact for the state that preceded it — rather than
+                // one render-time margin shared by the whole batch
+                // (which raced the very transitions the lines report:
+                // a completion line could sit beside a stale [n/N]).
+                let color = nbrs_runtime::observer::use_color();
+                for (entry, margin_body) in &new_logs {
+                    let margin = format_margin_from_body(margin_body, color);
+                    let margin = &margin;
                     let entry_level = severity_to_level(entry.severity);
                     if entry_level < min_level {
                         continue;
@@ -767,7 +818,8 @@ fn run_render_loop(
                 cols,
                 &status_margin,
                 margin_visible_width,
-                &row2_margin,
+                &status_gutters,
+                &mut gutter_state,
             );
             footer_return_up = cursor_below_top;
             let _ = _drawn_rows;
@@ -816,78 +868,23 @@ fn run_render_loop(
     }
 }
 
-/// Build the left-margin prefix carrying the session timer
-/// (compact 8-char clock from
-/// [`nbrs_runtime::readouts::format::format_compact_session_elapsed`]),
-/// plus the current phase index, followed by a `│` gutter. The
-/// magnitude-tracking color span from
-/// [`nbrs_runtime::readouts::format::session_elapsed_color`]
-/// wraps the clock so glance-readability tracks how deep
-/// into the run the log line is (dim under a minute,
-/// default under an hour, bold beyond).
+/// Build the agreed left-margin gutter: a fixed-width
+/// `session-time · [n/N] · phase-time │` triad — the margin BODY comes
+/// from [`crate::state::RunState::margin_body_stamp`] (single source,
+/// shared with the actor's per-line stamps) and this wraps it in the
+/// color + divider dressing.
 fn format_margin_prefix(
     snap: &std::sync::Arc<crate::state::RunState>,
     color: bool,
 ) -> String {
-    use nbrs_runtime::readouts::format::{
-        format_compact_session_elapsed, session_elapsed_color,
-    };
+    format_margin_from_body(&snap.margin_body_stamp(), color)
+}
 
+/// Colorize a margin body (stamped or live) and append the `│ ` divider.
+fn format_margin_from_body(body: &str, color: bool) -> String {
     let dim   = if color { "\x1b[2m"  } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
-
-    let secs = snap.elapsed_secs();
-    let elapsed_str = format_compact_session_elapsed(secs);
-    let (clock_open, clock_close) = session_elapsed_color(secs, color);
-
-    // Count phases only — scope nodes (for_each / do_while
-    // wrappers) live in `snap.phases` but they're not what
-    // the operator wants in the step counter.
-    //
-    // Denominator: `expected_total_phases`, pinned by
-    // `install_tree` from the pre-map walk. Stable across
-    // the run regardless of whether the executor materializes
-    // additional phases at runtime (param-driven `for_each`
-    // expansion the structural pass couldn't resolve).
-    //
-    // Numerator: the pre-mapped `seq` of the currently-running
-    // phase (or the latest-completed phase when nothing is
-    // running). `seq` is the 1-based pre-map sequence number
-    // assigned at SceneTree::push time — STABLE under runtime
-    // mutation. The previous logic used `phase_only.iter()
-    // .position(running)`, which silently drifted as the live
-    // phase list grew (auto-extern materialization appended new
-    // pending phases, shifting the running one's index even
-    // though its pre-mapped slot hadn't moved).
-    //
-    // Runtime-materialized phases (no `seq`) report `None`
-    // here; we fall back to a sequential count among the
-    // non-pending phases so the operator still sees forward
-    // progress in that edge case.
-    let phase_only: Vec<_> = snap.phases.iter()
-        .filter(|p| matches!(p.kind, crate::state::EntryKind::Phase))
-        .collect();
-    let total = snap.expected_total_phases;
-    let running_seq = phase_only.iter()
-        .find(|p| matches!(p.status, crate::state::PhaseStatus::Running))
-        .and_then(|p| p.seq);
-    let latest_done_seq = phase_only.iter()
-        .filter(|p| !matches!(p.status, crate::state::PhaseStatus::Pending))
-        .filter_map(|p| p.seq)
-        .max();
-    let fallback_done = phase_only.iter()
-        .filter(|p| !matches!(p.status, crate::state::PhaseStatus::Pending))
-        .count();
-    let phase_str = match (running_seq, latest_done_seq, total) {
-        (Some(s), _, n) if n > 0 => format!("{s:>3}/{n}"),
-        (None, Some(s), n) if n > 0 => format!("{s:>3}/{n}"),
-        (None, None, n) if n > 0 && fallback_done > 0 =>
-            format!("{fallback_done:>3}/{n}"),
-        (_, _, n) if n > 0 => format!("  0/{n}"),
-        _ => "   /  ".to_string(),
-    };
-
-    format!("{clock_open}{elapsed_str}{clock_close} {dim}{phase_str} │{reset} ")
+    format!("{dim}{body} \u{2502}{reset} ")
 }
 
 /// Direct `TIOCGWINSZ` ioctl on `fd 2` (stderr). Returns
@@ -948,7 +945,8 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
     term_cols: u16,
     status_margin: &str,
     margin_width: u16,
-    row2_margin: &str,
+    gutters: &[crate::status_fold::RowGutter],
+    gutter_state: &mut GutterState,
 ) -> (u16, u16) {
     let status_lines: Vec<&str> = status_text
         .map(|s| s.split('\n').collect())
@@ -971,16 +969,70 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
     // `PromptState::render(cols)`.)
     let avail = (term_cols as usize).saturating_sub(margin_width as usize);
 
+    let use_color_now = nbrs_runtime::observer::use_color();
+    // Standard blank-aligned continuation gutter (divider only) for
+    // rows without contextual content. A zero-width margin means the
+    // sink runs marginless (piped/plain) — no divider column exists,
+    // so continuation rows get nothing, gutters included.
+    let blank_w = (margin_width as usize).saturating_sub(2);
+    let blank_margin_owned = if margin_width == 0 {
+        String::new()
+    } else {
+        format!("\x1b[2m{:<blank_w$}│\x1b[0m ", "")
+    };
+    let blank_margin: &str = &blank_margin_owned;
+
     let mut first = true;
     for (i, row) in status_lines.iter().enumerate() {
         if !first {
             let _ = write!(out, "\r\n");
         }
         first = false;
-        let margin = if i == 0 || row2_margin.is_empty() {
+        // Row 0 carries the workload-level triad; every other row's
+        // gutter belongs to the phase block it sits in — the DETAIL
+        // row under each phase header renders that phase's contextual
+        // cell (completion bar, or latency trend for open-ended
+        // pollers), all remaining rows the blank divider. Single
+        // placement: each value appears in exactly one cell.
+        let ctx_margin_owned;
+        let margin = if i == 0 || margin_width == 0 {
             status_margin
         } else {
-            row2_margin
+            match gutters.get(i) {
+                Some(crate::status_fold::RowGutter::Bar(f)) => {
+                    ctx_margin_owned = bar_gutter(*f, blank_w, use_color_now);
+                    &ctx_margin_owned
+                }
+                Some(crate::status_fold::RowGutter::Latency { key, p50, p99 }) => {
+                    ctx_margin_owned = latency_gutter(
+                        gutter_state.rings.entry(key.clone()).or_default(),
+                        *p50, *p99, blank_w, use_color_now);
+                    &ctx_margin_owned
+                }
+                Some(crate::status_fold::RowGutter::LatencyHist { key, p50 }) => {
+                    ctx_margin_owned = latency_hist_gutter(
+                        gutter_state.hists.entry(key.clone())
+                            .or_insert_with(|| crate::widgets::DecimatingTrend::new(
+                                // Matches the helper's spark region:
+                                // cell width minus the min∕max label
+                                // (≤11 chars) and its separator space,
+                                // so no lifetime cell is ever clipped.
+                                blank_w.saturating_sub(12).max(4))),
+                        *p50, blank_w, use_color_now);
+                    &ctx_margin_owned
+                }
+                Some(crate::status_fold::RowGutter::Text(t)) => {
+                    ctx_margin_owned = text_gutter(t, blank_w, use_color_now);
+                    &ctx_margin_owned
+                }
+                Some(crate::status_fold::RowGutter::Spark { key, value }) => {
+                    ctx_margin_owned = spark_gutter(
+                        gutter_state.rings.entry(key.clone()).or_default(),
+                        *value, blank_w, use_color_now);
+                    &ctx_margin_owned
+                }
+                _ => blank_margin,
+            }
         };
         let fitted = nbrs_runtime::activity::truncate_to_width(row, avail);
         // A truncation can strand an open SGR (the reset was past the
@@ -1073,97 +1125,130 @@ fn redraw_console_altscreen<W: Write>(
     let _ = out.flush();
 }
 
-/// Build the row-2 margin for a running-phase status block.
-/// Layout: `<bar><eta-padded><spinner>` so the bar reads as
-/// "progress" and the spinner replaces the standard `│`
-/// divider as a still-ticking indicator. Padded with spaces
-/// so its visible width matches `target_width` — the row-1
-/// margin width — making the divider columns line up
-/// vertically across rows.
-///
-/// With MULTIPLE phases running, the bar is the AVERAGE of the
-/// NON-daemon phases' progress (a daemon's percent-of-budget on an
-/// open-extent cursor is not meaningful run progress — and the old
-/// `values().next()` pick was HashMap-ordered, so the gutter could
-/// arbitrarily track the daemon). The ETA is the LONGEST remaining
-/// across the same set — time until all of them finish. When only
-/// daemons are running (a foreground gap), they stand in so the
-/// gutter doesn't flicker out.
-///
-/// Returns an empty string when no phase is currently running
-/// — the caller falls back to the standard margin.
-fn format_running_phase_row2_margin(
-    snap: &std::sync::Arc<crate::state::RunState>,
-    target_width: u16,
-    color: bool,
-) -> String {
-    use nbrs_runtime::readouts::format::{
-        braille_bar, format_eta, spinner_frame,
-    };
-    if snap.active_phases.is_empty() {
-        return String::new();
-    }
-    let foreground: Vec<&crate::state::ActivePhase> = snap.active_phases.values()
-        .filter(|p| !p.daemon)
-        .collect();
-    let phases: Vec<&crate::state::ActivePhase> = if foreground.is_empty() {
-        snap.active_phases.values().collect()
-    } else {
-        foreground
-    };
+/// Build the continuation (row-2+) margin for the footer status block: a blank
+/// gutter the same visible width as the row-1 [`format_margin_prefix`], with the
+/// `│` divider in the same column. A phase's detail rows — its metric line and
+/// its op-leaf lines — sit under this so they line up beneath the count/time
+/// triad, matching the interactive tree (only an entry's leading row shows the
+/// triad; its detail rows are blank under the divider). Empty when no phase is
+
+/// Completion-bar gutter cell (the house braille bar + divider).
+fn bar_gutter(frac: f64, w: usize, color: bool) -> String {
     let dim   = if color { "\x1b[2m"  } else { "" };
-    let cyan  = if color { "\x1b[36m" } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
-    // Spinner cadence follows the longest-running phase so the frame
-    // doesn't jump when a sibling phase starts or finishes.
-    let elapsed = phases.iter()
-        .map(|p| p.started_at.elapsed().as_secs_f64())
-        .fold(0.0_f64, f64::max);
-    // Average percent over the phases with a known extent; a phase
-    // whose extent is still unknown contributes nothing rather than
-    // dragging the mean to zero.
-    let pcts: Vec<f64> = phases.iter()
-        .filter(|p| p.cursor_extent > 0)
-        .map(|p| (p.ops_finished as f64) * 100.0 / (p.cursor_extent as f64))
-        .collect();
-    let pct = if pcts.is_empty() { 0.0 }
-              else { pcts.iter().sum::<f64>() / pcts.len() as f64 };
-    let bar = braille_bar(pct, 10);
-    // Longest remaining across the set = time until ALL finish.
-    let max_remaining = phases.iter()
-        .filter(|p| p.cursor_extent > 0 && p.ops_per_sec > 0.0)
-        .map(|p| p.cursor_extent.saturating_sub(p.ops_finished) as f64 / p.ops_per_sec)
-        .fold(f64::NAN, f64::max);
-    let eta_str = if max_remaining.is_finite() {
-        format_eta(max_remaining)
-    } else {
-        format_eta(elapsed)
-    };
-    // Spinner ticks once per render. Use elapsed-secs * 10 so
-    // the frame advances at ~10 Hz independent of redraw cadence.
-    let tick = (elapsed * 10.0) as u64;
-    let spinner = spinner_frame(tick);
-    // Pad the ETA out so the whole margin is exactly `target_width`
-    // visible columns and the spinner lands under the row-1 `│`.
-    let pad = row2_margin_pad(eta_str.chars().count(), target_width as usize);
-    format!("{bar} {dim}{eta_str}{reset}{:<pad$}{cyan}{spinner}{reset} ", "", pad = pad)
+    let bg     = if color { "\x1b[48;2;50;50;50m" } else { "" };
+    let bright = if color { "\x1b[97m" } else { "" };
+    let bar = nbrs_runtime::readouts::format::braille_bar(frac * 100.0, w);
+    format!("{bg}{bright}{bar}{reset}{dim}│{reset} ")
 }
 
-/// Spaces between the ETA and the spinner-divider in the running-
-/// phase row-2 margin, sized so the full margin is exactly
-/// `target_width` visible columns and the spinner sits under the
-/// row-1 `│` divider.
-///
-/// Layout: `bar(10) " "(1) eta(E) <pad> spinner(1) " "(1)`, so the
-/// total is `13 + E + pad` and the spinner (the column before the
-/// trailing space) must land at `target_width - 1` — i.e.
-/// `pad = target_width - 13 - E`. (The previous code counted a
-/// non-existent space after the ETA, leaving the spinner one
-/// column shy of the divider except when `saturating_sub` happened
-/// to clamp the pad to zero.)
-fn row2_margin_pad(eta_visible: usize, target_width: usize) -> usize {
-    // 10 (bar) + 1 (space) + eta + pad + 1 (spinner) + 1 (space)
-    target_width.saturating_sub(10 + 1 + eta_visible + 1 + 1)
+/// Latency-trend gutter cell for open-ended pollers: a p50 sparkline
+/// (one sample per redraw tick) with the current p50∕p99 to its
+/// right, sized to exactly the bar's footprint. Compact by design —
+/// the trend shape carries the signal; the two numbers anchor it.
+fn latency_gutter(
+    ring: &mut std::collections::VecDeque<f64>,
+    p50: u64,
+    p99: u64,
+    w: usize,
+    color: bool,
+) -> String {
+    let dim   = if color { "\x1b[2m"  } else { "" };
+    let reset = if color { "\x1b[0m"  } else { "" };
+    let cyan  = if color { "\x1b[36m" } else { "" };
+    let fmt = |n: u64| {
+        let ms = n as f64 / 1e6;
+        if ms >= 100.0 { format!("{ms:.0}") }
+        else if ms >= 10.0 { format!("{ms:.1}") }
+        else { format!("{ms:.2}") }
+    };
+    let text = format!("{}∕{}ms", fmt(p50), fmt(p99));
+    let spark_w = w.saturating_sub(text.chars().count() + 1).max(4);
+    ring.push_back(p50 as f64 / 1e6);
+    while ring.len() > spark_w {
+        ring.pop_front();
+    }
+    let samples: Vec<f64> = ring.iter().copied().collect();
+    let spark = crate::widgets::sparkline_str(&samples, spark_w);
+    format!("{cyan}{spark}{reset} {dim}{text:>tw$}│{reset} ",
+        tw = w - spark_w - 1)
+}
+
+/// Workload-declared layout-text gutter cell (`gutter: "<template>"`):
+/// the rendered text verbatim, truncated/right-aligned to the cell.
+fn text_gutter(text: &str, w: usize, color: bool) -> String {
+    let dim   = if color { "\x1b[2m"  } else { "" };
+    let reset = if color { "\x1b[0m"  } else { "" };
+    let fitted = nbrs_runtime::activity::truncate_to_width(text, w);
+    let pad = w.saturating_sub(
+        fitted.chars().filter(|c| !c.is_control()).count());
+    format!("{dim}{fitted}{:pad$}│{reset} ", "")
+}
+
+/// Workload-declared trend gutter cell (`gutter: {spark: ...}`): a
+/// sparkline of published samples with the current value to its
+/// right — same footprint as the latency cell, generic units.
+fn spark_gutter(
+    ring: &mut std::collections::VecDeque<f64>,
+    value: f64,
+    w: usize,
+    color: bool,
+) -> String {
+    let dim   = if color { "\x1b[2m"  } else { "" };
+    let reset = if color { "\x1b[0m"  } else { "" };
+    let cyan  = if color { "\x1b[36m" } else { "" };
+    let text = if value.abs() >= 100.0 { format!("{value:.0}") }
+        else if value.abs() >= 10.0 { format!("{value:.1}") }
+        else { format!("{value:.2}") };
+    let spark_w = w.saturating_sub(text.chars().count() + 1).max(4);
+    ring.push_back(value);
+    while ring.len() > spark_w {
+        ring.pop_front();
+    }
+    let samples: Vec<f64> = ring.iter().copied().collect();
+    let spark = crate::widgets::sparkline_str(&samples, spark_w);
+    format!("{cyan}{spark}{reset} {dim}{text:>tw$}│{reset} ",
+        tw = w - spark_w - 1)
+}
+
+/// Per-key persistent display state for the contextual gutter
+/// cells: rolling sample rings (`Latency` / `Spark`) and lifetime
+/// decimating trend buffers (`LatencyHist`). Owned by the render
+/// loop, threaded into each footer draw.
+#[derive(Default)]
+pub(crate) struct GutterState {
+    rings: std::collections::HashMap<String, std::collections::VecDeque<f64>>,
+    hists: std::collections::HashMap<String, crate::widgets::DecimatingTrend>,
+}
+
+/// LIFETIME-histogram latency cell for open-ended pollers — the
+/// distinct renderable form beside `latency_gutter`'s rolling
+/// window. Each push lands in a decimating trend buffer (one
+/// sample per cell until the width fills, then buckets re-average
+/// at half resolution), so the whole phase history stays visible.
+/// Labels are the DISCRETE lifetime min∕max of the pushed samples,
+/// untouched by the averaging.
+fn latency_hist_gutter(
+    trend: &mut crate::widgets::DecimatingTrend,
+    p50: u64,
+    w: usize,
+    color: bool,
+) -> String {
+    let dim   = if color { "\x1b[2m"  } else { "" };
+    let reset = if color { "\x1b[0m"  } else { "" };
+    let cyan  = if color { "\x1b[36m" } else { "" };
+    let fmt = |ms: f64| {
+        if ms >= 100.0 { format!("{ms:.0}") }
+        else if ms >= 10.0 { format!("{ms:.1}") }
+        else { format!("{ms:.2}") }
+    };
+    trend.push(p50 as f64 / 1e6);
+    let text = format!("{}∕{}ms", fmt(trend.min), fmt(trend.max));
+    let spark_w = w.saturating_sub(text.chars().count() + 1).max(4);
+    let samples = trend.series();
+    let spark = crate::widgets::sparkline_str(&samples, spark_w);
+    format!("{cyan}{spark}{reset} {dim}{text:>tw$}│{reset} ",
+        tw = w - spark_w - 1)
 }
 
 /// Approximate visible width of a string with ANSI SGR escape
@@ -1176,10 +1261,14 @@ fn visible_width(s: &str) -> usize {
     let mut in_escape = false;
     for ch in s.chars() {
         if in_escape {
-            if ch == 'm' { in_escape = false; }
+            // Escapes end on any final byte (`m`, `K`, `J`, …),
+            // not just SGR's `m`.
+            if ch.is_ascii_alphabetic() { in_escape = false; }
             continue;
         }
         if ch == '\x1b' { in_escape = true; continue; }
+        // Control chars (`\r`, …) occupy no columns.
+        if ch.is_control() { continue; }
         width += 1;
     }
     width
@@ -1231,73 +1320,37 @@ mod redraw_tests {
     //! "stacked status snapshots" bug.
     use super::*;
 
-    /// The gutter bar AVERAGES the non-daemon phases' progress; a
-    /// daemon's open-extent percent must not drag (or arbitrarily
-    /// replace) it. Two foreground phases at 20% and 40% average to
-    /// 30% regardless of a daemon sitting at ~0%.
+    /// The continuation blank margin is a gutter of the row-0 width
+    /// with the `│` in the same column, so a phase's detail rows align
+    /// under its count/time triad. Rows with no contextual gutter get
+    /// exactly this divider, nothing more.
     #[test]
-    fn row2_bar_averages_non_daemon_phases() {
-        use std::sync::Arc;
-        use std::time::{Duration, Instant};
-        use nbrs_metrics::summaries::binomial_summary::BinomialSummary;
-        use nbrs_metrics::summaries::ewma::Ewma;
-        use nbrs_metrics::summaries::peak_tracker::PeakTracker;
-        use nbrs_runtime::readouts::format::braille_bar;
-        use crate::state::{ActivePhase, ActivePhaseId, RunState};
-
-        fn phase(name: &str, daemon: bool, done: u64, extent: u64) -> ActivePhase {
-            ActivePhase {
-                name: name.into(),
-                labels: String::new(),
-                cursor_name: "row".into(),
-                cursor_extent: extent,
-                daemon,
-                rows_consumed: 0,
-                rows_total: 0,
-                fibers: 1,
-                started_at: Instant::now(),
-                ops_started: done,
-                ops_finished: done,
-                ops_ok: done,
-                skips: 0,
-                errors: 0,
-                retries: 0,
-                ops_per_sec: 100.0,
-                adapter_counters: Vec::new(),
-                rows_per_batch: 0.0,
-                relevancy: Vec::new(),
-                throughput_summary: Arc::new(BinomialSummary::new(60)),
-                rate_ewma: Arc::new(Ewma::new(Duration::from_secs(5))),
-                latency_peak_5s: Arc::new(PeakTracker::max(Duration::from_secs(5))),
-                latency_peak_10s: Arc::new(PeakTracker::max(Duration::from_secs(10))),
-                render: None,
-            }
+    fn blank_gutter_is_width_aligned_divider() {
+        let row1 = "   12.3s [5/9]  1.2s │ ";   // 23 visible cols
+        let target = super::visible_width(row1);
+        let mut out: Vec<u8> = Vec::new();
+        draw_footer_at_cursor(
+            &mut out, Some("head\ndetail"), None,
+            80, row1, target as u16,
+            &[], &mut GutterState::default());
+        let out = String::from_utf8(out).expect("utf-8");
+        let line1 = out.split("\r\n").nth(1).expect("two rows");
+        let margin_end = line1.find("detail").expect("detail text present");
+        let margin = &line1[..margin_end];
+        assert_eq!(super::visible_width(margin), target,
+            "blank margin must be exactly the row-0 width: {margin:?}");
+        // Strip SGR escapes, then everything before the divider must
+        // be blank.
+        let mut plain = String::new();
+        let mut in_esc = false;
+        for c in margin.chars() {
+            if in_esc { if c.is_ascii_alphabetic() { in_esc = false; } continue; }
+            if c == '\u{1b}' { in_esc = true; continue; }
+            if !c.is_ascii_control() { plain.push(c); }
         }
-
-        let mut state = RunState::new("w.yaml", "s", "cql");
-        state.active_phases.insert(
-            ActivePhaseId::new(1, "load", "t=1"), phase("load", false, 20, 100));
-        state.active_phases.insert(
-            ActivePhaseId::new(1, "recall", "t=1"), phase("recall", false, 40, 100));
-        // Daemon at ~0% of a huge open-extent budget.
-        state.active_phases.insert(
-            ActivePhaseId::new(1, "probe", "t=1"), phase("probe", true, 3, 1_000_000));
-        let snap = Arc::new(state);
-
-        let margin = format_running_phase_row2_margin(&snap, 30, false);
-        assert!(margin.contains(&braille_bar(30.0, 10)),
-            "bar must be the 30% average of the two foreground phases \
-             (20% + 40%), daemon excluded: {margin:?}");
-
-        // Daemon-only interval: the daemon stands in rather than the
-        // gutter flickering out.
-        let mut state = RunState::new("w.yaml", "s", "cql");
-        state.active_phases.insert(
-            ActivePhaseId::new(1, "probe", "t=1"), phase("probe", true, 500_000, 1_000_000));
-        let snap = Arc::new(state);
-        let margin = format_running_phase_row2_margin(&snap, 30, false);
-        assert!(margin.contains(&braille_bar(50.0, 10)),
-            "daemon-only fallback shows the daemon's progress: {margin:?}");
+        let div = plain.find('│').expect("divider present");
+        assert!(plain[..div].chars().all(|c| c == ' '),
+            "blank margin must be blank before the divider: {plain:?}");
     }
 
     /// One simulated render tick with a left margin: draw the footer
@@ -1311,7 +1364,8 @@ mod redraw_tests {
     ) -> String {
         let mut out: Vec<u8> = Vec::new();
         let width = super::visible_width(margin) as u16;
-        draw_footer_at_cursor(&mut out, status, prompt, 80, margin, width, "");
+        draw_footer_at_cursor(&mut out, status, prompt, 80, margin, width, &[],
+            &mut GutterState::default());
         String::from_utf8(out).expect("rendered bytes are utf-8")
     }
 
@@ -1335,7 +1389,8 @@ mod redraw_tests {
     fn footer_rows_home_erase_and_have_no_trailing_newline() {
         let mut out: Vec<u8> = Vec::new();
         let (rows, below) = draw_footer_at_cursor(
-            &mut out, Some("head row\ntail row"), None, 80, "", 0, "");
+            &mut out, Some("head row\ntail row"), None, 80, "", 0, &[],
+            &mut GutterState::default());
         let s = String::from_utf8(out).expect("utf-8");
         assert_eq!((rows, below), (2, 1), "two rows, cursor 1 below the top");
         assert!(s.contains("\r\x1b[Khead row"), "head row homed + erased: {s:?}");
@@ -1350,7 +1405,8 @@ mod redraw_tests {
     #[test]
     fn empty_footer_draws_nothing() {
         let mut out: Vec<u8> = Vec::new();
-        let (rows, below) = draw_footer_at_cursor(&mut out, None, None, 80, "", 0, "");
+        let (rows, below) = draw_footer_at_cursor(&mut out, None, None, 80, "", 0, &[],
+            &mut GutterState::default());
         assert_eq!((rows, below), (0, 0));
         assert!(out.is_empty(), "empty footer emits no bytes: {out:?}");
     }
@@ -1379,19 +1435,27 @@ mod redraw_tests {
     /// bar+ETA+spinner gutter), line 0 of the status inherits the
     /// standard row-1 margin and lines 1+ inherit the row-2 margin.
     #[test]
-    fn row2_margin_applies_to_line_two_only() {
+    fn contextual_gutter_applies_to_detail_row_only() {
+        // New contract: row 0 carries the triad margin; a row whose
+        // RowGutter is Bar(f) renders the completion-bar cell; Blank
+        // rows get the plain divider.
         let row1 = "12.34s 5/9 │ ";
-        let row2 = "⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ 3s   │ ";
         let status = "running\nstats line";
         let mut out: Vec<u8> = Vec::new();
+        let gutters = vec![
+            crate::status_fold::RowGutter::Blank,
+            crate::status_fold::RowGutter::Bar(0.5),
+        ];
         draw_footer_at_cursor(
             &mut out, Some(status), None,
-            80, row1, super::visible_width(row1) as u16, row2);
+            80, row1, super::visible_width(row1) as u16,
+            &gutters, &mut GutterState::default());
         let out = String::from_utf8(out).expect("utf-8");
         assert!(out.contains(&format!("\r\x1b[K{row1}running")),
-            "line 0 MUST carry row1 margin: {out:?}");
-        assert!(out.contains(&format!("\r\x1b[K{row2}stats line")),
-            "line 1 MUST carry row2 margin: {out:?}");
+            "line 0 MUST carry the triad margin: {out:?}");
+        // Detail row: half-full braille bar (has full cells) + text.
+        assert!(out.contains('\u{28ff}') && out.contains("stats line"),
+            "line 1 MUST carry the bar gutter: {out:?}");
     }
 
     /// A status row wider than the terminal is TRUNCATED to one
@@ -1409,7 +1473,8 @@ mod redraw_tests {
         let mut out: Vec<u8> = Vec::new();
         let (rows, below) = draw_footer_at_cursor(
             &mut out, Some(&status), None,
-            80, margin, super::visible_width(margin) as u16, "");
+            80, margin, super::visible_width(margin) as u16,
+            &[], &mut GutterState::default());
         assert_eq!((rows, below), (2, 1));
         let out = String::from_utf8(out).expect("utf-8");
         for line in out.split("\r\n") {
@@ -1425,51 +1490,32 @@ mod redraw_tests {
         let mut out2: Vec<u8> = Vec::new();
         draw_footer_at_cursor(
             &mut out2, Some(&colored), None,
-            80, margin, super::visible_width(margin) as u16, "");
+            80, margin, super::visible_width(margin) as u16,
+            &[], &mut GutterState::default());
         let out2 = String::from_utf8(out2).expect("utf-8");
         assert!(out2.ends_with("\x1b[0m"),
             "truncated colored row must close its SGR: {out2:?}");
     }
 
-    /// Empty row2 margin → every line falls back to row1 (the
-    /// no-active-phase baseline path).
+    /// Empty gutter list → row 0 carries the triad margin, every
+    /// other row the blank-aligned divider (the no-contextual-cell
+    /// baseline path).
     #[test]
-    fn empty_row2_margin_uses_row1_for_every_line() {
+    fn empty_gutters_fall_back_to_blank_divider() {
         let row1 = "12.34s 5/9 │ ";
         let status = "first\nsecond";
         let mut out: Vec<u8> = Vec::new();
         draw_footer_at_cursor(
             &mut out, Some(status), None,
-            80, row1, super::visible_width(row1) as u16, "");
+            80, row1, super::visible_width(row1) as u16,
+            &[], &mut GutterState::default());
         let out = String::from_utf8(out).expect("utf-8");
         assert!(out.contains(&format!("\r\x1b[K{row1}first")),
-            "line 0 MUST carry row1 margin: {out:?}");
-        assert!(out.contains(&format!("\r\x1b[K{row1}second")),
-            "line 1 MUST also carry row1 margin when row2 is empty: {out:?}");
-    }
-
-    /// The running-phase row-2 margin pads the ETA so the spinner-
-    /// divider lands under the row-1 `│` — for EVERY ETA width that
-    /// fits, not just the one width where the old off-by-one
-    /// happened to cancel out. Margin layout:
-    /// `bar(10) " " eta <pad> spinner(1) " "`; the spinner column
-    /// (1-based) must equal `target - 1` (the `│` column).
-    #[test]
-    fn row2_margin_spinner_aligns_under_divider_for_all_eta_widths() {
-        // e.g. row-1 margin "21.3901s   3/53 │ " is 18 wide; `│`
-        // at column 17, trailing space at 18.
-        let target = 18;
-        for eta in 1..=5 {
-            let pad = super::row2_margin_pad(eta, target);
-            let total = 10 + 1 + eta + pad + 1 + 1;
-            assert_eq!(total, target,
-                "margin width must equal target (eta={eta})");
-            let spinner_col = 10 + 1 + eta + pad + 1; // 1-based
-            assert_eq!(spinner_col, target - 1,
-                "spinner must sit under the `│` divider (eta={eta})");
-        }
-        // The reported case: eta "1s" (2 cols) → pad 3, not 2.
-        assert_eq!(super::row2_margin_pad(2, 18), 3);
+            "line 0 MUST carry the triad margin: {out:?}");
+        assert!(out.contains("│\x1b[0m second"),
+            "line 1 MUST carry the blank divider margin: {out:?}");
+        assert!(!out.contains(&format!("{row1}second")),
+            "line 1 must NOT repeat the triad margin: {out:?}");
     }
 
     /// A fresh sink (no shared cursor, or one still holding the

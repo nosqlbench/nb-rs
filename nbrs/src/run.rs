@@ -407,7 +407,13 @@ pub async fn run_command(args: &[String]) {
         // single-sink, no-watcher case.
         let formatted_handle = if tui_mode == "formatted" {
             use nbrs_tui::display_sink::{DisplayInputs, DisplaySink};
-            let sink = nbrs_tui::formatted_line_sink::FormattedLineSink;
+            // The sink OWNS the piped surface (sink_active): per-event
+            // lines and status snapshots all come from its thread, so a
+            // backpressured pipe can never block a workload thread.
+            let sink = nbrs_tui::formatted_line_sink::FormattedLineSink::new(
+                observer_arc.min_level(),
+                observer_arc.sink_active_flag(),
+            );
             let handle = Box::new(sink).start(DisplayInputs {
                 state: run_state.clone(),
                 frame_rx: None,
@@ -418,7 +424,28 @@ pub async fn run_command(args: &[String]) {
             None
         };
 
+        // `tui=off` with a real (cycle-running) workload — console-owning
+        // adapters (plotter etc.). Per the always-a-sink invariant the
+        // WORST CASE surface is log-only: claim `sink_active` so the
+        // observer's synchronous stderr writes are suppressed for the
+        // whole run (entries still land in the ring, the inspector, and
+        // session.log via the async file sink) and no workload thread
+        // can ever block on the adapter-owned terminal. Early-exit
+        // dryruns keep the synchronous path: they run no workload
+        // (nothing to throttle) and their console diagnostics matter.
+        let off_claimed = if tui_mode == "off" && !dryrun_is_early_exit {
+            observer_arc.sink_active_flag().store(true, std::sync::atomic::Ordering::Release);
+            true
+        } else {
+            false
+        };
+
         let run_result = nbrs_runtime::runner::run_with_observer(args, observer).await;
+
+        if off_claimed {
+            // Post-run: release so shutdown stragglers print normally.
+            observer_arc.sink_active_flag().store(false, std::sync::atomic::Ordering::Release);
+        }
 
         if let Some(s) = supervisor {
             // Two-step teardown so the terminal is **fully

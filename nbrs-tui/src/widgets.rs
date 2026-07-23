@@ -141,6 +141,51 @@ pub fn format_elapsed(secs: f64) -> String {
     }
 }
 
+/// Format a cumulative duration for the status margin with an EXPLICIT
+/// unit at every magnitude, so adjacent rows never jump between
+/// notation systems: `13.7s` → `2m19s` → `1h05m`. The earlier colon
+/// form (`2:19`) sat beside decimal seconds (`13.7s`) and read as a
+/// magnitude discontinuity — `2:19` scans as "2.19" unless the reader
+/// stops to reparse the notation. Unit-suffixed forms keep the scan
+/// monotonic: bigger number of coarser unit == longer, always.
+pub fn format_dur_compact(secs: f64) -> String {
+    if secs < 60.0 {
+        format!("{secs:.1}s")
+    } else if secs < 3600.0 {
+        let total = secs as u64;
+        format!("{}m{:02}s", total / 60, total % 60)
+    } else {
+        let total = secs as u64;
+        format!("{}h{:02}m", total / 3600, (total % 3600) / 60)
+    }
+}
+
+/// Visible width (chars) of a status-margin body for `total_phases`, matching
+/// [`margin_body`]: session-time(8) + space + `[n/total]` count field
+/// (`2·digits+3`) + space + phase/leaf-time(8).
+// Currently unreferenced: the sinks measure the rendered margin's
+// visible width directly (per-line stamps carry their own body), but
+// this function IS the width contract `margin_body` promises — kept as
+// the executable form of that documentation for the SRD-63 margin work.
+#[allow(dead_code)]
+pub fn margin_body_width(total_phases: usize) -> usize {
+    8 + 1 + (total_phases.to_string().len().max(1) * 2 + 3) + 1 + 8
+}
+
+/// The agreed status-margin body: a fixed-width `session-time · count ·
+/// phase/leaf-time` triad (no `│`, no color) — session time on the LEFT, the
+/// phase counter in the MIDDLE, the phase timer on the RIGHT. `count` is padded
+/// to the `[n/total]` field width so the flanking right-aligned 8-col time slots
+/// line up across every row; `—` fills an absent time. Shared by the managed-TUI
+/// gutter and the op leaves so surfaces align identically.
+pub fn margin_body(total_phases: usize, count: &str, leaf: Option<f64>, sess: Option<f64>) -> String {
+    let tw = total_phases.to_string().len().max(1);
+    let count_w = tw * 2 + 3;
+    let leaf_s = leaf.map(format_dur_compact).unwrap_or_else(|| "—".to_string());
+    let sess_s = sess.map(format_dur_compact).unwrap_or_else(|| "—".to_string());
+    format!("{sess_s:>8} {count:<count_w$} {leaf_s:>8}")
+}
+
 /// Format a rate value with auto-scaling (K/M suffix).
 ///
 /// Uses a consistent decimal width within each magnitude band so
@@ -264,4 +309,127 @@ pub fn bar_str_braille(fraction: f64, width: usize) -> (String, String) {
     for _ in drawn..width { unfilled.push('\u{28C0}'); }
 
     (filled, unfilled)
+}
+
+/// A lifetime trend buffer that keeps its WHOLE history renderable
+/// at character-cell resolution by decimating in place. Starts at
+/// one sample per cell; when the buffer fills its capacity, adjacent
+/// bucket pairs are re-averaged (only then — never eagerly) and the
+/// per-bucket stride doubles: 1, 2, 4, … So a young readout shows
+/// every discrete sample, and a long-lived one shows its full life
+/// compressed to the same width. Tracks the discrete lifetime
+/// min/max of every sample pushed (unaffected by averaging).
+pub struct DecimatingTrend {
+    /// Completed buckets, oldest first. Never exceeds `cap`.
+    buckets: Vec<f64>,
+    /// Character-cell capacity, fixed at creation.
+    cap: usize,
+    /// Samples per completed bucket (power of two).
+    stride: u32,
+    /// Partial-bucket accumulator for the in-progress cell.
+    pend_sum: f64,
+    pend_n: u32,
+    /// Discrete lifetime extrema over every pushed sample.
+    pub min: f64,
+    pub max: f64,
+}
+
+impl DecimatingTrend {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            buckets: Vec::with_capacity(cap.max(2)),
+            cap: cap.max(2),
+            stride: 1,
+            pend_sum: 0.0,
+            pend_n: 0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+        }
+    }
+
+    /// Push one sample: update the lifetime extrema, accumulate into
+    /// the in-progress bucket, and decimate only when the buffer is
+    /// about to exceed its width.
+    pub fn push(&mut self, v: f64) {
+        self.min = self.min.min(v);
+        self.max = self.max.max(v);
+        self.pend_sum += v;
+        self.pend_n += 1;
+        if self.pend_n >= self.stride {
+            // At capacity, halve FIRST (stride doubles) — the pending
+            // samples then belong to a wider bucket and may stay
+            // partial rather than flushing at the retired stride.
+            if self.buckets.len() == self.cap {
+                let mut merged = Vec::with_capacity(self.cap);
+                let mut it = self.buckets.chunks_exact(2);
+                for pair in &mut it {
+                    merged.push((pair[0] + pair[1]) / 2.0);
+                }
+                if let [last] = it.remainder() {
+                    merged.push(*last);
+                }
+                self.buckets = merged;
+                self.stride *= 2;
+            }
+            if self.pend_n >= self.stride {
+                let avg = self.pend_sum / self.pend_n as f64;
+                self.pend_sum = 0.0;
+                self.pend_n = 0;
+                self.buckets.push(avg);
+            }
+        }
+    }
+
+    /// The renderable series: completed buckets plus the live
+    /// partial bucket (so the newest cell moves every push).
+    pub fn series(&self) -> Vec<f64> {
+        let mut s = self.buckets.clone();
+        if self.pend_n > 0 {
+            s.push(self.pend_sum / self.pend_n as f64);
+        }
+        s
+    }
+}
+
+#[cfg(test)]
+mod decimating_trend_tests {
+    use super::DecimatingTrend;
+
+    #[test]
+    fn one_sample_per_cell_until_width_fills() {
+        let mut t = DecimatingTrend::new(8);
+        for v in 0..8 {
+            t.push(v as f64);
+        }
+        assert_eq!(t.series(), (0..8).map(|v| v as f64).collect::<Vec<_>>(),
+            "below capacity every sample is its own cell");
+    }
+
+    #[test]
+    fn halves_resolution_only_when_full() {
+        let mut t = DecimatingTrend::new(4);
+        for v in [1.0, 2.0, 3.0, 4.0] {
+            t.push(v);
+        }
+        assert_eq!(t.series(), vec![1.0, 2.0, 3.0, 4.0]);
+        // The 5th sample forces ONE halving: pairs re-average to
+        // [1.5, 3.5], stride becomes 2, and the new sample starts a
+        // partial bucket rendered live.
+        t.push(10.0);
+        assert_eq!(t.series(), vec![1.5, 3.5, 10.0]);
+        // A 6th sample completes that stride-2 bucket.
+        t.push(20.0);
+        assert_eq!(t.series(), vec![1.5, 3.5, 15.0]);
+    }
+
+    #[test]
+    fn lifetime_extrema_are_discrete_not_averaged() {
+        let mut t = DecimatingTrend::new(2);
+        for v in [5.0, 100.0, 1.0, 7.0, 9.0] {
+            t.push(v);
+        }
+        assert_eq!(t.min, 1.0, "min is the discrete lifetime minimum");
+        assert_eq!(t.max, 100.0,
+            "max survives even after its sample is averaged away");
+    }
 }

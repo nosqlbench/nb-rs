@@ -352,6 +352,29 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
         }
     }
 
+    fn op_starting(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId, op_name: &str) {
+        self.state.send(RunStateCmd::OpStarting {
+            parent: parent_phase,
+            op_name: op_name.to_string(),
+        });
+    }
+
+    fn op_completed(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId, op_name: &str, duration_secs: f64) {
+        self.state.send(RunStateCmd::OpCompleted {
+            parent: parent_phase,
+            op_name: op_name.to_string(),
+            duration_secs,
+        });
+    }
+
+    fn op_failed(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId, op_name: &str, error: &str) {
+        self.state.send(RunStateCmd::OpFailed {
+            parent: parent_phase,
+            op_name: op_name.to_string(),
+            error: error.to_string(),
+        });
+    }
+
     fn phase_progress(&self, update: &nbrs_runtime::observer::PhaseProgressUpdate) {
         self.state.send(RunStateCmd::PhaseProgress(update.clone()));
     }

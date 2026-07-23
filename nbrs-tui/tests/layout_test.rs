@@ -60,6 +60,7 @@ fn make_test_state() -> (RunStateHandle, JoinHandle<()>) {
         rows_total: 5000,
         fibers: 100,
         started_at: Instant::now(),
+        session_started: 0.0,
         ops_started: 2600,
         ops_finished: 2500,
         ops_ok: 2500,

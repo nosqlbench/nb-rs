@@ -1551,6 +1551,10 @@ impl App {
         let expanded = self.tree_expanded == Some(entry_idx)
             || self.tree_lod == TreeLod::Maximal
             || self.tree_lod == TreeLod::Focus;
+        // Op-level status rows (SRD-63) render whenever the phase row
+        // renders, independent of expand/drill — counted in both
+        // branches so scroll/hit-test math matches draw_tree.
+        let op_rows = self.op_rows_for(phase);
         if expanded {
             // Drilled phases also render a header row + one row
             // per op name. Counted here so scroll math, mouse
@@ -1561,10 +1565,22 @@ impl App {
             } else {
                 0
             };
-            1 + self.detail_line_count_for(phase) + drill_rows
+            1 + self.detail_line_count_for(phase) + drill_rows + op_rows
         } else {
-            1
+            1 + op_rows
         }
+    }
+
+    /// Number of op-level status rows a phase contributes (SRD-63):
+    /// one per `readout: visible` op recorded under the phase. They
+    /// render whenever the phase row renders (not gated by expand /
+    /// drill), so they're added to both branches of
+    /// `rendered_lines_for` to keep scroll / hit-test math consistent.
+    fn op_rows_for(&self, phase: &crate::state::PhaseEntry) -> usize {
+        self.run_state.load()
+            .phase_ops.get(&phase.node_id)
+            .map(|v| v.len())
+            .unwrap_or(0)
     }
 
     /// Count of detail lines for a phase using live state when the
@@ -2306,7 +2322,7 @@ impl App {
         // to each phase's detail block; header only shows one.
         let phase_eta = state.first_active().and_then(|a| {
             if a.ops_finished > 0 && a.cursor_extent > 0 {
-                let phase_elapsed = a.started_at.elapsed().as_secs_f64();
+                let phase_elapsed = (state.elapsed_secs() - a.session_started).max(0.0);
                 let fraction = a.ops_finished as f64 / a.cursor_extent as f64;
                 if fraction > 0.01 {
                     let total_est = phase_elapsed / fraction;
@@ -2359,6 +2375,75 @@ impl App {
 
         let para = Paragraph::new(line1).block(block);
         frame.render_widget(para, area);
+    }
+
+    /// Build the fixed-width left status margin for a tree row: three
+    /// consistent slots — a count, this leaf's cumulative time, and the
+    /// session's cumulative time — followed (by the caller) with the `│`
+    /// divider that separates the timing/progress margin from the semantic
+    /// view. For a phase leaf the slots read as `[N/T]`, the phase's total
+    /// time, and the session clock at this phase. Times persist after the
+    /// leaf finishes (completed/failed use the frozen values); a running
+    /// leaf shows live values; pending shows `—`. Scope rows (containers,
+    /// not leaves) get a blank margin of the same width so the `│` column
+    /// stays aligned down the whole tree. The slot *types* are uniform;
+    /// their *meaning* specializes per leaf kind (and, later, per op).
+    fn status_margin(&self, phase: &crate::state::PhaseEntry, state: &RunState) -> String {
+        use crate::state::{EntryKind, PhaseStatus};
+        let total = state.total_phases();
+        if phase.kind == EntryKind::Scope {
+            // Containers, not leaves — fully blank margin, same width.
+            return " ".repeat(Self::margin_width(total));
+        }
+        let count = match phase.seq {
+            Some(seq) => format!("[{seq}/{total}]"),
+            None => String::new(),
+        };
+        let (leaf, sess): (Option<f64>, Option<f64>) = match &phase.status {
+            PhaseStatus::Running => (
+                state.active_phase(&phase.name, &phase.labels)
+                    .map(|a| (state.elapsed_secs() - a.session_started).max(0.0)),
+                Some(state.elapsed_secs()),
+            ),
+            PhaseStatus::Completed | PhaseStatus::Failed(_) =>
+                (phase.duration_secs, phase.session_elapsed),
+            PhaseStatus::Pending => (None, None),
+        };
+        Self::margin_fmt(total, &count, leaf, sess)
+    }
+
+    /// Op-leaf variant of the status margin (SRD-63). Same three slots and the
+    /// same fixed width as the phase margin (so the `│` column stays aligned),
+    /// specialized: count = `[i/N]` within the phase, leaf-time = the op's
+    /// execution time, session-time = the session clock at the op.
+    fn op_status_margin(&self, op: &crate::state::OpEntry, op_total: usize, state: &RunState) -> String {
+        use crate::state::PhaseStatus;
+        let count = format!("[{}/{}]", op.seq + 1, op_total);
+        let (leaf, sess): (Option<f64>, Option<f64>) = match &op.status {
+            PhaseStatus::Running =>
+                (Some((state.elapsed_secs() - op.session_started).max(0.0)), Some(state.elapsed_secs())),
+            PhaseStatus::Completed | PhaseStatus::Failed(_) =>
+                (op.duration_secs, op.session_elapsed),
+            PhaseStatus::Pending => (None, None),
+        };
+        Self::margin_fmt(state.total_phases(), &count, leaf, sess)
+    }
+
+    /// Fixed total width of the status margin, driven by `total_phases`'
+    /// digit width so every row's divider aligns.
+    fn margin_width(total_phases: usize) -> usize {
+        let tw = total_phases.to_string().len().max(1);
+        (tw * 2 + 3) + 1 + 8 + 1 + 8 // count · " " · leaf(8) · " " · session(8)
+    }
+
+    /// Format the margin from parts: `count` left-padded to the fixed count
+    /// field, then the two right-aligned time slots (`—` when absent).
+    fn margin_fmt(total_phases: usize, count: &str, leaf: Option<f64>, sess: Option<f64>) -> String {
+        let tw = total_phases.to_string().len().max(1);
+        let count_w = tw * 2 + 3;
+        let leaf_s = leaf.map(widgets::format_dur_compact).unwrap_or_else(|| "—".into());
+        let sess_s = sess.map(widgets::format_dur_compact).unwrap_or_else(|| "—".into());
+        format!("{count:<count_w$} {leaf_s:>8} {sess_s:>8}")
     }
 
     fn draw_tree(&self, frame: &mut Frame, area: Rect, state: &RunState) {
@@ -2458,6 +2543,11 @@ impl App {
             // `┬ ` lines.
             if phase.kind == crate::state::EntryKind::Scope {
                 lines.push(Line::from(vec![
+                    // Scopes are containers, not execution leaves — blank
+                    // margin, but keep the divider so the `│` column stays
+                    // unbroken down the tree.
+                    Span::styled(self.status_margin(phase, state), Style::default().fg(colors::DIM)),
+                    Span::styled(" │ ", Style::default().fg(colors::BORDER)),
                     marker,
                     Span::styled(format!("{indent}┬ "), Style::default().fg(colors::BORDER)),
                     Span::styled(&phase.name, Style::default().fg(colors::TEXT).italic()),
@@ -2491,22 +2581,17 @@ impl App {
             // up the yellow tint too so the whole live line reads hot.
             let label_color = if is_running { health_color } else { colors::DIM };
 
+            // Left status margin: a fixed-width column of
+            // count · leaf-time · session-time, then the `│` that
+            // separates the timing/progress margin from the semantic
+            // view. The `[N/T]` count and this leaf's cumulative time
+            // live here now (persisted), not inline on the right.
             let mut spans = vec![
+                Span::styled(self.status_margin(phase, state), Style::default().fg(colors::DIM)),
+                Span::styled(" │ ", Style::default().fg(colors::BORDER)),
                 marker,
                 Span::styled(format!("{indent}{icon} "), Style::default().fg(icon_color)),
             ];
-
-            // Pre-map sequence number prefix: `[N/T]` so the
-            // operator can correlate the row with the
-            // `phase X/Y` counter in the header at a glance.
-            // Only Phase entries carry a `seq`; Scope rows hit
-            // the earlier `continue` branch above.
-            if let Some(seq) = phase.seq {
-                spans.push(Span::styled(
-                    format!("[{seq}/{}] ", state.total_phases()),
-                    Style::default().fg(colors::DIM),
-                ));
-            }
 
             spans.push(Span::styled(&phase.name, name_style));
 
@@ -2534,12 +2619,8 @@ impl App {
 
             match &phase.status {
                 PhaseStatus::Completed => {
-                    if let Some(dur) = phase.duration_secs {
-                        spans.push(Span::styled(
-                            format!("  {:.1}s", dur),
-                            Style::default().fg(colors::DIM),
-                        ));
-                    }
+                    // This leaf's cumulative time now lives in the left
+                    // status margin (persisted), not inline here.
                     // Attach the completion summary so the tree acts
                     // as a post-hoc record of what each phase produced.
                     // Ordered for "tell me the key story" reading:
@@ -2689,6 +2770,57 @@ impl App {
                             Span::styled(op_name.clone(), name_style),
                         ]));
                     }
+                }
+            }
+
+            // Op-level status leaves (SRD-63): ops that declared
+            // `readout: visible` surface as their own timed rows,
+            // indented one level under the phase and rendered whenever
+            // the phase row renders (independent of expand/drill) —
+            // opting an op in is a request to always see its live
+            // status. The `│` divider + margin columns match the phase
+            // rows so timing/session numbers stay in the left margin.
+            // Row count here must equal `op_rows_for`.
+            if let Some(ops) = state.phase_ops.get(&phase.node_id) {
+                let op_total = ops.len();
+                for op in ops {
+                    let (op_icon, op_color) = match &op.status {
+                        PhaseStatus::Completed => ("✓", colors::PHASE_DONE),
+                        PhaseStatus::Running => (spinner_frame(), colors::PHASE_ACTIVE),
+                        PhaseStatus::Pending => ("○", colors::PHASE_PENDING),
+                        PhaseStatus::Failed(_) => ("✗", colors::PHASE_FAILED),
+                    };
+                    let op_name_style = match &op.status {
+                        PhaseStatus::Running =>
+                            Style::default().fg(colors::PHASE_ACTIVE).bold(),
+                        PhaseStatus::Completed => Style::default().fg(colors::TEXT),
+                        PhaseStatus::Failed(_) =>
+                            Style::default().fg(colors::PHASE_FAILED).bold(),
+                        _ => Style::default().fg(colors::DIM),
+                    };
+                    let mut op_spans = vec![
+                        Span::styled(
+                            self.op_status_margin(op, op_total, state),
+                            Style::default().fg(colors::DIM),
+                        ),
+                        Span::styled(" │ ", Style::default().fg(colors::BORDER)),
+                        // Op rows aren't independently tree-selectable —
+                        // blank marker column keeps content aligned with
+                        // phase rows.
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("{indent}  {op_icon} "),
+                            Style::default().fg(op_color),
+                        ),
+                        Span::styled(op.name.clone(), op_name_style),
+                    ];
+                    if let PhaseStatus::Failed(err) = &op.status {
+                        op_spans.push(Span::styled(
+                            format!("  {err}"),
+                            Style::default().fg(colors::PHASE_FAILED),
+                        ));
+                    }
+                    lines.push(Line::from(op_spans));
                 }
             }
         }

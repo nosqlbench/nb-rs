@@ -444,6 +444,33 @@ impl RunObserver for LogOnlyObserver {
         self.state.send(RunStateCmd::PhaseProgress(update.clone()));
     }
 
+    // SRD-63 — op-level status leaves (`readout: visible`). The managed
+    // (LogOnly) surface is what `nbrs run` shows, so it must forward these to
+    // the actor just like `TuiObserver` does, or `phase_ops` never populates
+    // and the leaves never render in the footer.
+    fn op_starting(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId, op_name: &str) {
+        self.state.send(RunStateCmd::OpStarting {
+            parent: parent_phase,
+            op_name: op_name.to_string(),
+        });
+    }
+
+    fn op_completed(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId, op_name: &str, duration_secs: f64) {
+        self.state.send(RunStateCmd::OpCompleted {
+            parent: parent_phase,
+            op_name: op_name.to_string(),
+            duration_secs,
+        });
+    }
+
+    fn op_failed(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId, op_name: &str, error: &str) {
+        self.state.send(RunStateCmd::OpFailed {
+            parent: parent_phase,
+            op_name: op_name.to_string(),
+            error: error.to_string(),
+        });
+    }
+
     fn phase_render_attach(&self, handle: nbrs_runtime::observer::PhaseRenderHandle) {
         // SRD-100 P2 — route the per-phase render handle to the actor;
         // LogOnlySink folds `active_phases` and renders each phase's

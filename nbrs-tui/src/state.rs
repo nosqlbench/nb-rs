@@ -173,6 +173,11 @@ pub struct ActivePhase {
     pub rows_total: u64,
     pub fibers: usize,
     pub started_at: Instant,
+    /// Session-clock reading (see [`RunState::elapsed_secs`]) when this
+    /// phase entered Running — the SINGLE time basis every displayed
+    /// phase timer derives from, so `session_started + leaf-time` always
+    /// equals the session column shown beside it.
+    pub session_started: f64,
 
     // Snapshot counters (updated by progress thread)
     pub ops_started: u64,
@@ -238,6 +243,16 @@ pub struct PhaseEntry {
     pub kind: EntryKind,
     pub op_count: usize,
     pub duration_secs: Option<f64>,
+    /// Session cumulative time (seconds) captured at this leaf's
+    /// terminal boundary — the session clock reading when the phase
+    /// completed/failed. Persisted so a finished row keeps showing the
+    /// session time at which it finished. `None` while still running or
+    /// pending (the renderer substitutes the live session clock).
+    pub session_elapsed: Option<f64>,
+    /// Session-clock reading when the phase entered Running; the time
+    /// basis for the leaf timer (`session_elapsed - session_started` =
+    /// displayed duration, exactly).
+    pub session_started: Option<f64>,
     pub depth: usize,
     pub summary: Option<PhaseSummary>,
     /// Stanza op-template names. Populated for `Phase` entries
@@ -250,6 +265,31 @@ pub struct PhaseEntry {
     /// the `phase X/Y` counter in the TUI header (see
     /// [`crate::scene_tree::SceneNode::seq`]).
     pub seq: Option<usize>,
+}
+
+/// An op-level execution leaf (SRD-63), shown as a timed status line
+/// nested under its parent phase when the op declares `readout: visible`.
+/// Mirrors the phase's status-margin fields so the same renderer/slots
+/// apply, specialized: the count slot is `[seq/total]` within the phase,
+/// the leaf time is this op's execution time, the session time is the
+/// session clock at the op.
+#[derive(Clone)]
+pub struct OpEntry {
+    pub name: String,
+    pub status: PhaseStatus,
+    /// Start of the current execution (for the live timer while running).
+    pub started_at: Instant,
+    /// Session-clock reading at op start — the display time basis (see
+    /// [`ActivePhase::session_started`]).
+    pub session_started: f64,
+    /// Persisted op execution time, set at completion/failure.
+    /// Computed as a session-clock delta (`session_elapsed -
+    /// session_started`) so it reconciles with the session column.
+    pub duration_secs: Option<f64>,
+    /// Session clock captured at the op's terminal boundary.
+    pub session_elapsed: Option<f64>,
+    /// Arrival order within the parent phase (0-based).
+    pub seq: usize,
 }
 
 /// Top-level run state shared between executor and TUI.
@@ -281,6 +321,20 @@ pub struct RunState {
     /// child summaries cheaply. Side-map (rather than baked into
     /// `SceneNode`) so the tree itself stays small / serializable.
     pub summaries: HashMap<SceneNodeId, PhaseSummary>,
+    /// Side-map of the session clock reading captured when each leaf
+    /// reached a terminal state (completed/failed), keyed by
+    /// `SceneNodeId`. Mirrors `summaries`; feeds `PhaseEntry::session_elapsed`
+    /// so a finished row persists the session time at which it finished.
+    pub phase_session_elapsed: HashMap<SceneNodeId, f64>,
+    /// Session clock at each phase's Running transition — see
+    /// [`PhaseEntry::session_started`]. Keyed like
+    /// `phase_session_elapsed`.
+    pub phase_session_started: HashMap<SceneNodeId, f64>,
+    /// Op-level status leaves keyed by their parent phase's `SceneNodeId`,
+    /// in arrival order. Populated only for ops declaring `readout: visible`
+    /// (via the `readout` wrapper's op-lifecycle events); empty otherwise, so
+    /// there is no cost for the common case.
+    pub phase_ops: HashMap<SceneNodeId, Vec<OpEntry>>,
     /// Denormalized DFS view of `tree` in display order, kept in
     /// sync by `rebuild_phases()` after every tree mutation. Read
     /// by the renderer hot paths via `state.phases` indexing —
@@ -384,6 +438,9 @@ impl RunState {
             limit: "none".to_string(),
             tree: SceneTree::new(),
             summaries: HashMap::new(),
+            phase_session_elapsed: HashMap::new(),
+            phase_session_started: HashMap::new(),
+            phase_ops: HashMap::new(),
             phases: Vec::new(),
             expected_total_phases: 0,
             active_phases: HashMap::new(),
@@ -501,6 +558,9 @@ impl RunState {
     pub fn install_tree(&mut self, tree: SceneTree) {
         self.tree = tree;
         self.summaries.clear();
+        self.phase_session_elapsed.clear();
+        self.phase_session_started.clear();
+        self.phase_ops.clear();
         self.rebuild_phases();
         // Pin the pre-map's phase count. Read by the margin
         // renderer as the stable denominator so a refine /
@@ -595,8 +655,10 @@ impl RunState {
     /// own node directly; a phase the pre-map never enumerated is
     /// pushed dynamically so it still gets a tree slot.
     pub fn set_phase_running(&mut self, scene_node_id: SceneNodeId, name: &str, labels: &str, op_count: usize) {
+        let session_now = self.elapsed_secs();
         if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Pending)) {
             self.tree.set_phase_running_at(id, op_count);
+            self.phase_session_started.insert(id, session_now);
         } else {
             // Not found — add dynamically and mark running. Phases
             // that weren't pre-mapped (e.g. unresolvable for_each
@@ -604,6 +666,7 @@ impl RunState {
             let root = self.tree.root();
             let id = self.tree.push(root, EntryKind::Phase, name, labels);
             self.tree.set_phase_running_at(id, op_count);
+            self.phase_session_started.insert(id, session_now);
         }
         self.rebuild_phases();
     }
@@ -618,9 +681,21 @@ impl RunState {
         duration_secs: f64,
         summary: PhaseSummary,
     ) {
+        // Capture the session clock BEFORE the mutable-borrow block so a
+        // finished leaf persists the session time at which it finished.
+        let session_now = self.elapsed_secs();
         if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Running)) {
-            self.tree.set_phase_completed_at(id, duration_secs);
+            // Displayed duration is a session-clock delta so
+            // `session_started + duration == session_elapsed` holds
+            // exactly on every rendered row. The executor-measured
+            // `duration_secs` is the fallback when the start was never
+            // observed (runtime-materialized phase).
+            let display_duration = self.phase_session_started.get(&id)
+                .map(|s| (session_now - s).max(0.0))
+                .unwrap_or(duration_secs);
+            self.tree.set_phase_completed_at(id, display_duration);
             self.summaries.insert(id, summary);
+            self.phase_session_elapsed.insert(id, session_now);
             self.rebuild_phases();
         }
     }
@@ -628,15 +703,108 @@ impl RunState {
     /// Mark a phase as failed, keyed by the dispatch-time
     /// `scene_node_id` (SRD-100 P1c).
     pub fn set_phase_failed(&mut self, scene_node_id: SceneNodeId, name: &str, labels: &str, error: &str) {
+        let session_now = self.elapsed_secs();
         if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, None) {
             self.tree.set_phase_failed_at(id, error);
+            self.phase_session_elapsed.insert(id, session_now);
             self.rebuild_phases();
+        }
+    }
+
+    /// An op-level status leaf started (SRD-63). Creates or re-arms the entry
+    /// (keyed by name within the parent phase) as Running with a fresh timer.
+    pub fn op_starting(&mut self, parent: SceneNodeId, name: &str) {
+        let session_now = self.elapsed_secs();
+        let ops = self.phase_ops.entry(parent).or_default();
+        if let Some(e) = ops.iter_mut().find(|e| e.name == name) {
+            e.status = PhaseStatus::Running;
+            e.started_at = Instant::now();
+            e.session_started = session_now;
+            e.duration_secs = None;
+            e.session_elapsed = None;
+        } else {
+            let seq = ops.len();
+            ops.push(OpEntry {
+                name: name.to_string(),
+                status: PhaseStatus::Running,
+                started_at: Instant::now(),
+                session_started: session_now,
+                duration_secs: None,
+                session_elapsed: None,
+                seq,
+            });
+        }
+    }
+
+    /// An op-level status leaf completed; persists its execution time and the
+    /// session clock at completion.
+    pub fn op_completed(&mut self, parent: SceneNodeId, name: &str, duration_secs: f64) {
+        let session_now = self.elapsed_secs();
+        if let Some(ops) = self.phase_ops.get_mut(&parent) {
+            if let Some(e) = ops.iter_mut().find(|e| e.name == name) {
+                e.status = PhaseStatus::Completed;
+                // Session-clock delta, not the executor's own measure —
+                // see PhaseEntry::session_started. Executor value is the
+                // fallback for a start that was never observed.
+                let _ = duration_secs;
+                e.duration_secs = Some((session_now - e.session_started).max(0.0));
+                e.session_elapsed = Some(session_now);
+            }
+        }
+    }
+
+    /// An op-level status leaf failed; freezes its elapsed time and session clock.
+    pub fn op_failed(&mut self, parent: SceneNodeId, name: &str, error: &str) {
+        let session_now = self.elapsed_secs();
+        if let Some(ops) = self.phase_ops.get_mut(&parent) {
+            if let Some(e) = ops.iter_mut().find(|e| e.name == name) {
+                e.duration_secs = Some((session_now - e.session_started).max(0.0));
+                e.status = PhaseStatus::Failed(error.to_string());
+                e.session_elapsed = Some(session_now);
+            }
         }
     }
 
     /// Elapsed time since run started.
     pub fn elapsed_secs(&self) -> f64 {
         self.started_at.elapsed().as_secs_f64()
+    }
+
+    /// The uncolored status-margin body (`session · [n/N] · leaf`)
+    /// for the CURRENT state. The run-state actor stamps this onto
+    /// every scrollback line at Log-command processing time, so a
+    /// line's gutter is computed from exactly the state that
+    /// preceded it in the command stream — it can never disagree
+    /// with the event the line describes (the old render-time
+    /// margin was one snapshot for a whole drained batch, and raced
+    /// the very transitions the lines reported).
+    pub fn margin_body_stamp(&self) -> String {
+        let secs = self.elapsed_secs();
+        let phase_only: Vec<_> = self.phases.iter()
+            .filter(|p| matches!(p.kind, EntryKind::Phase))
+            .collect();
+        let total = self.expected_total_phases;
+        let running = phase_only.iter()
+            .find(|p| matches!(p.status, PhaseStatus::Running));
+        let running_seq = running.and_then(|p| p.seq);
+        let latest_done_seq = phase_only.iter()
+            .filter(|p| !matches!(p.status, PhaseStatus::Pending))
+            .filter_map(|p| p.seq)
+            .max();
+        let fallback_done = phase_only.iter()
+            .filter(|p| !matches!(p.status, PhaseStatus::Pending))
+            .count();
+        let count = match (running_seq, latest_done_seq, total) {
+            (Some(s), _, n) if n > 0 => format!("[{s}/{n}]"),
+            (None, Some(s), n) if n > 0 => format!("[{s}/{n}]"),
+            (None, None, n) if n > 0 && fallback_done > 0 => format!("[{fallback_done}/{n}]"),
+            (_, _, n) if n > 0 => format!("[0/{n}]"),
+            _ => "[-/-]".to_string(),
+        };
+        let leaf = running
+            .and_then(|p| self.active_phase(&p.name, &p.labels))
+            .map(|a| (secs - a.session_started).max(0.0));
+        crate::widgets::margin_body(total, &count, leaf, Some(secs))
     }
 
     /// Rebuild the denormalized `phases` view from the current
@@ -659,6 +827,8 @@ impl RunState {
                 // depth 0 (matching pre-tree behavior).
                 depth: n.depth.saturating_sub(1),
                 summary: self.summaries.get(&n.id).cloned(),
+                session_elapsed: self.phase_session_elapsed.get(&n.id).copied(),
+                session_started: self.phase_session_started.get(&n.id).copied(),
                 op_names: n.op_names.clone(),
                 seq: n.seq,
             })
@@ -713,8 +883,18 @@ mod resolve_tests {
         s.set_phase_running(p2, "p", "x=2", 7);
         s.set_phase_completed(p2, "p", "x=2", 10.0, PhaseSummary::default());
         s.set_phase_completed(p1, "p", "x=1", 5.0, PhaseSummary::default());
-        assert_eq!(row(&s, p1).duration_secs, Some(5.0));
-        assert_eq!(row(&s, p2).duration_secs, Some(10.0));
+        // Displayed durations are session-clock deltas (NOT the
+        // executor-passed 10.0/5.0): each row must reconcile exactly
+        // against its own session columns, the single-time-basis
+        // invariant the gutter readout depends on.
+        for p in [p1, p2] {
+            let r = row(&s, p);
+            let d = r.duration_secs.expect("completed row has duration");
+            let reconciled = r.session_elapsed.expect("session_elapsed set")
+                - r.session_started.expect("session_started set");
+            assert!((d - reconciled).abs() < 1e-9,
+                "duration {d} must equal session_elapsed - session_started {reconciled}");
+        }
         assert_eq!(row(&s, p1).op_count, 3);
         assert_eq!(row(&s, p2).op_count, 7);
         assert!(matches!(row(&s, p1).status, PhaseStatus::Completed));

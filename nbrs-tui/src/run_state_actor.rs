@@ -56,6 +56,13 @@ use crate::state::{ActivePhase, LogEntry, LogSeverity, PhaseSummary, RunState};
 pub(crate) struct LogLine {
     pub seq: u64,
     pub entry: LogEntry,
+    /// Uncolored margin body (`session · [n/N] · leaf`) computed by the
+    /// actor AT LOG-PROCESSING TIME — i.e. from state that includes every
+    /// command that preceded this line in the stream. The sink renders
+    /// this stamp (adding color/divider) instead of a render-time
+    /// snapshot margin, so a line's gutter can never disagree with the
+    /// event the line describes.
+    pub margin_body: String,
 }
 
 /// Single-consumer handle to the durable scrollback stream, held by
@@ -143,6 +150,24 @@ pub enum RunStateCmd {
         scene_node_id: SceneNodeId,
         name: String,
         labels: String,
+        error: String,
+    },
+    /// SRD-63 — an op-level status leaf (`readout: visible`) started, keyed
+    /// by its parent phase's scene-node id.
+    OpStarting {
+        parent: SceneNodeId,
+        op_name: String,
+    },
+    /// An op-level status leaf completed; `duration_secs` is its execution time.
+    OpCompleted {
+        parent: SceneNodeId,
+        op_name: String,
+        duration_secs: f64,
+    },
+    /// An op-level status leaf failed.
+    OpFailed {
+        parent: SceneNodeId,
+        op_name: String,
         error: String,
     },
     /// Live update from the executor's progress thread.
@@ -450,7 +475,8 @@ fn handle_cmd(
                 // Fire-and-forget: a momentarily-parked receiver
                 // (Ctrl-T swap window) still buffers; the next sink
                 // replays it into the restored scrollback.
-                let _ = log_tx.send(LogLine { seq, entry: stream_entry });
+                let margin_body = state.margin_body_stamp();
+                let _ = log_tx.send(LogLine { seq, entry: stream_entry, margin_body });
             } else {
                 state.push_log_entry(entry);
             }
@@ -477,6 +503,7 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
             let rate_ewma = Arc::new(Ewma::new(Duration::from_secs(1)));
             let latency_peak_5s = Arc::new(PeakTracker::max(Duration::from_secs(5)));
             let latency_peak_10s = Arc::new(PeakTracker::max(Duration::from_secs(10)));
+            let session_started = state.elapsed_secs();
             state.active_phases.insert(key, ActivePhase {
                 name,
                 labels,
@@ -488,6 +515,7 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
                 rows_total: 0,
                 fibers: concurrency,
                 started_at: Instant::now(),
+                session_started,
                 ops_started: 0,
                 ops_finished: 0,
                 ops_ok: 0,
@@ -549,6 +577,15 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         RunStateCmd::PhaseFailed { exec_id, scene_node_id, name, labels, error } => {
             state.set_phase_failed(scene_node_id, &name, &labels, &error);
             state.active_phases.remove(&crate::state::ActivePhaseId::new(exec_id, name, labels));
+        }
+        RunStateCmd::OpStarting { parent, op_name } => {
+            state.op_starting(parent, &op_name);
+        }
+        RunStateCmd::OpCompleted { parent, op_name, duration_secs } => {
+            state.op_completed(parent, &op_name, duration_secs);
+        }
+        RunStateCmd::OpFailed { parent, op_name, error } => {
+            state.op_failed(parent, &op_name, &error);
         }
         RunStateCmd::PhaseProgress(update) => {
             if let Some(active) = state.active_phase_mut(update.exec_id, &update.name, &update.labels) {

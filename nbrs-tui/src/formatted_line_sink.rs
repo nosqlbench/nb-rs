@@ -36,14 +36,21 @@
 //! stream. The cadence is fixed today; if operators want to tune
 //! it, add a `tui-status-cadence=` knob.
 //!
-//! ## Coexistence with the observer
+//! ## Surface ownership (2026-07-23)
 //!
-//! The observer's synchronous stderr path (`tui=off` /
-//! `sink_active=false`) keeps emitting per-event log lines as
-//! usual. This sink interleaves periodic snapshots into the same
-//! stream. No locking — stderr writes are line-buffered by the
-//! OS, and the two writers don't share state beyond the shared
-//! `RunStateHandle`.
+//! This sink now OWNS the stderr surface, exactly like
+//! `LogOnlySink`: it flips `sink_active` (silencing the observer's
+//! synchronous per-event writes), claims the durable scrollback
+//! stream, and emits every log line from ITS OWN thread — each with
+//! its actor-stamped margin — plus the periodic status snapshot.
+//! The invariant this buys: **no workload thread ever writes the
+//! terminal fd**. A blocked or slow pipe stalls only this sink
+//! thread while the unbounded stream buffers; the workload planes
+//! (fibers, executor, actor snapshot publishing) are untouched.
+//! Previously the observer kept writing per-event lines
+//! synchronously from calling threads, so a backpressured pipe
+//! throttled the workload precisely during log-heavy incidents
+//! (warn storms) — the failure mode this rewrite removes.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -61,13 +68,25 @@ use crate::run_state_actor::RunStateHandle;
 /// log stream.
 const STATUS_CADENCE: Duration = Duration::from_secs(5);
 
-/// Non-interactive, non-positioning status emitter. Periodically
-/// appends a one-line snapshot of the running state to stderr;
-/// coexists with the observer's synchronous log writes.
-pub struct FormattedLineSink;
+/// Non-interactive, non-positioning sink for piped/redirected
+/// stderr. Owns the surface: per-event log lines (with stamped
+/// margins) AND periodic status snapshots, all from one thread.
+pub struct FormattedLineSink {
+    /// Severity floor for emitted lines (mirrors the observer's).
+    min_level: nbrs_runtime::observer::LogLevel,
+    /// Shared with the observer: while high, the observer's
+    /// synchronous stderr writes are suppressed — this sink is
+    /// the only fd writer.
+    sink_active: Arc<AtomicBool>,
+}
 
-impl Default for FormattedLineSink {
-    fn default() -> Self { Self }
+impl FormattedLineSink {
+    pub fn new(
+        min_level: nbrs_runtime::observer::LogLevel,
+        sink_active: Arc<AtomicBool>,
+    ) -> Self {
+        Self { min_level, sink_active }
+    }
 }
 
 impl DisplaySink for FormattedLineSink {
@@ -75,17 +94,35 @@ impl DisplaySink for FormattedLineSink {
         let DisplayInputs { state, .. } = inputs;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
+        let min_level = self.min_level;
+        let sink_active = self.sink_active.clone();
+        // Claim order: flip `sink_active` FIRST (observer stops its
+        // synchronous writes immediately), then claim the stream, then
+        // seed the skip-cursor. A line in the flip→seed window reaches
+        // the stream only (observer already silenced) with seq > seed,
+        // so it is emitted exactly once by this sink; lines before the
+        // flip went to stderr synchronously and sit at seq <= seed, so
+        // they are skipped. No duplicates, no losses. (Seeding BEFORE
+        // the flip — the old order — let a line be both written
+        // synchronously and re-emitted here: the startup-dupe bug.)
+        sink_active.store(true, Ordering::Release);
+        let scrollback = state.take_log_stream();
+        let last_seen = state.load().log_seq_total;
         let join = std::thread::Builder::new()
             .name("formatted-line-sink".into())
-            .spawn(move || run_emit_loop(state, stop_for_thread))
+            .spawn(move || run_emit_loop(
+                state, stop_for_thread, scrollback, last_seen, min_level))
             .expect("spawn formatted-line-sink thread");
-        Box::new(FormattedLineSinkHandle { stop, join: Some(join) })
+        Box::new(FormattedLineSinkHandle {
+            stop, join: Some(join), sink_active: self.sink_active,
+        })
     }
 }
 
 struct FormattedLineSinkHandle {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
+    sink_active: Arc<AtomicBool>,
 }
 
 impl SinkHandle for FormattedLineSinkHandle {
@@ -94,17 +131,53 @@ impl SinkHandle for FormattedLineSinkHandle {
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
+        // Hand the surface back: straggler logs after shutdown go
+        // through the observer's synchronous path again (post-run,
+        // main-thread — nothing left to throttle).
+        self.sink_active.store(false, Ordering::Release);
     }
 }
 
-fn run_emit_loop(state: RunStateHandle, stop: Arc<AtomicBool>) {
-    // Poll interval: short enough to honor a shutdown request
-    // quickly; the cadence-aware emission below only fires once
-    // per STATUS_CADENCE.
+fn run_emit_loop(
+    state: RunStateHandle,
+    stop: Arc<AtomicBool>,
+    scrollback: crate::run_state_actor::ScrollbackReceiver,
+    mut last_seen: u64,
+    min_level: nbrs_runtime::observer::LogLevel,
+) {
+    // Poll interval: short enough to honor a shutdown request and keep
+    // line latency low; the status snapshot still fires only once per
+    // STATUS_CADENCE.
     const POLL: Duration = Duration::from_millis(250);
     let mut next_emit = std::time::Instant::now() + STATUS_CADENCE;
 
-    while !stop.load(Ordering::Relaxed) {
+    loop {
+        let stopping = stop.load(Ordering::Relaxed);
+
+        // Per-event lines: drain the durable stream fully. Plain
+        // append-only text — the actor-stamped margin body plus the
+        // message, no cursor addressing, no color (piped surface).
+        {
+            let mut err = std::io::stderr().lock();
+            while let Some(line) = scrollback.try_next() {
+                if line.seq <= last_seen {
+                    continue; // pre-claim: already emitted synchronously
+                }
+                last_seen = line.seq;
+                let level = severity_to_level(line.entry.severity);
+                if level < min_level {
+                    continue;
+                }
+                let _ = writeln!(err, "{} │ {}",
+                    line.margin_body, line.entry.message);
+            }
+            let _ = err.flush();
+        }
+
+        if stopping {
+            return; // final drain above already ran
+        }
+
         std::thread::sleep(POLL);
         if std::time::Instant::now() < next_emit {
             continue;
@@ -113,14 +186,19 @@ fn run_emit_loop(state: RunStateHandle, stop: Arc<AtomicBool>) {
 
         let snap = state.load();
         let line = format_status_snapshot(&snap);
-        // Direct stderr write — line-buffered by the OS, no
-        // sink_active coordination needed because the observer's
-        // synchronous stderr path is the authoritative log
-        // emitter and we're only injecting status snapshots
-        // alongside it.
         let mut err = std::io::stderr().lock();
         let _ = writeln!(err, "{line}");
         let _ = err.flush();
+    }
+}
+
+fn severity_to_level(s: crate::state::LogSeverity) -> nbrs_runtime::observer::LogLevel {
+    use nbrs_runtime::observer::LogLevel as L;
+    match s {
+        crate::state::LogSeverity::Debug => L::Debug,
+        crate::state::LogSeverity::Info => L::Info,
+        crate::state::LogSeverity::Warn => L::Warn,
+        crate::state::LogSeverity::Error => L::Error,
     }
 }
 

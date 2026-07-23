@@ -202,6 +202,7 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
                         )),
                         bodies: Arc::new(vec![body]),
                         memo: Arc::new(arc_swap::ArcSwap::from_pointee(String::new())),
+                        gutter: Arc::new(arc_swap::ArcSwapOption::empty()),
                         status_metrics: Arc::from(Vec::<String>::new()),
                         concurrency: 1,
                         seq: None,
