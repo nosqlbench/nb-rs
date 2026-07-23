@@ -147,6 +147,61 @@ fn vec_norm(a: &[f32]) -> Vec<f32> {
     }
 }
 
+/// `lid_mle(distances, k)` — Levina–Bickel maximum-likelihood estimate of
+/// the **local intrinsic dimensionality** at one query point, from its
+/// sorted ground-truth nearest-neighbor distances.
+///
+/// Given ascending distances `r_1 ≤ … ≤ r_k` to the `k` nearest neighbors,
+///
+/// ```text
+///     d̂ = m / Σ_{j=1..m} ln(r_k / r_j)        (m = number of valid terms)
+/// ```
+///
+/// the standard MLE (Levina & Bickel, NIPS 2004) with `r_k` as the cutoff
+/// radius. `k` is clamped to the available length. Terms with a
+/// non-positive `r_j` (exact duplicates / self-matches at distance 0, where
+/// `ln(r_k/r_j)` is undefined) are skipped — the conventional handling.
+/// Returns `0.0` for a degenerate query (fewer than one valid term, or a
+/// non-positive log-sum, e.g. all-duplicate neighbors) so the caller can
+/// filter it out of the aggregate.
+///
+/// Reporting the *distribution* of this per-query estimate (mean / p50 /
+/// p90) characterizes both the intrinsic dimension and its heterogeneity —
+/// the quantity that governs whether a 1-D locality ordering can work (a
+/// low, tight LID favors it; a high or skewed LID does not).
+///
+/// ASSUMES `distances` are true metric distances in ascending order (the
+/// dataset's `neighbor_distances` / `filtered_neighbor_distances` facet).
+/// If that facet stores *squared* distances the estimate is scaled by ½
+/// (double it); if it stores *similarities* (higher = closer) the result is
+/// meaningless — validate against the dataset's metric first.
+#[crate::polydat_node(category = Arithmetic)]
+fn lid_mle(distances: &[f32], k: f64) -> f64 {
+    let k = (k as usize).min(distances.len());
+    if k < 2 {
+        return 0.0;
+    }
+    let r_k = distances[k - 1] as f64;
+    if r_k <= 0.0 {
+        return 0.0;
+    }
+    let ln_rk = r_k.ln();
+    let mut logsum = 0.0_f64;
+    let mut terms = 0u32;
+    for &r_j in &distances[..k - 1] {
+        let r_j = r_j as f64;
+        if r_j > 0.0 {
+            logsum += ln_rk - r_j.ln(); // ln(r_k / r_j) ≥ 0 since r_j ≤ r_k
+            terms += 1;
+        }
+    }
+    if terms == 0 || logsum <= 0.0 {
+        0.0
+    } else {
+        terms as f64 / logsum
+    }
+}
+
 /// `hash_vec(seed, dim)` — deterministic synthetic f32 vector:
 /// element `i` is the xxh3 hash of `(seed, i)` mapped into
 /// `[-1, 1)`. The canonical generator for synthetic embeddings —
@@ -234,6 +289,34 @@ mod tests {
         let mut out = [Value::None];
         VecNorm::new().eval(&[vecv(vec![0.0; 4])], &mut out);
         assert_eq!(out[0].as_vec_f32(), &[0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn lid_mle_matches_closed_form_and_handles_degenerate() {
+        // r_j = e^{j}, j=0..9 → ln(r_k/r_j) = 9-j; Σ_{j=0}^{8}(9-j)=45,
+        // 9 valid terms → d̂ = 9/45 = 0.2. Deterministic arithmetic check.
+        let dists: Vec<f32> = (0..10).map(|j| (j as f32).exp()).collect();
+        let mut out = [Value::None];
+        LidMle::new().eval(&[vecv(dists), Value::F64(10.0)], &mut out);
+        assert!((out[0].as_f64() - 0.2).abs() < 1e-4, "got {}", out[0].as_f64());
+
+        // Fewer than 2 distances → degenerate → 0.0.
+        let mut out = [Value::None];
+        LidMle::new().eval(&[vecv(vec![1.0]), Value::F64(10.0)], &mut out);
+        assert_eq!(out[0].as_f64(), 0.0);
+
+        // All-zero (duplicate) neighbors, r_k = 0 → degenerate → 0.0.
+        let mut out = [Value::None];
+        LidMle::new().eval(&[vecv(vec![0.0, 0.0, 0.0]), Value::F64(3.0)], &mut out);
+        assert_eq!(out[0].as_f64(), 0.0);
+
+        // Zero-distance self-match at r_1 is skipped, not fatal: distances
+        // [0, e, e^2] with k=3 → r_k=e^2 (ln=2), only r_2=e (ln=1) valid →
+        // 1 term, logsum=1 → d̂ = 1.0.
+        let mut out = [Value::None];
+        let d: Vec<f32> = vec![0.0, std::f32::consts::E, std::f32::consts::E * std::f32::consts::E];
+        LidMle::new().eval(&[vecv(d), Value::F64(3.0)], &mut out);
+        assert!((out[0].as_f64() - 1.0).abs() < 1e-4, "got {}", out[0].as_f64());
     }
 
     #[test]
