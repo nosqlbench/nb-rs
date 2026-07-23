@@ -1101,15 +1101,25 @@ impl SessionHost {
     let started_at = saved_doc.as_ref()
         .map(|d| d.started_at.clone())
         .unwrap_or_else(crate::checkpoint::storage::now_rfc3339);
-    let checkpoint_writer = std::sync::Arc::new(match saved_doc.as_ref() {
-        Some(_doc) => crate::checkpoint::CheckpointWriter::from_existing(
-            checkpoint_path.clone(), saved_doc.clone().unwrap(),
-            crate::checkpoint::storage::now_rfc3339(), invocation,
-        ),
-        None => crate::checkpoint::CheckpointWriter::new(
-            checkpoint_path.clone(), session.id.clone(), started_at, invocation,
-        ),
-    });
+    // A dry-run is resume-inert (SRD-44): it short-circuits ops and may
+    // run against placeholder params, so it must persist NO checkpoint —
+    // otherwise its (synthetic) phase completions poison a later
+    // `--resume-latest`. `Session::new_with_args` already withholds the
+    // `latest` symlink from a dry-run; this withholds the checkpoint too.
+    let checkpoint_writer = std::sync::Arc::new(
+        if crate::session::args_request_dryrun(&args) {
+            crate::checkpoint::CheckpointWriter::disabled(checkpoint_path.clone())
+        } else {
+            match saved_doc.as_ref() {
+                Some(_doc) => crate::checkpoint::CheckpointWriter::from_existing(
+                    checkpoint_path.clone(), saved_doc.clone().unwrap(),
+                    crate::checkpoint::storage::now_rfc3339(), invocation,
+                ),
+                None => crate::checkpoint::CheckpointWriter::new(
+                    checkpoint_path.clone(), session.id.clone(), started_at, invocation,
+                ),
+            }
+        });
 
     Ok(SessionHost {
         session,
@@ -4535,8 +4545,29 @@ fn scan_polydat_binding_lhs(
         // with an ident, etc.).
         let is_binding = bytes.get(j) == Some(&b'=')
             || (bytes.get(j) == Some(&b':') && bytes.get(j + 1) == Some(&b'='));
-        if !is_binding { continue; }
-        out.insert(body[..i].to_string());
+        if is_binding {
+            out.insert(body[..i].to_string());
+            continue;
+        }
+        // Typed cell form: `name: type := default` (e.g.
+        // `shared sstables: u64 := 0`). The `:` here is a type
+        // annotation, not `:=` — skip the type token and accept
+        // iff an assignment follows it. Without this arm, typed
+        // shared/volatile declarations were invisible to the
+        // undeclared-placeholder validator and any `{name}`
+        // reference to one tripped a false positive.
+        if bytes.get(j) == Some(&b':') {
+            let rest = body[j + 1..].trim_start();
+            let te = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            if te > 0 {
+                let after_ty = rest[te..].trim_start();
+                if after_ty.starts_with(":=") || after_ty.starts_with('=') {
+                    out.insert(body[..i].to_string());
+                }
+            }
+        }
     }
 }
 
@@ -5534,6 +5565,19 @@ mod tests {
     }
 
     // ── Polydat binding-LHS-name scanner ──────────────────────────
+
+    #[test]
+    fn scan_polydat_binding_lhs_handles_typed_cell_form() {
+        // `shared name: type := default` — the type annotation sits
+        // between the name and the assignment; the scanner must still
+        // collect the name (undeclared-placeholder false-positive fix).
+        let mut out = std::collections::HashSet::new();
+        scan_polydat_binding_lhs(&mut out,
+            "shared sstables: u64 := 0\nshared measured: f64 := 1.0\nplain := 2\n");
+        assert!(out.contains("sstables"), "{out:?}");
+        assert!(out.contains("measured"), "{out:?}");
+        assert!(out.contains("plain"), "{out:?}");
+    }
 
     #[test]
     fn scan_polydat_binding_lhs_handles_tuple_destructure() {

@@ -49,6 +49,12 @@ pub const CHECKPOINT_VERSION: u32 = 1;
 pub struct CheckpointWriter {
     /// Absolute path to `logs/<session>/checkpoint.jsonl`.
     path: PathBuf,
+    /// When `false` (a dry-run writer), every event is dropped before
+    /// it touches disk and no `checkpoint.jsonl` is created — a dry-run
+    /// records no resumable state (SRD-44). The in-memory mirror is
+    /// still maintained so `snapshot` stays coherent for tests, but
+    /// `resume_hint` stays silent.
+    enabled: bool,
     inner: Mutex<Inner>,
     /// File descriptor of the held flock lockfile
     /// (`logs/<session>/checkpoint.lock`). The descriptor is
@@ -109,6 +115,7 @@ impl CheckpointWriter {
         let file = open_append(&path);
         let writer = Self {
             path,
+            enabled: true,
             inner: Mutex::new(Inner {
                 doc,
                 index: HashMap::new(),
@@ -154,6 +161,7 @@ impl CheckpointWriter {
         let file = open_append(&path);
         let writer = Self {
             path,
+            enabled: true,
             inner: Mutex::new(Inner { doc, index, file }),
             _lock_fd: lock,
         };
@@ -165,6 +173,36 @@ impl CheckpointWriter {
             invocation: new_invocation,
         });
         writer
+    }
+
+    /// A resume-inert writer for dry-runs: no `checkpoint.jsonl` is
+    /// created, no flock is taken, and every lifecycle event is dropped
+    /// before it reaches disk. A dry-run short-circuits ops and may run
+    /// against placeholder params, so persisting its phases as
+    /// "completed" would poison a later `--resume-latest` (SRD-44) —
+    /// this constructor guarantees it can't. The file handle targets
+    /// `/dev/null` purely to keep the struct total; `append_event`
+    /// never writes to it.
+    pub fn disabled(path: PathBuf) -> Self {
+        let doc = Checkpoint {
+            version: CHECKPOINT_VERSION,
+            session: String::new(),
+            started_at: String::new(),
+            checkpoint_at: String::new(),
+            invocation: 0,
+            phases: Vec::new(),
+        };
+        let file = open_append(std::path::Path::new("/dev/null"));
+        Self {
+            path,
+            enabled: false,
+            inner: Mutex::new(Inner {
+                doc,
+                index: HashMap::new(),
+                file,
+            }),
+            _lock_fd: None,
+        }
     }
 
     /// Declare a phase the run plans to execute. Called during
@@ -388,6 +426,11 @@ impl CheckpointWriter {
     /// phase-lifecycle boundary so a crash between ticks loses
     /// at most one tick's worth of progress.
     pub fn flush(&self) -> Result<(), String> {
+        // Nothing is ever written on a dry-run writer, and its handle is
+        // `/dev/null` (which rejects fdatasync) — so flush is a no-op.
+        if !self.enabled {
+            return Ok(());
+        }
         let g = self.inner.lock().unwrap();
         match g.file.sync_data() {
             Ok(()) => Ok(()),
@@ -405,6 +448,10 @@ impl CheckpointWriter {
     /// `checkpoint: idempotent`, return a multi-line hint string
     /// the runtime can show the operator on exit.
     pub fn resume_hint(&self) -> Option<String> {
+        // A dry-run persisted nothing — never advise resuming it.
+        if !self.enabled {
+            return None;
+        }
         let cp = self.snapshot();
         let recoverable = cp.phases.iter().any(|e| {
             e.skip_eligible
@@ -435,6 +482,11 @@ impl CheckpointWriter {
     /// updating the mirror first (so a reader-fold and the
     /// in-memory snapshot stay equivalent).
     fn append_event(&self, event: CheckpointData) {
+        // Dry-run writer: drop every event before it touches disk so no
+        // resumable state is ever persisted (SRD-44).
+        if !self.enabled {
+            return;
+        }
         let mut g = self.inner.lock().unwrap();
         let mut line = match serde_json::to_string(&event) {
             Ok(s) => s,
@@ -623,6 +675,26 @@ mod tests {
         assert!(lines[1].contains("\"type\":\"phase_declared\""));
         assert!(lines[2].contains("\"type\":\"phase_started\""));
         assert!(lines[3].contains("\"type\":\"phase_completed\""));
+    }
+
+    #[test]
+    fn disabled_writer_persists_nothing() {
+        // SRD-44 dry-run gate: a disabled writer must create NO
+        // checkpoint.jsonl and drop every lifecycle event, so a later
+        // `--resume-latest` can never pick a dry-run's phases up.
+        let dir = tempdir();
+        let path = dir.join("checkpoint.jsonl");
+        let w = CheckpointWriter::disabled(path.clone());
+        let id = ident("teardown", "(table=changeme_default)");
+        w.declare_phase(id.clone(), true);
+        w.phase_started(&id);
+        w.phase_completed(&id, 1.0);
+        w.flush().expect("flush is a harmless no-op");
+
+        assert!(!path.exists(),
+            "dry-run must not create a checkpoint file at {}", path.display());
+        assert!(w.resume_hint().is_none(),
+            "dry-run must never advertise a resumable session");
     }
 
     #[test]

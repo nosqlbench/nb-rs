@@ -387,6 +387,25 @@ pub fn session_dir_named(name: &str) -> PathBuf {
     default_sessions_root().join(name)
 }
 
+/// Whether the CLI args request a dry-run (any `dryrun=<mode>` with a
+/// non-empty, non-false value). A dry-run is resume-INERT: it must NOT
+/// claim the `latest` symlink and must NOT write a checkpoint, so a
+/// later `--resume-latest` can never pick a dry-run up and resume from
+/// its (placeholder / short-circuited) phases (SRD-44). Detected from
+/// raw args so both `Session::new_with_args` (the `latest` claim) and
+/// `SessionHost::setup` (the checkpoint writer) gate on one signal.
+pub fn args_request_dryrun(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        let a = a.strip_prefix("--").unwrap_or(a);
+        a.strip_prefix("dryrun=")
+            .map(|v| {
+                let v = v.trim();
+                !v.is_empty() && v != "false" && v != "0"
+            })
+            .unwrap_or(false)
+    })
+}
+
 /// Point `<sessions-root>/latest` at `session_dir`, but only when
 /// the dir lives under the sessions root — a path the user
 /// redirected elsewhere (`--session-path /tmp/x`) is left alone,
@@ -1277,7 +1296,12 @@ impl Session {
         //   `feedback_tests_no_project_root` rule), and
         // - `logs/latest` shouldn't get hijacked by test fixtures
         //   or one-off `--session-path` runs.
-        if target_is_under(&logs, &output_dir) {
+        // A dry-run is resume-inert: it must not hijack `latest` (nor
+        // the per-artifact convenience links). Leaving `latest` pointing
+        // at the prior REAL run is exactly what lets a subsequent
+        // `--resume-latest` resume that run instead of the throwaway
+        // dry-run. See `args_request_dryrun` / SRD-44.
+        if target_is_under(&logs, &output_dir) && !args_request_dryrun(args) {
             let _ = std::fs::create_dir_all(&logs);
             let latest = logs.join("latest");
             let _ = std::fs::remove_file(&latest);
@@ -1567,6 +1591,22 @@ mod tests {
         use std::sync::Mutex;
         static LOCK: Mutex<()> = Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn dryrun_detection_from_args() {
+        let yes = |a: &[&str]| {
+            args_request_dryrun(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        assert!(yes(&["run", "workload=w", "dryrun=op"]));
+        assert!(yes(&["run", "dryrun=phase,wiring"]));
+        assert!(yes(&["run", "--dryrun=structure"]));
+        // A real run — no dryrun signal.
+        assert!(!yes(&["run", "workload=w", "scenario=incremental"]));
+        // Explicit falsey values are not a dry-run.
+        assert!(!yes(&["run", "dryrun=false"]));
+        assert!(!yes(&["run", "dryrun=0"]));
+        assert!(!yes(&["run", "dryrun="]));
     }
 
     #[test]
