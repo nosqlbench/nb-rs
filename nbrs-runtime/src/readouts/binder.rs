@@ -1138,7 +1138,9 @@ mod tests {
         let out = sink.take();
         assert!(out.contains("✓"), "phase_outcome's ✓ missing: {out}");
         assert!(out.contains("[setup]"), "phase name missing: {out}");
-        assert!(out.contains("[1/2]"), "seq prefix missing: {out}");
+        // Single-placement rule: the margin owns [n/N]; the body must
+        // NOT carry a seq prefix.
+        assert!(!out.contains("[1/2]"), "seq must not appear in body: {out}");
     }
 
     #[test]

@@ -115,6 +115,22 @@ metrics:    workload-emphasised metrics";
     s.len()
 }
 
+/// The METER SLOT: `NN%` when the subject has a completion fraction,
+/// or a latency summary (`p50:1.2ms p99:9.8ms`) for open-ended
+/// subjects (daemon background pollers), which have no "done" to
+/// meter — the space carries the signal an operator actually watches
+/// on a poller. Empty only when open-ended with no samples yet.
+fn meter_slot(_ctx: &dyn ReadoutContext, frac: Option<f64>) -> String {
+    // Open-ended subjects render NOTHING here: the header aligns with
+    // workload-level tracking; their latency display lives in the
+    // detail row's contextual gutter (see the sink's latency_gutter),
+    // the space a progress meter would otherwise own.
+    match frac {
+        Some(f) => format!("{:.0}%", f * 100.0),
+        None => String::new(),
+    }
+}
+
 fn render_labeled(
     ctx: &dyn ReadoutContext,
     out: &mut dyn ReadoutBuf,
@@ -159,14 +175,13 @@ fn render_labeled(
         let depth_indent = ctx.depth_indent();
         let activity_name = ctx.activity_name();
         let spinner = spinner_frame(ctx.refresh_tick());
-        let seq_prefix: String = match ctx.subject_seq() {
-            Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
-            None => String::new(),
-        };
+        // No seq prefix: the margin's [n/N] slot owns the phase
+        // counter (single-placement rule — nothing the gutter
+        // carries is repeated in body text).
         let mut tmp = String::with_capacity(64);
         let _ = write!(
             &mut tmp,
-            "{depth_indent}{cyan}{spinner}{reset} {seq_prefix}{bold}{blue}[{activity_name}]{reset} {dim}starting…{reset}",
+            "{depth_indent}{cyan}{spinner}{reset} {bold}{blue}[{activity_name}]{reset} {dim}starting…{reset}",
         );
         let len = tmp.len();
         let _ = out.write_str(&tmp);
@@ -181,11 +196,12 @@ fn render_labeled(
     // 100% for the whole wait. `cycles_completed` matches
     // what `phase_outcome` reports and what rate / ETA derive
     // from, so the running bar and the final DONE line agree.
-    let pct: f64 = if total_extent > 0 {
-        ops_completed as f64 * 100.0 / total_extent as f64
-    } else {
-        0.0
-    };
+    // A derived-progress override (a producer measuring its own
+    // completion, e.g. `poll.progress`) wins over both — the
+    // cycle basis pins at 0% for a single long measured op.
+    // Single fraction source (override → rows → cycles); `None` for
+    // open-ended subjects, whose meter slot renders latency instead.
+    let frac = ctx.progress_fraction();
     // ok% excludes SKIPS — a skipped (`if:`-gated) op is neither a
     // success nor a failure, so the basis is result-producing ops only
     // (`cycles_completed - skips == result_total`).
@@ -198,6 +214,16 @@ fn render_labeled(
         successes as f64 * 100.0 / result_total as f64
     } else {
         100.0
+    };
+    // All ops skipped so far → no results to be ok about: `ok:—`
+    // instead of a fabricated 100%, plus an explicit skip counter so
+    // the line reads as "gated off", not "measured clean".
+    let ok_str: String = if result_total > 0 {
+        format!("{ok_pct:.0}%")
+    } else if skips > 0 {
+        "—".to_string()
+    } else {
+        "100%".to_string()
     };
     // Attempt success rate (SRD-91): fraction of RESOLVED
     // adapter invocations that succeeded. Denominator is
@@ -216,6 +242,11 @@ fn render_labeled(
     };
     let rate: f64 = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
     let rate_str = format_rate(rate);
+    let skips_chip: String = if skips > 0 {
+        format!(" {dim}skip:{skips}{reset}")
+    } else {
+        String::new()
+    };
 
     // The spinner moved OUT of this line — it now replaces
     // the `│` divider on the row-2 margin (built by the sink
@@ -243,22 +274,34 @@ fn render_labeled(
     // as past→future without needing a label. When ETA can't
     // be computed (no extent / no progress) the span
     // degenerates to just elapsed.
-    let elapsed_str = format_eta(elapsed);
+    // ETA only: elapsed lives in the margin's leaf slot (single-
+    // placement rule), so the body never re-emits it.
+    // Open-ended phases (daemons, elapsed-bounded cursors) have no
+    // meaningful completion target — the extent-based fallback must
+    // not resurrect an ETA that `eta_secs()` already declined.
+    // The chip carries BOTH the remaining time and the total phase
+    // estimate (`elapsed + remaining`), so the operator reads the
+    // full expected wall time without adding the margin's elapsed
+    // to the countdown in their head.
+    let eta_chip = |secs: f64| format!(
+        " {dim}(~{} left of ~{}){reset}",
+        format_eta(secs), format_eta(elapsed + secs));
     let eta = match ctx.eta_secs() {
-        Some(secs) =>
-            format!(" {dim}({elapsed_str}/{}){reset}", format_eta(secs)),
-        None if total_extent > 0 && rate > 0.0 => {
+        Some(secs) => eta_chip(secs),
+        // Cursor phases (`rows_total > 0`) never take this arm: the
+        // extent is row-denominated while `rate`/`finished` are
+        // op-denominated (one op strides N rows), so the quotient
+        // would overstate the ETA by the stride factor.
+        None if !ctx.open_ended() && ctx.rows_total() == 0
+            && total_extent > 0 && rate > 0.0 => {
             let remaining = total_extent.saturating_sub(finished) as f64;
-            format!(" {dim}({elapsed_str}/{}){reset}", format_eta(remaining / rate))
+            eta_chip(remaining / rate)
         }
-        None =>
-            format!(" {dim}({elapsed_str}){reset}"),
-    };
-
-    let seq_prefix: String = match ctx.subject_seq() {
-        Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
         None => String::new(),
     };
+
+    // Margin owns [n/N]; body omits it (single-placement rule).
+    let seq_prefix: String = String::new();
     let depth_indent = ctx.depth_indent();
     let activity_name = ctx.activity_name();
     let chips = ctx.status_metric_chips();
@@ -310,8 +353,16 @@ fn render_labeled(
     // and the total extent the phase is bounded by. With no extent
     // (unbounded sources, when those exist), we elide the `/T` half and
     // show just the running counter.
+    // Open-ended phase: neither a rows target nor a cycle extent is
+    // a real completion bound — show just the running counter.
     let rows_total = ctx.rows_total();
-    let cycles_chip = if rows_total > 0 {
+    let cycles_chip = if ctx.open_ended() {
+        if ops_completed > 0 {
+            format!(" {dim}cycles:{ops_completed}{reset}")
+        } else {
+            String::new()
+        }
+    } else if rows_total > 0 {
         let rows_consumed = ctx.rows_consumed();
         let rows_rate = if elapsed > 0.0 { rows_consumed as f64 / elapsed } else { 0.0 };
         format!(" {dim}rows:{rows_consumed}/{rows_total} {}{reset}", format_rate(rows_rate))
@@ -373,11 +424,12 @@ fn render_labeled(
     let _ = write!(
         &mut tmp,
         "{memo_header}\
-{depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{bold}{blue}{activity_name}{reset}{coords_part} {pct:.0}%\n\
-{depth_indent}    {dim}{rate_str}{reset} {ok_tone}ok:{ok_pct:.0}%{reset} \
-{att_tone}att:{att_pct:.0}%{reset} \
+{depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{bold}{blue}{activity_name}{reset}{coords_part} {meter}\n\
+{depth_indent}    {dim}{rate_str}{reset} {ok_tone}ok:{ok_str}{reset} \
+{att_tone}att:{att_pct:.0}%{reset}{skips_chip} \
 {err_tone}e:{errors} r:{retries}{reset} {dim}c:{concurrency}{reset}{cycles_chip}{eta}\
 {key_line}",
+        meter = meter_slot(ctx, frac),
     );
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -413,10 +465,12 @@ fn render_expanded(
 
     // See `render_labeled` — pct must use completed cycles so
     // dispatched-but-not-yet-returned ops don't pin the bar
-    // at 100% during long synchronous waits.
-    let pct: f64 = if total_extent > 0 {
-        ops_completed as f64 * 100.0 / total_extent as f64
-    } else { 0.0 };
+    // at 100% during long synchronous waits; a derived-progress
+    // override (measured completion) wins over both.
+    // Single fraction source (override → rows → cycles); `None` for
+    // open-ended subjects, whose meter slot renders latency instead.
+    let frac = ctx.progress_fraction();
+    let pct: f64 = frac.map(|f| f * 100.0).unwrap_or(0.0);
     // ok% over RESOLVED ops only (`cycles_completed - skips ==
     // result_total`) — a skip is neither a success nor a failure,
     // so it must not dilute the rate. Matches `render_labeled`.
@@ -452,18 +506,17 @@ fn render_expanded(
     let chips = ctx.status_metric_chips();
     let adapter_status = ctx.adapter_counters_text();
     let batch_info = ctx.batch_info_text();
-    let seq_prefix: String = match ctx.subject_seq() {
-        Some((s, t)) => format!("[{s}/{t}] "),
-        None => String::new(),
-    };
+    // Margin owns [n/N]; body omits it (single-placement rule).
+    let seq_prefix: String = String::new();
 
     let mut tmp = String::with_capacity(384);
     let _ = write!(
         &mut tmp,
         "{cyan}{spinner}{reset} {seq_prefix}{activity_name}\n  \
-         progress:   {pct:.0}% {dim}{bar}{reset}  {eta}\n  \
+         progress:   {meter} {dim}{bar}{reset}  {eta}\n  \
          throughput: {rate_str}  ok:{ok_pct:.0}%  att:{att_pct:.0}%\n  \
          counters:   e:{errors} r:{retries} c:{concurrency}",
+        meter = meter_slot(ctx, frac),
         spinner = spinner_frame(ctx.refresh_tick()),
     );
     if !adapter_status.is_empty() {
@@ -488,23 +541,21 @@ fn render_compact(
     ctx: &dyn ReadoutContext,
     out: &mut dyn ReadoutBuf,
 ) -> usize {
-    let total_extent = ctx.cycles_total();
     let finished     = ctx.ops_finished();
-    let ops_completed= ctx.cycles_completed();
     let elapsed      = ctx.elapsed_secs();
-    // Pct from completed cycles — see `render_labeled`.
-    let pct: f64 = if total_extent > 0 {
-        ops_completed as f64 * 100.0 / total_extent as f64
-    } else {
-        0.0
-    };
+    // Pct from completed cycles — see `render_labeled`; a
+    // derived-progress override (measured completion) wins.
+    // Single fraction source (override → rows → cycles); `None` for
+    // open-ended subjects, whose meter slot renders latency instead.
+    let frac = ctx.progress_fraction();
+    let _pct: f64 = frac.map(|f| f * 100.0).unwrap_or(0.0);
     let rate: f64 = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
     let mut tmp = String::with_capacity(32);
     let _ = write!(
         &mut tmp,
-        "{spin} {pct:.0}% {rate}",
+        "{spin} {meter} {rate}",
+        meter = meter_slot(ctx, frac),
         spin = spinner_frame(ctx.refresh_tick()),
-        pct = pct,
         rate = format_rate(rate),
     );
     let len = tmp.len();
@@ -623,10 +674,13 @@ mod tests {
             "two-line break after pct missing: {out:?}");
         assert!(out.contains("50/s ok:100% att:100% e:0 r:0 c:1"),
             "labeled body wrong: {out:?}");
-        // Time span: `(elapsed/eta)`. Both 1s here (elapsed=1,
-        // remaining=cycles_total/rate=50/50=1s).
-        assert!(out.contains("(1s/1s)"),
-            "elapsed/ETA span missing for finite-rate phase: {out:?}");
+        // Time chip is ETA-ONLY (single-placement rule: elapsed is
+        // the margin leaf slot's datum). remaining=cycles_total/rate
+        // = 50/50 = 1s.
+        assert!(out.contains("(~1s left of ~2s)"),
+            "ETA chip missing for finite-rate phase: {out:?}");
+        assert!(!out.contains("(1s/1s)"),
+            "elapsed must not be re-emitted in the body: {out:?}");
     }
 
     #[test]
@@ -816,12 +870,11 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
-        // The time span itself collapses to elapsed-only;
-        // `(0s)` appears, but no `0s/...` ETA half.
-        assert!(out.contains("(0s)") || out.contains("(1s)"),
-            "elapsed-only time span missing: {out}");
-        assert!(!out.contains("/0s") && !out.contains("0s/"),
-            "ETA half should be suppressed when cycles_total=0: {out}");
+        // No extent and no override → no ETA is computable, and
+        // elapsed belongs to the margin — so the body carries NO
+        // time chip at all (single-placement rule).
+        assert!(!out.contains(" left)") && !out.contains("(0s") && !out.contains("(1s"),
+            "no time chip expected when ETA is not computable: {out}");
     }
 
     #[test]

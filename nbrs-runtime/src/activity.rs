@@ -264,6 +264,23 @@ pub struct ActivityMetrics {
     pub ops_finished: std::sync::atomic::AtomicU64,
     pub result_elements: Arc<Counter>,
     pub result_bytes: Arc<Counter>,
+    /// Derived phase-progress override, in parts-per-million of the
+    /// completion fraction (0..=1_000_000); `u64::MAX` = unset. When
+    /// set, status surfaces render THIS fraction for the phase's
+    /// completion bar / percentage instead of the cycles-based
+    /// `cycles_completed / total_extent` — load-bearing for phases
+    /// whose single long op measures its own progress (e.g. a
+    /// `poll:` await publishing `completion_ratio` from
+    /// `system_views.sstable_tasks`), where the cycle count pins the
+    /// bar at 0% for the whole wait. Stored as integer ppm so the
+    /// producer/consumer handoff stays a lock-free atomic.
+    pub progress_override_ppm: std::sync::atomic::AtomicU64,
+    /// Elapsed milliseconds of the producer that published
+    /// [`Self::progress_override_ppm`] (e.g. the poll's own elapsed),
+    /// `u64::MAX` = unset. Carried so displays can derive an ETA on the
+    /// measured basis — `elapsed × (1−f)/f` — instead of the cycle
+    /// accounting, which stands still for a single long measured op.
+    pub progress_override_elapsed_ms: std::sync::atomic::AtomicU64,
     /// Per-error-type counters, keyed by error_name.
     /// Created on demand when a new error type is first seen.
     /// Captured via the [`DynamicCapture`] hook — the registry on
@@ -357,6 +374,8 @@ impl ActivityMetrics {
             ops_finished: std::sync::atomic::AtomicU64::new(0),
             result_elements: Arc::new(Counter::new(labels.with("name", "result_elements"))),
             result_bytes: Arc::new(Counter::new(labels.with("name", "result_bytes"))),
+            progress_override_ppm: std::sync::atomic::AtomicU64::new(u64::MAX),
+            progress_override_elapsed_ms: std::sync::atomic::AtomicU64::new(u64::MAX),
             error_type_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
             labels: labels.clone(),
             dispensers: std::sync::Mutex::new(None),
@@ -476,11 +495,71 @@ impl ActivityMetrics {
         self.cycles_total.get()
     }
 
+    /// Publish (or clear, with `None`) the derived phase-progress
+    /// override. `Some(f)` is clamped to `[0.0, 1.0]` and stored in
+    /// ppm; see the field doc on [`Self::progress_override_ppm`].
+    /// Clearing also clears the producer-elapsed companion.
+    pub fn set_progress_override(&self, fraction: Option<f64>) {
+        let ppm = match fraction {
+            Some(f) => (f.clamp(0.0, 1.0) * 1_000_000.0).round() as u64,
+            None => u64::MAX,
+        };
+        self.progress_override_ppm
+            .store(ppm, std::sync::atomic::Ordering::Relaxed);
+        if fraction.is_none() {
+            self.progress_override_elapsed_ms
+                .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// As [`Self::set_progress_override`], additionally recording the
+    /// producer's own elapsed seconds at publish time. Displays derive
+    /// the measured-basis ETA from the pair: `elapsed × (1−f)/f`.
+    pub fn set_progress_override_with_elapsed(&self, fraction: f64, elapsed_secs: f64) {
+        self.set_progress_override(Some(fraction));
+        let ms = (elapsed_secs.max(0.0) * 1000.0).round() as u64;
+        self.progress_override_elapsed_ms
+            .store(ms.min(u64::MAX - 1), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The derived phase-progress override as a fraction in
+    /// `[0.0, 1.0]`, or `None` when no producer has published one.
+    pub fn progress_override(&self) -> Option<f64> {
+        let ppm = self.progress_override_ppm
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (ppm != u64::MAX).then(|| (ppm.min(1_000_000)) as f64 / 1_000_000.0)
+    }
+
+    /// The producer-elapsed seconds recorded with the override, or
+    /// `None` when unset (no producer, or a producer that publishes
+    /// the fraction only).
+    pub fn progress_override_elapsed_secs(&self) -> Option<f64> {
+        let ms = self.progress_override_elapsed_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (ms != u64::MAX).then(|| ms as f64 / 1000.0)
+    }
+
     /// Increment counter for a specific error type. Creates the
     /// counter on first occurrence of each error name. The new
     /// counter is read by the [`DynamicCapture`] hook on every
     /// capture tick — registration on `Component` is implicit
     /// through the hook, not a per-name `register_instrument` call.
+    /// Top-N error types by count, rendered `name=count` comma-joined —
+    /// empty string when no typed errors were recorded. Gives failure
+    /// messages their WHAT (which error families drove the counters)
+    /// without a metrics query.
+    pub fn top_error_types(&self, n: usize) -> String {
+        let map = self.error_type_counts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut v: Vec<(String, u64)> = map.iter()
+            .map(|(k, c)| (k.clone(), c.get()))
+            .filter(|(_, c)| *c > 0)
+            .collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        v.truncate(n);
+        v.iter().map(|(k, c)| format!("{k}={c}"))
+            .collect::<Vec<_>>().join(", ")
+    }
+
     pub fn count_error_type(&self, error_name: &str) {
         let mut map = self.error_type_counts.lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -610,6 +689,12 @@ impl ActivityMetrics {
         // output sequence.
         let mut candidates: Vec<(String, String)> = Vec::new();
         for live in self.collect_relevancy_live() {
+            // Zero evaluations (e.g. every op `if:`-skipped) means
+            // there is no measurement — omit the chip rather than
+            // fabricating `recall:0.00%` from an empty aggregate.
+            if live.total_count == 0 {
+                continue;
+            }
             candidates.push((
                 live.name,
                 format!("{:.2}%", live.total_mean * 100.0),
@@ -841,6 +926,14 @@ pub struct Activity {
     /// load it every tick without blocking the executor.
     /// Default empty.
     pub memo: Arc<arc_swap::ArcSwap<String>>,
+    /// Phase gutter — the contextual left-gutter cell content that
+    /// the `gutter` wrapper publishes (distinct from `memo`, which
+    /// owns the `[[ ... ]]` header line). `None` ⇒ the display
+    /// derives the cell automatically (completion bar for metered
+    /// phases, latency trend for daemons); `Some` overrides that
+    /// derivation with the workload-declared spec. Lock-free
+    /// atomic for the same reason as `memo`.
+    pub gutter: Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>>,
     /// SRD-75 phase-poll context. When present, the fiber
     /// loop checks the predicate after each source-exhaustion
     /// event; if false and the timeout hasn't elapsed, the
@@ -1035,6 +1128,7 @@ impl Activity {
             wrappers_override: None,
             wrap_default_order: None,
             memo: Arc::new(arc_swap::ArcSwap::from_pointee(String::new())),
+            gutter: Arc::new(arc_swap::ArcSwapOption::empty()),
             phase_poll: None,
         }
     }
@@ -1395,9 +1489,18 @@ impl Activity {
             {
                 let allowed_extras = adapter.known_op_params();
                 let workload_keys = &activity.workload_params;
+                // A params key is legitimate if it is (1) a non-wrapper
+                // core param, (2) a wrapper field declared via the
+                // registry's `owned_fields` — the durable, type-safe
+                // route that replaced the fragile "it's also a CLI
+                // param" coincidence for fields like `errors`/`tries`,
+                // (3) a CLI param blast-merged into every op's params at
+                // parse time, (4) an adapter-declared extra, or (5) a
+                // workload-level param.
                 let unknown_params: Vec<&String> = template.params.keys()
                     .filter(|k| {
                         !crate::validation::CORE_OP_PARAMS.contains(&k.as_str())
+                            && !wrapper_registry.owns_field(k)
                             && !crate::runner::is_cli_param(k)
                             && !allowed_extras.contains(&k.as_str())
                             && !workload_keys.contains_key(k.as_str())
@@ -1408,18 +1511,21 @@ impl Activity {
                         .map(|s| s.as_str())
                         .collect::<Vec<_>>()
                         .join(", ");
+                    let wrapper_vocab = wrapper_registry.all_owned_fields()
+                        .into_iter().collect::<Vec<_>>().join(", ");
                     crate::diag!(crate::observer::LogLevel::Error,
                         "error: op '{}' has unknown params keys [{list}] — \
-                         not in the core vocabulary, not declared by \
-                         adapter '{}', and not declared as a workload-level \
-                         param. Known core op params: [{}]. Adapter \
-                         extras: [{}]. Did you mean to put this under a \
-                         declared param, or did you misspell `relevancy:` \
-                         / `verify:` / nest it under a wrapper key the \
-                         runtime doesn't read?",
+                         not a core op param, not a wrapper field, not \
+                         declared by adapter '{}', and not a workload-level \
+                         param. Known core op params: [{}]. Wrapper fields: \
+                         [{}]. Adapter extras: [{}]. Did you misspell a \
+                         wrapper key (e.g. `verify:` / `poll:` / `readout:`) \
+                         or nest something under a key the runtime doesn't \
+                         read?",
                         template.name,
                         adapter.name(),
                         crate::validation::CORE_OP_PARAMS.join(", "),
+                        wrapper_vocab,
                         allowed_extras.join(", "),
                     );
                     return true; // stop — misconfiguration
@@ -1685,6 +1791,7 @@ impl Activity {
                         Some(n) if n != 1 => crate::wrappers::TriesDispenser::wrap(
                             raw, n, activity.metrics.clone(),
                             backoff_base_ms, backoff_max_ms, backoff_ratio,
+                            activity.stop_view(),
                         ),
                         _ => raw,
                     };
@@ -1813,8 +1920,21 @@ impl Activity {
                                 // responses like Jolokia's
                                 // `{value, status, …}`.
                                 let json_path = get_str("json_path");
-                                let (d, _pm) = crate::wrappers::PollingDispenser::wrap(
+                                // `memo` / `progress` — live-status templates
+                                // re-rendered per poll iteration against the
+                                // wires: `memo` publishes the measured values
+                                // to the activity memo (default: append
+                                // `measured N row(s)…` to the base memo);
+                                // `progress` parses to an f64 fraction that
+                                // drives the phase completion bar via the
+                                // derived-progress override.
+                                let each_memo = get_str("memo");
+                                let progress_template = get_str("progress");
+                                let (d, _pm) = crate::wrappers::PollingDispenser::wrap_with_status(
                                     current.clone(), interval, timeout, max_error_retries, metric_name, min_rows, max_rows, json_path.clone(),
+                                    each_memo, Some(activity.memo.clone()),
+                                    progress_template, Some(activity.metrics.clone()),
+                                    activity.stop_view(),
                                 );
                                 crate::diag!(crate::observer::LogLevel::Debug,
                                     "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={}, rows=[{}..={}], json_path={:?})",
@@ -2027,6 +2147,60 @@ impl Activity {
                                     );
                                     false
                                 }
+                            }
+                            crate::wrappers::gutter::NAME => {
+                                // Gutter wrapper: parse `gutter:` (layout-
+                                // string shorthand or `{bar}` / `{spark}`
+                                // map), wrap with the activity's shared
+                                // gutter slot.
+                                use crate::wrappers::gutter::GutterKind;
+                                let parsed = match template.params.get("gutter") {
+                                    Some(serde_json::Value::String(s)) if !s.is_empty() =>
+                                        Some((GutterKind::Text, s.clone())),
+                                    Some(serde_json::Value::Object(obj)) => {
+                                        if let Some(t) = obj.get("bar").and_then(|v| v.as_str()) {
+                                            Some((GutterKind::Bar, t.to_string()))
+                                        } else {
+                                            obj.get("spark").and_then(|v| v.as_str())
+                                                .map(|t| (GutterKind::Spark, t.to_string()))
+                                        }
+                                    }
+                                    _ => None,
+                                };
+                                match parsed {
+                                    Some((kind, tmpl)) => {
+                                        current = crate::wrappers::GutterDispenser::wrap(
+                                            current.clone(),
+                                            kind,
+                                            tmpl,
+                                            activity.gutter.clone(),
+                                        );
+                                        false
+                                    }
+                                    None => {
+                                        crate::diag!(crate::observer::LogLevel::Warn,
+                                            "op '{}': gutter: requires a layout string \
+                                             or one of `bar:` / `spark:`",
+                                            template.name);
+                                        false
+                                    }
+                                }
+                            }
+                            crate::wrappers::readout::NAME => {
+                                // Readout wrapper: op-level status leaf. Wrap the
+                                // inner op with a lifecycle reporter keyed by the
+                                // op-template name; the parent phase is resolved at
+                                // run time from the task-local CURRENT_PHASE. Only
+                                // `readout: visible` triggers it (see the wrapper's
+                                // `triggers`), so this arm always wraps when reached.
+                                current = crate::wrappers::ReadoutDispenser::wrap(
+                                    current.clone(),
+                                    template.name.clone(),
+                                );
+                                crate::diag!(crate::observer::LogLevel::Debug,
+                                    "  op '{}': readout visible (op-level status line)",
+                                    template.name);
+                                false
                             }
                             crate::wrappers::errors::NAME => {
                                 // SRD-82 Part 3b — hand-placed OUTERMOST after
@@ -2441,8 +2615,24 @@ impl Activity {
                     // repeats it (matches the `[class] message` convention
                     // used by the cycle-/daemon-error paths).
                     let actual = state.describe();
+                    // Identity + attribution: the tripped message must say
+                    // WHICH phase instance (labels carry the sweep cell /
+                    // partition) and WHAT failed (top error types by
+                    // count) — not just why the predicate fired.
+                    let labels = &activity.config.phase_labels;
+                    let where_part = if labels.is_empty() {
+                        format!("phase '{}'", activity.config.name)
+                    } else {
+                        format!("phase '{}' ({labels})", activity.config.name)
+                    };
+                    let top_errs = activity.metrics.top_error_types(3);
+                    let what_part = if top_errs.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — top errors: {top_errs}")
+                    };
                     if outcome.is_failure() {
-                        let msg = format!("stop condition tripped — actual: {actual} — failing phase");
+                        let msg = format!("stop condition tripped in {where_part} — actual: {actual}{what_part} — failing phase");
                         crate::diag!(crate::observer::LogLevel::Error,
                             "activity '{}': {reason} — {msg}", activity.config.name);
                         if let Ok(mut slot) = activity.stop_reason.lock()
@@ -2465,7 +2655,7 @@ impl Activity {
                             });
                         }
                     } else {
-                        let msg = format!("stop condition tripped — actual: {actual} — stopping phase");
+                        let msg = format!("stop condition tripped in {where_part} — actual: {actual}{what_part} — stopping phase");
                         crate::diag!(crate::observer::LogLevel::Warn,
                             "activity '{}': {reason} — {msg}", activity.config.name);
                         if let Ok(mut slot) = activity.stop_reason.lock()
@@ -2812,6 +3002,8 @@ impl Activity {
                     activity.memo.as_ref(),
                     final_seq,
                     final_depth,
+                    // End-of-phase: the subject is closed, never open-ended.
+                    false,
                 );
                 let phase_status_default = {
                     let readout = crate::readouts::Registry::lookup("phase_status")

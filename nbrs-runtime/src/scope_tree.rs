@@ -142,20 +142,7 @@ impl ScopeKind {
             },
             ScopeKind::Phase { name } => format!("phase '{name}'"),
             ScopeKind::OpTemplate { name } => format!("op '{name}'"),
-            ScopeKind::Bindings { source } => {
-                // Render as a one-line summary; long source
-                // blocks are truncated for readability in
-                // diagnostic output.
-                let one_line: String = source.lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                if one_line.len() > 80 {
-                    format!("bindings: {}…", &one_line[..77])
-                } else {
-                    format!("bindings: {one_line}")
-                }
-            }
+            ScopeKind::Bindings { source } => bindings_label(source),
         }
     }
 }
@@ -1883,5 +1870,41 @@ mod tests {
         // Fix: scoped lookup picks the right descendant.
         assert_eq!(tree.find_bindings_scope_under(3, &bindings_source), Some(4));
         assert_eq!(tree.find_bindings_scope_under(6, &bindings_source), Some(7));
+    }
+}
+
+/// One-line display label for a scenario-level `bindings:` scope.
+///
+/// Summarizes the names the scope DEFINES (`x := …`, `shared y := …`,
+/// `extern z: T = …`, `input w: T`) instead of echoing raw source —
+/// the first source line is often a comment, which read as an
+/// unnatural, repeating emission in the scenario-tree readout.
+/// Comment-only / empty sources degrade to a bare `bindings:`.
+pub fn bindings_label(source: &str) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    for line in source.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let t = t.strip_prefix("shared ").or_else(|| t.strip_prefix("volatile "))
+            .or_else(|| t.strip_prefix("final ")).unwrap_or(t);
+        let t = t.strip_prefix("extern ").or_else(|| t.strip_prefix("input ")).unwrap_or(t);
+        let ident_end = t.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(t.len());
+        if ident_end == 0 {
+            continue;
+        }
+        let rest = t[ident_end..].trim_start();
+        if rest.starts_with(":=") || rest.starts_with(':') {
+            let name = &t[..ident_end];
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    match names.len() {
+        0 => "bindings:".to_string(),
+        1..=4 => format!("bindings: {}", names.join(", ")),
+        n => format!("bindings: {} (+{} more)", names[..4].join(", "), n - 4),
     }
 }

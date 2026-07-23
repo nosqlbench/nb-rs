@@ -502,13 +502,10 @@ fn render_compact_value(
     let glyph_color = status_color(&outcome, color);
     let glyph = outcome.glyph();
 
-    let cycles = ctx.cycles_completed();
-    let total_extent = ctx.cycles_total();
-    let pct: f64 = if total_extent > 0 {
-        cycles as f64 * 100.0 / total_extent as f64
-    } else {
-        100.0
-    };
+    // Fraction basis via ctx.progress_fraction(): rows for batched
+    // phases (cycles basis showed "1%" for a completed stride-100
+    // batch load), cycles otherwise, override first.
+    let pct: f64 = ctx.progress_fraction().map(|f| f * 100.0).unwrap_or(100.0);
     let elapsed = ctx.elapsed_secs();
     let depth_indent = ctx.depth_indent();
     let name = ctx.subject_name();
@@ -594,19 +591,15 @@ fn render_expanded_value(
     let ok_pct: f64 = if result_total > 0 {
         ok as f64 * 100.0 / result_total as f64
     } else { 100.0 };
-    let pct: f64 = if total_extent > 0 {
-        cycles as f64 * 100.0 / total_extent as f64
-    } else { 100.0 };
+    let pct: f64 = ctx.progress_fraction().map(|f| f * 100.0).unwrap_or(100.0);
     let rate: f64 = if elapsed > 0.0 { consumed as f64 / elapsed } else { 0.0 };
     let rate_str = format_rate(rate);
 
     let err_color = if errors > 0 || retries > 0 { yellow } else { dim };
     let labels = ctx.subject_labels();
     let depth_indent = ctx.depth_indent();
-    let seq_part: String = match ctx.subject_seq() {
-        Some((s, t)) => format!(" {dim}[{s}/{t}]{reset}"),
-        None => String::new(),
-    };
+    // Margin owns [n/N] (single-placement rule) — body omits it.
+    let seq_part: String = String::new();
     // SRD-? — Expanded LOD: each row already labelled
     // (`coords:`), so the wrap-aware folder gets generous
     // available-width by passing `head_consumed == coords_label_width`.
@@ -811,10 +804,8 @@ fn render_labeled_explanation(
     let reset  = if color { "\x1b[0m"  } else { "" };
 
     let depth_indent = ctx.depth_indent();
-    let seq_part: String = match ctx.subject_seq() {
-        Some(_) => format!("{dim}[idx/total]{reset} "),
-        None => String::new(),
-    };
+    // Margin owns [n/N] (single-placement rule) — body omits it.
+    let seq_part: String = String::new();
     let coords_part: String = if ctx.subject_labels().is_empty() {
         String::new()
     } else {
@@ -883,16 +874,25 @@ fn render_labeled_value(
     // bumped cycles-first, so this can momentarily dip below `ok` — it is
     // never truly < ok. Clamp up so ok% stays <= 100%.
     let result_total = cycles.saturating_sub(skips).max(ok);
-    let ok_pct: f64 = if result_total > 0 {
-        ok as f64 * 100.0 / result_total as f64
+    // A phase where every op skipped has NO results to be ok about —
+    // `ok:—` instead of a fabricated 100%, and the skip count shown
+    // so the line reads as "gated off", not "measured clean".
+    let ok_str: String = if result_total > 0 {
+        format!("{:.0}%", ok as f64 * 100.0 / result_total as f64)
+    } else if skips > 0 {
+        "—".to_string()
     } else {
-        100.0
+        "100%".to_string()
     };
-    let pct: f64 = if total_extent > 0 {
-        cycles as f64 * 100.0 / total_extent as f64
+    let skips_chip: String = if skips > 0 {
+        format!(" {dim}skip:{skips}{reset}")
     } else {
-        100.0
+        String::new()
     };
+    // Fraction basis via ctx.progress_fraction(): rows for batched
+    // phases (cycles basis showed "1%" for a completed stride-100
+    // batch load), cycles otherwise, override first.
+    let pct: f64 = ctx.progress_fraction().map(|f| f * 100.0).unwrap_or(100.0);
     let rate: f64 = if elapsed > 0.0 {
         consumed as f64 / elapsed
     } else {
@@ -904,10 +904,8 @@ fn render_labeled_value(
 
     let labels = ctx.subject_labels();
     let depth_indent = ctx.depth_indent();
-    let seq_part: String = match ctx.subject_seq() {
-        Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
-        None => String::new(),
-    };
+    // Margin owns [n/N] (single-placement rule) — body omits it.
+    let seq_part: String = String::new();
     // Per-cell completion bar for small phases — preserves
     // the per-op success/failure visibility from `phase_status`
     // through to the completion line so the operator can see
@@ -982,8 +980,8 @@ fn render_labeled_value(
         &mut tmp,
         "{memo_header}\
 {depth_indent}{glyph_color}{glyph}{reset}{bar} {seq}{bold}{blue}[{name}]{reset}{coords} {pct:.0}%\n\
-{depth_indent}    {rate_str} ok:{ok_pct:.0}% \
-{err_color}e:{errors} r:{retries}{reset} c:{concurrency}{chips} \
+{depth_indent}    {rate_str} ok:{ok_str} \
+{err_color}e:{errors} r:{retries}{reset}{skips_chip} c:{concurrency}{chips} \
 {dim}({elapsed:.2}s){reset}",
         depth_indent = depth_indent,
         glyph_color = glyph_color,
@@ -997,7 +995,8 @@ fn render_labeled_value(
         coords = coords_part,
         pct = pct,
         rate_str = rate_str,
-        ok_pct = ok_pct,
+        ok_str = ok_str,
+        skips_chip = skips_chip,
         err_color = err_color,
         errors = errors,
         retries = retries,
@@ -1038,10 +1037,8 @@ fn render_labeled_value_failed(
     let labels = ctx.subject_labels();
     let depth_indent = ctx.depth_indent();
     let name = ctx.subject_name();
-    let seq_part: String = match ctx.subject_seq() {
-        Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
-        None => String::new(),
-    };
+    // Margin owns [n/N] (single-placement rule) — body omits it.
+    let seq_part: String = String::new();
     let seq_visible: usize = match ctx.subject_seq() {
         Some((s, t)) => format!("[{s}/{t}] ").chars().count(),
         None => 0,
@@ -1363,6 +1360,7 @@ mod tests {
         cycles_completed: u64,
         cycles_total: u64,
         ops_ok: u64,
+        skips: u64,
         errors: u64,
         retries: u64,
         concurrency: usize,
@@ -1384,6 +1382,7 @@ mod tests {
                 cycles_completed: 0,
                 cycles_total: 0,
                 ops_ok: 0,
+                skips: 0,
                 errors: 0,
                 retries: 0,
                 concurrency: 0,
@@ -1405,6 +1404,7 @@ mod tests {
         fn cycles_completed(&self) -> u64 { self.cycles_completed }
         fn cycles_total(&self) -> u64 { self.cycles_total }
         fn ops_ok(&self) -> u64 { self.ops_ok }
+        fn skips(&self) -> u64 { self.skips }
         fn errors(&self) -> u64 { self.errors }
         fn retries(&self) -> u64 { self.retries }
         fn concurrency(&self) -> usize { self.concurrency }
@@ -1470,7 +1470,7 @@ mod tests {
         };
         assert_eq!(
             render(&ctx),
-            "✓ ☑☑☑ [1/2] [setup] 100%\n    300/s ok:100% e:0 r:0 c:1 (0.01s)"
+            "✓ ☑☑☑ [setup] 100%\n    300/s ok:100% e:0 r:0 c:1 (0.01s)"
         );
     }
 
@@ -1491,7 +1491,7 @@ mod tests {
         };
         assert_eq!(
             render(&ctx),
-            "✓ [1/8] [run] (profile=alpha), (bucket=1, kind=READ) 100%\n    16.2K/s ok:100% e:0 r:0 c:1 recall_at_10:79.62% (0.01s)"
+            "✓ [run] (profile=alpha), (bucket=1, kind=READ) 100%\n    16.2K/s ok:100% e:0 r:0 c:1 recall_at_10:79.62% (0.01s)"
         );
     }
 
@@ -1640,7 +1640,7 @@ mod tests {
         let s = render_at(&ctx, Lod::Expanded, ContentMode::Value);
         // Header line carries the same identity as Labeled.
         assert!(s.contains("✓ [ann_query]"));
-        assert!(s.contains("[1/8]"));
+        assert!(!s.contains("[1/8]"));
         assert!(s.contains("profile=alpha, k=10"));
         // Per-field labelled rows (every Labeled field
         // appears here too — §3.3 monotonicity).
@@ -1767,7 +1767,9 @@ mod tests {
         assert!(s.contains("done"),         "expected 'done' descriptor: {s}");
         assert!(s.contains("phase-name"),   "expected 'phase-name': {s}");
         assert!(s.contains("scope-coords"), "expected 'scope-coords': {s}");
-        assert!(s.contains("idx/total"),    "expected seq descriptor: {s}");
+        // Single-placement: the body no longer carries [n/N] (the
+        // margin owns it), so the explanation must not describe it.
+        assert!(!s.contains("idx/total"),   "seq descriptor must be gone: {s}");
         assert!(s.contains("progress%"),    "expected 'progress%': {s}");
         assert!(s.contains("throughput"),   "expected 'throughput': {s}");
         assert!(s.contains("ok:ok%"),       "expected ok descriptor: {s}");
@@ -1977,4 +1979,25 @@ mod tests {
         assert!(out.contains('\n'),
             "expected two-line break in labeled render: {out:?}");
     }
+    /// A phase whose ops ALL `if:`-skipped reads as gated off — an
+    /// explicit skip counter, `ok:—` (no results to be ok about),
+    /// and no fabricated 100%.
+    #[test]
+    fn fully_skipped_phase_shows_skip_chip_not_fake_ok() {
+        let ctx = TestCtx {
+            phase_name: "recall_postcompact".into(),
+            cycles_completed: 10_000,
+            cycles_total: 10_000,
+            skips: 10_000,
+            elapsed_secs: 0.02,
+            consumed: 10_000,
+            concurrency: 20,
+            ..TestCtx::default()
+        };
+        let out = render(&ctx);
+        assert!(out.contains("ok:—"), "no fabricated ok%: {out:?}");
+        assert!(out.contains("skip:10000"), "skip count shown: {out:?}");
+        assert!(!out.contains("ok:100%"), "must not claim 100% ok: {out:?}");
+    }
+
 }

@@ -233,6 +233,55 @@ pub trait ReadoutContext {
     /// `None`.
     fn eta_secs(&self) -> Option<f64> { None }
 
+    /// True for an OPEN-ENDED subject — a daemon / background poll with
+    /// no meaningful completion total. Displays render a latency summary
+    /// in place of a progress meter (there is no "done" to meter).
+    /// Default false.
+    fn open_ended(&self) -> bool { false }
+
+    /// Live service-time percentiles (nanoseconds) for the subject, 0
+    /// when unavailable. Rendered by open-ended subjects in the space a
+    /// progress meter would otherwise occupy.
+    fn latency_p50_nanos(&self) -> u64 { 0 }
+    fn latency_p99_nanos(&self) -> u64 { 0 }
+
+    /// The subject's completion fraction on the CORRECT basis, or
+    /// `None` when progress is not meaningful (open-ended subjects).
+    /// Priority:
+    ///   1. derived-progress override (a producer measuring itself);
+    ///   2. row basis (`rows_consumed / rows_total`) — REQUIRED for
+    ///      batched phases, whose cycle count is denominated in ops
+    ///      while the extent is denominated in rows (the old
+    ///      cycles-basis pct showed 1% for a stride-100 batch load);
+    ///   3. cycle basis for plain per-op phases.
+    fn progress_fraction(&self) -> Option<f64> {
+        if let Some(f) = self.progress_override() {
+            return Some(f.clamp(0.0, 1.0));
+        }
+        if self.open_ended() {
+            return None;
+        }
+        let (rc, rt) = (self.rows_consumed(), self.rows_total());
+        if rt > 0 {
+            return Some((rc as f64 / rt as f64).clamp(0.0, 1.0));
+        }
+        let t = self.cycles_total();
+        if t > 0 {
+            return Some((self.cycles_completed() as f64 / t as f64).clamp(0.0, 1.0));
+        }
+        None
+    }
+
+    /// Derived completion fraction in `[0.0, 1.0]` published by a
+    /// producer that measures its own progress (e.g. a `poll:`
+    /// await's `progress:` template reading `completion_ratio`).
+    /// When `Some`, phase displays render THIS fraction for the
+    /// completion bar / percentage instead of the cycles-based
+    /// `cycles_completed / cycles_total` — which pins at 0% for a
+    /// single long op no matter how far along the measured work is.
+    /// Default `None` (cycle accounting applies).
+    fn progress_override(&self) -> Option<f64> { None }
+
     // ── Workload-emphasised metrics ───────────────────────
 
     /// Pre-rendered status-metric chip string (e.g.

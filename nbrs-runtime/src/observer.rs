@@ -92,6 +92,20 @@ pub trait RunObserver: Send + Sync {
     /// Update live metrics for the active phase (called at progress tick rate).
     fn phase_progress(&self, update: &PhaseProgressUpdate);
 
+    /// SRD-63 — an op-level execution leaf became visible (`readout: visible`,
+    /// enabled by the `readout` wrapper). Nests under `parent_phase` in the
+    /// hierarchic status view; the consumer assigns its sequence within the
+    /// phase from arrival order. Default no-op so observers that don't render
+    /// op-level leaves (and the zero-cost non-readout path) are unaffected.
+    fn op_starting(&self, _parent_phase: crate::scene_tree::SceneNodeId, _op_name: &str) {}
+
+    /// An op-level execution leaf completed. `duration_secs` is the op's own
+    /// cumulative execution time. Default no-op.
+    fn op_completed(&self, _parent_phase: crate::scene_tree::SceneNodeId, _op_name: &str, _duration_secs: f64) {}
+
+    /// An op-level execution leaf failed. Default no-op.
+    fn op_failed(&self, _parent_phase: crate::scene_tree::SceneNodeId, _op_name: &str, _error: &str) {}
+
     /// SRD-100 P2 — attach the per-phase [`PhaseRenderHandle`] to the live
     /// display fold, **once**, after the activity's metrics/binder exist
     /// (the executor calls this on-task at progress-setup time). Observers
@@ -293,6 +307,9 @@ pub struct PhaseRenderHandle {
     /// Live memo header (the memo-wrapper `before:`/`after:` state),
     /// snapshotted into the context each render.
     pub memo: Arc<arc_swap::ArcSwap<String>>,
+    /// Live gutter-cell spec (the gutter-wrapper state). `None` in
+    /// the slot ⇒ the display derives the cell automatically.
+    pub gutter: Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>>,
     /// `status_metrics:` selection for the per-phase status chips.
     pub status_metrics: Arc<[String]>,
     /// Fiber count at attach time (the inline context's `concurrency`).
@@ -456,6 +473,28 @@ pub fn toggle_explain() {
 pub fn is_explain_held() -> bool {
     let deadline = EXPLAIN_HELD_UNTIL_NS.load(std::sync::atomic::Ordering::Acquire);
     deadline != 0 && now_nanos() < deadline
+}
+
+/// Readout pause — the `p` key's copy-support freeze. While set,
+/// readout frontends stop writing to the terminal (the line-mode
+/// sink freezes its log drain and status redraw; buffered output
+/// flushes on resume) so the operator can select and copy text
+/// without the surface repainting underneath the selection. The
+/// full-TUI app keeps its own snapshot-based pause; this global
+/// serves the line-mode frontends, which have no App state.
+static READOUT_PAUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Toggle the readout pause; returns the NEW state (`true` =
+/// now paused).
+pub fn toggle_readout_pause() -> bool {
+    !READOUT_PAUSED.fetch_xor(true, std::sync::atomic::Ordering::AcqRel)
+}
+
+/// True while the readout pause is on (see
+/// [`toggle_readout_pause`]).
+pub fn readouts_paused() -> bool {
+    READOUT_PAUSED.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Minimum severity that reaches the file sink

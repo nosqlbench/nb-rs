@@ -211,6 +211,19 @@ pub struct InlineRefreshContext {
     /// Snapshot of the activity's memo at tick build time.
     /// Empty when no `memo:` wrapper has published anything.
     pub memo: String,
+    /// Derived-progress override snapshot (see
+    /// [`crate::activity::ActivityMetrics::progress_override`]).
+    pub progress_override: Option<f64>,
+    /// Producer-elapsed seconds recorded with the override — the
+    /// measured-basis ETA's time denominator.
+    pub progress_override_elapsed: Option<f64>,
+    /// Open-ended subject (daemon / background poll): no progress
+    /// meter; latency summary renders in its place.
+    pub open_ended: bool,
+    /// Live service-time percentiles (nanos) from the activity's
+    /// timer, for the open-ended latency chip. 0 = no data yet.
+    pub lat_p50_nanos: u64,
+    pub lat_p99_nanos: u64,
 }
 
 impl ReadoutContext for InlineRefreshContext {
@@ -241,13 +254,44 @@ impl ReadoutContext for InlineRefreshContext {
     fn event(&self) -> EventType { EventType::Update }
     fn refresh_tick(&self) -> u64 { self.refresh_tick }
     fn phase_memo(&self) -> &str { &self.memo }
+    fn progress_override(&self) -> Option<f64> { self.progress_override }
+    fn open_ended(&self) -> bool { self.open_ended }
+    fn latency_p50_nanos(&self) -> u64 { self.lat_p50_nanos }
+    fn latency_p99_nanos(&self) -> u64 { self.lat_p99_nanos }
     /// SRD-63 Push 9f: derive ETA from `cycles_total -
     /// ops_finished` divided by the observed throughput
     /// rate (`ops_finished / elapsed`). `None` when the
     /// extent isn't known (sourceless phase running by
     /// time / open-ended) or no progress has been made
     /// yet (rate would divide-by-zero).
+    ///
+    /// A derived-progress override with a recorded producer
+    /// elapsed wins: ETA = `elapsed × (1−f)/f` — the measured
+    /// basis for a single long op (a poll-driven drain) whose
+    /// cycle accounting stands still. Guarded to `f` in
+    /// `(0, 1)`: at 0 nothing is measurable yet, at 1 the
+    /// after-state takes over momentarily.
     fn eta_secs(&self) -> Option<f64> {
+        // Open-ended subjects have no completion, hence no ETA.
+        if self.open_ended {
+            return None;
+        }
+        if let (Some(f), Some(e)) = (self.progress_override, self.progress_override_elapsed)
+            && f > 0.0 && f < 1.0 && e > 0.0
+        {
+            return Some(e * (1.0 - f) / f);
+        }
+        // Cursor-driven phase: rows are the authoritative ordinal
+        // basis. Ops stride N rows each, so an op-denominated rate
+        // against the row-denominated extent would overstate the
+        // ETA by the stride factor (e.g. ~64/s ops vs 7.8K/s rows
+        // → 35h instead of 18m).
+        if self.rows_total > 0 && self.elapsed_secs > 0.0 {
+            if self.rows_consumed == 0 { return None; }
+            let rate = self.rows_consumed as f64 / self.elapsed_secs;
+            let remaining = self.rows_total.saturating_sub(self.rows_consumed) as f64;
+            return Some(remaining / rate);
+        }
         if self.cycles_total == 0 || self.elapsed_secs <= 0.0 {
             return None;
         }
@@ -467,6 +511,9 @@ pub fn build_inline_refresh_context(
     // resolves these from the dispatch-time `SceneNodeId` instead.
     phase_seq: Option<(usize, usize)>,
     depth_indent: String,
+    // Open-ended (daemon) subject: suppress progress metering, carry
+    // the latency chip instead.
+    open_ended: bool,
 ) -> InlineRefreshContext {
     // Counter snapshots — must match the prior inline-status
     // formulas so byte equivalence holds.
@@ -558,6 +605,15 @@ pub fn build_inline_refresh_context(
         .unwrap_or(activity_name);
 
     let memo_snapshot: String = memo.load().as_str().to_string();
+    // Live latency percentiles for the open-ended chip (and any future
+    // consumer): a peek at the service-time HDR — no reset, cheap at
+    // display cadence.
+    let (lat_p50, lat_p99) = {
+        let snap = progress_metrics.service_time.peek_snapshot();
+        let h = &snap.histogram;
+        if h.is_empty() { (0, 0) }
+        else { (h.value_at_quantile(0.50), h.value_at_quantile(0.99)) }
+    };
     InlineRefreshContext {
         phase_name: bare_name.to_string(),
         activity_name: activity_name.to_string(),
@@ -585,11 +641,110 @@ pub fn build_inline_refresh_context(
         refresh_tick,
         use_color: crate::observer::use_color(),
         memo: memo_snapshot,
+        progress_override: progress_metrics.progress_override(),
+        progress_override_elapsed: progress_metrics.progress_override_elapsed_secs(),
+        open_ended,
+        lat_p50_nanos: lat_p50,
+        lat_p99_nanos: lat_p99,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn eta_prefers_measured_basis_when_override_present() {
+        // 25% done after 60s of measured work → 180s remain,
+        // regardless of the standing-still cycle accounting.
+        let ctx = super::InlineRefreshContext {
+            phase_name: String::new(),
+            activity_name: String::new(),
+            phase_seq: None,
+            phase_labels: String::new(),
+            cycles_completed: 3,
+            cycles_total: 4,
+            ops_started: 4,
+            ops_finished: 3,
+            ops_ok: 3,
+            skips: 0,
+            errors: 0,
+            retries: 0,
+            attempt_ok: 3,
+            attempt_failed: 0,
+            concurrency: 1,
+            elapsed_secs: 600.0,
+            consumed: 3,
+            rows_consumed: 0,
+            rows_total: 0,
+            status_metric_chips: String::new(),
+            adapter_counters_text: String::new(),
+            batch_info_text: String::new(),
+            depth_indent: String::new(),
+            refresh_tick: 0,
+            use_color: false,
+            memo: String::new(),
+            progress_override: Some(0.25),
+            progress_override_elapsed: Some(60.0),
+            open_ended: false,
+            lat_p50_nanos: 0,
+            lat_p99_nanos: 0,
+        };
+        use crate::readouts::ReadoutContext;
+        let eta = ctx.eta_secs().expect("measured ETA");
+        assert!((eta - 180.0).abs() < 1e-9, "eta={eta}");
+        // Without the elapsed companion, fall back to cycle basis.
+        let ctx2 = super::InlineRefreshContext { progress_override_elapsed: None, ..ctx };
+        let eta2 = ctx2.eta_secs().expect("cycle ETA");
+        assert!((eta2 - 200.0).abs() < 1e-9, "eta2={eta2}");
+    }
+
+    #[test]
+    fn eta_uses_row_basis_for_cursor_phases() {
+        // Cursor phase, ops stride 100 rows each: 2M of 10M rows in
+        // 200s → 8M remain at 10K rows/s → 800s. The op basis
+        // (10K ops finished vs a 10M extent) would claim ~200,000s —
+        // the stride-factor overstatement this pins against.
+        let ctx = super::InlineRefreshContext {
+            phase_name: String::new(),
+            activity_name: String::new(),
+            phase_seq: None,
+            phase_labels: String::new(),
+            cycles_completed: 10_000,
+            cycles_total: 10_000_000,
+            ops_started: 10_000,
+            ops_finished: 10_000,
+            ops_ok: 10_000,
+            skips: 0,
+            errors: 0,
+            retries: 0,
+            attempt_ok: 10_000,
+            attempt_failed: 0,
+            concurrency: 1,
+            elapsed_secs: 200.0,
+            consumed: 10_000,
+            rows_consumed: 2_000_000,
+            rows_total: 10_000_000,
+            status_metric_chips: String::new(),
+            adapter_counters_text: String::new(),
+            batch_info_text: String::new(),
+            depth_indent: String::new(),
+            refresh_tick: 0,
+            use_color: false,
+            memo: String::new(),
+            progress_override: None,
+            progress_override_elapsed: None,
+            open_ended: false,
+            lat_p50_nanos: 0,
+            lat_p99_nanos: 0,
+        };
+        use crate::readouts::ReadoutContext;
+        let eta = ctx.eta_secs().expect("row-basis ETA");
+        assert!((eta - 800.0).abs() < 1e-6, "eta={eta}");
+        // No rows consumed yet → unknown, not a fabricated op-basis ETA.
+        let ctx2 = super::InlineRefreshContext { rows_consumed: 0, ..ctx };
+        assert!(ctx2.eta_secs().is_none(),
+            "zero-row cursor phase must have no ETA");
+    }
+
     use super::{is_internal_counter, rows_per_batch};
 
     /// The leading-underscore convention: `_batch_writes` is an internal

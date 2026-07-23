@@ -1909,15 +1909,15 @@ fn execute_node<'a>(
                 // this arm "transparent" in pre-map while the
                 // runtime did build_subscope; the unified walker
                 // does both at every depth.
-                let one_line = source.lines().map(str::trim)
-                    .find(|l| !l.is_empty()).unwrap_or("");
+                // Label = the names this scope defines (comment-only
+                // first lines made the raw-source label read as a
+                // repeating stray comment in the readout).
+                let label = crate::scope_tree::bindings_label(source);
                 let mut scope_path = ctx.scene_tree_path.clone();
-                scope_path.push(PathSegment::ScenarioInclude(
-                    format!("bindings:{one_line}"),
-                ));
+                scope_path.push(PathSegment::ScenarioInclude(label.clone()));
                 let scope_id = push_scope_scene_node(
                     ctx.scene_tree_parent_id, scope_path.clone(),
-                    format!("bindings: {one_line}"), Vec::new(),
+                    label, Vec::new(),
                 );
                 let prior_parent = ctx.current_parent_kernel.take();
                 ctx.current_parent_kernel = Some(chained);
@@ -5249,6 +5249,7 @@ async fn run_phase_inner(
             metrics: progress_metrics.clone(),
             bodies: std::sync::Arc::new(update_bodies),
             memo: activity.memo.clone(),
+            gutter: activity.gutter.clone(),
             status_metrics: activity.config.status_metrics.clone().into(),
             concurrency: activity.config.concurrency,
             seq,
