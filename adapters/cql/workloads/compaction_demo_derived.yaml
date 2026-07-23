@@ -124,7 +124,11 @@ params:
   # `table` is NOT a param — it is derived (sanitized) from the dataset
   # and profile in the top-level `bindings:` block below, so a different
   # `dataset=`/`profile=` automatically lands in its own table.
-  concurrency: "100"
+  # Raised 100 -> 200 (2026-07-23): with smaller memtables (cheaper
+  # per-insert graph search) and the merge CPU bound (concurrent_builds=2,
+  # build pool 40), the extra in-flight converts the latency headroom into
+  # throughput (Little's law: rate = fibers / per-batch service time).
+  concurrency: "200"
   query_concurrency: "20"
   replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
   # k / limit / min_query_ms are referenced as bare wires (`k: k`,
@@ -207,7 +211,7 @@ params:
   # its measured stride. A positive value takes precedence over the
   # measured stride AND bypasses the probe entirely (its op no-ops via
   # `if:`). Numeric, so CLI magnitude suffixes work (`batch_size=2k`).
-  batch_size: 50
+  batch_size: 100
 
   # ── Post-load step toggles (1 = enabled, 0 = skipped) ────────
   # Independently enable/disable each post-load step per tier. All OFF by
@@ -256,6 +260,13 @@ bindings: |
   # coerces the F64 stride to a row count.
   shared measured: f64 := 1.0
 
+  # Live sstable count for the CURRENT tier, written through from
+  # `finalize_index`'s `read_sstables` capture. Root-scoped (2026-07-23) so
+  # the sibling `recall_postcompact` phase can gate on "did this tier
+  # actually compact" (`sstables > 1`). Re-written each tier before it is
+  # read; 0 until the first finalize.
+  shared sstables: u64 := 0
+
 scenarios:
   # Default: the incremental size-tier sweep.
   default:
@@ -285,16 +296,25 @@ scenarios:
       # that used to no-op past the cap while still iterating every tier.
       continue_if: "end_of(p) <= effective_max_size"
       phases:
-        # Each tier is TWO sibling sub-scopes (SRD-82 Part 6 daemon
-        # isolation): the `tier_build` include holds the
-        # ingest→flush→compact phases together with the `concurrent_query`
-        # DAEMON, so the daemon shadows EXACTLY those and is stopped the
-        # moment they finish — its `daemon_stop` is latched when its own
-        # scope's foreground completes (executor `run_scenario_body`). The
-        # `recall_check` then runs in a SIBLING scope, after the daemon has
-        # stopped, so the probe load never perturbs the recall measurement.
-        - scenario: tier_build
-        - recall_check
+        # Each tier is FOUR sibling sub-scopes (SRD-82 Part 6 daemon
+        # isolation), capturing recall BEFORE and AFTER compaction:
+        #   tier_load          load + flush, shadowed by the
+        #                      `concurrent_query` daemon (stops when the
+        #                      scope's foreground completes)
+        #   recall_postload    UNCONDITIONAL recall over the standard query
+        #                      set — the pre-compaction measurement
+        #   tier_compact       finalize (flush/read/compact/drain), again
+        #                      daemon-shadowed by its own
+        #                      `concurrent_query` instance
+        #   recall_postcompact recall AFTER compaction — its op is gated on
+        #                      `sstables > 1` (the tier actually compacted)
+        # The recall phases run in SIBLING scopes after each daemon has
+        # stopped, so probe load never perturbs a measurement; the phase
+        # NAMES are the before/after labels in every readout and metric.
+        - scenario: tier_load
+        - recall_postload
+        - scenario: tier_compact
+        - recall_postcompact
 
   # The build half of one tier: load the incremental vectors, flush, and
   # major-compact — shadowed by the `concurrent_query` daemon. Rooted as
@@ -306,7 +326,7 @@ scenarios:
   # `finalize_index` completes. The for-loop tier `p` is in scope here
   # (inherited from the enclosing `for:`), so the phases resolve
   # `idx_of(p)` / `start_of(p)` / `end_of(p)` unchanged.
-  tier_build:
+  tier_load:
     - concurrent_query
     # Freeze the measured batch stride for THIS tier's load. `const stride`
     # is an extern-no-default freeze of the workload-root `shared measured`
@@ -322,6 +342,13 @@ scenarios:
       phases:
         - load_increment
     - flush
+
+  # The compaction half of one tier, in its OWN daemon-shadowed scope so
+  # `recall_postload` can run between flush and compaction. A fresh
+  # `concurrent_query` daemon instance shadows the finalize, preserving
+  # query load during compaction exactly as the pre-split `tier_build` did.
+  tier_compact:
+    - concurrent_query
     - finalize_index
 
   # Single-phase scenarios for piecewise runs.
@@ -355,6 +382,11 @@ phases:
   # tens of seconds. Runs ONCE before the sweep (the table accumulates
   # vectors incrementally across tiers; it is NOT reset between profiles).
   teardown:
+    # Skip-eligible on resume: a completed teardown must NOT re-run — it drops the
+    # table, which would wipe every loaded tier. `--resume` skips it (identity match)
+    # and continues on the existing data. This is what makes in-session resume preserve
+    # the sweep's accumulated state instead of starting over.
+    checkpoint: idempotent
     concurrency: 1
     # One-shot anti-DDL: never retry (the truncate is EXPECTED to fail on a
     # first run and is tolerated by its op-scoped errors policy).
@@ -384,6 +416,8 @@ phases:
         raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
 
   schema:
+    # Completed schema DDL skips on resume (keyspace/table/index already exist).
+    checkpoint: idempotent
     concurrency: 1
     # One-shot idempotent DDL: single attempt.
     tries: 1
@@ -402,8 +436,13 @@ phases:
       #             size-tier compactor never fires spontaneously
       #             mid-load; the test owns compaction timing via
       #             `finalize_index`.
-      #   default — no compaction clause emitted; the server's default
-      #             STCS behaviour applies (background compactions run).
+      #   default — explicit SizeTieredCompactionStrategy (min 5 / max 8,
+      #             liberal buckets bucket_low 0.3 / bucket_high 2.0) so
+      #             background compactions run as STCS. NOTE: we specify STCS
+      #             explicitly rather than relying on the server default —
+      #             this build defaults to UnifiedCompactionStrategy (UCS),
+      #             which batches many sstables per merge and shards into
+      #             parallel compactions, pathological for vector SAI builds.
       create_table_pinned:
         if: "disable_auto_compaction != 0"
         raw: |
@@ -416,7 +455,8 @@ phases:
         raw: |
           CREATE TABLE IF NOT EXISTS {keyspace}.{table}
           (key text PRIMARY KEY, value vector<float, {dim}>)
-          WITH compression = {'enabled': 'false'}
+          WITH compaction = {'class': 'SizeTieredCompactionStrategy', 'min_threshold': '5', 'max_threshold': '8', 'bucket_low': '0.3', 'bucket_high': '2.0'}
+          AND compression = {'enabled': 'false'}
       create_vector_index:
         raw: |
           CREATE CUSTOM INDEX IF NOT EXISTS {table}{vector_idx_suffix}
@@ -424,13 +464,16 @@ phases:
           USING 'StorageAttachedIndex'
           WITH OPTIONS = {
             'similarity_function': '{similarity_function}',
-            'source_model': '{source_model}'
+            'source_model': '{source_model}',
+            'enable_hierarchy': 'true'
           }
 
   # Boost compaction throughput + parallelism at session start so the
   # major compaction in `finalize_index` isn't throttled by the
   # per-node defaults. `0` is Cassandra's "no rate limit" sentinel.
   tune_cluster:
+    # Completed cluster tuning skips on resume (knobs already applied).
+    checkpoint: idempotent
     adapter: http
     concurrency: 1
     cycles: 1
@@ -483,6 +526,9 @@ phases:
   # (SRD-91) captures ANN query latency *while the tier is being ingested
   # and indexed* — the whole point of the probe.
   concurrent_query:
+    # Skip a completed tier's shadow daemon on resume (its tier_build is done); only
+    # the failed/pending tier re-spawns it.
+    checkpoint: idempotent
     adapter: cql
     daemon: true
     concurrency: 1
@@ -540,6 +586,12 @@ phases:
   # cluster to confirm the derived stride. The rows it writes (keys
   # [0, measure_probe_rows)) are re-inserted idempotently by tier 1's load.
   measure_batch:
+    # Deliberately NOT `checkpoint: idempotent`: this probe writes the shared
+    # `measured` cell that the tier loop's `const stride := ... measured` freeze reads.
+    # That cell is session state, not persisted in the checkpoint, so on resume the
+    # probe must RE-RUN to repopulate it (cheap: one idempotent batch) — skipping it
+    # would leave `stride` unresolved for the resumed tier. (Passing an explicit
+    # `batch_size` param makes stride independent of this probe.)
     concurrency: 1
     # ONE op only: it reserves rows_per_op (= one byte-budget-worth of rows,
     # capped at MAX_PREDICTED_ROWS) and reports the count it wrote. Without
@@ -589,6 +641,8 @@ phases:
   # and the table ends each tier holding exactly [0, this_count).
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   load_increment:
+    # Completed tier loads skip on resume; the loads are idempotent re-inserts anyway.
+    checkpoint: idempotent
     concurrency: concurrency
     # `tries:` MAP FORM (SRD-82 Part 3b) — the load is where a drowning
     # server triggers retry storms, so pace retries explicitly here. `count`
@@ -660,6 +714,11 @@ phases:
         per:     self
         action:  abort
         at:      workload
+    # REMOVED 2026-07-23: the 100 ops/s cap (10K rows/s at the measured
+    # stride of 100) was the ceiling hiding server-side throughput
+    # recovery. The attempt/result backstops below remain the safety
+    # net. Restore by uncommenting:
+    # rate: 100
     bindings: |
       # `p` is the active masked profile tier from `profile_partitions`:
       # `[start_of(p), end_of(p))` is the incremental delta since the
@@ -706,6 +765,8 @@ phases:
   # increment rolls into an on-disk SSTable for `finalize_index` to
   # compact-merge with the prior tiers' SSTables.
   flush:
+    # Completed tier flush skips on resume.
+    checkpoint: idempotent
     adapter: http
     concurrency: 1
     cycles: 1
@@ -744,15 +805,19 @@ phases:
   #   poll_progress   -> CQL system_views.sstable_tasks, op-level
   #                      `poll: await_empty`; live progress until idle
   finalize_index:
+    # Completed tier finalize (flush + compaction drain) skips on resume; the failed
+    # tier re-runs it.
+    checkpoint: idempotent
     adapter: cql
     concurrency: 1
     cycles: 1
     tries: 1
     bindings: |
       # Cross-op cell: `read_sstables` writes it, `trigger_compact`'s
-      # `if:` reads it. `shared` so the write-through propagates across
-      # ops on the phase scope.
-      shared sstables := 0
+      # `if:` reads it. Since 2026-07-23 the cell is declared at the
+      # WORKLOAD ROOT (not re-declared here) so the write-through
+      # reaches the root `shared sstables` and the sibling
+      # `recall_postcompact` phase can gate on it.
       # Wall-clock read for the phase-duration metric.
       volatile now_ms := current_epoch_millis()
     metrics:
@@ -760,6 +825,9 @@ phases:
     ops:
       flush:
         adapter: http
+        # SRD-63: surface this op as its own timed status leaf under the
+        # finalize_index phase (flush is the slow SAI-graph build step).
+        readout: visible
         # Part of finalize: gated by the finalize toggle.
         if: "enable_finalize != 0"
         # 15s connect budget to the Jolokia agent (see the standalone `flush`
@@ -778,10 +846,11 @@ phases:
             eq: "200"
         strict: true
         memo:
-          before: "flushing keyspace {keyspace}"
-          after:  "flushed keyspace {keyspace}"
+          before: "finalize step 1/4 — flushing {keyspace} memtables to sstables (builds the on-disk SAI vector graph for the just-loaded tier; this is the slow part of a flush, not the write itself)"
+          after:  "finalize step 1/4 — flushed {keyspace} (memtables → sstables + vector index)"
       read_sstables:
         adapter: http
+        readout: visible
         if: "enable_finalize != 0"
         uri: "http://{host}:8778/jolokia/read/org.apache.cassandra.metrics:type=Table,keyspace={keyspace},scope={table},name=LiveSSTableCount/Value"
         method: GET
@@ -797,9 +866,11 @@ phases:
         metrics:
           table_live_sstables: { kind: gauge, value: sstables }
         memo:
-          after: "{keyspace}.{table}: {sstables} live sstable(s) before compaction"
+          before: "finalize step 2/4 — reading live sstable count for {keyspace}.{table} (decides whether a compaction is needed)"
+          after:  "finalize step 2/4 — {keyspace}.{table} has {sstables} live sstable(s) before compaction"
       trigger_compact:
         adapter: http
+        readout: visible
         daemon: true
         # 15s connect budget only — the request itself may run the full
         # compaction (request_timeout_ms below); this bounds just the connect.
@@ -820,12 +891,24 @@ phases:
             eq: "200"
         strict: true
         memo:
-          before: "compacting {keyspace}.{table}"
-          after:  "compacted {keyspace}.{table}"
+          before: "finalize step 3/4 — triggering major compaction of {keyspace}.{table} ({sstables} sstables → 1; merges the vector graph segments and NVQ-refines them). Synchronous — returns when compaction completes."
+          after:  "finalize step 3/4 — major compaction of {keyspace}.{table} returned"
       poll_progress:
         adapter: cql
+        readout: visible
         # Nothing to poll unless a compaction was triggered.
         if: "enable_finalize != 0 && enable_compact != 0"
+        # Advisory status poller: a poll timeout (or any read error) must NOT halt the
+        # sweep — this is monitoring, not load. Route every error to warn+count so a slow
+        # or wedged compaction drain degrades to a logged warning, not a terminal error
+        # that trips the scenario's `children_failed > 0` stop condition.
+        #
+        # `completion_ratio < 1.0` excludes COMPLETED task rows, which linger registered
+        # for minutes after a merge finishes (observed 2026-07-22). Without it, `/0/...`
+        # captures the stale lingering row (pinned at 1.0) or a pre-batch row (pinned at
+        # 0.0) instead of the active merge's climbing ratio, and `await_empty` blocks on
+        # dead rows — hiding the incremental progress jvector is publishing.
+        errors: ".*:warn,counter"
         bindings: |
           extern active_compactions: u64 = 0
           extern completion_ratio:   f64 = 0.0
@@ -836,7 +919,8 @@ phases:
             FROM system_views.sstable_tasks
            WHERE keyspace_name = '{keyspace}'
              AND table_name   = '{table}'
-             AND kind         = 'compaction'
+             AND kind         = 'secondary index build'
+             AND completion_ratio < 1.0
           ALLOW FILTERING
         capture:
           active_compactions: ":count"
@@ -846,16 +930,30 @@ phases:
         poll:
           mode: await_empty
           interval_ms: 5000
-          timeout_ms: 14400000
+          # 48h. Gracious enough that even the largest (~1B-vector) tier's compaction
+          # drain won't hit it under normal progress (was 4h, which the 60-70M tier blew
+          # through). If it ever is exceeded, the op-level `errors:` policy above turns the
+          # poll_timeout into a warning, not a run-ending error.
+          timeout_ms: 172800000
           max_error_retries: 5
           metric_name: compaction_wait_time_s
+          # Re-rendered after every poll against that poll's captures, so the
+          # memo shows the live measured state of the drain instead of the
+          # static `before:` text for the (potentially hours-long) wait.
+          memo: "finalize step 4/4 — {keyspace}.{table} index build draining: ratio {completion_ratio}, {progress}/{total} token range parts, {active_compactions} task(s) in flight"
+          # The measured fractional completion drives this phase's completion
+          # bar/percentage (derived-progress override) — the cycle-based bar
+          # would otherwise sit at 0% for the whole drain.
+          progress: "{completion_ratio}"
         metrics:
           compaction_completion_ratio: { kind: gauge, value: completion_ratio }
-          compaction_progress_bytes:   { kind: gauge, value: progress }
-          compaction_total_bytes:      { kind: gauge, value: total }
+          # Unit is token range parts (the 'secondary index build' task), not bytes.
+          compaction_progress_parts:   { kind: gauge, value: progress }
+          compaction_total_parts:      { kind: gauge, value: total }
           compaction_pending_tasks:    { kind: gauge, value: active_compactions }
         memo:
-          after: "compacting {keyspace}.{table}: ratio {completion_ratio}, {progress}/{total} bytes ({active_compactions} task(s) in flight)"
+          before: "finalize step 4/4 — waiting for {keyspace}.{table} vector index build to drain (await_empty; polls system_views.sstable_tasks kind='secondary index build' every 5s)"
+          after:  "finalize step 4/4 — {keyspace}.{table} index build at ratio {completion_ratio}, {progress}/{total} token range parts ({active_compactions} task(s) in flight)"
         request_timeout_ms: 60000
 
   # Recall against the post-compaction index AT THIS TIER'S SIZE, using
@@ -864,6 +962,8 @@ phases:
   # metric carries the profile name as the in-scope `{tier}` label).
   # Skipped (no-op) once a tier's size exceeds `max_size`.
   recall_check:
+    # Completed tier recall measurement skips on resume (already recorded).
+    checkpoint: idempotent
     concurrency: "{query_concurrency}"
     # SRD-82/92 phase-level `interval:` wrapper — re-run THIS PHASE every
     # `recall_interval`, in the same session. Disabled (`0`) by default so
@@ -897,9 +997,22 @@ phases:
       const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
       const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
       const base := query_count(prebuffered)
-      cursor q = until_elapsed(base, min_query_ms)
+      # Standard measurement: ONE pass over the tier's full query set (the
+      # dataset's own query count), so every tier reports recall over the
+      # same standard N queries.
+      cursor q = range(0, base)
+      # DISABLED 2026-07-23 — time-boxed form: repeated the query set until
+      # `min_query_ms` had elapsed, sizing the measurement by TIME rather
+      # than a standard query count, which made per-tier sample sizes
+      # unequal (fast tiers repeated queries; slow tiers under-sampled).
+      # Re-enable by swapping the cursor back:
+      # cursor q = until_elapsed(base, min_query_ms)
       query_vector := query_vector_at(prebuffered, q % base)
       ground_truth := neighbor_indices_at(prebuffered, q % base)
+      # Ground-truth neighbor DISTANCES for the same query (already in the
+      # prebuffer — this facet loads once, ~Q*k*4 bytes). Feeds the LID
+      # metric below; adds no Cassandra query.
+      neighbor_distances := neighbor_distances_at(prebuffered, q % base)
     ops:
       select_ann:
         timeout: 60s   # 60s per read; retried up to the phase `tries` budget on a CQL timeout
@@ -912,6 +1025,190 @@ phases:
           rows_per_op:
             kind: gauge
             value: count
+          # Local intrinsic dimensionality (Levina–Bickel MLE) of THIS tier,
+          # computed per query from the prebuffered ground-truth neighbor
+          # distances — zero extra Cassandra queries, purely client-side
+          # (see partitioned-scan-build.md §10: LID predicts whether a 1-D
+          # vector-locality ordering can help — low & tight favours it,
+          # high or heterogeneous does not). The histogram stores u64, so the
+          # value is scaled ×1000: read p50/p90 and divide by 1000 to get the
+          # dimension. Degenerate queries (duplicate/self-match neighbors)
+          # emit 0 and should be read past when interpreting the low tail.
+          lid_millidim:
+            kind: histogram
+            value: "lid_mle(neighbor_distances, k) * 1000"
+        evaluations:
+          relevancy:
+            actual: key
+            expected: ground_truth
+            k: k
+            r: limit
+            functions:
+              - recall
+
+  recall_postload:
+    # Completed tier recall measurement skips on resume (already recorded).
+    checkpoint: idempotent
+    # Surface the PRIMARY recall metrics on the readout while this
+    # phase runs and on its completion line — the pre/post-compaction
+    # comparison should be readable directly off the display, not
+    # only from metrics.db. Glob per SRD-63 chip selection.
+    status_metrics: [recall*]
+    concurrency: "{query_concurrency}"
+    # (no `interval:` here — this phase is a one-shot per-tier
+    # measurement; the periodic-monitor form lives on `recall_check`.)
+    # SRD-82 ErrorPolicy — recall queries run AFTER compaction, so they should
+    # mostly succeed; a transient timeout is counted (not fatal). The `stop_when`
+    # sanity backstop fails the phase only if the error rate exceeds
+    # `error_rate_backstop` (same servo-layered threshold as `load_increment`,
+    # set outside the servo margin) — meaning the recall measurement is
+    # untrustworthy.
+    errors: ".*:warn,counter"
+    # Result-specific backstop, derived from base counters in the predicate
+    # (result_failure terminal failed ops / cycles_total completed ops).
+    # Non-sugared canonical form (see load_increment for the axis key). The
+    # query error-rate crossing the backstop means the recall measurement is
+    # untrustworthy → abort: cancel in-flight queries and stop the WHOLE run.
+    stop_when:
+      - condition: "(cycles_total > 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {error_rate_backstop}))"
+        pulse:   continuous
+        per:     self
+        action:  abort
+        at:      workload
+    bindings: |
+      # Same masked tier as the load: name it by its masked position
+      # idx_of(p), prebuffer the tier's own ground-truth facets.
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
+      const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
+      const base := query_count(prebuffered)
+      # Standard measurement: ONE pass over the tier's full query set (the
+      # dataset's own query count), so every tier reports recall over the
+      # same standard N queries.
+      cursor q = range(0, base)
+      # DISABLED 2026-07-23 — time-boxed form: repeated the query set until
+      # `min_query_ms` had elapsed, sizing the measurement by TIME rather
+      # than a standard query count, which made per-tier sample sizes
+      # unequal (fast tiers repeated queries; slow tiers under-sampled).
+      # Re-enable by swapping the cursor back:
+      # cursor q = until_elapsed(base, min_query_ms)
+      query_vector := query_vector_at(prebuffered, q % base)
+      ground_truth := neighbor_indices_at(prebuffered, q % base)
+      # Ground-truth neighbor DISTANCES for the same query (already in the
+      # prebuffer — this facet loads once, ~Q*k*4 bytes). Feeds the LID
+      # metric below; adds no Cassandra query.
+      neighbor_distances := neighbor_distances_at(prebuffered, q % base)
+    ops:
+      select_ann:
+        timeout: 60s   # 60s per read; retried up to the phase `tries` budget on a CQL timeout
+        prepared: |
+          SELECT [key] FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector}
+          LIMIT {limit}
+        metrics:
+          rows_per_op:
+            kind: gauge
+            value: count
+          # Local intrinsic dimensionality (Levina–Bickel MLE) of THIS tier,
+          # computed per query from the prebuffered ground-truth neighbor
+          # distances — zero extra Cassandra queries, purely client-side
+          # (see partitioned-scan-build.md §10: LID predicts whether a 1-D
+          # vector-locality ordering can help — low & tight favours it,
+          # high or heterogeneous does not). The histogram stores u64, so the
+          # value is scaled ×1000: read p50/p90 and divide by 1000 to get the
+          # dimension. Degenerate queries (duplicate/self-match neighbors)
+          # emit 0 and should be read past when interpreting the low tail.
+          lid_millidim:
+            kind: histogram
+            value: "lid_mle(neighbor_distances, k) * 1000"
+        evaluations:
+          relevancy:
+            actual: key
+            expected: ground_truth
+            k: k
+            r: limit
+            functions:
+              - recall
+
+  recall_postcompact:
+    # Completed tier recall measurement skips on resume (already recorded).
+    checkpoint: idempotent
+    # Surface the PRIMARY recall metrics on the readout while this
+    # phase runs and on its completion line — the pre/post-compaction
+    # comparison should be readable directly off the display, not
+    # only from metrics.db. Glob per SRD-63 chip selection.
+    status_metrics: [recall*]
+    concurrency: "{query_concurrency}"
+    # (no `interval:` here — this phase is a one-shot per-tier
+    # measurement; the periodic-monitor form lives on `recall_check`.)
+    # SRD-82 ErrorPolicy — recall queries run AFTER compaction, so they should
+    # mostly succeed; a transient timeout is counted (not fatal). The `stop_when`
+    # sanity backstop fails the phase only if the error rate exceeds
+    # `error_rate_backstop` (same servo-layered threshold as `load_increment`,
+    # set outside the servo margin) — meaning the recall measurement is
+    # untrustworthy.
+    errors: ".*:warn,counter"
+    # Result-specific backstop, derived from base counters in the predicate
+    # (result_failure terminal failed ops / cycles_total completed ops).
+    # Non-sugared canonical form (see load_increment for the axis key). The
+    # query error-rate crossing the backstop means the recall measurement is
+    # untrustworthy → abort: cancel in-flight queries and stop the WHOLE run.
+    stop_when:
+      - condition: "(cycles_total > 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {error_rate_backstop}))"
+        pulse:   continuous
+        per:     self
+        action:  abort
+        at:      workload
+    bindings: |
+      # Same masked tier as the load: name it by its masked position
+      # idx_of(p), prebuffer the tier's own ground-truth facets.
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
+      const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
+      const base := query_count(prebuffered)
+      # Standard measurement: ONE pass over the tier's full query set (the
+      # dataset's own query count), so every tier reports recall over the
+      # same standard N queries.
+      cursor q = range(0, base)
+      # DISABLED 2026-07-23 — time-boxed form: repeated the query set until
+      # `min_query_ms` had elapsed, sizing the measurement by TIME rather
+      # than a standard query count, which made per-tier sample sizes
+      # unequal (fast tiers repeated queries; slow tiers under-sampled).
+      # Re-enable by swapping the cursor back:
+      # cursor q = until_elapsed(base, min_query_ms)
+      query_vector := query_vector_at(prebuffered, q % base)
+      ground_truth := neighbor_indices_at(prebuffered, q % base)
+      # Ground-truth neighbor DISTANCES for the same query (already in the
+      # prebuffer — this facet loads once, ~Q*k*4 bytes). Feeds the LID
+      # metric below; adds no Cassandra query.
+      neighbor_distances := neighbor_distances_at(prebuffered, q % base)
+    ops:
+      select_ann:
+        # Gate: only measure when THIS tier actually compacted; skips
+        # (not fails) otherwise, so no-compaction tiers yield no
+        # misleading "post" row.
+        if: "enable_finalize != 0 && enable_compact != 0 && sstables > 1"
+        timeout: 60s   # 60s per read; retried up to the phase `tries` budget on a CQL timeout
+        prepared: |
+          SELECT [key] FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector}
+          LIMIT {limit}
+        metrics:
+          rows_per_op:
+            kind: gauge
+            value: count
+          # Local intrinsic dimensionality (Levina–Bickel MLE) of THIS tier,
+          # computed per query from the prebuffered ground-truth neighbor
+          # distances — zero extra Cassandra queries, purely client-side
+          # (see partitioned-scan-build.md §10: LID predicts whether a 1-D
+          # vector-locality ordering can help — low & tight favours it,
+          # high or heterogeneous does not). The histogram stores u64, so the
+          # value is scaled ×1000: read p50/p90 and divide by 1000 to get the
+          # dimension. Degenerate queries (duplicate/self-match neighbors)
+          # emit 0 and should be read past when interpreting the low tail.
+          lid_millidim:
+            kind: histogram
+            value: "lid_mle(neighbor_distances, k) * 1000"
         evaluations:
           relevancy:
             actual: key
