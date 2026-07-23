@@ -23,7 +23,7 @@ Related axioms:
 The production execution form is the **interpreter-hosted mixed
 kernel**: P1 owns the graph, and Dynamic-lifecycle cones of
 JIT-classifiable nodes run as embedded P3 native segments
-(docs/SRD/105_jit_default_engine.md — `jit: auto` is the default).
+(host SRD-105 — `jit: auto` is the default).
 The whole-kernel selection heuristics below are exercised by
 `nbrs bench` and the equivalence suites rather than the production
 compile path.

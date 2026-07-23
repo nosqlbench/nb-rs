@@ -182,9 +182,11 @@ jobs:
           set -euo pipefail
           if [[ "${{ matrix.os }}" == "macos" ]]; then
             sysroot="$PWD/adapters/cql/target/sysroot/lib"
-            cp "$(brew --prefix openssl@3)/lib/libcrypto.a" "$sysroot/"
-            cp "$(brew --prefix openssl@3)/lib/libssl.a"    "$sysroot/"
-            cp "$(brew --prefix libuv)/lib/libuv.a"         "$sysroot/"
+            # -f: the sysroot cache restores these .a files with brew's
+            # read-only mode; plain cp can't overwrite them on a cache hit.
+            cp -f "$(brew --prefix openssl@3)/lib/libcrypto.a" "$sysroot/"
+            cp -f "$(brew --prefix openssl@3)/lib/libssl.a"    "$sysroot/"
+            cp -f "$(brew --prefix libuv)/lib/libuv.a"         "$sysroot/"
             # Brew paths kept as fallback in case any transitive
             # dep we haven't anticipated still needs dynamic resolve.
             uv="$(brew --prefix libuv)/lib"
