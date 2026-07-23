@@ -1879,7 +1879,12 @@ fn normalize_op_object(
     // separately below.
     let activity_params = ["ratio", "adapter", "driver", "space", "instrument", "start-timers", "stop-timers",
         "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms", "poll_metric_name", "emit",
-        "batch", "max_batch_size", "batchtype", "memo",
+        "batch", "max_batch_size", "batchtype", "memo", "gutter",
+        // SRD-63 op-level status visibility. `readout: visible` opts the
+        // op into its own timed status leaf; excised into params so the
+        // `readout` wrapper's trigger (which reads params) sees it rather
+        // than the field falling through to the adapter op payload.
+        "readout",
         // SRD-82 op shell — a per-op error-routing override (`errors:
         // "<pattern>:<actions>"`), resolved into a child of the phase policy
         // and pinned to this op's dispenser, and the op-level `tries:`

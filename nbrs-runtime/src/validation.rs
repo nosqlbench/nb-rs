@@ -91,32 +91,31 @@ inventory::submit! {
 /// setup time so silent-ignore traps like `evaluations: { relevancy: ... }`
 /// (a wrapper key the runtime never reads) cannot hide a
 /// misconfigured op.
+/// Core op-template params consumed directly by the runtime or the
+/// adapter layer that are NOT owned by any wrapper. Wrapper fields
+/// (`verify`, `poll`, `memo`, `readout`, `errors`, `tries`, `while`,
+/// `rate`, `fields`, …) are deliberately absent: the op
+/// closed-vocabulary guard accepts them via
+/// [`crate::wrapper_registry::WrapperRegistry::owns_field`], which
+/// derives the wrapper vocabulary structurally from each wrapper's
+/// `owned_fields` declaration. Keeping them out of this list is the
+/// point — one source of truth per field, so adding a wrapper never
+/// requires editing here. The drift-guard test
+/// `core_op_params_disjoint_from_owned_fields` fails if a wrapper
+/// field creeps back in.
 pub const CORE_OP_PARAMS: &[&str] = &[
-    // Validation / scoring
-    "relevancy", "verify", "strict",
-    // Batching
+    // Batching (no wrapper owns these — consumed by the batch path).
     "batch", "batchtype", "max_batch_size",
-    // Polling
-    // `poll:` is a single discriminant (string or map); per-knob
-    // config lives nested under it. Flat `poll_*`-prefix keys
-    // were retired so wrapper namespaces don't collide with
-    // adapter fields.
-    "poll",
-    // Operator-visible phase memo. String shorthand or
-    // `{before, after}` map; rendered through wires
-    // substitution before publish.
-    "memo",
-    // Op weighting / fields-render wrapper
-    "ratio", "fields",
-    // Adapter selection
+    // Op weighting (activity-level dispatch weight, not a wrapper).
+    "ratio",
+    // Adapter selection.
     "adapter", "driver",
-    // Daemon-op declaration + loop / rate primitives. `daemon`
-    // marks an op for cycle-pool dispatch onto a daemon fiber
-    // (with per-op-name cap); `daemon_cancel_grace_ms` overrides
-    // the phase-exit drain budget; `while` declares a loop
-    // predicate evaluated per-iteration; `rate` paces the loop
-    // (independent of activity-level rate).
-    "daemon", "daemon_cancel_grace_ms", "while", "rate",
+    // Daemon-op declaration. `daemon` marks an op for cycle-pool
+    // dispatch onto a daemon fiber (with per-op-name cap);
+    // `daemon_cancel_grace_ms` overrides the phase-exit drain budget.
+    // (The loop / rate primitives `while` / `rate` ARE wrapper-owned
+    // and come from the registry.)
+    "daemon", "daemon_cancel_grace_ms",
 ];
 
 /// Configuration for relevancy measurement on a single op template.
@@ -1287,6 +1286,44 @@ mod tests {
     #[test]
     fn parse_int_array_bracket_format() {
         assert_eq!(parse_int_array("[1, 5, 12, 23]"), vec![1, 5, 12, 23]);
+    }
+
+    /// SRD-32a unification drift-guard: `CORE_OP_PARAMS` is the
+    /// NON-wrapper core vocabulary. Wrapper fields are accepted by the
+    /// op closed-vocab guard via the registry's `owns_field`, so a
+    /// wrapper field appearing in `CORE_OP_PARAMS` is duplication that
+    /// reintroduces the very two-lists-to-maintain trap this unification
+    /// removed. Fail loudly if one creeps back in.
+    #[test]
+    fn core_op_params_disjoint_from_owned_fields() {
+        let registry = crate::wrapper_registry::WrapperRegistry::from_inventory();
+        let owned = registry.all_owned_fields();
+        let dupes: Vec<&str> = CORE_OP_PARAMS.iter().copied()
+            .filter(|p| owned.contains(p))
+            .collect();
+        assert!(
+            dupes.is_empty(),
+            "these CORE_OP_PARAMS are already wrapper-owned (remove them — \
+             the guard accepts them via WrapperRegistry::owns_field): {dupes:?}",
+        );
+    }
+
+    /// The type-safe replacement for the CLI-coincidence hole: a
+    /// wrapper field that is NEITHER a CLI param NOR in CORE_OP_PARAMS
+    /// must still be recognized, purely because a wrapper declares it.
+    /// `readout` is exactly such a field (opt-in op status, never CLI-
+    /// settable), so it is the live regression witness.
+    #[test]
+    fn wrapper_field_accepted_without_cli_or_core_membership() {
+        let registry = crate::wrapper_registry::WrapperRegistry::from_inventory();
+        assert!(registry.owns_field("readout"),
+            "readout must be registry-owned");
+        assert!(registry.owns_field("errors"),
+            "errors must be registry-owned (was riding the CLI hatch)");
+        assert!(registry.owns_field("tries"),
+            "tries must be registry-owned (was riding the CLI hatch)");
+        assert!(!CORE_OP_PARAMS.contains(&"readout"),
+            "readout should NOT be in CORE_OP_PARAMS — it's wrapper-owned");
     }
 
     #[test]

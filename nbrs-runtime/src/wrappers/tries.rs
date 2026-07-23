@@ -96,6 +96,13 @@ pub struct TriesDispenser {
     /// holds it constant at the floor. Clamped to `>= 1.0` at use so a
     /// misconfigured ratio never shrinks the backoff.
     backoff_ratio: f64,
+    /// SRD-92 cooperative-stop view (the same aspect handed to the
+    /// `while:` wrapper): once any layered stop source fires — session
+    /// Ctrl-C, activity fault, walk halt, daemon-group completion —
+    /// a retryable failure returns terminally instead of starting
+    /// fresh attempts through the drain window. Injected at wrap time
+    /// so the wrapper never reaches for globals itself.
+    stop: crate::session_signals::StopView,
 }
 
 impl TriesDispenser {
@@ -107,10 +114,12 @@ impl TriesDispenser {
         backoff_base_ms: u64,
         backoff_max_ms: u64,
         backoff_ratio: f64,
+        stop: crate::session_signals::StopView,
     ) -> Arc<dyn OpDispenser> {
         Arc::new(Self {
             inner, tries, metrics,
             backoff_base_ms, backoff_max_ms, backoff_ratio,
+            stop,
         })
     }
 }
@@ -239,12 +248,27 @@ impl OpDispenser for TriesDispenser {
                         // per-op).
                         let retryable = matches!(&e, ExecutionError::Op(ad) if ad.retryable);
                         if retryable && attempt_no < self.tries {
+                            // Session shutdown: the cooperative drain
+                            // waits for the CURRENT attempt only — a
+                            // fresh retry is new work, and against a
+                            // struggling server it spins through the
+                            // whole grace window. Checked again after
+                            // the backoff so a Ctrl-C during the wait
+                            // also lands.
+                            if self.stop.stopped() {
+                                self.metrics.tries_histogram.record(attempt_no as u64);
+                                return Err(e);
+                            }
                             let wait = backoff_wait_ms(
                                 self.backoff_base_ms, self.backoff_max_ms,
                                 self.backoff_ratio, attempt_no, cycle,
                             );
                             if wait > 0 {
                                 portable_sleep_ms(wait).await;
+                            }
+                            if self.stop.stopped() {
+                                self.metrics.tries_histogram.record(attempt_no as u64);
+                                return Err(e);
                             }
                             continue;
                         }
@@ -339,7 +363,8 @@ mod tests {
     async fn tries_zero_fails_without_executing() {
         let inner = Arc::new(FlakyInner { fail_first: 0, calls: AtomicU32::new(0) });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 0, metrics, 0, 0, 2.0);
+        let d = TriesDispenser::wrap(inner.clone(), 0, metrics, 0, 0, 2.0,
+            crate::session_signals::StopView::default());
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let err = d.execute(0, &ctx).await.expect_err("tries:0 must fail");
@@ -348,13 +373,38 @@ mod tests {
             "inner must never be invoked at tries:0");
     }
 
+    /// Session shutdown ends the retry loop: a retryable failure with
+    /// budget remaining returns terminally instead of spinning through
+    /// the cooperative-drain window on a struggling server.
+    #[tokio::test]
+    async fn shutdown_stops_retries_immediately() {
+        let _guard = crate::session_signals::STOP_GLOBAL_TEST_LOCK
+            .lock().unwrap_or_else(|e| e.into_inner());
+        crate::session_signals::clear_session_stop_for_test();
+        // Would fail retryably 50 times — but stop is raised, so the
+        // very first failure must be terminal.
+        let inner = Arc::new(FlakyInner { fail_first: 50, calls: AtomicU32::new(0) });
+        let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
+        let d = TriesDispenser::wrap(inner.clone(), 100, metrics, 0, 0, 2.0,
+            crate::session_signals::StopView::default());
+        let (fields, pulls) = empty_ctx();
+        let ctx = ExecCtx::new(&fields, &pulls);
+        crate::session_signals::request_stop();
+        let res = d.execute(0, &ctx).await;
+        crate::session_signals::clear_session_stop_for_test();
+        res.expect_err("failure under shutdown must be terminal");
+        assert_eq!(inner.calls.load(Ordering::Relaxed), 1,
+            "no fresh attempts once the session is stopping");
+    }
+
     /// `tries: 3` retries a retryable failure up to 3 TOTAL attempts and
     /// succeeds when the third works.
     #[tokio::test]
     async fn tries_is_a_total_attempt_budget() {
         let inner = Arc::new(FlakyInner { fail_first: 2, calls: AtomicU32::new(0) });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 3, metrics.clone(), 0, 0, 2.0);
+        let d = TriesDispenser::wrap(inner.clone(), 3, metrics.clone(), 0, 0, 2.0,
+            crate::session_signals::StopView::default());
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         d.execute(0, &ctx).await.expect("third attempt succeeds");
@@ -368,7 +418,8 @@ mod tests {
     async fn budget_exhaustion_is_terminal() {
         let inner = Arc::new(FlakyInner { fail_first: 5, calls: AtomicU32::new(0) });
         let metrics = Arc::new(ActivityMetrics::new(&Labels::empty()));
-        let d = TriesDispenser::wrap(inner.clone(), 2, metrics, 0, 0, 2.0);
+        let d = TriesDispenser::wrap(inner.clone(), 2, metrics, 0, 0, 2.0,
+            crate::session_signals::StopView::default());
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let err = d.execute(0, &ctx).await.expect_err("budget spent");

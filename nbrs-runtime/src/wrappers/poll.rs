@@ -111,6 +111,11 @@ pub struct PollingDispenser {
     /// wrapper propagates upstream. `0` means strict: any
     /// inner-op error fails the poll immediately.
     max_error_retries: u32,
+    /// SRD-92 cooperative-stop view (same aspect as the `while:` and
+    /// `tries` wrappers). Checked at the top of every poll iteration
+    /// so a session/walk/daemon stop abandons the poll instead of
+    /// waiting out the cadence or timeout. Injected at wrap time.
+    stop: crate::session_signals::StopView,
     /// Named metric for the poll elapsed time (e.g., "index_build_time").
     metric_name: Option<String>,
     /// Threshold for "done": the poll is considered satisfied
@@ -135,6 +140,31 @@ pub struct PollingDispenser {
     /// to count; an object or null maps to 1 / 0. Default `None`
     /// uses `body.element_count()` as-is.
     json_path: Option<String>,
+    /// `poll.memo` — optional template re-rendered after EVERY poll
+    /// iteration (against the wires, so this iteration's captures are
+    /// visible) and published to the activity memo. Without it, a
+    /// long await shows only the memo wrapper's static `before:` text
+    /// while the measured values sit unrendered in wires — the memo
+    /// is where the operator is looking, so the measurement belongs
+    /// there. When absent but `memo_state` is wired, a generic
+    /// `<base memo> — measured N row(s) …` suffix is published
+    /// instead, so every poll surfaces its live measurement without
+    /// workload changes.
+    each_memo: Option<String>,
+    /// The activity's memo slot (same ArcSwap the memo wrapper
+    /// writes). `None` in tests / callers that don't surface memos.
+    memo_state: Option<Arc<arc_swap::ArcSwap<String>>>,
+    /// `poll.progress` — optional template whose rendered value is
+    /// parsed as an `f64` completion fraction in `[0.0, 1.0]` and
+    /// published to the activity's derived-progress override each
+    /// iteration (e.g. `"{completion_ratio}"`). Drives the phase
+    /// completion bar for phases whose one long op measures its own
+    /// progress; cleared when the poll completes so the cycle-based
+    /// accounting takes back over.
+    progress_template: Option<String>,
+    /// Metrics of the owning activity — target of the
+    /// derived-progress override. `None` in bare tests.
+    activity_metrics: Option<Arc<crate::activity::ActivityMetrics>>,
     /// Externally visible metrics for the polling operation.
     pub metrics: Arc<PollingMetrics>,
 }
@@ -185,6 +215,34 @@ impl PollingDispenser {
         max_rows: u64,
         json_path: Option<String>,
     ) -> (Arc<dyn OpDispenser>, Arc<PollingMetrics>) {
+        Self::wrap_with_status(
+            inner, poll_interval_ms, timeout_ms, max_error_retries,
+            metric_name, min_rows, max_rows, json_path,
+            None, None, None, None,
+            crate::session_signals::StopView::default(),
+        )
+    }
+
+    /// As [`Self::wrap`], plus the live-status handles: the
+    /// per-iteration memo template + activity memo slot, and the
+    /// derived-progress template + activity metrics. See the field
+    /// docs (`each_memo`, `progress_template`) for semantics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn wrap_with_status(
+        inner: Arc<dyn OpDispenser>,
+        poll_interval_ms: u64,
+        timeout_ms: u64,
+        max_error_retries: u32,
+        metric_name: Option<String>,
+        min_rows: u64,
+        max_rows: u64,
+        json_path: Option<String>,
+        each_memo: Option<String>,
+        memo_state: Option<Arc<arc_swap::ArcSwap<String>>>,
+        progress_template: Option<String>,
+        activity_metrics: Option<Arc<crate::activity::ActivityMetrics>>,
+        stop: crate::session_signals::StopView,
+    ) -> (Arc<dyn OpDispenser>, Arc<PollingMetrics>) {
         let metrics = Arc::new(PollingMetrics::new());
         let dispenser = Arc::new(Self {
             inner,
@@ -195,9 +253,80 @@ impl PollingDispenser {
             min_rows,
             max_rows,
             json_path,
+            each_memo,
+            memo_state,
+            progress_template,
+            activity_metrics,
+            stop,
             metrics: metrics.clone(),
         });
         (dispenser, metrics)
+    }
+
+    /// Per-iteration status publish: memo + derived progress.
+    ///
+    /// Runs after each not-yet-done poll, when this iteration's
+    /// captures are already on the wires. Substitution failures
+    /// degrade to a debug log — status must never fail the poll.
+    fn publish_iteration_status(
+        &self,
+        wires: &dyn crate::wires::WireSource,
+        base_memo: &str,
+        row_count: u64,
+        polls: u64,
+        elapsed_secs: f64,
+    ) {
+        if let Some(memo) = &self.memo_state {
+            let rendered = self.each_memo.as_deref().and_then(|t| {
+                match crate::wires::substitute_via_wires(t, wires) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        crate::diag!(crate::observer::LogLevel::Debug,
+                            "poll.memo: substitution failed for '{t}': {e}");
+                        None
+                    }
+                }
+            });
+            // Default (no template / render failure): keep the memo the
+            // operator already sees and append the measurement to it.
+            let text = rendered.unwrap_or_else(|| format!(
+                "{base_memo} — measured {row_count} row(s) [target {}..={}] · poll {polls}, {elapsed_secs:.0}s",
+                self.min_rows, self.max_rows,
+            ));
+            memo.store(Arc::new(text));
+        }
+        if let (Some(metrics), Some(t)) = (&self.activity_metrics, self.progress_template.as_deref()) {
+            match crate::wires::substitute_via_wires(t, wires) {
+                Ok(s) => match s.trim().parse::<f64>() {
+                    // Elapsed rides along so the display can derive the
+                    // measured-basis ETA (`elapsed × (1−f)/f`) — the
+                    // cycle-based ETA stands still for one long measured op.
+                    Ok(f) => metrics.set_progress_override_with_elapsed(f, elapsed_secs),
+                    Err(_) => {
+                        crate::diag!(crate::observer::LogLevel::Debug,
+                            "poll.progress: '{t}' rendered to non-numeric '{s}'");
+                    }
+                },
+                Err(e) => {
+                    crate::diag!(crate::observer::LogLevel::Debug,
+                        "poll.progress: substitution failed for '{t}': {e}");
+                }
+            }
+        }
+    }
+}
+
+/// Drop guard clearing the derived-progress override when the poll
+/// future ends — by completion, timeout, error, OR cancellation (a
+/// daemon drop mid-await). Without it a finished/cancelled poll's
+/// stale fraction would keep driving the phase bar.
+struct ProgressOverrideClear<'m>(Option<&'m crate::activity::ActivityMetrics>);
+
+impl Drop for ProgressOverrideClear<'_> {
+    fn drop(&mut self) {
+        if let Some(m) = self.0 {
+            m.set_progress_override(None);
+        }
     }
 }
 
@@ -213,8 +342,31 @@ impl OpDispenser for PollingDispenser {
             let start = std::time::Instant::now();
             let mut polls = 0u64;
             let mut retryable_errors_consumed: u32 = 0;
+            // Memo text as of poll start — the memo wrapper is OUTER,
+            // so its `before:` template is already published; the
+            // default per-iteration publish appends the measurement
+            // to this base rather than compounding onto itself.
+            let base_memo: String = self.memo_state.as_ref()
+                .map(|m| m.load().as_str().to_string())
+                .unwrap_or_default();
+            let _progress_clear =
+                ProgressOverrideClear(self.activity_metrics.as_deref());
 
             loop {
+                // Session shutdown: abandon the poll. The cooperative
+                // drain waits for in-flight WORK, not for a poll
+                // cadence that may have minutes of timeout left —
+                // without this check a Ctrl-C leaves the drain stuck
+                // behind the next interval/retry sleep.
+                if self.stop.stopped() {
+                    return Err(ExecutionError::Op(AdapterError {
+                        error_name: "shutdown_cancelled".into(),
+                        message: format!(
+                            "session stop requested — poll abandoned after {} poll(s), {:.1}s",
+                            polls, start.elapsed().as_secs_f64()),
+                        retryable: false,
+                    }));
+                }
                 // SRD-03 §"Status-Determination Invariant":
                 // every inner-op outcome other than the
                 // specific positive case (empty body, signalling
@@ -298,6 +450,19 @@ impl OpDispenser for PollingDispenser {
                         self.max_rows,
                         start.elapsed().as_secs_f64()
                     );
+                    // Live status: this iteration's captures are on the
+                    // wires; expose the poll's own counters alongside
+                    // them (slot-absent writes no-op) and publish the
+                    // measured values to the memo + the derived
+                    // phase-progress override.
+                    let _ = ctx.wires.write(
+                        "poll_count", polydat::ast::Value::U64(polls));
+                    let _ = ctx.wires.write(
+                        "poll_elapsed_ms",
+                        polydat::ast::Value::U64(start.elapsed().as_millis() as u64));
+                    self.publish_iteration_status(
+                        ctx.wires, &base_memo, row_count, polls,
+                        start.elapsed().as_secs_f64());
                 }
 
                 if is_done {
@@ -419,5 +584,89 @@ pub(crate) fn count_from_json_pointer(json: &serde_json::Value, path: &str) -> u
         serde_json::Value::String(s) if s.is_empty() => 0,
         serde_json::Value::String(_) => 1,
         serde_json::Value::Null => 0,
+    }
+}
+
+#[cfg(test)]
+mod status_publish_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Minimal WireSource: one f64 wire named `completion_ratio`.
+    struct RatioWire(f64);
+    impl crate::wires::WireSource for RatioWire {
+        fn get(&self, name: &str) -> Option<polydat::ast::Value> {
+            (name == "completion_ratio")
+                .then(|| polydat::ast::Value::F64(self.0))
+        }
+        fn names(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(std::iter::once("completion_ratio".to_string()))
+        }
+    }
+
+    fn dispenser_with_status(
+        each_memo: Option<&str>,
+        progress: Option<&str>,
+        memo: &Arc<arc_swap::ArcSwap<String>>,
+        metrics: &Arc<crate::activity::ActivityMetrics>,
+    ) -> PollingDispenser {
+        struct NoopInner;
+        impl OpDispenser for NoopInner {
+            fn execute<'a>(
+                &'a self,
+                _cycle: u64,
+                _ctx: &'a crate::fixture::ExecCtx<'a>,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+                Box::pin(async move { Ok(OpResult { body: None, skipped: false }) })
+            }
+        }
+        PollingDispenser {
+            inner: Arc::new(NoopInner),
+            poll_interval: std::time::Duration::from_millis(1),
+            timeout: std::time::Duration::from_millis(10),
+            max_error_retries: 0,
+            metric_name: None,
+            min_rows: 0,
+            max_rows: 0,
+            json_path: None,
+            each_memo: each_memo.map(String::from),
+            memo_state: Some(memo.clone()),
+            progress_template: progress.map(String::from),
+            activity_metrics: Some(metrics.clone()),
+            stop: crate::session_signals::StopView::default(),
+            metrics: Arc::new(PollingMetrics::new()),
+        }
+    }
+
+    fn test_metrics() -> Arc<crate::activity::ActivityMetrics> {
+        Arc::new(crate::activity::ActivityMetrics::new(
+            &nbrs_metrics::labels::Labels::default()))
+    }
+
+    #[test]
+    fn progress_template_publishes_override_and_memo_renders() {
+        let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::from("base")));
+        let metrics = test_metrics();
+        let d = dispenser_with_status(
+            Some("ratio {completion_ratio}"), Some("{completion_ratio}"),
+            &memo, &metrics);
+        let wires = RatioWire(0.42);
+        d.publish_iteration_status(&wires, "base", 1, 3, 15.0);
+        assert_eq!(metrics.progress_override(), Some(0.42),
+            "progress template must publish the derived override");
+        assert_eq!(memo.load().as_str(), "ratio 0.42");
+    }
+
+    #[test]
+    fn default_memo_suffix_without_template() {
+        let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::from("waiting")));
+        let metrics = test_metrics();
+        let d = dispenser_with_status(None, None, &memo, &metrics);
+        let wires = RatioWire(0.9);
+        d.publish_iteration_status(&wires, "waiting", 4, 7, 33.0);
+        assert!(memo.load().contains("measured 4 row(s)"),
+            "default memo must carry the measurement: {}", memo.load());
+        assert_eq!(metrics.progress_override(), None,
+            "no progress template -> no override");
     }
 }

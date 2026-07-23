@@ -250,6 +250,26 @@ impl WrapperRegistry {
         self.entries.iter().copied()
     }
 
+    /// Whether `field` is an op-template key declared as owned by ANY
+    /// registered wrapper (its trigger or a knob it consumes). This is
+    /// the single structural source of truth for "this params key is a
+    /// wrapper field" — driven by each wrapper's `owned_fields`
+    /// declaration, not a hand-maintained parallel list. The op
+    /// closed-vocabulary guard consults it so a wrapper field is
+    /// accepted because a wrapper *declares* it, not because it happens
+    /// to also be a CLI param (SRD-32a). Adding a wrapper therefore
+    /// never requires touching `CORE_OP_PARAMS` or the CLI vocabulary.
+    pub fn owns_field(&self, field: &str) -> bool {
+        self.iter().any(|reg| reg.owned_fields.contains(&field))
+    }
+
+    /// Every field name owned by some registered wrapper, deduplicated.
+    /// Exposed for diagnostics (the closed-vocab guard names the full
+    /// accepted wrapper vocabulary) and for the drift-guard test.
+    pub fn all_owned_fields(&self) -> std::collections::BTreeSet<&'static str> {
+        self.iter().flat_map(|reg| reg.owned_fields.iter().copied()).collect()
+    }
+
     /// Look up by name. Returns `None` for unknown names; the
     /// caller surfaces that as a typo diagnostic with a
     /// closest-match suggestion (see [`closest_match`]).

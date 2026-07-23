@@ -210,6 +210,11 @@ pub const DEFAULT_ORDER: &[&str] = &[
     // from default order would surface as a
     // `ForbiddenOuter` resolve error.
     "memo",
+    // `gutter` sits beside memo for the same reason memo needs a
+    // slot: dryrun forbids it outer, so it must beat dryrun's
+    // tiebreak. Inside `while:` / `op_rate:` so each loop
+    // iteration publishes its own cell value.
+    "gutter",
     // `op_rate:` paces inner iterations. Slotted inside
     // `while:` so the acquire fires once per loop iteration;
     // outside metrics/memo so the wait isn't counted against

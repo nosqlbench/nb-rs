@@ -59,6 +59,7 @@ const FORBIDS_OUTER: &[WrapperName] = &[
     super::result::NAME,
     super::metrics::NAME,
     super::memo::NAME,
+    super::gutter::NAME,
     // `while` loops the entire wrapper stack inner of it; dryrun
     // must short-circuit BEFORE the loop or the dry-run pass
     // would burn cycles iterating a no-op stand-in.
