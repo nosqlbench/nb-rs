@@ -132,8 +132,11 @@ phases:
         result-body: [ {body} ]
         # SRD-66 result-binding: write floor_decade(count) THROUGH to
         # the parent `shared measured` cell (SRD-67 Phase 5 "Rule 2").
+        # `trunc_u64` — floor_decade returns f64, the cell is U64, and
+        # narrowing is never automatic (type-stable cells): the
+        # explicit cast is the author's act, per scope_model.md.
         result: |
-          measured := floor_decade(count)
+          measured := trunc_u64(floor_decade(count))
 
   use_stride:
     adapter: testkit

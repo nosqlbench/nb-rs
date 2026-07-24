@@ -75,9 +75,18 @@ fn run_scenario(scenario: &str) -> (String, String, bool) {
         .arg("--session-path")
         .arg(&session);
     let out = cmd.output().expect("run nbrs");
+    // Evidence = stderr + session.log: `tui=off` claims the log-only
+    // surface, so in-run diagnostics (e.g. the graceful "workload stop
+    // condition tripped" line) land in session.log and are suppressed
+    // from the console; failure-path reasons still print post-run.
+    let session_log = std::fs::read_to_string(session.join("session.log"))
+        .unwrap_or_default();
+    let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
+    evidence.push('\n');
+    evidence.push_str(&session_log);
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
+        evidence,
         out.status.success(),
     )
 }

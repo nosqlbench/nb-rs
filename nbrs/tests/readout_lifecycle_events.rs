@@ -14,7 +14,10 @@
 //!
 //! `trace` emits `event=<slot_name> ...` as its first
 //! line, so the assertion is just substring matching
-//! against the captured stderr.
+//! against the run's log evidence (stderr + session.log:
+//! `tui=off` claims the log-only surface, so in-run readout
+//! renders land in session.log and are deliberately
+//! suppressed from the console).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -59,7 +62,9 @@ fn run_workload(yaml: &str) -> String {
     cmd.arg("tui=off");
     cmd.arg("adapter=stdout");
     let output = cmd.output().expect("run nbrs");
-    String::from_utf8_lossy(&output.stderr).to_string()
+    let session_log = std::fs::read_to_string(session_path.join("session.log"))
+        .unwrap_or_default();
+    format!("{}\n{session_log}", String::from_utf8_lossy(&output.stderr))
 }
 
 #[test]

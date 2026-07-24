@@ -45,13 +45,16 @@ impl Sandbox {
     }
 
     /// Spawn `nbrs <verb> [args] workload=<path>` from inside
-    /// the sandbox dir. Returns the (stdout, stderr, ok) triple.
-    /// Working dir is the sandbox so `logs/latest` resolves
-    /// under the sandbox — this lets `nbrs refine` (with no
-    /// explicit session selector) attach to the most recent
-    /// session here without contaminating the project tree.
-    /// Pre-pends `tui=off` so the test runs deterministically
-    /// in non-TTY mode.
+    /// the sandbox dir. Returns `(stdout, evidence, ok)` where
+    /// `evidence` is stderr plus the latest session's
+    /// `session.log` — `tui=off` claims the log-only surface, so
+    /// in-run diagnostics (the `refine: skipping phase …` lines)
+    /// land in session.log and are deliberately suppressed from
+    /// the console. Working dir is the sandbox so
+    /// `sessions/latest` resolves under the sandbox — this lets
+    /// `nbrs refine` (with no explicit session selector) attach
+    /// to the most recent session here without contaminating the
+    /// project tree.
     fn invoke(&self, verb: &str, extra: &[&str]) -> (String, String, bool) {
         let mut cmd = nbrs();
         cmd.current_dir(self._parent.path());
@@ -61,9 +64,15 @@ impl Sandbox {
         cmd.arg("cycles=1");
         cmd.arg("tui=off");
         let output = cmd.output().expect("nbrs spawn");
+        let session_log = std::fs::read_to_string(
+            self._parent.path().join("sessions").join("latest").join("session.log"))
+            .unwrap_or_default();
+        let mut evidence = String::from_utf8_lossy(&output.stderr).to_string();
+        evidence.push('\n');
+        evidence.push_str(&session_log);
         (
             String::from_utf8_lossy(&output.stdout).to_string(),
-            String::from_utf8_lossy(&output.stderr).to_string(),
+            evidence,
             output.status.success(),
         )
     }

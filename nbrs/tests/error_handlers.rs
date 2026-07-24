@@ -49,7 +49,14 @@ fn write_workload(label: &str, body: &str) -> PathBuf {
     dir
 }
 
-/// Run `nbrs run workload=... <extra>` and return (stdout, stderr, success).
+/// Run `nbrs run workload=... <extra>` and return
+/// `(stdout, evidence, success)`, where `evidence` is stderr plus the
+/// session's `session.log`. The handler/readout output the tests
+/// assert on moved off the console: `tui=off` claims the log-only
+/// surface for the whole run (the always-a-sink invariant — no
+/// workload thread may block on an adapter-owned terminal), so in-run
+/// diagnostics land in the ring + session.log and are deliberately
+/// suppressed from stderr; only post-run reports still print there.
 /// Uses a per-invocation `--session-path` so cargo's parallel
 /// test execution doesn't race on `logs/default_<timestamp>`.
 fn run(workload: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
@@ -71,10 +78,15 @@ fn run(workload: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
         cmd.arg(a);
     }
     let out = cmd.output().expect("failed to exec nbrs");
+    let session_log = std::fs::read_to_string(session_path.join("session.log"))
+        .unwrap_or_default();
     let _ = std::fs::remove_dir_all(&session_parent);
+    let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
+    evidence.push('\n');
+    evidence.push_str(&session_log);
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
+        evidence,
         out.status.success(),
     )
 }
@@ -152,7 +164,9 @@ blocks:
         "errors=stop",
     ]);
     assert!(!ok, "run should have failed, stderr={stderr}");
-    assert!(!stderr.contains("\ndone."),
+    // Line-based: the completion marker is a bare `done.` on stderr or
+    // a `… INF done.` session.log line — either ends the line with it.
+    assert!(!stderr.lines().any(|l| l.trim_end().ends_with("done.")),
         "run should not have completed, stderr={stderr}");
 }
 

@@ -5,13 +5,15 @@
 //! (SRD 18b §"Scheduler abstraction").
 //!
 //! Wall-clock comparisons are too noisy on shared infrastructure,
-//! so each test inspects stderr log ordering: with two latency-
+//! so each test inspects the session.log stream: with two latency-
 //! bounded sibling phases, a serial run finishes the first phase
 //! before announcing the second, while a concurrent run logs both
 //! phases as in-flight before either completes. The latency-bound
 //! ops give the scheduler enough wall-time slack that the entry
 //! lines for both phases land before the completion lines under
-//! any reasonable concurrent dispatch.
+//! any reasonable concurrent dispatch. (`tui=off` suppresses in-run
+//! diagnostics from stderr — see `run`'s doc — so the console
+//! stream carries no dispatch evidence.)
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -68,6 +70,12 @@ phases:
         result-latency: 1000
 "#;
 
+/// Returns `(stdout, session_log, ok)`. The dispatch evidence is read
+/// from the session's `session.log`, not stderr: `tui=off` claims the
+/// log-only surface for the whole run (the always-a-sink invariant —
+/// no workload thread may block on an adapter-owned terminal), so
+/// in-run diagnostics land in the ring + session.log and are
+/// deliberately suppressed from the console.
 fn run(workload: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
     // Per-invocation session parent so cargo's parallel test
     // execution doesn't collide on `logs/default_<timestamp>`.
@@ -89,10 +97,12 @@ fn run(workload: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
     cmd.arg(&session_path);
     for a in extra { cmd.arg(a); }
     let out = cmd.output().expect("failed to exec nbrs");
+    let session_log = std::fs::read_to_string(session_path.join("session.log"))
+        .unwrap_or_default();
     let _ = std::fs::remove_dir_all(&session_parent);
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
+        session_log,
         out.status.success(),
     )
 }
@@ -119,32 +129,32 @@ fn both_in_flight(stream: &str) -> bool {
 #[test]
 fn serial_baseline_does_not_overlap_phases() {
     let path = write_workload("serial", TWO_PHASE_LATENCY_YAML);
-    let (stdout, stderr, ok) = run(&path, &[]);
-    assert!(ok, "nbrs failed: stdout={stdout}\nstderr={stderr}");
+    let (stdout, log, ok) = run(&path, &[]);
+    assert!(ok, "nbrs failed: stdout={stdout}\nsession.log={log}");
     assert!(
-        !both_in_flight(&stderr),
-        "serial baseline must complete each phase before starting the next.\nstderr={stderr}",
+        !both_in_flight(&log),
+        "serial baseline must complete each phase before starting the next.\nsession.log={log}",
     );
 }
 
 #[test]
 fn schedule_unlimited_overlaps_sibling_phases() {
     let path = write_workload("unlimited", TWO_PHASE_LATENCY_YAML);
-    let (stdout, stderr, ok) = run(&path, &["schedule=*"]);
-    assert!(ok, "nbrs failed: stdout={stdout}\nstderr={stderr}");
+    let (stdout, log, ok) = run(&path, &["schedule=*"]);
+    assert!(ok, "nbrs failed: stdout={stdout}\nsession.log={log}");
     assert!(
-        both_in_flight(&stderr),
-        "schedule=* must dispatch both siblings before either completes.\nstderr={stderr}",
+        both_in_flight(&log),
+        "schedule=* must dispatch both siblings before either completes.\nsession.log={log}",
     );
 }
 
 #[test]
 fn schedule_bounded_two_overlaps_two_siblings() {
     let path = write_workload("bounded2", TWO_PHASE_LATENCY_YAML);
-    let (stdout, stderr, ok) = run(&path, &["schedule=2"]);
-    assert!(ok, "nbrs failed: stdout={stdout}\nstderr={stderr}");
+    let (stdout, log, ok) = run(&path, &["schedule=2"]);
+    assert!(ok, "nbrs failed: stdout={stdout}\nsession.log={log}");
     assert!(
-        both_in_flight(&stderr),
-        "schedule=2 must dispatch both siblings before either completes.\nstderr={stderr}",
+        both_in_flight(&log),
+        "schedule=2 must dispatch both siblings before either completes.\nsession.log={log}",
     );
 }

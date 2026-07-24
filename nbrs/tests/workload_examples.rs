@@ -64,6 +64,11 @@ fn nbrs(session: &SessionDir) -> Command {
     cmd
 }
 
+/// Returns `(stdout, evidence)` where `evidence` is stderr plus the
+/// session's `session.log` — `tui=off` (the non-TTY default under
+/// `cargo test`) claims the log-only surface, so in-run diagnostics
+/// like the `done.` completion line land in session.log and are
+/// deliberately suppressed from the console.
 fn run_inline(op: &str, extra_args: &[&str]) -> (String, String) {
     let session = SessionDir::new();
     let mut cmd = nbrs(&session);
@@ -73,8 +78,11 @@ fn run_inline(op: &str, extra_args: &[&str]) -> (String, String) {
     }
     let output = cmd.output().expect("failed to run nbrs");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (stdout, stderr)
+    let session_log = std::fs::read_to_string(session.path.join("session.log"))
+        .unwrap_or_default();
+    let evidence = format!("{}\n{session_log}",
+        String::from_utf8_lossy(&output.stderr));
+    (stdout, evidence)
 }
 
 // ─── Example workloads ─────────────────────────────────────────

@@ -64,10 +64,19 @@ fn run(workload: &Path, extra: &[&str]) -> (String, String, bool) {
         cmd.arg(a);
     }
     let out = cmd.output().expect("failed to exec nbrs");
+    // Evidence = stderr + session.log: `tui=off` claims the log-only
+    // surface, so in-run diagnostics (✓ outcome blocks, graceful
+    // workload-stop lines) land in session.log and are deliberately
+    // suppressed from the console.
+    let session_log = std::fs::read_to_string(session_path.join("session.log"))
+        .unwrap_or_default();
     let _ = std::fs::remove_dir_all(&session_parent);
+    let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
+    evidence.push('\n');
+    evidence.push_str(&session_log);
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
+        evidence,
         out.status.success(),
     )
 }
