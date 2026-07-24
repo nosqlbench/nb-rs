@@ -61,13 +61,25 @@ impl Drop for TempDir {
 /// same value every cycle. `pace_ms` stretches the phase so the live
 /// footer (metric cell) is observable; the retention tests run it
 /// fast instead.
-fn recall_workload(dir: &TempDir, cycles: u32, pace_ms: u32) -> PathBuf {
+/// `with_epilogue` appends a ~4 s paced trailer phase: the retention
+/// tests assert on `measure`'s completed block in SCROLLBACK, and a
+/// child that exits milliseconds after printing it loses the tail to
+/// the pty drain race (the emulator can miss bytes written just
+/// before exit). The trailer keeps the child alive while the
+/// assertions read a fully-drained block.
+fn recall_workload(dir: &TempDir, cycles: u32, pace_ms: u32, with_epilogue: bool) -> PathBuf {
+    let epilogue_phase = if with_epilogue { ", epilogue" } else { "" };
+    let epilogue_block = if with_epilogue {
+        "\n  epilogue:\n    adapter: testkit\n    cycles: 40\n    concurrency: 1\n    ops:\n      linger:\n        stmt: \"tick\"\n        result-latency: \"100ms\"\n"
+    } else {
+        ""
+    };
     let yaml_path = dir.path().join("recall_cell.yaml");
     std::fs::write(
         &yaml_path,
         format!(
             r#"scenarios:
-  default: [measure]
+  default: [measure{epilogue_phase}]
 
 phases:
   measure:
@@ -93,12 +105,27 @@ phases:
             expected: ground_truth
             k: 3
             r: 3
-            functions: [recall]
+            functions: [recall]{epilogue_block}
 "#
         ),
     )
     .expect("write workload yaml");
     yaml_path
+}
+
+/// The `measure` block's slice of the screen: from its terminal
+/// (✓/⊘/✗) header row up to the first subsequent `epilogue` row (the
+/// trailer phase's footer). Assertions scoped here can't be satisfied
+/// or violated by the trailer's own live rows.
+fn measure_block(screen: &str) -> Option<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let start = lines.iter().position(|l| l.contains("[measure]"))?;
+    let end = lines[start..]
+        .iter()
+        .position(|l| l.contains("epilogue"))
+        .map(|off| start + off)
+        .unwrap_or(lines.len());
+    Some(lines[start..end].join("\n"))
 }
 
 fn build_config(workload: &Path, session: &Path, extra: &[&str]) -> Config {
@@ -148,17 +175,29 @@ async fn assert_screen(
     }
 }
 
-/// Wait until the process' post-run report has printed, then return
-/// the final screen for scrollback assertions.
-async fn final_screen(stepper: &mut SteppableTerminal, timeout: Duration) -> String {
-    assert_screen(stepper, "post-run report (`phases:` line)", timeout, |s| {
-        s.contains("phases:")
+/// Wait until `measure`'s completed block satisfies `block_pred`,
+/// give the drain a settle window, and return the block's slice.
+/// The child is still alive (epilogue trailer running), so the
+/// slice is fully drained — no dependence on output written just
+/// before process exit.
+async fn settled_measure_block(
+    stepper: &mut SteppableTerminal,
+    what: &str,
+    block_pred: impl Fn(&str) -> bool,
+) -> String {
+    assert_screen(stepper, what, Duration::from_secs(45), |s| {
+        measure_block(s).is_some_and(|b| block_pred(&b))
     })
     .await;
-    // One more render pass so trailing lines land.
-    let _ = tokio::time::timeout(
-        Duration::from_secs(2), stepper.render_all_output()).await;
-    stepper.screen_as_string().unwrap_or_default()
+    // Settle: further drain passes so any straggler detail rows land
+    // before negative assertions read the slice.
+    for _ in 0..10 {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2), stepper.render_all_output()).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let screen = stepper.screen_as_string().unwrap_or_default();
+    measure_block(&screen).expect("measure block present after wait")
 }
 
 /// SRD-92 R4 — a line whose LEFT-OF-DIVIDER cell carries the metric
@@ -192,7 +231,7 @@ fn has_recall_metric_cell(screen: &str) -> bool {
 async fn recall_metric_cell_renders_live_trend() {
     let dir = TempDir::new();
     // 60 × 150 ms ≈ 9 s of live footer to observe.
-    let yaml = recall_workload(&dir, 60, 150);
+    let yaml = recall_workload(&dir, 60, 150, false);
     let session = dir.path().join("session");
     let config = build_config(&yaml, &session, &[]);
 
@@ -229,26 +268,29 @@ async fn recall_metric_cell_renders_live_trend() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completed_full_keeps_detail_rows_and_leaves() {
     let dir = TempDir::new();
-    let yaml = recall_workload(&dir, 3, 10);
+    let yaml = recall_workload(&dir, 3, 10, true);
     let session = dir.path().join("session");
     let config = build_config(&yaml, &session, &[]);
 
     let mut stepper = SteppableTerminal::start(config)
         .await
         .expect("start steppable terminal");
-    let screen = final_screen(&mut stepper, Duration::from_secs(90)).await;
+    // The op leaf is the LAST row of the retained block to land, so
+    // waiting for it inside the slice means the whole block is in.
+    let block = settled_measure_block(
+        &mut stepper,
+        "measure's full completed block (through the op leaf)",
+        |b| b.contains("\u{2713} probe"),
+    )
+    .await;
     let _ = stepper.kill();
 
-    assert!(screen.contains("[measure]"),
-        "✓ header row must be retained:\n{screen}");
-    assert!(screen.contains("/s ok:"),
-        "counters detail row must be retained under `full`:\n{screen}");
-    assert!(screen.contains("recall:66.67%"),
-        "key-metric chip must be retained on the counters row under `full`:\n{screen}");
-    assert!(screen.contains("mean="),
-        "relevancy summary detail line must be retained under `full`:\n{screen}");
-    assert!(screen.contains("✓ probe"),
-        "op leaf must be retained under `full`:\n{screen}");
+    assert!(block.contains("/s ok:"),
+        "counters detail row must be retained under `full`:\n{block}");
+    assert!(block.contains("recall:66.67%"),
+        "key-metric chip must be retained on the counters row under `full`:\n{block}");
+    assert!(block.contains("mean="),
+        "relevancy summary detail line must be retained under `full`:\n{block}");
 }
 
 /// SRD-92 R5 `completed_phases=headers` — scrollback keeps ONLY the
@@ -258,24 +300,30 @@ async fn completed_full_keeps_detail_rows_and_leaves() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completed_headers_drops_detail_rows_and_leaves() {
     let dir = TempDir::new();
-    let yaml = recall_workload(&dir, 3, 10);
+    let yaml = recall_workload(&dir, 3, 10, true);
     let session = dir.path().join("session");
     let config = build_config(&yaml, &session, &["completed_phases=headers"]);
 
     let mut stepper = SteppableTerminal::start(config)
         .await
         .expect("start steppable terminal");
-    let screen = final_screen(&mut stepper, Duration::from_secs(90)).await;
+    // The header row itself is the wait target; the settle window in
+    // the helper gives any (wrongly) emitted detail rows time to land
+    // before the absence assertions read the slice.
+    let block = settled_measure_block(
+        &mut stepper,
+        "measure's ✓ header row",
+        |_| true,
+    )
+    .await;
     let _ = stepper.kill();
 
-    assert!(screen.contains("[measure]"),
-        "✓ header row must still be retained under `headers`:\n{screen}");
-    assert!(!screen.contains("/s ok:"),
-        "counters detail row must be dropped under `headers`:\n{screen}");
-    assert!(!screen.contains("mean="),
-        "relevancy summary detail line must be dropped under `headers`:\n{screen}");
-    assert!(!screen.contains("✓ probe"),
-        "op leaf must be dropped under `headers`:\n{screen}");
+    assert!(!block.contains("/s ok:"),
+        "counters detail row must be dropped under `headers`:\n{block}");
+    assert!(!block.contains("mean="),
+        "relevancy summary detail line must be dropped under `headers`:\n{block}");
+    assert!(!block.contains("✓ probe"),
+        "op leaf must be dropped under `headers`:\n{block}");
 
     // The dropped rows still land in session.log (display-surface
     // retention only — the durable record is not thinned).
