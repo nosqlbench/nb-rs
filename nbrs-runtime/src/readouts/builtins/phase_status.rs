@@ -320,15 +320,17 @@ fn render_labeled(
     // the result-vs-attempt divergence reads at a glance.
     let att_tone   = if att_pct >= 100.0 { dim } else { yellow };
 
-    // Memo header (if any): operator-visible state string
-    // published by the `memo:` wrapper. Sits ABOVE the regular
-    // status line in EMPHASIS color so it's hard to miss.
+    // Memo row (if any): operator-visible state string published
+    // by the `memo:` wrapper, in EMPHASIS color. SRD-92: blocks
+    // compose HEADER-FIRST — the memo is a detail row directly
+    // under the header, never a banner above it (which broke the
+    // header/detail gutter alignment surface-side).
     let memo = ctx.phase_memo();
-    let memo_header = if memo.is_empty() {
+    let memo_row = if memo.is_empty() {
         String::new()
     } else {
         let bold_yellow = if color { "\x1b[1;33m" } else { "" };
-        format!("{depth_indent}{bold_yellow}[[ {memo} ]]{reset}\n")
+        format!("{depth_indent}    {bold_yellow}[[ {memo} ]]{reset}\n")
     };
 
     // Two-line layout: break after the progress percentage so
@@ -423,8 +425,8 @@ fn render_labeled(
     let mut tmp = String::with_capacity(320);
     let _ = write!(
         &mut tmp,
-        "{memo_header}\
-{depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{bold}{blue}{activity_name}{reset}{coords_part} {meter}\n\
+        "{depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{bold}{blue}{activity_name}{reset}{coords_part} {meter}\n\
+{memo_row}\
 {depth_indent}    {dim}{rate_str}{reset} {ok_tone}ok:{ok_str}{reset} \
 {att_tone}att:{att_pct:.0}%{reset}{skips_chip} \
 {err_tone}e:{errors} r:{retries}{reset} {dim}c:{concurrency}{reset}{cycles_chip}{eta}\
@@ -846,11 +848,16 @@ mod tests {
             &ctx, Lod::Labeled, ContentMode::Value,
             &ReadoutOptions::new(), &mut buf,
         );
-        assert!(s.starts_with("[[ compacting tableX ]]\n"),
-            "memo header must lead the output, got: {s:?}");
-        // Body still present below the header.
-        assert!(s.contains("100%"),
-            "regular status body missing: {s:?}");
+        // SRD-92: blocks compose HEADER-FIRST — the memo is a
+        // detail row directly under the header, not a banner above.
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[0].contains("x") && lines[0].contains("100%"),
+            "header row must lead the output, got: {s:?}");
+        assert_eq!(lines[1].trim_start(), "[[ compacting tableX ]]",
+            "memo must be the first detail row under the header: {s:?}");
+        // Counters row still present below the memo.
+        assert!(lines[2].contains("ok:"),
+            "regular counters row missing: {s:?}");
     }
 
     #[test]

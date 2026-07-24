@@ -3747,6 +3747,88 @@ async fn run_phase_inner(
         crate::checkpoint::ResumeAction::ReRun => {}
     }
 
+    // --- `skipped_phases=prune`: pre-entry gate short-circuit ---
+    //
+    // When EVERY op of the phase declares `if:` and every gate
+    // evaluates false against the CURRENT parent chain (per-iteration
+    // values included), the phase would run only to skip each cycle.
+    // Prune mode skips the traversal itself: no activity, no fibers,
+    // no observer events, no completion line — the scene tree records
+    // the Skipped outcome for replay, and the walk moves on. Gates
+    // are evaluated on per-iteration hydrations of the ops' installed
+    // template kernels — the same programs the fibers would use.
+    if crate::observer::skipped_phase_display()
+        == crate::observer::SkippedPhaseDisplay::Prune
+        && let Some(phase_def) = ctx.phases.get(phase_name)
+        && !phase_def.ops.is_empty()
+        && phase_def.ops.iter().all(|op| op.condition.is_some())
+        && let Some(parent) = ctx.current_parent_kernel.as_ref()
+    {
+        // `ctx.current_scope_idx` is the ENCLOSING scenario scope (the
+        // phase arm doesn't descend the cursor); resolve this phase's own
+        // scope node among its children by name. Ambiguity (same-named
+        // sibling phases) falls through to a normal run.
+        let phase_nodes: Vec<crate::scope_tree::ScopeNodeIdx> =
+            ctx.scope_tree.nodes[ctx.current_scope_idx].children.iter()
+                .copied()
+                .filter(|c| matches!(&ctx.scope_tree.nodes[*c].kind,
+                    crate::scope_tree::ScopeKind::Phase { name } if name == phase_name))
+                .collect();
+        let mut all_false = phase_nodes.len() == 1;
+        let mut gates_checked = 0usize;
+        let op_children: Vec<crate::scope_tree::ScopeNodeIdx> = phase_nodes.first()
+            .map(|p| ctx.scope_tree.nodes[*p].children.clone())
+            .unwrap_or_default();
+        for child in &op_children {
+            let node = &ctx.scope_tree.nodes[*child];
+            let crate::scope_tree::ScopeKind::OpTemplate { name } = &node.kind else { continue };
+            let Some(op) = phase_def.ops.iter().find(|o| o.name == *name) else { continue };
+            let Some(cond) = op.condition.as_ref() else { continue };
+            let cond_name = cond.trim().trim_start_matches('{').trim_end_matches('}');
+            let Some(installed) = node.cached_kernel.get() else {
+                all_false = false; // no kernel to consult — don't guess
+                break;
+            };
+            let gate_kernel = polydat::kernel::PolydatKernel::for_iteration(
+                installed, parent, &[]);
+            // `for_iteration` returns a fresh kernel; this Arc holds the
+            // only reference, so the unwrap is structural. Fall through
+            // to a normal run rather than guess if that ever changes.
+            let Ok(mut gate_kernel) = std::sync::Arc::try_unwrap(gate_kernel) else {
+                all_false = false;
+                break;
+            };
+            let truthy = match gate_kernel.pull(cond_name) {
+                polydat::ast::Value::None => false,
+                polydat::ast::Value::U64(v) => *v != 0,
+                polydat::ast::Value::F64(v) => *v != 0.0,
+                polydat::ast::Value::Bool(v) => *v,
+                polydat::ast::Value::Str(s) => !s.is_empty(),
+                _ => true,
+            };
+            gates_checked += 1;
+            if truthy {
+                all_false = false;
+                break;
+            }
+        }
+        // Every op's gate must have been FOUND and evaluated false —
+        // a scope-tree shape mismatch (wrong current_scope_idx, elided
+        // op nodes) must fall through to a normal run, never prune.
+        if all_false && gates_checked != phase_def.ops.len() {
+            all_false = false;
+        }
+        if all_false {
+            crate::diag!(crate::observer::LogLevel::Debug,
+                "phase '{phase_name}' [pruned — every op gate false at entry \
+                 (skipped_phases=prune)]");
+            crate::scene_tree::with_global_mut(|t| {
+                t.set_phase_completed_at(scene_node_id, 0.0);
+            });
+            return crate::phase_outcome::Outcome::skipped();
+        }
+    }
+
     // --- Compile inner kernel via BindingScope ---
     let (iter_op_builder, iter_ops, runtime_cursor_extents,
          runtime_cursor_min_ms, runtime_cursor_min_passes,

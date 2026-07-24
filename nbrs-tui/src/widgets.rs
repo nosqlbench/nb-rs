@@ -94,10 +94,20 @@ pub fn sparkline_str(values: &[f64], width: usize) -> String {
     let min = visible.iter().cloned().fold(f64::INFINITY, f64::min);
     let max = visible.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let range = max - min;
+    // Degenerate-range guard: min-max normalization amplifies ANY
+    // spread to full bar height, so a series that is flat up to
+    // floating-point accumulation noise (a constant mean recomputed
+    // as sum/n each sample jitters at ~1e-14 relative) would render
+    // as a dramatic false trend. Treat a spread below one part per
+    // billion of the series' magnitude as flat — far above f64
+    // noise, far below anything a ~20-cell spark can meaningfully
+    // display.
+    let scale = min.abs().max(max.abs());
+    let flat = range <= 0.0 || range < scale * 1e-9;
 
     let mut s = String::with_capacity(width * 3);
     for &v in visible {
-        if range <= 0.0 {
+        if flat {
             // Flat line — show mid-height
             s.push(blocks[4]);
         } else {
@@ -312,23 +322,30 @@ pub fn bar_str_braille(fraction: f64, width: usize) -> (String, String) {
 }
 
 /// A lifetime trend buffer that keeps its WHOLE history renderable
-/// at character-cell resolution by decimating in place. Starts at
-/// one sample per cell; when the buffer fills its capacity, adjacent
-/// bucket pairs are re-averaged (only then — never eagerly) and the
-/// per-bucket stride doubles: 1, 2, 4, … So a young readout shows
-/// every discrete sample, and a long-lived one shows its full life
-/// compressed to the same width. Tracks the discrete lifetime
-/// min/max of every sample pushed (unaffected by averaging).
+/// at character-cell resolution, in two regions:
+///
+/// - **history** (left): buckets of `stride` samples each (stride is
+///   a power of two), re-averaged only when the display fills;
+/// - **raw tail** (right): the most recent samples, ONE CELL PER
+///   SAMPLE, filling left-to-right into whatever margin the history
+///   leaves — rendered in a distinct color by the gutter so "recent,
+///   individual" reads apart from "older, averaged".
+///
+/// Samples stack from the LEFT. When `history + raw` would exceed the
+/// capacity, the trend RESAMPLES: history pairs merge (stride
+/// doubles) and the raw tail folds into complete stride-sized buckets
+/// appended to history, freeing right-margin for individual samples
+/// again. Lifetime `min`/`max` are the DISCRETE extrema of every
+/// pushed sample, untouched by averaging.
 pub struct DecimatingTrend {
-    /// Completed buckets, oldest first. Never exceeds `cap`.
-    buckets: Vec<f64>,
+    /// Averaged history buckets, oldest first, `stride` samples each.
+    hist: Vec<f64>,
+    /// Recent samples, one per future cell, oldest first.
+    raw: Vec<f64>,
     /// Character-cell capacity, fixed at creation.
     cap: usize,
-    /// Samples per completed bucket (power of two).
+    /// Samples per history bucket (power of two).
     stride: u32,
-    /// Partial-bucket accumulator for the in-progress cell.
-    pend_sum: f64,
-    pend_n: u32,
     /// Discrete lifetime extrema over every pushed sample.
     pub min: f64,
     pub max: f64,
@@ -337,57 +354,106 @@ pub struct DecimatingTrend {
 impl DecimatingTrend {
     pub fn new(cap: usize) -> Self {
         Self {
-            buckets: Vec::with_capacity(cap.max(2)),
-            cap: cap.max(2),
+            hist: Vec::new(),
+            raw: Vec::new(),
+            cap: cap.max(4),
             stride: 1,
-            pend_sum: 0.0,
-            pend_n: 0,
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
         }
     }
 
-    /// Push one sample: update the lifetime extrema, accumulate into
-    /// the in-progress bucket, and decimate only when the buffer is
-    /// about to exceed its width.
+    /// Push one sample onto the raw tail; resample when full.
+    ///
+    /// The overflow loop GUARANTEES progress on every pass (no
+    /// stride-doubling without shrinkage): a ≥2-cell history halves
+    /// by pair-merge; a degenerate history (0–1 cells) rebases by
+    /// folding the raw tail pairwise instead. Either way the total
+    /// strictly decreases, the loop terminates, and the stride can
+    /// never overflow to zero (the runaway that produced a
+    /// divide-by-zero at 2³² doublings).
     pub fn push(&mut self, v: f64) {
         self.min = self.min.min(v);
         self.max = self.max.max(v);
-        self.pend_sum += v;
-        self.pend_n += 1;
-        if self.pend_n >= self.stride {
-            // At capacity, halve FIRST (stride doubles) — the pending
-            // samples then belong to a wider bucket and may stay
-            // partial rather than flushing at the retired stride.
-            if self.buckets.len() == self.cap {
+        self.raw.push(v);
+        while self.hist.len() + self.raw.len() > self.cap {
+            if self.hist.len() >= 2 {
+                // Merge history pairs (stride doubles), then fold the
+                // raw tail into complete new-stride buckets. The
+                // remainder (< stride samples) stays raw — the margin
+                // the fold freed shows individual samples again.
+                self.stride = self.stride.saturating_mul(2);
                 let mut merged = Vec::with_capacity(self.cap);
-                let mut it = self.buckets.chunks_exact(2);
+                let mut it = self.hist.chunks_exact(2);
                 for pair in &mut it {
                     merged.push((pair[0] + pair[1]) / 2.0);
                 }
                 if let [last] = it.remainder() {
                     merged.push(*last);
                 }
-                self.buckets = merged;
-                self.stride *= 2;
-            }
-            if self.pend_n >= self.stride {
-                let avg = self.pend_sum / self.pend_n as f64;
-                self.pend_sum = 0.0;
-                self.pend_n = 0;
-                self.buckets.push(avg);
+                self.hist = merged;
+                let s = (self.stride as usize).max(1);
+                let complete = self.raw.len() / s * s;
+                for chunk in self.raw[..complete].chunks_exact(s) {
+                    self.hist.push(chunk.iter().sum::<f64>() / s as f64);
+                }
+                self.raw.drain(..complete);
+            } else {
+                // Degenerate history: rebase — fold the raw tail
+                // pairwise (display-approximate when a lone legacy
+                // bucket remains; this is a trend view, not a ledger).
+                // raw ≥ cap−1 ≥ 3 here, so at least one pair folds and
+                // the loop shrinks.
+                self.stride = 2;
+                let complete = self.raw.len() / 2 * 2;
+                for pair in self.raw[..complete].chunks_exact(2) {
+                    self.hist.push((pair[0] + pair[1]) / 2.0);
+                }
+                self.raw.drain(..complete);
             }
         }
     }
 
-    /// The renderable series: completed buckets plus the live
-    /// partial bucket (so the newest cell moves every push).
+    /// Number of averaged history cells (the raw tail starts after).
+    pub fn hist_len(&self) -> usize {
+        self.hist.len()
+    }
+
+    /// The renderable series: averaged history then the raw tail,
+    /// oldest to newest, left-stacked.
     pub fn series(&self) -> Vec<f64> {
-        let mut s = self.buckets.clone();
-        if self.pend_n > 0 {
-            s.push(self.pend_sum / self.pend_n as f64);
-        }
+        let mut s = self.hist.clone();
+        s.extend_from_slice(&self.raw);
         s
+    }
+}
+
+#[cfg(test)]
+mod sparkline_tests {
+    use super::sparkline_str;
+
+    #[test]
+    fn noise_flat_series_renders_flat() {
+        // A constant metric recomputed as sum/n jitters at ~1e-14
+        // relative — min-max normalization would stretch that to a
+        // full-height false trend. The degenerate-range guard must
+        // render it flat (mid-height throughout), same as exactly
+        // equal values.
+        let base = 200.0 / 3.0; // 66.666… — the shape observed live
+        let noisy: Vec<f64> = (0..16)
+            .map(|i| base + (i as f64) * 5e-14)
+            .collect();
+        let s = sparkline_str(&noisy, 16);
+        let glyphs: std::collections::HashSet<char> = s.chars().collect();
+        assert_eq!(glyphs.len(), 1,
+            "noise-flat series must render one glyph, got {s:?}");
+        assert!(s.chars().all(|c| c == '▅'), "mid-height flat: {s:?}");
+
+        // A genuine trend still renders as one.
+        let real: Vec<f64> = (0..16).map(|i| i as f64).collect();
+        let s = sparkline_str(&real, 16);
+        assert!(s.contains('▁') && s.contains('█'),
+            "real spread must span the bar range: {s:?}");
     }
 }
 
@@ -402,30 +468,52 @@ mod decimating_trend_tests {
             t.push(v as f64);
         }
         assert_eq!(t.series(), (0..8).map(|v| v as f64).collect::<Vec<_>>(),
-            "below capacity every sample is its own cell");
+            "below capacity every sample is its own raw cell");
+        assert_eq!(t.hist_len(), 0, "no averaging before the first fill");
     }
 
     #[test]
-    fn halves_resolution_only_when_full() {
+    fn resample_folds_left_and_reopens_raw_margin() {
         let mut t = DecimatingTrend::new(4);
         for v in [1.0, 2.0, 3.0, 4.0] {
             t.push(v);
         }
-        assert_eq!(t.series(), vec![1.0, 2.0, 3.0, 4.0]);
-        // The 5th sample forces ONE halving: pairs re-average to
-        // [1.5, 3.5], stride becomes 2, and the new sample starts a
-        // partial bucket rendered live.
+        // 5th sample forces the resample: history takes the pair
+        // averages of ALL complete pairs (raw folds at the new
+        // stride), and the odd sample stays raw in the freed margin.
         t.push(10.0);
+        assert_eq!(t.hist_len(), 2, "folded pairs: [1.5, 3.5]");
         assert_eq!(t.series(), vec![1.5, 3.5, 10.0]);
-        // A 6th sample completes that stride-2 bucket.
+        // The margin now takes individual samples again.
         t.push(20.0);
-        assert_eq!(t.series(), vec![1.5, 3.5, 15.0]);
+        assert_eq!(t.series(), vec![1.5, 3.5, 10.0, 20.0]);
+        assert_eq!(t.hist_len(), 2, "recent samples stay raw until the next fill");
+        // Next fill: history merges to stride 4 ([2.5]); the raw tail
+        // (3 samples) is below the new stride so it stays raw — the
+        // whole life still fits the width, individual recency intact.
+        t.push(30.0);
+        assert_eq!(t.hist_len(), 1, "[2.5] at stride 4");
+        assert_eq!(t.series(), vec![2.5, 10.0, 20.0, 30.0]);
+    }
+
+    /// Regression: a degenerate history (0–1 cells) must not spin the
+    /// stride without shrinking — the old resample doubled the stride
+    /// on every push once nothing could fold, overflowing u32 to zero
+    /// after 2³² doublings and dividing by it. Bounded capacity and a
+    /// live stride must hold over an arbitrarily long life.
+    #[test]
+    fn tiny_capacity_never_overflows_or_stalls() {
+        let mut t = DecimatingTrend::new(4);
+        for i in 0..100_000 {
+            t.push((i % 37) as f64);
+            assert!(t.series().len() <= 4, "series stays within capacity");
+        }
     }
 
     #[test]
     fn lifetime_extrema_are_discrete_not_averaged() {
-        let mut t = DecimatingTrend::new(2);
-        for v in [5.0, 100.0, 1.0, 7.0, 9.0] {
+        let mut t = DecimatingTrend::new(4);
+        for v in [5.0, 100.0, 1.0, 7.0, 9.0, 2.0] {
             t.push(v);
         }
         assert_eq!(t.min, 1.0, "min is the discrete lifetime minimum");

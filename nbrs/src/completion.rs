@@ -149,6 +149,8 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
     crate::cli_spec::KvParam { key: "on_removed=", provider: static_on_removed },
     crate::cli_spec::KvParam { key: "seq=", provider: static_seq },
     crate::cli_spec::KvParam { key: "kernel_opt=", provider: static_kernel_opt },
+    crate::cli_spec::KvParam { key: "skipped_phases=", provider: static_skipped_phases },
+    crate::cli_spec::KvParam { key: "completed_phases=", provider: static_completed_phases },
     crate::cli_spec::KvParam { key: "jit=", provider: static_jit },
     crate::cli_spec::KvParam { key: "phases=", provider: workload_phase_provider },
     crate::cli_spec::KvParam { key: "resume=", provider: session_name_provider },
@@ -234,6 +236,14 @@ fn static_seq(partial: &str, _ctx: &[&str]) -> Vec<String> {
 
 fn static_kernel_opt(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(&["release", "diagnostic"], partial)
+}
+
+fn static_skipped_phases(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["elide", "mark", "prune"], partial)
+}
+
+fn static_completed_phases(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(&["full", "headers"], partial)
 }
 
 fn static_jit(partial: &str, _ctx: &[&str]) -> Vec<String> {

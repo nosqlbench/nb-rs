@@ -158,7 +158,16 @@ fn collect_param_bindings(
     exclude: &[String],
     required: &mut Vec<String>,
 ) {
-    for value in params.values() {
+    for (key, value) in params.iter() {
+        // `gutter:` templates resolve at RUNTIME — during-forms on the
+        // fiber wires, `final:` at phase end with a status-metric
+        // fallback (`{recall}`, `{latency_p50}`) that has no wire
+        // declaration anywhere. Unresolved names degrade to visible
+        // literal text in the cell, so they must not be collected as
+        // required wire references.
+        if key == "gutter" {
+            continue;
+        }
         collect_json_bindings(value, exclude, required);
     }
 }

@@ -11,7 +11,7 @@
 //! latency trend (daemons). This wrapper lets the workload take
 //! that cell over with its own computed value.
 //!
-//! Three declaration forms:
+//! Declaration forms:
 //!
 //! - `gutter: "<layout template>"` — printf-style polydat layout
 //!   string; the rendered text fills the cell verbatim.
@@ -21,6 +21,15 @@
 //! - `gutter: { spark: "<template>" }` — template renders to an
 //!   `f64` sample; each publication appends to a per-phase trend
 //!   ring displayed as a sparkline with the current value.
+//! - `gutter: { …, final: <string | {bar|spark|text}> }` — the
+//!   COMPLETION form: evaluated once at phase end and rendered as
+//!   the left-gutter cell of the phase's ✓ outcome DETAIL line
+//!   (the header line's timing triad is never touched). Final
+//!   templates may also reference status-metric names (`{recall}`,
+//!   `{latency_p50}`, …) — resolved from the phase's aggregates
+//!   when no wire matches. Phases with a during-form but no
+//!   `final:` still get ONE final update: the during template
+//!   re-evaluated at phase end.
 
 use std::sync::Arc;
 
@@ -62,12 +71,19 @@ fn describe_assignment(s: WrapperSubject) -> Option<String> {
         if s.is_empty() { return None; }
         Some(format!("gutter: \"{s}\" (layout)"))
     } else if let Some(obj) = v.as_object() {
-        if let Some(t) = obj.get("bar").and_then(|x| x.as_str()) {
-            Some(format!("gutter: bar \"{t}\""))
-        } else {
-            obj.get("spark").and_then(|x| x.as_str())
-                .map(|t| format!("gutter: spark \"{t}\""))
+        let mut parts: Vec<String> = Vec::new();
+        for key in ["bar", "spark", "text"] {
+            if let Some(t) = obj.get(key).and_then(|x| x.as_str()) {
+                parts.push(format!("{key} \"{t}\""));
+            }
         }
+        match obj.get("final") {
+            Some(f) if f.is_string() =>
+                parts.push(format!("final \"{}\"", f.as_str().unwrap_or(""))),
+            Some(f) if f.is_object() => parts.push("final {…}".to_string()),
+            _ => {}
+        }
+        if parts.is_empty() { None } else { Some(format!("gutter: {}", parts.join(" / "))) }
     } else {
         None
     }

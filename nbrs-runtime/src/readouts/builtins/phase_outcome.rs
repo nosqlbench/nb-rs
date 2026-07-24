@@ -488,6 +488,20 @@ fn status_color(
 /// Trained-operator scan form: status glyph + identity +
 /// completion percentage + wallclock. Per §3.3
 /// monotonicity, every field is present in Labeled.
+/// The completion METER SLOT (SRD-92): ` NN%` from the single
+/// fraction source, ` 100%` for a bounded subject with no computable
+/// fraction (it finished), and EMPTY for an open-ended subject —
+/// there is no "done" to meter on a stopped daemon, same rule the
+/// live meter slot follows (the cycles basis printed a meaningless
+/// percentage against the daemon's wall-clock ceiling).
+fn completion_meter(ctx: &dyn ReadoutContext) -> String {
+    if ctx.open_ended() {
+        return String::new();
+    }
+    format!(" {:.0}%",
+        ctx.progress_fraction().map(|f| f * 100.0).unwrap_or(100.0))
+}
+
 fn render_compact_value(
     ctx: &dyn ReadoutContext,
     out: &mut dyn ReadoutBuf,
@@ -504,8 +518,9 @@ fn render_compact_value(
 
     // Fraction basis via ctx.progress_fraction(): rows for batched
     // phases (cycles basis showed "1%" for a completed stride-100
-    // batch load), cycles otherwise, override first.
-    let pct: f64 = ctx.progress_fraction().map(|f| f * 100.0).unwrap_or(100.0);
+    // batch load), cycles otherwise, override first; empty for
+    // open-ended subjects.
+    let meter = completion_meter(ctx);
     let elapsed = ctx.elapsed_secs();
     let depth_indent = ctx.depth_indent();
     let name = ctx.subject_name();
@@ -513,8 +528,8 @@ fn render_compact_value(
     let mut tmp = String::with_capacity(64);
     let _ = write!(
         &mut tmp,
-        "{depth_indent}{glyph_color}{glyph}{reset} {bold}{blue}[{name}]{reset} \
-{pct:.0}% {dim}({elapsed:.2}s){reset}",
+        "{depth_indent}{glyph_color}{glyph}{reset} {bold}{blue}[{name}]{reset}\
+{meter} {dim}({elapsed:.2}s){reset}",
     );
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -591,7 +606,15 @@ fn render_expanded_value(
     let ok_pct: f64 = if result_total > 0 {
         ok as f64 * 100.0 / result_total as f64
     } else { 100.0 };
-    let pct: f64 = ctx.progress_fraction().map(|f| f * 100.0).unwrap_or(100.0);
+    // Open-ended subjects have no completion fraction — the progress
+    // row shows the bare cycle count instead of a fabricated percent.
+    let progress_cell: String = if ctx.open_ended() {
+        format!("— (open-ended, {cycles} cycles)")
+    } else {
+        let pct: f64 = ctx.progress_fraction()
+            .map(|f| f * 100.0).unwrap_or(100.0);
+        format!("{pct:.0}% ({cycles} of {total_extent})")
+    };
     let rate: f64 = if elapsed > 0.0 { consumed as f64 / elapsed } else { 0.0 };
     let rate_str = format_rate(rate);
 
@@ -639,7 +662,7 @@ fn render_expanded_value(
         &mut tmp,
         "{depth_indent}{glyph_color}{glyph}{reset} {bold}{blue}[{name}]{reset}{seq}{coords}\n\
 {depth_indent}  status:      {glyph_color}{status_label}{reset}\n\
-{depth_indent}  progress:    {pct:.0}% ({cycles} of {total})\n\
+{depth_indent}  progress:    {progress_cell}\n\
 {depth_indent}  throughput:  {rate_str}\n\
 {depth_indent}  ok:          {ok_pct:.0}%  ({ok} of {result_total})\n\
 {depth_indent}  reliability: {err_color}e:{errors} r:{retries}{reset}\n\
@@ -651,7 +674,6 @@ fn render_expanded_value(
         seq = seq_part,
         coords = coords_line,
         chips = chips_block,
-        total = total_extent,
         status_label = outcome.label(),
         errors_block = errors_block,
     );
@@ -891,8 +913,9 @@ fn render_labeled_value(
     };
     // Fraction basis via ctx.progress_fraction(): rows for batched
     // phases (cycles basis showed "1%" for a completed stride-100
-    // batch load), cycles otherwise, override first.
-    let pct: f64 = ctx.progress_fraction().map(|f| f * 100.0).unwrap_or(100.0);
+    // batch load), cycles otherwise, override first; empty for
+    // open-ended subjects.
+    let meter = completion_meter(ctx);
     let rate: f64 = if elapsed > 0.0 {
         consumed as f64 / elapsed
     } else {
@@ -956,17 +979,55 @@ fn render_labeled_value(
     );
     let chips = ctx.status_metric_chips();
 
-    // Memo header (if any) — see phase_status for rationale.
+    // Memo row (if any) — see phase_status for rationale.
     // The memo carries the latest published state at phase
     // end; useful when a phase's last activity (e.g. "compacted
-    // table_X") is the takeaway the operator needs.
+    // table_X") is the takeaway the operator needs. SRD-92:
+    // header-first composition — the memo renders as a detail
+    // row under the ✓/⊘ head line, never as a banner above it.
     let memo = ctx.phase_memo();
-    let memo_header = if memo.is_empty() {
+    let memo_row = if memo.is_empty() {
         String::new()
     } else {
         let bold_yellow = if color { "\x1b[1;33m" } else { "" };
-        format!("{depth_indent}{bold_yellow}[[ {memo} ]]{reset}\n")
+        format!("{depth_indent}    {bold_yellow}[[ {memo} ]]{reset}\n")
     };
+
+    // FULLY-SKIPPED phase (`skipped_phases=mark`, the default): every
+    // cycle was `if:`-gated off — the completion must read as "gated
+    // off", not as a measurement. One unmistakable line pair: the ⊘
+    // glyph plus the skip count; no rate, no ok%, no pct (nothing was
+    // measured). `elide`/`prune` never reach this renderer — the fire
+    // site suppresses the readout entirely for those modes.
+    let fully_skipped = skips > 0 && cycles > 0 && skips >= cycles
+        && ok == 0 && errors == 0;
+    if fully_skipped
+        && crate::observer::skipped_phase_display()
+           == crate::observer::SkippedPhaseDisplay::Mark
+    {
+        let mut tmp = String::with_capacity(160);
+        let _ = write!(
+            &mut tmp,
+            "{depth_indent}{dim}⊘{reset} {seq}{bold}{blue}[{name}]{reset}{coords} {dim}gated off{reset}\n\
+{memo_row}\
+{depth_indent}    {dim}skip:{skips} c:{concurrency} ({elapsed:.2}s){reset}",
+            memo_row = memo_row,
+            depth_indent = depth_indent,
+            dim = dim,
+            reset = reset,
+            seq = seq_part,
+            bold = bold,
+            blue = blue,
+            name = ctx.subject_name(),
+            coords = coords_part,
+            skips = skips,
+            concurrency = concurrency,
+            elapsed = elapsed,
+        );
+        let len = tmp.len();
+        let _ = out.write_str(&tmp);
+        return len;
+    }
 
     // Two-line layout mirroring `phase_status` Labeled:
     //   line 1: {depth}✓ {seq}[{name}]{coords} {pct}%
@@ -978,8 +1039,8 @@ fn render_labeled_value(
     let mut tmp = String::with_capacity(256);
     let _ = write!(
         &mut tmp,
-        "{memo_header}\
-{depth_indent}{glyph_color}{glyph}{reset}{bar} {seq}{bold}{blue}[{name}]{reset}{coords} {pct:.0}%\n\
+        "{depth_indent}{glyph_color}{glyph}{reset}{bar} {seq}{bold}{blue}[{name}]{reset}{coords}{meter}\n\
+{memo_row}\
 {depth_indent}    {rate_str} ok:{ok_str} \
 {err_color}e:{errors} r:{retries}{reset}{skips_chip} c:{concurrency}{chips} \
 {dim}({elapsed:.2}s){reset}",
@@ -993,7 +1054,7 @@ fn render_labeled_value(
         blue = blue,
         name = ctx.subject_name(),
         coords = coords_part,
-        pct = pct,
+        meter = meter,
         rate_str = rate_str,
         ok_str = ok_str,
         skips_chip = skips_chip,
@@ -1979,9 +2040,10 @@ mod tests {
         assert!(out.contains('\n'),
             "expected two-line break in labeled render: {out:?}");
     }
-    /// A phase whose ops ALL `if:`-skipped reads as gated off — an
-    /// explicit skip counter, `ok:—` (no results to be ok about),
-    /// and no fabricated 100%.
+    /// A phase whose ops ALL `if:`-skipped reads as gated off — under
+    /// the default `skipped_phases=mark` mode the completion is the
+    /// explicit ⊘ form: skip counter, no rate, no ok%, no fabricated
+    /// measurement of any kind.
     #[test]
     fn fully_skipped_phase_shows_skip_chip_not_fake_ok() {
         let ctx = TestCtx {
@@ -1995,9 +2057,11 @@ mod tests {
             ..TestCtx::default()
         };
         let out = render(&ctx);
-        assert!(out.contains("ok:—"), "no fabricated ok%: {out:?}");
+        assert!(out.contains("gated off"), "explicit skip marker: {out:?}");
+        assert!(out.contains('⊘'), "skip glyph shown: {out:?}");
         assert!(out.contains("skip:10000"), "skip count shown: {out:?}");
-        assert!(!out.contains("ok:100%"), "must not claim 100% ok: {out:?}");
+        assert!(!out.contains("ok:"), "no ok% of any kind on a gated-off phase: {out:?}");
+        assert!(!out.contains("/s"), "no rate on a gated-off phase: {out:?}");
     }
 
 }

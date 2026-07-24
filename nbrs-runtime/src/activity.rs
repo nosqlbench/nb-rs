@@ -709,6 +709,14 @@ impl ActivityMetrics {
             candidates.push(("latency_max".to_string(),  fmt(h.max() as f64)));
             candidates.push(("latency_mean".to_string(), fmt(h.mean())));
         }
+        // KEY-METRIC accent: `status_metrics:` selection is the
+        // workload author saying "this is the number I'm running the
+        // test for" — the chip gets its own bright palette slot
+        // (bold bright magenta; used by nothing else on the line) so
+        // it reads first among the dim bookkeeping counters.
+        let color = crate::observer::use_color();
+        let accent = if color { "\x1b[1;95m" } else { "" };
+        let reset  = if color { "\x1b[0m" } else { "" };
         let mut out: Vec<String> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for pat in patterns {
@@ -716,7 +724,7 @@ impl ActivityMetrics {
                 if !seen.contains(name.as_str()) && glob_match(pat, name) {
                     seen.insert(name.clone());
                     let label = chip_display_label(name);
-                    out.push(format!(" {label}:{val}"));
+                    out.push(format!(" {accent}{label}:{val}{reset}"));
                 }
             }
         }
@@ -724,6 +732,45 @@ impl ActivityMetrics {
     }
 
 
+
+    /// The PRIMARY key metric as a raw numeric sample: the first
+    /// `status_metrics:` pattern's first match, in the same
+    /// candidate order [`Self::collect_status_values`] uses
+    /// (relevancy aggregates as percent, then service-time
+    /// quantiles as milliseconds). Feeds the key-metric row's
+    /// gutter cell TREND (SRD-92 R4): the cell shows the metric's
+    /// history as a sparkline — the current value's single
+    /// placement is the chips text in the row body. `None` when
+    /// nothing matches or nothing has been measured yet.
+    pub fn collect_status_primary(&self, patterns: &[String]) -> Option<(String, f64)> {
+        if patterns.is_empty() {
+            return None;
+        }
+        let mut candidates: Vec<(String, f64)> = Vec::new();
+        for live in self.collect_relevancy_live() {
+            if live.total_count == 0 {
+                continue;
+            }
+            candidates.push((live.name, live.total_mean * 100.0));
+        }
+        let snap = self.service_time.peek_snapshot();
+        let h = &snap.histogram;
+        if !h.is_empty() {
+            let ms = |n: f64| n / 1e6;
+            candidates.push(("latency_p50".to_string(),  ms(h.value_at_quantile(0.50) as f64)));
+            candidates.push(("latency_p99".to_string(),  ms(h.value_at_quantile(0.99) as f64)));
+            candidates.push(("latency_max".to_string(),  ms(h.max() as f64)));
+            candidates.push(("latency_mean".to_string(), ms(h.mean())));
+        }
+        for pat in patterns {
+            for (name, val) in &candidates {
+                if glob_match(pat, name) {
+                    return Some((name.clone(), *val));
+                }
+            }
+        }
+        None
+    }
 
     /// Collect status counters from all registered dispensers.
     pub fn collect_status_counters(&self) -> Vec<(String, u64)> {
@@ -934,6 +981,14 @@ pub struct Activity {
     /// derivation with the workload-declared spec. Lock-free
     /// atomic for the same reason as `memo`.
     pub gutter: Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>>,
+    /// The op-declared DURING-execution gutter template (kind +
+    /// template), retained for the guaranteed one-final-update at
+    /// phase end when no `final:` form is declared.
+    pub gutter_spec: std::sync::Mutex<Option<(crate::wrappers::gutter::GutterKind, String)>>,
+    /// The op-declared `final:` gutter template — evaluated once at
+    /// phase end (wires first, status-metric aggregates as fallback)
+    /// and rendered as the ✓ outcome detail line's gutter cell.
+    pub gutter_final_spec: std::sync::Mutex<Option<(crate::wrappers::gutter::GutterKind, String)>>,
     /// SRD-75 phase-poll context. When present, the fiber
     /// loop checks the predicate after each source-exhaustion
     /// event; if false and the timeout hasn't elapsed, the
@@ -1129,6 +1184,8 @@ impl Activity {
             wrap_default_order: None,
             memo: Arc::new(arc_swap::ArcSwap::from_pointee(String::new())),
             gutter: Arc::new(arc_swap::ArcSwapOption::empty()),
+            gutter_spec: std::sync::Mutex::new(None),
+            gutter_final_spec: std::sync::Mutex::new(None),
             phase_poll: None,
         }
     }
@@ -2154,36 +2211,57 @@ impl Activity {
                                 // map), wrap with the activity's shared
                                 // gutter slot.
                                 use crate::wrappers::gutter::GutterKind;
-                                let parsed = match template.params.get("gutter") {
-                                    Some(serde_json::Value::String(s)) if !s.is_empty() =>
-                                        Some((GutterKind::Text, s.clone())),
-                                    Some(serde_json::Value::Object(obj)) => {
-                                        if let Some(t) = obj.get("bar").and_then(|v| v.as_str()) {
-                                            Some((GutterKind::Bar, t.to_string()))
-                                        } else {
-                                            obj.get("spark").and_then(|v| v.as_str())
-                                                .map(|t| (GutterKind::Spark, t.to_string()))
-                                        }
+                                // Sub-form parser shared by the top-level map and the
+                                // nested `final:` map.
+                                let parse_forms = |obj: &serde_json::Map<String, serde_json::Value>|
+                                    -> Option<(GutterKind, String)>
+                                {
+                                    if let Some(t) = obj.get("bar").and_then(|v| v.as_str()) {
+                                        Some((GutterKind::Bar, t.to_string()))
+                                    } else if let Some(t) = obj.get("spark").and_then(|v| v.as_str()) {
+                                        Some((GutterKind::Spark, t.to_string()))
+                                    } else {
+                                        obj.get("text").and_then(|v| v.as_str())
+                                            .map(|t| (GutterKind::Text, t.to_string()))
                                     }
-                                    _ => None,
                                 };
-                                match parsed {
-                                    Some((kind, tmpl)) => {
+                                let (during, fin) = match template.params.get("gutter") {
+                                    Some(serde_json::Value::String(s)) if !s.is_empty() =>
+                                        (Some((GutterKind::Text, s.clone())), None),
+                                    Some(serde_json::Value::Object(obj)) => {
+                                        let during = parse_forms(obj);
+                                        let fin = match obj.get("final") {
+                                            Some(serde_json::Value::String(s)) if !s.is_empty() =>
+                                                Some((GutterKind::Text, s.clone())),
+                                            Some(serde_json::Value::Object(fobj)) => parse_forms(fobj),
+                                            _ => None,
+                                        };
+                                        (during, fin)
+                                    }
+                                    _ => (None, None),
+                                };
+                                if during.is_none() && fin.is_none() {
+                                    crate::diag!(crate::observer::LogLevel::Warn,
+                                        "op '{}': gutter: requires a layout string, one of \
+                                         `bar:` / `spark:` / `text:`, or a `final:` form",
+                                        template.name);
+                                    false
+                                } else {
+                                    if let Some((kind, tmpl)) = &during {
+                                        *activity.gutter_spec.lock().unwrap() =
+                                            Some((*kind, tmpl.clone()));
                                         current = crate::wrappers::GutterDispenser::wrap(
                                             current.clone(),
-                                            kind,
-                                            tmpl,
+                                            *kind,
+                                            tmpl.clone(),
                                             activity.gutter.clone(),
                                         );
-                                        false
                                     }
-                                    None => {
-                                        crate::diag!(crate::observer::LogLevel::Warn,
-                                            "op '{}': gutter: requires a layout string \
-                                             or one of `bar:` / `spark:`",
-                                            template.name);
-                                        false
+                                    if let Some((kind, tmpl)) = &fin {
+                                        *activity.gutter_final_spec.lock().unwrap() =
+                                            Some((*kind, tmpl.clone()));
                                     }
+                                    false
                                 }
                             }
                             crate::wrappers::readout::NAME => {
@@ -2956,6 +3034,7 @@ impl Activity {
                 outcome,
                 outcome_errors,
                 outcome_resume_cursor: None,
+                open_ended: activity.daemon_stop.is_some(),
             };
             // SRD-63 §6.2 / Push 9c: synthesise one final
             // `on_update` tick before the DONE summary. The
@@ -3036,6 +3115,29 @@ impl Activity {
                 }
             }
 
+            // gutter/final — the guaranteed ONE final gutter update.
+            // A declared `final:` template is evaluated here, at phase
+            // end (wires over the activity chain, status-metric
+            // aggregates as fallback), and stored into the gutter slot
+            // the display actor reads when stamping this phase's ✓
+            // outcome DETAIL line. Without a `final:`, the slot already
+            // holds the during-form's LAST PUBLISHED value (the
+            // dispenser publishes on every op completion) — that last
+            // computed value IS the final update; re-evaluating the
+            // per-cycle template here would run it against a
+            // degenerate end-of-phase context.
+            {
+                let fin = activity.gutter_final_spec.lock().ok()
+                    .and_then(|g| g.clone());
+                if let Some((kind, tmpl)) = fin {
+                    if let Some(final_spec) = evaluate_final_gutter(
+                        &activity, op_builder.source_kernel(), kind, &tmpl)
+                    {
+                        activity.gutter.store(Some(Arc::new(final_spec)));
+                    }
+                }
+            }
+
             // Build a one-shot binder for `on_phase_end`:
             // workload's `on_phase_end:` overrides if any,
             // else the default body — `phase_outcome` for the
@@ -3103,7 +3205,22 @@ impl Activity {
                     &rendered,
                 );
             }
-            if !rendered.is_empty() {
+            // `skipped_phases=elide|prune`: a FULLY-SKIPPED phase (every
+            // cycle `if:`-gated off, nothing measured, no errors) leaves
+            // no completion line — the snapshot store above still holds
+            // the render for replay, but the live readout stays silent.
+            // `mark` (the default) emits phase_outcome's explicit
+            // `⊘ gated off` form instead.
+            let fully_skipped = {
+                let skips = activity.metrics.skips_total.get();
+                skips > 0 && ops_completed > 0 && skips >= ops_completed
+                    && successes == 0 && errors == 0
+            };
+            let elide_skipped = fully_skipped && matches!(
+                crate::observer::skipped_phase_display(),
+                crate::observer::SkippedPhaseDisplay::Elide
+                | crate::observer::SkippedPhaseDisplay::Prune);
+            if !rendered.is_empty() && !elide_skipped {
                 // SRD-81 push 1: the per-phase ✓ outcome is a typed
                 // `PhaseOutcome` projection, not a generic diagnostic.
                 // The terminal scrollback shows it; the TUI tree /
@@ -3158,9 +3275,18 @@ impl Activity {
                         let dim = if color { "\x1b[2m" } else { "" };
                         let bold = if color { "\x1b[1m" } else { "" };
                         let reset = if color { "\x1b[0m" } else { "" };
-                        crate::diag!(crate::observer::LogLevel::Info,
-                            "{depth_indent}{bold}{name}{reset}: mean={:.2}% {dim}p50={:.2}% p99={:.2}% min={:.2}% max={:.2}% (n={n}){reset}",
-                            mean * 100.0, p50 * 100.0, p99 * 100.0, min * 100.0, max * 100.0,
+                        // SRD-92: a PhaseDetail projection — a detail
+                        // row of the completion block above it, so the
+                        // terminal sink renders it under the blank
+                        // divider margin (no timing triad) and
+                        // `completed_phases=headers` drops it.
+                        crate::observer::log_categorized(
+                            crate::observer::LogLevel::Info,
+                            crate::observer::LogCategory::PhaseDetail,
+                            &format!(
+                                "{depth_indent}{bold}{name}{reset}: mean={:.2}% {dim}p50={:.2}% p99={:.2}% min={:.2}% max={:.2}% (n={n}){reset}",
+                                mean * 100.0, p50 * 100.0, p99 * 100.0, min * 100.0, max * 100.0,
+                            ),
                         );
                         // Pick up `k`/`r` from the F64Stats's
                         // labels so per-phase summary gauges
@@ -4070,6 +4196,78 @@ pub fn terminal_cols() -> Option<usize> {
 /// `status_metrics:` accepts (`recall*`, `latency_p99`, etc.).
 /// Trades worst-case quadratic time for simplicity; the
 /// candidate set is also tiny (low single-digit count of metric
+/// Evaluate a gutter template ONCE at phase end (the `final:` form,
+/// or the during-form's guaranteed last update). Placeholders resolve
+/// through the wires of a throwaway subscope of the activity's source
+/// kernel (shared cells and captures visible), then any names still
+/// unresolved fall back to the phase's STATUS-METRIC aggregates
+/// (`{recall}`, `{latency_p50}`, …) formatted exactly like the status
+/// chips. Numeric kinds (`bar`/`spark`) additionally require the fully
+/// resolved string to parse as f64; failures degrade to None (no
+/// final cell) — the display must never fail a completed phase.
+fn evaluate_final_gutter(
+    activity: &Activity,
+    source_kernel: &Arc<polydat::kernel::PolydatKernel>,
+    kind: crate::wrappers::gutter::GutterKind,
+    template: &str,
+) -> Option<crate::wrappers::gutter::GutterSpec> {
+    use crate::wrappers::gutter::{GutterKind, GutterSpec};
+    // Wires pass: a fresh wired subscope (cells attach via the
+    // sanctioned materialize path) gives template names their live
+    // end-of-phase values.
+    let sub = polydat::kernel::PolydatKernel::for_iteration(
+        source_kernel, source_kernel, &[]);
+    let rendered = match Arc::try_unwrap(sub) {
+        Ok(mut k) => {
+            let wires = crate::wires::CycleWires::new(&mut k);
+            crate::wires::substitute_via_wires(template, &wires).ok()
+        }
+        Err(_) => None,
+    };
+    let mut text = rendered.unwrap_or_else(|| template.to_string());
+
+    // Status-metric fallback for placeholders the wires didn't know:
+    // relevancy aggregates and the latency family, formatted like the
+    // status chips so `{recall}` in a final template reads identically
+    // to the `recall:` chip beside it.
+    if text.contains('{') {
+        let mut candidates: Vec<(String, String)> = Vec::new();
+        for live in activity.metrics.collect_relevancy_live() {
+            if live.total_count > 0 {
+                candidates.push((live.name, format!("{:.2}%", live.total_mean * 100.0)));
+            }
+        }
+        let snap = activity.metrics.service_time.peek_snapshot();
+        let h = &snap.histogram;
+        if !h.is_empty() {
+            let fmt = nbrs_metrics::reporters::summary::format_duration;
+            candidates.push(("latency_p50".into(), fmt(h.value_at_quantile(0.50) as f64)));
+            candidates.push(("latency_p99".into(), fmt(h.value_at_quantile(0.99) as f64)));
+            candidates.push(("latency_max".into(), fmt(h.max() as f64)));
+            candidates.push(("latency_mean".into(), fmt(h.mean())));
+        }
+        for (name, val) in &candidates {
+            text = text.replace(&format!("{{{name}}}"), val);
+        }
+    }
+
+    // A template still carrying unresolved placeholders means the value
+    // it names was never measured (a gated-off recall phase has no
+    // relevancy aggregate) — no measurement, no cell. The completion
+    // detail line keeps its standard stamp instead of showing the
+    // literal `recall {recall}`.
+    if text.contains('{') && text.contains('}') {
+        return None;
+    }
+    match kind {
+        GutterKind::Text => Some(GutterSpec::Text(text)),
+        GutterKind::Bar => text.trim().parse::<f64>().ok()
+            .map(|v| GutterSpec::Bar(v.clamp(0.0, 1.0))),
+        GutterKind::Spark => text.trim().parse::<f64>().ok()
+            .map(GutterSpec::Spark),
+    }
+}
+
 /// names per phase).
 fn glob_match(pattern: &str, candidate: &str) -> bool {
     glob_match_bytes(pattern.as_bytes(), candidate.as_bytes())
@@ -4137,6 +4335,39 @@ mod tests {
     use crate::adapter::{OpResult, AdapterError, ExecutionError};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// SRD-92 R4 — `collect_status_primary` feeds the key-metric
+    /// gutter cell's trend: first `status_metrics:` pattern's first
+    /// candidate, as a raw numeric (latency family in milliseconds).
+    /// The relevancy-first candidate ordering is exercised end-to-end
+    /// by `nbrs/tests/srd92_display.rs` (a live relevancy aggregate
+    /// needs the full validation pipeline).
+    #[test]
+    fn status_primary_selects_first_matching_numeric() {
+        let m = ActivityMetrics::new(&nbrs_metrics::labels::Labels::empty());
+        // No patterns → no primary, regardless of measurements.
+        assert_eq!(m.collect_status_primary(&[]), None);
+        // Patterns but nothing measured yet → None (no fabricated 0).
+        assert_eq!(m.collect_status_primary(&["latency_*".into()]), None);
+
+        // 5 ms samples land in the service-time histogram.
+        for _ in 0..10 {
+            m.service_time.record(5_000_000);
+        }
+        let (name, val) = m.collect_status_primary(&["latency_p50".into()])
+            .expect("p50 measurable");
+        assert_eq!(name, "latency_p50");
+        assert!((val - 5.0).abs() < 0.5, "p50 ≈ 5 ms, got {val}");
+
+        // Glob: first pattern's FIRST candidate wins (p50 precedes
+        // p99 in candidate order).
+        let (name, _) = m.collect_status_primary(&["latency_*".into()])
+            .expect("glob matches");
+        assert_eq!(name, "latency_p50");
+
+        // Non-matching pattern → None.
+        assert_eq!(m.collect_status_primary(&["recall*".into()]), None);
+    }
 
     /// A counting DriverAdapter + OpDispenser for testing.
     struct CountingDriverAdapter {

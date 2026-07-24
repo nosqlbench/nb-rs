@@ -55,6 +55,13 @@ pub enum LogCategory {
     /// TUI log panel (diagnostics-only) filters it out instead of
     /// garbling the multi-line ANSI render as one `Span`.
     PhaseOutcome,
+    /// A per-phase **detail** line emitted around a completion block
+    /// (e.g. the relevancy `mean=/p50=` summary). SRD-92: detail rows
+    /// belong to the block above them — the terminal sink renders
+    /// them under the blank divider margin (no timing triad; one
+    /// header per item) and `completed_phases=headers` drops them
+    /// from scrollback along with the block's other detail rows.
+    PhaseDetail,
 }
 
 /// Kind of pre-mapped scenario entry. Re-export of
@@ -334,6 +341,106 @@ impl std::fmt::Debug for PhaseRenderHandle {
             .field("seq", &self.seq)
             .field("bodies", &self.bodies.len())
             .finish_non_exhaustive()
+    }
+}
+
+/// SRD-? — how a FULLY-SKIPPED phase (every cycle `if:`-gated off, or
+/// pre-entry pruned) is represented across the plan, traversal, and
+/// readout surfaces. Selected once per run via the `skipped_phases`
+/// param; read by the runtime's completion fire, the executor's
+/// pre-entry gate, and the TUI's tree fold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SkippedPhaseDisplay {
+    /// Traversed as normal, but elided from the readout and the
+    /// completed-phase tree — a gated-off phase leaves no trace.
+    Elide,
+    /// Traversed as normal and kept in the plan/readout, explicitly
+    /// rendered as skipped (`⊘ [name] gated off`). The default:
+    /// visible but unmistakable.
+    #[default]
+    Mark,
+    /// Not even traversed: when every op declares `if:` and all
+    /// gates evaluate false at phase entry, the phase is skipped
+    /// before dispatch — elided from plan, traversal, and readout.
+    /// (Post-hoc fully-skipped phases — gates that opened false
+    /// mid-run — are elided as in `Elide`.)
+    Prune,
+}
+
+impl SkippedPhaseDisplay {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "elide" => Some(Self::Elide),
+            "mark" => Some(Self::Mark),
+            "prune" => Some(Self::Prune),
+            _ => None,
+        }
+    }
+}
+
+static SKIPPED_PHASE_DISPLAY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+
+/// Set the run's skipped-phase display mode (runner, at param parse).
+pub fn set_skipped_phase_display(mode: SkippedPhaseDisplay) {
+    let v = match mode {
+        SkippedPhaseDisplay::Elide => 0,
+        SkippedPhaseDisplay::Mark => 1,
+        SkippedPhaseDisplay::Prune => 2,
+    };
+    SKIPPED_PHASE_DISPLAY.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The run's skipped-phase display mode. Default [`SkippedPhaseDisplay::Mark`].
+pub fn skipped_phase_display() -> SkippedPhaseDisplay {
+    match SKIPPED_PHASE_DISPLAY.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => SkippedPhaseDisplay::Elide,
+        2 => SkippedPhaseDisplay::Prune,
+        _ => SkippedPhaseDisplay::Mark,
+    }
+}
+
+/// SRD-92 R5 — how much of a completed node's block is retained in
+/// scrollback. Completion is never a full collapse: the header line
+/// always lands; this selects whether the detail rows and op leaves
+/// land with it. Selected once per run via the `completed_phases=`
+/// param; session.log keeps every line unconditionally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CompletedPhaseDisplay {
+    /// Header + detail rows (counters, key metrics, memo) + op
+    /// leaves — the full block, in contract shape. The default.
+    #[default]
+    Full,
+    /// Header row only.
+    Headers,
+}
+
+impl CompletedPhaseDisplay {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "full" => Some(Self::Full),
+            "headers" => Some(Self::Headers),
+            _ => None,
+        }
+    }
+}
+
+static COMPLETED_PHASE_DISPLAY: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+/// Set the run's completed-phase display mode (runner, at param parse).
+pub fn set_completed_phase_display(mode: CompletedPhaseDisplay) {
+    let v = match mode {
+        CompletedPhaseDisplay::Full => 0,
+        CompletedPhaseDisplay::Headers => 1,
+    };
+    COMPLETED_PHASE_DISPLAY.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The run's completed-phase display mode. Default [`CompletedPhaseDisplay::Full`].
+pub fn completed_phase_display() -> CompletedPhaseDisplay {
+    match COMPLETED_PHASE_DISPLAY.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => CompletedPhaseDisplay::Headers,
+        _ => CompletedPhaseDisplay::Full,
     }
 }
 
@@ -789,5 +896,23 @@ impl RunObserver for StderrObserver {
             // (the channel owns the fd); the `min_level` gate above stays here.
             crate::output_channel::log_to_surface(level, message);
         }
+    }
+}
+
+#[cfg(test)]
+mod display_mode_tests {
+    use super::*;
+
+    #[test]
+    fn completed_phase_display_parses_and_rejects() {
+        assert_eq!(CompletedPhaseDisplay::parse("full"),
+            Some(CompletedPhaseDisplay::Full));
+        assert_eq!(CompletedPhaseDisplay::parse(" HEADERS "),
+            Some(CompletedPhaseDisplay::Headers));
+        assert_eq!(CompletedPhaseDisplay::parse("collapse"), None);
+        // Default is Full — completion is never a full collapse
+        // (SRD-92 R5).
+        assert_eq!(CompletedPhaseDisplay::default(),
+            CompletedPhaseDisplay::Full);
     }
 }

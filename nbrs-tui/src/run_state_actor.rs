@@ -63,6 +63,12 @@ pub(crate) struct LogLine {
     /// snapshot margin, so a line's gutter can never disagree with the
     /// event the line describes.
     pub margin_body: String,
+    /// gutter/final — when this entry is a phase's ✓ outcome block and
+    /// the phase published a final gutter spec, the sink renders it as
+    /// the margin CELL of the block's DETAIL line (row 1). The header
+    /// row keeps the timing triad untouched; every other row gets the
+    /// standard stamp.
+    pub detail_gutter: Option<nbrs_runtime::wrappers::gutter::GutterSpec>,
 }
 
 /// Single-consumer handle to the durable scrollback stream, held by
@@ -471,15 +477,89 @@ fn handle_cmd(
             // with no drainer (tui=on / tui=off / tui=formatted).
             if log_stream_active.load(Ordering::Acquire) {
                 let stream_entry = entry.clone();
+                // gutter/final: a ✓ outcome block for a phase whose
+                // render handle carries a final gutter spec gets that
+                // spec attached — the sink renders it as the detail
+                // line's margin cell. The runtime stores the final
+                // spec BEFORE logging the outcome, and the phase is
+                // still in active_phases at this point (its
+                // PhaseCompleted follows this Log in the stream), so
+                // the head-line `[name]` match is unambiguous among
+                // actives.
+                let mut margin_body: Option<String> = None;
+                let detail_gutter = if stream_entry.category
+                    == crate::state::LogCategory::PhaseOutcome
+                {
+                    let plain = crate::status_fold::strip_ansi(&stream_entry.message);
+                    let subject = plain.split('[').nth(1)
+                        .map(|rest| rest.split(']').next().unwrap_or("").to_string())
+                        .and_then(|name| state.active_phases.values()
+                            .find(|a| a.name == name.as_str()));
+                    // SRD-92 R1: the ✓ header wears the completing
+                    // NODE'S OWN triad ([n/N] from its plan seq, its
+                    // session-clock delta) — the workload-level stamp
+                    // can point at a still-running sibling under
+                    // concurrent dispatch.
+                    if let Some((s, n)) = subject
+                        .and_then(|a| a.render.as_ref())
+                        .and_then(|h| h.seq)
+                    {
+                        let sess = state.elapsed_secs();
+                        let leaf = subject
+                            .map(|a| (sess - a.session_started).max(0.0));
+                        margin_body = Some(crate::widgets::margin_body(
+                            n, &format!("[{s}/{n}]"), leaf, Some(sess)));
+                    }
+                    subject
+                        .and_then(|a| a.render.as_ref())
+                        .and_then(|h| h.gutter.load_full())
+                        .map(|arc| (*arc).clone())
+                } else {
+                    None
+                };
                 let seq = state.push_log_entry(entry);
                 // Fire-and-forget: a momentarily-parked receiver
                 // (Ctrl-T swap window) still buffers; the next sink
                 // replays it into the restored scrollback.
-                let margin_body = state.margin_body_stamp();
-                let _ = log_tx.send(LogLine { seq, entry: stream_entry, margin_body });
+                let margin_body = margin_body
+                    .unwrap_or_else(|| state.margin_body_stamp());
+                let _ = log_tx.send(LogLine { seq, entry: stream_entry, margin_body, detail_gutter });
             } else {
                 state.push_log_entry(entry);
             }
+        }
+        RunStateCmd::PhaseCompleted { exec_id, scene_node_id, name, labels, duration_secs } => {
+            // Preserve the per-op timing leaves into the durable
+            // scrollback: the footer's op rows (SRD-63 `readout:
+            // visible`) vanish with the active-phase block at
+            // completion, but their individual timings are exactly the
+            // detail the aggregate line forgets. Emit each op's FINAL
+            // leaf right under the phase's ✓ outcome block (the
+            // outcome Log line precedes this command in the stream, so
+            // ordering is inherent). Skipped/elided phases have no
+            // leaves recorded and emit nothing.
+            if log_stream_active.load(Ordering::Acquire)
+                && nbrs_runtime::observer::completed_phase_display()
+                    == nbrs_runtime::observer::CompletedPhaseDisplay::Full
+            {
+                let leaves = state.final_op_leaves(&name, &labels);
+                for text in leaves {
+                    let entry = LogEntry {
+                        severity: crate::state::LogSeverity::Info,
+                        message: text,
+                        // SRD-92: op leaves are detail rows of the ✓
+                        // block — blank divider margin, no triad (the
+                        // leaf carries its timing in-body).
+                        category: nbrs_runtime::observer::LogCategory::PhaseDetail,
+                        at: std::time::SystemTime::now(),
+                    };
+                    let stream_entry = entry.clone();
+                    let seq = state.push_log_entry(entry);
+                    let margin_body = state.margin_body_stamp();
+                    let _ = log_tx.send(LogLine { seq, entry: stream_entry, margin_body, detail_gutter: None });
+                }
+            }
+            apply(state, RunStateCmd::PhaseCompleted { exec_id, scene_node_id, name, labels, duration_secs });
         }
         other => apply(state, other),
     }

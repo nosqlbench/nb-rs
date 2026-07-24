@@ -557,11 +557,12 @@ fn run_render_loop(
         // and on a swap re-entry from the prior sink's final cursor
         // (its scrollback). Both are `seq <= last_seen` and dropped
         // from re-emission here; everything newer is emitted below.
-        let mut new_logs: Vec<(crate::state::LogEntry, String)> = Vec::new();
+        let mut new_logs: Vec<(crate::state::LogEntry, String,
+            Option<nbrs_runtime::wrappers::gutter::GutterSpec>)> = Vec::new();
         while let Some(line) = scrollback.try_next() {
             if line.seq > last_seen {
                 last_seen = line.seq;
-                new_logs.push((line.entry, line.margin_body));
+                new_logs.push((line.entry, line.margin_body, line.detail_gutter));
             }
             // else: already on the surface (pre-handoff stderr / prior
             // sink) — skip re-emitting, matching the old seq-cursor.
@@ -766,7 +767,7 @@ fn run_render_loop(
                 // (which raced the very transitions the lines report:
                 // a completion line could sit beside a stale [n/N]).
                 let color = nbrs_runtime::observer::use_color();
-                for (entry, margin_body) in &new_logs {
+                for (entry, margin_body, detail_gutter) in &new_logs {
                     let margin = format_margin_from_body(margin_body, color);
                     let margin = &margin;
                     let entry_level = severity_to_level(entry.severity);
@@ -798,8 +799,64 @@ fn run_render_loop(
                     // newline so it scrolls the surface.
                     let painted = nbrs_runtime::observer::colorize_log_line(
                         entry_level, &entry.message);
-                    for row in painted.split('\n') {
-                        let _ = write!(stderr, "{margin}{row}\r\n");
+                    // SRD-92 margin assignment for scrollback: the
+                    // HEADER row of every entry gets the actor-stamped
+                    // triad; detail rows get the blank divider margin
+                    // — a multi-row entry never repeats the triad —
+                    // except cells explicitly attached (gutter/final on
+                    // the ✓ block's standard detail row). A PhaseDetail
+                    // entry (e.g. the relevancy summary line) is a
+                    // detail row of the block above it, so its single
+                    // row renders under the blank margin too.
+                    let w = visible_width(margin);
+                    let cell_w = w.saturating_sub(2);
+                    let blank_margin = if w == 0 {
+                        String::new()
+                    } else {
+                        format!("\x1b[2m{:<cell_w$}│\x1b[0m ", "")
+                    };
+                    let final_cell: Option<String> = detail_gutter.as_ref().map(|spec| {
+                        match spec {
+                            nbrs_runtime::wrappers::gutter::GutterSpec::Text(t) =>
+                                text_gutter(t, cell_w, color),
+                            nbrs_runtime::wrappers::gutter::GutterSpec::Bar(f) =>
+                                bar_gutter(*f, cell_w, color),
+                            nbrs_runtime::wrappers::gutter::GutterSpec::Spark(v) =>
+                                text_gutter(&format!("{v:.2}"), cell_w, color),
+                        }
+                    });
+                    // `completed_phases=headers` (SRD-92 R5): retain
+                    // only the header row of completion blocks in
+                    // scrollback (details/leaves stay in session.log).
+                    let headers_only = matches!(
+                        nbrs_runtime::observer::completed_phase_display(),
+                        nbrs_runtime::observer::CompletedPhaseDisplay::Headers);
+                    let is_detail_entry = entry.category
+                        == crate::state::LogCategory::PhaseDetail;
+                    if headers_only && is_detail_entry {
+                        continue;
+                    }
+                    let rows: Vec<&str> = painted.split('\n').collect();
+                    let roles = crate::status_fold::classify_block(&rows);
+                    for (i, row) in rows.iter().enumerate() {
+                        let role = roles[i];
+                        if headers_only
+                            && entry.category == crate::state::LogCategory::PhaseOutcome
+                            && role != crate::status_fold::RowRole::Header
+                        {
+                            continue;
+                        }
+                        let row_margin: &str = if is_detail_entry {
+                            &blank_margin
+                        } else {
+                            match role {
+                                crate::status_fold::RowRole::Header => margin,
+                                crate::status_fold::RowRole::Standard =>
+                                    final_cell.as_deref().unwrap_or(&blank_margin),
+                                _ => &blank_margin,
+                            }
+                        };
+                        let _ = write!(stderr, "{row_margin}{row}\r\n");
                     }
                 }
                 // `last_seen` already advanced during the stream drain
@@ -988,37 +1045,71 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
             let _ = write!(out, "\r\n");
         }
         first = false;
-        // Row 0 carries the workload-level triad; every other row's
-        // gutter belongs to the phase block it sits in — the DETAIL
-        // row under each phase header renders that phase's contextual
-        // cell (completion bar, or latency trend for open-ended
-        // pollers), all remaining rows the blank divider. Single
-        // placement: each value appears in exactly one cell.
+        // SRD-92 margin assignment: every node HEADER row carries its
+        // own timing triad (not just footer row 0 — each concurrent
+        // phase's header wears its own [n/N]/clock); each DETAIL row
+        // renders its own gutter cell (completion bar, latency trend,
+        // metric macro, workload cell) or the blank divider. Single
+        // placement: each value appears in exactly one cell. Row 0
+        // falls back to the workload-level triad when the fold didn't
+        // classify it (no active phase blocks).
         let ctx_margin_owned;
-        let margin = if i == 0 || margin_width == 0 {
+        let margin = if margin_width == 0 {
             status_margin
         } else {
             match gutters.get(i) {
+                Some(crate::status_fold::RowGutter::Header(body)) => {
+                    ctx_margin_owned = format_margin_from_body(body, use_color_now);
+                    &ctx_margin_owned
+                }
+                Some(crate::status_fold::RowGutter::Metric { key, name, value }) => {
+                    ctx_margin_owned = metric_gutter(
+                        gutter_state.rings.entry(key.clone()).or_default(),
+                        name, *value, blank_w, use_color_now);
+                    &ctx_margin_owned
+                }
                 Some(crate::status_fold::RowGutter::Bar(f)) => {
                     ctx_margin_owned = bar_gutter(*f, blank_w, use_color_now);
                     &ctx_margin_owned
                 }
-                Some(crate::status_fold::RowGutter::Latency { key, p50, p99 }) => {
-                    ctx_margin_owned = latency_gutter(
-                        gutter_state.rings.entry(key.clone()).or_default(),
-                        *p50, *p99, blank_w, use_color_now);
+                Some(crate::status_fold::RowGutter::Latency { key, p50, p99, count }) => {
+                    let cell = gutter_state.latency.entry(key.clone()).or_default();
+                    if *count != cell.last_count || cell.last_w != blank_w
+                        || cell.last_render.is_empty()
+                    {
+                        cell.last_render = latency_gutter(
+                            &mut cell.ring, *p50, *p99, blank_w, use_color_now);
+                        cell.last_count = *count;
+                        cell.last_w = blank_w;
+                    }
+                    ctx_margin_owned = cell.last_render.clone();
                     &ctx_margin_owned
                 }
-                Some(crate::status_fold::RowGutter::LatencyHist { key, p50 }) => {
-                    ctx_margin_owned = latency_hist_gutter(
-                        gutter_state.hists.entry(key.clone())
-                            .or_insert_with(|| crate::widgets::DecimatingTrend::new(
+                Some(crate::status_fold::RowGutter::LatencyHist { key, p50, count }) => {
+                    let cell = gutter_state.hists.entry(key.clone())
+                        .or_insert_with(|| HistCellState {
+                            trend: crate::widgets::DecimatingTrend::new(
                                 // Matches the helper's spark region:
                                 // cell width minus the min∕max label
                                 // (≤11 chars) and its separator space,
                                 // so no lifetime cell is ever clipped.
-                                blank_w.saturating_sub(12).max(4))),
-                        *p50, blank_w, use_color_now);
+                                blank_w.saturating_sub(12).max(4)),
+                            last_count: 0,
+                            last_w: 0,
+                            last_render: String::new(),
+                        });
+                    // Sample-gated: one trend sample per NEW op, not per
+                    // redraw tick — a slow poller keeps a stable cell
+                    // between ops.
+                    if *count != cell.last_count || cell.last_w != blank_w
+                        || cell.last_render.is_empty()
+                    {
+                        cell.last_render = latency_hist_gutter(
+                            &mut cell.trend, *p50, blank_w, use_color_now);
+                        cell.last_count = *count;
+                        cell.last_w = blank_w;
+                    }
+                    ctx_margin_owned = cell.last_render.clone();
                     &ctx_margin_owned
                 }
                 Some(crate::status_fold::RowGutter::Text(t)) => {
@@ -1031,6 +1122,7 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
                         *value, blank_w, use_color_now);
                     &ctx_margin_owned
                 }
+                _ if i == 0 => status_margin,
                 _ => blank_margin,
             }
         };
@@ -1171,7 +1263,37 @@ fn latency_gutter(
     let samples: Vec<f64> = ring.iter().copied().collect();
     let spark = crate::widgets::sparkline_str(&samples, spark_w);
     format!("{cyan}{spark}{reset} {dim}{text:>tw$}│{reset} ",
-        tw = w - spark_w - 1)
+        tw = w.saturating_sub(spark_w + 1))
+}
+
+/// Key-metric gutter cell (SRD-92 R4): the metric macro's live view —
+/// a sparkline TREND of the primary key metric in the KEY-METRIC
+/// ACCENT (bright magenta, the palette's dedicated key-metric
+/// color), labeled by the metric's short name. The current numeric
+/// is single-placed in the row body's chips; the cell carries the
+/// history the body can't.
+fn metric_gutter(
+    ring: &mut std::collections::VecDeque<f64>,
+    name: &str,
+    value: f64,
+    w: usize,
+    color: bool,
+) -> String {
+    let accent = if color { "\x1b[1;95m" } else { "" };
+    let dim    = if color { "\x1b[2m"    } else { "" };
+    let reset  = if color { "\x1b[0m"    } else { "" };
+    let label = nbrs_runtime::activity::truncate_to_width(
+        name, w.saturating_sub(5).max(4));
+    let label_w = label.chars().count();
+    let spark_w = w.saturating_sub(label_w + 1).max(4);
+    ring.push_back(value);
+    while ring.len() > spark_w {
+        ring.pop_front();
+    }
+    let samples: Vec<f64> = ring.iter().copied().collect();
+    let spark = crate::widgets::sparkline_str(&samples, spark_w);
+    format!("{accent}{spark}{reset} {dim}{label:>lw$}│{reset} ",
+        lw = w.saturating_sub(spark_w + 1))
 }
 
 /// Workload-declared layout-text gutter cell (`gutter: "<template>"`):
@@ -1208,7 +1330,7 @@ fn spark_gutter(
     let samples: Vec<f64> = ring.iter().copied().collect();
     let spark = crate::widgets::sparkline_str(&samples, spark_w);
     format!("{cyan}{spark}{reset} {dim}{text:>tw$}│{reset} ",
-        tw = w - spark_w - 1)
+        tw = w.saturating_sub(spark_w + 1))
 }
 
 /// Per-key persistent display state for the contextual gutter
@@ -1218,25 +1340,53 @@ fn spark_gutter(
 #[derive(Default)]
 pub(crate) struct GutterState {
     rings: std::collections::HashMap<String, std::collections::VecDeque<f64>>,
-    hists: std::collections::HashMap<String, crate::widgets::DecimatingTrend>,
+    latency: std::collections::HashMap<String, LatencyCellState>,
+    hists: std::collections::HashMap<String, HistCellState>,
+}
+
+/// Rolling-latency cell state: the sample ring plus the SAMPLE-GATED
+/// render cache — when the timer's lifetime count hasn't advanced
+/// since the last draw (a 1 op/s poller between ops), the previous
+/// rendering is reused verbatim: no new trend sample, no re-render.
+#[derive(Default)]
+struct LatencyCellState {
+    ring: std::collections::VecDeque<f64>,
+    last_count: u64,
+    last_w: usize,
+    last_render: String,
+}
+
+/// Lifetime-histogram cell state; same sample-gated render cache.
+struct HistCellState {
+    trend: crate::widgets::DecimatingTrend,
+    last_count: u64,
+    last_w: usize,
+    last_render: String,
 }
 
 /// LIFETIME-histogram latency cell for open-ended pollers — the
 /// distinct renderable form beside `latency_gutter`'s rolling
-/// window. Each push lands in a decimating trend buffer (one
-/// sample per cell until the width fills, then buckets re-average
-/// at half resolution), so the whole phase history stays visible.
-/// Labels are the DISCRETE lifetime min∕max of the pushed samples,
-/// untouched by the averaging.
+/// window. Two regions, LEFT-STACKED:
+///
+/// - averaged history (cyan): `DecimatingTrend` buckets, re-averaged
+///   at half resolution only when the width fills;
+/// - raw tail (bright yellow): the most recent samples, one cell per
+///   sample, growing rightward into the free margin until the next
+///   resample folds them into history.
+///
+/// Bar heights normalize across BOTH regions together so the eye
+/// compares averaged past against raw present on one scale. Labels
+/// are the DISCRETE lifetime min∕max of the pushed samples.
 fn latency_hist_gutter(
     trend: &mut crate::widgets::DecimatingTrend,
     p50: u64,
     w: usize,
     color: bool,
 ) -> String {
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
-    let cyan  = if color { "\x1b[36m" } else { "" };
+    let dim    = if color { "\x1b[2m"  } else { "" };
+    let reset  = if color { "\x1b[0m"  } else { "" };
+    let cyan   = if color { "\x1b[36m" } else { "" };
+    let accent = if color { "\x1b[93m" } else { "" };
     let fmt = |ms: f64| {
         if ms >= 100.0 { format!("{ms:.0}") }
         else if ms >= 10.0 { format!("{ms:.1}") }
@@ -1246,9 +1396,23 @@ fn latency_hist_gutter(
     let text = format!("{}∕{}ms", fmt(trend.min), fmt(trend.max));
     let spark_w = w.saturating_sub(text.chars().count() + 1).max(4);
     let samples = trend.series();
-    let spark = crate::widgets::sparkline_str(&samples, spark_w);
-    format!("{cyan}{spark}{reset} {dim}{text:>tw$}│{reset} ",
-        tw = w - spark_w - 1)
+    // The trend's capacity is sized for the COMMON label width; a
+    // wider label (5-digit ms) shrinks the spark region below it.
+    // Clamp to the newest `spark_w` cells — dropping the OLDEST,
+    // most-averaged history first — so the cell never overdraws its
+    // budget and bleeds across the gutter divider.
+    let cut = samples.len().saturating_sub(spark_w);
+    let visible = &samples[cut..];
+    // Render at the visible length (no left padding — samples stack
+    // from the LEFT), then split by region and right-pad the free
+    // margin.
+    let glyphs = crate::widgets::sparkline_str(visible, visible.len().max(1));
+    let hist_n = trend.hist_len().saturating_sub(cut);
+    let hist_part: String = glyphs.chars().take(hist_n).collect();
+    let raw_part: String = glyphs.chars().skip(hist_n).collect();
+    let pad = spark_w.saturating_sub(visible.len());
+    format!("{cyan}{hist_part}{reset}{accent}{raw_part}{reset}{:pad$} {dim}{text:>tw$}│{reset} ",
+        "", tw = w.saturating_sub(spark_w + 1))
 }
 
 /// Approximate visible width of a string with ANSI SGR escape

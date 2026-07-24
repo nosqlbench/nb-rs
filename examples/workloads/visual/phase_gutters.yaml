@@ -21,6 +21,8 @@
 #
 # Usage:
 #   nbrs run workload=examples/workloads/visual/phase_gutters.yaml
+#
+#@ expect completed, 0 failed
 
 scenarios:
   default:
@@ -29,6 +31,8 @@ scenarios:
     - custom_bar
     - custom_spark
     - custom_text
+    - key_metric
+    - key_metric_recall
 
 phases:
   # Daemon phase, no gutter declaration → automatic latency trend
@@ -115,4 +119,59 @@ phases:
         result-latency: 10ms
         result-body:
           - value: 1
-        gutter: "lap {lap}∙c {cycle}"
+        gutter:
+          text: "lap {lap}∙c {cycle}"
+          # `final:` — evaluated ONCE at phase end and rendered as the
+          # ✓ outcome detail line's gutter cell. May reference status
+          # metrics ({recall}, {latency_p50}, …) resolved from the
+          # phase aggregates. Without `final:` the during-form's last
+          # published value is the final cell.
+          final: "done: p50 {latency_p50}"
+
+  # KEY METRICS (SRD-92 R4): `status_metrics:` chips get their own
+  # detail row under the counters line, and that row's gutter cell
+  # defaults to the METRIC MACRO — a bright trend sparkline of the
+  # primary key metric, labeled by name. The current numeric stays in
+  # the row body (single placement); the standard detail row keeps its
+  # automatic completion bar; the cells stack under the header's triad.
+  key_metric:
+    adapter: testkit
+    cycles: 1200
+    concurrency: 4
+    status_metrics: [latency_p50, latency_p99]
+    ops:
+      probe:
+        readout: visible
+        result-latency: 10ms
+        result-body:
+          - value: 1
+
+  # RELEVANCY key metric: the same macro driven by a measured recall
+  # aggregate. The op's fixed 3-row body is scored against a literal
+  # ground truth by the standard `evaluations.relevancy` pipeline —
+  # keys {0,1,5} vs truth {0,1,2} at k=3 → a deterministic
+  # recall:66.67% chip in the row body, `recall` trend in the cell.
+  key_metric_recall:
+    adapter: testkit
+    cycles: 800
+    concurrency: 4
+    status_metrics: [recall]
+    bindings: |
+      input cycle: u64
+      ground_truth := "0,1,2"
+    ops:
+      probe:
+        stmt: "ping"
+        readout: visible
+        result-latency: 10ms
+        result-body:
+          - key: "0"
+          - key: "1"
+          - key: "5"
+        evaluations:
+          relevancy:
+            actual: key
+            expected: ground_truth
+            k: 3
+            r: 3
+            functions: [recall]

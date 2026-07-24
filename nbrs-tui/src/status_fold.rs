@@ -49,23 +49,33 @@ pub fn render_active_status(snap: &RunState) -> Option<String> {
     render_active_status_with_gutters(snap).map(|(text, _)| text)
 }
 
-/// Per-line CONTEXTUAL GUTTER content for the footer's left margin.
-/// The gutter cell beside each phase's DETAIL row (the stats line
-/// under its header) belongs to that phase — a completion bar for
-/// metered phases, a latency trend for open-ended pollers. Header
-/// rows stay aligned with the workload-level tracking timers (row 0's
-/// triad); every other row gets the plain divider.
+/// Per-line CONTEXTUAL GUTTER content for the footer's left margin
+/// (SRD-92). Each block renders header-first: the header row carries
+/// the node's own timing triad, and every detail row under it owns
+/// one gutter cell (possibly blank) — cells stack vertically under
+/// the header, single-placement intact.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RowGutter {
     /// Plain blank-aligned divider.
     Blank,
+    /// Node HEADER row (SRD-92 R1): the pre-rendered, uncolored
+    /// margin body (`session · [n/N] · node-time` triad) for this
+    /// node — the sink wraps it in the color + divider dressing.
+    Header(String),
+    /// Key-metric detail row (SRD-92 R4): the metric macro's live
+    /// view — a bright TREND sparkline of the phase's primary key
+    /// metric, labeled by metric name. The current numeric lives
+    /// only in the row body's chips (single placement); the cell
+    /// carries what the body can't — the history. `key` persists
+    /// the sink-side sample ring across ticks like `Spark`.
+    Metric { key: String, name: String, value: f64 },
     /// Metered phase: completion-bar fill fraction.
     Bar(f64),
     /// Open-ended phase (daemon poller): latency trend. `key`
     /// identifies the phase so the sink's sample ring persists
     /// across ticks; p50/p99 are the current service-time
     /// percentiles in nanos.
-    Latency { key: String, p50: u64, p99: u64 },
+    Latency { key: String, p50: u64, p99: u64, count: u64 },
     /// Workload-declared layout text (`gutter: "<template>"`),
     /// placed in the cell verbatim (truncated to fit).
     Text(String),
@@ -79,7 +89,69 @@ pub enum RowGutter {
     /// until the width fills, then re-averaged at half resolution,
     /// etc.), labeled with the discrete lifetime min∕max. Distinct
     /// renderable from the rolling `Latency` form.
-    LatencyHist { key: String, p50: u64 },
+    /// `count` is the timer's LIFETIME sample count — the sink
+    /// re-renders (and pushes a trend sample) only when it advanced
+    /// since the last draw, so a slow poller (1 op/s) keeps a stable
+    /// cell between ops instead of restating the same value every
+    /// redraw tick.
+    LatencyHist { key: String, p50: u64, count: u64 },
+}
+
+/// Row roles within one rendered block (SRD-92): the header leads,
+/// details follow. Classification is positional per the contract —
+/// renderers compose header-first — with memo rows recognized by
+/// their `[[` banner form at any position.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RowRole {
+    Header,
+    Memo,
+    /// The standard counters detail line (rate/ok/att/e/r/c/…).
+    Standard,
+    /// Key-metric detail rows (status-metric / adapter chips).
+    KeyMetrics,
+}
+
+/// Strip SGR escape sequences (`ESC [ … <alpha>`) so role matching
+/// sees the text an operator sees. The old classifier tested the
+/// RAW bytes and a color-styled memo banner defeated it, landing
+/// the standard-detail gutter cell on the header row.
+pub fn strip_ansi(s: &str) -> String {
+    let mut plain = String::with_capacity(s.len());
+    let mut esc = false;
+    for c in s.chars() {
+        if esc {
+            if c.is_ascii_alphabetic() { esc = false; }
+            continue;
+        }
+        if c == '\u{1b}' { esc = true; continue; }
+        plain.push(c);
+    }
+    plain
+}
+
+/// Classify each row of a rendered block per SRD-92: memo rows are
+/// `[[ … ]]` banners (ANSI-stripped match), the first non-memo row
+/// is the header, the next non-memo row the standard detail line,
+/// and remaining non-memo rows are key-metric details.
+pub fn classify_block(rows: &[&str]) -> Vec<RowRole> {
+    let mut roles = Vec::with_capacity(rows.len());
+    let mut seen_header = false;
+    let mut seen_standard = false;
+    for r in rows {
+        let plain = strip_ansi(r);
+        if plain.trim_start().starts_with("[[") {
+            roles.push(RowRole::Memo);
+        } else if !seen_header {
+            seen_header = true;
+            roles.push(RowRole::Header);
+        } else if !seen_standard {
+            seen_standard = true;
+            roles.push(RowRole::Standard);
+        } else {
+            roles.push(RowRole::KeyMetrics);
+        }
+    }
+    roles
 }
 
 /// As [`render_active_status`], additionally returning one
@@ -90,23 +162,21 @@ pub fn render_active_status_with_gutters(
 ) -> Option<(String, Vec<RowGutter>)> {
     let mut lines: Vec<String> = Vec::new();
     let mut gutters: Vec<RowGutter> = Vec::new();
+    let session_now = snap.elapsed_secs();
     for p in active_phases_ordered(snap) {
-        if let Some(status) = render_phase_status(p, snap.elapsed_secs()) {
-            // Tag this phase's block: memo rows (leading `[[`) and the
-            // header row get Blank; the DETAIL row (first line after
-            // the header) carries the phase's contextual gutter.
+        if let Some((status, chips)) = render_phase_status_parts(p, session_now) {
             let block: Vec<&str> = status.split('\n').collect();
-            let header_idx = block.iter()
-                .position(|l| !l.trim_start().starts_with("[["))
-                .unwrap_or(0);
-            let detail_idx = header_idx + 1;
+            let roles = classify_block(&block);
             let ctx_gutter = phase_context_gutter(p);
+            let header_gutter = phase_header_gutter(p, session_now);
+            let metric_cell = phase_metric_gutter(p, &chips);
             for (i, line) in block.iter().enumerate() {
                 lines.push((*line).to_string());
-                gutters.push(if i == detail_idx {
-                    ctx_gutter.clone()
-                } else {
-                    RowGutter::Blank
+                gutters.push(match roles[i] {
+                    RowRole::Header => header_gutter.clone(),
+                    RowRole::Memo => RowGutter::Blank,
+                    RowRole::Standard => ctx_gutter.clone(),
+                    RowRole::KeyMetrics => metric_cell.clone(),
                 });
             }
             for leaf in render_op_leaves(snap, p) {
@@ -119,6 +189,40 @@ pub fn render_active_status_with_gutters(
         None
     } else {
         Some((lines.join("\n"), gutters))
+    }
+}
+
+/// SRD-92 R1 — the header row's margin: this node's OWN timing triad
+/// (`session · [n/N] · phase-time`), same body format the actor
+/// stamps on scrollback headers, so every concurrently-visible
+/// phase's header carries its own [n/N] and clock rather than only
+/// footer row 0 wearing the workload-level stamp.
+fn phase_header_gutter(p: &ActivePhase, session_now: f64) -> RowGutter {
+    let Some((s, n)) = p.render.as_ref().and_then(|h| h.seq) else {
+        return RowGutter::Blank;
+    };
+    let elapsed = (session_now - p.session_started).max(0.0);
+    RowGutter::Header(crate::widgets::margin_body(
+        n, &format!("[{s}/{n}]"), Some(elapsed), Some(session_now)))
+}
+
+/// SRD-92 R4 — the key-metric detail row's default gutter cell: the
+/// metric macro, a bright trend of the phase's PRIMARY key metric
+/// (first `status_metrics:` match, numeric form). Blank when the
+/// phase publishes no chips or no primary numeric is measurable —
+/// the row body still shows the chips text either way.
+fn phase_metric_gutter(p: &ActivePhase, chips: &str) -> RowGutter {
+    if strip_ansi(chips).trim().is_empty() {
+        return RowGutter::Blank;
+    }
+    let Some(handle) = p.render.as_ref() else { return RowGutter::Blank };
+    match handle.metrics.collect_status_primary(&handle.status_metrics) {
+        Some((name, value)) => RowGutter::Metric {
+            key: format!("metric:{}@{}", p.name, p.labels),
+            name,
+            value,
+        },
+        None => RowGutter::Blank,
     }
 }
 
@@ -164,6 +268,7 @@ fn phase_context_gutter(p: &ActivePhase) -> RowGutter {
         return RowGutter::LatencyHist {
             key: format!("{}@{}", p.name, p.labels),
             p50: h.value_at_quantile(0.50),
+            count: handle.metrics.service_time.count(),
         };
     }
     let frac = handle.metrics.progress_override()
@@ -260,6 +365,17 @@ fn op_spinner(elapsed: f64) -> &'static str {
 /// so the animation rate stays identical and per-phase — no sink-side
 /// tick counter is threaded through.
 pub fn render_phase_status(phase: &ActivePhase, session_now: f64) -> Option<String> {
+    render_phase_status_parts(phase, session_now).map(|(s, _)| s)
+}
+
+/// As [`render_phase_status`], additionally returning the phase's
+/// key-metric chips text (adapter + batch + status-metric chips, as
+/// the context composes them) so the fold can derive the key-metric
+/// row's default gutter cell (SRD-92 R4) from the same context build.
+pub fn render_phase_status_parts(
+    phase: &ActivePhase,
+    session_now: f64,
+) -> Option<(String, String)> {
     let handle = phase.render.as_ref()?;
     if handle.bodies.is_empty() {
         return None;
@@ -304,7 +420,14 @@ pub fn render_phase_status(phase: &ActivePhase, session_now: f64) -> Option<Stri
     if rendered.trim().is_empty() {
         return None;
     }
-    Some(rendered)
+    use nbrs_runtime::readouts::context::ReadoutContext as _;
+    let chips = format!(
+        "{}{}{}",
+        ctx.adapter_counters_text(),
+        ctx.batch_info_text(),
+        ctx.status_metric_chips(),
+    );
+    Some((rendered, chips))
 }
 
 #[cfg(test)]
@@ -495,5 +618,59 @@ mod tests {
         // The interleave must not alter output for phases with no opted-in ops.
         let s = state_with(vec![literal_phase("run", Some(1), Some("ops=5 ok=5"))]);
         assert_eq!(render_active_status(&s).as_deref(), Some("ops=5 ok=5"));
+    }
+
+    #[test]
+    fn classify_block_is_ansi_immune() {
+        // SRD-92: role classification strips SGR before matching. A
+        // color-styled memo banner (`\x1b[1;33m[[ … ]]`) used to defeat
+        // the raw `starts_with("[[")` test, sliding the standard-detail
+        // gutter cell onto the header row (bar-beside-header bug).
+        let rows = [
+            "  \u{1b}[1m\u{1b}[34mfinalize_index\u{1b}[0m 64%",
+            "    \u{1b}[1;33m[[ finalize step 3/4 ]]\u{1b}[0m",
+            "      0/s ok:100% e:0 r:0 c:1",
+            "      rows/s=12.5K recall:97.84%",
+        ];
+        assert_eq!(
+            classify_block(&rows),
+            vec![
+                RowRole::Header,
+                RowRole::Memo,
+                RowRole::Standard,
+                RowRole::KeyMetrics,
+            ],
+        );
+    }
+
+    #[test]
+    fn classify_block_memo_anywhere_never_shifts_roles() {
+        // Memo rows are recognized positionally-independently; the
+        // header is always the first NON-memo row and the standard
+        // detail the next, wherever the memo lands.
+        let rows = ["[[ memo ]]", "head", "stats"];
+        assert_eq!(
+            classify_block(&rows),
+            vec![RowRole::Memo, RowRole::Header, RowRole::Standard],
+        );
+    }
+
+    #[test]
+    fn header_rows_carry_their_own_triad_gutter() {
+        // SRD-92 R1: every phase's header row gets a Header gutter
+        // carrying that node's OWN margin body ([n/N] from its seq) —
+        // not just footer row 0.
+        let s = state_with(vec![
+            literal_phase("a", Some(1), Some("A-status")),
+            literal_phase("b", Some(2), Some("B-status")),
+        ]);
+        let (_, gutters) = render_active_status_with_gutters(&s).expect("some");
+        match (&gutters[0], &gutters[1]) {
+            (RowGutter::Header(a), RowGutter::Header(b)) => {
+                assert!(a.contains("[1/2]"), "phase a triad: {a:?}");
+                assert!(b.contains("[2/2]"), "phase b triad: {b:?}");
+            }
+            other => panic!("both header rows must carry Header gutters: {other:?}"),
+        }
     }
 }

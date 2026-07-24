@@ -515,6 +515,18 @@ impl SceneTree {
     }
 
     /// Mark the phase node at `id` as completed with `duration_secs`.
+    /// Detach `id` from its parent's child list, removing it from every
+    /// tree walk (display folds, replay tree). The node's allocation and
+    /// id remain valid — ids are stable — it is simply unreachable.
+    /// Used by the `skipped_phases=elide|prune` display modes to drop
+    /// fully-gated-off phases from the completed tree.
+    pub fn remove_node(&mut self, id: SceneNodeId) {
+        let Some(parent) = self.nodes.get(id).and_then(|n| n.parent) else { return };
+        if let Some(p) = self.nodes.get_mut(parent) {
+            p.children.retain(|c| *c != id);
+        }
+    }
+
     pub fn set_phase_completed_at(&mut self, id: SceneNodeId, duration_secs: f64) {
         if let Some(n) = self.nodes.get_mut(id) {
             n.status = PhaseStatus::Completed;

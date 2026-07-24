@@ -29,7 +29,17 @@ fn run_state_tracks_phase_lifecycle() {
 
     s.set_phase_completed(0, "schema", "", 1.5, nbrs_tui::state::PhaseSummary::default());
     assert!(matches!(s.phases[0].status, nbrs_tui::state::PhaseStatus::Completed));
-    assert_eq!(s.phases[0].duration_secs, Some(1.5));
+    // Session-clock reconciliation: with the start observed, the
+    // DISPLAYED duration is the session delta — `session_started +
+    // duration == session_elapsed` holds exactly on the rendered row.
+    // The executor-measured value (1.5 here) is only the fallback for
+    // a never-observed start.
+    let e = &s.phases[0];
+    let (ss, se) = (e.session_started.expect("start observed"),
+                    e.session_elapsed.expect("completion stamped"));
+    let d = e.duration_secs.expect("duration set");
+    assert!((ss + d - se).abs() < 1e-9,
+        "session_started({ss}) + duration({d}) must equal session_elapsed({se})");
 }
 
 #[test]
@@ -153,9 +163,19 @@ fn actor_attributes_concurrent_same_name_cells_to_correct_nodes() {
 
     let snap = handle.load();
     let row = |id| snap.phases.iter().find(|e| e.node_id == id).expect("row for id");
-    // Each cell's node carries ITS OWN duration AND summary — not a sibling's.
-    assert_eq!(row(a).duration_secs, Some(10.0), "x=1 node keeps its own duration");
-    assert_eq!(row(b).duration_secs, Some(20.0), "x=2 node keeps its own duration");
+    // Each cell's node carries ITS OWN duration AND summary — not a
+    // sibling's. Displayed durations are session-clock deltas (the
+    // executor-measured 10.0/20.0 are only never-observed-start
+    // fallbacks), so per-node timing attribution is pinned by each
+    // row reconciling against its OWN session stamps.
+    for (id, tag) in [(a, "x=1"), (b, "x=2")] {
+        let r = row(id);
+        let (ss, se) = (r.session_started.expect("start observed"),
+                        r.session_elapsed.expect("completion stamped"));
+        let d = r.duration_secs.expect("duration set");
+        assert!((ss + d - se).abs() < 1e-9,
+            "{tag} node's duration must reconcile with its own session stamps");
+    }
     assert_eq!(row(a).summary.as_ref().map(|s| s.ops_finished), Some(10),
         "x=1 node keeps its own summary (ops_finished)");
     assert_eq!(row(b).summary.as_ref().map(|s| s.ops_finished), Some(20),

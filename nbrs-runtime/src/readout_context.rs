@@ -60,12 +60,20 @@ pub struct ActivityReadoutContext {
     /// SRD-76 — cursor-resume payload, when the phase
     /// supports it. `None` for the common case.
     pub outcome_resume_cursor: Option<crate::phase_outcome::ResumeCursor>,
+    /// True for a daemon (open-ended) phase: there is no "done" to
+    /// meter, so completion renders no percentage (SRD-92 — the
+    /// same rule the live meter slot follows). Without this the
+    /// trait-default `false` let `progress_fraction()` fall through
+    /// to the cycles basis and a stopped daemon printed a
+    /// meaningless `N%` (cycles over its wall-clock ceiling).
+    pub open_ended: bool,
 }
 
 impl ReadoutContext for ActivityReadoutContext {
     fn subject_name(&self) -> &str { &self.phase_name }
     fn subject_seq(&self) -> Option<(usize, usize)> { self.phase_seq }
     fn subject_labels(&self) -> &str { &self.phase_labels }
+    fn open_ended(&self) -> bool { self.open_ended }
     fn cycles_completed(&self) -> u64 { self.cycles_completed }
     fn cycles_total(&self) -> u64 { self.cycles_total }
     fn ops_ok(&self) -> u64 { self.ops_ok }

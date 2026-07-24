@@ -1680,6 +1680,27 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         diag = DiagnosticConfig::parse(spec);
     }
 
+    // skipped_phases= — how fully-gated-off phases are represented
+    // (elide | mark | prune). Default: mark.
+    if let Some(spec) = params.get("skipped_phases") {
+        match crate::observer::SkippedPhaseDisplay::parse(spec) {
+            Some(mode) => crate::observer::set_skipped_phase_display(mode),
+            None => return Err(format!(
+                "unknown skipped_phases value '{spec}' — use 'elide', 'mark', or 'prune'")),
+        }
+    }
+
+    // completed_phases= — how much of a completed node's block is
+    // retained in scrollback (full | headers). Default: full (SRD-92
+    // R5 — completion is never a full collapse).
+    if let Some(spec) = params.get("completed_phases") {
+        match crate::observer::CompletedPhaseDisplay::parse(spec) {
+            Some(mode) => crate::observer::set_completed_phase_display(mode),
+            None => return Err(format!(
+                "unknown completed_phases value '{spec}' — use 'full' or 'headers'")),
+        }
+    }
+
     // "Never Ignore Silently" — scenario-parse errors are
     // ALWAYS fatal regardless of strict mode. The parser used
     // to silently drop unknown scenario-node keys (e.g.
@@ -3972,7 +3993,17 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
         // maps (e.g. `relevancy: { actual: key, expected: …}`).
         // Walk the JSON recursively so anything stringy gets
         // scanned regardless of nesting depth.
-        for v in op.params.values() {
+        //
+        // `gutter:` is exempt: its templates resolve at RUNTIME
+        // (wires first, then status-metric aggregates like
+        // `{recall}` / `{latency_p50}` which have no workload
+        // declaration), and an unresolved name degrades to
+        // visible literal text in the cell — never a silent
+        // failure this validator needs to preempt.
+        for (k, v) in op.params.iter() {
+            if k == "gutter" {
+                continue;
+            }
             scan_json_for_refs(v, refs);
         }
         match &op.bindings {

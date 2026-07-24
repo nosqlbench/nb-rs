@@ -113,22 +113,22 @@ fn render_labeled_value(
         String::new()
     };
 
-    // Memo header: phase displays surface the latest published
-    // memo as `[[ <memo> ]]` above the bracket-form row.
-    // Empty memo → no header. Bold yellow per the style guide's
-    // EMPHASIS tier.
+    // Memo row: phase displays surface the latest published memo
+    // as `[[ <memo> ]]` — a detail row BELOW the bracket-form
+    // header (SRD-92 header-first composition). Empty memo → no
+    // row. Bold yellow per the style guide's EMPHASIS tier.
     let memo = ctx.phase_memo();
-    let memo_header = if memo.is_empty() {
+    let memo_row = if memo.is_empty() {
         String::new()
     } else {
         let bold_yellow = if color { "\x1b[1;33m" } else { "" };
-        format!("{depth_indent}{bold_yellow}[[ {memo} ]]{reset}\n")
+        format!("\n{depth_indent}    {bold_yellow}[[ {memo} ]]{reset}")
     };
 
     let mut tmp = String::with_capacity(160);
     let _ = write!(
         &mut tmp,
-        "{memo_header}{depth_indent}{marker} {seq_part}{bold}{blue}{phase_name}{reset}{labels_part}{dur_part}{suffix}",
+        "{depth_indent}{marker} {seq_part}{bold}{blue}{phase_name}{reset}{labels_part}{dur_part}{suffix}{memo_row}",
     );
     let len = tmp.len();
     let _ = out.write_str(&tmp);

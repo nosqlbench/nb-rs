@@ -673,6 +673,50 @@ impl RunState {
 
     /// Mark a phase as completed and attach a metrics summary,
     /// keyed by the dispatch-time `scene_node_id` (SRD-100 P1c).
+    /// Final per-op timing leaves for a phase at its completion —
+    /// the durable form of the footer's SRD-63 op rows, preserved
+    /// into scrollback under the ✓ outcome block. Terminal ops carry
+    /// their execution time and session finish-stamp; an op still
+    /// mid-flight at phase end (a cancelled daemon probe) shows `—`.
+    /// Empty when the phase declared no `readout: visible` ops.
+    pub fn final_op_leaves(&self, name: &str, labels: &str) -> Vec<String> {
+        let node_id = match self.phases.iter().find(|e| {
+            e.name == name && e.labels == labels
+                && matches!(e.status, PhaseStatus::Running)
+        }) {
+            Some(e) => e.node_id,
+            None => return Vec::new(),
+        };
+        let ops = match self.phase_ops.get(&node_id) {
+            Some(ops) if !ops.is_empty() => ops,
+            _ => return Vec::new(),
+        };
+        let total = ops.len();
+        ops.iter().map(|op| {
+            let icon = match &op.status {
+                PhaseStatus::Completed => "✓",
+                PhaseStatus::Failed(_) => "✗",
+                _ => "—",
+            };
+            let leaf_s = op.duration_secs
+                .map(crate::widgets::format_dur_compact)
+                .unwrap_or_else(|| "—".to_string());
+            let time_part = match op.session_elapsed {
+                Some(v) => format!("{leaf_s} @ {}", crate::widgets::format_dur_compact(v)),
+                None => leaf_s,
+            };
+            let mut line = format!(
+                "    {icon} {name}  [{seq}/{total}]  {time_part}",
+                name = op.name, seq = op.seq + 1,
+            );
+            if let PhaseStatus::Failed(err) = &op.status {
+                line.push_str("  ");
+                line.push_str(err);
+            }
+            line
+        }).collect()
+    }
+
     pub fn set_phase_completed(
         &mut self,
         scene_node_id: SceneNodeId,
@@ -684,6 +728,28 @@ impl RunState {
         // Capture the session clock BEFORE the mutable-borrow block so a
         // finished leaf persists the session time at which it finished.
         let session_now = self.elapsed_secs();
+        // `skipped_phases=elide|prune`: a FULLY-SKIPPED phase (every op
+        // `if:`-gated off, nothing measured) leaves no completed-tree
+        // entry — remove its node instead of folding it in. `mark` (the
+        // default) keeps it, rendered with the runtime's ⊘ outcome.
+        let fully_skipped = summary.skips > 0
+            && summary.ops_finished > 0
+            && summary.skips >= summary.ops_finished
+            && summary.ops_ok == 0
+            && summary.errors == 0;
+        if fully_skipped && matches!(
+            nbrs_runtime::observer::skipped_phase_display(),
+            nbrs_runtime::observer::SkippedPhaseDisplay::Elide
+            | nbrs_runtime::observer::SkippedPhaseDisplay::Prune)
+        {
+            if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Running)) {
+                self.tree.remove_node(id);
+                self.summaries.remove(&id);
+                self.phase_session_started.remove(&id);
+                self.rebuild_phases();
+            }
+            return;
+        }
         if let Some(id) = self.resolve_phase_node(scene_node_id, name, labels, Some(&PhaseStatus::Running)) {
             // Displayed duration is a session-clock delta so
             // `session_started + duration == session_elapsed` holds
