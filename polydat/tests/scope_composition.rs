@@ -995,3 +995,64 @@ fn const_with_bound_interpolation_shadows_outer() {
         Some("OVERRIDE".to_string()),
     );
 }
+
+// =========================================================================
+// Cross-fiber shared-cell invalidation (cross_fiber_invalidation.md §5)
+// =========================================================================
+
+/// A cross-kernel cell write must invalidate EVERY memoized node
+/// between the cell-bound slot and a pulled output — not only the
+/// pull root. Regression: `check_cell_clean` updated `last_seen`
+/// (consuming the dirty signal) at the first node that checked,
+/// then the root's re-evaluation recursed into upstream nodes whose
+/// own checks now read the consumed signal as clean and returned
+/// stale buffers — the root recomputed its pre-write value forever.
+/// A single-comparison predicate hides this (the root reads the
+/// slot directly); the multi-node tree below is the smallest shape
+/// that exposed it (a phase-poll predicate memoized at its
+/// pre-write value across every re-pull).
+#[test]
+fn cross_kernel_cell_write_invalidates_full_memoized_chain() {
+    // grandparent (cells' defining scope) → reader (same program,
+    // the per-fiber main-kernel shape) → writer (extern slots only,
+    // the per-op kernel shape).
+    let root = compile_polydat(r#"
+        input cycle: u64
+        shared s := 0
+        shared a := 0
+        shared p := 0
+        ready := (s == 1) & (a == 0) & (p == 0)
+    "#).unwrap();
+
+    let mut reader = root.subscope(
+        PolydatMatter::builder().program(root.program().clone()).build().unwrap()
+    ).unwrap();
+
+    let writer_program = compile_polydat(r#"
+        input cycle: u64
+        extern s: u64
+        extern a: u64
+        extern p: u64
+    "#).unwrap().program().clone();
+    let mut writer = reader.subscope(
+        PolydatMatter::builder().program(writer_program).build().unwrap()
+    ).unwrap();
+
+    // Establish the memoized pre-write evaluation on the reader.
+    assert_eq!(reader.pull("ready"), &Value::U64(0), "pre-write predicate");
+
+    // Cross-kernel write through the writer's cell-bound slot.
+    use polydat::kernel::Dataflow;
+    writer.set_wire("s", Value::U64(1)).expect("cell-bound write");
+
+    // The very next pull must observe it — through the whole
+    // comparison/AND chain, not just at the root.
+    assert_eq!(reader.pull("ready"), &Value::U64(1),
+        "first post-write pull reads the fresh cell through the full chain");
+    // And stay fresh (the dirty signal must not be half-consumed).
+    assert_eq!(reader.pull("ready"), &Value::U64(1), "second post-write pull");
+
+    // Reverting the cell propagates the same way.
+    writer.set_wire("s", Value::U64(0)).expect("cell-bound write");
+    assert_eq!(reader.pull("ready"), &Value::U64(0), "revert propagates");
+}

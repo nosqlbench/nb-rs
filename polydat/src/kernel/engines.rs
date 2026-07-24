@@ -590,7 +590,7 @@ impl EngineCore {
         // immutable borrow of `self.cell_cones`,
         // `self.shared_cells`, and `self.last_seen` coexist
         // because they're disjoint fields of `self`.
-        let mut dirty: Vec<(*const SharedCellInner, u64)> = Vec::new();
+        let mut dirty: Vec<(*const SharedCellInner, u64, usize)> = Vec::new();
         {
             let cone = self.cell_cones[node_idx].as_ref().unwrap();
             for group in &cone.groups {
@@ -606,7 +606,7 @@ impl EngineCore {
                     let ptr = Arc::as_ptr(cell);
                     let prev = self.last_seen.get(&ptr).copied().unwrap_or(0);
                     if r != prev {
-                        dirty.push((ptr, r));
+                        dirty.push((ptr, r, entry.input_slot));
                     }
                 }
             }
@@ -615,8 +615,38 @@ impl EngineCore {
         // Second pass: update last_seen for every cell whose
         // revision we observed has advanced. Done in a
         // separate pass to release the cone borrow above.
-        for (ptr, r) in dirty {
-            self.last_seen.insert(ptr, r);
+        //
+        // Updating `last_seen` CONSUMES the dirty signal for this
+        // fiber, so the re-evaluation it triggers must reach every
+        // memoized node between the dirty slot and any consumer —
+        // not just the node that happened to check first. The
+        // caller only re-evaluates the CHECKED node; its recursive
+        // upstream walk re-checks each parent's own cone, which now
+        // reads the just-updated `last_seen` and comes back clean,
+        // leaving the intermediate buffers stale — the checked node
+        // then recomputes from stale parents (observed as a
+        // phase-poll predicate memoized at its pre-write value
+        // forever). Mirror `set_input`'s write-side rule on the
+        // read side: a detected cross-fiber write invalidates every
+        // node whose transitive input provenance covers the dirty
+        // slot.
+        if !clean {
+            let mut dirty_mask: u64 = 0;
+            for (ptr, r, slot) in dirty {
+                self.last_seen.insert(ptr, r);
+                if slot < 64 {
+                    dirty_mask |= 1u64 << slot;
+                }
+            }
+            for node_idx in 0..program.nodes.len() {
+                let prov = program.input_provenance
+                    .get(node_idx)
+                    .copied()
+                    .unwrap_or(0);
+                if prov & dirty_mask != 0 {
+                    self.node_clean[node_idx] = false;
+                }
+            }
         }
         clean
     }
