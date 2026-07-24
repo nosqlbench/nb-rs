@@ -302,10 +302,21 @@ pub fn cascade_parent_into_source(inputs: CascadeInputs<'_>, outputs: CascadeOut
         // to inline as literals into the cached downstream
         // program. Everything else cascades as `extern`; per-
         // activation materialization delivers the correct value.
+        //
+        // A `shared` output is NEVER statically known, whatever its
+        // initializer's provenance: the cell is mutable at runtime
+        // (captures write it). Const-inlining one freezes the
+        // initializer AND makes the child the name's local final,
+        // which `materialize_wiring_from_outer` honors by DROPPING
+        // the ancestral cell — descendants then read the frozen
+        // initializer forever and a writer's update is never
+        // visible to them.
         let Some(output_idx) = parent_program.output_index(&owned) else { continue };
         let (node_idx, port_idx) = parent_program.resolve_output_by_index(output_idx);
-        let upstream_is_statically_known =
-            parent_program.input_provenance_for(node_idx) == 0;
+        let is_shared = parent_program.output_modifier(&owned)
+            == polydat::dsl::ast::BindingModifier::SHARED;
+        let upstream_is_statically_known = !is_shared
+            && parent_program.input_provenance_for(node_idx) == 0;
         if upstream_is_statically_known
             && let Some(value) = parent_kernel.lookup(&owned)
             && let Some(literal) = format_value_as_final_literal(&value)

@@ -96,7 +96,23 @@ impl OpBuilder {
     /// fiber.
     pub fn new(kernel: impl Into<Arc<PolydatKernel>>) -> Self {
         let kernel: Arc<PolydatKernel> = kernel.into();
-        let scope_values = kernel.scope_values();
+        // Scope values seed PLAIN slots only. A CELL-BOUND slot's value
+        // is the live shared cell — snapshotting it here freezes the
+        // cell's activity-start value, and every downstream
+        // re-application (fiber seeding, the stanza-boundary
+        // `reset_captures`) would `set_input` that stale snapshot
+        // THROUGH the cell, clobbering later writes for every kernel
+        // sharing it. Same exclusion `reset_inputs_from` documents:
+        // cells are cross-kernel shared state with their own
+        // lifecycle.
+        let scope_values: Vec<(String, Value)> = kernel.scope_values()
+            .into_iter()
+            .filter(|(name, _)| {
+                kernel.program().find_input(name)
+                    .map(|idx| kernel.state_ref().shared_cell(idx).is_none())
+                    .unwrap_or(true)
+            })
+            .collect();
         let init_overrides = collect_init_overrides(&kernel);
         Self {
             scope_values,

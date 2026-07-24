@@ -1131,6 +1131,9 @@ pub fn build_phase_scope_kernel(
         ..Default::default()
     };
 
+    if std::env::var("NBRS_DEBUG_SCOPE_SYNTH").map(|v| v == "1").unwrap_or(false) {
+        eprintln!("=== SCOPE SYNTH [{context}] inherited={inherited_names:?} ===\n{source}\n=== END ===");
+    }
     let matter = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
         .source(source)
@@ -1493,6 +1496,24 @@ pub fn build_op_template_scope_kernel(
             referenced.push(n.to_string());
         }
     }
+    // Capture targets are a WRITE usage surface of this op: the
+    // runtime lands each captured value on this kernel's input slot
+    // via `ctx.wires.write` (see TraversingDispenser). The name must
+    // therefore be declared here like any other referenced wire —
+    // the standard cascade below emits the `extern` (with the
+    // parent's port type) and the wiring machinery binds it to the
+    // ancestral `shared` cell when one is in scope, making the
+    // write visible across phases. Without the declaration a
+    // capture-only op's write is a silent NoSlot drop, and any
+    // later phase gating on the cell reads its initializer forever.
+    for cap in &op.captures {
+        let n = cap.as_name.as_str();
+        if !n.is_empty() && !body_locally_declared.contains(n)
+            && !referenced.iter().any(|r| r == n)
+        {
+            referenced.push(n.to_string());
+        }
+    }
     if let Some(ref delay_spec) = op.delay {
         for raw in delay_spec.names() {
             let n = raw.trim().trim_start_matches('{').trim_end_matches('}');
@@ -1791,6 +1812,11 @@ pub fn build_op_template_scope_kernel(
     }
     let result_source: Option<String> = Some(result_source).filter(|s| !s.trim().is_empty());
 
+    if std::env::var("NBRS_DEBUG_SCOPE_SYNTH").map(|v| v == "1").unwrap_or(false) {
+        eprintln!("=== OP SYNTH [{context}] inherited={inherited_names:?} parent_has_xval_input={:?} parent_manifest_has_xval={} ===\n{source}\n=== END ===",
+            parent_kernel.program().find_input("xval"),
+            manifest_by_name.contains_key("xval"));
+    }
     let mut matter_builder = polydat::kernel::subcontext::PolydatMatter::builder()
         .label(context)
         .source(source)
@@ -2624,6 +2650,9 @@ pub fn validate_placeholders_via_kernel(
             );
         }
         for (key, value) in op.params.iter() {
+            if key == "gutter" {
+                continue; // runtime-resolved templates (see the mutable pass below)
+            }
             let path = format!("op '{op_name}' param '{key}'");
             let mut throwaway = value.clone();
             resolve_placeholders_in_json(
@@ -2685,6 +2714,15 @@ pub fn resolve_placeholders_in_op_params(
     };
     let op_name = op.name.clone();
     for (key, value) in op.params.iter_mut() {
+        // `gutter:` templates resolve at RUNTIME — during-forms per op
+        // completion on the fiber wires, `final:` at phase end with a
+        // status-metric fallback (`{recall}`, `{latency_p50}`) that has
+        // no kernel presence here. Unresolved names degrade to visible
+        // literal text in the cell, so the strict pre-resolution pass
+        // must not reject them.
+        if key == "gutter" {
+            continue;
+        }
         let path = format!("op '{op_name}' param '{key}'");
         resolve_placeholders_in_json(
             value, kernel, &per_cycle_names, &path, &mut errors,

@@ -121,6 +121,19 @@ impl HasPolydatMatter for ParsedOp {
             return PolydatMatter::Definitions;
         }
 
+        // capture: writes result-extracted values onto Polydat
+        // wires — definitions by construction, same as `result:`.
+        // The op-template kernel is where the capture target's
+        // slot lives; when the target is an ancestral `shared`
+        // cell, that slot is what the wiring cascade cell-binds.
+        // Without materialisation the cycle-time write lands on a
+        // non-cell fallback and the captured value never crosses
+        // the phase boundary — a later phase gating on the cell
+        // reads its initializer forever.
+        if !self.captures.is_empty() {
+            return PolydatMatter::Definitions;
+        }
+
         // Anything that gets here reads parent bindings only
         // (e.g. `if:` / `delay:` references) or has nothing
         // GK-shaped at all.

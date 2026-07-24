@@ -265,6 +265,13 @@ impl<'a> WireSource for CycleWires<'a> {
     fn write(&self, name: &str, value: Value) -> WriteOutcome {
         use polydat::kernel::{Dataflow, WriteError};
         let mut k = self.kernel.lock().expect("CycleWires mutex poisoned");
+        if std::env::var("NBRS_DEBUG_WIRES").map(|v| v == "1").unwrap_or(false) {
+            let cells: Vec<String> = k.shared_cells_in_scope().iter()
+                .map(|c| c.name.clone()).collect();
+            let slot_cell = k.program().find_input(name)
+                .map(|idx| k.state_ref().shared_cell(idx).is_some());
+            eprintln!("WIRES.write name={name} value={value:?} slot_cell_bound={slot_cell:?} cells_in_scope={cells:?}");
+        }
         // Go through the typed Dataflow surface (per S4): the
         // boundary enforces T1+T2 and routes through the auto-
         // adapter catalog before rejecting mismatched writes.
