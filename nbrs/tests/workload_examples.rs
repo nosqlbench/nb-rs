@@ -358,15 +358,28 @@ fn optimizer_servos_the_rate_control_directly() {
     // way to servo `rate`: the phase `rate:` field is a fixed `f64` that can't carry
     // a `{var}` bind, so the indirect form is unavailable. The `rate:` value is the
     // warmup the daemon retargets from.
+    //
+    // Real-time sensitivity: overload onset is in-flight >= 4, i.e.
+    // ~2000/s at the 2 ms op latency. The candidates sit WIDE of that
+    // threshold on both sides (3x above, 4x below) so a loaded machine
+    // that only achieves a fraction of the requested pace still
+    // overloads at the high setting and never at the low one — a
+    // tight 2x margin made this flip to a scoring tie under
+    // concurrent-sweep CPU contention. The cycle budget must outlast
+    // both eval settle windows at the candidates' burn rates (the
+    // high candidate burns ~6000 cycles/s; running out mid-eval ends
+    // the phase at "0 evals"), so the cheap candidate runs first and
+    // the budget carries generous slack — the optimizer concludes the
+    // phase after its evals, so slack costs no wall time.
     let yaml = r#"
 phases:
   saturate:
-    cycles: 60000
+    cycles: 200000
     concurrency: 8
     rate: 2000
     errors: warn
     error_rate_max: 1.0
-    for_each: "rate in 4000, 1000"
+    for_each: "rate in 500, 6000"
     optimize:
       objective: score
       max_evals: 10
@@ -394,7 +407,7 @@ phases:
     );
     assert!(!out.contains("error:"), "direct rate servo errored: {out}");
     assert!(
-        out.contains("(control): best [1000]"),
+        out.contains("(control): best [500]"),
         "servoing the `rate` control by name must find the lower, overload-free rate: {out}"
     );
 }

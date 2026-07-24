@@ -70,10 +70,18 @@ fn pty_config(args: &[&str], sessions: &Path, width: u16, height: u16) -> Config
 }
 
 /// Step the emulator until `needle` appears, or panic with the last screen.
+///
+/// Each drain pass is timeout-guarded: `render_all_output()` can park
+/// indefinitely when the child exits mid-drain (the reader task ends
+/// without closing the surface channel), which turned this poll loop
+/// into a permanent futex wait. A guarded pass simply falls through
+/// to the screen check — the deadline below stays the single failure
+/// authority, with the screen dump preserved.
 async fn wait_for(stepper: &mut SteppableTerminal, needle: &str, timeout: Duration) {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let _ = stepper.render_all_output().await;
+        let _ = tokio::time::timeout(
+            Duration::from_millis(400), stepper.render_all_output()).await;
         if let Ok(s) = stepper.screen_as_string()
             && s.contains(needle)
         {
@@ -88,9 +96,12 @@ async fn wait_for(stepper: &mut SteppableTerminal, needle: &str, timeout: Durati
 }
 
 /// Drain a few more render passes so the final screen is complete.
+/// Same per-pass guard as [`wait_for`] — a parked drain must not
+/// wedge the epilogue.
 async fn settle(stepper: &mut SteppableTerminal) {
     for _ in 0..5 {
-        let _ = stepper.render_all_output().await;
+        let _ = tokio::time::timeout(
+            Duration::from_millis(400), stepper.render_all_output()).await;
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 }
@@ -137,7 +148,7 @@ fn piped_op_output_is_exactly_the_lines_and_diagnostics_go_to_stderr() {
 // shadow-terminal PTY test. Serialized under nextest via the `pty` test-group
 // (`.config/nextest.toml`) so concurrent PTY allocation can't stall it; runs
 // normally under plain `cargo test`. A global `slow-timeout` is the backstop.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn console_owning_tty_prints_op_output_with_no_diagnostic_leak() {
     let tmp = TempDir::new();
     let sessions = tmp.path.join("s");
@@ -186,7 +197,7 @@ async fn console_owning_tty_prints_op_output_with_no_diagnostic_leak() {
 
 // shadow-terminal PTY test — serialized under nextest via the `pty`
 // test-group (`.config/nextest.toml`); runs normally under `cargo test`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interactive_dashboard_renders_the_run() {
     let tmp = TempDir::new();
     let sessions = tmp.path.join("s");

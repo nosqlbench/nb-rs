@@ -12,6 +12,14 @@
 //! DETERMINISTIC recall of 2/3 (keys {0,1,5} vs truth {0,1,2} at
 //! k=3) — no live backend, no dataset, no timing dependence in the
 //! measured value.
+//!
+//! Operating envelope: the child renders a live display, so total CPU
+//! oversubscription (e.g. a spin-storm saturating every core,
+//! including the one the child's timing/cadence thread pins to)
+//! starves the render cadence and times these out — failing SAFE with
+//! a screen dump, never wedging (each drain pass is timeout-guarded).
+//! Normal conditions, including full-workspace sweeps (test targets
+//! run sequentially), complete in well under a second.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -114,6 +122,11 @@ fn build_config(workload: &Path, session: &Path, extra: &[&str]) -> Config {
 }
 
 /// Poll the rendered screen until `pred` holds, or panic with a dump.
+///
+/// Each drain pass is timeout-guarded: `render_all_output()` can park
+/// indefinitely when the child exits mid-drain (see
+/// output_channel_harness), so a guarded pass falls through to the
+/// screen check and the deadline stays the single failure authority.
 async fn assert_screen(
     stepper: &mut SteppableTerminal,
     what: &str,
@@ -122,7 +135,8 @@ async fn assert_screen(
 ) {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let _ = stepper.render_all_output().await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2), stepper.render_all_output()).await;
         let screen = stepper.screen_as_string().unwrap_or_default();
         if pred(&screen) {
             return;
@@ -142,7 +156,8 @@ async fn final_screen(stepper: &mut SteppableTerminal, timeout: Duration) -> Str
     })
     .await;
     // One more render pass so trailing lines land.
-    let _ = stepper.render_all_output().await;
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2), stepper.render_all_output()).await;
     stepper.screen_as_string().unwrap_or_default()
 }
 
