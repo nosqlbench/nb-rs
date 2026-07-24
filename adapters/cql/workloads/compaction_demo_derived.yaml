@@ -813,6 +813,12 @@ phases:
     cycles: 1
     tries: 1
     bindings: |
+      # 2s pre-poll grace for the drain (f64 = milliseconds, consumed by
+      # poll_progress's `delay:`): covers the daemon-dispatch race where
+      # the first drain poll could run before trigger_compact's JMX call
+      # registers its compaction task — an empty first read would satisfy
+      # `await_empty` instantly and release the tier early.
+      const drain_grace := 2000.0
       # Cross-op cell: `read_sstables` writes it, `trigger_compact`'s
       # `if:` reads it. Since 2026-07-23 the cell is declared at the
       # WORKLOAD ROOT (not re-declared here) so the write-through
@@ -896,6 +902,7 @@ phases:
       poll_progress:
         adapter: cql
         readout: visible
+        delay: drain_grace
         # Nothing to poll unless a compaction was triggered.
         if: "enable_finalize != 0 && enable_compact != 0"
         # Advisory status poller: a poll timeout (or any read error) must NOT halt the
@@ -914,12 +921,20 @@ phases:
           extern completion_ratio:   f64 = 0.0
           extern progress:           u64 = 0
           extern total:              u64 = 0
+        # NO kind filter (2026-07-24): the drain must hold for the WHOLE
+        # compaction, not only its index-build tail. During the merge's
+        # row-ingest pass the only registered row is the byte-denominated
+        # `Compaction` task — filtering to 'secondary index build' made
+        # `await_empty` exit in that window, the next tier's
+        # trigger_compact then CANCELLED the in-flight merges (the
+        # cleanly-interruptible merge honors it), and every cancelled
+        # merge left an index-less sstable that scheduled a full
+        # 40-thread index rebuild — the flush-starvation storm.
         raw: |
           SELECT completion_ratio, progress, total
             FROM system_views.sstable_tasks
            WHERE keyspace_name = '{keyspace}'
              AND table_name   = '{table}'
-             AND kind         = 'secondary index build'
              AND completion_ratio < 1.0
           ALLOW FILTERING
         capture:
@@ -940,7 +955,7 @@ phases:
           # Re-rendered after every poll against that poll's captures, so the
           # memo shows the live measured state of the drain instead of the
           # static `before:` text for the (potentially hours-long) wait.
-          memo: "finalize step 4/4 — {keyspace}.{table} index build draining: ratio {completion_ratio}, {progress}/{total} token range parts, {active_compactions} task(s) in flight"
+          memo: "finalize step 4/4 — {keyspace}.{table} compaction draining: ratio {completion_ratio}, {progress}/{total} units, {active_compactions} task(s) in flight"
           # The measured fractional completion drives this phase's completion
           # bar/percentage (derived-progress override) — the cycle-based bar
           # would otherwise sit at 0% for the whole drain.
@@ -1099,6 +1114,12 @@ phases:
       neighbor_distances := neighbor_distances_at(prebuffered, q % base)
     ops:
       select_ann:
+        # gutter/final — the phase's ✓ outcome DETAIL line carries the
+        # primary measurement in its left-gutter cell: `recall <mean>`
+        # resolved from the relevancy aggregates at phase end. The
+        # header line's timing triad is untouched.
+        gutter:
+          final: "recall {recall}"
         timeout: 60s   # 60s per read; retried up to the phase `tries` budget on a CQL timeout
         prepared: |
           SELECT [key] FROM {keyspace}.{table}
@@ -1187,6 +1208,12 @@ phases:
         # (not fails) otherwise, so no-compaction tiers yield no
         # misleading "post" row.
         if: "enable_finalize != 0 && enable_compact != 0 && sstables > 1"
+        # gutter/final — the phase's ✓ outcome DETAIL line carries the
+        # primary measurement in its left-gutter cell: `recall <mean>`
+        # resolved from the relevancy aggregates at phase end. The
+        # header line's timing triad is untouched.
+        gutter:
+          final: "recall {recall}"
         timeout: 60s   # 60s per read; retried up to the phase `tries` budget on a CQL timeout
         prepared: |
           SELECT [key] FROM {keyspace}.{table}
