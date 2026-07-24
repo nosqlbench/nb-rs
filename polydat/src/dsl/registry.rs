@@ -609,11 +609,19 @@ mod tests {
 
     #[test]
     fn mixed_radix_is_variadic_consts() {
+        // SRD-80b Phase E: `mixed_radix` is macro-registered via the
+        // `Const<Vec<u64>>` shape, which implies
+        // `VariadicConsts { min_consts: 0 }` (empty lists permitted at
+        // the signature level; the trailing-zero positional rule lives
+        // in the arithmetic module's hand validator). The stale
+        // hand-written FuncSig this test used to pin (min_consts: 1,
+        // params without the const-vec entry) duplicated the macro
+        // registration under the same name and was removed.
         let sig = lookup("mixed_radix").unwrap();
-        assert!(matches!(sig.arity, Arity::VariadicConsts { min_consts: 1 }),
-            "mixed_radix should be VariadicConsts");
-        assert_eq!(sig.params.len(), 1); // just the wire input
-        assert!(matches!(sig.params[0].slot_type, SlotType::Wire));
+        assert!(matches!(sig.arity, Arity::VariadicConsts { min_consts: 0 }),
+            "mixed_radix should be VariadicConsts, got {:?}", sig.arity);
+        assert!(matches!(sig.params[0].slot_type, SlotType::Wire),
+            "first param is the u64 wire input");
     }
 
     #[test]

@@ -2026,6 +2026,8 @@ fn every_registered_function_compiles() {
             "input cycle: u64\nout := vec_scale(hash_vec(cycle, 8), 2.0)".into()),
         ("vec_norm",
             "input cycle: u64\nout := vec_norm(hash_vec(cycle, 8))".into()),
+        ("lid_mle",
+            "input cycle: u64\nout := lid_mle(hash_vec(cycle, 8), 4.0)".into()),
         // Register-plane nodes need reg operands — splats are the
         // workload-callable constructors.
         ("reg_gather_f32",

@@ -342,49 +342,27 @@ fn interleave(a: u64, b: u64) -> u64 {
 // Signature declarations for the DSL registry
 // ---------------------------------------------------------------------------
 
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::ast::SlotType;
+use crate::dsl::registry::FuncSig;
 
 /// Signatures for arithmetic and variadic nodes.
 ///
-/// SRD-80b Phase E: most arithmetic nodes route through the
-/// proc-macro NodeRegistration. Only `mixed_radix` (dynamic
-/// output count from a `Const<Vec<C>>` arg) still needs a
-/// hand-written FuncSig + build_node entry.
+/// SRD-80b Phase E: every arithmetic node routes through the
+/// proc-macro NodeRegistration — `mixed_radix` included, via the
+/// `Const<Vec<C>>` + `DynamicOutputs<T>` shape. The hand-written
+/// `FuncSig`/`build_node` pair that predated that migration was
+/// removed: it duplicated the macro's registration under the same
+/// name, leaving `lookup("mixed_radix")`'s answer to inventory
+/// link order. Only [`validate_node`] stays hand-written (its
+/// positional rule can't ride on a per-param constraint).
 pub fn signatures() -> &'static [FuncSig] {
-    use FuncCategory as C;
-    &[
-        FuncSig {
-            name: "mixed_radix", category: C::Arithmetic, outputs: 0,
-            description: "decompose into mixed-radix digits (output count = number of radixes)",
-            help: "Decompose a single u64 into multiple coordinate digits, like\nnested loops unrolled into a flat index. Each radix defines the\nmodulus for that digit; radix=0 means unbounded (captures remainder).\nProduces one output port per radix.\nParameters:\n  input    — u64 wire input\n  radix... — one or more u64 constants (variadic)\nExample: mixed_radix(cycle, 10, 26, 0)  // 3 outputs: d0 in [0,10), d1 in [0,26), d2 unbounded\nTheory: mixed-radix decomposition generalizes base conversion;\neach position can have a different base.",
-            identity: None, variadic_ctor: None,
-            params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
-            ],
-            arity: Arity::VariadicConsts { min_consts: 1 },
-            commutativity: crate::ast::Commutativity::Positional,
-            default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
-            // Hand registration: no static return-port declaration;
-            // type inference falls back to the name heuristic.
-            output_port: None,
-        },
-    ]
+    &[]
 }
 
-/// Try to build an arithmetic node from a function name and const args.
-///
-/// Returns `None` if the name is not handled by this module. Only
-/// `mixed_radix` is still hand-built here (see [`signatures`]).
+/// No hand-built arithmetic nodes remain — construction goes
+/// through the proc-macro registration (see [`signatures`]).
 pub(crate) fn build_node(name: &str, _wires: &[crate::compile::assembly::WireRef], _wire_types: &[crate::ast::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::PolydatNode>, String>> {
-    match name {
-        "mixed_radix" => {
-            let radixes: Vec<u64> = consts.iter().map(|c| c.as_u64()).collect();
-            Some(Ok(Box::new(MixedRadix::new(radixes))))
-        }
-        _ => None,
-    }
+    let _ = (name, consts);
+    None
 }
 
 
