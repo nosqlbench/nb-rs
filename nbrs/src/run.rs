@@ -602,6 +602,14 @@ fn print_post_run_reports(
     run_result: &Result<(), String>,
     silent_console: bool,
 ) {
+    // Queue barrier before reading the snapshot: a fast walk (a
+    // dryrun completes 256 phases in ~1s) can outrun the actor's
+    // command queue, and a stale snapshot here miscounted phases
+    // nondeterministically (reported "N not run" + a bogus exit
+    // code 2 while the log said "all phases complete"). Ordered-
+    // inbox ack guarantees every lifecycle event is applied;
+    // best-effort on timeout.
+    let _ = run_state.drain_barrier(std::time::Duration::from_secs(5));
     // Resolve the *active* session dir for this run. When the
     // user passed `--session-path`, `--logs-dir`, or
     // `--session-name`, the session lives there — NOT under

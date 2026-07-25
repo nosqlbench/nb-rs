@@ -238,6 +238,15 @@ pub enum RunStateCmd {
     /// phase before the executor moves on. The `tick_rate`
     /// throttle is bypassed for this single redraw.
     FrameAck(mpsc::Sender<()>),
+    /// Queue barrier: acked by the actor the moment it is
+    /// processed, AFTER every command sent before it (the inbox is
+    /// ordered). Unlike [`Self::FrameAck`] it does not wait for a
+    /// TUI draw, so it works on every surface — the post-run
+    /// reporter uses it to guarantee the snapshot reflects all
+    /// lifecycle events before counting phases (a fast walk could
+    /// otherwise outrun the actor and report bogus not-run counts
+    /// and exit codes).
+    Barrier(mpsc::Sender<()>),
 }
 
 /// Synchronisation surface shared between the actor (which
@@ -332,6 +341,18 @@ impl RunStateHandle {
     pub fn flush_frame(&self, timeout: Duration) -> bool {
         let (tx, rx) = mpsc::channel::<()>();
         if self.inbox.send(RunStateCmd::FrameAck(tx)).is_err() {
+            return false;
+        }
+        rx.recv_timeout(timeout).is_ok()
+    }
+
+    /// Block until the actor has PROCESSED every command sent on
+    /// this handle prior to the call (ordered-inbox barrier; no TUI
+    /// involvement, so it works on every surface). Best-effort:
+    /// `false` on timeout or a dead actor.
+    pub fn drain_barrier(&self, timeout: Duration) -> bool {
+        let (tx, rx) = mpsc::channel::<()>();
+        if self.inbox.send(RunStateCmd::Barrier(tx)).is_err() {
             return false;
         }
         rx.recv_timeout(timeout).is_ok()
@@ -448,6 +469,11 @@ fn handle_cmd(
     cmd: RunStateCmd,
 ) {
     match cmd {
+        RunStateCmd::Barrier(tx) => {
+            // All prior commands are already applied (ordered inbox);
+            // ack immediately. Receiver may have timed out — ignore.
+            let _ = tx.send(());
+        }
         RunStateCmd::FrameAck(tx) => {
             // Register the tx so the TUI app can signal it after
             // the next draw. Setting `force_redraw` bypasses the
@@ -574,6 +600,9 @@ fn handle_cmd(
 
 fn apply(state: &mut RunState, cmd: RunStateCmd) {
     match cmd {
+        // Intercepted by `handle_cmd` (acked there); a stray one
+        // reaching the state-mutation fold is a harmless no-op.
+        RunStateCmd::Barrier(_) => {}
         RunStateCmd::InstallTree(tree) => {
             state.install_tree(tree);
         }
