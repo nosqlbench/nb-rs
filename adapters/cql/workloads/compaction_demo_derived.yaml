@@ -919,11 +919,19 @@ phases:
         # or wedged compaction drain degrades to a logged warning, not a terminal error
         # that trips the scenario's `children_failed > 0` stop condition.
         #
-        # `completion_ratio < 1.0` excludes COMPLETED task rows, which linger registered
-        # for minutes after a merge finishes (observed 2026-07-22). Without it, `/0/...`
-        # captures the stale lingering row (pinned at 1.0) or a pre-batch row (pinned at
-        # 0.0) instead of the active merge's climbing ratio, and `await_empty` blocks on
-        # dead rows — hiding the incremental progress jvector is publishing.
+        # NO completion_ratio filter (2026-07-25): a LIVE task's ratio saturates
+        # at 1.0 minutes before the task deregisters — at 60M scale the merge
+        # epilogue (compacted-graph write + rescore + cleanup, cassandra's
+        # "Writing compacted graph" → "Compaction complete" span) ran 2m22s past
+        # ratio 1.0; the old `completion_ratio < 1.0` predicate filtered that
+        # live row out, the drain released early, and tier 24's load collided
+        # with the merge tail (10% write-attempt failures → error_rate_backstop
+        # abort). Counting ALL registered rows can over-wait on stale completed
+        # rows that linger a few minutes after finishing (the 2026-07-22
+        # observation that motivated the filter) — a bounded, safe delay under
+        # the 48h timeout, unlike the unbounded damage of under-waiting. The
+        # display captures may briefly show a lingering row's pinned ratio;
+        # existence, not the ratio, is the drain condition.
         errors: ".*:warn,counter"
         bindings: |
           extern active_compactions: u64 = 0
@@ -951,7 +959,6 @@ phases:
             FROM system_views.sstable_tasks
            WHERE keyspace_name = '{keyspace}'
              AND table_name   = '{table}'
-             AND completion_ratio < 1.0
           ALLOW FILTERING
         capture:
           active_compactions: ":count"
