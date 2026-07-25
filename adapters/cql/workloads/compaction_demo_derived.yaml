@@ -921,6 +921,13 @@ phases:
           extern completion_ratio:   f64 = 0.0
           extern progress:           u64 = 0
           extern total:              u64 = 0
+          # Drain speed in the memo's own units (units/s): per-second rate of
+          # the compaction_progress_parts gauge over a trailing 2m window
+          # (one sample lands per 5s poll below). rate()'s counter-reset
+          # handling absorbs the drain's task switches (each new task's
+          # progress restarts at 0), and finished tiers' series go static
+          # (rate 0), so the sum self-scopes to the active drain.
+          units_per_s := round_u64(metricsql_scalar("sum(rate(compaction_progress_parts[2m]))"))
         # NO kind filter (2026-07-24): the drain must hold for the WHOLE
         # compaction, not only its index-build tail. During the merge's
         # row-ingest pass the only registered row is the byte-denominated
@@ -942,6 +949,15 @@ phases:
           completion_ratio:   "/0/completion_ratio"
           progress:           "/0/progress"
           total:              "/0/total"
+        # Live drain-speed cell, refreshed per poll iteration (the poll
+        # wrapper republishes the during form each poll — the op itself
+        # completes only once, at drain end). The phase's ✓ outcome line
+        # retains the LAST published value as its final cell, so each
+        # tier's closing compaction speed stays readable in scrollback.
+        # (This cell replaces the auto completion bar on the stats row;
+        # the header meter still shows the ratio-driven percentage.)
+        gutter:
+          text: "≈{units_per_s} units/s"
         poll:
           mode: await_empty
           interval_ms: 5000

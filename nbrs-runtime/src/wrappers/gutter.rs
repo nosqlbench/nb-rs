@@ -30,6 +30,11 @@
 //!   when no wire matches. Phases with a during-form but no
 //!   `final:` still get ONE final update: the during template
 //!   re-evaluated at phase end.
+//!
+//! Inside a `poll:` drain, the during form is additionally
+//! re-published per poll iteration by the poll wrapper (against
+//! that iteration's captures, like the poll memo) — this wrapper
+//! alone fires only when the drain op completes.
 
 use std::sync::Arc;
 
@@ -114,6 +119,76 @@ pub enum GutterKind {
     Spark,
 }
 
+/// Parse an op's `gutter:` param value into its `(during, final)`
+/// template forms. Shared by the wrapper-cascade arm (which builds
+/// the [`GutterDispenser`] and stores the specs on the activity) and
+/// the poll wrapper (which re-publishes the during form per poll
+/// iteration so a single long drain op keeps a live cell).
+pub fn parse_specs(
+    v: Option<&serde_json::Value>,
+) -> (Option<(GutterKind, String)>, Option<(GutterKind, String)>) {
+    let parse_forms = |obj: &serde_json::Map<String, serde_json::Value>|
+        -> Option<(GutterKind, String)>
+    {
+        if let Some(t) = obj.get("bar").and_then(|x| x.as_str()) {
+            Some((GutterKind::Bar, t.to_string()))
+        } else if let Some(t) = obj.get("spark").and_then(|x| x.as_str()) {
+            Some((GutterKind::Spark, t.to_string()))
+        } else {
+            obj.get("text").and_then(|x| x.as_str())
+                .map(|t| (GutterKind::Text, t.to_string()))
+        }
+    };
+    match v {
+        Some(serde_json::Value::String(s)) if !s.is_empty() =>
+            (Some((GutterKind::Text, s.clone())), None),
+        Some(serde_json::Value::Object(obj)) => {
+            let during = parse_forms(obj);
+            let fin = match obj.get("final") {
+                Some(serde_json::Value::String(s)) if !s.is_empty() =>
+                    Some((GutterKind::Text, s.clone())),
+                Some(serde_json::Value::Object(fobj)) => parse_forms(fobj),
+                _ => None,
+            };
+            (during, fin)
+        }
+        _ => (None, None),
+    }
+}
+
+/// Render one gutter template against the wires into its publishable
+/// spec. `None` on substitution failure or (for the numeric kinds) a
+/// non-numeric render — callers leave the last good value in place.
+pub(crate) fn render_spec(
+    kind: GutterKind,
+    template: &str,
+    wires: &dyn crate::wires::WireSource,
+) -> Option<GutterSpec> {
+    let rendered = match crate::wires::substitute_via_wires(template, wires) {
+        Ok(s) => s,
+        Err(e) => {
+            crate::diag!(crate::observer::LogLevel::Debug,
+                "gutter: substitution failed for '{template}': {e}");
+            return None;
+        }
+    };
+    match kind {
+        GutterKind::Text => Some(GutterSpec::Text(rendered)),
+        GutterKind::Bar | GutterKind::Spark => {
+            match rendered.trim().parse::<f64>() {
+                Ok(v) if kind == GutterKind::Bar =>
+                    Some(GutterSpec::Bar(v.clamp(0.0, 1.0))),
+                Ok(v) => Some(GutterSpec::Spark(v)),
+                Err(_) => {
+                    crate::diag!(crate::observer::LogLevel::Debug,
+                        "gutter: '{template}' rendered to non-numeric '{rendered}'");
+                    None
+                }
+            }
+        }
+    }
+}
+
 /// Op-wrapper publishing the phase's gutter-cell spec after each
 /// successful inner op (post-op, so captures from THIS execution
 /// are on the wires — the cell reflects measured state).
@@ -143,31 +218,9 @@ impl GutterDispenser {
     }
 
     fn publish(&self, wires: &dyn crate::wires::WireSource) {
-        let rendered = match crate::wires::substitute_via_wires(&self.template, wires) {
-            Ok(s) => s,
-            Err(e) => {
-                crate::diag!(crate::observer::LogLevel::Debug,
-                    "gutter: substitution failed for '{}': {e}", self.template);
-                return;
-            }
-        };
-        let spec = match self.kind {
-            GutterKind::Text => GutterSpec::Text(rendered),
-            GutterKind::Bar | GutterKind::Spark => {
-                match rendered.trim().parse::<f64>() {
-                    Ok(v) if self.kind == GutterKind::Bar =>
-                        GutterSpec::Bar(v.clamp(0.0, 1.0)),
-                    Ok(v) => GutterSpec::Spark(v),
-                    Err(_) => {
-                        crate::diag!(crate::observer::LogLevel::Debug,
-                            "gutter: '{}' rendered to non-numeric '{rendered}'",
-                            self.template);
-                        return;
-                    }
-                }
-            }
-        };
-        self.gutter_state.store(Some(Arc::new(spec)));
+        if let Some(spec) = render_spec(self.kind, &self.template, wires) {
+            self.gutter_state.store(Some(Arc::new(spec)));
+        }
     }
 }
 

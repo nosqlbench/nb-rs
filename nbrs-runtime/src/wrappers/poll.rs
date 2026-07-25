@@ -164,6 +164,14 @@ pub struct PollingDispenser {
     progress_template: Option<String>,
     /// Metrics of the owning activity — target of the
     /// derived-progress override. `None` in bare tests.
+    /// The op's `gutter:` DURING form, re-published per poll
+    /// iteration against that poll's wires — a single long drain op
+    /// (`await_empty` over an hours-long compaction) keeps a live
+    /// cell instead of one publish at op end. The final-form/`final:`
+    /// semantics are untouched (the activity epilogue owns those).
+    each_gutter: Option<(crate::wrappers::gutter::GutterKind, String)>,
+    /// The activity's shared gutter slot; `None` in bare tests.
+    gutter_state: Option<Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>>>,
     activity_metrics: Option<Arc<crate::activity::ActivityMetrics>>,
     /// Externally visible metrics for the polling operation.
     pub metrics: Arc<PollingMetrics>,
@@ -218,7 +226,7 @@ impl PollingDispenser {
         Self::wrap_with_status(
             inner, poll_interval_ms, timeout_ms, max_error_retries,
             metric_name, min_rows, max_rows, json_path,
-            None, None, None, None,
+            None, None, None, None, None, None,
             crate::session_signals::StopView::default(),
         )
     }
@@ -241,6 +249,8 @@ impl PollingDispenser {
         memo_state: Option<Arc<arc_swap::ArcSwap<String>>>,
         progress_template: Option<String>,
         activity_metrics: Option<Arc<crate::activity::ActivityMetrics>>,
+        each_gutter: Option<(crate::wrappers::gutter::GutterKind, String)>,
+        gutter_state: Option<Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>>>,
         stop: crate::session_signals::StopView,
     ) -> (Arc<dyn OpDispenser>, Arc<PollingMetrics>) {
         let metrics = Arc::new(PollingMetrics::new());
@@ -257,6 +267,8 @@ impl PollingDispenser {
             memo_state,
             progress_template,
             activity_metrics,
+            each_gutter,
+            gutter_state,
             stop,
             metrics: metrics.clone(),
         });
@@ -294,6 +306,11 @@ impl PollingDispenser {
                 self.min_rows, self.max_rows,
             ));
             memo.store(Arc::new(text));
+        }
+        if let (Some(state), Some((kind, template))) = (&self.gutter_state, &self.each_gutter) {
+            if let Some(spec) = crate::wrappers::gutter::render_spec(*kind, template, wires) {
+                state.store(Some(Arc::new(spec)));
+            }
         }
         if let (Some(metrics), Some(t)) = (&self.activity_metrics, self.progress_template.as_deref()) {
             match crate::wires::substitute_via_wires(t, wires) {
@@ -633,6 +650,8 @@ mod status_publish_tests {
             memo_state: Some(memo.clone()),
             progress_template: progress.map(String::from),
             activity_metrics: Some(metrics.clone()),
+            each_gutter: None,
+            gutter_state: None,
             stop: crate::session_signals::StopView::default(),
             metrics: Arc::new(PollingMetrics::new()),
         }
@@ -668,5 +687,42 @@ mod status_publish_tests {
             "default memo must carry the measurement: {}", memo.load());
         assert_eq!(metrics.progress_override(), None,
             "no progress template -> no override");
+    }
+
+    #[test]
+    fn iteration_status_republishes_gutter_during_form() {
+        // SRD-92: an op with a `gutter:` DURING form inside a poll
+        // drain refreshes its cell per poll iteration — the
+        // GutterDispenser alone publishes only once, at the end of
+        // the (potentially hours-long) drain op. Substitution runs
+        // against the iteration's wires, so the cell tracks the
+        // measured state exactly like the poll memo.
+        let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::new()));
+        let metrics = test_metrics();
+        let gutter_state: Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>> =
+            Arc::new(arc_swap::ArcSwapOption::empty());
+        let mut d = dispenser_with_status(None, None, &memo, &metrics);
+        d.each_gutter = Some((crate::wrappers::gutter::GutterKind::Text,
+            "ratio {completion_ratio}".into()));
+        d.gutter_state = Some(gutter_state.clone());
+
+        d.publish_iteration_status(&RatioWire(0.25), "waiting", 4, 1, 5.0);
+        assert_eq!(gutter_state.load().as_deref(),
+            Some(&crate::wrappers::gutter::GutterSpec::Text("ratio 0.25".into())),
+            "first iteration publishes the rendered during form");
+
+        // Next iteration's wires supersede the cell.
+        d.publish_iteration_status(&RatioWire(0.75), "waiting", 2, 2, 10.0);
+        assert_eq!(gutter_state.load().as_deref(),
+            Some(&crate::wrappers::gutter::GutterSpec::Text("ratio 0.75".into())),
+            "each iteration refreshes the cell");
+
+        // A failed substitution must leave the last good value.
+        d.each_gutter = Some((crate::wrappers::gutter::GutterKind::Spark,
+            "{no_such_wire}".into()));
+        d.publish_iteration_status(&RatioWire(0.9), "waiting", 1, 3, 15.0);
+        assert_eq!(gutter_state.load().as_deref(),
+            Some(&crate::wrappers::gutter::GutterSpec::Text("ratio 0.75".into())),
+            "render failure must not clobber the cell");
     }
 }

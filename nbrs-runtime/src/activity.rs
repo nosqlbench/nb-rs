@@ -1987,10 +1987,17 @@ impl Activity {
                                 // derived-progress override.
                                 let each_memo = get_str("memo");
                                 let progress_template = get_str("progress");
+                                // The op's `gutter:` DURING form rides into the poll
+                                // loop for per-iteration refresh — the GutterDispenser
+                                // itself publishes only once, when the (potentially
+                                // hours-long) drain op completes.
+                                let (each_gutter, _) = crate::wrappers::gutter::parse_specs(
+                                    template.params.get("gutter"));
                                 let (d, _pm) = crate::wrappers::PollingDispenser::wrap_with_status(
                                     current.clone(), interval, timeout, max_error_retries, metric_name, min_rows, max_rows, json_path.clone(),
                                     each_memo, Some(activity.memo.clone()),
                                     progress_template, Some(activity.metrics.clone()),
+                                    each_gutter, Some(activity.gutter.clone()),
                                     activity.stop_view(),
                                 );
                                 crate::diag!(crate::observer::LogLevel::Debug,
@@ -2210,36 +2217,8 @@ impl Activity {
                                 // string shorthand or `{bar}` / `{spark}`
                                 // map), wrap with the activity's shared
                                 // gutter slot.
-                                use crate::wrappers::gutter::GutterKind;
-                                // Sub-form parser shared by the top-level map and the
-                                // nested `final:` map.
-                                let parse_forms = |obj: &serde_json::Map<String, serde_json::Value>|
-                                    -> Option<(GutterKind, String)>
-                                {
-                                    if let Some(t) = obj.get("bar").and_then(|v| v.as_str()) {
-                                        Some((GutterKind::Bar, t.to_string()))
-                                    } else if let Some(t) = obj.get("spark").and_then(|v| v.as_str()) {
-                                        Some((GutterKind::Spark, t.to_string()))
-                                    } else {
-                                        obj.get("text").and_then(|v| v.as_str())
-                                            .map(|t| (GutterKind::Text, t.to_string()))
-                                    }
-                                };
-                                let (during, fin) = match template.params.get("gutter") {
-                                    Some(serde_json::Value::String(s)) if !s.is_empty() =>
-                                        (Some((GutterKind::Text, s.clone())), None),
-                                    Some(serde_json::Value::Object(obj)) => {
-                                        let during = parse_forms(obj);
-                                        let fin = match obj.get("final") {
-                                            Some(serde_json::Value::String(s)) if !s.is_empty() =>
-                                                Some((GutterKind::Text, s.clone())),
-                                            Some(serde_json::Value::Object(fobj)) => parse_forms(fobj),
-                                            _ => None,
-                                        };
-                                        (during, fin)
-                                    }
-                                    _ => (None, None),
-                                };
+                                let (during, fin) = crate::wrappers::gutter::parse_specs(
+                                    template.params.get("gutter"));
                                 if during.is_none() && fin.is_none() {
                                     crate::diag!(crate::observer::LogLevel::Warn,
                                         "op '{}': gutter: requires a layout string, one of \
