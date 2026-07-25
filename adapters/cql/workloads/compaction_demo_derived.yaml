@@ -774,6 +774,15 @@ phases:
     ops:
       flush:
         adapter: http
+        # Visible leaf: the synchronous forceKeyspaceFlush produces no
+        # signal until it returns, but the box is busy the whole time —
+        # per flushed memtable, cassandra encodes the segment's vectors
+        # and serializes the SAI on-disk graph (SERIAL by design,
+        # flush_build_parallel=false; ~20s per ~1M-row memtable, logged
+        # cassandra-side as "CassandraOnHeapGraph: Writing graph took
+        # Nms"). The leaf's default duration cell ticks through that
+        # window so the wait reads as measured work, not a stall.
+        readout: visible
         # Forced-flush toggle: skip the whole flush when disabled.
         if: "enable_flush != 0"
         # 15s TCP-connect budget to the Jolokia agent (distinct from the
@@ -794,8 +803,8 @@ phases:
             eq: "200"
         strict: true
         memo:
-          before: "flushing keyspace {keyspace}"
-          after:  "flushed keyspace {keyspace}"
+          before: "flushing keyspace {keyspace} — memtable data + per-segment SAI vector graph build (serial; ~20s per ~1M-row memtable; see cassandra 'Writing graph took' lines)"
+          after:  "flushed keyspace {keyspace} (memtables → sstables + vector index)"
 
   # Major compaction. One stanza, ops run once each in order:
   #   flush           -> roll any remaining memtable to disk
