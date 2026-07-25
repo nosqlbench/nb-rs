@@ -679,7 +679,15 @@ impl RunState {
     /// their execution time and session finish-stamp; an op still
     /// mid-flight at phase end (a cancelled daemon probe) shows `—`.
     /// Empty when the phase declared no `readout: visible` ops.
-    pub fn final_op_leaves(&self, name: &str, labels: &str) -> Vec<String> {
+    /// Returns `(line, duration_cell)` pairs: the leaf body carries
+    /// icon · name · `[i/N]` · `@ session-stamp`; the node's own
+    /// execution DURATION is the second element, rendered as the
+    /// leaf row's default gutter cell (SRD-92: a visible node with
+    /// no declared gutter gets its execution time as the cell —
+    /// the scannable per-step time ledger). Single placement: the
+    /// duration appears only in the cell, the session stamp only
+    /// in the body.
+    pub fn final_op_leaves(&self, name: &str, labels: &str) -> Vec<(String, String)> {
         let node_id = match self.phases.iter().find(|e| {
             e.name == name && e.labels == labels
                 && matches!(e.status, PhaseStatus::Running)
@@ -698,22 +706,22 @@ impl RunState {
                 PhaseStatus::Failed(_) => "✗",
                 _ => "—",
             };
-            let leaf_s = op.duration_secs
+            let duration_cell = op.duration_secs
                 .map(crate::widgets::format_dur_compact)
                 .unwrap_or_else(|| "—".to_string());
-            let time_part = match op.session_elapsed {
-                Some(v) => format!("{leaf_s} @ {}", crate::widgets::format_dur_compact(v)),
-                None => leaf_s,
+            let stamp = match op.session_elapsed {
+                Some(v) => format!("  @ {}", crate::widgets::format_dur_compact(v)),
+                None => String::new(),
             };
             let mut line = format!(
-                "    {icon} {name}  [{seq}/{total}]  {time_part}",
+                "    {icon} {name}  [{seq}/{total}]{stamp}",
                 name = op.name, seq = op.seq + 1,
             );
             if let PhaseStatus::Failed(err) = &op.status {
                 line.push_str("  ");
                 line.push_str(err);
             }
-            line
+            (line, duration_cell)
         }).collect()
     }
 

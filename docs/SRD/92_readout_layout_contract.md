@@ -38,9 +38,13 @@ region — not just the first footer row: each concurrently-visible phase's
 header carries its OWN triad ([n/N] from the node's plan seq, node-time from
 its session delta).
 
-Op leaves are visible nodes too; their header carries the timing data in-body
-(`✓ name [i/N] leaf @ session`) because their margin column is owned by the
-enclosing phase block — in-body timing satisfies R1 for them.
+Op leaves are visible nodes too. Their gutter cell carries the node's own
+EXECUTION DURATION — cumulative while running, final once terminal — the
+default cell for any visible node with no declared gutter, forming a
+scannable per-step time ledger (live and retained into scrollback). The
+body keeps identity plus the terminal session stamp (`✓ name [i/N] @
+session`); single placement holds — duration only in the cell, stamp only
+in the body.
 
 ### R2 — detail lines and the gutter stack
 

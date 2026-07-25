@@ -847,7 +847,11 @@ fn run_render_loop(
                             continue;
                         }
                         let row_margin: &str = if is_detail_entry {
-                            &blank_margin
+                            // Detail entries (op leaves, relevancy
+                            // summaries) never wear a triad; an
+                            // attached cell (the leaf's execution
+                            // duration) takes the margin, else blank.
+                            final_cell.as_deref().unwrap_or(&blank_margin)
                         } else {
                             match role {
                                 crate::status_fold::RowRole::Header => margin,

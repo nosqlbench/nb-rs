@@ -543,20 +543,27 @@ fn handle_cmd(
                     == nbrs_runtime::observer::CompletedPhaseDisplay::Full
             {
                 let leaves = state.final_op_leaves(&name, &labels);
-                for text in leaves {
+                for (text, duration_cell) in leaves {
                     let entry = LogEntry {
                         severity: crate::state::LogSeverity::Info,
                         message: text,
                         // SRD-92: op leaves are detail rows of the ✓
-                        // block — blank divider margin, no triad (the
-                        // leaf carries its timing in-body).
+                        // block — no triad; their gutter cell carries
+                        // the node's execution duration (the default
+                        // cell for a visible node with no declared
+                        // gutter), the per-step time ledger retained
+                        // into scrollback.
                         category: nbrs_runtime::observer::LogCategory::PhaseDetail,
                         at: std::time::SystemTime::now(),
                     };
                     let stream_entry = entry.clone();
                     let seq = state.push_log_entry(entry);
                     let margin_body = state.margin_body_stamp();
-                    let _ = log_tx.send(LogLine { seq, entry: stream_entry, margin_body, detail_gutter: None });
+                    let _ = log_tx.send(LogLine {
+                        seq, entry: stream_entry, margin_body,
+                        detail_gutter: Some(
+                            nbrs_runtime::wrappers::gutter::GutterSpec::Text(duration_cell)),
+                    });
                 }
             }
             apply(state, RunStateCmd::PhaseCompleted { exec_id, scene_node_id, name, labels, duration_secs });

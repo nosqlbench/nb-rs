@@ -186,9 +186,9 @@ pub fn render_active_status_with_gutters(
                     RowRole::KeyMetrics => metric_cell.clone(),
                 });
             }
-            for leaf in render_op_leaves(snap, p) {
+            for (leaf, cell) in render_op_leaves(snap, p) {
                 lines.push(leaf);
-                gutters.push(RowGutter::Blank);
+                gutters.push(cell);
             }
         }
     }
@@ -306,19 +306,19 @@ fn metered_fraction(
         }))
 }
 
-/// SRD-63 — render an active phase's op-level status leaves (ops that declared
-/// `readout: visible`) as plain footer lines nested under the phase: status
-/// icon · name · `[i/N]` · this op's execution time. Single-placement rule:
-/// a RUNNING row shows its leaf timer only (the live session clock is the
-/// margin's datum, one row up); a TERMINAL row appends `@ <session>` — the
-/// session stamp at which it finished, which has no other home on this
-/// surface. The sink prepends its own footer gutter to every line.
+/// SRD-63 / SRD-92 — render an active phase's op-level status leaves (ops
+/// that declared `readout: visible`) as footer lines nested under the
+/// phase: status icon · name · `[i/N]` (+ `@ <session>` stamp on terminal
+/// rows). Each leaf row's GUTTER CELL carries the node's own execution
+/// time — cumulative while running, final once terminal — the default
+/// cell for a visible node with no declared gutter. Single placement:
+/// duration in the cell, session stamp in the body.
 ///
 /// The leaves live in `phase_ops` keyed by the phase's scene-node id, which the
 /// `ActivePhase` doesn't carry; we resolve it from the running tree row with a
 /// matching `(name, labels)`. Returns empty (no allocation of leaf lines) when
 /// the phase has no row yet or no opted-in ops.
-fn render_op_leaves(snap: &RunState, phase: &ActivePhase) -> Vec<String> {
+fn render_op_leaves(snap: &RunState, phase: &ActivePhase) -> Vec<(String, RowGutter)> {
     let node_id = match snap.phases.iter().find(|e| {
         e.name == phase.name
             && e.labels == phase.labels
@@ -345,16 +345,19 @@ fn render_op_leaves(snap: &RunState, phase: &ActivePhase) -> Vec<String> {
                 PhaseStatus::Failed(_) => ("✗", op.duration_secs, op.session_elapsed),
                 PhaseStatus::Pending => ("○", None, None),
             };
-            let leaf_s = leaf.map(format_dur_compact).unwrap_or_else(|| "—".to_string());
-            // Terminal rows carry their session finish-stamp (`@ 12.3s`) —
-            // unique info on this surface; running rows carry the leaf
-            // timer alone (session is the margin's, one row up).
-            let time_part = match sess {
-                Some(v) => format!("{leaf_s} @ {}", format_dur_compact(v)),
-                None => leaf_s,
+            // Duration is the leaf's GUTTER CELL (cumulative while
+            // running, final once terminal); terminal rows keep their
+            // session finish-stamp in the body — its only home.
+            let cell = match leaf {
+                Some(v) => RowGutter::Text(format_dur_compact(v)),
+                None => RowGutter::Blank,
+            };
+            let stamp = match sess {
+                Some(v) => format!("  @ {}", format_dur_compact(v)),
+                None => String::new(),
             };
             let mut line = format!(
-                "    {icon} {name}  [{seq}/{total}]  {time_part}",
+                "    {icon} {name}  [{seq}/{total}]{stamp}",
                 name = op.name,
                 seq = op.seq + 1,
             );
@@ -362,7 +365,7 @@ fn render_op_leaves(snap: &RunState, phase: &ActivePhase) -> Vec<String> {
                 line.push_str("  ");
                 line.push_str(err);
             }
-            line
+            (line, cell)
         })
         .collect()
 }
