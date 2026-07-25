@@ -172,6 +172,12 @@ pub struct PollingDispenser {
     each_gutter: Option<(crate::wrappers::gutter::GutterKind, String)>,
     /// The activity's shared gutter slot; `None` in bare tests.
     gutter_state: Option<Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>>>,
+    /// The op's compiled `metrics:` GAUGE slots, re-published per
+    /// poll iteration (see `metrics::publish_gauges_lenient`).
+    /// Filled by the metrics wrapper's cascade arm AFTER this
+    /// dispenser is built (metrics wraps outside poll), hence the
+    /// late-bound swap; empty/`None` when the op has no metrics.
+    iteration_gauges: Option<Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>>>,
     activity_metrics: Option<Arc<crate::activity::ActivityMetrics>>,
     /// Externally visible metrics for the polling operation.
     pub metrics: Arc<PollingMetrics>,
@@ -226,7 +232,7 @@ impl PollingDispenser {
         Self::wrap_with_status(
             inner, poll_interval_ms, timeout_ms, max_error_retries,
             metric_name, min_rows, max_rows, json_path,
-            None, None, None, None, None, None,
+            None, None, None, None, None, None, None,
             crate::session_signals::StopView::default(),
         )
     }
@@ -251,6 +257,7 @@ impl PollingDispenser {
         activity_metrics: Option<Arc<crate::activity::ActivityMetrics>>,
         each_gutter: Option<(crate::wrappers::gutter::GutterKind, String)>,
         gutter_state: Option<Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>>>,
+        iteration_gauges: Option<Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>>>,
         stop: crate::session_signals::StopView,
     ) -> (Arc<dyn OpDispenser>, Arc<PollingMetrics>) {
         let metrics = Arc::new(PollingMetrics::new());
@@ -269,6 +276,7 @@ impl PollingDispenser {
             activity_metrics,
             each_gutter,
             gutter_state,
+            iteration_gauges,
             stop,
             metrics: metrics.clone(),
         });
@@ -306,6 +314,13 @@ impl PollingDispenser {
                 self.min_rows, self.max_rows,
             ));
             memo.store(Arc::new(text));
+        }
+        // Gauges first: the gutter/memo templates may read metricsql
+        // over the very series these samples feed.
+        if let Some(handle) = &self.iteration_gauges {
+            if let Some(slots) = handle.load_full() {
+                crate::wrappers::metrics::publish_gauges_lenient(&slots, wires);
+            }
         }
         if let (Some(state), Some((kind, template))) = (&self.gutter_state, &self.each_gutter) {
             if let Some(spec) = crate::wrappers::gutter::render_spec(*kind, template, wires) {
@@ -652,6 +667,7 @@ mod status_publish_tests {
             activity_metrics: Some(metrics.clone()),
             each_gutter: None,
             gutter_state: None,
+            iteration_gauges: None,
             stop: crate::session_signals::StopView::default(),
             metrics: Arc::new(PollingMetrics::new()),
         }

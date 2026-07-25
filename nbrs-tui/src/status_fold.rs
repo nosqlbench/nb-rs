@@ -79,6 +79,13 @@ pub enum RowGutter {
     /// Workload-declared layout text (`gutter: "<template>"`),
     /// placed in the cell verbatim (truncated to fit).
     Text(String),
+    /// Workload-declared layout text COMPOSED with the phase's own
+    /// completion fraction (SRD-92 R3): the cell shows the auto
+    /// bar and the workload text side by side, so a custom cell
+    /// (e.g. a measured units/s readout) doesn't cost the operator
+    /// the progress indicator. Built by the fold whenever a Text
+    /// spec lands on a phase that has a completion fraction.
+    BarText { frac: f64, text: String },
     /// Workload-declared trend sample (`gutter: {spark: ...}`):
     /// sparkline ring + current value. `key` persists the ring
     /// across ticks, like `Latency`.
@@ -233,11 +240,17 @@ fn phase_metric_gutter(p: &ActivePhase, chips: &str) -> RowGutter {
 fn phase_context_gutter(p: &ActivePhase) -> RowGutter {
     let Some(handle) = p.render.as_ref() else { return RowGutter::Blank };
     // A workload-declared `gutter:` wrapper spec overrides the
-    // automatic derivation — the phase owns its cell.
+    // automatic derivation — the phase owns its cell. A TEXT spec on
+    // a metered phase COMPOSES with the completion fraction instead
+    // of replacing it (SRD-92 R3): custom readout and progress bar
+    // share the cell.
     if let Some(spec) = handle.gutter.load_full() {
         use nbrs_runtime::wrappers::gutter::GutterSpec;
         return match spec.as_ref() {
-            GutterSpec::Text(s) => RowGutter::Text(s.clone()),
+            GutterSpec::Text(s) => match (!p.daemon).then(|| metered_fraction(p, handle)).flatten() {
+                Some(f) => RowGutter::BarText { frac: f, text: s.clone() },
+                None => RowGutter::Text(s.clone()),
+            },
             GutterSpec::Bar(f) => RowGutter::Bar(*f),
             GutterSpec::Spark(v) => RowGutter::Spark {
                 key: format!("spark:{}@{}", p.name, p.labels),
@@ -271,18 +284,26 @@ fn phase_context_gutter(p: &ActivePhase) -> RowGutter {
             count: handle.metrics.service_time.count(),
         };
     }
-    let frac = handle.metrics.progress_override()
+    match metered_fraction(p, handle) {
+        Some(f) => RowGutter::Bar(f),
+        None => RowGutter::Blank,
+    }
+}
+
+/// The phase's completion fraction on the single agreed basis
+/// (override → rows → cycles), `None` when nothing meters it.
+fn metered_fraction(
+    p: &ActivePhase,
+    handle: &nbrs_runtime::observer::PhaseRenderHandle,
+) -> Option<f64> {
+    handle.metrics.progress_override()
         .or_else(|| (p.rows_total > 0).then(|| {
             (p.rows_consumed as f64 / p.rows_total as f64).clamp(0.0, 1.0)
         }))
         .or_else(|| (p.cursor_extent > 0).then(|| {
             (handle.metrics.cycles_completed() as f64 / p.cursor_extent as f64)
                 .clamp(0.0, 1.0)
-        }));
-    match frac {
-        Some(f) => RowGutter::Bar(f),
-        None => RowGutter::Blank,
-    }
+        }))
 }
 
 /// SRD-63 — render an active phase's op-level status leaves (ops that declared
@@ -653,6 +674,33 @@ mod tests {
             classify_block(&rows),
             vec![RowRole::Memo, RowRole::Header, RowRole::Standard],
         );
+    }
+
+    #[test]
+    fn text_gutter_on_metered_phase_composes_with_bar() {
+        // SRD-92 R3: a workload Text cell on a phase that has a
+        // completion fraction keeps the progress indicator — the fold
+        // emits the composed BarText, not a bare Text that would cost
+        // the operator the bar.
+        let p = literal_phase("run", Some(1), Some("body"));
+        let handle = p.render.as_ref().unwrap();
+        handle.gutter.store(Some(std::sync::Arc::new(
+            nbrs_runtime::wrappers::gutter::GutterSpec::Text("≈42 units/s".into()))));
+        match phase_context_gutter(&p) {
+            RowGutter::BarText { frac, text } => {
+                assert_eq!(text, "≈42 units/s");
+                assert!((0.0..=1.0).contains(&frac));
+            }
+            other => panic!("metered phase + text spec must compose: {other:?}"),
+        }
+
+        // A daemon (no fraction) keeps the bare text cell.
+        let mut d = literal_phase("watch", Some(2), Some("body"));
+        d.daemon = true;
+        d.render.as_ref().unwrap().gutter.store(Some(std::sync::Arc::new(
+            nbrs_runtime::wrappers::gutter::GutterSpec::Text("t".into()))));
+        assert!(matches!(phase_context_gutter(&d), RowGutter::Text(_)),
+            "open-ended phase has no fraction to compose");
     }
 
     #[test]

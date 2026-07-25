@@ -1859,6 +1859,12 @@ impl Activity {
                     let mut current: Arc<dyn OpDispenser> = crate::wrappers::TraversingDispenser::wrap(
                         raw, template, traversal_stats.clone(),
                     );
+                    // Late-bound handoff from the metrics arm (outside poll in
+                    // the cascade, so it runs AFTER the poll arm below) to the
+                    // poll dispenser: the op's compiled gauge slots, re-published
+                    // per poll iteration so drains feed the store live.
+                    let poll_iteration_gauges: Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>> =
+                        Arc::new(arc_swap::ArcSwapOption::empty());
 
                     // Apply each remaining wrapper in plan order.
                     // Skip `traverse`; it's already constructed.
@@ -1998,6 +2004,7 @@ impl Activity {
                                     each_memo, Some(activity.memo.clone()),
                                     progress_template, Some(activity.metrics.clone()),
                                     each_gutter, Some(activity.gutter.clone()),
+                                    Some(poll_iteration_gauges.clone()),
                                     activity.stop_view(),
                                 );
                                 crate::diag!(crate::observer::LogLevel::Debug,
@@ -2121,12 +2128,15 @@ impl Activity {
                                 let wrap_result = {
                                     let mut guard = dispenser_component.write()
                                         .unwrap_or_else(|e| e.into_inner());
-                                    crate::wrappers::MetricsDispenser::wrap(
+                                    crate::wrappers::MetricsDispenser::wrap_with_slots(
                                         current.clone(), &template.metrics, &mut guard, &mut fx,
                                     )
                                 };
                                 match wrap_result {
-                                    Ok(d) => {
+                                    Ok((d, slots)) => {
+                                        if let Some(slots) = slots {
+                                            poll_iteration_gauges.store(Some(slots));
+                                        }
                                         // Mark the dispenser
                                         // component Running so the
                                         // cadence reporter's

@@ -1116,6 +1116,10 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
                     ctx_margin_owned = text_gutter(t, blank_w, use_color_now);
                     &ctx_margin_owned
                 }
+                Some(crate::status_fold::RowGutter::BarText { frac, text }) => {
+                    ctx_margin_owned = bar_text_gutter(*frac, text, blank_w, use_color_now);
+                    &ctx_margin_owned
+                }
                 Some(crate::status_fold::RowGutter::Spark { key, value }) => {
                     ctx_margin_owned = spark_gutter(
                         gutter_state.rings.entry(key.clone()).or_default(),
@@ -1294,6 +1298,25 @@ fn metric_gutter(
     let spark = crate::widgets::sparkline_str(&samples, spark_w);
     format!("{accent}{spark}{reset} {dim}{label:>lw$}│{reset} ",
         lw = w.saturating_sub(spark_w + 1))
+}
+
+/// Composed cell (SRD-92 R3): the phase's completion bar beside a
+/// workload-declared text readout — a custom cell on a metered phase
+/// keeps the progress indicator. The bar takes a fixed sub-cell (8,
+/// shrinking on narrow margins); the text gets the remainder,
+/// truncated.
+fn bar_text_gutter(frac: f64, text: &str, w: usize, color: bool) -> String {
+    let dim    = if color { "\x1b[2m"  } else { "" };
+    let reset  = if color { "\x1b[0m"  } else { "" };
+    let bg     = if color { "\x1b[48;2;50;50;50m" } else { "" };
+    let bright = if color { "\x1b[97m" } else { "" };
+    let bar_w = if w >= 14 { 8 } else { (w / 3).max(3) };
+    let text_w = w.saturating_sub(bar_w + 1);
+    let bar = nbrs_runtime::readouts::format::braille_bar(frac * 100.0, bar_w);
+    let fitted = nbrs_runtime::activity::truncate_to_width(text, text_w);
+    let pad = text_w.saturating_sub(
+        fitted.chars().filter(|c| !c.is_control()).count());
+    format!("{bg}{bright}{bar}{reset} {dim}{fitted}{:pad$}│{reset} ", "")
 }
 
 /// Workload-declared layout-text gutter cell (`gutter: "<template>"`):

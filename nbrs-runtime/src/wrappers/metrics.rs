@@ -106,12 +106,44 @@ pub struct MetricsDispenser {
     /// One slot per declared metric. Stable ordering by metric
     /// name keeps per-cycle dispatch deterministic for tests and
     /// makes any per-cycle warning sequence reproducible.
-    slots: Vec<MetricSlot>,
+    slots: Arc<Vec<MetricSlot>>,
+}
+
+/// Lenient per-iteration GAUGE publication for poll drains: the
+/// dispenser above only fires when the (potentially hours-long)
+/// drain op completes, so the poll wrapper re-publishes gauge slots
+/// per poll iteration against that iteration's wires — the store
+/// then carries live samples (`compaction_progress_parts` etc.)
+/// instead of a single end-of-drain point. Gauges only: counters
+/// and histograms keep their one-record-per-op semantics (the
+/// end-of-op publish would double-count them). Resolution misses
+/// degrade to a debug log — status must never fail the poll.
+pub(crate) fn publish_gauges_lenient(
+    slots: &[MetricSlot],
+    wires: &dyn crate::wires::WireSource,
+) {
+    for slot in slots {
+        let MetricInstrument::Gauge(g) = &slot.instrument else { continue };
+        let Some(value) = wires.get(&slot.binding_name) else {
+            crate::diag!(crate::observer::LogLevel::Debug,
+                "poll gauge '{}': binding '{}' unresolved this iteration",
+                slot.family, slot.binding_name);
+            continue;
+        };
+        let Some(raw) = value_to_f64(&value) else {
+            crate::diag!(crate::observer::LogLevel::Debug,
+                "poll gauge '{}': '{}' non-numeric this iteration",
+                slot.family, slot.value_expr);
+            continue;
+        };
+        let sanitised = slot.format.as_ref().map(|f| f.apply(raw)).unwrap_or(raw);
+        g.set(sanitised);
+    }
 }
 
 /// One compiled metric slot: instrument storage + sanitiser +
 /// pre-bound Polydat pull handle.
-struct MetricSlot {
+pub(crate) struct MetricSlot {
     /// Family name registered with the [`Component`]. Used in
     /// diagnostic messages (e.g. the counter non-positive warning).
     family: String,
@@ -201,8 +233,22 @@ impl MetricsDispenser {
         component: &mut nbrs_metrics::component::Component,
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<Arc<dyn OpDispenser>, String> {
+        Self::wrap_with_slots(inner, metrics, component, fx).map(|(d, _)| d)
+    }
+
+    /// As [`Self::wrap`], additionally returning the compiled slot
+    /// list (shared `Arc`) so the poll wrapper can re-publish the
+    /// GAUGE slots per poll iteration (see
+    /// [`publish_gauges_lenient`]). `None` when the op declares no
+    /// metrics.
+    pub(crate) fn wrap_with_slots(
+        inner: Arc<dyn OpDispenser>,
+        metrics: &HashMap<String, nbrs_workload::model::MetricSpec>,
+        component: &mut nbrs_metrics::component::Component,
+        fx: &mut crate::fixture::ScopeFixture,
+    ) -> Result<(Arc<dyn OpDispenser>, Option<Arc<Vec<MetricSlot>>>), String> {
         if metrics.is_empty() {
-            return Ok(inner);
+            return Ok((inner, None));
         }
         // Stable ordering on metric names so init-time
         // diagnostics + per-cycle dispatch are reproducible.
@@ -291,7 +337,8 @@ impl MetricsDispenser {
             });
         }
 
-        Ok(Arc::new(Self { inner, slots }))
+        let slots = Arc::new(slots);
+        Ok((Arc::new(Self { inner, slots: slots.clone() }), Some(slots)))
     }
 }
 
@@ -310,7 +357,7 @@ impl OpDispenser for MetricsDispenser {
             if result.skipped {
                 return Ok(result);
             }
-            for slot in &self.slots {
+            for slot in self.slots.iter() {
                 // Sole resolution path: ctx.wires reads through the
                 // live per-fiber kernel handle (project rule
                 // "GK Is Canonical Scope"). The op-template synthesiser
@@ -543,7 +590,7 @@ mod tests {
                 instrument,
             });
         }
-        let typed = Arc::new(MetricsDispenser { inner, slots });
+        let typed = Arc::new(MetricsDispenser { inner, slots: Arc::new(slots) });
 
         let plan = fx.seal();
         kernel.set_inputs(&[0]);
