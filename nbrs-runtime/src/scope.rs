@@ -4214,6 +4214,7 @@ extern keyspace: String
                 slurp: false,
                 path: Some("/0/value".into()),
                 count: false,
+                agg: None,
             },
             CapturePoint {
                 source_name: "active_for_cf".into(),
@@ -4222,6 +4223,7 @@ extern keyspace: String
                 slurp: false,
                 path: Some("/1/value".into()),
                 count: true,
+                agg: None,
             },
         ];
         let phase = WorkloadPhase {
@@ -4272,6 +4274,7 @@ extern keyspace: String
             slurp: false,
             path: Some("/0/value".into()),
             count: false,
+            agg: None,
         }];
         // Phase author also declared `sstables := …` —
         // collision is the bug.

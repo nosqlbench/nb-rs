@@ -117,6 +117,8 @@ fn extract_captures_from_json(
             let sub = json.pointer(path);
             let value = if spec.count {
                 polydat::ast::Value::U64(count_of_subtree(sub))
+            } else if let Some(agg) = &spec.agg {
+                aggregate_rows(sub, agg)
             } else {
                 match sub {
                     Some(v) => json_subtree_to_value(v),
@@ -187,6 +189,51 @@ fn count_of_subtree(v: Option<&serde_json::Value>) -> u64 {
 /// shapes (array / object) are kept as `Value::Json` so the
 /// kernel can carry the original shape without lossy
 /// stringification.
+/// Folds one numeric field across the rows of an addressed array
+/// (`:min(f)` / `:max(f)` / `:sum(f)` capture aggregation). Rows
+/// missing the field, and non-numeric values, are skipped; an
+/// empty fold yields `Value::None` (renders like a missing
+/// capture). Sum stays integral (`U64`) while every contributing
+/// value is a non-negative integer, else widens to `F64`; min/max
+/// return the winning row's value with its original JSON type.
+fn aggregate_rows(sub: Option<&serde_json::Value>, agg: &bindpoints::CaptureAgg) -> polydat::ast::Value {
+    use bindpoints::CaptureAgg;
+    let rows = match sub {
+        Some(serde_json::Value::Array(rows)) => rows,
+        _ => return polydat::ast::Value::None,
+    };
+    let field = match agg {
+        CaptureAgg::Min(f) | CaptureAgg::Max(f) | CaptureAgg::Sum(f) => f.as_str(),
+    };
+    let nums: Vec<&serde_json::Number> = rows.iter()
+        .filter_map(|row| row.get(field))
+        .filter_map(|v| v.as_number())
+        .collect();
+    if nums.is_empty() {
+        return polydat::ast::Value::None;
+    }
+    match agg {
+        CaptureAgg::Sum(_) => {
+            if nums.iter().all(|n| n.as_u64().is_some()) {
+                polydat::ast::Value::U64(nums.iter().map(|n| n.as_u64().unwrap()).sum())
+            } else {
+                polydat::ast::Value::F64(nums.iter().filter_map(|n| n.as_f64()).sum())
+            }
+        }
+        CaptureAgg::Min(_) | CaptureAgg::Max(_) => {
+            let want_min = matches!(agg, CaptureAgg::Min(_));
+            let mut best = nums[0];
+            for n in &nums[1..] {
+                let (a, b) = (n.as_f64().unwrap_or(f64::NAN), best.as_f64().unwrap_or(f64::NAN));
+                if (want_min && a < b) || (!want_min && a > b) {
+                    best = n;
+                }
+            }
+            json_to_value(&serde_json::Value::Number((*best).clone()))
+        }
+    }
+}
+
 fn json_subtree_to_value(v: &serde_json::Value) -> polydat::ast::Value {
     match v {
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
@@ -297,6 +344,7 @@ mod tests {
             slurp,
             path: None,
             count: false,
+            agg: None,
         }
     }
 
@@ -401,7 +449,44 @@ mod tests {
             slurp: false,
             path: Some(path.into()),
             count,
+            agg: None,
         }
+    }
+
+    #[test]
+    fn aggregate_captures_fold_rows_with_mixed_units() {
+        // The sstable_tasks shape that motivated aggregation: a
+        // byte-denominated task saturated at 1.0 alongside an
+        // ordinal-denominated task mid-flight. min(ratio) must
+        // surface the merge's 0.4, not row 0's 1.0.
+        let body = JsonBody(serde_json::json!([
+            {"completion_ratio": 1.0, "progress": 31357891323u64, "total": 31357891323u64},
+            {"completion_ratio": 0.4, "progress": 8000000u64,     "total": 20000000u64},
+        ]));
+        fn cap_agg(name: &str, agg: bindpoints::CaptureAgg) -> bindpoints::CapturePoint {
+            bindpoints::CapturePoint {
+                source_name: name.into(),
+                as_name: name.into(),
+                cast_type: None,
+                slurp: false,
+                path: Some(String::new()),
+                count: false,
+                agg: Some(agg),
+            }
+        }
+        let specs = vec![
+            cap_agg("completion_ratio", bindpoints::CaptureAgg::Min("completion_ratio".into())),
+            cap_agg("max_ratio",        bindpoints::CaptureAgg::Max("completion_ratio".into())),
+            cap_agg("progress",         bindpoints::CaptureAgg::Sum("progress".into())),
+        ];
+        let captures = extract_captures_from_json(&body, &specs);
+        assert_eq!(captures["completion_ratio"].as_f64(), 0.4);
+        assert_eq!(captures["max_ratio"].as_f64(), 1.0);
+        assert_eq!(captures["progress"].as_u64(), 31357891323 + 8000000);
+        // Empty result set folds to None (missing-capture semantics).
+        let empty = JsonBody(serde_json::json!([]));
+        let c2 = extract_captures_from_json(&empty, &specs[..1]);
+        assert!(matches!(c2["completion_ratio"], polydat::ast::Value::None));
     }
 
     #[test]

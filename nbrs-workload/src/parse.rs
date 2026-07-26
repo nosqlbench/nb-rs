@@ -2122,9 +2122,12 @@ fn normalize_op_object(
                  `:count` suffix). Got {kind}.",
                 kind = eval_value_kind(spec_val),
             ))?;
-            let (path, count) = match raw.strip_suffix(":count") {
-                Some(p) => (p.to_string(), true),
-                None => (raw.to_string(), false),
+            let (path, count, agg) = match raw.strip_suffix(":count") {
+                Some(p) => (p.to_string(), true, None),
+                None => match parse_capture_agg_suffix(raw) {
+                    Some((p, a)) => (p, false, Some(a)),
+                    None => (raw.to_string(), false, None),
+                },
             };
             if !path.is_empty() && !path.starts_with('/') {
                 return Err(format!(
@@ -2141,6 +2144,7 @@ fn normalize_op_object(
                 slurp: false,
                 path: Some(path),
                 count,
+                agg,
             });
         }
     }
@@ -2193,6 +2197,30 @@ fn normalize_op_object(
 /// - **Mapping** (object, §2.3): canonical full-shape form
 ///   keyed by metric name. Each value is either a string
 ///   (treated as `value:`) or a full `MetricSpec` mapping.
+/// Parses a `:min(field)` / `:max(field)` / `:sum(field)` suffix on a
+/// declarative capture path, returning `(path_prefix, agg)`. The path
+/// prefix may be empty (root = the whole rows array). Returns `None`
+/// when the spec carries no recognized aggregation suffix.
+fn parse_capture_agg_suffix(raw: &str) -> Option<(String, crate::bindpoints::CaptureAgg)> {
+    use crate::bindpoints::CaptureAgg;
+    if !raw.ends_with(')') {
+        return None;
+    }
+    for (tag, make) in [
+        (":min(", CaptureAgg::Min as fn(String) -> CaptureAgg),
+        (":max(", CaptureAgg::Max as fn(String) -> CaptureAgg),
+        (":sum(", CaptureAgg::Sum as fn(String) -> CaptureAgg),
+    ] {
+        if let Some(idx) = raw.rfind(tag) {
+            let field = &raw[idx + tag.len()..raw.len() - 1];
+            if !field.is_empty() && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return Some((raw[..idx].to_string(), make(field.to_string())));
+            }
+        }
+    }
+    None
+}
+
 fn parse_metrics_field(
     val: Option<&JVal>,
     op_name: &str,

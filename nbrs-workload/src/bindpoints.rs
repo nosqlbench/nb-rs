@@ -411,6 +411,27 @@ pub fn replace_bind_points_with_markers(value: &str) -> String {
 ///   and the consumer needs all per-row column values as a list
 ///   (e.g. recall-evaluator's `actual:` reads).
 /// - `[@col as values]` — slurp with alias.
+/// Row-set aggregation for a declarative capture: reduce an
+/// array-of-rows body (or addressed sub-array) to one scalar by
+/// folding the named field across rows. Declared with a
+/// `:min(field)` / `:max(field)` / `:sum(field)` suffix on the
+/// capture path. Motivating case: `system_views.sstable_tasks`
+/// carries several concurrent tasks in MIXED units (a
+/// byte-denominated data compaction plus an ordinal-denominated
+/// index build) — a `/0/...` capture pins whichever row sorts
+/// first, so a saturated byte task masks the still-running merge;
+/// `:min(completion_ratio)` reads the least-complete task, which
+/// is the drain's true state.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum CaptureAgg {
+    /// Numeric minimum of `field` across rows.
+    Min(String),
+    /// Numeric maximum of `field` across rows.
+    Max(String),
+    /// Numeric sum of `field` across rows.
+    Sum(String),
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CapturePoint {
     /// The field name to capture from the result.
@@ -452,6 +473,12 @@ pub struct CapturePoint {
     /// also set (declarative capture form).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub count: bool,
+    /// Row-set aggregation (`:min(f)` / `:max(f)` / `:sum(f)`
+    /// path suffix): fold the named field across the rows of the
+    /// addressed array instead of capturing a single value. Like
+    /// `count`, only honoured on the declarative capture form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agg: Option<CaptureAgg>,
 }
 
 /// Result of parsing capture points from a string.
@@ -582,6 +609,7 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
                     slurp,
                     path: None,
                     count: false,
+                    agg: None,
                 });
                 // Emit source name without brackets into raw template
                 raw.push_str(&source_name);

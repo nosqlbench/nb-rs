@@ -960,11 +960,21 @@ phases:
            WHERE keyspace_name = '{keyspace}'
              AND table_name   = '{table}'
           ALLOW FILTERING
+        # Aggregated across ALL task rows (2026-07-26): the drain window
+        # typically holds TWO tasks in mixed units — the byte-denominated
+        # data `Compaction` (which finishes its bytes early and then sits
+        # registered at ratio 1.0 while the index build runs) and the
+        # ordinal/byte-denominated vector merge. The previous `/0/...`
+        # captures pinned whichever row sorted first (the saturated byte
+        # task), freezing the memo at "ratio 1.0, ≈0 units/s" for entire
+        # multi-minute merges. min(ratio) reads the least-complete task —
+        # the drain's true state; sum(progress) keeps the units/s gutter
+        # moving whichever task is advancing.
         capture:
           active_compactions: ":count"
-          completion_ratio:   "/0/completion_ratio"
-          progress:           "/0/progress"
-          total:              "/0/total"
+          completion_ratio:   ":min(completion_ratio)"
+          progress:           ":sum(progress)"
+          total:              ":sum(total)"
         # Live drain-speed cell, refreshed per poll iteration (the poll
         # wrapper republishes the during form each poll — the op itself
         # completes only once, at drain end). The phase's ✓ outcome line
