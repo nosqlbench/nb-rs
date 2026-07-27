@@ -1347,3 +1347,35 @@ phases:
             r: limit
             functions:
               - recall
+
+# ---------------------------------------------------------------------------
+# Reports. Rendered from the SESSION DB, which is written continuously, so the
+# same command gives the same view during a run and after it — the view is a
+# function of recorded state, not of run lifecycle. `nbrs table compaction_shape`
+# mid-run shows every tier finished so far; the in-flight tier appears with a
+# zero duration (its cycle has not closed yet) and therefore an infinite rate,
+# which is the honest rendering of "not finished" rather than a guess.
+# ---------------------------------------------------------------------------
+report:
+  compaction_shape_section: |
+    file compaction_shape.md as 'Compaction shape and throughput per tier'
+
+    text compaction_shape_heading as "What this shows":
+     One row per size tier, in tier order. `segments` is how many vector-index
+     sstables the tier's major compaction merged — the K in cost-over-K, and the
+     number that separates "one big source plus a tail of flush segments" from
+     "a dozen equal ones". `index_bytes` and `table_bytes` are the merged input
+     sizes (the index's own bytes, and the whole sstables). `duration_ms` is the
+     finalize phase's cycle service time, which spans flush through drain.
+     `index_bytes_per_ms` is achieved throughput over that span.
+
+     Read K against throughput: at fixed segment count the per-byte rate should
+     hold, and where it falls off with size the merge has left the page cache
+     and gone IO-bound.
+
+    table compaction_shape:
+      group_by: p
+      query: segments: max(compaction_input_segments) by (p)
+      query: vector_index_bytes: max(compaction_input_index_bytes) by (p)
+      query: other_sstable_bytes: max(compaction_input_table_bytes) by (p)
+      query: finalize_seconds: max(cycles_servicetime_mean{phase="finalize_index"}) by (p)
