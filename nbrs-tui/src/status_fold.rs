@@ -79,6 +79,8 @@ pub enum RowGutter {
     /// Workload-declared layout text (`gutter: "<template>"`),
     /// placed in the cell verbatim (truncated to fit).
     Text(String),
+    /// Key metric: label at the cell's left edge, value against the divider.
+    Labeled { name: String, value: String },
     /// Workload-declared layout text COMPOSED with the phase's own
     /// completion fraction (SRD-92 R3): the cell shows the auto
     /// bar and the workload text side by side, so a custom cell
@@ -247,6 +249,8 @@ fn phase_context_gutter(p: &ActivePhase) -> RowGutter {
     if let Some(spec) = handle.gutter.load_full() {
         use nbrs_runtime::wrappers::gutter::GutterSpec;
         return match spec.as_ref() {
+            GutterSpec::Labeled { name, value } =>
+                RowGutter::Labeled { name: name.clone(), value: value.clone() },
             GutterSpec::Text(s) => match (!p.daemon).then(|| metered_fraction(p, handle)).flatten() {
                 Some(f) => RowGutter::BarText { frac: f, text: s.clone() },
                 None => RowGutter::Text(s.clone()),

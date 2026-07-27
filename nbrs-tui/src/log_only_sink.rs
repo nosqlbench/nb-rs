@@ -817,6 +817,8 @@ fn run_render_loop(
                     };
                     let final_cell: Option<String> = detail_gutter.as_ref().map(|spec| {
                         match spec {
+                            nbrs_runtime::wrappers::gutter::GutterSpec::Labeled { name, value } =>
+                                labeled_gutter(name, value, cell_w, color),
                             nbrs_runtime::wrappers::gutter::GutterSpec::Text(t) =>
                                 text_gutter(t, cell_w, color),
                             nbrs_runtime::wrappers::gutter::GutterSpec::Bar(f) =>
@@ -1120,6 +1122,10 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
                     ctx_margin_owned = text_gutter(t, blank_w, use_color_now);
                     &ctx_margin_owned
                 }
+                Some(crate::status_fold::RowGutter::Labeled { name, value }) => {
+                    ctx_margin_owned = labeled_gutter(name, value, blank_w, use_color_now);
+                    &ctx_margin_owned
+                }
                 Some(crate::status_fold::RowGutter::BarText { frac, text }) => {
                     ctx_margin_owned = bar_text_gutter(*frac, text, blank_w, use_color_now);
                     &ctx_margin_owned
@@ -1323,15 +1329,43 @@ fn bar_text_gutter(frac: f64, text: &str, w: usize, color: bool) -> String {
     format!("{bg}{bright}{bar}{reset} {dim}{fitted}{:pad$}│{reset} ", "")
 }
 
-/// Workload-declared layout-text gutter cell (`gutter: "<template>"`):
-/// the rendered text verbatim, truncated/right-aligned to the cell.
+/// Workload-declared layout-text gutter cell (`gutter: "<template>"`), and the
+/// leaf duration cell.
+///
+/// RIGHT-aligned against the divider, which is the house convention for a
+/// VALUE: the node-header row already right-aligns its elapsed time there, so
+/// a left-aligned leaf duration put the same quantity in a different column
+/// depending on the row type. Values now line up vertically whatever the row.
+/// (The doc-comment always claimed right alignment; the code did not.)
 fn text_gutter(text: &str, w: usize, color: bool) -> String {
     let dim   = if color { "\x1b[2m"  } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
     let fitted = nbrs_runtime::activity::truncate_to_width(text, w);
     let pad = w.saturating_sub(
         fitted.chars().filter(|c| !c.is_control()).count());
-    format!("{dim}{fitted}{:pad$}│{reset} ", "")
+    format!("{dim}{:pad$}{fitted}│{reset} ", "")
+}
+
+/// Key-metric gutter cell: NAME left, VALUE right, filling the cell.
+///
+/// The pairing is the point. A key metric is the row's headline number, so the
+/// value sits against the divider like every other value, and its label sits at
+/// the far edge — one glance finds the number, another finds what it measures,
+/// and both stay in the same columns across rows. The value is accented; the
+/// label stays dim so it recedes.
+fn labeled_gutter(name: &str, value: &str, w: usize, color: bool) -> String {
+    let dim    = if color { "\x1b[2m"     } else { "" };
+    let accent = if color { "\x1b[1;92m"  } else { "" };
+    let reset  = if color { "\x1b[0m"     } else { "" };
+    // The value is never sacrificed: it claims its width first, and the label
+    // takes what is left (truncated, or dropped entirely on a very narrow cell).
+    let val = nbrs_runtime::activity::truncate_to_width(value, w);
+    let val_w = val.chars().filter(|c| !c.is_control()).count();
+    let label_room = w.saturating_sub(val_w + 1);
+    let label = nbrs_runtime::activity::truncate_to_width(name, label_room);
+    let label_w = label.chars().filter(|c| !c.is_control()).count();
+    let gap = w.saturating_sub(label_w + val_w);
+    format!("{dim}{label}{:gap$}{reset}{accent}{val}{reset}│ ", "")
 }
 
 /// Workload-declared trend gutter cell (`gutter: {spark: ...}`): a
@@ -1419,22 +1453,25 @@ fn latency_hist_gutter(
         else if ms >= 10.0 { format!("{ms:.1}") }
         else { format!("{ms:.2}") }
     };
+    let text_probe = format!("{}∕{}ms", fmt(trend.min), fmt(trend.max));
+    let spark_w = w.saturating_sub(text_probe.chars().count() + 1).max(4);
+    // Size the trend to the cell BEFORE pushing, so the history/tail split is
+    // taken at the width actually being drawn (and follows a terminal resize).
+    trend.resize(spark_w);
     trend.push(p50 as f64 / 1e6);
     let text = format!("{}∕{}ms", fmt(trend.min), fmt(trend.max));
-    let spark_w = w.saturating_sub(text.chars().count() + 1).max(4);
-    let samples = trend.series();
-    // The trend's capacity is sized for the COMMON label width; a
-    // wider label (5-digit ms) shrinks the spark region below it.
-    // Clamp to the newest `spark_w` cells — dropping the OLDEST,
-    // most-averaged history first — so the cell never overdraws its
-    // budget and bleeds across the gutter divider.
-    let cut = samples.len().saturating_sub(spark_w);
-    let visible = &samples[cut..];
-    // Render at the visible length (no left padding — samples stack
-    // from the LEFT), then split by region and right-pad the free
-    // margin.
+    // Fixed split: the history occupies a constant `hist_cap` columns (the power
+    // of two nearest halfway) and the tail the remainder, one sample per cell.
+    // Both are scaled against the SAME extrema so the halves are visually
+    // comparable — the whole point of pinning the divider.
+    let (hist_cells, raw_cells) = trend.split_view();
+    let mut visible: Vec<f64> = Vec::with_capacity(spark_w);
+    visible.extend_from_slice(&hist_cells);
+    visible.extend_from_slice(&raw_cells);
+    let cut = visible.len().saturating_sub(spark_w);
+    let visible = &visible[cut..];
     let glyphs = crate::widgets::sparkline_str(visible, visible.len().max(1));
-    let hist_n = trend.hist_len().saturating_sub(cut);
+    let hist_n = hist_cells.len().saturating_sub(cut);
     let hist_part: String = glyphs.chars().take(hist_n).collect();
     let raw_part: String = glyphs.chars().skip(hist_n).collect();
     let pad = spark_w.saturating_sub(visible.len());

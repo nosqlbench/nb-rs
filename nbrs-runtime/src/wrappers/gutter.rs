@@ -56,6 +56,12 @@ pub enum GutterSpec {
     Bar(f64),
     /// One trend sample → sparkline ring + current-value label.
     Spark(f64),
+    /// A key metric: label and value rendered on opposite sides of the cell.
+    /// Declared as `gutter: { final: { name: "recall", value: "{recall}" } }`.
+    /// The pair is explicit rather than split out of one string because the two
+    /// orders both occur in practice (`recall 96%` vs `≈900/s units`), so no
+    /// splitting rule can infer which token is the value.
+    Labeled { name: String, value: String },
 }
 
 /// Trigger: `gutter:` is a string (layout template) or a map with
@@ -117,6 +123,10 @@ pub enum GutterKind {
     Text,
     Bar,
     Spark,
+    /// Key metric: label and value, carried through the template pipeline as a
+    /// single string joined by US (unit separator) so interpolation of both
+    /// halves happens in one pass, then split at render time.
+    Labeled,
 }
 
 /// Parse an op's `gutter:` param value into its `(during, final)`
@@ -130,6 +140,11 @@ pub fn parse_specs(
     let parse_forms = |obj: &serde_json::Map<String, serde_json::Value>|
         -> Option<(GutterKind, String)>
     {
+        if let Some(m) = obj.get("labeled").and_then(|x| x.as_object()) {
+            let name = m.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let value = m.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            return Some((GutterKind::Labeled, format!("{name}{}{value}", '\u{1f}')));
+        }
         if let Some(t) = obj.get("bar").and_then(|x| x.as_str()) {
             Some((GutterKind::Bar, t.to_string()))
         } else if let Some(t) = obj.get("spark").and_then(|x| x.as_str()) {
@@ -173,6 +188,10 @@ pub(crate) fn render_spec(
         }
     };
     match kind {
+        GutterKind::Labeled => {
+            let (name, value) = rendered.split_once('\u{1f}').unwrap_or(("", rendered.as_str()));
+            Some(GutterSpec::Labeled { name: name.to_string(), value: value.to_string() })
+        }
         GutterKind::Text => Some(GutterSpec::Text(rendered)),
         GutterKind::Bar | GutterKind::Spark => {
             match rendered.trim().parse::<f64>() {

@@ -4249,6 +4249,10 @@ fn evaluate_final_gutter(
         return None;
     }
     match kind {
+        GutterKind::Labeled => {
+            let (name, value) = text.split_once('\u{1f}').unwrap_or(("", text.as_str()));
+            Some(GutterSpec::Labeled { name: name.to_string(), value: value.to_string() })
+        }
         GutterKind::Text => Some(GutterSpec::Text(text)),
         GutterKind::Bar => text.trim().parse::<f64>().ok()
             .map(|v| GutterSpec::Bar(v.clamp(0.0, 1.0))),

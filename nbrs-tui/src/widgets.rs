@@ -337,15 +337,39 @@ pub fn bar_str_braille(fraction: f64, width: usize) -> (String, String) {
 /// appended to history, freeing right-margin for individual samples
 /// again. Lifetime `min`/`max` are the DISCRETE extrema of every
 /// pushed sample, untouched by averaging.
+/// The power of two nearest to `n / 2`, clamped so at least one cell remains
+/// on each side. This is how the history/tail split is chosen: halfway keeps
+/// the two views balanced, and a power of two makes every halving of the
+/// history exact.
+pub fn nearest_pow2_half(n: usize) -> usize {
+    if n < 2 { return 1; }
+    let half = (n as f64) / 2.0;
+    let lo_exp = (half.log2().floor().max(0.0) as u32).min(31);
+    let (a, b) = (1usize << lo_exp, 1usize << (lo_exp + 1));
+    let pick = if (half - a as f64).abs() <= (b as f64 - half).abs() { a } else { b };
+    pick.clamp(1, n.saturating_sub(1).max(1))
+}
+
 pub struct DecimatingTrend {
     /// Averaged history buckets, oldest first, `stride` samples each.
     hist: Vec<f64>,
     /// Recent samples, one per future cell, oldest first.
     raw: Vec<f64>,
-    /// Character-cell capacity, fixed at creation.
-    cap: usize,
+    /// Cells reserved for the decimated history: a POWER OF TWO, the one
+    /// nearest half the cell width. Fixing this boundary is the point —
+    /// previously it drifted, because a halving emptied `raw`, which then
+    /// refilled until the next halving, so the two regions were never the same
+    /// width twice and could not be compared across ticks. A power of two also
+    /// makes each halving exact: `hist` folds pairwise with no remainder.
+    hist_cap: usize,
+    /// Cells reserved for the un-decimated tail, one sample per cell.
+    raw_cap: usize,
     /// Samples per history bucket (power of two).
     stride: u32,
+    /// Partial bucket: samples evicted from the tail that do not yet make a
+    /// full `stride`-wide history cell.
+    pending_sum: f64,
+    pending_n: u32,
     /// Discrete lifetime extrema over every pushed sample.
     pub min: f64,
     pub max: f64,
@@ -353,13 +377,64 @@ pub struct DecimatingTrend {
 
 impl DecimatingTrend {
     pub fn new(cap: usize) -> Self {
+        let cap = cap.max(4);
+        let hist_cap = nearest_pow2_half(cap);
         Self {
             hist: Vec::new(),
             raw: Vec::new(),
-            cap: cap.max(4),
+            hist_cap,
+            raw_cap: cap - hist_cap,
             stride: 1,
+            pending_sum: 0.0,
+            pending_n: 0,
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
+        }
+    }
+
+    /// Re-target the trend at a new cell width. Cheap and idempotent, so the
+    /// painter may call it every render; a terminal resize re-splits the cell
+    /// without discarding history.
+    pub fn resize(&mut self, cap: usize) {
+        let cap = cap.max(4);
+        let hist_cap = nearest_pow2_half(cap);
+        if hist_cap == self.hist_cap && cap - hist_cap == self.raw_cap {
+            return;
+        }
+        self.hist_cap = hist_cap;
+        self.raw_cap = cap - hist_cap;
+        while self.raw.len() > self.raw_cap { self.evict_oldest_raw(); }
+        while self.hist.len() > self.hist_cap { self.halve_hist(); }
+    }
+
+    /// Halve the history in place: pairwise average, stride doubles. Exact,
+    /// because `hist_cap` is a power of two.
+    fn halve_hist(&mut self) {
+        self.stride = self.stride.saturating_mul(2);
+        let mut merged = Vec::with_capacity(self.hist.len().div_ceil(2));
+        let mut it = self.hist.chunks_exact(2);
+        for pair in &mut it {
+            merged.push((pair[0] + pair[1]) / 2.0);
+        }
+        if let [last] = it.remainder() {
+            merged.push(*last);
+        }
+        self.hist = merged;
+    }
+
+    /// Move the oldest per-sample cell into the history bucket, emitting a
+    /// history cell once a full `stride` of samples has accumulated.
+    fn evict_oldest_raw(&mut self) {
+        if self.raw.is_empty() { return; }
+        let v = self.raw.remove(0);
+        self.pending_sum += v;
+        self.pending_n += 1;
+        if self.pending_n >= self.stride.max(1) {
+            let n = self.pending_n as f64;
+            self.hist.push(self.pending_sum / n);
+            self.pending_sum = 0.0;
+            self.pending_n = 0;
+            if self.hist.len() > self.hist_cap { self.halve_hist(); }
         }
     }
 
@@ -376,55 +451,147 @@ impl DecimatingTrend {
         self.min = self.min.min(v);
         self.max = self.max.max(v);
         self.raw.push(v);
-        while self.hist.len() + self.raw.len() > self.cap {
-            if self.hist.len() >= 2 {
-                // Merge history pairs (stride doubles), then fold the
-                // raw tail into complete new-stride buckets. The
-                // remainder (< stride samples) stays raw — the margin
-                // the fold freed shows individual samples again.
-                self.stride = self.stride.saturating_mul(2);
-                let mut merged = Vec::with_capacity(self.cap);
-                let mut it = self.hist.chunks_exact(2);
-                for pair in &mut it {
-                    merged.push((pair[0] + pair[1]) / 2.0);
-                }
-                if let [last] = it.remainder() {
-                    merged.push(*last);
-                }
-                self.hist = merged;
-                let s = (self.stride as usize).max(1);
-                let complete = self.raw.len() / s * s;
-                for chunk in self.raw[..complete].chunks_exact(s) {
-                    self.hist.push(chunk.iter().sum::<f64>() / s as f64);
-                }
-                self.raw.drain(..complete);
-            } else {
-                // Degenerate history: rebase — fold the raw tail
-                // pairwise (display-approximate when a lone legacy
-                // bucket remains; this is a trend view, not a ledger).
-                // raw ≥ cap−1 ≥ 3 here, so at least one pair folds and
-                // the loop shrinks.
-                self.stride = 2;
-                let complete = self.raw.len() / 2 * 2;
-                for pair in self.raw[..complete].chunks_exact(2) {
-                    self.hist.push((pair[0] + pair[1]) / 2.0);
-                }
-                self.raw.drain(..complete);
-            }
+        // The tail holds exactly `raw_cap` cells once warmed; everything older
+        // migrates into the fixed-width history. The split therefore stops
+        // moving, which is what makes the two regions comparable tick to tick.
+        while self.raw.len() > self.raw_cap {
+            self.evict_oldest_raw();
         }
     }
 
-    /// Number of averaged history cells (the raw tail starts after).
+    #[allow(dead_code)]
     pub fn hist_len(&self) -> usize {
         self.hist.len()
     }
 
+    // Inspection surface: the painter draws via `split_view`, so these exist for
+    // tests and for callers that want the raw regions rather than the fixed view.
+    #[allow(dead_code)]
+    /// Cells reserved for the history region.
+    pub fn hist_cap(&self) -> usize { self.hist_cap }
+
+    #[allow(dead_code)]
+    /// Cells reserved for the per-sample tail region.
+    pub fn raw_cap(&self) -> usize { self.raw_cap }
+
+    /// Render-ready split at a FIXED boundary: the history resampled to exactly
+    /// `hist_cap` cells, and the newest samples one-per-cell up to `raw_cap`.
+    ///
+    /// The resample is what actually pins the divider. Halving cannot keep the
+    /// history at a constant length on its own — folding an odd count leaves a
+    /// remainder (9 → 5), so `hist` sawtooths and the boundary walks, which is
+    /// the drift this replaced. Stretching whatever history exists across a
+    /// constant number of columns makes the two regions comparable on every
+    /// tick, at the cost of repeating a column while the buffer is between
+    /// foldings — honest, since those columns really do describe the same
+    /// averaged span.
+    ///
+    /// While warming up (`hist` still empty) the history side is empty and the
+    /// caller left-pads; the tail simply grows into its own region.
+    pub fn split_view(&self) -> (Vec<f64>, Vec<f64>) {
+        let hist = if self.hist.is_empty() {
+            Vec::new()
+        } else if self.hist.len() == self.hist_cap {
+            self.hist.clone()
+        } else {
+            // Nearest-neighbour stretch to the fixed width.
+            (0..self.hist_cap)
+                .map(|i| {
+                    let src = i * self.hist.len() / self.hist_cap;
+                    self.hist[src.min(self.hist.len() - 1)]
+                })
+                .collect()
+        };
+        let start = self.raw.len().saturating_sub(self.raw_cap);
+        (hist, self.raw[start..].to_vec())
+    }
+
     /// The renderable series: averaged history then the raw tail,
     /// oldest to newest, left-stacked.
+    #[allow(dead_code)]
     pub fn series(&self) -> Vec<f64> {
         let mut s = self.hist.clone();
         s.extend_from_slice(&self.raw);
         s
+    }
+}
+
+#[cfg(test)]
+mod trend_split_tests {
+    use super::*;
+
+    #[test]
+    fn nearest_pow2_half_picks_the_closer_power() {
+        assert_eq!(nearest_pow2_half(20), 8);   // half=10 -> 8 is closer than 16
+        assert_eq!(nearest_pow2_half(24), 8);   // half=12 ties 8 vs 16; tie goes low,
+                                               // leaving more cells for live detail
+        assert_eq!(nearest_pow2_half(16), 8);   // exact
+        assert_eq!(nearest_pow2_half(32), 16);  // exact
+        assert_eq!(nearest_pow2_half(5), 2);    // half=2.5 -> 2 (tie-break low)
+        // Always leaves at least one cell for the per-sample tail.
+        for n in 2..64 { assert!(nearest_pow2_half(n) < n, "n={n}"); }
+    }
+
+    #[test]
+    fn split_stays_fixed_as_samples_accumulate() {
+        // The regression: the boundary used to drift, because a halving emptied
+        // the tail which then refilled. Once warmed, both regions must hold the
+        // same widths on every subsequent push.
+        let cap = 20;
+        let hist_cap = nearest_pow2_half(cap); // 8
+        let raw_cap = cap - hist_cap;
+        let mut t = DecimatingTrend::new(cap);
+        for i in 0..5_000 {
+            t.push(i as f64);
+            let (hist, raw) = t.split_view();
+            assert!(raw.len() <= raw_cap, "tail overdrew at push {i}: {}", raw.len());
+            if i >= 64 {
+                // Warmed: the RENDERED split must be constant on every tick.
+                assert_eq!(hist.len(), hist_cap,
+                    "history view must stay fixed at {hist_cap}, got {} at push {i}", hist.len());
+                assert_eq!(raw.len(), raw_cap,
+                    "tail view must stay fixed at {raw_cap}, got {} at push {i}", raw.len());
+            }
+        }
+    }
+
+    #[test]
+    fn tail_is_one_sample_per_cell_and_newest() {
+        // The right-hand region must be raw, un-averaged, most-recent samples.
+        let cap = 20;
+        let hist_cap = nearest_pow2_half(cap);
+        let raw_cap = cap - hist_cap;
+        let mut t = DecimatingTrend::new(cap);
+        for i in 0..1_000 { t.push(i as f64); }
+        let series = t.series();
+        let tail = &series[series.len() - raw_cap..];
+        let expected: Vec<f64> = ((1_000 - raw_cap)..1_000).map(|i| i as f64).collect();
+        assert_eq!(tail, &expected[..], "tail must be the newest raw samples");
+    }
+
+    #[test]
+    fn resize_rebalances_without_losing_the_series() {
+        let mut t = DecimatingTrend::new(20);
+        for i in 0..500 { t.push(i as f64); }
+        t.resize(40);
+        for i in 0..500 { t.push(i as f64); }
+        let (h, r) = t.split_view();
+        assert_eq!(h.len(), nearest_pow2_half(40));
+        assert_eq!(h.len() + r.len(), 40);
+        t.resize(12);
+        for i in 0..500 { t.push(i as f64); }
+        let (h, r) = t.split_view();
+        assert_eq!(h.len(), nearest_pow2_half(12));
+        assert_eq!(h.len() + r.len(), 12, "shrinking must not overdraw");
+    }
+
+    #[test]
+    fn lifetime_extrema_survive_decimation() {
+        let mut t = DecimatingTrend::new(16);
+        t.push(1000.0);
+        for i in 0..500 { t.push(i as f64); }
+        assert_eq!(t.max, 1000.0, "max must be the discrete lifetime max");
+        assert_eq!(t.min, 0.0);
     }
 }
 
@@ -459,41 +626,39 @@ mod sparkline_tests {
 
 #[cfg(test)]
 mod decimating_trend_tests {
-    use super::DecimatingTrend;
+    use super::{DecimatingTrend, nearest_pow2_half};
 
     #[test]
-    fn one_sample_per_cell_until_width_fills() {
-        let mut t = DecimatingTrend::new(8);
-        for v in 0..8 {
+    fn tail_is_bounded_from_the_start() {
+        // CHANGED with the fixed split: the tail is capped at `raw_cap`
+        // immediately rather than consuming the whole width until the cell
+        // fills. Bounding it from the start is what lets the history/tail
+        // divider sit in one place for the entire run; previously the boundary
+        // only existed after the first fold and then walked on every fold.
+        let cap = 8;
+        let raw_cap = cap - nearest_pow2_half(cap); // 8 - 4 = 4
+        let mut t = DecimatingTrend::new(cap);
+        for v in 0..cap {
             t.push(v as f64);
         }
-        assert_eq!(t.series(), (0..8).map(|v| v as f64).collect::<Vec<_>>(),
-            "below capacity every sample is its own raw cell");
-        assert_eq!(t.hist_len(), 0, "no averaging before the first fill");
+        let (_hist, raw) = t.split_view();
+        assert_eq!(raw.len(), raw_cap, "tail is bounded at {raw_cap}");
+        assert_eq!(raw, vec![4.0, 5.0, 6.0, 7.0], "tail holds the newest samples, unaveraged");
+        assert!(t.hist_len() > 0, "older samples fold into history rather than being dropped");
     }
 
     #[test]
-    fn resample_folds_left_and_reopens_raw_margin() {
-        let mut t = DecimatingTrend::new(4);
-        for v in [1.0, 2.0, 3.0, 4.0] {
-            t.push(v);
-        }
-        // 5th sample forces the resample: history takes the pair
-        // averages of ALL complete pairs (raw folds at the new
-        // stride), and the odd sample stays raw in the freed margin.
-        t.push(10.0);
-        assert_eq!(t.hist_len(), 2, "folded pairs: [1.5, 3.5]");
-        assert_eq!(t.series(), vec![1.5, 3.5, 10.0]);
-        // The margin now takes individual samples again.
-        t.push(20.0);
-        assert_eq!(t.series(), vec![1.5, 3.5, 10.0, 20.0]);
-        assert_eq!(t.hist_len(), 2, "recent samples stay raw until the next fill");
-        // Next fill: history merges to stride 4 ([2.5]); the raw tail
-        // (3 samples) is below the new stride so it stays raw — the
-        // whole life still fits the width, individual recency intact.
-        t.push(30.0);
-        assert_eq!(t.hist_len(), 1, "[2.5] at stride 4");
-        assert_eq!(t.series(), vec![2.5, 10.0, 20.0, 30.0]);
+    fn history_folds_and_keeps_a_fixed_width_view() {
+        let cap = 8;
+        let hist_cap = nearest_pow2_half(cap); // 4
+        let mut t = DecimatingTrend::new(cap);
+        for v in 0..64 { t.push(v as f64); }
+        let (hist, raw) = t.split_view();
+        assert_eq!(hist.len(), hist_cap, "history view is a constant width");
+        assert_eq!(hist.len() + raw.len(), cap, "the two regions tile the cell exactly");
+        // History is averaged and ordered oldest -> newest; the tail is raw.
+        assert!(hist.windows(2).all(|w| w[0] <= w[1]), "history stays ordered: {hist:?}");
+        assert_eq!(raw, vec![60.0, 61.0, 62.0, 63.0]);
     }
 
     /// Regression: a degenerate history (0–1 cells) must not spin the
