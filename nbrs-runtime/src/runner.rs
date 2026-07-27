@@ -4374,7 +4374,20 @@ fn collect_polydat_brace_refs(
 ) -> Vec<PolydatBraceFinding> {
     use nbrs_workload::model::BindingsDef;
     let mut out: Vec<PolydatBraceFinding> = Vec::new();
+    // Braces are no longer categorically invalid in Polydat: the block form of
+    // conditional selection (`if <cond> { a } else { b }`) uses them. So a brace is
+    // only evidence of a stray YAML placeholder when the source ALSO fails to parse.
+    // Gating on parseability keeps this check doing its actual job — converting a
+    // cryptic "expected expression, got LBrace" into a message that names the file,
+    // line and placeholder — without rejecting valid if-expressions.
     let mut push_refs = |loc: &str, source: &str| {
+        let parses = polydat::dsl::lexer::lex(source)
+            .ok()
+            .and_then(|toks| polydat::dsl::parser::parse(toks).ok())
+            .is_some();
+        if parses {
+            return;
+        }
         for name in scan_polydat_braced_refs(source) {
             out.push(PolydatBraceFinding {
                 location: loc.to_string(),
@@ -5517,6 +5530,32 @@ mod tests {
     }
 
     // ── scan_polydat_braced_refs: invalid `{...}` outside strings ─
+
+    #[test]
+    fn polydat_brace_guard_allows_valid_if_block() {
+        // Block-form conditional selection uses braces legitimately. The guard must
+        // not flag it, because the source parses.
+        let src = "extern segments: u64 = 0\nmean := if segments > 0 { 100 } else { 0 }\n";
+        let parses = polydat::dsl::lexer::lex(src)
+            .ok()
+            .and_then(|t| polydat::dsl::parser::parse(t).ok())
+            .is_some();
+        assert!(parses, "if-block source must parse: {src}");
+    }
+
+    #[test]
+    fn polydat_brace_guard_still_catches_stray_placeholder() {
+        // A YAML placeholder in expression position does NOT parse, so the guard
+        // still fires and still names the placeholder.
+        let src = "const passes := multiples_at_least({min_query_cycles}, base)\n";
+        let parses = polydat::dsl::lexer::lex(src)
+            .ok()
+            .and_then(|t| polydat::dsl::parser::parse(t).ok())
+            .is_some();
+        assert!(!parses, "stray placeholder must fail to parse");
+        let refs = scan_polydat_braced_refs(src);
+        assert!(refs.iter().any(|r| r == "min_query_cycles"), "got {refs:?}");
+    }
 
     #[test]
     fn scan_polydat_braced_refs_flags_expression_position_braces() {
