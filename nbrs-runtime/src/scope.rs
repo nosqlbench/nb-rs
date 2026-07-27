@@ -1238,6 +1238,12 @@ pub(crate) fn scan_idents_in_polydat_source(src: &str) -> HashSet<String> {
     const KEYWORDS: &[&str] = &[
         "input", "extern", "final", "init", "shared", "volatile", "cursor", "pragma",
         "true", "false", "as", "in", "for",
+        // Block-form conditional selection: `if <cond> { a } else { b }`. This is a
+        // TEXTUAL scan, so it cannot tell a keyword from a wire name by position —
+        // before these were listed, a binding using the block form reported `if` and
+        // `else` as unresolved wire references. The call form `if(cond, a, b)` was
+        // unaffected and so did not surface this.
+        "if", "else",
     ];
     let mut out = HashSet::new();
     let mut chars = src.chars().peekable();
@@ -2926,6 +2932,23 @@ mod polydat_param_classifier_tests {
         for word in ["Forwarding", "bindings", "allow", "list", "params", "trailing", "comment", "words"] {
             assert!(!idents.contains(word),
                 "comment word '{word}' must not be scanned as a wire ref: {idents:?}");
+        }
+    }
+
+    #[test]
+    fn scan_idents_skips_block_conditional_keywords() {
+        // Block-form conditional selection puts bare `if` / `else` in expression
+        // position. This scanner is textual, so without the keyword entries they were
+        // emitted as wire references and the phase failed with
+        // `unresolved wire reference(s) ["else", "if"]` (regression: finalize_index's
+        // seg_mib_mean binding).
+        let src = "seg_mib_mean := if segments > 0 { total / max(segments, 1) } else { 0 }\n";
+        let idents = scan_idents_in_polydat_source(src);
+        assert!(idents.contains("segments"), "real wire must still be found: {idents:?}");
+        assert!(idents.contains("total"), "real wire must still be found: {idents:?}");
+        for kw in ["if", "else"] {
+            assert!(!idents.contains(kw),
+                "conditional keyword '{kw}' must not scan as a wire ref: {idents:?}");
         }
     }
 
