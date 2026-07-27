@@ -130,12 +130,55 @@ fn natural_cmp_pipe_tuple(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-/// Compare two single tokens. Numeric (both parse as `f64`)
-/// compares numerically; otherwise lexicographic.
+/// Compare two single tokens with natural (human) ordering: digit runs compare by
+/// magnitude, everything else lexicographically.
+///
+/// Previously this only compared numerically when the token was WHOLLY numeric
+/// and fell back to plain `str::cmp` otherwise — so any label with a number
+/// embedded in text sorted lexically, and rows came out
+/// `0, 1, 10, 11, … 2, 20`. That is the common case, not the exception: phase
+/// coordinates (`Partition(10/36 …)`), sweep labels (`k=10` vs `k=2`) and tier
+/// names all embed their number. The doc claimed magnitude ordering; now the code
+/// does it.
+///
+/// Digit runs are compared by significant length then bytes rather than by
+/// parsing, so arbitrarily long numeric runs cannot overflow or lose precision,
+/// and leading zeros do not change the order (`007` == `7`).
 fn natural_cmp_one(a: &str, b: &str) -> std::cmp::Ordering {
-    match (a.parse::<f64>(), b.parse::<f64>()) {
-        (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
-        _ => a.cmp(b),
+    use std::cmp::Ordering;
+    // Wholly-numeric fast path first, so decimals keep float semantics
+    // (`1.5` < `10`, which segment-wise comparison alone would get wrong).
+    if let (Ok(x), Ok(y)) = (a.parse::<f64>(), b.parse::<f64>()) {
+        return x.partial_cmp(&y).unwrap_or(Ordering::Equal);
+    }
+    let (mut ar, mut br) = (a, b);
+    loop {
+        if ar.is_empty() || br.is_empty() {
+            // The shorter prefix sorts first (`tier2` before `tier2a`).
+            return ar.len().cmp(&br.len());
+        }
+        let a_digit = ar.starts_with(|c: char| c.is_ascii_digit());
+        let b_digit = br.starts_with(|c: char| c.is_ascii_digit());
+        if a_digit && b_digit {
+            let an = ar.find(|c: char| !c.is_ascii_digit()).unwrap_or(ar.len());
+            let bn = br.find(|c: char| !c.is_ascii_digit()).unwrap_or(br.len());
+            let (ad, bd) = (&ar[..an], &br[..bn]);
+            let (at, bt) = (ad.trim_start_matches('0'), bd.trim_start_matches('0'));
+            match at.len().cmp(&bt.len()).then_with(|| at.cmp(bt)) {
+                Ordering::Equal => {}
+                non_eq => return non_eq,
+            }
+            ar = &ar[an..];
+            br = &br[bn..];
+        } else {
+            let (ac, bc) = (ar.chars().next().unwrap(), br.chars().next().unwrap());
+            match ac.cmp(&bc) {
+                Ordering::Equal => {}
+                non_eq => return non_eq,
+            }
+            ar = &ar[ac.len_utf8()..];
+            br = &br[bc.len_utf8()..];
+        }
     }
 }
 
@@ -1046,5 +1089,75 @@ mod tests {
         assert_eq!(opts.name.as_deref(), Some("recall_v1"));
         assert!(opts.create);
         assert_eq!(opts.spec.as_deref(), Some("recall; mean(recall)"));
+    }
+}
+
+#[cfg(test)]
+mod natural_sort_tests {
+    use super::{natural_cmp_one, natural_cmp_pipe_tuple};
+    use std::cmp::Ordering;
+
+    #[test]
+    fn embedded_numbers_order_by_magnitude() {
+        // The regression: report rows came out 0, 1, 10, 11, ... 2, 20 because a
+        // label with a number inside text fell back to lexical comparison.
+        let mut keys = vec![
+            "Partition(10/36 [1000000..2000000))",
+            "Partition(2/36 [200000..300000))",
+            "Partition(0/36 [0..100000))",
+            "Partition(20/36 [20000000..30000000))",
+            "Partition(1/36 [100000..200000))",
+        ];
+        keys.sort_by(|a, b| natural_cmp_one(a, b));
+        assert_eq!(keys, vec![
+            "Partition(0/36 [0..100000))",
+            "Partition(1/36 [100000..200000))",
+            "Partition(2/36 [200000..300000))",
+            "Partition(10/36 [1000000..2000000))",
+            "Partition(20/36 [20000000..30000000))",
+        ]);
+    }
+
+    #[test]
+    fn sweep_labels_order_by_magnitude() {
+        let mut keys = vec!["k=10", "k=2", "k=100", "k=1"];
+        keys.sort_by(|a, b| natural_cmp_one(a, b));
+        assert_eq!(keys, vec!["k=1", "k=2", "k=10", "k=100"]);
+    }
+
+    #[test]
+    fn wholly_numeric_tokens_keep_float_semantics() {
+        // Segment-wise comparison alone would read "1.5" as 1 then 5 and place it
+        // after "10"; the whole-token fast path keeps decimals correct.
+        assert_eq!(natural_cmp_one("1.5", "10"), Ordering::Less);
+        assert_eq!(natural_cmp_one("2", "10"), Ordering::Less);
+        assert_eq!(natural_cmp_one("10", "10"), Ordering::Equal);
+    }
+
+    #[test]
+    fn leading_zeros_do_not_change_order() {
+        assert_eq!(natural_cmp_one("tier007", "tier7"), Ordering::Equal);
+        assert_eq!(natural_cmp_one("tier007", "tier8"), Ordering::Less);
+    }
+
+    #[test]
+    fn long_digit_runs_do_not_overflow() {
+        // Compared by significant length then bytes, never parsed, so runs far
+        // beyond u64 still order correctly.
+        let big = format!("x{}", "9".repeat(40));
+        let bigger = format!("x1{}", "0".repeat(40));
+        assert_eq!(natural_cmp_one(&big, &bigger), Ordering::Less);
+    }
+
+    #[test]
+    fn shorter_prefix_sorts_first() {
+        assert_eq!(natural_cmp_one("tier2", "tier2a"), Ordering::Less);
+    }
+
+    #[test]
+    fn pipe_tuples_compare_segment_by_segment() {
+        // Multi-key group_by joins label values with `|`; each segment is natural.
+        assert_eq!(natural_cmp_pipe_tuple("a|2", "a|10"), Ordering::Less);
+        assert_eq!(natural_cmp_pipe_tuple("tier2|x", "tier10|a"), Ordering::Less);
     }
 }
