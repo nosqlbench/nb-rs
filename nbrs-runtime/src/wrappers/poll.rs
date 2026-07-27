@@ -241,8 +241,11 @@ impl PollingDispenser {
     /// per-iteration memo template + activity memo slot, and the
     /// derived-progress template + activity metrics. See the field
     /// docs (`each_memo`, `progress_template`) for semantics.
+    // pub(crate), not pub: the returned handles include `MetricSlot`, which is crate-private, and
+    // every caller (activity.rs wiring, `wrap` above) is in-crate. Declaring it `pub` leaked a
+    // private type through a public signature.
     #[allow(clippy::too_many_arguments)]
-    pub fn wrap_with_status(
+    pub(crate) fn wrap_with_status(
         inner: Arc<dyn OpDispenser>,
         poll_interval_ms: u64,
         timeout_ms: u64,
