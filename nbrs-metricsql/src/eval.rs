@@ -812,6 +812,12 @@ pub(crate) fn align_and_combine(
         }];
     }
     // MIXED CASE: one side is a single instant value, the other a series. The
+    // reach of this case is wider than it first appears: it is also what makes a
+    // TIMER-STAT operand work. A timer stat for a finished phase has one
+    // resurrected last value while its partner has many, so before this branch
+    // existed such divisions came back empty and looked like a separate
+    // datasource-selection defect. There is only one bug here.
+    //
     // single value is the operand's value throughout, so broadcast it rather
     // than demanding a timestamp twin it cannot have — a metric written once per
     // phase divided by one sampled per tick is an ordinary, meaningful query,
