@@ -267,6 +267,20 @@ bindings: |
   # read; 0 until the first finalize.
   shared sstables: u64 := 0
 
+  # Vector-index segment shape for the CURRENT tier's compaction, written
+  # through from `finalize_index`'s `segment_sizes` capture. Declared here so
+  # the drain memo can interpolate them while it waits, and so a later phase
+  # could gate on the shape. Zero until the first finalize.
+  shared segments:        u64 := 0
+  shared seg_bytes_min:   u64 := 0
+  shared seg_bytes_max:   u64 := 0
+  shared seg_bytes_total: u64 := 0
+  shared tbl_bytes_total: u64 := 0
+  # Per-segment index sizes, slurped as a JSON array — the individual segment
+  # sizes being merged, not just their summary. Carried as a string because the
+  # value is a list, not a scalar.
+  shared seg_index_bytes: String := "[]"
+
 scenarios:
   # Default: the incremental size-tier sweep.
   default:
@@ -811,7 +825,9 @@ phases:
   #   read_sstables   -> read LiveSSTableCount; capture `sstables`
   #   trigger_compact -> DAEMON, `if: sstables > 1`; holds the JMX
   #                      socket open for the whole synchronous compaction
-  #   poll_progress   -> CQL system_views.sstable_tasks, op-level
+  #   segment_sizes   -> CQL system_views.sstable_indexes; per-segment sizes
+  #                      of the vector index sstables being merged
+  #   await_compaction -> CQL system_views.sstable_tasks, op-level
   #                      `poll: await_empty`; live progress until idle
   finalize_index:
     # Completed tier finalize (flush + compaction drain) skips on resume; the failed
@@ -823,7 +839,7 @@ phases:
     tries: 1
     bindings: |
       # 2s pre-poll grace for the drain (f64 = milliseconds, consumed by
-      # poll_progress's `delay:`): covers the daemon-dispatch race where
+      # await_compaction's `delay:`): covers the daemon-dispatch race where
       # the first drain poll could run before trigger_compact's JMX call
       # registers its compaction task — an empty first read would satisfy
       # `await_empty` instantly and release the tier early.
@@ -861,8 +877,8 @@ phases:
             eq: "200"
         strict: true
         memo:
-          before: "finalize step 1/4 — flushing {keyspace} memtables to sstables (builds the on-disk SAI vector graph for the just-loaded tier; this is the slow part of a flush, not the write itself)"
-          after:  "finalize step 1/4 — flushed {keyspace} (memtables → sstables + vector index)"
+          before: "finalize step 1/5 — flushing {keyspace} memtables to sstables (builds the on-disk SAI vector graph for the just-loaded tier; this is the slow part of a flush, not the write itself)"
+          after:  "finalize step 1/5 — flushed {keyspace} (memtables → sstables + vector index)"
       read_sstables:
         adapter: http
         readout: visible
@@ -881,8 +897,8 @@ phases:
         metrics:
           table_live_sstables: { kind: gauge, value: sstables }
         memo:
-          before: "finalize step 2/4 — reading live sstable count for {keyspace}.{table} (decides whether a compaction is needed)"
-          after:  "finalize step 2/4 — {keyspace}.{table} has {sstables} live sstable(s) before compaction"
+          before: "finalize step 2/5 — reading live sstable count for {keyspace}.{table} (decides whether a compaction is needed)"
+          after:  "finalize step 2/5 — {keyspace}.{table} has {sstables} live sstable(s) before compaction"
       trigger_compact:
         adapter: http
         readout: visible
@@ -906,9 +922,54 @@ phases:
             eq: "200"
         strict: true
         memo:
-          before: "finalize step 3/4 — triggering major compaction of {keyspace}.{table} ({sstables} sstables → 1; merges the vector graph segments and NVQ-refines them). Synchronous — returns when compaction completes."
-          after:  "finalize step 3/4 — major compaction of {keyspace}.{table} returned"
-      poll_progress:
+          before: "finalize step 3/5 — triggering major compaction of {keyspace}.{table} ({sstables} sstables → 1; merges the vector graph segments and NVQ-refines them). Synchronous — returns when compaction completes."
+          after:  "finalize step 3/5 — major compaction of {keyspace}.{table} returned"
+      # Size distribution of the vector-index segments this compaction is merging.
+      # Runs AFTER trigger_compact, which is `daemon: true` — so it reads while the
+      # compaction is in flight, and the inputs are still on disk (a major compaction
+      # does not retire its sources until it completes). system_views.sstable_indexes
+      # emits one row per (index, sstable) with per_column_disk_size (this index's own
+      # bytes in that sstable) and per_table_disk_size (the whole sstable). The
+      # per-segment list is what makes the merge's K-vs-size shape legible: one large
+      # base segment plus a tail of ~1M-row flush segments looks very different from
+      # a dozen equal ones, and merge cost tracks that shape.
+      segment_sizes:
+        adapter: cql
+        readout: visible
+        if: "enable_finalize != 0 && enable_compact != 0"
+        # Advisory, like the drain below: a failed read must not fail the tier.
+        errors: ".*:warn,counter"
+        raw: |
+          SELECT sstable_name, [@per_column_disk_size as seg_index_bytes], per_table_disk_size
+            FROM system_views.sstable_indexes
+           WHERE keyspace_name = '{keyspace}'
+             AND index_name = '{table}{vector_idx_suffix}'
+        capture:
+          # Aggregates via the row-set folds (:count / :min / :max / :sum).
+          segments:        ":count"
+          seg_bytes_min:   ":min(per_column_disk_size)"
+          seg_bytes_max:   ":max(per_column_disk_size)"
+          seg_bytes_total: ":sum(per_column_disk_size)"
+          tbl_bytes_total: ":sum(per_table_disk_size)"
+        bindings: |
+          # MiB for display; the raw byte columns stay available for metrics.
+          # The capture targets themselves are declared as shared wires at the
+          # workload level, so they are in scope here and in the drain memo.
+          seg_mib_min   := seg_bytes_min / 1048576
+          seg_mib_max   := seg_bytes_max / 1048576
+          seg_mib_total := seg_bytes_total / 1048576
+          tbl_mib_total := tbl_bytes_total / 1048576
+          # Both branches always evaluate (dataflow select, not a guard), so the
+          # divisor is made safe with max(); the `if` only chooses what to report.
+          seg_mib_mean  := if segments > 0 { seg_bytes_total / max(segments, 1) / 1048576 } else { 0 }
+        metrics:
+          compaction_input_segments:    { kind: gauge, value: segments }
+          compaction_input_index_bytes: { kind: gauge, value: seg_bytes_total }
+          compaction_input_table_bytes: { kind: gauge, value: tbl_bytes_total }
+        memo:
+          before: "finalize step 4/5 — measuring the vector-index segments {keyspace}.{table} is merging"
+          after:  "finalize step 4/5 — merging {segments} segment(s): index min {seg_mib_min} MiB / mean {seg_mib_mean} MiB / max {seg_mib_max} MiB, total {seg_mib_total} MiB (whole sstables {tbl_mib_total} MiB); per-segment index bytes {seg_index_bytes}"
+      await_compaction:
         adapter: cql
         readout: visible
         delay: drain_grace
@@ -997,7 +1058,7 @@ phases:
           # Re-rendered after every poll against that poll's captures, so the
           # memo shows the live measured state of the drain instead of the
           # static `before:` text for the (potentially hours-long) wait.
-          memo: "finalize step 4/4 — {keyspace}.{table} compaction draining: ratio {completion_ratio}, {progress}/{total} units, {active_compactions} task(s) in flight"
+          memo: "finalize step 5/5 — {keyspace}.{table} compaction draining: ratio {completion_ratio}, {progress}/{total} units, {active_compactions} task(s) in flight | merging {segments} segment(s), index total {seg_mib_total} MiB (max {seg_mib_max} MiB)"
           # The measured fractional completion drives this phase's completion
           # bar/percentage (derived-progress override) — the cycle-based bar
           # would otherwise sit at 0% for the whole drain.
@@ -1009,8 +1070,8 @@ phases:
           compaction_total_parts:      { kind: gauge, value: total }
           compaction_pending_tasks:    { kind: gauge, value: active_compactions }
         memo:
-          before: "finalize step 4/4 — waiting for {keyspace}.{table} vector index build to drain (await_empty; polls system_views.sstable_tasks kind='secondary index build' every 5s)"
-          after:  "finalize step 4/4 — {keyspace}.{table} index build at ratio {completion_ratio}, {progress}/{total} token range parts ({active_compactions} task(s) in flight)"
+          before: "finalize step 5/5 — waiting for {keyspace}.{table} vector index build to drain (await_empty; polls system_views.sstable_tasks kind='secondary index build' every 5s)"
+          after:  "finalize step 5/5 — {keyspace}.{table} index build at ratio {completion_ratio}, {progress}/{total} token range parts ({active_compactions} task(s) in flight)"
         request_timeout_ms: 60000
 
   # Recall against the post-compaction index AT THIS TIER'S SIZE, using
