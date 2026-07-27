@@ -1379,3 +1379,5 @@ report:
       query: vector_index_bytes: max(compaction_input_index_bytes) by (p)
       query: other_sstable_bytes: max(compaction_input_table_bytes) by (p)
       query: finalize_seconds: max(cycles_servicetime_mean{phase="finalize_index"}) by (p)
+      query: finalize_ms: max(time_to_index) by (p)
+      query: index_bytes_per_ms: max(compaction_input_index_bytes) by (p) / max(time_to_index) by (p)

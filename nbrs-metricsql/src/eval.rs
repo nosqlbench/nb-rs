@@ -506,6 +506,66 @@ fn is_scalar_expr(e: &Expr) -> bool {
 /// return 0/1; arithmetic ops use the same machinery the
 /// parser's constant-folder uses, so result semantics agree
 /// (NaN propagation, division-by-zero → ±inf, etc.).
+#[cfg(test)]
+mod align_tests {
+    use super::*;
+
+    fn s(ts: i64, v: f64) -> Sample { Sample { timestamp_ms: ts, value: v } }
+
+    #[test]
+    fn instant_vectors_combine_despite_different_write_times() {
+        // The regression: two metric families written on different cadence ticks
+        // each resolved alone but their ratio came back empty, because matching
+        // required identical timestamps. At an instant the timestamp records when
+        // the datum was written, not when it is evaluated.
+        let left = vec![s(1_000, 100.0)];
+        let right = vec![s(1_500, 4.0)];
+        let out = align_and_combine(&left, &right, &|a, b| a / b);
+        assert_eq!(out.len(), 1, "instant operands must combine");
+        assert_eq!(out[0].value, 25.0);
+        assert_eq!(out[0].timestamp_ms, 1_500, "result carries the freshest input");
+    }
+
+    #[test]
+    fn range_vectors_still_align_strictly() {
+        // With real series on both sides, combining across instants would invent
+        // a correlation the data does not contain, so equality still governs.
+        let left = vec![s(1_000, 10.0), s(2_000, 20.0), s(3_000, 30.0)];
+        let right = vec![s(2_000, 2.0), s(3_000, 3.0), s(4_000, 4.0)];
+        let out = align_and_combine(&left, &right, &|a, b| a / b);
+        assert_eq!(out.len(), 2, "only the shared instants combine");
+        assert_eq!(out[0].timestamp_ms, 2_000);
+        assert_eq!(out[0].value, 10.0);
+        assert_eq!(out[1].timestamp_ms, 3_000);
+        assert_eq!(out[1].value, 10.0);
+    }
+
+    #[test]
+    fn single_sample_broadcasts_across_a_series() {
+        // A metric written once per phase divided by one sampled per tick is an
+        // ordinary query; strict alignment used to return nothing for it.
+        let once = vec![s(5_000, 100.0)];
+        let ticks = vec![s(1_000, 2.0), s(2_000, 4.0), s(3_000, 5.0)];
+        let out = align_and_combine(&once, &ticks, &|a, b| a / b);
+        assert_eq!(out.len(), 3, "the single value applies throughout");
+        assert_eq!(out[0].value, 50.0);
+        assert_eq!(out[1].value, 25.0);
+        assert_eq!(out[2].value, 20.0);
+        // Timestamps come from the series side, which is the one that varies.
+        assert_eq!(out[2].timestamp_ms, 3_000);
+        // Symmetric in the other direction, with the operand order preserved.
+        let out = align_and_combine(&ticks, &once, &|a, b| a / b);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].value, 2.0 / 100.0);
+    }
+
+    #[test]
+    fn empty_operand_yields_nothing() {
+        assert!(align_and_combine(&[], &[s(1, 1.0)], &|a, b| a + b).is_empty());
+        assert!(align_and_combine(&[s(1, 1.0)], &[], &|a, b| a + b).is_empty());
+    }
+}
+
 pub(crate) fn eval_binary_value(op: BinaryOp, l: f64, r: f64, bool_mod: bool) -> f64 {
     use BinaryOp::*;
     match op {
@@ -733,6 +793,44 @@ pub(crate) fn align_and_combine(
     right: &[Sample],
     combine: &impl Fn(f64, f64) -> f64,
 ) -> Vec<Sample> {
+    // INSTANT-VECTOR CASE: one sample per side. Both operands are the value of
+    // their series *at the evaluation instant*, so they combine unconditionally —
+    // the sample's own timestamp records when the datum was last written, not
+    // when it is being evaluated, and two metric families are almost never
+    // written on the same tick.
+    //
+    // Requiring exact timestamp equality here silently produced EMPTY results
+    // for every cross-family expression whose operands came from different
+    // cadence subscriptions: each side resolved fine alone, and their ratio
+    // vanished. Result carries the later timestamp, so downstream sees the
+    // freshest input the value depends on.
+    if left.len() == 1 && right.len() == 1 {
+        let (l, r) = (&left[0], &right[0]);
+        return vec![Sample {
+            timestamp_ms: l.timestamp_ms.max(r.timestamp_ms),
+            value: combine(l.value, r.value),
+        }];
+    }
+    // MIXED CASE: one side is a single instant value, the other a series. The
+    // single value is the operand's value throughout, so broadcast it rather
+    // than demanding a timestamp twin it cannot have — a metric written once per
+    // phase divided by one sampled per tick is an ordinary, meaningful query,
+    // and strict alignment silently returned nothing for it.
+    if left.len() == 1 && right.len() > 1 {
+        let l = &left[0];
+        return right.iter()
+            .map(|r| Sample { timestamp_ms: r.timestamp_ms, value: combine(l.value, r.value) })
+            .collect();
+    }
+    if right.len() == 1 && left.len() > 1 {
+        let r = &right[0];
+        return left.iter()
+            .map(|l| Sample { timestamp_ms: l.timestamp_ms, value: combine(l.value, r.value) })
+            .collect();
+    }
+    // RANGE case: genuine time series on both sides. Align strictly by
+    // timestamp — combining samples from different instants would invent a
+    // correlation that the data does not contain.
     let mut out: Vec<Sample> = Vec::new();
     for l in left {
         if let Some(r) = right.iter().find(|r| r.timestamp_ms == l.timestamp_ms) {
