@@ -139,7 +139,12 @@ fn sanitize(s: &str) -> String {
 /// Hand-rolled so this crate stays free of a serde_json
 /// dependency; the surface here is small enough that a tiny
 /// escape helper covers it.
-fn render_record(now_ms: i64, name: &str, labels: &Labels, value: &MetricValue) -> String {
+/// One JSONL record for a metric instance at a tick.
+///
+/// `pub(crate)` so the single-file metrics log renders byte-identical records to
+/// the per-instance files: the two differ only in how records are routed to
+/// files, never in their shape, so a consumer can parse either with one reader.
+pub(crate) fn render_record(now_ms: i64, name: &str, labels: &Labels, value: &MetricValue) -> String {
     let mut out = String::with_capacity(128);
     out.push('{');
     write_kv(&mut out, "ts", &now_ms.to_string(), false);
@@ -230,7 +235,7 @@ fn render_record(now_ms: i64, name: &str, labels: &Labels, value: &MetricValue) 
     out
 }
 
-fn write_kv(out: &mut String, key: &str, value: &str, quote_value: bool) {
+pub(crate) fn write_kv(out: &mut String, key: &str, value: &str, quote_value: bool) {
     out.push('"');
     escape_into(out, key);
     out.push_str("\":");

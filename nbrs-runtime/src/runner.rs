@@ -562,6 +562,61 @@ fn build_session_metrics(
             }
         }
 
+    // Single-file metrics log — opt-in, for OUTSIDE OBSERVERS. The session
+    // SQLite db is always written and stays the system of record; this only
+    // duplicates the same coalesced cadence windows into one plain JSONL file so
+    // a process can tail or ship metrics without linking SQLite, opening a db
+    // another process is writing in WAL mode, or knowing the schema. Enable via
+    // any of (a path enables it; `true` uses `<session>/metrics.jsonl`):
+    //   * `--metrics-log[=<path>]` flag on the CLI
+    //   * `metrics-log=<path|true>` in workload params
+    //   * `NBRS_METRICS_LOG=<path|1>` env var
+    let metrics_log_setting: Option<String> = args.iter()
+        .find_map(|a| a.strip_prefix("--metrics-log").map(|rest| {
+            rest.strip_prefix('=').unwrap_or("true").to_string()
+        }))
+        .or_else(|| params.get("metrics-log").cloned())
+        .or_else(|| std::env::var("NBRS_METRICS_LOG").ok());
+    let metrics_log_path = match metrics_log_setting.as_deref() {
+        None => None,
+        Some("0") | Some("false") | Some("no") | Some("off") | Some("") => None,
+        Some("1") | Some("true") | Some("yes") | Some("on") =>
+            Some(session.output_dir.join("metrics.jsonl")),
+        Some(explicit) => Some(std::path::PathBuf::from(explicit)),
+    };
+    if let Some(log_path) = metrics_log_path {
+        match nbrs_metrics::reporters::metrics_log::MetricsLogReporter::new(&log_path) {
+            Ok(reporter) => {
+                // Same cadence as the database, deliberately: the log is an
+                // alternative READ of what the db holds, so matching granularity
+                // is what makes the two comparable.
+                if let Some(cadence) = cadence_tree.align_to_declared(
+                    std::time::Duration::from_secs(30),
+                ) {
+                    match cadence_reporter.subscribe(
+                        cadence,
+                        Box::new(reporter),
+                        nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
+                    ) {
+                        Ok(_) => {
+                            crate::diag!(crate::observer::LogLevel::Info,
+                                "metrics: JSONL log every {:?} -> {} (session db unaffected)",
+                                cadence, log_path.display());
+                        }
+                        Err(e) => {
+                            crate::diag!(crate::observer::LogLevel::Warn,
+                                "metrics: metrics log subscribe failed: {e}");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                crate::diag!(crate::observer::LogLevel::Warn,
+                    "metrics: metrics log disabled: {e}");
+            }
+        }
+    }
+
     // Per-instance JSONL snapshot reporter — opt-in. Writes
     // one file per (metric, label-tuple) in `<session>/metrics/`,
     // one JSON record appended per snapshot tick. Useful when
