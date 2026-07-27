@@ -215,7 +215,7 @@ Comparison results are always `u64` truth values (0 = false,
 with bitwise operators (`a < b & c < d`) and with the `if(...)`
 intrinsic below.
 
-### Conditional Selection — `if(cond, a, b)`
+### Conditional Selection — `if(cond, a, b)` and `if cond { a } else { b }`
 
 `if` is a compiler intrinsic, not a registered function: at
 compile time it desugars to `select_u64(cond, a, b)` or
@@ -240,6 +240,46 @@ Both branches are *always* evaluated — there is no short-
 circuit. `if` is an expression-level select, not a control-flow
 construct. Side-effecting nodes inside an unselected branch
 still run (they're part of the DAG); design accordingly.
+
+#### Block form
+
+The same intrinsic also accepts a block spelling, which reads
+better when the branches are themselves expressions:
+
+```
+// Identical to if(segments > 0, total / segments, 0)
+mean := if segments > 0 { total / segments } else { 0 }
+
+// `else if` chains; right-associative, so this is
+// if(a, 1, if(b, 2, 3))
+tier := if a { 1 } else if b { 2 } else { 3 }
+
+// It is an expression, so it composes like one.
+scaled := 1 + if hot { 10 } else { 0 }
+```
+
+This is **sugar only**: the parser rewrites it to
+`if(cond, a, b)` before anything else sees it, in the same way
+`a + b` becomes `u64_add(a, b)`. Branch-type dispatch, u64→f64
+widening, and the `select_*` node it compiles to are therefore
+identical between the two spellings — there is one construct
+here, with two ways to write it. Pretty-printed output shows
+the canonical call form.
+
+Two consequences of that, both inherited rather than special to
+the block form:
+
+* **`else` is mandatory.** A Polydat expression always produces
+  a value and there is no unit type, so a one-armed `if` would
+  have no result on the false path.
+* **The braces are not a guard.** Because both branches always
+  evaluate, `if n > 0 { total / n } else { 0 }` does *not*
+  protect the division — write `total / max(n, 1)` instead. The
+  block form looks imperative; the semantics remain dataflow.
+
+`if` stays a *soft* keyword: `if(` is still parsed as the call
+form, so existing kernels are unaffected and a wire may still
+be named `if` in positions where no block can follow.
 
 ### Literal Promotion
 

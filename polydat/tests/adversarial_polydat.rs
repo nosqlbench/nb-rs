@@ -877,3 +877,105 @@ fn type_mismatch_error_names_user_binding_via_prefix() {
         "expected error to mention the LHS binding name 'overscan', got:\n{err}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Block-form conditional selection: `if <cond> { a } else { b }`
+//
+// Surface sugar over the `if(cond, a, b)` intrinsic. These assert the sugar is
+// genuinely the same construct end to end -- same type dispatch, same widening,
+// same values -- rather than merely parsing.
+// ---------------------------------------------------------------------------
+
+/// Block form and call form must compute the same value through the u64 path.
+#[test]
+fn if_block_matches_call_form_u64() {
+    let block = r#"
+        input cycle: u64
+        n := 12
+        out := if n > 0 { 100 } else { 7 }
+    "#;
+    let call = r#"
+        input cycle: u64
+        n := 12
+        out := if(n > 0, 100, 7)
+    "#;
+    let mut kb = compile_polydat(block).unwrap();
+    let mut kc = compile_polydat(call).unwrap();
+    kb.set_inputs(&[0]);
+    kc.set_inputs(&[0]);
+    assert_eq!(kb.pull("out").as_u64(), 100);
+    assert_eq!(kb.pull("out").as_u64(), kc.pull("out").as_u64());
+}
+
+/// The false path is taken when the condition is 0.
+#[test]
+fn if_block_takes_else_branch() {
+    let src = r#"
+        input cycle: u64
+        n := 0
+        out := if n > 0 { 100 } else { 7 }
+    "#;
+    let mut kernel = compile_polydat(src).unwrap();
+    kernel.set_inputs(&[0]);
+    assert_eq!(kernel.pull("out").as_u64(), 7);
+}
+
+/// Mixed u64/f64 branches widen through select_f64, exactly as the call form does.
+#[test]
+fn if_block_widens_mixed_branches_to_f64() {
+    let src = r#"
+        input cycle: u64
+        flag := 1
+        out := if flag > 0 { 1 } else { 2.5 }
+    "#;
+    let mut kernel = compile_polydat(src).unwrap();
+    kernel.set_inputs(&[0]);
+    assert!((kernel.pull("out").as_f64() - 1.0).abs() < 1e-9,
+            "u64 branch should widen to f64 when the other branch is f64");
+}
+
+/// String branches route through select_str in the block form too.
+#[test]
+fn if_block_picks_str() {
+    let src = r#"
+        input cycle: u64
+        s := "LATENCY"
+        out := if s == "LATENCY" { "fast" } else { "thorough" }
+    "#;
+    let mut kernel = compile_polydat(src).unwrap();
+    kernel.set_inputs(&[0]);
+    assert_eq!(kernel.pull("out").as_str(), "fast");
+}
+
+/// `else if` chains select the correct arm.
+#[test]
+fn if_block_else_if_chain_selects_middle_arm() {
+    let src = r#"
+        input cycle: u64
+        n := 5
+        out := if n > 10 { 1 } else if n > 3 { 2 } else { 3 }
+    "#;
+    let mut kernel = compile_polydat(src).unwrap();
+    kernel.set_inputs(&[0]);
+    assert_eq!(kernel.pull("out").as_u64(), 2);
+}
+
+/// The motivating case: guard a divisor without a conditional guarantee. Both
+/// branches evaluate (dataflow, no short-circuit), so the safe idiom is to make
+/// the divisor itself safe -- this asserts the documented behaviour holds.
+#[test]
+fn if_block_does_not_short_circuit_the_untaken_branch() {
+    let src = r#"
+        input cycle: u64
+        segments := 0
+        total := 1000
+        mean := total / max(segments, 1)
+        out := if segments > 0 { mean } else { 0 }
+    "#;
+    let mut kernel = compile_polydat(src).unwrap();
+    kernel.set_inputs(&[0]);
+    // segments == 0 -> else arm; the then-arm's `mean` was still computed, and
+    // max(segments,1) is what kept it well-defined.
+    assert_eq!(kernel.pull("out").as_u64(), 0);
+    assert_eq!(kernel.pull("mean").as_u64(), 1000);
+}

@@ -541,11 +541,19 @@ by hand using only registered nodes.**
 The intrinsic catalog is part of the grammar's
 *structural commitment* — these forms exist at parse
 time and are not extensible by library code. The specific
-catalog (currently `if(cond, a, b)`, literal promotion in
+catalog (currently `if(cond, a, b)` and its block spelling
+`if cond { a } else { b }`, literal promotion in
 wire position, and string-interpolation desugar to
 `printf(...)`) is delegated to
-[language_spec.md §"Conditional Selection — `if(cond, a,
-b)`" + §"Literal Promotion" + §"String Interpolation"](language_spec.md).
+[language_spec.md §"Conditional Selection" + §"Literal
+Promotion" + §"String Interpolation"](language_spec.md).
+
+`if` is a soft keyword: the lexer emits it as an ordinary
+identifier, and only the token that follows decides the parse
+(`(` keeps the call form; anything else opens the block form).
+This is the same treatment `over` and `input` receive, and it
+is why adding the block form required no lexer change and
+broke no existing kernel.
 
 What this enables:
 

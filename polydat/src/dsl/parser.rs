@@ -584,6 +584,87 @@ fn parse_postfix_as(p: &mut Parser, mut expr: Expr) -> Result<Expr, String> {
 
 /// Parse an atomic expression: literal, identifier, function call,
 /// parenthesized group, or unary negation.
+/// Parses the block form of conditional selection:
+/// `if <cond> { <then> } else { <else> }`, including `else if` chains.
+///
+/// This is **surface sugar only**. It desugars here, at parse time, into the
+/// existing `if(cond, then, else)` call intrinsic, exactly as `a + b` is sugar
+/// for `u64_add(a, b)`. Everything downstream is therefore inherited rather than
+/// duplicated: branch-type dispatch (Str > F64 > U64), automatic u64→f64
+/// widening of the narrower branch, and the compiled `select_*` node selection
+/// all live in `binding.rs`'s desugar and behave identically for both spellings.
+///
+/// Two semantic points that follow from Polydat being a dataflow kernel language
+/// rather than an imperative one, and which the block syntax deliberately does
+/// not pretend otherwise about:
+///
+/// * **Both branches always evaluate.** There is no short-circuit; `select_*`
+///   picks between two values that have both already been computed. A branch is
+///   not a guard, so it cannot be used to avoid a division by zero or an
+///   out-of-range read on the untaken side.
+/// * **`else` is mandatory.** Every Polydat expression yields a value and there
+///   is no unit type, so a one-armed `if` would have nothing to produce when the
+///   condition is false.
+fn parse_if_block(p: &mut Parser, span: Span) -> Result<Expr, String> {
+    let cond = parse_expr(p)?;
+
+    if !matches!(p.peek(), TokenKind::LBrace) {
+        return Err(format!(
+            "expected `{{` to open the then-branch of an `if` expression, got {:?} at line {}, col {}. \
+             Block form is `if <cond> {{ <then> }} else {{ <else> }}`; the call form `if(cond, a, b)` \
+             is also accepted.",
+            p.peek(), p.span().line, p.span().col
+        ));
+    }
+    p.advance();
+    let then_expr = parse_expr(p)?;
+    p.expect(&TokenKind::RBrace)?;
+
+    match p.peek().clone() {
+        TokenKind::Ident(word) if word == "else" => { p.advance(); }
+        other => {
+            return Err(format!(
+                "expected `else` after the then-branch of an `if` expression, got {:?} at line {}, col {}. \
+                 `else` is required: a Polydat expression always produces a value, so there is no \
+                 result for the false path without it.",
+                other, p.span().line, p.span().col
+            ));
+        }
+    }
+
+    // `else if ...` chains by recursing: the else-branch is itself an if-expression.
+    let else_expr = match p.peek().clone() {
+        TokenKind::Ident(word) if word == "if" => {
+            let else_span = p.span();
+            p.advance();
+            parse_if_block(p, else_span)?
+        }
+        TokenKind::LBrace => {
+            p.advance();
+            let e = parse_expr(p)?;
+            p.expect(&TokenKind::RBrace)?;
+            e
+        }
+        other => {
+            return Err(format!(
+                "expected `{{` or `if` after `else`, got {:?} at line {}, col {}",
+                other, p.span().line, p.span().col
+            ));
+        }
+    };
+
+    // Desugar to the call intrinsic; `binding.rs` handles it from here.
+    Ok(Expr::Call(CallExpr {
+        func: "if".into(),
+        args: vec![
+            Arg::Positional(cond),
+            Arg::Positional(then_expr),
+            Arg::Positional(else_expr),
+        ],
+        span,
+    }))
+}
+
 fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
     let span = p.span();
 
@@ -625,7 +706,14 @@ fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
         }
         TokenKind::Ident(name) => {
             p.advance();
-            if matches!(p.peek(), TokenKind::LParen) {
+            // `if` is a SOFT keyword, like `over` and `input`: it stays a plain
+            // identifier to the lexer, and only the shape that follows decides how
+            // it parses. `if(` is the long-standing call form and is left entirely
+            // alone; anything else is the block form below. Keeping it soft is what
+            // lets both spellings coexist without a lexer change or a migration.
+            if name == "if" && !matches!(p.peek(), TokenKind::LParen) {
+                parse_if_block(p, span)
+            } else if matches!(p.peek(), TokenKind::LParen) {
                 // Function call: name(args...)
                 parse_call(p, name, span)
             } else if matches!(p.peek(), TokenKind::Dot) {
@@ -1505,6 +1593,99 @@ mod tests {
             }
             _ => panic!("expected cycle binding"),
         }
+    }
+
+
+    /// Helper: unwrap a binding's value as the `if` call the block form desugars to.
+    fn if_call(src: &str) -> CallExpr {
+        let f = parse_str(src);
+        match &f.statements[0] {
+            Statement::Binding(b) => match &b.value {
+                Expr::Call(c) => {
+                    assert_eq!(c.func, "if", "block form must desugar to the `if` intrinsic");
+                    assert_eq!(c.args.len(), 3, "if intrinsic takes (cond, then, else)");
+                    c.clone()
+                }
+                other => panic!("expected Call, got {:?}", other),
+            },
+            _ => panic!("expected binding"),
+        }
+    }
+
+    #[test]
+    fn if_block_desugars_to_the_call_intrinsic() {
+        // The whole point: the block form is sugar, not a second construct. It must
+        // produce exactly what the long-standing call form produces, so branch-type
+        // dispatch and widening in binding.rs apply to it unchanged.
+        let block = if_call("y := if c { a } else { b }");
+        let call = if_call("y := if(c, a, b)");
+        for (i, (bl, ca)) in block.args.iter().zip(call.args.iter()).enumerate() {
+            match (bl, ca) {
+                (Arg::Positional(Expr::Ident(x, _)), Arg::Positional(Expr::Ident(y, _))) => {
+                    assert_eq!(x, y, "arg {} differs between block and call form", i);
+                }
+                _ => panic!("expected plain idents in both forms"),
+            }
+        }
+    }
+
+    #[test]
+    fn if_block_accepts_expressions_in_condition_and_branches() {
+        let c = if_call("y := if segments > 0 { total / segments } else { 0 }");
+        assert!(matches!(&c.args[0], Arg::Positional(Expr::BinOp(_, BinOpKind::Gt, _))),
+                "condition should parse as a full expression");
+        assert!(matches!(&c.args[1], Arg::Positional(Expr::BinOp(_, BinOpKind::Div, _))),
+                "then-branch should parse as a full expression");
+    }
+
+    #[test]
+    fn if_block_chains_else_if() {
+        // `else if` nests as the else-branch, so the chain is right-associative.
+        let c = if_call("y := if a { 1 } else if b { 2 } else { 3 }");
+        match &c.args[2] {
+            Arg::Positional(Expr::Call(inner)) => {
+                assert_eq!(inner.func, "if");
+                assert!(matches!(&inner.args[1], Arg::Positional(Expr::IntLit(2, _))));
+                assert!(matches!(&inner.args[2], Arg::Positional(Expr::IntLit(3, _))));
+            }
+            other => panic!("expected nested if in else position, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn if_block_nests_inside_other_expressions() {
+        // It is an expression, so it composes like one.
+        let f = parse_str("y := 1 + if c { 2 } else { 3 }");
+        match &f.statements[0] {
+            Statement::Binding(b) => match &b.value {
+                Expr::BinOp(_, BinOpKind::Add, rhs) => {
+                    assert!(matches!(**rhs, Expr::Call(ref c) if c.func == "if"));
+                }
+                other => panic!("expected Add with an if on the rhs, got {:?}", other),
+            },
+            _ => panic!("expected binding"),
+        }
+    }
+
+    #[test]
+    fn if_call_form_still_parses_as_a_call() {
+        // `if` stays a soft keyword: `if(` must not be captured by the block form.
+        let c = if_call("y := if(c, a, b)");
+        assert_eq!(c.args.len(), 3);
+    }
+
+    #[test]
+    fn if_block_requires_else() {
+        // Every Polydat expression yields a value, so a one-armed if has no result
+        // on the false path. The error must say that rather than failing cryptically.
+        let err = parse_str_err("y := if c { a }");
+        assert!(err.contains("else"), "error should name the missing else: {}", err);
+    }
+
+    #[test]
+    fn if_block_reports_a_missing_brace_helpfully() {
+        let err = parse_str_err("y := if c a else b");
+        assert!(err.contains("if <cond>"), "error should show the block form: {}", err);
     }
 
     #[test]
