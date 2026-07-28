@@ -1340,10 +1340,18 @@ fn bar_text_gutter(frac: f64, text: &str, w: usize, color: bool) -> String {
 fn text_gutter(text: &str, w: usize, color: bool) -> String {
     let dim   = if color { "\x1b[2m"  } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
-    let fitted = nbrs_runtime::activity::truncate_to_width(text, w);
-    let pad = w.saturating_sub(
+    // One column of right margin before the divider, matching the header cell
+    // (`body │`). Without it a leaf's duration ended flush against the divider
+    // while the header's phase time stopped a column short, so the same quantity
+    // — how long the thing took — sat in two different columns depending on which
+    // row you were reading:
+    //     0.0s│     ✓ flush  [1/4]
+    //    45.0s │    ✓ [concurrent_query]
+    let inner = w.saturating_sub(1);
+    let fitted = nbrs_runtime::activity::truncate_to_width(text, inner);
+    let pad = inner.saturating_sub(
         fitted.chars().filter(|c| !c.is_control()).count());
-    format!("{dim}{:pad$}{fitted}│{reset} ", "")
+    format!("{dim}{:pad$}{fitted} │{reset} ", "")
 }
 
 /// Key-metric gutter cell: NAME left, VALUE right, filling the cell.
@@ -1357,15 +1365,31 @@ fn labeled_gutter(name: &str, value: &str, w: usize, color: bool) -> String {
     let dim    = if color { "\x1b[2m"     } else { "" };
     let accent = if color { "\x1b[1;92m"  } else { "" };
     let reset  = if color { "\x1b[0m"     } else { "" };
-    // The value is never sacrificed: it claims its width first, and the label
-    // takes what is left (truncated, or dropped entirely on a very narrow cell).
-    let val = nbrs_runtime::activity::truncate_to_width(value, w);
-    let val_w = val.chars().filter(|c| !c.is_control()).count();
-    let label_room = w.saturating_sub(val_w + 1);
-    let label = nbrs_runtime::activity::truncate_to_width(name, label_room);
-    let label_w = label.chars().filter(|c| !c.is_control()).count();
-    let gap = w.saturating_sub(label_w + val_w);
-    format!("{dim}{label}{:gap$}{reset}{accent}{val}{reset}│ ", "")
+    // Bracketed and centred, because this cell shares a column with the phase
+    // TIMINGS. Aligning the metric the same way they are aligned made it read as
+    // one more timing field; the brackets span the cell so the row announces
+    // itself as something else entirely before you read the number.
+    let inner = w.saturating_sub(1);          // shared right margin, as above
+    let text_w = inner.saturating_sub(2);     // the two bracket columns
+    let plain = format!("{name}: {value}");
+    if text_w < 3 {
+        // No room to be decorative — keep the number, drop the frame.
+        let val = nbrs_runtime::activity::truncate_to_width(value, inner);
+        let pad = inner.saturating_sub(val.chars().filter(|c| !c.is_control()).count());
+        return format!("{dim}{:pad$}{reset}{accent}{val}{reset}{dim} │{reset} ", "");
+    }
+    let fitted = nbrs_runtime::activity::truncate_to_width(&plain, text_w);
+    let fitted_w = fitted.chars().filter(|c| !c.is_control()).count();
+    let slack = text_w.saturating_sub(fitted_w);
+    let left = slack / 2;
+    let right = slack - left;
+    // The label stays dim and the value is accented, as before — the frame is
+    // structure, not emphasis.
+    let (lbl, val) = match fitted.split_once(": ") {
+        Some((l, v)) => (format!("{l}: "), v.to_string()),
+        None => (String::new(), fitted.clone()),
+    };
+    format!("{dim}[{:left$}{lbl}{reset}{accent}{val}{reset}{dim}{:right$}] │{reset} ", "", "")
 }
 
 /// Workload-declared trend gutter cell (`gutter: {spark: ...}`): a
@@ -1777,5 +1801,70 @@ mod redraw_tests {
         // Nested / multiple escapes.
         assert_eq!(super::visible_width("\x1b[1;31mAB\x1b[0m\x1b[32mCD\x1b[0m"),
             4);
+    }
+
+    /// The phase time must land in the SAME column whichever row carries it.
+    ///
+    /// A header row renders `body │` and a leaf row renders its duration through
+    /// `text_gutter`. Before the shared right margin the leaf's duration sat flush
+    /// against the divider while the header's stopped a column short, so the same
+    /// quantity appeared in two columns depending on the row:
+    ///     0.0s│     ✓ flush  [1/4]
+    ///    45.0s │    ✓ [concurrent_query]
+    #[test]
+    fn phase_time_lands_in_one_column_across_row_kinds() {
+        let total = 256usize;
+        let body = crate::widgets::margin_body(total, "[65/256]", Some(45.0), Some(569.0));
+        let header = super::format_margin_from_body(&body, false);
+        let blank_w = crate::widgets::margin_body_width(total) + 1;
+        let leaf = super::text_gutter("0.0s", blank_w, false);
+
+        let divider = |cell: &str| cell.chars().position(|c| c == '│').expect("divider");
+        assert_eq!(divider(&header), divider(&leaf),
+            "divider column differs:\n  header |{header}|\n  leaf   |{leaf}|");
+
+        // Both durations end on the column immediately before the divider's space.
+        let ends_at = |cell: &str, needle: &str| {
+            cell.find(needle).map(|b| cell[..b].chars().count() + needle.chars().count())
+                .expect("duration present")
+        };
+        assert_eq!(ends_at(&header, "45.0s"), ends_at(&leaf, "0.0s"),
+            "durations end in different columns:\n  header |{header}|\n  leaf   |{leaf}|");
+    }
+
+    /// Timing rows carry a mark so they are not mistaken for the metric cells
+    /// that share the column — and it must be single-width, because the width
+    /// arithmetic counts characters.
+    #[test]
+    fn timing_rows_are_marked_with_a_single_cell_glyph() {
+        let body = crate::widgets::margin_body(4, "[1/4]", Some(1.0), Some(2.0));
+        assert!(body.starts_with(crate::widgets::TIMING_MARK), "got: {body}");
+        assert_eq!(crate::widgets::TIMING_MARK.chars().count(), 1);
+        // Emoji-presentation clocks render two cells wide and would shift every
+        // divider on these rows by one column.
+        for wide in ["\u{23F1}", "\u{231A}", "\u{1F550}"] {
+            assert_ne!(crate::widgets::TIMING_MARK, wide);
+        }
+    }
+
+    /// A key metric is framed, not aligned like a timing, so the row announces
+    /// what kind of number it carries before the number is read.
+    #[test]
+    fn key_metric_cell_is_bracketed_and_centred() {
+        let cell = super::labeled_gutter("recall", "97.88%", 28, false);
+        let plain: String = cell.chars().filter(|c| *c != '\u{1b}').collect();
+        assert!(plain.contains("[") && plain.contains("]"), "got: |{cell}|");
+        assert!(plain.contains("recall: 97.88%"), "got: |{cell}|");
+        // Frame spans the cell: `[` first, `]` against the divider's margin.
+        let open = plain.find('[').unwrap();
+        assert_eq!(open, 0, "bracket must open at the cell edge: |{cell}|");
+        let close = plain.find(']').unwrap();
+        let divider = plain.find('│').unwrap();
+        assert_eq!(divider - close, 2, "close bracket sits one space before the divider: |{cell}|");
+        // Centred: padding on both sides differs by at most one.
+        let inner = &plain[open + 1..close];
+        let lead = inner.len() - inner.trim_start().len();
+        let trail = inner.len() - inner.trim_end().len();
+        assert!(lead.abs_diff(trail) <= 1, "not centred: |{inner}|");
     }
 }

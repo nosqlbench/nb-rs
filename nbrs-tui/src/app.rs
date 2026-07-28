@@ -2433,7 +2433,10 @@ impl App {
     /// digit width so every row's divider aligns.
     fn margin_width(total_phases: usize) -> usize {
         let tw = total_phases.to_string().len().max(1);
-        (tw * 2 + 3) + 1 + 8 + 1 + 8 // count · " " · leaf(8) · " " · session(8)
+        // Mark · " " · count · " " · leaf(8) · " " · session(8) — must track
+        // `widgets::margin_body_width`, which the log-only surface uses, or the
+        // two surfaces stop aligning with each other.
+        widgets::TIMING_MARK.chars().count() + 1 + (tw * 2 + 3) + 1 + 8 + 1 + 8
     }
 
     /// Format the margin from parts: `count` left-padded to the fixed count
@@ -2443,7 +2446,7 @@ impl App {
         let count_w = tw * 2 + 3;
         let leaf_s = leaf.map(widgets::format_dur_compact).unwrap_or_else(|| "—".into());
         let sess_s = sess.map(widgets::format_dur_compact).unwrap_or_else(|| "—".into());
-        format!("{count:<count_w$} {leaf_s:>8} {sess_s:>8}")
+        format!("{} {count:<count_w$} {leaf_s:>8} {sess_s:>8}", widgets::TIMING_MARK)
     }
 
     fn draw_tree(&self, frame: &mut Frame, area: Rect, state: &RunState) {

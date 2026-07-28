@@ -179,11 +179,22 @@ pub fn format_dur_compact(secs: f64) -> String {
 // the executable form of that documentation for the SRD-63 margin work.
 #[allow(dead_code)]
 pub fn margin_body_width(total_phases: usize) -> usize {
-    8 + 1 + (total_phases.to_string().len().max(1) * 2 + 3) + 1 + 8
+    TIMING_MARK.chars().count() + 1
+        + 8 + 1 + (total_phases.to_string().len().max(1) * 2 + 3) + 1 + 8
 }
 
-/// The agreed status-margin body: a fixed-width `session-time · count ·
-/// phase/leaf-time` triad (no `│`, no color) — session time on the LEFT, the
+/// Marks a gutter cell as PHASE TIMING, so timings are identifiable at a glance
+/// and are not read as one of the metric cells that share the same column.
+///
+/// Deliberately a single-cell glyph. The obvious choices — ⏱ U+23F1, ⌚, 🕐 —
+/// carry emoji presentation and occupy two terminal cells, while the width
+/// arithmetic through this module counts CHARACTERS. Any of them would shift
+/// every divider on the timing rows by one column, breaking the alignment the
+/// mark exists to serve.
+pub const TIMING_MARK: &str = "◷";
+
+/// The agreed status-margin body: a [`TIMING_MARK`] followed by a fixed-width
+/// `session-time · count · phase/leaf-time` triad (no `│`, no color) — session time on the LEFT, the
 /// phase counter in the MIDDLE, the phase timer on the RIGHT. `count` is padded
 /// to the `[n/total]` field width so the flanking right-aligned 8-col time slots
 /// line up across every row; `—` fills an absent time. Shared by the managed-TUI
@@ -193,7 +204,7 @@ pub fn margin_body(total_phases: usize, count: &str, leaf: Option<f64>, sess: Op
     let count_w = tw * 2 + 3;
     let leaf_s = leaf.map(format_dur_compact).unwrap_or_else(|| "—".to_string());
     let sess_s = sess.map(format_dur_compact).unwrap_or_else(|| "—".to_string());
-    format!("{sess_s:>8} {count:<count_w$} {leaf_s:>8}")
+    format!("{TIMING_MARK} {sess_s:>8} {count:<count_w$} {leaf_s:>8}")
 }
 
 /// Format a rate value with auto-scaling (K/M suffix).
