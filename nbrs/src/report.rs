@@ -345,6 +345,58 @@ pub fn image_section_body(report_path: &Path, image_path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::markdown_table;
+
+    /// Pipe positions counted in CHARACTERS. `char_indices` yields BYTE offsets,
+    /// which would report a correctly-padded row containing `µ` as misaligned —
+    /// measuring the test the same wrong way the code must not.
+    fn cols(line: &str) -> Vec<usize> {
+        line.chars().enumerate().filter(|(_, c)| *c == '|').map(|(i, _)| i).collect()
+    }
+
+    /// Every `|` must land in the same column on every line of a table.
+    ///
+    /// The report table emitted `|---|---|` beside unpadded cells, so the raw
+    /// markdown was a ragged grid — fine once rendered, hard to read as text,
+    /// which is how these files are read most of the time.
+    #[test]
+    fn markdown_table_aligns_every_divider() {
+        let header = vec!["p".to_string(), "segments".to_string(), "bytes".to_string()];
+        let rows = vec![
+            vec!["Partition(0/36 [0..100000))".into(), "1".into(), "489170772".into()],
+            vec!["short".into(), "22".into(), "7".into()],
+        ];
+        let out = markdown_table(&header, &rows, 1);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "header + divider + 2 rows:\n{out}");
+        let want = cols(lines[0]);
+        for (n, l) in lines.iter().enumerate() {
+            assert_eq!(cols(l), want, "line {n} pipes misaligned:\n{out}");
+        }
+        // The divider is filled, not a bare `---`.
+        assert!(lines[1].contains("-----"), "divider must span the column:\n{out}");
+        // Label column left-aligned, value columns right-aligned.
+        assert!(lines[3].starts_with("| short  "), "labels left-align:\n{out}");
+        assert!(lines[3].contains("|       22 |"), "values right-align:\n{out}");
+    }
+
+    /// Width is counted in characters, not bytes, so a multi-byte unit suffix
+    /// doesn't over-pad its column and knock the grid out of true.
+    #[test]
+    fn markdown_table_measures_characters_not_bytes() {
+        let header = vec!["metric".to_string(), "value".to_string()];
+        let rows = vec![
+            vec!["latency".into(), "12µs".into()],   // 'µ' is two bytes
+            vec!["count".into(), "9999".into()],
+        ];
+        let out = markdown_table(&header, &rows, 1);
+        let lines: Vec<&str> = out.lines().collect();
+        let want = cols(lines[0]);
+        for (n, l) in lines.iter().enumerate() {
+            assert_eq!(cols(l), want, "line {n} misaligned by byte-width padding:\n{out}");
+        }
+    }
+
     use super::*;
 
     fn tmp_path(name: &str) -> std::path::PathBuf {
@@ -461,4 +513,56 @@ mod tests {
         assert!(body.contains("![plot_recall](plot_recall.png)"),
             "got: {body}");
     }
+}
+
+/// Render a markdown table with every `|` in the same column.
+///
+/// A rendered table looks the same whether or not the source is padded, but these
+/// `.md` files are read as text at least as often as they are rendered, and a
+/// ragged grid is hard to scan. Cells are padded to the widest entry in their
+/// column and the divider is filled to match.
+///
+/// `right_align_from` is the first column index to right-align — label columns
+/// before it stay left-aligned. Pass `header.len()` to left-align everything.
+///
+/// Widths count CHARACTERS, not bytes: a unit suffix like `µs` is two bytes and
+/// one column, so byte length would over-pad whichever column it lands in.
+pub(crate) fn markdown_table(
+    header: &[String],
+    rows: &[Vec<String>],
+    right_align_from: usize,
+) -> String {
+    let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < widths.len() {
+                widths[i] = widths[i].max(cell.chars().count());
+            }
+        }
+    }
+
+    let mut out = String::new();
+    out.push('|');
+    for (i, h) in header.iter().enumerate() {
+        out.push_str(&format!(" {:<w$} |", h, w = widths[i]));
+    }
+    out.push('\n');
+    out.push('|');
+    for w in &widths {
+        out.push_str(&format!("-{}-|", "-".repeat(*w)));
+    }
+    out.push('\n');
+    for row in rows {
+        out.push('|');
+        for (i, cell) in row.iter().enumerate() {
+            if i >= widths.len() { continue; }
+            if i < right_align_from {
+                out.push_str(&format!(" {:<w$} |", cell, w = widths[i]));
+            } else {
+                out.push_str(&format!(" {:>w$} |", cell, w = widths[i]));
+            }
+        }
+        out.push('\n');
+    }
+    out
 }

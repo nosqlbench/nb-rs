@@ -839,6 +839,71 @@ fn split_attached_value(cur: &str) -> Option<(String, String)> {
 /// label-value-pair) re-use the existing
 /// [`metric_provider`] / [`series_provider`] / [`filter_provider`]
 /// plumbing.
+/// First-positional words `report_command` accepts besides an item name, so tab
+/// offers the whole vocabulary of that slot rather than only half of it.
+const REPORT_POSITIONAL_WORDS: &[&str] = &["all", "list", "figure", "rename", "scratch"];
+
+fn with_report_words(mut names: Vec<String>, partial: &str) -> Vec<String> {
+    names.extend(REPORT_POSITIONAL_WORDS.iter()
+        .filter(|w| w.starts_with(partial))
+        .map(|w| (*w).to_string()));
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// How many positional slots the item-name provider serves.
+///
+/// veks counts every non-`-` word as a positional, and `workload=<file>` /
+/// `session=<dir>` are exactly that shape — so with the default single slot, one
+/// `workload=` token exhausted the budget and the name stopped completing:
+/// `nbrs table comp` offered `compaction_shape` while
+/// `nbrs table workload=x.yaml comp` offered nothing, though the second is the
+/// form the tool's own hint text tells you to use. Serving several slots lets the
+/// provider decide for itself, which is what [`report_name_slot_open`] does.
+const REPORT_POSITIONAL_SLOTS: usize = 4;
+
+/// Whether the item-name slot is still unfilled.
+///
+/// Everything before the name is a `key=value` param, a flag, or a flag's value.
+/// A bare word that is none of those IS the name, and once one is present the
+/// provider must go quiet rather than suggest a second.
+fn report_name_slot_open(ctx: &[&str]) -> bool {
+    let mut i = 0;
+    while i < ctx.len() {
+        let w = ctx[i];
+        if w.starts_with('-') {
+            // Skip a value-taking flag's value; `--flag=value` is self-contained.
+            if !w.contains('=') && flag_takes_value(w) {
+                i += 1;
+            }
+        } else if !w.contains('=') && !REPORT_POSITIONAL_WORDS.contains(&w) {
+            return false;   // a bare, non-keyword word — that's the name
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Positional completion for `nbrs plot <name>` / `nbrs report plot <name>`.
+///
+/// `fn_provider` takes a plain fn pointer, so each kind gets its own thin
+/// wrapper rather than a closure over the kind.
+fn plot_positional_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    if !report_name_slot_open(ctx) {
+        return Vec::new();
+    }
+    with_report_words(plot_name_provider(partial, ctx), partial)
+}
+
+/// Positional completion for `nbrs table <name>` / `nbrs report table <name>`.
+fn table_positional_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    if !report_name_slot_open(ctx) {
+        return Vec::new();
+    }
+    with_report_words(summary_name_provider(partial, ctx), partial)
+}
+
 pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
     use nbrs_workload::report::vocab::{self, ValueProvider};
 
@@ -905,6 +970,24 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
         // identically rather than one being second-class.
         .with_value_provider("session=", fn_provider(session_name_provider))
         .with_value_provider("workload=", fn_provider(workload_positional_provider));
+
+    // The POSITIONAL — the item name. Only `--name` carried a provider, so
+    // `nbrs table <TAB>` offered nothing even though `nbrs table --name <TAB>`
+    // listed the very same items, and the positional is the spelling the docs and
+    // everyday use favour (`nbrs table compaction_shape`). Kind-specific, so
+    // `table` offers table items and `plot` offers plots rather than both.
+    node = match kind {
+        nbrs_workload::report::Kind::Plot =>
+            node.with_positional_provider(fn_provider(plot_positional_provider))
+                .with_positional_slots(REPORT_POSITIONAL_SLOTS),
+        nbrs_workload::report::Kind::Table =>
+            node.with_positional_provider(fn_provider(table_positional_provider))
+                .with_positional_slots(REPORT_POSITIONAL_SLOTS),
+        // text/file/details aren't accepted at this position by the parser yet
+        // (see the ignored `report_text_excludes_figure_directives` test), so
+        // advertising names for them would promise a path that errors.
+        _ => node,
+    };
 
     node
 }
@@ -1912,6 +1995,38 @@ mod walker_tests {
         assert_eq!(split_attached_value("--strict=1"), None);
         assert_eq!(split_attached_value("session=/tmp/s"), None);
         assert_eq!(split_attached_value("--execution"), None);
+    }
+
+    /// The item-name POSITIONAL must complete, and must survive a preceding
+    /// `key=value` token.
+    ///
+    /// Only `--name` carried a provider, so `nbrs table <TAB>` offered nothing
+    /// while `nbrs table --name <TAB>` listed the very same items — and the
+    /// positional is the spelling the docs and everyday use favour. veks counts
+    /// every non-`-` word as a positional, so `workload=<file>` alone exhausted a
+    /// single slot and silenced the provider even after it was attached.
+    #[test]
+    fn report_item_names_complete_at_the_positional() {
+        // `report_name_slot_open` is the gate; drive it directly since the name
+        // sources need a session db or workload on disk.
+        assert!(report_name_slot_open(&[]), "empty line: the name slot is open");
+        assert!(report_name_slot_open(&["workload=w.yaml"]),
+            "a kv param must not consume the name slot");
+        assert!(report_name_slot_open(&["workload=w.yaml", "session=/tmp/s"]),
+            "several kv params must not consume it either");
+        assert!(report_name_slot_open(&["--db", "/tmp/m.db"]),
+            "a value flag and its value must not consume it");
+        assert!(report_name_slot_open(&["--ascii"]),
+            "a bool flag must not consume it");
+        assert!(report_name_slot_open(&["all"]),
+            "a structural word is not the item name");
+
+        // Once a real name is present the provider must go quiet rather than
+        // suggest a second one.
+        assert!(!report_name_slot_open(&["compaction_shape"]),
+            "an item name fills the slot");
+        assert!(!report_name_slot_open(&["workload=w.yaml", "compaction_shape"]),
+            "…including after a kv param");
     }
 
     /// The db-backed value providers must read the session named ON THE LINE.

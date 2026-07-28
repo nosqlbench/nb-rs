@@ -356,31 +356,22 @@ fn render_metricsql_table(
         return Ok(out);
     }
 
-    // Markdown.
-    let mut out = String::new();
-    let mut header: Vec<&str> = group_keys.iter().map(String::as_str).collect();
-    let header_strs: Vec<&str> = column_headers.iter().map(String::as_str).collect();
-    for h in &header_strs { header.push(*h); }
-    out.push_str("| ");
-    out.push_str(&header.join(" | "));
-    out.push_str(" |\n|");
-    for _ in &header {
-        out.push_str("---|");
-    }
-    out.push('\n');
-    for (group_val, cells) in &by_group {
-        out.push_str("| ");
-        for v in split_group(group_val) {
-            out.push_str(&v);
-            out.push_str(" | ");
-        }
-        let cell_strs: Vec<String> = cells.iter()
-            .zip(column_units.iter())
-            .map(|(c, u)| render_cell(*c, u.as_ref(), " | "))
-            .collect();
-        out.push_str(&cell_strs.join(" | "));
-        out.push_str(" |\n");
-    }
+    // Markdown. Label columns left-aligned, value columns right-aligned; the
+    // shared renderer pads every cell so the `|` grid lines up in the raw file.
+    let header: Vec<String> = group_keys.iter().cloned()
+        .chain(column_headers.iter().cloned())
+        .collect();
+    let label_cols = group_keys.len();
+    let rows: Vec<Vec<String>> = by_group.iter()
+        .map(|(group_val, cells)| {
+            let mut row = split_group(group_val);
+            row.extend(cells.iter()
+                .zip(column_units.iter())
+                .map(|(c, u)| render_cell(*c, u.as_ref(), " | ")));
+            row
+        })
+        .collect();
+    let out = crate::report::markdown_table(&header, &rows, label_cols);
     Ok(out)
 }
 

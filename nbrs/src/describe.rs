@@ -877,9 +877,10 @@ fn describe_wiring_functions_md(path: &str) {
     for (cat, funcs) in &grouped {
         out.push_str(&format!("## {}\n\n", cat.display_name()));
 
-        // Summary table for this category
-        out.push_str("| Function | Params | Arity | JIT | Description |\n");
-        out.push_str("|----------|--------|-------|-----|-------------|\n");
+        // Summary table for this category. Rows are collected first so the
+        // renderer can pad every cell to its column width — emitting a fixed
+        // `|----------|` divider beside unpadded cells left the grid ragged.
+        let mut table_rows: Vec<Vec<String>> = Vec::new();
 
         for sig in funcs {
             let level = probe_compile_level(sig.name);
@@ -909,11 +910,15 @@ fn describe_wiring_functions_md(path: &str) {
 
             // Escape pipes in description
             let desc = sig.description.replace('|', "\\|");
-            out.push_str(&format!(
-                "| `{}` | {} | {} | {} | {} |\n",
-                sig.name, params_desc, arity, jit, desc
-            ));
+            table_rows.push(vec![
+                format!("`{}`", sig.name), params_desc, arity, jit.to_string(), desc,
+            ]);
         }
+        let headers: Vec<String> = ["Function", "Params", "Arity", "JIT", "Description"]
+            .iter().map(|h| (*h).to_string()).collect();
+        // All columns left-aligned: every one is prose or a short token, none
+        // numeric.
+        out.push_str(&crate::report::markdown_table(&headers, &table_rows, headers.len()));
         out.push('\n');
 
         // Detailed entries with help text
@@ -1096,10 +1101,11 @@ fn describe_wiring_types_md(path: &str) {
 
     for (group_name, types) in groups {
         out.push_str(&format!("## {group_name}\n\n"));
-        out.push_str("| Label | Description |\n|---|---|\n");
-        for (t, desc) in *types {
-            out.push_str(&format!("| `{}` | {} |\n", port_type_label(*t), desc));
-        }
+        let headers: Vec<String> = vec!["Label".to_string(), "Description".to_string()];
+        let rows: Vec<Vec<String>> = types.iter()
+            .map(|(t, desc)| vec![format!("`{}`", port_type_label(*t)), (*desc).to_string()])
+            .collect();
+        out.push_str(&crate::report::markdown_table(&headers, &rows, headers.len()));
         out.push('\n');
     }
 
