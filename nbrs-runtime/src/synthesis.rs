@@ -353,7 +353,7 @@ pub struct FiberBuilder {
 /// unresolved bind points produce broken ops at runtime.
 pub fn validate_bind_points(
     templates: &[ParsedOp],
-    program: &PolydatProgram,
+    program_for_op: &dyn Fn(&str) -> Arc<PolydatProgram>,
 ) -> Result<(), String> {
     // Collect all capture declarations across templates. Captures
     // are extracted at workload-parse time and live on
@@ -370,6 +370,14 @@ pub fn validate_bind_points(
     let mut errors: Vec<String> = Vec::new();
 
     for template in templates {
+        // THIS op's program, not the activity-wide one. An op that owns a
+        // kernel (its own `bindings:`, or an adapter that materialises one)
+        // has its bindings in that program and nowhere else, so validating
+        // every template against the activity kernel reported an op's own
+        // binding as unresolvable — `{x}` in `stmt:`/`raw:` failed at RUNTIME
+        // while the same name still rendered fine in `memo:`/`gutter:`, which
+        // read the live wires instead of this check.
+        let program = program_for_op(&template.name);
         for (field_name, value) in &template.op {
             if let serde_json::Value::String(s) = value {
                 let bps = bindpoints::extract_bind_points(s);

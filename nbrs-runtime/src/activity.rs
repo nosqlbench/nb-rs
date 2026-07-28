@@ -1397,7 +1397,8 @@ impl Activity {
         };
 
         // Validate all bind points are resolvable before execution
-        if let Err(e) = crate::synthesis::validate_bind_points(templates, &program) {
+        let program_for_op = |name: &str| op_builder.program_for_op(name);
+        if let Err(e) = crate::synthesis::validate_bind_points(templates, &program_for_op) {
             crate::diag!(crate::observer::LogLevel::Error, "error: {e}");
             return true;
         }
