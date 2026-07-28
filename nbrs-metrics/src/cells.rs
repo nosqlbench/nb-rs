@@ -209,4 +209,64 @@ mod tests {
                  missing from {eff}");
         }
     }
+
+    /// The tree does NOT forbid two siblings sharing a label set, and must not:
+    /// an iteration whose values repeat (the fib comprehension yields `n=1`
+    /// twice) re-materialises the same identity, which is one identity sampled
+    /// again over time. Enforcing distinctness in `attach` was tried and
+    /// panicked on that working case.
+    ///
+    /// This test pins the permissiveness so the guarantee cells rely on is
+    /// understood as a RESOLVER guarantee, not a tree invariant.
+    #[test]
+    fn the_tree_permits_siblings_that_share_a_label_set() {
+        let p = parent();
+        for _ in 0..2 {
+            let c = Arc::new(RwLock::new(Component::new(
+                Labels::of("tier", "24"), HashMap::new())));
+            crate::component::attach(&p, &c);
+        }
+        assert_eq!(p.read().unwrap().child_count(), 2,
+            "attach is vertical-only by design; siblings may repeat");
+    }
+
+    /// Distinct values attach as distinct siblings — the thing cells exist to
+    /// create.
+    #[test]
+    fn distinct_siblings_still_attach() {
+        let p = parent();
+        for v in ["24", "25", "26"] {
+            let c = Arc::new(RwLock::new(Component::new(
+                Labels::of("tier", v), HashMap::new())));
+            crate::component::attach(&p, &c);
+        }
+        assert_eq!(p.read().unwrap().child_count(), 3);
+    }
+
+    /// So the guarantee has to come from HERE: the same coordinate resolves to
+    /// the existing cell instead of attaching a twin, which is what keeps one
+    /// coordinate mapped to one identity.
+    #[test]
+    fn the_resolver_is_what_prevents_a_duplicated_cell_identity() {
+        let p = parent();
+        let coord = Labels::of("tier", "24");
+        for _ in 0..5 {
+            resolve_under(&p, &coord);
+        }
+        assert_eq!(p.read().unwrap().child_count(), 1,
+            "repeated resolution must not multiply cells for one coordinate");
+    }
+
+    /// Cells route through the same check, so a resolver cannot be the only
+    /// thing standing between the tree and a duplicated identity.
+    #[test]
+    fn repeated_cell_resolution_does_not_trip_the_sibling_check() {
+        let p = parent();
+        let coord = Labels::of("tier", "24");
+        let first = resolve_under(&p, &coord);
+        let again = resolve_under(&p, &coord);
+        assert!(Arc::ptr_eq(&first, &again),
+            "memoisation must return the existing cell rather than attach a twin");
+        assert_eq!(p.read().unwrap().child_count(), 1);
+    }
 }

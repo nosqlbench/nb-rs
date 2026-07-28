@@ -827,6 +827,23 @@ fn count_walk(
 /// attach time (init, not per-cycle): a collision is a construction
 /// bug and panics with both label sets named, rather than letting
 /// the composition silently pick a winner.
+///
+/// **The rule is vertical, not horizontal.** It constrains a child against
+/// its ANCESTORS. It deliberately does not stop two SIBLINGS declaring the
+/// same own-labels, which composes two components with byte-identical
+/// `effective_labels` — and that is legitimate: a phase re-materialised
+/// later, or an iteration whose values repeat (the fib comprehension yields
+/// `n=1` twice), is the SAME metric identity sampled again over time, not a
+/// second identity. Enforcing sibling-distinctness here was tried and
+/// rejected: it panics on that working case.
+///
+/// The consequence to know: two components alive at once with identical
+/// effective labels can each register the same family, yielding two
+/// instruments that share one metric identity, and the duplicate-family
+/// check cannot see it because they are different components. For cells
+/// materialised from data ([`crate::cells`]) that is closed by construction
+/// — `CellMap` memoises one cell per coordinate per parent — but it is a
+/// resolver guarantee, not a tree invariant.
 pub fn attach(
     parent: &Arc<RwLock<Component>>,
     child: &Arc<RwLock<Component>>,

@@ -202,18 +202,28 @@ nothing.
 
 ## Open questions
 
-1. **Global identity uniqueness.** The duplicate-family check is per-component,
-   so it enforces uniqueness *within* a cell, and `MetricSet::insert_counter`
-   looks up by family and appends without dup detection. Nothing enforces that
-   two components cannot carry identical effective label sets. Today that is
-   unreachable because every cell is structurally distinct; once cells come from
-   data it becomes reachable, and it is the one place the closed 1:1 association
-   could break unnoticed. Push the check up to the full label set, tree-wide?
-2. **Which tiers may declare.** Phase-level is clearly needed. Op-level
+1. **Which tiers may declare.** Phase-level is clearly needed. Op-level
    declaration would let one op own a dimension its siblings never see — useful,
    or a footgun?
 
 ## Settled
+
+- **Sibling identity is a resolver guarantee, not a tree invariant.** The
+  label-ownership check in `attach` is *vertical*: it constrains a child against
+  its ancestors. It permits two siblings to share an own-label set, and must —
+  an iteration whose values repeat (the fib comprehension yields `n=1` twice)
+  re-materialises the same identity, which is one identity sampled again over
+  time, not a second identity. Enforcing sibling-distinctness in `attach` was
+  implemented, tested, and **rejected**: it panics on that working case
+  (`comprehension_gen_fib_count`).
+
+  The residual hazard is therefore real but narrow: two components alive at once
+  with identical effective labels can each register the same family, and the
+  per-component duplicate check cannot see it. For cells this is closed by
+  `CellMap` memoising one cell per coordinate per parent — a test asserts
+  repeated resolution attaches no twin — but it is the resolver that guarantees
+  it, so any future data-derived child path must route through the same resolver
+  rather than calling `attach` directly.
 
 - **Multi-dimension coordinates are ONE cell** carrying the whole set. Identity
   is the resulting label set, so composition order is not something identity
