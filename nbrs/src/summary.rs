@@ -287,9 +287,14 @@ fn render_metricsql_table(
     // sees a column of bare nanosecond integers labelled
     // `latency` and has no way to tell whether
     // `338422551` is microseconds, nanoseconds, or seconds.
+    let timestamp_columns: Vec<bool> = cfg.metricsql_columns.iter()
+        .map(|(_name, expr)| is_timestamp_query(expr))
+        .collect();
     let column_units: Vec<Option<TimeUnit>> = cfg.metricsql_columns.iter()
         .enumerate()
         .map(|(idx, (_name, expr))| {
+            // A moment is formatted as a clock time, not scaled as a duration.
+            if timestamp_columns[idx] { return None; }
             if !is_time_domain_query(expr) { return None; }
             // Gather the max-abs cell value across rows.
             let max_abs = by_group.values()
@@ -311,15 +316,25 @@ fn render_metricsql_table(
     // Render headers including unit annotations.
     let column_headers: Vec<String> = cfg.metricsql_columns.iter()
         .zip(column_units.iter())
-        .map(|((name, _expr), unit)| match unit {
-            Some(u) => format!("{name} ({})", u.symbol),
-            None    => name.clone(),
+        .enumerate()
+        .map(|(idx, ((name, _expr), unit))| {
+            if timestamp_columns[idx] { return format!("{name} (UTC)"); }
+            match unit {
+                Some(u) => format!("{name} ({})", u.symbol),
+                None    => name.clone(),
+            }
         })
         .collect();
 
     // Render a single cell against the chosen column unit.
-    fn render_cell(value: Option<f64>, unit: Option<&TimeUnit>, sep: &str) -> String {
+    fn render_cell(value: Option<f64>, unit: Option<&TimeUnit>, is_timestamp: bool, sep: &str) -> String {
         let _ = sep;
+        if is_timestamp {
+            return match value {
+                None => "-".to_string(),
+                Some(v) => nbrs_runtime::session::format_utc_short(v),
+            };
+        }
         match (value, unit) {
             (None, _)            => "-".to_string(),
             (Some(v), Some(u))   => format!("{:.3}", v / u.divisor),
@@ -347,8 +362,8 @@ fn render_metricsql_table(
         out.push('\n');
         for (group_val, cells) in &by_group {
             let mut row: Vec<String> = split_group(group_val);
-            for (cell, unit) in cells.iter().zip(column_units.iter()) {
-                row.push(render_cell(*cell, unit.as_ref(), ","));
+            for (idx, (cell, unit)) in cells.iter().zip(column_units.iter()).enumerate() {
+                row.push(render_cell(*cell, unit.as_ref(), timestamp_columns[idx], ","));
             }
             out.push_str(&row.join(","));
             out.push('\n');
@@ -367,7 +382,8 @@ fn render_metricsql_table(
             let mut row = split_group(group_val);
             row.extend(cells.iter()
                 .zip(column_units.iter())
-                .map(|(c, u)| render_cell(*c, u.as_ref(), " | ")));
+                .enumerate()
+                .map(|(idx, (c, u))| render_cell(*c, u.as_ref(), timestamp_columns[idx], " | ")));
             row
         })
         .collect();
@@ -410,6 +426,37 @@ impl TimeUnit {
 /// `_µs`) are recognised. False positives (a hypothetical
 /// `latency_count` of dimensionless integers) would just
 /// re-scale a small column harmlessly.
+/// Whether a column's value is a MOMENT rather than a quantity.
+///
+/// `tfirst_over_time` / `tlast_over_time` return Unix seconds, so the duration
+/// heuristics below would happily label them "s" and print 1785…  as a magnitude.
+/// A moment needs formatting as a clock time instead, and this test has to run
+/// first because such a query also matches the `_seconds` suffix rule.
+fn is_timestamp_query(expr: &str) -> bool {
+    let lower = expr.to_ascii_lowercase();
+    // Every MetricsQL `t*_over_time` returns a moment, so match the family rather
+    // than listing members: `tlast_change_over_time` is not a substring of
+    // `tlast_over_time` and was silently rendering as a raw epoch float.
+    const MOMENT_FNS: &[&str] = &["tfirst_over_time", "tlast_over_time", "tlast_change_over_time"];
+    if !MOMENT_FNS.iter().any(|f| lower.contains(f)) {
+        return false;
+    }
+    // Only a BARE timestamp rollup is a moment. `tlast - tfirst` is an elapsed
+    // duration and must scale like one; formatting it as a clock time turns
+    // "5h25m of compaction" into a date in 1970. Any top-level arithmetic means
+    // the value is derived, so look for an operator outside parentheses.
+    let mut depth = 0i32;
+    for c in lower.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            '+' | '-' | '*' | '/' if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
 fn is_time_domain_query(expr: &str) -> bool {
     let lower = expr.to_ascii_lowercase();
     const NAME_HINTS: &[&str] = &[

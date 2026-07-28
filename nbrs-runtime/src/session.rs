@@ -1580,6 +1580,23 @@ pub fn format_log_timestamp(t: std::time::SystemTime) -> String {
 }
 
 /// Convert days since Unix epoch to (year, month, day).
+/// Format Unix seconds as `MM-DD HH:MM:SS` (UTC).
+///
+/// Exposed because report tables now show WHEN a series started and last moved,
+/// and the epoch value on its own is unreadable. Shares `days_to_ymd` with the
+/// session-id formatter rather than restating the calendar arithmetic; the year
+/// is omitted because these columns compare moments inside one run, where the
+/// month and day are already the widest useful distinction.
+pub fn format_utc_short(epoch_seconds: f64) -> String {
+    if !epoch_seconds.is_finite() || epoch_seconds <= 0.0 {
+        return "-".to_string();
+    }
+    let secs = epoch_seconds as u64;
+    let (_, month, day) = days_to_ymd(secs / 86400);
+    let t = secs % 86400;
+    format!("{month:02}-{day:02} {:02}:{:02}:{:02}", t / 3600, (t % 3600) / 60, t % 60)
+}
+
 fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     // Algorithm from Howard Hinnant's date library
     let z = days + 719468;
