@@ -78,7 +78,7 @@ async fn fiber_reads_phase_and_cycle_from_task_context() {
     let _g = TEST_LOCK.lock().unwrap();
     let phase: Arc<str> = Arc::from("rampup");
 
-    with_fiber_context(phase.clone(), empty_controls(), None, async {
+    with_fiber_context(phase.clone(), empty_controls(), async {
         // The fiber body advances the cycle a few times, asserting each
         // read reflects the most-recent update. `phase`/`cycle` are
         // macro-authored — compile a fresh kernel per iteration so each
@@ -130,7 +130,7 @@ async fn fiber_reads_control_through_context() {
     let root = build_session_with_concurrency(8);
 
     let phase: Arc<str> = Arc::from("rampup");
-    with_fiber_context(phase, snapshot_controls(&root), Some(root.clone()), async {
+    with_fiber_context(phase, snapshot_controls(&root), async {
         set_task_cycle(0);
 
         // The control readers (`control` / `control_u64` / `control_str`)
@@ -155,7 +155,7 @@ async fn fiber_writes_control_via_control_set_and_reads_back() {
     let root = build_session_with_concurrency(8);
 
     let phase: Arc<str> = Arc::from("rampup");
-    with_fiber_context(phase, snapshot_controls(&root), Some(root.clone()), async {
+    with_fiber_context(phase, snapshot_controls(&root), async {
         // Issue a write from inside the fiber, via the same factory route
         // the compiler uses, under a binding scope (for attribution).
         let _scope = polydat::dsl::factory::compile_ctx::scoped_binding("integration_feedback_loop");
@@ -203,7 +203,7 @@ async fn control_set_out_of_range_leaves_value_unchanged() {
         .controls().get("concurrency").unwrap();
 
     let phase: Arc<str> = Arc::from("rampup");
-    with_fiber_context(phase, snapshot_controls(&root), Some(root.clone()), async {
+    with_fiber_context(phase, snapshot_controls(&root), async {
         let consts = [polydat::dsl::factory::ConstArg::Str("concurrency".into())];
         let writer = polydat::dsl::factory::build_node("control_set", &[], &[], &consts)
             .expect("build control_set");
@@ -238,7 +238,7 @@ async fn branch_scoped_control_resolves_from_descendant_fiber() {
     set_session_root(root.clone());
 
     let phase: Arc<str> = Arc::from("any_phase");
-    with_fiber_context(phase, snapshot_controls(&root), Some(root.clone()), async {
+    with_fiber_context(phase, snapshot_controls(&root), async {
         let mut k = polydat::dsl::compile_polydat("r := control(\"hdr_sigdigs\")")
             .expect("compile");
         assert_eq!(k.pull("r").as_f64(), 4.0);

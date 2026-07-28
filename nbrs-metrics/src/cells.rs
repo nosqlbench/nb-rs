@@ -89,6 +89,27 @@ impl CellMap {
     }
 }
 
+/// Resolve the cell for `coord` under `parent`, creating it on first sight.
+///
+/// Free function rather than a method so the lock discipline lives in ONE
+/// place: resolving attaches a child, which takes `parent`'s write lock, so a
+/// caller holding a read guard across the call self-deadlocks on the same
+/// `RwLock`. Binding the `Arc` first is what releases it.
+///
+/// `parent` must be **the component the metric registers on**, not an ambient
+/// one. A cell REFINES an identity: the coordinate adds dimensions to the label
+/// set that component already contributes. Sourcing the parent from ambient
+/// context instead composes identity from wherever the code happens to be
+/// running, which silently drops the parts the registration site owns (`op=`,
+/// most obviously) — a different metric identity wearing the same family name.
+pub fn resolve_under(
+    parent: &Arc<RwLock<Component>>,
+    coord: &Labels,
+) -> Arc<RwLock<Component>> {
+    let cells = parent.read().unwrap_or_else(|e| e.into_inner()).cells();
+    cells.resolve(parent, coord)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +185,28 @@ mod tests {
         assert!(eff.contains("tier=") && eff.contains("keyspace="),
             "both dimensions belong to one cell, got {eff}");
         assert_eq!(p.read().unwrap().child_count(), 1);
+    }
+
+    /// Identity is the LABEL SET (with the family name promoted into it), so a
+    /// cell must add to the parent's dimensions, never stand in for them. If a
+    /// cell were parented somewhere else, the emitted identity would silently
+    /// lose whatever the registration site owned.
+    #[test]
+    fn a_cell_refines_the_parents_identity_rather_than_replacing_it() {
+        let phase = parent();
+        let op = Arc::new(RwLock::new(Component::new(
+            Labels::of("op", "read_history"),
+            HashMap::new(),
+        )));
+        crate::component::attach(&phase, &op);
+
+        let cell = resolve_under(&op, &Labels::of("tier", "24"));
+        let eff = cell.read().unwrap().effective_labels().to_prometheus();
+
+        for owned in ["phase=", "op=", "tier="] {
+            assert!(eff.contains(owned),
+                "a cell must carry every dimension its ancestors own; {owned} \
+                 missing from {eff}");
+        }
     }
 }

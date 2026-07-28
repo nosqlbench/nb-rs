@@ -135,6 +135,24 @@ every check below possible.
 
 ### 4. Runtime
 
+**The parent is the component the metric registers on** — never an ambient one.
+
+Identity is the label set with the family name promoted into it (this crate
+already works that way: `split_name_label` requires a `name` label, and the
+wrapper builds `component_labels.with("family", …)`). Distinct label set ⟺
+distinct identity, 1:1 and closed. A cell therefore **refines** an identity: the
+coordinate ADDS dimensions to the set its registration site already contributes.
+
+Sourcing the parent from ambient context — the running fiber's component, say —
+composes identity from wherever the code happens to be executing, which silently
+drops what the registration site owns (`op=`, most obviously) and yields a
+different identity wearing the same family name. It is also structurally wrong:
+one fiber runs many ops, each with its own `op=` component, so no fiber-level
+component can be the right parent for all of them.
+
+`cells::resolve_under(parent, coord)` takes the parent explicitly for exactly
+this reason.
+
 At attach time the declaring tier's component records the dimension **name**
 (no values).
 
@@ -149,10 +167,9 @@ Per cycle, the metrics wrapper pulls `__cell_<dim>` alongside
    `gauge.set()`. No registry write and no component write lock after first
    sight.
 
-The cache is per-activity on the wrapper, not global. Cell resolution must
-target the **fiber's own** component, reusing `control_set`'s resolution path
-(`runtime_context.rs:195` — its comment flags that as load-bearing: a write must
-hit the component a subsequent read sees).
+The memoization lives on the parent component's `CellMap`, so it is scoped by
+the same containment that scopes the cells themselves — not a separate cache
+with a lifetime of its own.
 
 ### 5. Compile-time checks
 
@@ -185,16 +202,26 @@ nothing.
 
 ## Open questions
 
-1. **Cell lifetime.** Under the phase component (dies with the phase) or the
-   activity/session (persists across phases)? Recommend phase-scoped, matching
-   where the values are produced — but that ends a tier's series when its phase
-   ends, which changes what a trailing report query sees.
-2. **Multi-dimension cells.** `cell: {a: x, b: y}` should resolve to **one**
-   child carrying the whole coordinate rather than nested children, since
-   nesting would impose an arbitrary order on co-equal dimensions.
-3. **Which tiers may declare.** Phase-level is clearly needed. Op-level
+1. **Global identity uniqueness.** The duplicate-family check is per-component,
+   so it enforces uniqueness *within* a cell, and `MetricSet::insert_counter`
+   looks up by family and appends without dup detection. Nothing enforces that
+   two components cannot carry identical effective label sets. Today that is
+   unreachable because every cell is structurally distinct; once cells come from
+   data it becomes reachable, and it is the one place the closed 1:1 association
+   could break unnoticed. Push the check up to the full label set, tree-wide?
+2. **Which tiers may declare.** Phase-level is clearly needed. Op-level
    declaration would let one op own a dimension its siblings never see — useful,
    or a footgun?
+
+## Settled
+
+- **Multi-dimension coordinates are ONE cell** carrying the whole set. Identity
+  is the resulting label set, so composition order is not something identity
+  distinguishes; nesting would add tree structure with no identity meaning.
+- **Lifetime is containment, not a new rule.** A cell lives in its parent's
+  subtree and goes when that subtree does. Where a coordinate binding is
+  declared, reified, or subset is already governed by polydat's scope semantics
+  — this proposal introduces no scope rules of its own.
 
 ## Unverified
 
