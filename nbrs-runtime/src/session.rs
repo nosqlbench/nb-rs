@@ -727,7 +727,16 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
 
     // Umbrella --session / NBRS_SESSION first, so long-form
     // and per-key env can override individual fields.
-    let mut spec = match resolve_flag(args, "--session") {
+    // Accept the bare `session=<spec>` spelling as well as `--session=<spec>`.
+    // Read-side commands already take bare `workload=<file>`, so an operator
+    // reasonably writes `session=<dir>` beside it — and before this, that form was
+    // consumed as an unrecognised key=value and SILENTLY ignored, so the command
+    // reported on `sessions/latest` while naming a different directory. A wrong
+    // answer that looks right is the worst outcome available here.
+    let bare_session = args.iter()
+        .find_map(|a| a.strip_prefix("session="))
+        .map(|v| v.to_string());
+    let mut spec = match resolve_flag(args, "--session").or(bare_session) {
         Some(kv) => parse_session_kv(&kv),
         None => SessionDirSpec {
             session_keep: DEFAULT_SESSIONS_MAX,
@@ -1663,6 +1672,36 @@ mod tests {
         let (path, id) = spec.resolve("auto-id").unwrap();
         assert_eq!(path.to_str(), Some("/tmp/explicit"));
         assert_eq!(id, "explicit");
+    }
+
+    #[test]
+    fn bare_session_kv_resolves_like_the_dash_flag() {
+        // Read-side commands take bare `workload=<file>`, so an operator writes
+        // `session=<dir>` beside it. Before this was accepted, that token was
+        // consumed as an unrecognised key=value and IGNORED — the command
+        // reported on `sessions/latest` while naming a different directory.
+        let _g = env_test_lock();
+        clear_session_env();
+        let bare = resolve_session_dir(&["session=/tmp/explicit".to_string()])
+            .resolve("auto-id").unwrap();
+        let dashed = resolve_session_dir(&["--session=/tmp/explicit".to_string()])
+            .resolve("auto-id").unwrap();
+        assert_eq!(bare, dashed, "both spellings must name the same session");
+        assert_eq!(bare.0.to_str(), Some("/tmp/explicit"));
+    }
+
+    #[test]
+    fn dash_session_wins_over_bare_session() {
+        // Explicit flag beats the bare param spelling, so a wrapper script that
+        // appends `--session=` can override a workload-supplied `session=`.
+        let _g = env_test_lock();
+        clear_session_env();
+        let args = vec![
+            "session=/tmp/from-param".to_string(),
+            "--session=/tmp/from-flag".to_string(),
+        ];
+        let (path, _) = resolve_session_dir(&args).resolve("auto-id").unwrap();
+        assert_eq!(path.to_str(), Some("/tmp/from-flag"));
     }
 
     #[test]

@@ -54,6 +54,28 @@ pub(crate) fn is_cli_param(name: &str) -> bool {
     known_params().map(|p| p.contains(&name)).unwrap_or(true)
 }
 
+/// A CLI flag's value, accepting `--flag=value` and `--flag value`.
+///
+/// The same two spellings [`crate::session::resolve_flag`] accepts, minus its
+/// environment-variable fallback and conflict check — for flags that are
+/// CLI-only by design. Written out because the flags declared in the command
+/// spec are advertised (in `--help` and completion) as taking a value, and a
+/// reader matching only `--flag=` would silently ignore the spelling the
+/// completer suggests.
+fn cli_flag_value(args: &[String], flag: &str) -> Option<String> {
+    let eq_prefix = format!("{flag}=");
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(rest) = arg.strip_prefix(&eq_prefix) {
+            return Some(rest.to_string());
+        }
+        if arg == flag {
+            return iter.next().cloned();
+        }
+    }
+    None
+}
+
 /// Convert the workload-model `SummaryConfig` (parsed from the
 /// `summary:` workload field or the `--summary` CLI flag) into
 /// the SQLite reporter's `ReportConfig`. Used by both the
@@ -843,10 +865,10 @@ impl SessionHost {
     // `scenario_for_session` is recomputed below from the refine block's
     // params (the session-dir name); `openmetrics_url` feeds the
     // session metrics services.
-    let openmetrics_url: Option<String> = args.iter()
-        .find_map(|a| a.strip_prefix("--report-openmetrics-to=")
-            .or_else(|| a.strip_prefix("report-openmetrics-to=")))
-        .map(|s| s.to_string());
+    let openmetrics_url: Option<String> = cli_flag_value(&args[..], "--report-openmetrics-to")
+        .or_else(|| args.iter()
+            .find_map(|a| a.strip_prefix("report-openmetrics-to="))
+            .map(|s| s.to_string()));
     let resume_target: Option<std::path::PathBuf> = {
         let explicit = params.get("resume")
             .filter(|s| !s.is_empty())
@@ -1695,9 +1717,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // every result-binding LHS slot so step-debug / cycle-replay can
     // inspect writes the workload doesn't otherwise consume.
     let kernel_opt: polydat::kernel::KernelOptLevel = {
-        let raw = args.iter()
-            .find_map(|a| a.strip_prefix("--kernel-opt="))
-            .map(|s| s.to_string())
+        let raw = cli_flag_value(&args[..], "--kernel-opt")
             .or_else(|| params.get("kernel_opt").cloned());
         match raw {
             None => polydat::kernel::KernelOptLevel::default(),
@@ -1713,9 +1733,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // `force` drives the differential battery, `off` is the
     // interpreter baseline / escape hatch.
     {
-        let raw = args.iter()
-            .find_map(|a| a.strip_prefix("--jit="))
-            .map(|s| s.to_string())
+        let raw = cli_flag_value(&args[..], "--jit")
             .or_else(|| params.get("jit").cloned());
         if let Some(s) = raw {
             let mode = match s.trim() {

@@ -205,6 +205,20 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
     // (global default), with optional per-family overrides in one value:
     // `metrics_detail=timers,attempt_success:counts,attempt_failure:counts`.
     crate::cli_spec::KvParam { key: "metrics_detail=", provider: free_form },
+    // Metrics output sinks. Both have a `--flag` spelling too; they are listed
+    // here because the runner reads them from params as well
+    // (`params.get("metrics-log")` / `params.get("per-instance-metrics")`), and
+    // this list IS the known-param allow-list — an unlisted key that the runner
+    // nonetheless honours gets reported as unknown, which is the worst of both.
+    crate::cli_spec::KvParam { key: "metrics-log=", provider: free_form },
+    crate::cli_spec::KvParam { key: "per-instance-metrics=", provider: bool_values },
+    // Bare `session=<path|name>`, the sibling of `--session`. Accepted by
+    // `resolve_session_dir` for every command, run included, so it must be a
+    // known param here or a run that honours it also warns that it is unknown.
+    crate::cli_spec::KvParam { key: "session=", provider: session_name_provider },
+    // The runner reads a bare `report-openmetrics-to=<url>` beside the
+    // `--report-openmetrics-to` flag spelling, so it is a known param too.
+    crate::cli_spec::KvParam { key: "report-openmetrics-to=", provider: free_form },
 ];
 
 /// The run-style `key=value` param vocabulary (each key sans its trailing
@@ -234,7 +248,7 @@ fn static_seq(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(&["bucket", "interval", "concat"], partial)
 }
 
-fn static_kernel_opt(partial: &str, _ctx: &[&str]) -> Vec<String> {
+pub(crate) fn static_kernel_opt(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(&["release", "diagnostic"], partial)
 }
 
@@ -246,7 +260,7 @@ fn static_completed_phases(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(&["full", "headers"], partial)
 }
 
-fn static_jit(partial: &str, _ctx: &[&str]) -> Vec<String> {
+pub(crate) fn static_jit(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(&["off", "auto", "force"], partial)
 }
 
@@ -262,14 +276,23 @@ pub(crate) fn session_reuse_values(partial: &str, _ctx: &[&str]) -> Vec<String> 
 /// (the SRD-04 session umbrella), `latest` included — it is a
 /// valid `--session` target.
 pub(crate) fn session_name_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    let Ok(rd) = std::fs::read_dir("logs") else { return Vec::new() };
-    let mut out: Vec<String> = rd
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.starts_with(partial))
-        .collect();
+    // Ask the runtime where sessions live rather than hardcoding a directory.
+    // This read `"logs"` unconditionally, which SRD-77 renamed to `sessions/`,
+    // so `--session <TAB>` silently suggested nothing on every current layout.
+    // `logs/` is still scanned second for a pre-SRD-77 tree.
+    let mut roots = vec![nbrs_runtime::session::default_sessions_root()];
+    roots.push(std::path::PathBuf::from("logs"));
+    let mut out: Vec<String> = Vec::new();
+    for root in roots {
+        let Ok(rd) = std::fs::read_dir(&root) else { continue };
+        out.extend(rd
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.starts_with(partial)));
+    }
     out.sort();
+    out.dedup();
     out
 }
 
@@ -743,6 +766,11 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
     all_value_flags.extend([
         "--name", "--at", "--contextual", "--rename", "--group",
         "--workload", "--session", "--db", "--body", "--body-file",
+        // Bare `key=value` spellings the report handlers accept alongside the
+        // `--` forms. Undeclared, they completed as nothing and read as an
+        // unrecognised token, so `table x session=<dir>` silently reported on
+        // `sessions/latest` while naming another directory.
+        "workload=", "session=",
     ]);
     let bool_flags: &[&str] = &[
         "--add", "--replace", "--stdout", "--ascii", "--dry-run",
@@ -788,7 +816,11 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
         .with_value_provider("--at", fn_provider(at_anchor_provider))
         .with_value_provider("--contextual", fn_provider(contextual_mode_provider))
         .with_value_provider("--session", fn_provider(session_name_provider))
-        .with_value_provider("--workload", fn_provider(workload_positional_provider));
+        .with_value_provider("--workload", fn_provider(workload_positional_provider))
+        // Same providers behind the bare spellings, so both forms complete
+        // identically rather than one being second-class.
+        .with_value_provider("session=", fn_provider(session_name_provider))
+        .with_value_provider("workload=", fn_provider(workload_positional_provider));
 
     node
 }
@@ -1712,6 +1744,25 @@ pub fn spec() -> crate::cli_spec::Command {
 #[cfg(test)]
 mod walker_tests {
     use super::*;
+
+    /// The session provider must scan the root the RUNTIME uses. It read a
+    /// hardcoded `"logs"` — the pre-SRD-77 name — so `--session <TAB>` and
+    /// `session=<TAB>` silently offered nothing on every current layout, which
+    /// reads as "no sessions exist" rather than "this provider is looking in the
+    /// wrong place".
+    #[test]
+    fn session_provider_scans_the_runtime_sessions_root() {
+        let root = nbrs_runtime::session::default_sessions_root();
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let name = format!("zz-provider-probe-{n:x}");
+        std::fs::create_dir_all(root.join(&name)).unwrap();
+
+        let got = session_name_provider("zz-provider-probe-", &[]);
+        let _ = std::fs::remove_dir_all(root.join(&name));
+        assert!(got.contains(&name),
+            "provider must list sessions under {root:?}, got {got:?}");
+    }
 
     fn tempdir(tag: &str) -> std::path::PathBuf {
         // /tmp deliberately, not env::temp_dir(): on some setups

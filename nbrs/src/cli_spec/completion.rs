@@ -28,7 +28,16 @@ pub fn build_command_tree(root: &Command) -> CommandTree {
 }
 
 fn to_strict_node(cmd: &Command) -> StrictNode<true, true> {
-    let strict: StrictNode<false, false> = if cmd.subcommands.is_empty() {
+    // `completion_override` is checked HERE as well as in `to_node`, because
+    // root-level commands are built by this function alone. Without it a root
+    // command carrying an override got the plain leaf node instead — and since
+    // an override is used precisely by commands that declare no `flags` /
+    // `kv_params` of their own, that node is EMPTY: the command name completes,
+    // then nothing after it. `nbrs table`/`nbrs plot` behaved that way while
+    // `nbrs report table` (a deeper child, built by `to_node`) worked.
+    let strict: StrictNode<false, false> = if let Some(provider) = cmd.completion_override {
+        StrictNode::from_node(provider())
+    } else if cmd.subcommands.is_empty() {
         leaf_strict(cmd)
     } else {
         let children: Vec<(&str, Node)> = cmd.subcommands.iter()
@@ -112,4 +121,56 @@ fn leaf_node(cmd: &Command) -> Node {
         }
     }
     node
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A root-level command whose completion comes from an override must expose
+    /// that node's options. Root children are built by [`to_strict_node`] alone,
+    /// which used to fall through to the plain leaf builder and drop the
+    /// override — and since override-carrying commands declare no `flags` of
+    /// their own, the result was an empty node: the command name completed and
+    /// nothing after it did. `nbrs table` / `nbrs plot` were in that state while
+    /// `nbrs report table` worked.
+    #[test]
+    fn root_level_completion_override_is_honoured() {
+        fn override_node() -> Node {
+            Node::leaf_with_flags(&["--only-via-override"], &[])
+        }
+        let cmd = Command {
+            name: "aliased",
+            help: "",
+            category: Category::Tools,
+            level: Level::Secondary,
+            flags: Vec::new(),
+            kv_params: &[],
+            dynamic_options: None,
+            positionals: Vec::new(),
+            subcommands: Vec::new(),
+            handler: None,
+            raw_args: true,
+            completion_override: Some(override_node),
+        };
+        let root = Command {
+            name: "nbrs",
+            help: "",
+            category: Category::Tools,
+            level: Level::Workload,
+            flags: Vec::new(),
+            kv_params: &[],
+            dynamic_options: None,
+            positionals: Vec::new(),
+            subcommands: vec![cmd],
+            handler: None,
+            raw_args: false,
+            completion_override: None,
+        };
+        let tree = build_command_tree(&root);
+        let got = veks_completion::complete(
+            &tree, &["nbrs", "aliased", "--only"]);
+        assert!(got.iter().any(|c| c == "--only-via-override"),
+            "root-level override node must supply completions, got {got:?}");
+    }
 }

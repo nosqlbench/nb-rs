@@ -1014,5 +1014,131 @@ pub fn standard_run_flags() -> Vec<Flag> {
             help: "Readout-binding override.",
             repeatable: true,
         },
+        // Declared Bool, not Value, even though `--metrics-log=<path>` is
+        // accepted: the runner only reads the `=` spelling, so advertising a
+        // space-separated value would suggest `--metrics-log <path>`, where the
+        // path is instead taken as the scenario positional and the log lands at
+        // its default location. Bool advertises only what works.
+        Flag {
+            long: "--metrics-log", short: None, aliases: &[],
+            arity: Arity::Bool, value: ValueProvider::None,
+            help: "Also write metrics to one JSONL file for outside observers \
+                   (`=<path>`; bare ⇒ <session>/metrics.jsonl). The session db \
+                   is written regardless.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--per-instance-metrics", short: None, aliases: &[],
+            arity: Arity::Bool, value: ValueProvider::None,
+            help: "Also write one file per (metric, label-tuple).",
+            repeatable: false,
+        },
+        Flag {
+            long: "--report-openmetrics-to", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Push metrics to an OpenMetrics/Prometheus endpoint URL.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--kernel-opt", short: None, aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::Custom(crate::completion::static_kernel_opt),
+            help: "Polydat kernel optimisation level (release|diagnostic).",
+            repeatable: false,
+        },
+        Flag {
+            long: "--jit", short: None, aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::Custom(crate::completion::static_jit),
+            help: "SRD-105 session engine mix (off|auto|force).",
+            repeatable: false,
+        },
     ]
+}
+
+#[cfg(test)]
+mod flag_declaration_tests {
+    use super::*;
+
+    /// Source files whose argv reads must be reflected in a command spec.
+    /// Scanned as text at test time — the point is to catch a flag that the
+    /// runtime honours but no spec declares, which is invisible to `--help`
+    /// and to completion and therefore looks unsupported.
+    const SCANNED: &[&str] = &[
+        "/../nbrs-runtime/src/runner.rs",
+        "/../nbrs-runtime/src/session.rs",
+    ];
+
+    /// Long flags read by the scanned files that legitimately belong to a
+    /// command other than `run`, or to no command at all. Each needs a reason.
+    fn exempt(flag: &str) -> bool {
+        matches!(flag,
+            // Declared on the report/plot commands' own completion nodes.
+            "--db" | "--body" | "--body-file" | "--csv-also" | "--report"
+            // Internal: rewritten into argv by `plot`/`replay`, never typed.
+            | "--wrap-order" | "--wrap-default-order"
+            // Injected into argv by `refine_command` (refine.rs) to mark the
+            // run as a refinement; not a user-facing flag.
+            | "--refine"
+        )
+    }
+
+    fn declared() -> Vec<&'static str> {
+        let mut names = Vec::new();
+        for f in standard_run_flags() {
+            names.push(f.long);
+            names.extend(f.aliases.iter().copied());
+        }
+        names
+    }
+
+    #[test]
+    fn argv_flags_read_by_the_runtime_are_declared_in_the_spec() {
+        let declared = declared();
+        let mut undeclared: Vec<(String, String)> = Vec::new();
+
+        for rel in SCANNED {
+            let path = format!("{}{}", env!("CARGO_MANIFEST_DIR"), rel);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("scan {path}: {e}"));
+
+            for (n, line) in src.lines().enumerate() {
+                let code = line.trim_start();
+                // Skip doc/line comments: a flag NAMED in prose is not a read.
+                if code.starts_with("//") { continue; }
+                // Only lines that actually test argv against a literal.
+                let is_read = code.contains("resolve_flag(")
+                    || code.contains("strip_prefix(\"--")
+                    || code.contains("== \"--")
+                    || code.contains("starts_with(\"--");
+                if !is_read { continue; }
+
+                for tok in code.split("\"--").skip(1) {
+                    let name: String = tok
+                        .chars()
+                        .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                        .collect();
+                    if name.is_empty() { continue; }
+                    let flag = format!("--{name}");
+                    if exempt(&flag) || declared.contains(&flag.as_str()) { continue; }
+                    undeclared.push((flag, format!("{}:{}", rel.trim_start_matches("/../"), n + 1)));
+                }
+            }
+        }
+
+        assert!(undeclared.is_empty(),
+            "flags read from argv but not declared in a command spec — they \
+             will not appear in --help or completion. Declare them in \
+             standard_run_flags(), or add an `exempt()` reason: {undeclared:?}");
+    }
+
+    #[test]
+    fn metrics_sink_flags_are_discoverable() {
+        // Both were honoured by the runner while absent from the spec, which is
+        // exactly how `--per-instance-metrics` stayed undocumented.
+        let declared = declared();
+        for flag in ["--metrics-log", "--per-instance-metrics"] {
+            assert!(declared.contains(&flag), "{flag} must be declared");
+        }
+    }
 }

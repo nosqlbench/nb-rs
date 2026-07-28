@@ -894,6 +894,23 @@ struct SummaryOpts {
     label: Option<String>,
 }
 
+/// Whether a token is a `key=value` run/read param (`session=…`, `phases=…`,
+/// `cycles=…`) rather than a summary spec.
+///
+/// These reach the renderer because callers forward their whole argument tail.
+/// Without this test the first one became `opts.spec` — an ad-hoc spec whose
+/// directives are all unrecognised, which renders the DEFAULT summary table
+/// under the requested item's name and file. `nbrs table compaction_shape
+/// session=<dir>` produced a generic activity table titled "Summary" and
+/// reported success. A key=value token is never a spec: a spec body starts with
+/// a directive keyword, and `key=value` with no space is the param shape.
+fn is_kv_param_token(tok: &str) -> bool {
+    let Some((key, _)) = tok.split_once('=') else { return false };
+    !key.is_empty()
+        && !key.contains(char::is_whitespace)
+        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+}
+
 fn parse_args(args: &[String]) -> SummaryOpts {
     let mut opts = SummaryOpts::default();
     // `--session` / `--session-path` / `--session-name` resolve
@@ -1000,7 +1017,10 @@ fn parse_args(args: &[String]) -> SummaryOpts {
                 } else if let Some(v) = other.strip_prefix("--add-to-markdown=") {
                     opts.report = Some(PathBuf::from(v));
                     opts.report_mode = Some(crate::report::WriteMode::AddIfMissing);
-                } else if !other.starts_with("--") && opts.spec.is_none() {
+                } else if !other.starts_with("--")
+                    && !is_kv_param_token(other)
+                    && opts.spec.is_none()
+                {
                     // First bare positional is the spec / stored
                     // name / `*` shortcut. Subsequent positionals
                     // are silently ignored; the previous CLI
@@ -1029,6 +1049,31 @@ mod tests {
     fn first_positional_becomes_spec() {
         let opts = parse_args(&[s("recall; mean(recall) over profile~label")]);
         assert_eq!(opts.spec.as_deref(), Some("recall; mean(recall) over profile~label"));
+    }
+
+    #[test]
+    fn kv_param_tokens_do_not_become_spec() {
+        // Callers forward their whole argument tail, so run/read params land
+        // here. Taken as a spec, `session=<dir>` renders the DEFAULT summary
+        // table under the requested item's name and reports success — a wrong
+        // table that looks right. `nbrs table compaction_shape session=<dir>`
+        // did exactly that.
+        for tok in ["session=/tmp/s", "phases=load", "cycles=1..10", "tries=3"] {
+            let opts = parse_args(&[s(tok)]);
+            assert!(opts.spec.is_none(),
+                "`{tok}` is a param, not a spec (got {:?})", opts.spec);
+        }
+    }
+
+    #[test]
+    fn spec_with_an_equals_sign_still_parses_as_a_spec() {
+        // A spec body contains `=` inside filters, so the param test must key
+        // on the `key=` SHAPE (no whitespace before `=`), not on `=` presence.
+        let spec = "recall; max(recall{phase=\"ann\"}) over profile";
+        let opts = parse_args(&[s(spec)]);
+        assert_eq!(opts.spec.as_deref(), Some(spec));
+        let multi = "group_by: p\nquery: segments: max(compaction_input_segments) by (p)";
+        assert_eq!(parse_args(&[s(multi)]).spec.as_deref(), Some(multi));
     }
 
     #[test]

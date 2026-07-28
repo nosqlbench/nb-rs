@@ -1725,6 +1725,16 @@ fn render_one(
             let out = out_dir.join(format!("{}_table.md", item.name));
             argv.push("--output".into());
             argv.push(out.to_string_lossy().into_owned());
+            // Pass the item's own spec body, the way `plot_body_specs` does for
+            // plots. Sending only `--name=` made the renderer look the name up
+            // among the db's `summary.*` rows — which a `report:`-block item
+            // does not have — so the render failed whenever the item list came
+            // from anywhere but a `workload=` token. Carrying the body makes
+            // the render depend on the resolved item alone, so a live session
+            // and a finished one behave the same.
+            if !item.body.trim().is_empty() {
+                argv.push(item.body.clone());
+            }
             crate::summary::summary_command(&argv);
             Ok(())
         }
@@ -2605,7 +2615,11 @@ pub fn plot_alias_spec() -> crate::cli_spec::Command {
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
         raw_args: true,
-        completion_override: None,
+        // Same completion node as the real subcommand. Without this the
+        // alias — the spelling most operators actually type — completed
+        // NOTHING: not its flags, not `session=`, not report names.
+        completion_override: Some(|| crate::completion::kind_subcommand_node(
+            nbrs_workload::report::Kind::Plot)),
     }
 }
 
@@ -2628,7 +2642,11 @@ pub fn table_alias_spec() -> crate::cli_spec::Command {
         subcommands: Vec::new(),
         handler: Some(Handler::Sync(handle)),
         raw_args: true,
-        completion_override: None,
+        // Same completion node as the real subcommand. Without this the
+        // alias — the spelling most operators actually type — completed
+        // NOTHING: not its flags, not `session=`, not report names.
+        completion_override: Some(|| crate::completion::kind_subcommand_node(
+            nbrs_workload::report::Kind::Table)),
     }
 }
 
