@@ -135,6 +135,49 @@ fn execution_qualifier_flags() -> Vec<Flag> {
     ]
 }
 
+/// The session-resolution flags every read-side metrics subcommand accepts.
+///
+/// Declared in the spec, not just swallowed by the parsers: the walker validates
+/// against the spec, so an undeclared flag is REJECTED — `nbrs metrics groups
+/// --session=<dir>` failed with "unknown flag '--session'" even though the parser
+/// had a branch for it. The lifecycle members of the family
+/// (`--session-reuse/keep/shelflife`) are deliberately absent: they choose how to
+/// treat a session being written, and these commands only read.
+/// The bare `session=<dir>` spelling, declared so completion offers it beside
+/// `--session`. The handlers accept it via `forward_session_flags`; declaring it
+/// here is what makes it discoverable rather than folklore.
+pub static SESSION_KV: &[crate::cli_spec::KvParam] = &[
+    crate::cli_spec::KvParam {
+        key: "session=",
+        provider: crate::completion::session_name_provider,
+    },
+];
+
+fn session_resolution_flags() -> Vec<Flag> {
+    vec![
+        Flag {
+            long: "--session", short: None, aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::Custom(crate::completion::session_name_provider),
+            help: "Read this session instead of the latest (path or name).",
+            repeatable: false,
+        },
+        Flag {
+            long: "--session-name", short: None, aliases: &[],
+            arity: Arity::Value,
+            value: ValueProvider::Custom(crate::completion::session_name_provider),
+            help: "Read the session with this name.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--session-path", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::Path,
+            help: "Read the session at this path.",
+            repeatable: false,
+        },
+    ]
+}
+
 fn list_or_show_flags() -> Vec<Flag> {
     let mut out = vec![
         Flag {
@@ -170,6 +213,7 @@ fn list_or_show_flags() -> Vec<Flag> {
         },
     ];
     out.extend(execution_qualifier_flags());
+    out.extend(session_resolution_flags());
     out
 }
 
@@ -181,6 +225,7 @@ fn match_flags() -> Vec<Flag> {
         repeatable: false,
     }];
     out.extend(execution_qualifier_flags());
+    out.extend(session_resolution_flags());
     out
 }
 
@@ -190,7 +235,7 @@ fn match_flags() -> Vec<Flag> {
 /// source of truth (cli_spec §`raw_args`). Keep in sync with
 /// `metricsql_cmd::parse_args`.
 fn query_flags() -> Vec<Flag> {
-    vec![
+    let mut out = vec![
         Flag {
             long: "--db", short: None, aliases: &[],
             arity: Arity::Value, value: ValueProvider::Path,
@@ -244,7 +289,9 @@ fn query_flags() -> Vec<Flag> {
             help: "Emit every sample, not just the latest per series.",
             repeatable: false,
         },
-    ]
+    ];
+    out.extend(session_resolution_flags());
+    out
 }
 
 pub fn spec() -> Command {
@@ -275,7 +322,7 @@ pub fn spec() -> Command {
                        summary at each leaf; `--list` omits the values.",
                 category: Category::Tools, level: Level::Secondary,
                 flags: list_or_show_flags(),
-                kv_params: &[],
+                kv_params: SESSION_KV,
         dynamic_options: None,
         positionals: vec![crate::cli_spec::Positional {
                     name: "expr",
@@ -293,7 +340,7 @@ pub fn spec() -> Command {
                 help: "Flat list of `family{labels}` specs matching <expr>.",
                 category: Category::Tools, level: Level::Secondary,
                 flags: match_flags(),
-                kv_params: &[],
+                kv_params: SESSION_KV,
         dynamic_options: None,
         positionals: vec![crate::cli_spec::Positional {
                     name: "expr",
@@ -312,7 +359,7 @@ pub fn spec() -> Command {
                        (instances, rows, mean, min, max).",
                 category: Category::Tools, level: Level::Secondary,
                 flags: groups_flags(),
-                kv_params: &[],
+                kv_params: SESSION_KV,
         dynamic_options: None,
         positionals: vec![crate::cli_spec::Positional {
                     name: "expr",
@@ -338,7 +385,7 @@ pub fn spec() -> Command {
                 // declared flags still drive completion (cli_spec §raw_args)
                 // — so `--range`/`--lookback`/… now tab-complete.
                 flags: query_flags(),
-                kv_params: &[],
+                kv_params: SESSION_KV,
         dynamic_options: None,
         // Completion-only positional: `raw_args=true` makes the
         // walker hand the unparsed tail straight to
@@ -364,7 +411,7 @@ pub fn spec() -> Command {
                 help: "Live-update a metricsql expression on a polling interval.",
                 category: Category::Tools, level: Level::Secondary,
                 flags: Vec::new(),
-                kv_params: &[],
+                kv_params: SESSION_KV,
         dynamic_options: None,
         // Completion-only positional — see the `query` note above.
         positionals: vec![crate::cli_spec::Positional {
@@ -398,7 +445,8 @@ fn handle_groups(p: ParsedCommand) -> Result<(), String> {
     if let Some(by) = p.flag("--by") { argv.push("--by".into()); argv.push(by.to_string()); }
     if let Some(fmt) = p.flag("--format") { argv.push("--format".into()); argv.push(fmt.to_string()); }
     forward_exec_qualifier_flags(&p, &mut argv);
-    if let Some(expr) = p.positional(0) { argv.push(expr.to_string()); }
+    forward_session_flags(&p, &mut argv);
+    if let Some(expr) = expr_positional(&p) { argv.push(expr.to_string()); }
     groups_command(&argv);
     Ok(())
 }
@@ -408,6 +456,48 @@ fn handle_groups(p: ParsedCommand) -> Result<(), String> {
 /// imperative argv shape every metrics subcommand still
 /// consumes. Single chokepoint so the pair never drops on
 /// the floor at one of the handlers.
+/// Forward the session-resolution flags into the legacy parser's argv.
+///
+/// Each handler rebuilds an argv for its imperative parser, and these were simply
+/// LEFT OUT — so `--session` was accepted by the walker, then dropped before
+/// `resolve_db` could see it, and the command silently read the latest session
+/// instead of the named one. Declaring a flag and forwarding it are two separate
+/// obligations; satisfying only the first is what makes a flag look supported.
+fn forward_session_flags(p: &ParsedCommand, argv: &mut Vec<String>) {
+    for flag in ["--session", "--session-name", "--session-path"] {
+        if let Some(v) = p.flag(flag) {
+            argv.push(flag.to_string());
+            argv.push(v.to_string());
+        }
+    }
+    // The bare `session=<dir>` spelling too. On a walker-parsed command it
+    // arrives as a POSITIONAL, so without this it was silently swallowed as (or
+    // beside) the expression and the command read the latest session while naming
+    // another — the same silent-wrong-answer the `--session` gap produced. The
+    // report/summary family already accepts this spelling.
+    if let Some(v) = bare_session_positional(p) {
+        argv.push("--session".to_string());
+        argv.push(v);
+    }
+}
+
+/// The value of a bare `session=<dir>` positional, if present.
+fn bare_session_positional(p: &ParsedCommand) -> Option<String> {
+    p.positionals.iter()
+        .find_map(|t| t.strip_prefix("session=").map(|v| v.to_string()))
+        .filter(|v| !v.is_empty())
+}
+
+/// The first positional that is the command's EXPRESSION — skipping a bare
+/// `session=<dir>`, which is a parameter rather than an expression. Without this,
+/// `metrics match session=<dir> "pat"` would take the session token as the
+/// pattern and match nothing.
+fn expr_positional(p: &ParsedCommand) -> Option<&str> {
+    p.positionals.iter()
+        .map(|s| s.as_str())
+        .find(|t| !t.starts_with("session="))
+}
+
 fn forward_exec_qualifier_flags(p: &ParsedCommand, argv: &mut Vec<String>) {
     if let Some(n) = p.flag("--execution") {
         argv.push("--execution".into());
@@ -440,6 +530,7 @@ fn groups_flags() -> Vec<Flag> {
         },
     ];
     out.extend(execution_qualifier_flags());
+    out.extend(session_resolution_flags());
     out
 }
 
@@ -455,7 +546,8 @@ fn handle_match(p: ParsedCommand) -> Result<(), String> {
         argv.push(db.to_string());
     }
     forward_exec_qualifier_flags(&p, &mut argv);
-    if let Some(expr) = p.positional(0) {
+    forward_session_flags(&p, &mut argv);
+    if let Some(expr) = expr_positional(&p) {
         argv.push(expr.to_string());
     }
     match_specs(&argv);
@@ -498,7 +590,8 @@ fn list_from_parsed(p: &ParsedCommand, show_values: bool) {
         argv.push("--list".into());
     }
     forward_exec_qualifier_flags(p, &mut argv);
-    if let Some(expr) = p.positional(0) {
+    forward_session_flags(p, &mut argv);
+    if let Some(expr) = expr_positional(p) {
         argv.push(expr.to_string());
     }
     list(&argv, show_values);
@@ -683,6 +776,23 @@ impl MetricsExecFlag {
 /// dimension), `match` preserves the spec verbatim so the
 /// output round-trips into other commands that take a fully
 /// qualified metric instance reference.
+/// The metrics db these read commands should open: an explicit `--db`, else the
+/// session named on the line (`--session*`, or a bare `session=`), else the
+/// latest session.
+///
+/// The middle step is the one that was missing. All three parsers below SWALLOWED
+/// `--session*` and its value and then fell back to the latest session, on the
+/// premise that the umbrella applies it first — and the umbrella does so by
+/// repointing the `sessions/latest` symlink, which only works for a session under
+/// `sessions/` and makes a read command mutate global state. Resolving locally,
+/// the way `report` and `summary` do, works for any path and mutates nothing.
+fn resolve_db(db_flag: Option<PathBuf>, args: &[String]) -> PathBuf {
+    db_flag
+        .or_else(|| nbrs_runtime::session::read_session_dir(args)
+            .map(|d| d.join("metrics.db")))
+        .unwrap_or_else(nbrs_runtime::session::latest_metrics_db)
+}
+
 fn match_specs(args: &[String]) {
     let mut db_path: Option<PathBuf> = None;
     let mut filter_expr: Option<String> = None;
@@ -721,7 +831,7 @@ fn match_specs(args: &[String]) {
         Ok(f) => f,
         Err(e) => { eprintln!("nbrs metrics match: filter: {e}"); std::process::exit(2); }
     };
-    let db = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
+    let db = resolve_db(db_path, args);
     if !db.exists() {
         eprintln!("nbrs metrics match: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -920,7 +1030,7 @@ fn groups_command(args: &[String]) {
         Err(e) => { eprintln!("nbrs metrics groups: filter: {e}"); std::process::exit(2); }
     };
 
-    let db = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
+    let db = resolve_db(db_path, args);
     if !db.exists() {
         eprintln!("nbrs metrics groups: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -1395,7 +1505,7 @@ fn list(args: &[String], show_values_in: bool) {
         std::process::exit(2);
     }
 
-    let db = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
+    let db = resolve_db(db_path, args);
     if !db.exists() {
         eprintln!("nbrs metrics: db not found at '{}'", db.display());
         std::process::exit(2);
@@ -2399,6 +2509,88 @@ fn value_summary_string(conn: &rusqlite::Connection, instance_id: i64) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parsed(positionals: &[&str], flags: &[(&str, &str)]) -> ParsedCommand {
+        let mut f: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for (k, v) in flags {
+            f.entry((*k).to_string()).or_default().push((*v).to_string());
+        }
+        ParsedCommand {
+            path: vec!["metrics".into(), "match".into()],
+            flags: f,
+            bools: Default::default(),
+            positionals: positionals.iter().map(|s| s.to_string()).collect(),
+            raw: Vec::new(),
+            argv: Vec::new(),
+            help_requested: false,
+            version_requested: false,
+        }
+    }
+
+    /// Declaring a flag and FORWARDING it are separate obligations. These
+    /// handlers rebuild an argv for their imperative parser, and the session
+    /// family was left out of that rebuild — so `--session` passed the walker,
+    /// was dropped before `resolve_db` saw it, and the command read the latest
+    /// session while naming another.
+    #[test]
+    fn session_flags_reach_the_legacy_parser() {
+        let mut argv = Vec::new();
+        forward_session_flags(&parsed(&["expr"], &[("--session", "/tmp/s")]), &mut argv);
+        assert_eq!(argv, vec!["--session".to_string(), "/tmp/s".to_string()]);
+
+        let mut argv = Vec::new();
+        forward_session_flags(&parsed(&["expr"], &[("--session-path", "/tmp/p")]), &mut argv);
+        assert_eq!(argv, vec!["--session-path".to_string(), "/tmp/p".to_string()]);
+    }
+
+    /// The bare `session=<dir>` spelling arrives as a POSITIONAL on a
+    /// walker-parsed command. Unforwarded it was silently swallowed and the
+    /// command read the latest session — the same silent-wrong-answer as the
+    /// `--session` gap. The report/summary family already accepts this spelling.
+    #[test]
+    fn bare_session_positional_is_forwarded_and_kept_out_of_the_expr() {
+        let p = parsed(&["zzprobe*", "session=/tmp/s"], &[]);
+        let mut argv = Vec::new();
+        forward_session_flags(&p, &mut argv);
+        assert_eq!(argv, vec!["--session".to_string(), "/tmp/s".to_string()]);
+        assert_eq!(expr_positional(&p), Some("zzprobe*"),
+            "the pattern must still be the expression");
+
+        // Order must not matter: with the session token FIRST, the expression is
+        // still the pattern — otherwise `session=…` becomes the pattern and
+        // matches nothing.
+        let p = parsed(&["session=/tmp/s", "zzprobe*"], &[]);
+        assert_eq!(expr_positional(&p), Some("zzprobe*"));
+        let mut argv = Vec::new();
+        forward_session_flags(&p, &mut argv);
+        assert_eq!(argv, vec!["--session".to_string(), "/tmp/s".to_string()]);
+
+        // No session token ⇒ nothing forwarded, expression unchanged.
+        let p = parsed(&["zzprobe*"], &[]);
+        let mut argv = Vec::new();
+        forward_session_flags(&p, &mut argv);
+        assert!(argv.is_empty());
+        assert_eq!(expr_positional(&p), Some("zzprobe*"));
+    }
+
+    /// `resolve_db` prefers an explicit `--db`, then the named session, then the
+    /// latest. The middle step is the one that was missing.
+    #[test]
+    fn resolve_db_prefers_db_then_session() {
+        let explicit = resolve_db(Some(PathBuf::from("/tmp/x.db")), &[]);
+        assert_eq!(explicit, PathBuf::from("/tmp/x.db"));
+
+        let dir = std::env::temp_dir().join(format!(
+            "nbrs-resolve-db-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let args = vec![format!("--session={}", dir.display())];
+        assert_eq!(resolve_db(None, &args), dir.join("metrics.db"),
+            "a named session must supply the db when no --db is given");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     use std::cmp::Ordering;
 

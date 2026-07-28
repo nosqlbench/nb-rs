@@ -605,6 +605,13 @@ pub fn handle_complete_env(tree: &CommandTree) -> bool {
         let mut p = prior.clone();
         p.push(cur.clone());
         (p, String::new())
+    } else if let Some((flag, partial)) = split_attached_value(&cur) {
+        // `--flag=<partial>`: complete the VALUE. Readline's word-splitting breaks
+        // on `=`, so the candidates are bare values — the same shape the `key=`
+        // params already emit.
+        let mut p = prior.clone();
+        p.push(flag);
+        (p, partial)
     } else { (prior, cur) };
 
     let mut words_owned: Vec<String> = vec!["nbrs".to_string()];
@@ -738,23 +745,87 @@ fn detect_tap(app: &str, input_key: &str, max_level: u32) -> u32 {
     tap_count
 }
 
+/// Orthogonal dispatch flags on the report/plot/table commands — the ones the
+/// builder recognises that are not vocab-driven. Shared by
+/// [`kind_subcommand_node`] (which advertises them) and
+/// [`value_taking_flags`] (which treats them as value-taking), so the two cannot
+/// disagree about what the surface is.
+pub(crate) const REPORT_DISPATCH_VALUE_FLAGS: &[&str] = &[
+    "--name", "--at", "--contextual", "--rename", "--group",
+    "--workload", "--session", "--db", "--body", "--body-file",
+];
+
+/// Every flag spelling declared as taking a value, DERIVED from the command spec
+/// plus the report vocab.
+///
+/// This was a hand-maintained `matches!` list — the second list the `cli_spec`
+/// architecture exists to eliminate. It had drifted: `--execution` and `--range`
+/// (declared `Arity::Value` in `metrics_cmd`) were absent, and any flag added
+/// since was too. A flag missing here does not auto-advance to value position and
+/// its `--flag=<partial>` form completes nothing, so a correctly declared flag
+/// still behaves as though it takes no value.
+fn value_taking_flags() -> &'static std::collections::HashSet<String> {
+    static SET: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let mut out: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        fn walk(cmd: &crate::cli_spec::Command, out: &mut std::collections::HashSet<String>) {
+            for f in &cmd.flags {
+                if matches!(f.arity, crate::cli_spec::Arity::Value) {
+                    out.insert(f.long.to_string());
+                    if let Some(short) = f.short { out.insert(short.to_string()); }
+                    for a in f.aliases { out.insert(a.to_string()); }
+                }
+            }
+            for sub in &cmd.subcommands { walk(sub, out); }
+        }
+        walk(&crate::cli_spec::root::root(), &mut out);
+
+        // Report/plot/table declare no `flags` of their own — their surface comes
+        // from the vocab registry through `completion_override`, so a spec walk
+        // cannot see it.
+        for kind in [
+            nbrs_workload::report::Kind::Plot,
+            nbrs_workload::report::Kind::Table,
+            nbrs_workload::report::Kind::Text,
+            nbrs_workload::report::Kind::File,
+            nbrs_workload::report::Kind::Details,
+        ] {
+            for f in nbrs_workload::report::vocab::cli_flags_for(kind) {
+                out.insert(f.to_string());
+            }
+        }
+        for f in REPORT_DISPATCH_VALUE_FLAGS { out.insert((*f).to_string()); }
+        // The plot/report parser keeps its OWN list of value-taking flags, which it
+        // reads to tell a flag's value from a positional spec. That list is
+        // authoritative for those commands (`--filter`, the `--y*` axis family,
+        // …), so union it rather than restate it here.
+        for f in crate::plot_metrics::FLAGS_TAKING_VALUE { out.insert((*f).to_string()); }
+        out
+    })
+}
+
 /// Flags whose grammar requires a value (the `--flag value` /
 /// `--flag=value` shape). When the cursor sits on one of these
 /// with no trailing whitespace, completion auto-advances to
 /// value-position so the user gets one tab instead of two.
 fn flag_takes_value(cur: &str) -> bool {
-    matches!(cur,
-        "--name" | "--metric" | "--x" | "--series" | "--filter"
-        | "--db" | "--output" | "--label" | "--palette"
-        | "--line" | "--line-width" | "--marker" | "--marker-size"
-        | "--figure-num" | "--title" | "--xlabel" | "--ylabel"
-        | "--x-scale" | "--y-scale" | "--width" | "--height" | "--scale"
-        | "--csv-also" | "--report" | "--update-markdown"
-        | "--add-to-markdown" | "--format" | "--create"
-        | "--session" | "--session-name" | "--session-path"
-        | "--session-reuse" | "--session-keep" | "--session-shelflife"
-        | "--resume" | "--polydat-lib" | "--pid" | "--socket"
-    )
+    value_taking_flags().contains(cur)
+}
+
+/// Split an attached `--flag=<partial>` into its flag and partial value, when the
+/// flag is one that takes a value.
+///
+/// Without this, `--execution=<TAB>` completed NOTHING while `--execution <TAB>`
+/// worked: the pre-process below only recognised a cursor sitting exactly on the
+/// flag, so the attached spelling never reached the value provider. Both spellings
+/// are accepted by the parsers, so both must complete.
+fn split_attached_value(cur: &str) -> Option<(String, String)> {
+    if !cur.starts_with('-') { return None; }
+    let (flag, partial) = cur.split_once('=')?;
+    if !flag_takes_value(flag) { return None; }
+    Some((flag.to_string(), partial.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -775,17 +846,18 @@ pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
     // Orthogonal dispatch flags (not vocab-driven) — same set
     // the builder recognises in `report_build::Dispatch`.
     let mut all_value_flags: Vec<&'static str> = flags.clone();
-    all_value_flags.extend([
-        "--name", "--at", "--contextual", "--rename", "--group",
-        "--workload", "--session", "--db", "--body", "--body-file",
-        // Bare `key=value` spellings the report handlers accept alongside the
-        // `--` forms. Undeclared, they completed as nothing and read as an
-        // unrecognised token, so `table x session=<dir>` silently reported on
-        // `sessions/latest` while naming another directory.
-        "workload=", "session=",
-    ]);
+    all_value_flags.extend(REPORT_DISPATCH_VALUE_FLAGS.iter().copied());
+    // Bare `key=value` spellings the report handlers accept alongside the `--`
+    // forms. Undeclared, they completed as nothing and read as an unrecognised
+    // token, so `table x session=<dir>` silently reported on `sessions/latest`
+    // while naming another directory.
+    all_value_flags.extend(["workload=", "session="]);
     let bool_flags: &[&str] = &[
-        "--add", "--replace", "--stdout", "--ascii", "--dry-run",
+        // `--create` persists the spec under `--name`; it takes no value
+        // (`opts.create = true` in summary's parser). The retired
+        // `flag_takes_value` list wrongly counted it as value-taking, so
+        // completion advanced past it and treated the NEXT token as its value.
+        "--add", "--replace", "--stdout", "--ascii", "--dry-run", "--create",
     ];
 
     let mut node = Node::leaf_with_flags(&all_value_flags, bool_flags);
@@ -1762,6 +1834,85 @@ pub fn spec() -> crate::cli_spec::Command {
 #[cfg(test)]
 mod walker_tests {
     use super::*;
+
+    /// The value-taking flag set is DERIVED from the spec, not hand-listed.
+    ///
+    /// It used to be a `matches!` list that had drifted: `--execution` and
+    /// `--range` are declared `Arity::Value` in `metrics_cmd` but were absent, so
+    /// they neither auto-advanced to value position nor completed their
+    /// `--flag=<partial>` form.
+    #[test]
+    fn value_taking_flags_are_derived_from_the_spec() {
+        // Previously missing, and the reason this was found.
+        for flag in ["--execution", "--range", "--family", "--by", "--tofile"] {
+            assert!(flag_takes_value(flag),
+                "{flag} is declared Arity::Value in the spec and must be known");
+        }
+        // Still covers what the hand-written list covered.
+        for flag in ["--db", "--session", "--name", "--metric", "--format"] {
+            assert!(flag_takes_value(flag), "{flag} regressed out of the set");
+        }
+        // Bool flags must stay OUT: treating one as value-taking would swallow
+        // the following token as its value.
+        for flag in ["--strict", "--all-executions", "--no-prompt", "--ascii",
+                     "--per-instance-metrics", "--metrics-log"] {
+            assert!(!flag_takes_value(flag),
+                "{flag} takes no value; advertising one would eat the next token");
+        }
+    }
+
+    /// The derived set must cover everything the retired hand-written list did.
+    ///
+    /// Deriving is only an improvement if it LOSES nothing: a flag that silently
+    /// dropped out would stop auto-advancing to value position, and the loss
+    /// would show up as completion "just not working" for that flag. This pins
+    /// the retired list verbatim as the floor.
+    #[test]
+    fn derived_set_covers_the_retired_hand_written_list() {
+        const RETIRED: &[&str] = &[
+            "--name", "--metric", "--x", "--series", "--filter",
+            "--db", "--output", "--label", "--palette",
+            "--line", "--line-width", "--marker", "--marker-size",
+            "--figure-num", "--title", "--xlabel", "--ylabel",
+            "--x-scale", "--y-scale", "--width", "--height", "--scale",
+            "--csv-also", "--report", "--update-markdown",
+            "--add-to-markdown", "--format", "--create",
+            "--session", "--session-name", "--session-path",
+            "--session-reuse", "--session-keep", "--session-shelflife",
+            "--resume", "--polydat-lib", "--pid", "--socket",
+        ];
+        let missing: Vec<&str> = RETIRED.iter().copied()
+            .filter(|f| !flag_takes_value(f))
+            // `--create` is the one deliberate omission: the retired list had it
+            // WRONG. Summary's parser sets `opts.create = true` and reads no
+            // value, so counting it as value-taking made completion advance past
+            // it and treat the next token — often the spec positional — as its
+            // value. Deriving from the spec corrects that.
+            .filter(|f| *f != "--create")
+            .collect();
+        assert!(missing.is_empty(),
+            "the derived set must not lose flags the hand-written list had: \
+             {missing:?}");
+        assert!(!flag_takes_value("--create"),
+            "--create is a boolean; the retired list misclassified it");
+    }
+
+    /// `--flag=<partial>` must complete its value, like `--flag <partial>` does.
+    #[test]
+    fn attached_flag_values_are_split_for_completion() {
+        assert_eq!(split_attached_value("--execution=7"),
+            Some(("--execution".to_string(), "7".to_string())));
+        // Empty partial ⇒ offer everything.
+        assert_eq!(split_attached_value("--execution="),
+            Some(("--execution".to_string(), String::new())));
+        // A value containing `=` splits only at the FIRST one.
+        assert_eq!(split_attached_value("--filter=k=v"),
+            Some(("--filter".to_string(), "k=v".to_string())));
+        // Bool flags and bare params are not this shape.
+        assert_eq!(split_attached_value("--strict=1"), None);
+        assert_eq!(split_attached_value("session=/tmp/s"), None);
+        assert_eq!(split_attached_value("--execution"), None);
+    }
 
     /// The db-backed value providers must read the session named ON THE LINE.
     ///

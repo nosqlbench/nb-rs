@@ -59,7 +59,7 @@ const DEJAVU_SANS: &[u8] = include_bytes!("DejaVuSans.ttf");
 /// [`parse_args`]'s positional-spec pre-sweep so a flag's value
 /// (e.g. `local/foo` after `--session`) doesn't get
 /// misclassified as a positional DSL spec and rewrite `opts`.
-const FLAGS_TAKING_VALUE: &[&str] = &[
+pub(crate) const FLAGS_TAKING_VALUE: &[&str] = &[
     // Plot-specific
     "--metric", "--x", "--x1", "--reduce", "--series", "--filter", "--agg",
     "--db", "--output", "--name", "--label", "--palette",
