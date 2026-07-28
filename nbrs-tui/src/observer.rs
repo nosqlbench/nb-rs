@@ -468,10 +468,16 @@ impl nbrs_runtime::observer::RunObserver for TuiObserver {
 /// Without this, successful runs leave the terminal with no
 /// indication anything happened. Fails-soft if the state lock
 /// is poisoned.
+///
+/// `session_dir` is `None` when the caller cannot name a directory this run owns
+/// — a dry-run without an explicit `--session*`, whose own directory the CLI
+/// never learns. The summary still prints; only the artifact write is skipped.
+/// Passing the previous session's directory instead would write this run's
+/// artifacts into an unrelated real session.
 pub fn print_post_run_summary(
     run_state: &RunStateHandle,
     run_result: &Result<(), String>,
-    session_dir: &std::path::Path,
+    session_dir: Option<&std::path::Path>,
 ) {
     let s = run_state.load();
     let s: &RunState = &s;
@@ -521,7 +527,12 @@ pub fn print_post_run_summary(
             eprintln!("{s_buf}");
         }
     }
-    eprintln!("logs:    {}", session_dir.display());
+    match session_dir {
+        Some(d) => eprintln!("logs:    {}", d.display()),
+        // Naming `sessions/latest` here would be a lie: a dry-run does not claim
+        // it, so it still points at the previous real run.
+        None => eprintln!("logs:    (dry-run session; not linked as latest)"),
+    }
 
     if phases_only.is_empty() {
         eprintln!("phases:  none executed");
@@ -551,7 +562,13 @@ pub fn print_post_run_summary(
         // (session / logs / phases) plus the focused failures inset
         // below are all that remain inline.
         let tree = render_scenario_tree(&s.phases);
-        let tree_path = session_dir.join("scenario_tree.txt");
+        // `None` ⇒ no directory this run owns, so skip the write rather than put
+        // this run's tree in another session's directory. `nbrs replay
+        // --format=tree` then has nothing to read for a dry-run, which is the
+        // correct trade against corrupting a real run. Only the write is skipped
+        // — the failures inset below still prints.
+        if let Some(tree_dir) = session_dir {
+        let tree_path = tree_dir.join("scenario_tree.txt");
         match std::fs::write(&tree_path, &tree) {
             Ok(()) => {
                 eprintln!("scenario tree: nbrs replay --format=tree");
@@ -567,6 +584,7 @@ pub fn print_post_run_summary(
                     &format!("could not persist scenario tree to {}: {e}",
                         tree_path.display()));
             }
+        }
         }
     }
 

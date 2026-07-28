@@ -617,8 +617,21 @@ fn print_post_run_reports(
     // previous run left behind. Falling back to `logs/latest`
     // when no override is set preserves the historical
     // bare-CLI behavior.
-    let session_dir = nbrs_runtime::session::read_session_dir(args)
-        .unwrap_or_else(nbrs_runtime::session::latest_session_dir);
+    // A DRY-RUN is resume-inert: it deliberately does not claim `latest`
+    // (`args_request_dryrun` / SRD-44), so `latest` still points at the previous
+    // REAL session. Falling back to it here made every post-run artifact of a
+    // dry-run land in that unrelated session — scenario_tree.txt written into it,
+    // its summary.md rewritten, and `auto_render_plots` / `auto_inject_details`
+    // reading ITS metrics.db. Verified by running a dry-run and watching a
+    // finished session's files change. The CLI never learns the dry-run's own
+    // directory (the runner does not report it back), so the honest answer is
+    // `None`: skip post-run artifacts rather than write them somewhere wrong.
+    let session_dir: Option<std::path::PathBuf> =
+        match nbrs_runtime::session::read_session_dir(args) {
+            Some(explicit) => Some(explicit),
+            None if nbrs_runtime::session::args_request_dryrun(args) => None,
+            None => Some(nbrs_runtime::session::latest_session_dir()),
+        };
 
     // SRD-46 auto-render: when the workload completed without
     // being aborted by the error handler, render every plot
@@ -628,11 +641,17 @@ fn print_post_run_reports(
     // (cross-crate from nbrs-runtime); same fault-gate as
     // tables (run_result.is_ok() ⇒ render, else skip).
     if run_result.is_ok() {
-        auto_render_plots(&session_dir);
-        auto_inject_details(&session_dir);
+        if let Some(dir) = session_dir.as_deref() {
+            auto_render_plots(dir);
+            auto_inject_details(dir);
+        }
     }
 
-    if let Ok(entries) = std::fs::read_dir(&session_dir) {
+    // Same rule as above: with no directory this run owns, there are no summaries
+    // of ITS to echo — and scanning the previous session's would print that run's.
+    if let Some(scan_dir) = session_dir.as_deref()
+        && let Ok(entries) = std::fs::read_dir(scan_dir)
+    {
         let mut summary_paths: Vec<std::path::PathBuf> = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -664,7 +683,7 @@ fn print_post_run_reports(
     // terminal it goes to `session.log` only (the phase outcomes are
     // already there); the console stays the adapter's.
     if !silent_console {
-        print_post_run_summary(run_state, run_result, &session_dir);
+        print_post_run_summary(run_state, run_result, session_dir.as_deref());
     }
 }
 

@@ -299,8 +299,14 @@ pub(crate) fn session_name_provider(partial: &str, _ctx: &[&str]) -> Vec<String>
 /// Distinct phase identities from the latest session's
 /// `phase_outcomes` table (SRD-76). Best-effort, same
 /// convention as [`execution_id_provider`].
-pub(crate) fn phase_name_db_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    let db_path = nbrs_runtime::session::latest_metrics_db();
+pub(crate) fn phase_name_db_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    // Resolve the db from the command line — `--db`, the `--session*` family,
+    // or a bare `session=` — instead of assuming the latest session. Hardcoding
+    // `latest_metrics_db()` offered values from a DIFFERENT session than the one
+    // being targeted: with `--session=<dir>` naming a session holding only
+    // exec 77, completion still offered `0 1` from `sessions/latest`. Values that
+    // do not exist in the named session are worse than no suggestion at all.
+    let db_path = db_path_from_context(ctx);
     if !db_path.exists() {
         return Vec::new();
     }
@@ -334,9 +340,15 @@ pub(crate) fn phase_name_db_provider(partial: &str, _ctx: &[&str]) -> Vec<String
 /// distinct `interval_ms` windows in `sample_value`). `all` expands to the
 /// whole test span; each cadence is the normative metricsql `[<dur>]`
 /// range-vector window.
-pub(crate) fn metrics_range_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+pub(crate) fn metrics_range_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = vec!["all".to_string()];
-    let db_path = nbrs_runtime::session::latest_metrics_db();
+    // Resolve the db from the command line — `--db`, the `--session*` family,
+    // or a bare `session=` — instead of assuming the latest session. Hardcoding
+    // `latest_metrics_db()` offered values from a DIFFERENT session than the one
+    // being targeted: with `--session=<dir>` naming a session holding only
+    // exec 77, completion still offered `0 1` from `sessions/latest`. Values that
+    // do not exist in the named session are worse than no suggestion at all.
+    let db_path = db_path_from_context(ctx);
     if db_path.exists()
         && let Ok(conn) = rusqlite::Connection::open_with_flags(
             &db_path,
@@ -1049,8 +1061,14 @@ fn scenario_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
 /// table, lock contention) yields an empty list rather than
 /// an error message, matching the existing provider
 /// convention.
-pub fn execution_id_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
-    let db_path = nbrs_runtime::session::latest_metrics_db();
+pub fn execution_id_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    // Resolve the db from the command line — `--db`, the `--session*` family,
+    // or a bare `session=` — instead of assuming the latest session. Hardcoding
+    // `latest_metrics_db()` offered values from a DIFFERENT session than the one
+    // being targeted: with `--session=<dir>` naming a session holding only
+    // exec 77, completion still offered `0 1` from `sessions/latest`. Values that
+    // do not exist in the named session are worse than no suggestion at all.
+    let db_path = db_path_from_context(ctx);
     if !db_path.exists() {
         return Vec::new();
     }
@@ -1744,6 +1762,52 @@ pub fn spec() -> crate::cli_spec::Command {
 #[cfg(test)]
 mod walker_tests {
     use super::*;
+
+    /// The db-backed value providers must read the session named ON THE LINE.
+    ///
+    /// All three hardcoded `latest_metrics_db()` while ignoring the `ctx` they
+    /// are handed, so completing `--execution` under `--session=<dir>` offered
+    /// execution ids from a DIFFERENT session — values that do not exist in the
+    /// session being targeted, which is worse than no suggestion. The correct
+    /// resolver (`db_path_from_context`, honouring `--db`, `--session*` and bare
+    /// `session=`) already existed and had 11 other callers.
+    #[test]
+    fn db_backed_providers_honour_the_session_named_on_the_line() {
+        use nbrs_metrics::reporters::sqlite::SqliteReporter;
+        use nbrs_metrics::scheduler::Reporter;
+
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("nbrs-provider-ctx-{n:x}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("metrics.db");
+        {
+            let mut reporter = SqliteReporter::new(&db).unwrap();
+            // An exec id no real session in the tree would carry, so a value
+            // sourced from `sessions/latest` instead cannot pass by luck.
+            reporter.insert_execution_start("probe", 77, "run", None, 0, "", "");
+            reporter.flush();
+        }
+
+        let db_arg = db.to_string_lossy().to_string();
+        let got = execution_id_provider("", &["--db", &db_arg]);
+        assert!(got.iter().any(|e| e == "77"),
+            "`--db <path>` must select the db: {got:?}");
+
+        let session_flag = format!("--session={}", dir.display());
+        let got = execution_id_provider("", &[&session_flag]);
+        assert!(got.iter().any(|e| e == "77"),
+            "`--session=<dir>` must select the db: {got:?}");
+
+        // The bare spelling resolves identically — read_session_dir routes
+        // through the same resolver.
+        let bare = format!("session={}", dir.display());
+        let got = execution_id_provider("", &[&bare]);
+        assert!(got.iter().any(|e| e == "77"),
+            "bare `session=<dir>` must select the db: {got:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The session provider must scan the root the RUNTIME uses. It read a
     /// hardcoded `"logs"` — the pre-SRD-77 name — so `--session <TAB>` and
