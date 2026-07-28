@@ -350,16 +350,8 @@ fn render_metricsql_table(
             SiScale::for_max(max_abs)
         })
         .collect();
-    let column_secs: Vec<Option<SecondsUnit>> = cfg.metricsql_columns.iter()
-        .enumerate()
-        .map(|(idx, (_name, expr))| {
-            if !is_seconds_domain_query(expr) { return None; }
-            let max_abs = by_group.values()
-                .filter_map(|row| row[idx])
-                .filter(|v| v.is_finite())
-                .fold(0.0_f64, |m, v| m.max(v.abs()));
-            Some(SecondsUnit::for_max_seconds(max_abs))
-        })
+    let column_secs: Vec<bool> = cfg.metricsql_columns.iter()
+        .map(|(_name, expr)| is_seconds_domain_query(expr))
         .collect();
     let column_units: Vec<Option<TimeUnit>> = cfg.metricsql_columns.iter()
         .enumerate()
@@ -393,16 +385,16 @@ fn render_metricsql_table(
             match unit {
                 Some(u) => format!("{name} ({})", u.symbol),
                 None    => match (column_secs[idx], column_si[idx]) {
-                    (Some(sec), _) => format!("{name} ({})", sec.symbol),
-                    (None, Some(si)) => format!("{name} ({})", si.symbol),
-                    (None, None)     => name.clone(),
+                    (true, _)        => format!("{name} (h:m:s)"),
+                    (false, Some(si)) => format!("{name} ({})", si.symbol),
+                    (false, None)     => name.clone(),
                 },
             }
         })
         .collect();
 
     // Render a single cell against the chosen column unit.
-    fn render_cell(value: Option<f64>, unit: Option<&TimeUnit>, si: Option<SiScale>, secs: Option<SecondsUnit>, is_timestamp: bool, sep: &str) -> String {
+    fn render_cell(value: Option<f64>, unit: Option<&TimeUnit>, si: Option<SiScale>, secs: bool, is_timestamp: bool, sep: &str) -> String {
         let _ = sep;
         if is_timestamp {
             return match value {
@@ -414,9 +406,9 @@ fn render_metricsql_table(
             (None, _)            => "-".to_string(),
             (Some(v), Some(u))   => format!("{:.3}", v / u.divisor),
             (Some(v), None)      => match (secs, si) {
-                (Some(sec), _)   => format!("{:.2}", v / sec.divisor),
-                (None, Some(si)) => format!("{:.2}", v / si.divisor),
-                (None, None)     => format!("{v:.4}"),
+                (true, _)         => format_hms(v),
+                (false, Some(si)) => format!("{:.2}", v / si.divisor),
+                (false, None)     => format!("{v:.4}"),
             },
         }
     }
@@ -508,18 +500,19 @@ struct TimeUnit {
 /// convention), but a difference of two `t*_over_time` moments is seconds. Left
 /// to the SI scale such a column reads "2.00 (K)" — kiloseconds, which is
 /// arithmetically right and useless to a human watching a compaction.
-#[derive(Copy, Clone, Debug, PartialEq)]
-struct SecondsUnit {
-    symbol: &'static str,
-    divisor: f64,
-}
-
-impl SecondsUnit {
-    fn for_max_seconds(max_abs: f64) -> Self {
-        if max_abs >= 3600.0     { Self { symbol: "h",   divisor: 3600.0 } }
-        else if max_abs >= 60.0  { Self { symbol: "min", divisor: 60.0 } }
-        else                     { Self { symbol: "s",   divisor: 1.0 } }
+/// Elapsed time is written as a clock, not as a scaled number.
+///
+/// "4.50 (min)" asks the reader to convert; a scale that changes with the
+/// column's magnitude asks them to check the heading first, and one tier at
+/// "0.50 (min)" beside another at "4.50 (min)" hides that these are 30 seconds
+/// and 4½ minutes. `HH:MM:SS` is unambiguous, sorts correctly, and every row
+/// carries the same shape.
+fn format_hms(total_seconds: f64) -> String {
+    if !total_seconds.is_finite() || total_seconds < 0.0 {
+        return "-".to_string();
     }
+    let secs = total_seconds.round() as u64;
+    format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
 }
 
 /// Whether a column's value is a DURATION in seconds: a moment arithmetic'd
@@ -1282,9 +1275,14 @@ mod tests {
     /// that has run 2000 seconds as "2.00 (K)" — kiloseconds.
     #[test]
     fn seconds_domain_columns_scale_as_time() {
-        assert_eq!(SecondsUnit::for_max_seconds(7_200.0).symbol, "h");
-        assert_eq!(SecondsUnit::for_max_seconds(2_080.0).symbol, "min");
-        assert_eq!(SecondsUnit::for_max_seconds(45.0).symbol, "s");
+        // A clock, not a scaled number: "4.50 (min)" makes the reader convert, and
+        // a magnitude that shifts with the column hides that 0.50 and 4.50 are
+        // 30 seconds and 4 and a half minutes.
+        assert_eq!(format_hms(7_200.0), "02:00:00");
+        assert_eq!(format_hms(2_080.0), "00:34:40");
+        assert_eq!(format_hms(45.0), "00:00:45");
+        assert_eq!(format_hms(0.0), "00:00:00");
+        assert_eq!(format_hms(f64::NAN), "-");
 
         // A difference of two moments IS a duration.
         assert!(is_seconds_domain_query(
