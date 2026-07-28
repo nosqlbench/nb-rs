@@ -178,6 +178,24 @@ pub struct PollingDispenser {
     /// dispenser is built (metrics wraps outside poll), hence the
     /// late-bound swap; empty/`None` when the op has no metrics.
     iteration_gauges: Option<Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>>>,
+    /// Values written to the wires on the TERMINATING poll only,
+    /// as `(wire_name, expression)` pairs from `poll.on_done:`.
+    ///
+    /// A poll that watches remote work usually cannot observe that
+    /// work in a completed state: `system_views.compactions` (and
+    /// every view like it) lists what is RUNNING, so the observation
+    /// that means "done" is an empty result — the finished tier's
+    /// attributes are gone with it. The terminal sample is therefore
+    /// real ("nothing is running") but says nothing about the thing
+    /// that finished, and a `max(completion_ratio)` over the series
+    /// keeps reporting the last in-flight fraction for work that has
+    /// been done for an hour.
+    ///
+    /// `on_done` proxies the measurement the remote view cannot give
+    /// us: at termination these expressions are written to the wires
+    /// before the final publish, so the gauges fed by them record the
+    /// completed state as if it had been observed.
+    on_done: Vec<(String, String)>,
     activity_metrics: Option<Arc<crate::activity::ActivityMetrics>>,
     /// Externally visible metrics for the polling operation.
     pub metrics: Arc<PollingMetrics>,
@@ -232,7 +250,7 @@ impl PollingDispenser {
         Self::wrap_with_status(
             inner, poll_interval_ms, timeout_ms, max_error_retries,
             metric_name, min_rows, max_rows, json_path,
-            None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, Vec::new(),
             crate::session_signals::StopView::default(),
         )
     }
@@ -261,6 +279,7 @@ impl PollingDispenser {
         each_gutter: Option<(crate::wrappers::gutter::GutterKind, String)>,
         gutter_state: Option<Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>>>,
         iteration_gauges: Option<Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>>>,
+        on_done: Vec<(String, String)>,
         stop: crate::session_signals::StopView,
     ) -> (Arc<dyn OpDispenser>, Arc<PollingMetrics>) {
         let metrics = Arc::new(PollingMetrics::new());
@@ -280,6 +299,7 @@ impl PollingDispenser {
             each_gutter,
             gutter_state,
             iteration_gauges,
+            on_done,
             stop,
             metrics: metrics.clone(),
         });
@@ -288,9 +308,21 @@ impl PollingDispenser {
 
     /// Per-iteration status publish: memo + derived progress.
     ///
-    /// Runs after each not-yet-done poll, when this iteration's
-    /// captures are already on the wires. Substitution failures
-    /// degrade to a debug log — status must never fail the poll.
+    /// Runs after EVERY poll — including the terminating one, whose
+    /// observation is the one that detects completion and is no less
+    /// a measurement than the ones before it. Skipping it left every
+    /// series ending on the last incomplete sample, so a finished
+    /// unit of work read as 93% done forever.
+    ///
+    /// Idempotent by construction: every publish here is a set, not
+    /// an accumulate — `publish_gauges_lenient` handles gauges only,
+    /// and the memo / gutter / progress-override slots are
+    /// last-write-wins. Publishing the same iteration twice therefore
+    /// lands the same state; only the sample timestamp moves.
+    ///
+    /// Captures for this iteration are already on the wires.
+    /// Substitution failures degrade to a debug log — status must
+    /// never fail the poll.
     fn publish_iteration_status(
         &self,
         wires: &dyn crate::wires::WireSource,
@@ -381,8 +413,14 @@ impl OpDispenser for PollingDispenser {
             // so its `before:` template is already published; the
             // default per-iteration publish appends the measurement
             // to this base rather than compounding onto itself.
+            //
+            // Stripping a previously-appended suffix is what makes that
+            // hold ACROSS executions too: within one poll the base is
+            // captured once, but a second execution of the same op would
+            // otherwise read back its own decorated text as the base and
+            // grow the memo without bound.
             let base_memo: String = self.memo_state.as_ref()
-                .map(|m| m.load().as_str().to_string())
+                .map(|m| strip_measurement_suffix(m.load().as_str()).to_string())
                 .unwrap_or_default();
             let _progress_clear =
                 ProgressOverrideClear(self.activity_metrics.as_deref());
@@ -495,6 +533,45 @@ impl OpDispenser for PollingDispenser {
                     let _ = ctx.wires.write(
                         "poll_elapsed_ms",
                         polydat::ast::Value::U64(start.elapsed().as_millis() as u64));
+                    self.publish_iteration_status(
+                        ctx.wires, &base_memo, row_count, polls,
+                        start.elapsed().as_secs_f64());
+                }
+                if is_done {
+                    // The terminating observation is a measurement too, and it
+                    // is the only one that carries the completion time. It used
+                    // to be dropped: the loop published on `!is_done` only, so
+                    // every series ended on the last INCOMPLETE sample and
+                    // finished work read as partially done forever.
+                    //
+                    // `on_done` first, then the publish: the wires it writes are
+                    // what the gauges read. This is the proxy for a completed
+                    // state a remote view cannot show (see the field docs) — the
+                    // terminal captures describe an empty result set, not the
+                    // work that just finished.
+                    let _ = ctx.wires.write(
+                        "poll_count", polydat::ast::Value::U64(polls));
+                    let _ = ctx.wires.write(
+                        "poll_elapsed_ms",
+                        polydat::ast::Value::U64(start.elapsed().as_millis() as u64));
+                    for (name, expr) in &self.on_done {
+                        match crate::wires::substitute_via_wires(expr, ctx.wires) {
+                            Ok(rendered) => match rendered.trim().parse::<f64>() {
+                                Ok(v) => {
+                                    let _ = ctx.wires.write(
+                                        name, polydat::ast::Value::F64(v));
+                                }
+                                Err(_) => crate::diag!(
+                                    crate::observer::LogLevel::Debug,
+                                    "poll.on_done: '{name}: {expr}' rendered to \
+                                     non-numeric '{rendered}'"),
+                            },
+                            Err(e) => crate::diag!(
+                                crate::observer::LogLevel::Debug,
+                                "poll.on_done: substitution failed for \
+                                 '{name}: {expr}': {e}"),
+                        }
+                    }
                     self.publish_iteration_status(
                         ctx.wires, &base_memo, row_count, polls,
                         start.elapsed().as_secs_f64());
@@ -622,6 +699,89 @@ pub(crate) fn count_from_json_pointer(json: &serde_json::Value, path: &str) -> u
     }
 }
 
+/// Read `poll.on_done:` — the wire values a terminating poll writes before
+/// its final publish. Values may be numbers or strings; strings are kept
+/// verbatim so they can be wire expressions (`"total"`) rather than only
+/// literals.
+///
+/// Ordered by key so the writes are deterministic across runs — a map
+/// iteration order that varied would make one `on_done` entry able to
+/// shadow another differently from run to run.
+pub(crate) fn parse_on_done(
+    cfg: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Vec<(String, String)> {
+    let Some(map) = cfg
+        .and_then(|m| m.get("on_done"))
+        .and_then(|v| v.as_object())
+    else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = map
+        .iter()
+        .map(|(k, v)| {
+            let text = match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            (k.clone(), text)
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Drop the default per-iteration measurement suffix this wrapper appends,
+/// so re-deriving the base from a published memo is a fixed point.
+/// Matched on both halves of the default shape — a memo that merely
+/// contains an em-dash keeps it.
+fn strip_measurement_suffix(memo: &str) -> &str {
+    match memo.find(" — measured ") {
+        Some(i) if memo[i..].contains(" row(s) [target ") => &memo[..i],
+        _ => memo,
+    }
+}
+
+#[cfg(test)]
+mod on_done_config_tests {
+    use super::parse_on_done;
+
+    fn cfg(json: &str) -> serde_json::Map<String, serde_json::Value> {
+        match serde_json::from_str(json).expect("test json") {
+            serde_json::Value::Object(m) => m,
+            _ => panic!("expected an object"),
+        }
+    }
+
+    #[test]
+    fn absent_or_empty_yields_nothing() {
+        assert!(parse_on_done(None).is_empty());
+        assert!(parse_on_done(Some(&cfg(r#"{"mode":"await_empty"}"#))).is_empty());
+        assert!(parse_on_done(Some(&cfg(r#"{"on_done":{}}"#))).is_empty());
+    }
+
+    /// A YAML `completion_ratio: 1.0` arrives as a NUMBER, not a string — the
+    /// spelling an operator actually writes must not be silently dropped.
+    #[test]
+    fn numeric_and_string_values_both_read() {
+        let got = parse_on_done(Some(&cfg(
+            r#"{"on_done":{"completion_ratio":1.0,"progress":"total"}}"#)));
+        assert_eq!(got, vec![
+            ("completion_ratio".to_string(), "1.0".to_string()),
+            ("progress".to_string(), "total".to_string()),
+        ]);
+    }
+
+    /// Deterministic order: two entries must be applied the same way on every
+    /// run, so a later write shadowing an earlier one is reproducible.
+    #[test]
+    fn entries_are_ordered_by_key() {
+        let got = parse_on_done(Some(&cfg(
+            r#"{"on_done":{"z":1,"a":2,"m":3}}"#)));
+        let keys: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["a", "m", "z"]);
+    }
+}
+
 #[cfg(test)]
 mod status_publish_tests {
     use super::*;
@@ -671,9 +831,117 @@ mod status_publish_tests {
             each_gutter: None,
             gutter_state: None,
             iteration_gauges: None,
+            on_done: Vec::new(),
             stop: crate::session_signals::StopView::default(),
             metrics: Arc::new(PollingMetrics::new()),
         }
+    }
+
+    /// A writable wire bag — the terminating-publish tests need
+    /// `write` to actually land, which `NullWireSource` refuses.
+    struct MapWires(std::sync::Mutex<std::collections::HashMap<String, polydat::ast::Value>>);
+    impl MapWires {
+        fn new(seed: &[(&str, f64)]) -> Self {
+            Self(std::sync::Mutex::new(seed.iter()
+                .map(|(k, v)| (k.to_string(), polydat::ast::Value::F64(*v)))
+                .collect()))
+        }
+    }
+    impl crate::wires::WireSource for MapWires {
+        fn get(&self, name: &str) -> Option<polydat::ast::Value> {
+            self.0.lock().unwrap().get(name).cloned()
+        }
+        fn names(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            let v: Vec<String> = self.0.lock().unwrap().keys().cloned().collect();
+            Box::new(v.into_iter())
+        }
+        fn write(&self, name: &str, value: polydat::ast::Value) -> crate::wires::WriteOutcome {
+            self.0.lock().unwrap().insert(name.to_string(), value);
+            crate::wires::WriteOutcome::Stored
+        }
+    }
+
+    /// Run a poll to completion against `wires`. `NoopInner` returns an
+    /// empty body, so the FIRST poll is the terminating one — exactly the
+    /// iteration whose measurement used to be dropped.
+    fn run_to_done(d: &PollingDispenser, wires: &dyn crate::wires::WireSource) {
+        let fields = crate::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+        let pulls = crate::fixture::ResolvedPulls::empty();
+        let ctx = crate::fixture::ExecCtx::with_wires(&fields, &pulls, wires);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time().build().expect("test runtime");
+        rt.block_on(d.execute(0, &ctx)).expect("poll completes");
+    }
+
+    /// The measurement that DETECTS completion must reach metrics like every
+    /// incomplete one before it. Without this the last sample published is the
+    /// final not-yet-done poll, so a finished unit of work reads as partially
+    /// done for as long as the series is kept.
+    #[test]
+    fn the_terminating_poll_publishes_its_measurement() {
+        let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::from("base")));
+        let metrics = test_metrics();
+        let mut d = dispenser_with_status(None, None, &memo, &metrics);
+        let (slot, gauge) = crate::wrappers::metrics::test_gauge_slot(
+            "completion", "completion_ratio");
+        d.iteration_gauges = Some(Arc::new(
+            arc_swap::ArcSwapOption::from_pointee(vec![slot])));
+        let wires = MapWires::new(&[("completion_ratio", 0.42)]);
+
+        run_to_done(&d, &wires);
+
+        assert_eq!(gauge.get(), 0.42,
+            "the terminating poll's measurement must reach the gauge");
+    }
+
+    /// A remote view of in-flight work cannot show the finished item — it is
+    /// gone from the view, which is *why* the poll ended. `on_done` proxies
+    /// that unobservable completed state onto the final sample.
+    #[test]
+    fn on_done_proxies_the_completion_a_remote_view_cannot_show() {
+        let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::from("base")));
+        let metrics = test_metrics();
+        let mut d = dispenser_with_status(None, None, &memo, &metrics);
+        let (slot, gauge) = crate::wrappers::metrics::test_gauge_slot(
+            "completion", "completion_ratio");
+        d.iteration_gauges = Some(Arc::new(
+            arc_swap::ArcSwapOption::from_pointee(vec![slot])));
+        d.on_done = vec![("completion_ratio".into(), "1.0".into())];
+        // The last value the view ever showed: 42% done, then it vanished.
+        let wires = MapWires::new(&[("completion_ratio", 0.42)]);
+
+        run_to_done(&d, &wires);
+
+        assert_eq!(gauge.get(), 1.0,
+            "on_done must override the stale in-flight value");
+    }
+
+    /// Idempotence: these publishes are sets, not accumulates, so the same
+    /// terminating observation applied twice lands the same state. That is what
+    /// makes it safe to publish the final measurement in addition to whatever
+    /// the cadence already emitted for the same moment.
+    #[test]
+    fn republishing_the_terminating_measurement_is_idempotent() {
+        let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::from("base")));
+        let metrics = test_metrics();
+        let mut d = dispenser_with_status(None, None, &memo, &metrics);
+        let (slot, gauge) = crate::wrappers::metrics::test_gauge_slot(
+            "completion", "completion_ratio");
+        d.iteration_gauges = Some(Arc::new(
+            arc_swap::ArcSwapOption::from_pointee(vec![slot])));
+        d.on_done = vec![("completion_ratio".into(), "1.0".into())];
+        let wires = MapWires::new(&[("completion_ratio", 0.42)]);
+
+        run_to_done(&d, &wires);
+        let first = gauge.get();
+        let memo_after_first = memo.load_full();
+        run_to_done(&d, &wires);
+        let second = gauge.get();
+
+        assert_eq!(first, second,
+            "a repeated terminal publish must not shift the value");
+        assert_eq!(*memo_after_first, *memo.load_full(),
+            "a repeated terminal publish must not accumulate into the memo");
     }
 
     fn test_metrics() -> Arc<crate::activity::ActivityMetrics> {

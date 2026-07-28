@@ -342,6 +342,28 @@ impl MetricsDispenser {
     }
 }
 
+/// A gauge slot wired straight to a wire name — the metric path a poll
+/// publishes through, without the workload/kernel machinery around it.
+/// Lets other modules' tests assert on what actually reaches the
+/// instrument, rather than on a display-side proxy.
+#[cfg(test)]
+pub(crate) fn test_gauge_slot(
+    family: &str,
+    binding_name: &str,
+) -> (MetricSlot, Arc<nbrs_metrics::instruments::gauge::ValueGauge>) {
+    let g = Arc::new(nbrs_metrics::instruments::gauge::ValueGauge::new(nbrs_metrics::labels::Labels::default()));
+    (
+        MetricSlot {
+            family: family.to_string(),
+            value_expr: binding_name.to_string(),
+            binding_name: binding_name.to_string(),
+            format: None,
+            instrument: MetricInstrument::Gauge(g.clone()),
+        },
+        g,
+    )
+}
+
 impl WrappingDispenser for MetricsDispenser {}
 
 impl OpDispenser for MetricsDispenser {

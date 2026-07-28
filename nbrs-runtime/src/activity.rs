@@ -1997,6 +1997,17 @@ impl Activity {
                                 // loop for per-iteration refresh — the GutterDispenser
                                 // itself publishes only once, when the (potentially
                                 // hours-long) drain op completes.
+                                // `on_done` — values written to the wires on the
+                                // TERMINATING poll, before its metrics publish.
+                                // A remote view of in-flight work (a compactions
+                                // view, a job queue) shows what is RUNNING, so
+                                // "done" arrives as an empty result and the
+                                // finished item's attributes are already gone.
+                                // This proxies the completed measurement we could
+                                // not observe: `on_done: {completion_ratio: 1.0}`
+                                // makes the final sample say what the view no
+                                // longer can.
+                                let on_done = crate::wrappers::poll::parse_on_done(cfg);
                                 let (each_gutter, _) = crate::wrappers::gutter::parse_specs(
                                     template.params.get("gutter"));
                                 let (d, _pm) = crate::wrappers::PollingDispenser::wrap_with_status(
@@ -2005,11 +2016,13 @@ impl Activity {
                                     progress_template, Some(activity.metrics.clone()),
                                     each_gutter, Some(activity.gutter.clone()),
                                     Some(poll_iteration_gauges.clone()),
+                                    on_done.clone(),
                                     activity.stop_view(),
                                 );
                                 crate::diag!(crate::observer::LogLevel::Debug,
-                                    "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={}, rows=[{}..={}], json_path={:?})",
-                                    template.name, interval, timeout, max_error_retries, min_rows, max_rows, json_path);
+                                    "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={}, rows=[{}..={}], json_path={:?}, on_done={:?})",
+                                    template.name, interval, timeout, max_error_retries, min_rows, max_rows, json_path,
+                                    on_done.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>());
                                 current = d;
                                 false
                             }
