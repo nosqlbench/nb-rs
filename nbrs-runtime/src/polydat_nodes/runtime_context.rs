@@ -87,6 +87,19 @@ pub struct FiberContext {
     /// no session-root walk and no cross-talk. Empty for fibers spawned without
     /// a component (a control read then falls back to the session-root walk).
     pub controls: ControlMap,
+    /// The fiber's own component — the phase component this activity attached.
+    /// The parent under which data-materialised dimensional cells are created
+    /// ([`nbrs_metrics::cells::CellMap`]), which is what makes a cell
+    /// phase-scoped: it lives in this component's subtree and goes when the
+    /// phase does.
+    ///
+    /// Carried here, beside `controls`, for the same reason `controls` is: a
+    /// cell must be resolved against the component a subsequent read sees, and
+    /// concurrent sibling phases must not resolve into each other's tree.
+    /// `None` for fibers spawned without a component (tests, pre-bootstrap) —
+    /// a cell then has no dimensional context to hang from and is refused
+    /// rather than invented.
+    pub component: Option<Arc<RwLock<Component>>>,
 }
 
 /// A lock-free, shareable snapshot of resolved control handles (see
@@ -125,14 +138,37 @@ tokio::task_local! {
 ///
 /// Cycle starts at 0 and is updated via [`set_task_cycle`] on
 /// every iteration of the fiber's loop.
-pub async fn with_fiber_context<F>(phase: Arc<str>, controls: ControlMap, fut: F) -> F::Output
+pub async fn with_fiber_context<F>(
+    phase: Arc<str>,
+    controls: ControlMap,
+    component: Option<Arc<RwLock<Component>>>,
+    fut: F,
+) -> F::Output
 where
     F: Future,
 {
     FIBER_CTX.scope(
-        FiberContext { phase, cycle: AtomicU64::new(0), controls },
+        FiberContext { phase, cycle: AtomicU64::new(0), controls, component },
         fut,
     ).await
+}
+
+/// Resolve — creating on first sight — the dimensional cell for `coord` under
+/// the running fiber's own component.
+///
+/// The generic entry point: a wrapper, node, or adapter can place a sample in a
+/// data-derived cell without knowing how the component tree is built. Returns
+/// `None` outside a fiber scope or for a fiber with no component, where there
+/// is no dimensional context to attach to.
+pub fn resolve_cell(
+    coord: &nbrs_metrics::labels::Labels,
+) -> Option<Arc<RwLock<Component>>> {
+    let parent = FIBER_CTX.try_with(|ctx| ctx.component.clone()).ok().flatten()?;
+    // The guard MUST drop before `resolve`: attaching the child takes the same
+    // component's write lock, so holding a read guard across the call
+    // self-deadlocks on the RwLock. Binding the Arc first is what releases it.
+    let cells = parent.read().unwrap_or_else(|e| e.into_inner()).cells();
+    Some(cells.resolve(&parent, coord))
 }
 
 /// Resolve a control from the running fiber's **current component** snapshot
@@ -590,7 +626,7 @@ mod tests {
     #[tokio::test]
     async fn phase_and_cycle_read_from_task_locals() {
         let phase_arc: Arc<str> = Arc::from("rampup");
-        with_fiber_context(phase_arc.clone(), empty_controls(), async {
+        with_fiber_context(phase_arc.clone(), empty_controls(), None, async {
             set_task_cycle(4242);
             let mut k = polydat::dsl::compile_polydat("p := phase()\nc := cycle()")
                 .expect("compile phase/cycle");
@@ -749,6 +785,51 @@ mod tests {
         assert_eq!(k.pull("x").as_str(), "");
     }
 
+    /// A cell resolves under the FIBER'S OWN component, so concurrent sibling
+    /// phases materialise into their own subtrees instead of each other's —
+    /// the same property `controls` needs, for the same reason.
+    #[tokio::test]
+    async fn a_cell_resolves_under_the_fibers_own_component() {
+        use nbrs_metrics::labels::Labels;
+        let comp_a = component_with_concurrency(2);
+        let comp_b = component_with_concurrency(32);
+        let phase: Arc<str> = Arc::from("t");
+        let coord = Labels::of("tier", "24");
+
+        let in_a = with_fiber_context(phase.clone(), empty_controls(), Some(comp_a.clone()), async {
+            resolve_cell(&coord)
+        }).await.expect("a fiber with a component resolves a cell");
+        let in_b = with_fiber_context(phase.clone(), empty_controls(), Some(comp_b.clone()), async {
+            resolve_cell(&coord)
+        }).await.expect("sibling resolves too");
+
+        assert!(!Arc::ptr_eq(&in_a, &in_b),
+            "the same coordinate under different components must not be one cell");
+        assert_eq!(comp_a.read().unwrap().child_count(), 1);
+        assert_eq!(comp_b.read().unwrap().child_count(), 1);
+
+        // Resolving again in the same component is the SAME cell — a per-cycle
+        // resolve must not attach a child per cycle.
+        let again = with_fiber_context(phase, empty_controls(), Some(comp_a.clone()), async {
+            resolve_cell(&coord)
+        }).await.expect("resolves");
+        assert!(Arc::ptr_eq(&in_a, &again), "one coordinate is one cell per component");
+        assert_eq!(comp_a.read().unwrap().child_count(), 1, "no second child");
+    }
+
+    /// Outside a fiber, or without a component, there is no dimensional context
+    /// — refused rather than invented.
+    #[tokio::test]
+    async fn a_cell_is_refused_without_a_dimensional_context() {
+        use nbrs_metrics::labels::Labels;
+        let coord = Labels::of("tier", "24");
+        assert!(resolve_cell(&coord).is_none(), "no fiber scope, no cell");
+        let none = with_fiber_context(Arc::from("t"), empty_controls(), None, async {
+            resolve_cell(&coord)
+        }).await;
+        assert!(none.is_none(), "a fiber with no component has nothing to hang a cell from");
+    }
+
     #[tokio::test]
     async fn control_set_records_compile_time_binding_attribution() {
         let _g = serial_test();
@@ -850,11 +931,11 @@ mod tests {
         let phase: Arc<str> = Arc::from("p");
 
         // Each fiber resolves through its own component snapshot (FIBER_CTX).
-        let a_val = with_fiber_context(phase.clone(), snapshot_controls(&comp_a), async {
+        let a_val = with_fiber_context(phase.clone(), snapshot_controls(&comp_a), Some(comp_a.clone()), async {
             control_gauge_f64("concurrency")
         })
         .await;
-        let b_val = with_fiber_context(phase.clone(), snapshot_controls(&comp_b), async {
+        let b_val = with_fiber_context(phase.clone(), snapshot_controls(&comp_b), Some(comp_b.clone()), async {
             control_gauge_f64("concurrency")
         })
         .await;

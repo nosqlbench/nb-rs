@@ -153,6 +153,17 @@ pub struct Component {
     /// explicitly declares a control via
     /// `component.controls().declare(...)`.
     controls: crate::controls::ControlRegistry,
+    /// Data-materialised child cells, keyed by coordinate.
+    ///
+    /// Held behind an `Arc` and handed out BY VALUE, not as a borrow through
+    /// the component's guard: resolving a cell attaches a child, which takes
+    /// this component's WRITE lock. A caller that reached the map through a
+    /// read guard would still be holding it — a self-deadlock on the same
+    /// `RwLock`. Returning the `Arc` lets the guard drop before resolution.
+    ///
+    /// A cell's lifetime is this component's: a phase's cells go when the
+    /// phase subtree does.
+    cells: std::sync::Arc<crate::cells::CellMap>,
 }
 
 impl Component {
@@ -172,6 +183,7 @@ impl Component {
             dynamic_capture: None,
             last_capture_instant: Mutex::new(None),
             controls: crate::controls::ControlRegistry::new(),
+            cells: std::sync::Arc::new(crate::cells::CellMap::new()),
         }
     }
 
@@ -445,6 +457,22 @@ impl Component {
     /// control on it. See SRD 23.
     pub fn controls(&self) -> &crate::controls::ControlRegistry {
         &self.controls
+    }
+
+    /// This component's data-materialised cells. See [`crate::cells::CellMap`]:
+    /// one series per dimension instance is one CHILD per instance, not a label
+    /// bag on an instrument.
+    ///
+    /// Returns the `Arc` by value ON PURPOSE — see the field docs. Resolving
+    /// takes this component's write lock, so the caller must be able to drop
+    /// its read guard first:
+    ///
+    /// ```ignore
+    /// let cells = parent.read().unwrap().cells();  // guard dropped here
+    /// let cell  = cells.resolve(&parent, &coord);  // takes the write lock
+    /// ```
+    pub fn cells(&self) -> std::sync::Arc<crate::cells::CellMap> {
+        self.cells.clone()
     }
 
     /// Resolve a typed control by name, walking up the parent

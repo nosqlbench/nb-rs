@@ -2487,9 +2487,11 @@ impl Activity {
                     let activity_for_panic = activity.clone();
                     let activity_name_for_log = activity.config.name.clone();
                     let phase_arc_for_exec = phase_arc.clone();
+                    let fiber_component = activity.component.clone();
                     let body = crate::polydat_nodes::runtime_context::with_fiber_context(
                         phase_arc,
                         phase_controls,
+                        fiber_component,
                         async move {
                             executor_task(
                                 activity, dispensers, pull_plans,
@@ -3897,6 +3899,7 @@ async fn executor_task(
                             let body = crate::polydat_nodes::runtime_context::with_fiber_context(
                                 phase_arc,
                                 phase_controls,
+                                activity.component.clone(),
                                 daemon_dispatch(
                                     activity.clone(),
                                     dispensers,

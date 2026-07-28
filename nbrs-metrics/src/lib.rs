@@ -83,6 +83,7 @@ pub mod controls;
 pub mod thread_pools;
 pub mod scheduler;
 pub mod reporters;
+pub mod cells;
 pub mod component;
 pub mod diag;
 pub mod snapshot;
