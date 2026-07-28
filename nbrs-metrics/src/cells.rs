@@ -210,24 +210,59 @@ mod tests {
         }
     }
 
-    /// The tree does NOT forbid two siblings sharing a label set, and must not:
-    /// an iteration whose values repeat (the fib comprehension yields `n=1`
-    /// twice) re-materialises the same identity, which is one identity sampled
-    /// again over time. Enforcing distinctness in `attach` was tried and
-    /// panicked on that working case.
-    ///
-    /// This test pins the permissiveness so the guarantee cells rely on is
-    /// understood as a RESOLVER guarantee, not a tree invariant.
+    /// Two siblings sharing a label set AT THE SAME TIME is the case that
+    /// breaks identity: each can register the same family, and the two
+    /// instruments then wear one identity with the per-component duplicate
+    /// check unable to see it.
     #[test]
-    fn the_tree_permits_siblings_that_share_a_label_set() {
+    #[should_panic(expected = "sibling-identity violation")]
+    fn concurrent_siblings_cannot_share_a_label_set() {
         let p = parent();
-        for _ in 0..2 {
+        let _first = {
             let c = Arc::new(RwLock::new(Component::new(
                 Labels::of("tier", "24"), HashMap::new())));
             crate::component::attach(&p, &c);
+            c // kept alive and never stopped
+        };
+        let second = Arc::new(RwLock::new(Component::new(
+            Labels::of("tier", "24"), HashMap::new())));
+        crate::component::attach(&p, &second);
+    }
+
+    /// Sequential reuse must stay legal — an iteration whose values repeat
+    /// (fib yields `n=1` twice) re-materialises the SAME identity, which is one
+    /// identity sampled again over time. An unconditional check panicked here.
+    #[test]
+    fn a_label_set_may_be_reused_after_the_previous_component_stops() {
+        use crate::component::ComponentState;
+        let p = parent();
+        let first = Arc::new(RwLock::new(Component::new(
+            Labels::of("tier", "24"), HashMap::new())));
+        crate::component::attach(&p, &first);
+        first.write().unwrap().set_state(ComponentState::Stopped);
+
+        let second = Arc::new(RwLock::new(Component::new(
+            Labels::of("tier", "24"), HashMap::new())));
+        crate::component::attach(&p, &second); // must not panic
+        assert_eq!(p.read().unwrap().child_count(), 2);
+    }
+
+    /// The index must not keep a dead component alive, and must not leak a
+    /// phantom claim when a component is dropped without being stopped.
+    #[test]
+    fn a_dropped_component_releases_its_claim() {
+        let p = parent();
+        {
+            let c = Arc::new(RwLock::new(Component::new(
+                Labels::of("tier", "24"), HashMap::new())));
+            crate::component::attach(&p, &c);
+            // `children` holds a strong ref, so drop that too: this models a
+            // component detached and released rather than stopped.
+            crate::component::detach(&p, &c);
         }
-        assert_eq!(p.read().unwrap().child_count(), 2,
-            "attach is vertical-only by design; siblings may repeat");
+        let again = Arc::new(RwLock::new(Component::new(
+            Labels::of("tier", "24"), HashMap::new())));
+        crate::component::attach(&p, &again); // must not panic
     }
 
     /// Distinct values attach as distinct siblings — the thing cells exist to

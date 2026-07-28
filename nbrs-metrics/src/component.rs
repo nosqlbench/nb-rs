@@ -164,6 +164,21 @@ pub struct Component {
     /// A cell's lifetime is this component's: a phase's cells go when the
     /// phase subtree does.
     cells: std::sync::Arc<crate::cells::CellMap>,
+    /// Liveness token. `Some` from construction until this component reaches
+    /// [`ComponentState::Stopped`], then dropped.
+    ///
+    /// A parent holds `Weak` clones of its children's tokens to detect
+    /// CONCURRENT siblings sharing a label set (see [`attach`]). Weak, so the
+    /// check needs no lock on any child and no cleanup hook anywhere: the token
+    /// dies when the component stops, and again if the component is simply
+    /// dropped without stopping. There is no counter to decrement and therefore
+    /// no way to leak a phantom sibling that blocks a legitimate re-attach.
+    live: Option<std::sync::Arc<()>>,
+    /// Live children indexed by own-label rendering, for the
+    /// concurrent-sibling check in [`attach`]. Holds `Weak` tokens and is
+    /// pruned lazily on the only path that reads a bucket, so it never keeps a
+    /// dead component alive and never needs an explicit teardown pass.
+    live_children: std::collections::HashMap<String, Vec<std::sync::Weak<()>>>,
 }
 
 impl Component {
@@ -184,6 +199,8 @@ impl Component {
             last_capture_instant: Mutex::new(None),
             controls: crate::controls::ControlRegistry::new(),
             cells: std::sync::Arc::new(crate::cells::CellMap::new()),
+            live: Some(std::sync::Arc::new(())),
+            live_children: std::collections::HashMap::new(),
         }
     }
 
@@ -210,8 +227,25 @@ impl Component {
     }
 
     /// Transition to a new lifecycle state.
+    ///
+    /// Reaching [`ComponentState::Stopped`] drops the liveness token, which is
+    /// what releases this component's claim on its label set among its
+    /// siblings. Every stop path goes through here, so there is exactly one
+    /// place that can forget to do it.
     pub fn set_state(&mut self, state: ComponentState) {
         self.state = state;
+        if state == ComponentState::Stopped {
+            self.live = None;
+        }
+    }
+
+    /// A `Weak` handle to this component's liveness token, for a parent's
+    /// concurrent-sibling index. Dead once the component stops or is dropped.
+    fn live_handle(&self) -> std::sync::Weak<()> {
+        match &self.live {
+            Some(t) => std::sync::Arc::downgrade(t),
+            None => std::sync::Weak::new(),
+        }
     }
 
     /// Register an instrument under `family` on this component.
@@ -828,22 +862,24 @@ fn count_walk(
 /// bug and panics with both label sets named, rather than letting
 /// the composition silently pick a winner.
 ///
-/// **The rule is vertical, not horizontal.** It constrains a child against
-/// its ANCESTORS. It deliberately does not stop two SIBLINGS declaring the
-/// same own-labels, which composes two components with byte-identical
-/// `effective_labels` — and that is legitimate: a phase re-materialised
-/// later, or an iteration whose values repeat (the fib comprehension yields
-/// `n=1` twice), is the SAME metric identity sampled again over time, not a
-/// second identity. Enforcing sibling-distinctness here was tried and
-/// rejected: it panics on that working case.
+/// **Concurrent-sibling invariant.** The rule above is *vertical* — it
+/// constrains a child against its ANCESTORS. Two SIBLINGS declaring the
+/// same own-labels compose byte-identical `effective_labels`, and the same
+/// family registered on each then yields two instruments sharing one metric
+/// identity, which the per-component duplicate-family check cannot see
+/// because they are different components.
 ///
-/// The consequence to know: two components alive at once with identical
-/// effective labels can each register the same family, yielding two
-/// instruments that share one metric identity, and the duplicate-family
-/// check cannot see it because they are different components. For cells
-/// materialised from data ([`crate::cells`]) that is closed by construction
-/// — `CellMap` memoises one cell per coordinate per parent — but it is a
-/// resolver guarantee, not a tree invariant.
+/// That is rejected only when the siblings are alive AT THE SAME TIME.
+/// Sequential reuse is legitimate: an iteration whose values repeat (the fib
+/// comprehension yields `n=1` twice) re-materialises the same identity,
+/// which is one identity sampled again over time, not a second identity. An
+/// unconditional check was implemented and rejected for exactly that reason.
+///
+/// Liveness is tracked by a token each component holds until it reaches
+/// [`ComponentState::Stopped`]; the parent indexes `Weak` clones per
+/// own-label set. So the check needs no lock on any child, costs a lookup in
+/// one bucket, and cleans up with no teardown pass — a stopped or dropped
+/// component's claim simply expires.
 pub fn attach(
     parent: &Arc<RwLock<Component>>,
     child: &Arc<RwLock<Component>>,
@@ -864,9 +900,39 @@ pub fn attach(
     }
     c.effective_labels = parent_effective.extend(&c.labels);
     c.parent = Some(Arc::downgrade(parent));
+    let child_own = c.labels.to_prometheus();
+    let child_live = c.live_handle();
     drop(c);
 
     let mut p = parent.write().unwrap_or_else(|e| e.into_inner());
+    // Concurrent-sibling check — the horizontal half of the ownership rule,
+    // scoped to components that are alive AT THE SAME TIME.
+    //
+    // Sequential reuse of a label set is legitimate and must stay legal: an
+    // iteration whose values repeat (the fib comprehension yields `n=1` twice)
+    // re-materialises the same identity, which is one identity sampled again
+    // over time. Two components alive at once is a different thing entirely —
+    // each can register the same family, and the two instruments then share one
+    // metric identity with the per-component duplicate check unable to see it.
+    //
+    // Only this key's bucket is touched, and pruning happens on the same visit,
+    // so the check is O(live siblings sharing this exact label set) — normally
+    // zero — and the index self-cleans without a teardown pass.
+    let bucket = p.live_children.entry(child_own.clone()).or_default();
+    bucket.retain(|w| w.strong_count() > 0);
+    if !bucket.is_empty() {
+        let parent_labels = parent_effective.to_prometheus();
+        panic!(
+            "component sibling-identity violation: a LIVE sibling already \
+             declares the own-label set {child_own} under {parent_labels}. Both \
+             would compose byte-identical effective labels, so the same family \
+             registered on each yields two instruments sharing one metric \
+             identity — which the per-component duplicate-family check cannot \
+             see, because they are different components. (Re-using a label set \
+             AFTER the previous component stops is fine and is not this.)"
+        );
+    }
+    bucket.push(child_live);
     p.children.push(child.clone());
 }
 

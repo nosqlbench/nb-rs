@@ -208,22 +208,27 @@ nothing.
 
 ## Settled
 
-- **Sibling identity is a resolver guarantee, not a tree invariant.** The
-  label-ownership check in `attach` is *vertical*: it constrains a child against
-  its ancestors. It permits two siblings to share an own-label set, and must —
-  an iteration whose values repeat (the fib comprehension yields `n=1` twice)
-  re-materialises the same identity, which is one identity sampled again over
-  time, not a second identity. Enforcing sibling-distinctness in `attach` was
-  implemented, tested, and **rejected**: it panics on that working case
-  (`comprehension_gen_fib_count`).
+- **Concurrent siblings may not share a label set; sequential reuse may.**
+  The label-ownership check in `attach` is *vertical* (child vs. ancestors). The
+  horizontal case — two siblings composing byte-identical `effective_labels`,
+  each able to register the same family and produce two instruments wearing one
+  identity — is now checked, but only for components alive AT THE SAME TIME.
 
-  The residual hazard is therefore real but narrow: two components alive at once
-  with identical effective labels can each register the same family, and the
-  per-component duplicate check cannot see it. For cells this is closed by
-  `CellMap` memoising one cell per coordinate per parent — a test asserts
-  repeated resolution attaches no twin — but it is the resolver that guarantees
-  it, so any future data-derived child path must route through the same resolver
-  rather than calling `attach` directly.
+  An unconditional version was implemented first and rejected: it panics on
+  `comprehension_gen_fib_count`, where a sequence containing 1 twice attaches
+  two `emit_n` phases labelled `n="1"`. Those are sequential — the first reaches
+  `Stopped` before the second attaches — and re-materialising an identity later
+  is one identity sampled again over time, not a second identity.
+
+  Liveness rides on a token each component holds until `ComponentState::Stopped`
+  (cleared in `set_state`, the single transition choke point); the parent indexes
+  `Weak` clones per own-label set and prunes the one bucket it touches. So the
+  check needs no lock on any child, costs a lookup in that bucket, and expires
+  claims with no teardown pass — a component that is dropped without stopping
+  releases its claim too, which a test pins.
+
+  This closes the hazard at the tree rather than leaving it to whichever resolver
+  created the child, so a future data-derived child path cannot reopen it.
 
 - **Multi-dimension coordinates are ONE cell** carrying the whole set. Identity
   is the resulting label set, so composition order is not something identity
