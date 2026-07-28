@@ -1378,6 +1378,37 @@ report:
       query: segments: max(compaction_input_segments) by (p)
       query: vector_index_bytes: max(compaction_input_index_bytes) by (p)
       query: sai_shared_bytes: max(compaction_input_table_bytes) by (p)
+      # Rollups are wrapped in min()/max(): `by (p)` groups an AGGREGATION, and a
+      # bare rollup keeps every label, so an unwrapped t*_over_time silently fails
+      # to align with the aggregated columns it is combined with.
+      # WHEN each tier ran. `started` is the instance's first emission, which is
+      # when that tier's compaction began. `last_progress` is the last time the
+      # value MOVED -- not the last sample, because every instance keeps being
+      # re-sampled at its final value until the run ends, so "last sample" is the
+      # end of the run for every tier and says nothing. A tier whose last_progress
+      # is recent and whose done_pct is below 100 is the one still running.
+      query: started: min(tfirst_over_time(compaction_completion_ratio[24h])) by (p)
+      query: last_progress: max(tlast_change_over_time(compaction_completion_ratio[24h])) by (p)
+      # Elapsed SO FAR: first emission to last movement. `time_to_index` is written
+      # only when a tier finishes, so the tier being measured -- the slow one that
+      # may never finish -- has none, and every duration and rate derived from it
+      # was blank or infinite. This one keeps growing while the tier works.
+      query: elapsed_seconds: max(tlast_change_over_time(compaction_completion_ratio[24h])) by (p) - min(tfirst_over_time(compaction_completion_ratio[24h])) by (p)
+      query: done_pct: 100 * max(compaction_completion_ratio) by (p)
+      query: parts_done: max(compaction_progress_parts) by (p)
+      query: parts_total: max(compaction_total_parts) by (p)
+      # Throughput over elapsed-so-far, so a running tier reports the rate it is
+      # achieving now instead of nothing. For a finished tier this equals the
+      # completed rate; `finalize_ms` is kept beside it as the completion-time
+      # figure, blank until the tier closes.
+      # Two throughput figures, because they answer different questions and only one
+      # of them exists while a tier is still working:
+      #   index_bytes_per_ms  completion-time rate, exact, blank until the tier ends
+      #   live_bytes_per_ms   rate over the work done so far, available immediately
+      # The live figure is quantised by the metrics cadence, so on tiers that finish
+      # inside a tick or two it is coarse -- and on the long-running tier this whole
+      # table exists to measure, it is the only one there is.
+      query: index_bytes_per_ms: max(compaction_input_index_bytes) by (p) / max(time_to_index) by (p)
+      query: live_bytes_per_ms: max(compaction_progress_parts) by (p) / (1000 * (max(tlast_change_over_time(compaction_completion_ratio[24h])) by (p) - min(tfirst_over_time(compaction_completion_ratio[24h])) by (p)))
       query: finalize_seconds: max(cycles_servicetime_mean{phase="finalize_index"}) by (p)
       query: finalize_ms: max(time_to_index) by (p)
-      query: index_bytes_per_ms: max(compaction_input_index_bytes) by (p) / max(time_to_index) by (p)
