@@ -123,6 +123,17 @@ tokio::task_local! {
     /// own. `None` outside any phase body (e.g. the metrics scheduler thread);
     /// readers fall back to the first-running DFS heuristic (A1).
     static CURRENT_PHASE: crate::scene_tree::SceneNodeId;
+
+    /// Epoch millis at which the phase the **current task** is executing
+    /// started. Scoped by `run_phase` next to [`CURRENT_PHASE`] and carried
+    /// across fiber spawns by [`propagate`], so a phase-scoped clock is
+    /// available to everything running under the phase — including the ops,
+    /// which is the whole point.
+    ///
+    /// Same reason as `CURRENT_PHASE` for being a task-local rather than a
+    /// field on the shared per-execution context: concurrent sibling phases
+    /// share one `ExecutionContext` but must each resolve to THEIR start.
+    static CURRENT_PHASE_START_MS: u64;
 }
 
 
@@ -197,9 +208,20 @@ pub async fn scope<F: std::future::Future>(ctx: Arc<ExecutionContext>, fut: F) -
 /// emit nests under its depth.
 pub async fn with_current_phase<F: std::future::Future>(
     scene_node_id: crate::scene_tree::SceneNodeId,
+    phase_start_ms: u64,
     fut: F,
 ) -> F::Output {
-    CURRENT_PHASE.scope(scene_node_id, fut).await
+    CURRENT_PHASE_START_MS
+        .scope(phase_start_ms, CURRENT_PHASE.scope(scene_node_id, fut))
+        .await
+}
+
+/// Epoch millis at which the phase the current task is executing started, if
+/// set. `None` outside any phase body (the metrics scheduler thread, CLI paths,
+/// unit tests that never scoped one) — a caller then has no phase to be
+/// relative to and must say so rather than invent an origin.
+pub fn current_phase_start_ms() -> Option<u64> {
+    CURRENT_PHASE_START_MS.try_with(|ms| *ms).ok()
 }
 
 /// The scene node of the phase the current task is executing, if set (inside a
@@ -231,14 +253,21 @@ where
     // Capture BOTH task-locals now, while still inside the parent's scope.
     let ctx = try_current();
     let phase = current_phase_node();
+    let phase_start = current_phase_start_ms();
     async move {
         // Re-establish the executing-phase (inner) inside the execution
         // context (outer), so a fiber deep inside a phase still resolves to
         // both its execution AND its phase node (SRD-100 P1c).
         let inner = async move {
-            match phase {
-                Some(p) => CURRENT_PHASE.scope(p, fut).await,
-                None => fut.await,
+            let with_phase = async move {
+                match phase {
+                    Some(p) => CURRENT_PHASE.scope(p, fut).await,
+                    None => fut.await,
+                }
+            };
+            match phase_start {
+                Some(ms) => CURRENT_PHASE_START_MS.scope(ms, with_phase).await,
+                None => with_phase.await,
             }
         };
         match ctx {
@@ -251,6 +280,34 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The phase origin is per-task, so concurrent sibling phases each read
+    /// THEIR own start rather than whichever ran last.
+    #[tokio::test]
+    async fn phase_start_is_scoped_and_absent_outside_a_phase() {
+        assert_eq!(current_phase_start_ms(), None,
+            "outside a phase there is no origin to be relative to");
+        let inside = with_current_phase(1, 111, async { current_phase_start_ms() }).await;
+        assert_eq!(inside, Some(111));
+        let sibling = with_current_phase(2, 222, async { current_phase_start_ms() }).await;
+        assert_eq!(sibling, Some(222));
+        assert_eq!(current_phase_start_ms(), None,
+            "the scope must not leak past the phase body");
+    }
+
+    /// Fibers are spawned tasks, which do NOT inherit task-locals — the phase
+    /// clock has to survive `propagate` or every op would read no origin.
+    #[tokio::test]
+    async fn phase_start_survives_propagate_into_a_spawned_task() {
+        let got = with_current_phase(3, 333, async {
+            tokio::spawn(propagate(async { current_phase_start_ms() }))
+                .await
+                .expect("spawned task")
+        })
+        .await;
+        assert_eq!(got, Some(333),
+            "a propagated fiber must resolve its own phase's origin");
+    }
 
     #[test]
     fn alloc_exec_id_is_monotonic_and_unique() {
@@ -293,7 +350,7 @@ mod tests {
         assert_eq!(current_phase_node(), None);
         // Inside `with_current_phase` it resolves to the scoped node, and
         // reverts after the body returns.
-        let inside = with_current_phase(7, async { current_phase_node() }).await;
+        let inside = with_current_phase(7, 0, async { current_phase_node() }).await;
         assert_eq!(inside, Some(7));
         assert_eq!(current_phase_node(), None, "the scope reverts on exit");
     }
@@ -303,7 +360,7 @@ mod tests {
         // SRD-100 P1c — a bare spawn inside a phase body loses the ambient
         // phase; `propagate` re-establishes it so a fiber deep inside the
         // activity still indents to ITS phase's node.
-        let (bare, wrapped) = with_current_phase(42, async {
+        let (bare, wrapped) = with_current_phase(42, 0, async {
             let bare = tokio::spawn(async { current_phase_node() }).await.unwrap();
             let wrapped = tokio::spawn(propagate(async { current_phase_node() }))
                 .await
@@ -321,7 +378,7 @@ mod tests {
         // execution's exec_id AND its phase node.
         let ctx = ExecutionContext::new();
         let id = ctx.exec_id;
-        let (eid, phase) = scope(ctx, with_current_phase(9, async {
+        let (eid, phase) = scope(ctx, with_current_phase(9, 0, async {
             tokio::spawn(propagate(async { (current_exec_id(), current_phase_node()) }))
                 .await
                 .unwrap()

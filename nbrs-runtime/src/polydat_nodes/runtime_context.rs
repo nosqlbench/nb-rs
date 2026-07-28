@@ -427,6 +427,53 @@ fn phase() -> String {
 }
 
 // =========================================================================
+// phase_start_millis() / phase_elapsed_millis() — phase-scoped clock
+// =========================================================================
+
+/// Epoch millis at which the CURRENT phase started; `0` outside a phase body.
+///
+/// The phase-scoped counterpart to `session_start_millis()`. Both exist because
+/// they answer different questions and a session origin cannot substitute for a
+/// phase one in a run that sweeps many phases.
+///
+/// The origin is established once per phase by the executor's `run_phase` and
+/// carried across fiber spawns, so every op under the phase reads the same
+/// value — including concurrent sibling phases, which each see their own
+/// (the origin is a task-local, not shared execution state).
+///
+/// Intrinsically `Nondeterministic`: the origin differs per phase and per run,
+/// so the node must never be const-folded into one phase's value.
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("reads the current phase's start time; differs per phase and per run"),
+)]
+fn phase_start_millis() -> u64 {
+    crate::execution_context::current_phase_start_ms().unwrap_or(0)
+}
+
+/// Milliseconds elapsed since the CURRENT phase started; `0` outside a phase.
+///
+/// `current_epoch_millis() - phase_start_millis()` spelled as one node, which
+/// is the form workloads actually want — a phase-relative duration available
+/// while the phase is still running, rather than only at its completion pull.
+///
+/// Intrinsically `Nondeterministic`: it grows monotonically within a phase.
+#[polydat::polydat_node(
+    category = Context,
+    purity = Nondeterministic("monotonic elapsed time within the current phase"),
+)]
+fn phase_elapsed_millis() -> u64 {
+    let Some(start) = crate::execution_context::current_phase_start_ms() else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    now.saturating_sub(start)
+}
+
+// =========================================================================
 // cycle() — current cycle ordinal (thread-local)
 // =========================================================================
 

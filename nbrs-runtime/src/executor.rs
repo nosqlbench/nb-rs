@@ -3509,8 +3509,17 @@ async fn run_phase(
     phase_name: &str,
     scene_node_id: crate::scene_tree::SceneNodeId,
 ) -> crate::phase_outcome::Outcome {
+    // Phase-scoped clock origin, established HERE — the one place every phase
+    // body passes through — so `phase_start_millis()` / `phase_elapsed_millis()`
+    // resolve for the activity loop, its fibers, and the ops they run. Taken
+    // before the body so it is the phase's start, not the first op's.
+    let phase_start_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
     let outcome = crate::execution_context::with_current_phase(
         scene_node_id,
+        phase_start_ms,
         run_phase_inner(ctx, phase_name, scene_node_id),
     )
     .await;
@@ -6096,7 +6105,12 @@ fn emit_phase_metrics(
     ).map_err(|e| format!("phase '{phase_name}': metric-pull subscope: {e}"))?;
     phase_kernel.propagate_inputs_into(&mut k);
 
-    // Set the injected origin so `phase_elapsed(phase_start)` reads it.
+    // The synthesized `phase_start` is no longer an extern filled here — it
+    // binds `phase_start_millis()`, which reads the phase origin scoped by
+    // `run_phase` and is therefore already correct at this pull AND for every
+    // op that ran before it (as an extern it was set only here, so ops read the
+    // 0 default). This remains only for a workload that declares the extern by
+    // hand; a program without the input is the normal case and no-ops.
     if let Some(idx) = k.program().find_input("phase_start") {
         k.state().set_input(idx, Value::U64(phase_start_epoch_ms));
     }

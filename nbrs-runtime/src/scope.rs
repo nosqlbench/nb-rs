@@ -993,11 +993,19 @@ pub fn synthesize_phase_scope_bindings(
         // identity); for a deterministic value it is harmless. The
         // executor pulls each `__metric_<name>` once at phase
         // completion — see `executor::emit_phase_metrics`.
+        // `phase_start` binds the runtime's phase-scoped clock node rather
+        // than an extern the executor has to remember to fill. As an extern it
+        // was set ONLY on the completion-time metric pull, on a fresh subscope
+        // — so anything reading it while the phase was still running (an op,
+        // most obviously) saw the declared default of 0 and silently computed
+        // against the epoch. The node reads the phase origin the executor
+        // scopes in `run_phase`, so the value is correct from the phase's
+        // first op onward, and `volatile` keeps it out of const-fold identity.
         source.push_str(
             "# Phase-level metrics — synthesized.\n\
-             # `phase_start` is set by the executor (epoch millis at\n\
-             # phase start) on the completion-time metric pull.\n\
-             extern phase_start: u64 = 0\n",
+             # `phase_start` is the epoch millis at which THIS phase started,\n\
+             # read from the runtime's phase-scoped clock.\n\
+             volatile phase_start := phase_start_millis()\n",
         );
         let mut entries: Vec<_> = phase.metrics.iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
@@ -4203,8 +4211,14 @@ extern keyspace: String
             BindingsDef::PolydatSource(s) => s,
             other => panic!("expected PolydatSource, got {other:?}"),
         };
-        assert!(src.contains("extern phase_start: u64 = 0"),
-            "must inject the phase_start origin wire; got:\n{src}");
+        // Bound to the runtime's phase clock, NOT an extern: as an extern it
+        // was filled only at the completion-time pull, so anything reading it
+        // while the phase ran (an op) got the 0 default and computed against
+        // the epoch.
+        assert!(src.contains("volatile phase_start := phase_start_millis()"),
+            "must bind phase_start to the phase-scoped clock; got:\n{src}");
+        assert!(!src.contains("extern phase_start"),
+            "the fill-me-in extern must be gone; got:\n{src}");
         assert!(src.contains(
             "volatile __metric_time_to_index := current_epoch_millis() - phase_start"),
             "must emit the volatile metric binding; got:\n{src}");

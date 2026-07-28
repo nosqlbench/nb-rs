@@ -1093,12 +1093,15 @@ phases:
       #
       # WINDOW, not tier. Every metric published here inherits this phase's
       # `{tier}` label, but the bound below is a rolling 24h window, not this
-      # tier's start: no phase-start wire is visible at op scope
-      # (`phase_start` is injected only into the PHASE kernel and only set at
-      # its completion-time metric pull; `elapsed_ms` is a stop-condition wire
-      # and does not compile in an op binding). So read these as "completed
-      # compactions in the last N hours, as of this tier" — a window wider
-      # than a tier's finalize will include the previous tier's work.
+      # tier's start. Measured 2026-07-28: `phase_start` IS on the op's wires
+      # but reads 0 during ops (the executor sets it at the completion-time
+      # metric pull, after the ops have run); `elapsed_millis()` works here but
+      # anchors to SESSION start, not phase start; `elapsed_ms` is a
+      # stop-condition wire and does not compile in an op binding. So read
+      # these as "completed compactions in the last 24h, as of this tier" — a
+      # window wider than a tier's finalize includes the previous tier's work.
+      # The per-tier attribution is done report-side instead, by joining each
+      # history row's compacted_at to the tier whose phase window contains it.
       read_compaction_history:
         adapter: cql
         readout: visible
