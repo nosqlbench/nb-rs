@@ -1651,6 +1651,7 @@ mod tests {
         let mut tree = ScopeTree::build("default", &[phase("p")]);
         let mut phases = HashMap::new();
         phases.insert("p".into(), WorkloadPhase {
+            dimensions: Default::default(),
             cycles: None, concurrency: None, rate: None, daemon: false,
             adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
             ops: vec![
@@ -1686,6 +1687,7 @@ mod tests {
         let mut tree = ScopeTree::build("default", &[phase("p")]);
         let mut phases = HashMap::new();
         phases.insert("p".into(), WorkloadPhase {
+            dimensions: Default::default(),
             cycles: None, concurrency: None, rate: None, daemon: false,
             adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
             ops: vec![ParsedOp::simple("only", "noop")],
@@ -1709,6 +1711,7 @@ mod tests {
         let mut tree = ScopeTree::build("default", &[phase("p")]);
         let mut phases = HashMap::new();
         phases.insert("p".into(), WorkloadPhase {
+            dimensions: Default::default(),
             cycles: None, concurrency: None, rate: None, daemon: false,
             adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, stop_when: Vec::new(), tags: None,
             ops: vec![ParsedOp::simple("foo", "noop")],

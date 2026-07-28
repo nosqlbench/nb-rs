@@ -186,6 +186,7 @@ mod tests {
 
     fn empty_phase() -> WorkloadPhase {
         WorkloadPhase {
+            dimensions: Default::default(),
             cycles: None, concurrency: None, rate: None, daemon: false,
             adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, stop_when: Vec::new(), continue_if: None, tags: None,
             ops: vec![], for_each: None,
@@ -309,6 +310,7 @@ mod tests {
         let mut p = empty_phase();
         let mut op = ParsedOp::simple("a", "noop");
         op.metrics.insert("m".into(), MetricSpec {
+            cell: Default::default(),
             value: "factor * 2.0".into(),  // expression → Definitions
             family: None, kind: None, unit: None, format: None,
         });
@@ -341,6 +343,7 @@ mod tests {
         let mut p = empty_phase();
         let mut op = ParsedOp::simple("a", "noop");
         op.metrics.insert("m".into(), MetricSpec {
+            cell: Default::default(),
             value: "existing_wire".into(),
             family: None, kind: None, unit: None, format: None,
         });
@@ -370,6 +373,7 @@ mod tests {
         let mut with_metrics = empty_phase();
         let mut op_with = ParsedOp::simple("select_ann", "noop");
         op_with.metrics.insert("m".into(), MetricSpec {
+            cell: Default::default(),
             value: "existing_wire".into(),
             family: None, kind: None, unit: None, format: None,
         });

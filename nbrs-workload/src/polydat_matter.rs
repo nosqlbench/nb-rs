@@ -280,6 +280,7 @@ mod tests {
         op.metrics.insert("foo".into(), MetricSpec {
             value: "existing_wire".into(),
             family: None, kind: None, unit: None, format: None,
+            cell: Default::default(),
         });
         assert_eq!(op.polydat_matter(), PolydatMatter::Definitions);
     }
@@ -292,6 +293,7 @@ mod tests {
         op.metrics.insert("foo".into(), MetricSpec {
             value: "phase.recall_at_10".into(),
             family: None, kind: None, unit: None, format: None,
+            cell: Default::default(),
         });
         assert_eq!(op.polydat_matter(), PolydatMatter::Definitions);
     }
@@ -302,6 +304,7 @@ mod tests {
         op.metrics.insert("foo".into(), MetricSpec {
             value: "factor * 2.0".into(),
             family: None, kind: None, unit: None, format: None,
+            cell: Default::default(),
         });
         assert_eq!(op.polydat_matter(), PolydatMatter::Definitions);
     }
@@ -367,6 +370,7 @@ mod tests {
         metrics.insert("time_to_index".to_string(), crate::model::MetricSpec {
             value: "current_epoch_millis() - phase_start".into(),
             family: None, kind: None, unit: None, format: None,
+            cell: Default::default(),
         });
         let phase = WorkloadPhase {
             cycles: None, concurrency: None, rate: None,

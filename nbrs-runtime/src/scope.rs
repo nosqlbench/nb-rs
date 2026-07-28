@@ -1013,6 +1013,14 @@ pub fn synthesize_phase_scope_bindings(
             let binding = synthesize_metric_binding_name(name);
             source.push_str(&format!(
                 "volatile {binding} := {expr}\n", expr = spec.value));
+            // See the op-template path: a coordinate is compiled matter, not a
+            // runtime string. `volatile` for the same reason the value is —
+            // a coordinate read from a capture or a clock must not be folded
+            // into one phase's value.
+            for (dim, expr) in &spec.cell {
+                let cell_binding = synthesize_cell_binding_name(name, dim);
+                source.push_str(&format!("volatile {cell_binding} := {expr}\n"));
+            }
         }
     }
 
@@ -1810,6 +1818,15 @@ pub fn build_op_template_scope_kernel(
         for (name, spec) in entries {
             let binding = synthesize_metric_binding_name(name);
             result_source.push_str(&format!("{binding} := {expr}\n", expr = spec.value));
+            // Cell coordinates are reified the same way the value is: as
+            // compiled kernel bindings walked by `add_result_bindings`, so a
+            // coordinate expression gets its magic-extern slots and is
+            // type-checked, rather than being a string assembled at runtime.
+            // `BTreeMap` iteration keeps the emission order stable.
+            for (dim, expr) in &spec.cell {
+                let cell_binding = synthesize_cell_binding_name(name, dim);
+                result_source.push_str(&format!("{cell_binding} := {expr}\n"));
+            }
         }
     }
     // While-wrapper predicate. Synthesised as `__while := <expr>`
@@ -1860,6 +1877,21 @@ pub fn build_op_template_scope_kernel(
 /// names and lets diagnostic surfaces filter them out by prefix.
 pub fn synthesize_metric_binding_name(metric_name: &str) -> String {
     format!("__metric_{metric_name}")
+}
+
+/// The kernel wire a metric's cell COORDINATE is lowered to, per
+/// (metric, dimension).
+///
+/// Keyed by metric as well as dimension because two metrics in one scope may
+/// place into the same dimension by different expressions — `bytes_out` from
+/// one captured column and `bytes_in` from another. A per-dimension name would
+/// collide and one placement would silently win.
+///
+/// Same `__` convention as [`synthesize_metric_binding_name`]: it cannot
+/// collide with an author-declared output, and diagnostics can filter it as
+/// internal.
+pub fn synthesize_cell_binding_name(metric_name: &str, dimension: &str) -> String {
+    format!("__cell_{metric_name}__{dimension}")
 }
 
 /// The phase-kernel wire an **inline objective expression** is lowered to
@@ -3760,8 +3792,7 @@ extern table: String
         ));
         op.metrics.insert("overscan".into(), MetricSpec {
             value: "overscan".into(),
-            family: None, kind: None, unit: None, format: None,
-        });
+            family: None, kind: None, unit: None, format: None, cell: Default::default(),});
         let mut workload_params = HashMap::new();
         workload_params.insert("dataset".into(), "sift1m".into());
         workload_params.insert("profile".into(), "label_00".into());
@@ -3959,8 +3990,7 @@ extern keyspace: String
                 family: None,
                 kind: Some(nbrs_workload::model::MetricKind::Gauge),
                 unit: None,
-                format: None,
-            },
+                format: None, cell: Default::default(),},
         );
         let kernel = build_op_template_scope_kernel(
             &op, &manifest, &parent,
@@ -4192,13 +4222,57 @@ extern keyspace: String
     /// `volatile __metric_<name> := <value>` per metric. The phase's
     /// own bindings are appended verbatim.
     #[test]
+    /// A metric's `cell:` is reified as a compiled kernel binding beside its
+    /// value — the whole point of the design. If this did not compile, a
+    /// coordinate would have to be a runtime string, which is the
+    /// unvalidatable shape the proposal exists to avoid.
+    #[test]
+    fn phase_metrics_reify_cell_coordinates_as_kernel_bindings() {
+        use nbrs_workload::model::{BindingsDef, MetricSpec, WorkloadPhase};
+        let mut metrics = std::collections::HashMap::new();
+        let mut cell = std::collections::BTreeMap::new();
+        cell.insert("tier".to_string(), "tier_name".to_string());
+        metrics.insert("bytes_out".to_string(), MetricSpec {
+            value: "history_bytes_out".into(),
+            family: None, kind: None, unit: None, format: None, cell,
+        });
+        let phase = WorkloadPhase {
+            bindings: BindingsDef::PolydatSource(
+                "extern tier_name: str = \"\"\n\
+                 extern history_bytes_out: u64 = 0\n".into()),
+            metrics,
+            poll: None,
+            ..Default::default()
+        };
+        let out = synthesize_phase_scope_bindings(&phase).expect("synthesis");
+        let src = match out {
+            BindingsDef::PolydatSource(s) => s,
+            other => panic!("expected PolydatSource, got {other:?}"),
+        };
+        assert!(src.contains("volatile __cell_bytes_out__tier := tier_name"),
+            "coordinate must be emitted as a volatile binding; got:\n{src}");
+        assert!(src.contains("volatile __metric_bytes_out := history_bytes_out"),
+            "the value binding must still be emitted; got:\n{src}");
+    }
+
+    /// Per (metric, dimension), not per dimension: two metrics placing into
+    /// one dimension by different expressions must not collide on a wire name
+    /// and silently let one placement win.
+    #[test]
+    fn two_metrics_in_one_dimension_get_distinct_coordinate_wires() {
+        assert_eq!(synthesize_cell_binding_name("bytes_out", "tier"),
+                   "__cell_bytes_out__tier");
+        assert_ne!(synthesize_cell_binding_name("bytes_out", "tier"),
+                   synthesize_cell_binding_name("bytes_in", "tier"));
+    }
+
+    #[test]
     fn synthesize_phase_scope_bindings_emits_metric_bindings() {
         use nbrs_workload::model::{BindingsDef, MetricSpec, WorkloadPhase};
         let mut metrics = std::collections::HashMap::new();
         metrics.insert("time_to_index".to_string(), MetricSpec {
             value: "current_epoch_millis() - phase_start".into(),
-            family: None, kind: None, unit: None, format: None,
-        });
+            family: None, kind: None, unit: None, format: None, cell: Default::default(),});
         let phase = WorkloadPhase {
             bindings: BindingsDef::default(),
             metrics,

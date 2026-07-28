@@ -1529,6 +1529,14 @@ fn parse_phases(
         let metrics = parse_phase_metrics_field(phase_obj.get("metrics"), phase_name)
             .map_err(|e| format!("phase '{phase_name}' metrics: {e}"))?;
 
+        // Phase-level `dimensions:` — label names this phase introduces,
+        // whose VALUES arrive from data through a metric's `cell:`. The
+        // name is the structural declaration; declaring it here is what
+        // lets a `cell:` reference be checked against the program before
+        // any cycle runs, instead of surfacing as an attach-time panic on
+        // the component tree.
+        let dimensions = parse_dimensions_field(phase_obj.get("dimensions"), phase_name)?;
+
         // SRD-86 — phase `optimize:` block (workload-local config). A bare
         // string is sugar for `{ objective: <string> }` (see
         // `OptimizeBlock::from_yaml_value`).
@@ -1539,7 +1547,15 @@ fn parse_phases(
             ),
             None => None,
         };
+        // A `cell:` must name a DECLARED dimension. This is the payoff for
+        // reifying dimensions: the reference is checked against the program
+        // at load, so a typo'd or undeclared dimension is a workload error
+        // here rather than a component-tree surprise at attach time (or, in
+        // the label-ownership case, a runtime panic).
+        validate_cell_dimensions(phase_name, &dimensions, &inline_ops, &metrics)?;
+
         phases.insert(phase_name.clone(), WorkloadPhase {
+            dimensions,
             cycles,
             concurrency,
             rate,
@@ -2237,8 +2253,7 @@ fn parse_metrics_field(
             }
             out.insert(name.clone(), MetricSpec {
                 value: name, family: None, kind: None,
-                unit: None, format: None,
-            });
+                unit: None, format: None, cell: Default::default(),});
         }
         JVal::Array(items) => {
             for (idx, item) in items.iter().enumerate() {
@@ -2263,8 +2278,7 @@ fn parse_metrics_field(
                     }
                     out.insert(name.to_string(), MetricSpec {
                         value: name.to_string(), family: None, kind: None,
-                        unit: None, format: None,
-                    });
+                        unit: None, format: None, cell: Default::default(),});
                 } else {
                     // Bare-name form.
                     if trimmed.is_empty() {
@@ -2277,8 +2291,7 @@ fn parse_metrics_field(
                     }
                     out.insert(trimmed.to_string(), MetricSpec {
                         value: trimmed.to_string(), family: None, kind: None,
-                        unit: None, format: None,
-                    });
+                        unit: None, format: None, cell: Default::default(),});
                 }
             }
         }
@@ -2332,6 +2345,121 @@ fn parse_metrics_field(
 /// `__metric_<name>`, so the phase synthesiser emits
 /// `volatile __metric_<name> := <value>` straight from the raw
 /// `value:` expression preserved here.
+/// Parse a phase-level `dimensions:` block.
+///
+/// ```yaml
+/// dimensions:
+///   tier: { type: str }
+///   tier: str            # shorthand
+/// ```
+///
+/// Unknown keys are rejected rather than dropped: a silently-ignored
+/// dimension declaration would make a metric's `cell:` reference fail its
+/// existence check for a reason nothing points at.
+/// Check every `cell:` reference in a phase against its declared dimensions.
+///
+/// Both tiers are covered: the phase's own `metrics:` and each inline op's.
+/// The error names the declared set, because the common failure is a name
+/// declared one tier away rather than a nonsense name.
+fn validate_cell_dimensions(
+    phase_name: &str,
+    dimensions: &std::collections::BTreeMap<String, crate::model::DimensionSpec>,
+    ops: &[ParsedOp],
+    phase_metrics: &HashMap<String, MetricSpec>,
+) -> Result<(), String> {
+    let declared = || {
+        if dimensions.is_empty() {
+            "none are declared on this phase".to_string()
+        } else {
+            format!(
+                "declared here: {}",
+                dimensions.keys().cloned().collect::<Vec<_>>().join(", "))
+        }
+    };
+    let mut check = |site: &str, metric: &str, spec: &MetricSpec| -> Result<(), String> {
+        for dim in spec.cell.keys() {
+            if !dimensions.contains_key(dim) {
+                return Err(format!(
+                    "phase '{phase_name}' {site} metric '{metric}': cell \
+                     dimension '{dim}' is not declared. A dimension is a label \
+                     name owned by exactly one tier, so declare it on the phase \
+                     ({dim}: str) before placing a metric in it — {}",
+                    declared()));
+            }
+        }
+        Ok(())
+    };
+    for (name, spec) in phase_metrics {
+        check("phase-level", name, spec)?;
+    }
+    for op in ops {
+        for (name, spec) in &op.metrics {
+            check(&format!("op '{}'", op.name), name, spec)?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_dimensions_field(
+    val: Option<&JVal>,
+    phase_name: &str,
+) -> Result<std::collections::BTreeMap<String, crate::model::DimensionSpec>, String> {
+    use crate::model::{DimensionSpec, DimensionType};
+    let mut out = std::collections::BTreeMap::new();
+    let Some(v) = val else { return Ok(out) };
+    let JVal::Object(map) = v else {
+        return Err(format!(
+            "phase '{phase_name}' dimensions: expected a mapping of \
+             <name>: <declaration>, got {v:?}"));
+    };
+    for (name, decl) in map {
+        if !is_valid_ident(name) {
+            return Err(format!(
+                "phase '{phase_name}' dimension '{name}': a dimension name \
+                 becomes a metric label, so it must be a valid identifier \
+                 (alphanumerics + underscore, not starting with a digit)"));
+        }
+        let value_type = match decl {
+            // Shorthand: `tier: str`
+            JVal::String(s) => parse_dimension_type(s, phase_name, name)?,
+            JVal::Object(obj) => {
+                for k in obj.keys() {
+                    if k != "type" {
+                        return Err(format!(
+                            "phase '{phase_name}' dimension '{name}': unknown \
+                             field `{k}`. Recognised fields: type"));
+                    }
+                }
+                match obj.get("type") {
+                    None => DimensionType::default(),
+                    Some(JVal::String(s)) => parse_dimension_type(s, phase_name, name)?,
+                    Some(other) => return Err(format!(
+                        "phase '{phase_name}' dimension '{name}' type: \
+                         expected a string, got {other:?}")),
+                }
+            }
+            other => return Err(format!(
+                "phase '{phase_name}' dimension '{name}': expected a type \
+                 name or a mapping, got {other:?}")),
+        };
+        out.insert(name.clone(), DimensionSpec { value_type });
+    }
+    Ok(out)
+}
+
+fn parse_dimension_type(
+    s: &str,
+    phase_name: &str,
+    dim: &str,
+) -> Result<crate::model::DimensionType, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "str" | "string" => Ok(crate::model::DimensionType::Str),
+        other => Err(format!(
+            "phase '{phase_name}' dimension '{dim}' type '{other}': label \
+             values are strings; `str` is the only supported type")),
+    }
+}
+
 fn parse_phase_metrics_field(
     val: Option<&JVal>,
     phase_name: &str,
@@ -2347,8 +2475,7 @@ fn parse_phase_metrics_field(
                 return Err("scalar form requires a metric name".into());
             }
             out.insert(name.clone(), MetricSpec {
-                value: name, family: None, kind: None, unit: None, format: None,
-            });
+                value: name, family: None, kind: None, unit: None, format: None, cell: Default::default(),});
         }
         JVal::Array(items) => {
             // Sequence: bare wire names only (no `name := expr` form —
@@ -2372,8 +2499,7 @@ fn parse_phase_metrics_field(
                 }
                 out.insert(name.to_string(), MetricSpec {
                     value: name.to_string(), family: None, kind: None,
-                    unit: None, format: None,
-                });
+                    unit: None, format: None, cell: Default::default(),});
             }
         }
         JVal::Object(map) => {
@@ -2400,8 +2526,7 @@ fn parse_metric_spec_value(v: &JVal, key: &str) -> Result<crate::model::MetricSp
     match v {
         JVal::String(s) => Ok(MetricSpec {
             value: s.clone(), family: None, kind: None,
-            unit: None, format: None,
-        }),
+            unit: None, format: None, cell: Default::default(),}),
         JVal::Object(map) => {
             // SRD-30 unknown-field hygiene: reject any key outside the
             // MetricSpec surface rather than silently dropping it (a
@@ -2410,7 +2535,7 @@ fn parse_metric_spec_value(v: &JVal, key: &str) -> Result<crate::model::MetricSp
             // `kind`, not `type` — `type` is the word OpenMetrics /
             // Prometheus use, so it's the predictable mistake; give it
             // a targeted hint.
-            const KNOWN: &[&str] = &["value", "family", "kind", "unit", "format"];
+            const KNOWN: &[&str] = &["value", "family", "kind", "unit", "format", "cell"];
             for k in map.keys() {
                 if KNOWN.contains(&k.as_str()) { continue; }
                 let hint = if k == "type" {
@@ -2421,7 +2546,7 @@ fn parse_metric_spec_value(v: &JVal, key: &str) -> Result<crate::model::MetricSp
                 };
                 return Err(format!(
                     "metric '{key}': unknown field `{k}`{hint}. Recognised \
-                     fields: value, family, kind, unit, format"));
+                     fields: value, family, kind, unit, format, cell"));
             }
             let value = map.get("value")
                 .and_then(|v| v.as_str())
@@ -2449,7 +2574,43 @@ fn parse_metric_spec_value(v: &JVal, key: &str) -> Result<crate::model::MetricSp
                 Some(other) => return Err(format!(
                     "metric '{key}' kind: expected string, got {other:?}")),
             };
-            Ok(MetricSpec { value, family, kind, unit, format })
+            // `cell:` — dimensional placement. Each entry is
+            // `<dimension>: <polydat expression>`; the expression is
+            // reified by scope synthesis as a typed kernel binding, so a
+            // coordinate is compiled and checkable rather than a string
+            // assembled at runtime.
+            let mut cell = std::collections::BTreeMap::new();
+            match map.get("cell") {
+                None => {}
+                Some(JVal::Object(dims)) => {
+                    if dims.is_empty() {
+                        return Err(format!(
+                            "metric '{key}' cell: empty. Omit `cell:` entirely, \
+                             or name at least one dimension."));
+                    }
+                    for (dim, expr) in dims {
+                        let expr = expr.as_str().ok_or_else(|| format!(
+                            "metric '{key}' cell '{dim}': expected a polydat \
+                             expression string, got {expr:?}"))?;
+                        if expr.trim().is_empty() {
+                            return Err(format!(
+                                "metric '{key}' cell '{dim}': empty expression"));
+                        }
+                        if !is_valid_ident(dim) {
+                            return Err(format!(
+                                "metric '{key}' cell '{dim}': a dimension name \
+                                 becomes a metric label, so it must be a valid \
+                                 identifier (alphanumerics + underscore, not \
+                                 starting with a digit)"));
+                        }
+                        cell.insert(dim.clone(), expr.trim().to_string());
+                    }
+                }
+                Some(other) => return Err(format!(
+                    "metric '{key}' cell: expected a mapping of \
+                     <dimension>: <expression>, got {other:?}")),
+            }
+            Ok(MetricSpec { value, family, kind, unit, format, cell })
         }
         _ => Err(format!(
             "metric '{key}': expected string or mapping, got {v:?}")),

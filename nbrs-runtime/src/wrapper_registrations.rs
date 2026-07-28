@@ -280,6 +280,7 @@ mod tests {
         t.params.insert("fields".into(), serde_json::Value::Bool(true));
         t.metrics.insert("recall".into(),
             nbrs_workload::model::MetricSpec {
+                cell: Default::default(),
                 value: "recall_value".into(),
                 family: None,
                 kind: None,
@@ -347,6 +348,7 @@ mod tests {
             serde_json::Value::String("silent".into()));
         t.metrics.insert("recall".into(),
             nbrs_workload::model::MetricSpec {
+                cell: Default::default(),
                 value: "recall_value".into(),
                 family: None,
                 kind: None,

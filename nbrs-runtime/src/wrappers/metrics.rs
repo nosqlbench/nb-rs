@@ -490,6 +490,7 @@ mod tests {
 
     fn make_spec(value: &str, kind: MetricKind, format: Option<&str>) -> MetricSpec {
         MetricSpec {
+            cell: Default::default(),
             value: value.to_string(),
             family: None,
             kind: Some(kind),

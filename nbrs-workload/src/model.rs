@@ -846,7 +846,7 @@ pub struct BackoffSpec {
 pub struct WorkloadPhase {
     /// Number of stanzas for this phase. Each stanza executes all
     /// ops in sequence once. String type to support Polydat constant
-    /// references like `"{train_count}"`. Default 1 (one stanza).
+    /// references like `"{train_count, dimensions: Default::default(),}"`. Default 1 (one stanza).
     #[serde(default)]
     pub cycles: Option<String>,
     /// Concurrency (async fibers). String type to support Polydat constant
@@ -1029,6 +1029,18 @@ pub struct WorkloadPhase {
     /// phase component as the declared instrument (gauge by default).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metrics: HashMap<String, MetricSpec>,
+    /// Dimensions this phase introduces: label NAME → declaration.
+    ///
+    /// Declared at the tier that owns the name, per the component tree's
+    /// label-ownership rule (a name is set on exactly one tier and
+    /// inherited downward). Values are not enumerated — they arrive from
+    /// data via a metric's `cell:`.
+    ///
+    /// `BTreeMap` for deterministic synthesis order: a coordinate's
+    /// rendering is what keys a cell, so an order that varied between runs
+    /// would key one coordinate two ways.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub dimensions: std::collections::BTreeMap<String, DimensionSpec>,
     /// Phase-level poll spec — when present, the phase's
     /// cycle execution runs in a wall-clock loop until a GK
     /// predicate over captures returns `true`. SRD-75.
@@ -2258,6 +2270,46 @@ pub struct MetricSpec {
     /// storage holds the sanitised number. SRD-40b §1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
+    /// Optional dimensional placement: dimension name → a Polydat
+    /// expression producing that dimension's value for this sample.
+    ///
+    /// A metric identity is its label set with the family name promoted
+    /// into it, a closed 1:1 association. `cell:` therefore does not
+    /// attach a label to a sample — it selects the dimensional CELL the
+    /// sample belongs to, REFINING the identity its registration site
+    /// already composes. One value per cell, one family per cell, and the
+    /// existing duplicate-family check keeps working unchanged.
+    ///
+    /// `BTreeMap` so synthesis order is deterministic: the coordinate's
+    /// rendering is what keys a cell, and a map that iterated differently
+    /// between runs would key the same coordinate two ways.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub cell: std::collections::BTreeMap<String, String>,
+}
+
+/// A dimension a scope introduces: the label NAME whose values arrive from
+/// data, declared once at the tier that owns it.
+///
+/// The name is a structural declaration; only the value varies per cell.
+/// `Component::attach` enforces the same rule on the runtime tree — a label
+/// name is owned by exactly one tier and inherited downward — so declaring
+/// the name here is what lets that be checked against the program before a
+/// cycle runs, rather than surfacing as an attach-time panic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DimensionSpec {
+    /// Value type. `str` today — label values are strings, and a
+    /// dimension whose values came from a float would key cells on
+    /// formatting rather than on identity.
+    #[serde(default)]
+    pub value_type: DimensionType,
+}
+
+/// Declared value type of a [`DimensionSpec`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DimensionType {
+    #[default]
+    Str,
 }
 
 /// Metric type discriminator. SRD-40b §1.

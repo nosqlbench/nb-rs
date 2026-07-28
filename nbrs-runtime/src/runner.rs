@@ -5917,6 +5917,7 @@ mod tests {
         use std::collections::HashMap;
 
         let phase = WorkloadPhase {
+            dimensions: Default::default(),
             cycles: None, concurrency: None, rate: None, daemon: false,
             adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, stop_when: Vec::new(), continue_if: None, tags: None,
             ops: vec![], for_each: None,
