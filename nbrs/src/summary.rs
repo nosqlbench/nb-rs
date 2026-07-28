@@ -182,11 +182,19 @@ fn natural_cmp_one(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
+/// A table rendered for both destinations it has.
+pub(crate) struct TableRendering {
+    /// Plain-text form for the terminal: heading words stacked one per line.
+    pub console: String,
+    /// Valid GFM for the `.md` artifact: one header row, `<br>`-wrapped headings.
+    pub markdown: String,
+}
+
 fn render_metricsql_table(
     db_path: &Path,
     cfg: &SummaryConfig,
     format: &str,
-) -> Result<String, String> {
+) -> Result<TableRendering, String> {
     use nbrs_metrics::queryapi::sqlite::SqliteDataSource;
     use nbrs_metricsql::eval::{EvalContext, evaluate};
     use std::collections::BTreeMap;
@@ -214,7 +222,7 @@ fn render_metricsql_table(
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).map_err(|e| format!("read time bounds: {e}"))?;
     if max_ts == 0 {
-        return Ok(String::new());
+        return Ok(TableRendering { console: String::new(), markdown: String::new() });
     }
     let ctx = EvalContext {
         data: &ds,
@@ -439,7 +447,8 @@ fn render_metricsql_table(
             out.push_str(&row.join(","));
             out.push('\n');
         }
-        return Ok(out);
+        // CSV is not markdown — the same text serves both destinations.
+        return Ok(TableRendering { console: out.clone(), markdown: out });
     }
 
     // Markdown. Label columns left-aligned, value columns right-aligned; the
@@ -468,8 +477,15 @@ fn render_metricsql_table(
             row
         })
         .collect();
-    let out = crate::report::markdown_table(&header, &rows, label_cols);
-    Ok(out)
+    // Two renderings of the same table from one query pass: the console form
+    // stacks heading words on their own lines (narrow, aligned as plain text),
+    // and the markdown form is a valid GFM table whose headings wrap via `<br>`.
+    // Neither is derivable from the other by string surgery, and re-querying to
+    // produce the second would double the work for a formatting difference.
+    Ok(TableRendering {
+        console: crate::report::markdown_table(&header, &rows, label_cols),
+        markdown: crate::report::markdown_table_gfm(&header, &rows, label_cols),
+    })
 }
 
 /// Display unit for a time-domain column. nb-rs internal
@@ -889,9 +905,11 @@ pub fn summary_command(args: &[String]) {
             let exec_id_filter = nbrs_runtime::refine_plan::ExecutionQualifier::latest(&session_dir)
                 .specific_id();
             let report_cfg = report_config_from_summary(cfg, exec_id_filter);
-            reporter.format_summary_with_format(&report_cfg, &format)
+            // The legacy SQL renderer has one form, used for both destinations.
+            let legacy = reporter.format_summary_with_format(&report_cfg, &format);
+            TableRendering { console: legacy.clone(), markdown: legacy }
         };
-        if rendered.is_empty() {
+        if rendered.console.is_empty() {
             eprintln!("nbrs summary: '{name}' produced no rows \
                        (db='{}').", db_path.display());
             continue;
@@ -909,7 +927,9 @@ pub fn summary_command(args: &[String]) {
                         parent.display());
                     std::process::exit(1);
                 }
-        if let Err(e) = std::fs::write(&output_path, &rendered) {
+        // The artifact gets the GFM form — one header row, `<br>`-wrapped
+        // headings — so it stays a real table when rendered. No fence needed.
+        if let Err(e) = std::fs::write(&output_path, &rendered.markdown) {
             eprintln!("nbrs summary: failed to write '{}': {e}",
                 output_path.display());
             std::process::exit(1);
@@ -931,7 +951,8 @@ pub fn summary_command(args: &[String]) {
             // rendering when --output happens to be summary.md.
             if report_path != output_path {
                 let body = if format == "md" {
-                    rendered.clone()
+                    // Embedded in a markdown document, so the GFM form.
+                    rendered.markdown.clone()
                 } else {
                     let leaf = output_path.file_name()
                         .map(|s| s.to_string_lossy().into_owned())
@@ -966,7 +987,7 @@ pub fn summary_command(args: &[String]) {
         if multiple {
             println!("=== {name} → {} ===", output_path.display());
         }
-        print!("{rendered}");
+        print!("{}", rendered.console);
     }
     if !any_nonempty {
         std::process::exit(1);

@@ -380,6 +380,47 @@ mod tests {
         assert!(lines[3].contains("|       22 |"), "values right-align:\n{out}");
     }
 
+    /// Headings stack one word per line so a column is as wide as its widest
+    /// WORD, not its whole name — the point of the exercise.
+    #[test]
+    fn headings_stack_one_word_per_line() {
+        let header = vec!["p".to_string(), "live_bytes_per_ms (K)".to_string()];
+        let rows = vec![vec!["x".to_string(), "21.24".to_string()]];
+        let out = markdown_table(&header, &rows, 1);
+        let lines: Vec<&str> = out.lines().collect();
+        // Five heading lines: live / bytes / per / ms / (K), the unit kept whole.
+        assert_eq!(lines.len(), 5 + 1 + 1, "heading lines + divider + row:\n{out}");
+        assert!(lines[0].contains("live"), "{out}");
+        assert!(lines[4].contains("(K)"), "unit stays whole on its own line:\n{out}");
+        // Column is 5 wide ("bytes"), not 21 ("live_bytes_per_ms (K)").
+        let width = lines[5].split('|').nth(2).unwrap().len() - 2;
+        assert_eq!(width, 5, "column should size to its widest word:\n{out}");
+        // Bottom-aligned: the short heading's word sits on the last heading line.
+        assert!(lines[4].starts_with("| p "), "short headings bottom-align:\n{out}");
+    }
+
+    /// The markdown artifact must stay a real GFM table: one header row, the
+    /// delimiter immediately after. Given several header lines a renderer stops
+    /// recognising the table and reflows it into a paragraph, losing the very
+    /// alignment the columns provide.
+    #[test]
+    fn gfm_form_keeps_one_header_row() {
+        let header = vec!["p".to_string(), "live_bytes_per_ms (K)".to_string()];
+        let rows = vec![vec!["x".to_string(), "21.24".to_string()]];
+        let out = markdown_table_gfm(&header, &rows, 1);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "header + delimiter + row:\n{out}");
+        assert!(lines[0].contains("live<br>bytes<br>per<br>ms<br>(K)"),
+            "headings wrap via <br>:\n{out}");
+        assert!(lines[1].chars().all(|c| "|-: ".contains(c)), "delimiter row:\n{out}");
+        // Every line carries the same cell count, or the table is malformed.
+        let cells = |l: &str| l.matches('|').count();
+        assert_eq!(cells(lines[0]), cells(lines[1]));
+        assert_eq!(cells(lines[0]), cells(lines[2]));
+        // Value columns are marked right-aligned for the renderer.
+        assert!(lines[1].contains(":|"), "numeric columns right-align:\n{out}");
+    }
+
     /// Width is counted in characters, not bytes, so a multi-byte unit suffix
     /// doesn't over-pad its column and knock the grid out of true.
     #[test]
@@ -527,12 +568,52 @@ mod tests {
 ///
 /// Widths count CHARACTERS, not bytes: a unit suffix like `µs` is two bytes and
 /// one column, so byte length would over-pad whichever column it lands in.
-pub(crate) fn markdown_table(
+/// Split a heading into the words it stacks as.
+///
+/// `snake_case` segments become separate words; a trailing unit annotation
+/// (`(G)`, `(min)`, `(UTC)`) stays whole on its own line, being a unit rather
+/// than a word of the name.
+fn split_heading(heading: &str) -> Vec<String> {
+    let (name, unit) = match heading.rsplit_once(" (") {
+        Some((n, u)) => (n, Some(format!("({u}"))),
+        None => (heading, None),
+    };
+    let mut words: Vec<String> = name.split('_')
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    if words.is_empty() {
+        words.push(name.to_string());
+    }
+    if let Some(u) = unit {
+        words.push(u);
+    }
+    words
+}
+
+/// The same table as [`markdown_table`], but a VALID GitHub-Flavored-Markdown
+/// table: exactly one header row, delimiter immediately after.
+///
+/// GFM allows only one header row, so the stacked form — five heading lines
+/// before the delimiter — stops being recognised as a table at all and renders
+/// as a reflowed paragraph, losing the alignment the stacking was for. Here the
+/// heading words are joined with `<br>`, which GFM renders as line breaks inside
+/// the cell, so the heading still wraps to one word per line when rendered.
+///
+/// Data cells are padded to the column's display width (widest word or widest
+/// value). The heading cell carries its `<br>` markup and is therefore longer
+/// than that in the raw text, so the header row's pipes sit right of the data
+/// rows' — unavoidable, since the markup is invisible only once rendered, and
+/// the rendered view is the one this form exists to serve.
+pub(crate) fn markdown_table_gfm(
     header: &[String],
     rows: &[Vec<String>],
     right_align_from: usize,
 ) -> String {
-    let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
+    let header_lines: Vec<Vec<String>> = header.iter().map(|h| split_heading(h)).collect();
+    let mut widths: Vec<usize> = header_lines.iter()
+        .map(|words| words.iter().map(|w| w.chars().count()).max().unwrap_or(0))
+        .collect();
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
             if i < widths.len() {
@@ -543,10 +624,71 @@ pub(crate) fn markdown_table(
 
     let mut out = String::new();
     out.push('|');
-    for (i, h) in header.iter().enumerate() {
-        out.push_str(&format!(" {:<w$} |", h, w = widths[i]));
+    for words in header_lines.iter() {
+        out.push_str(&format!(" {} |", words.join("<br>")));
     }
     out.push('\n');
+    out.push('|');
+    for (i, w) in widths.iter().enumerate() {
+        // Alignment markers so the rendered table right-aligns its numbers, the
+        // same distinction the padded form makes with spaces.
+        if i < right_align_from {
+            out.push_str(&format!("-{}-|", "-".repeat(*w)));
+        } else {
+            out.push_str(&format!("-{}:|", "-".repeat(*w)));
+        }
+    }
+    out.push('\n');
+    for row in rows {
+        out.push('|');
+        for (i, cell) in row.iter().enumerate() {
+            if i >= widths.len() { continue; }
+            if i < right_align_from {
+                out.push_str(&format!(" {:<w$} |", cell, w = widths[i]));
+            } else {
+                out.push_str(&format!(" {:>w$} |", cell, w = widths[i]));
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+pub(crate) fn markdown_table(
+    header: &[String],
+    rows: &[Vec<String>],
+    right_align_from: usize,
+) -> String {
+    // Headings stack one WORD per line, so a column is only as wide as its widest
+    // single word rather than its whole name. `live_bytes_per_ms (K)` costs 21
+    // columns on one line and 6 across four — and these tables are long names over
+    // short numbers, so the name was setting the width nearly everywhere.
+    let header_lines: Vec<Vec<String>> = header.iter().map(|h| split_heading(h)).collect();
+    let header_depth = header_lines.iter().map(Vec::len).max().unwrap_or(1);
+
+    let mut widths: Vec<usize> = header_lines.iter()
+        .map(|words| words.iter().map(|w| w.chars().count()).max().unwrap_or(0))
+        .collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < widths.len() {
+                widths[i] = widths[i].max(cell.chars().count());
+            }
+        }
+    }
+
+    let mut out = String::new();
+    // Bottom-aligned: shorter headings are padded at the TOP so every heading's
+    // last word sits directly above the divider, beside the values it labels.
+    for line in 0..header_depth {
+        out.push('|');
+        for (i, words) in header_lines.iter().enumerate() {
+            let pad_top = header_depth - words.len();
+            let text = if line < pad_top { "" } else { words[line - pad_top].as_str() };
+            out.push_str(&format!(" {:<w$} |", text, w = widths[i]));
+        }
+        out.push('\n');
+    }
     out.push('|');
     for w in &widths {
         out.push_str(&format!("-{}-|", "-".repeat(*w)));
