@@ -337,6 +337,16 @@ pub struct SummaryConfig {
     /// one table row per distinct tuple — the same series
     /// breakdown the matching plot draws.
     pub group_by: Vec<String>,
+    /// SRD-46 — `state: <expr>`: a per-row COMPLETION test rendered as a word
+    /// rather than a number. A row whose expression yields a value is `complete`;
+    /// a row with none is `active`.
+    ///
+    /// The expression to use is whatever the workload records only at completion,
+    /// so "has this finished" is answered by the presence of that datum rather
+    /// than inferred from a progress percentage — a progress gauge can sit below
+    /// 100 on a row that finished, because the last poll before completion is the
+    /// value that persists.
+    pub state_query: Option<String>,
 }
 
 /// An aggregate expression: either
@@ -412,6 +422,7 @@ impl SummaryConfig {
         let mut show_details = true;
         let mut metricsql_columns: Vec<(String, String)> = Vec::new();
         let mut group_by: Vec<String> = Vec::new();
+        let mut state_query: Option<String> = None;
 
         // Strip `#` line comments before parsing (SRD-46:
         // report/plot/table bodies all support `#` comments).
@@ -447,6 +458,14 @@ impl SummaryConfig {
             // anonymous interpretation, which is what we want for
             // metricsql expressions whose label-literal `:` shows up
             // before a function-call `(`.
+            // `state: <expr>` — completion test, rendered as a word.
+            if let Some(rest) = line.strip_prefix("state:") {
+                let expr = rest.trim();
+                if !expr.is_empty() {
+                    state_query = Some(expr.to_string());
+                }
+                continue;
+            }
             if let Some(rest) = line.strip_prefix("query") {
                 let rest = rest.trim_start();
                 if let Some(after_colon) = rest.strip_prefix(':') {
@@ -505,6 +524,7 @@ impl SummaryConfig {
             raw: raw.to_string(),
             metricsql_columns,
             group_by,
+            state_query,
         }
     }
 

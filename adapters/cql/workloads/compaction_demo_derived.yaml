@@ -1375,6 +1375,10 @@ report:
 
     table compaction_shape:
       group_by: p
+      # Complete vs active, keyed on a datum that only exists once a tier has
+      # finished. Not derived from done_pct: that gauge keeps its last polled
+      # value after the work ends, so a finished tier can read well below 100.
+      state: max(time_to_index) by (p)
       query: segments: max(compaction_input_segments) by (p)
       query: vector_index_bytes: max(compaction_input_index_bytes) by (p)
       query: sai_shared_bytes: max(compaction_input_table_bytes) by (p)

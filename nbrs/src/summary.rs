@@ -278,6 +278,39 @@ fn render_metricsql_table(
         }
     }
 
+    // Completion state per row (`state: <expr>`). Evaluated like a value column
+    // but never displayed as one: presence of a value means the row finished,
+    // absence means it is still going. Presence is the test rather than a
+    // threshold on progress, because a progress gauge keeps its last polled value
+    // after the work ends and can sit below 100 on a row that completed.
+    let state_by_group: std::collections::BTreeMap<String, bool> = match &cfg.state_query {
+        None => Default::default(),
+        Some(expr) => {
+            let parsed = nbrs_metricsql::parse(expr)
+                .map_err(|e| format!("parse state '{expr}': {e}"))?;
+            let series = evaluate(&ctx, &parsed)
+                .map_err(|e| format!("evaluate state '{expr}': {e}"))?;
+            let mut m: std::collections::BTreeMap<String, bool> = Default::default();
+            for s in series {
+                let group_val: String = if group_keys.is_empty() {
+                    String::new()
+                } else {
+                    group_keys.iter()
+                        .map(|k| s.labels.iter()
+                            .find(|(lk, _)| lk == k)
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join("|")
+                };
+                let done = s.samples.iter().any(|sm| sm.value.is_finite());
+                let e = m.entry(group_val).or_insert(false);
+                *e = *e || done;
+            }
+            m
+        }
+    };
+
     // Per-column unit / scaling decision. For columns whose
     // query targets a time-domain metric (latency,
     // servicetime, anything ending in `_ns`/`_seconds`/`_us`/
@@ -289,6 +322,36 @@ fn render_metricsql_table(
     // `338422551` is microseconds, nanoseconds, or seconds.
     let timestamp_columns: Vec<bool> = cfg.metricsql_columns.iter()
         .map(|(_name, expr)| is_timestamp_query(expr))
+        .collect();
+    let column_si: Vec<Option<SiScale>> = cfg.metricsql_columns.iter()
+        .enumerate()
+        .map(|(idx, (_name, expr))| {
+            // Durations and moments have their own scales; percentages are
+            // already human-sized and a `K` on a percent column reads as an error.
+            if timestamp_columns[idx] || is_time_domain_query(expr) { return None; }
+            // Seconds-domain columns get their own scale below.
+            if is_seconds_domain_query(expr) { return None; }
+            let name_l = cfg.metricsql_columns[idx].0.to_ascii_lowercase();
+            if name_l.contains("pct") || name_l.contains("percent") || name_l.contains("ratio") {
+                return None;
+            }
+            let max_abs = by_group.values()
+                .filter_map(|row| row[idx])
+                .filter(|v| v.is_finite())
+                .fold(0.0_f64, |m, v| m.max(v.abs()));
+            SiScale::for_max(max_abs)
+        })
+        .collect();
+    let column_secs: Vec<Option<SecondsUnit>> = cfg.metricsql_columns.iter()
+        .enumerate()
+        .map(|(idx, (_name, expr))| {
+            if !is_seconds_domain_query(expr) { return None; }
+            let max_abs = by_group.values()
+                .filter_map(|row| row[idx])
+                .filter(|v| v.is_finite())
+                .fold(0.0_f64, |m, v| m.max(v.abs()));
+            Some(SecondsUnit::for_max_seconds(max_abs))
+        })
         .collect();
     let column_units: Vec<Option<TimeUnit>> = cfg.metricsql_columns.iter()
         .enumerate()
@@ -321,13 +384,17 @@ fn render_metricsql_table(
             if timestamp_columns[idx] { return format!("{name} (UTC)"); }
             match unit {
                 Some(u) => format!("{name} ({})", u.symbol),
-                None    => name.clone(),
+                None    => match (column_secs[idx], column_si[idx]) {
+                    (Some(sec), _) => format!("{name} ({})", sec.symbol),
+                    (None, Some(si)) => format!("{name} ({})", si.symbol),
+                    (None, None)     => name.clone(),
+                },
             }
         })
         .collect();
 
     // Render a single cell against the chosen column unit.
-    fn render_cell(value: Option<f64>, unit: Option<&TimeUnit>, is_timestamp: bool, sep: &str) -> String {
+    fn render_cell(value: Option<f64>, unit: Option<&TimeUnit>, si: Option<SiScale>, secs: Option<SecondsUnit>, is_timestamp: bool, sep: &str) -> String {
         let _ = sep;
         if is_timestamp {
             return match value {
@@ -338,7 +405,11 @@ fn render_metricsql_table(
         match (value, unit) {
             (None, _)            => "-".to_string(),
             (Some(v), Some(u))   => format!("{:.3}", v / u.divisor),
-            (Some(v), None)      => format!("{v:.4}"),
+            (Some(v), None)      => match (secs, si) {
+                (Some(sec), _)   => format!("{:.2}", v / sec.divisor),
+                (None, Some(si)) => format!("{:.2}", v / si.divisor),
+                (None, None)     => format!("{v:.4}"),
+            },
         }
     }
 
@@ -363,7 +434,7 @@ fn render_metricsql_table(
         for (group_val, cells) in &by_group {
             let mut row: Vec<String> = split_group(group_val);
             for (idx, (cell, unit)) in cells.iter().zip(column_units.iter()).enumerate() {
-                row.push(render_cell(*cell, unit.as_ref(), timestamp_columns[idx], ","));
+                row.push(render_cell(*cell, unit.as_ref(), column_si[idx], column_secs[idx], timestamp_columns[idx], ","));
             }
             out.push_str(&row.join(","));
             out.push('\n');
@@ -373,17 +444,27 @@ fn render_metricsql_table(
 
     // Markdown. Label columns left-aligned, value columns right-aligned; the
     // shared renderer pads every cell so the `|` grid lines up in the raw file.
+    let has_state = cfg.state_query.is_some();
     let header: Vec<String> = group_keys.iter().cloned()
+        .chain(has_state.then(|| "state".to_string()))
         .chain(column_headers.iter().cloned())
         .collect();
-    let label_cols = group_keys.len();
+    // The state word is a label, so it left-aligns with the group keys rather
+    // than right-aligning with the numbers.
+    let label_cols = group_keys.len() + usize::from(has_state);
     let rows: Vec<Vec<String>> = by_group.iter()
         .map(|(group_val, cells)| {
             let mut row = split_group(group_val);
+            if has_state {
+                row.push(match state_by_group.get(group_val) {
+                    Some(true) => "complete".to_string(),
+                    _ => "active".to_string(),
+                });
+            }
             row.extend(cells.iter()
                 .zip(column_units.iter())
                 .enumerate()
-                .map(|(idx, (c, u))| render_cell(*c, u.as_ref(), timestamp_columns[idx], " | ")));
+                .map(|(idx, (c, u))| render_cell(*c, u.as_ref(), column_si[idx], column_secs[idx], timestamp_columns[idx], " | ")));
             row
         })
         .collect();
@@ -403,6 +484,76 @@ struct TimeUnit {
     /// What to divide nanoseconds by to produce the
     /// displayed value.
     divisor: f64,
+}
+
+/// Column scale for a value already expressed in SECONDS.
+///
+/// The duration machinery below assumes nanoseconds (nb-rs metrics are nanos by
+/// convention), but a difference of two `t*_over_time` moments is seconds. Left
+/// to the SI scale such a column reads "2.00 (K)" — kiloseconds, which is
+/// arithmetically right and useless to a human watching a compaction.
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct SecondsUnit {
+    symbol: &'static str,
+    divisor: f64,
+}
+
+impl SecondsUnit {
+    fn for_max_seconds(max_abs: f64) -> Self {
+        if max_abs >= 3600.0     { Self { symbol: "h",   divisor: 3600.0 } }
+        else if max_abs >= 60.0  { Self { symbol: "min", divisor: 60.0 } }
+        else                     { Self { symbol: "s",   divisor: 1.0 } }
+    }
+}
+
+/// Whether a column's value is a DURATION in seconds: a moment arithmetic'd
+/// against another moment. `is_timestamp_query` rejects these as not-a-moment;
+/// this catches what that rejection leaves behind.
+fn is_seconds_domain_query(expr: &str) -> bool {
+    let lower = expr.to_ascii_lowercase();
+    const MOMENT_FNS: &[&str] = &["tfirst_over_time", "tlast_over_time", "tlast_change_over_time"];
+    if !MOMENT_FNS.iter().any(|f| lower.contains(f)) { return false; }
+    // Seconds come from SUBTRACTING one moment from another. A rate that merely
+    // DIVIDES by such a difference is not itself a duration — it carries the
+    // units of its numerator, and labelling one "(h)" because the elapsed time
+    // appears in its denominator turns bytes-per-millisecond into hours.
+    let mut depth = 0i32;
+    for c in lower.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            '-' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A magnitude shared by every cell in one column.
+///
+/// Chosen from the column's largest value and then applied to ALL of its rows,
+/// so the rows stay comparable at a glance: a column of byte counts reads
+/// 0.49 / 2.45 / 19.59 under a `G` heading, not 489170772 beside 19594373133
+/// where the eye has to count digits to see which is bigger. Mixing magnitudes
+/// within a column would defeat that, which is why the scale is a property of
+/// the column rather than of each value.
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct SiScale {
+    symbol: &'static str,
+    divisor: f64,
+}
+
+impl SiScale {
+    fn for_max(max_abs: f64) -> Option<Self> {
+        // Below a thousand there is nothing to gain: the number is already
+        // readable and a suffix would only add a decimal point.
+        if !max_abs.is_finite()      { None }
+        else if max_abs >= 1e12 { Some(Self { symbol: "T", divisor: 1e12 }) }
+        else if max_abs >= 1e9  { Some(Self { symbol: "G", divisor: 1e9  }) }
+        else if max_abs >= 1e6  { Some(Self { symbol: "M", divisor: 1e6  }) }
+        else if max_abs >= 1e3  { Some(Self { symbol: "K", divisor: 1e3  }) }
+        else { None }
+    }
 }
 
 impl TimeUnit {
@@ -1087,6 +1238,43 @@ mod tests {
     fn first_positional_becomes_spec() {
         let opts = parse_args(&[s("recall; mean(recall) over profile~label")]);
         assert_eq!(opts.spec.as_deref(), Some("recall; mean(recall) over profile~label"));
+    }
+
+    /// One magnitude per column, chosen from that column's largest value, so rows
+    /// stay comparable without counting digits.
+    #[test]
+    fn si_scale_is_per_column_not_per_value() {
+        assert_eq!(SiScale::for_max(19_594_373_133.0).unwrap().symbol, "G");
+        assert_eq!(SiScale::for_max(489_170_772.0).unwrap().symbol, "M");
+        assert_eq!(SiScale::for_max(23_187.0).unwrap().symbol, "K");
+        // Small enough to read as-is — a suffix would only add a decimal point.
+        assert!(SiScale::for_max(999.0).is_none());
+        assert!(SiScale::for_max(0.0).is_none());
+        // A column's smallest values ride the column's scale, not their own:
+        // 489170772 in a column topping 19.6G shows as 0.49, not 489.17M.
+        let col = SiScale::for_max(19_594_373_133.0).unwrap();
+        assert_eq!(format!("{:.2}", 489_170_772.0 / col.divisor), "0.49");
+    }
+
+    /// A value already in seconds needs a time scale, not an SI one: the duration
+    /// machinery elsewhere assumes nanoseconds, and SI alone renders a compaction
+    /// that has run 2000 seconds as "2.00 (K)" — kiloseconds.
+    #[test]
+    fn seconds_domain_columns_scale_as_time() {
+        assert_eq!(SecondsUnit::for_max_seconds(7_200.0).symbol, "h");
+        assert_eq!(SecondsUnit::for_max_seconds(2_080.0).symbol, "min");
+        assert_eq!(SecondsUnit::for_max_seconds(45.0).symbol, "s");
+
+        // A difference of two moments IS a duration.
+        assert!(is_seconds_domain_query(
+            "max(tlast_over_time(x[7d])) - on() group_right() min(tfirst_over_time(y[7d])) by (p)"));
+        // A rate that divides BY that difference is not: it keeps its numerator's
+        // units, and calling it "(h)" turned bytes-per-ms into hours.
+        assert!(!is_seconds_domain_query(
+            "max(bytes) by (p) / (1000 * (max(tlast_over_time(x[7d])) - on() group_right() min(tfirst_over_time(y[7d])) by (p)))"));
+        // A bare moment is neither — it is an instant, handled as a timestamp.
+        assert!(!is_seconds_domain_query("min(tfirst_over_time(x[7d])) by (p)"));
+        assert!(is_timestamp_query("min(tfirst_over_time(x[7d])) by (p)"));
     }
 
     #[test]
