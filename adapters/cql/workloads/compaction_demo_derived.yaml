@@ -1387,13 +1387,36 @@ report:
       # re-sampled at its final value until the run ends, so "last sample" is the
       # end of the run for every tier and says nothing. A tier whose last_progress
       # is recent and whose done_pct is below 100 is the one still running.
-      query: started: min(tfirst_over_time(compaction_completion_ratio[24h])) by (p)
-      query: last_progress: max(tlast_change_over_time(compaction_completion_ratio[24h])) by (p)
-      # Elapsed SO FAR: first emission to last movement. `time_to_index` is written
-      # only when a tier finishes, so the tier being measured -- the slow one that
-      # may never finish -- has none, and every duration and rate derived from it
-      # was blank or infinite. This one keeps growing while the tier works.
-      query: elapsed_seconds: max(tlast_change_over_time(compaction_completion_ratio[24h])) by (p) - min(tfirst_over_time(compaction_completion_ratio[24h])) by (p)
+      query: started: min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
+      query: last_progress: max(tlast_change_over_time(compaction_completion_ratio[7d])) by (p)
+      # How long this tier has been going, as of the most recent activity ANYWHERE
+      # in the run -- which, for the tier currently working, is now.
+      #
+      # The lookback must outlast the sweep: a tier whose start falls outside the
+      # window would report the window edge instead, silently understating its age.
+      # 7d covers a full 36-tier run with room to spare; the execution qualifier
+      # keeps earlier executions in the same session out of it.
+      #
+      # Deriving it from the tier's own samples does not work: that gives
+      # last-change minus first-sample, which is quantised to the metrics cadence
+      # and, for a tier less than one tick old, is exactly zero because no CHANGE
+      # has been recorded yet. The tier that just started is precisely the one an
+      # operator is watching, and it read 0.0s.
+      #
+      # `on() group_right()` broadcasts the single global maximum across the
+      # per-tier starts; without an explicit empty-on() join an unlabeled series
+      # matches no labeled one and the whole column comes back empty.
+      #
+      # The global term is the latest SAMPLE, not the latest change: every instance
+      # is re-sampled each tick, so the newest sample anywhere is "now" to within
+      # one tick. Using the latest change here read 0.0s on the tier that had just
+      # started, because a series with no change yet reports its own first sample
+      # and that then won the maximum.
+      #
+      # For a FINISHED tier this is its age rather than its duration -- read
+      # finalize_ms for that, which is exact. For the tier still running it is the
+      # elapsed time, accurate to the second.
+      query: running_for: max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
       query: done_pct: 100 * max(compaction_completion_ratio) by (p)
       query: parts_done: max(compaction_progress_parts) by (p)
       query: parts_total: max(compaction_total_parts) by (p)
@@ -1404,11 +1427,10 @@ report:
       # Two throughput figures, because they answer different questions and only one
       # of them exists while a tier is still working:
       #   index_bytes_per_ms  completion-time rate, exact, blank until the tier ends
-      #   live_bytes_per_ms   rate over the work done so far, available immediately
-      # The live figure is quantised by the metrics cadence, so on tiers that finish
-      # inside a tick or two it is coarse -- and on the long-running tier this whole
-      # table exists to measure, it is the only one there is.
+      #   live_bytes_per_ms   work done so far over running_for, available at once
+      # On the long-running tier this table exists to measure, the live figure is
+      # the only rate there is.
       query: index_bytes_per_ms: max(compaction_input_index_bytes) by (p) / max(time_to_index) by (p)
-      query: live_bytes_per_ms: max(compaction_progress_parts) by (p) / (1000 * (max(tlast_change_over_time(compaction_completion_ratio[24h])) by (p) - min(tfirst_over_time(compaction_completion_ratio[24h])) by (p)))
+      query: live_bytes_per_ms: max(compaction_progress_parts) by (p) / (1000 * (max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)))
       query: finalize_seconds: max(cycles_servicetime_mean{phase="finalize_index"}) by (p)
       query: finalize_ms: max(time_to_index) by (p)
