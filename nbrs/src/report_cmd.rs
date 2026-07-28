@@ -998,6 +998,29 @@ pub(crate) fn plot_body_specs(
         .collect())
 }
 
+/// Extract every report item from a parsed workload, with the workload's params
+/// interpolated.
+///
+/// Shared by both resolution paths so an item resolved from a stored
+/// `workload_yaml` is identical to one resolved from the file on disk — the two
+/// must not drift, or the same report would render differently depending on how
+/// it was reached.
+fn items_from_workload(workload: &nbrs_workload::model::Workload) -> Vec<ResolvedItem> {
+    // Report items routinely contain `{cql_dialect}`-style placeholders that
+    // operators expect rendered with the workload's declared values. Expand once
+    // here so every downstream consumer (markdown assembler, plot renderer) sees
+    // resolved literals.
+    let params: std::collections::HashMap<String, String> = workload.params.clone();
+    let mut out: Vec<ResolvedItem> = Vec::new();
+    for group in &workload.report.groups {
+        for item in &group.items {
+            let style = workload.report.effective_style(group, item);
+            out.push(resolve_item(item, &style, &params));
+        }
+    }
+    out
+}
+
 pub(crate) fn resolve_items(
     workload_path: Option<&Path>,
     session_db: Option<&Path>,
@@ -1019,15 +1042,7 @@ pub(crate) fn resolve_items(
         // every downstream consumer (the markdown
         // assembler, the plot renderer that parses the
         // body) sees the resolved literals.
-        let params: std::collections::HashMap<String, String> = workload.params.clone();
-        let mut out: Vec<ResolvedItem> = Vec::new();
-        for group in &workload.report.groups {
-            for item in &group.items {
-                let style = workload.report.effective_style(group, item);
-                out.push(resolve_item(item, &style, &params));
-            }
-        }
-        Ok(out)
+        Ok(items_from_workload(&workload))
     } else {
         // Db fallback: read `report.<name>` rows from the
         // session db's session_metadata table (SRD-46). Each
@@ -1074,6 +1089,36 @@ pub(crate) fn resolve_items(
             match nbrs_workload::report::parse_persisted_item(&row.1) {
                 Ok(item) => out.push(resolve_item(&item, &default_style, &params)),
                 Err(_) => continue,
+            }
+        }
+        if !out.is_empty() {
+            return Ok(out);
+        }
+        // LIVE-SESSION fallback: no `report.*` rows yet. Those are persisted when
+        // a run ENDS, so during a run the db has none — which used to force
+        // `workload=<file>` and made the same report reachable one way live and
+        // another way afterwards.
+        //
+        // The run start already stored the entire workload source under
+        // `workload_yaml`, so nothing new is needed: parse the report block out of
+        // that. The command therefore behaves identically at any point in a run's
+        // life, and resolves against the workload as it was WHEN THE RUN STARTED
+        // rather than whatever the file says now — which is the more truthful
+        // source for a report about that run.
+        let yaml = nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(
+            &conn, "workload_yaml")
+            .into_iter()
+            .find(|(k, _)| k == "workload_yaml")
+            .map(|(_, v)| v);
+        if let Some(yaml) = yaml {
+            match nbrs_workload::parse::parse_workload(
+                &yaml, &std::collections::HashMap::new())
+            {
+                Ok(w) => return Ok(items_from_workload(&w)),
+                Err(e) => {
+                    eprintln!("nbrs report: stored workload_yaml did not parse \
+                               ({e}); pass `workload=<file>` to override");
+                }
             }
         }
         Ok(out)
