@@ -1096,6 +1096,20 @@ enum RollupFn {
     Rate, Increase, Delta,
     SumOverTime, AvgOverTime, MinOverTime, MaxOverTime,
     CountOverTime, LastOverTime, FirstOverTime,
+    /// Unix timestamp (SECONDS, as MetricsQL returns) of the first / last sample in
+    /// the window, rather than its value. Lets a table show WHEN a series started
+    /// and last moved, and lets an IN-FLIGHT phase report elapsed time as
+    /// `tlast - tfirst`: a phase that never completes has no duration metric to
+    /// read, because those are written at completion.
+    TFirstOverTime, TLastOverTime,
+    /// Unix seconds of the last sample whose value DIFFERS from the one before it.
+    /// Metric instances keep being sampled at their last value after the work that
+    /// fed them stops, so a sample's existence says nothing about activity — the
+    /// value moving does. Paired with `tfirst_over_time` (which lands on the
+    /// instance's first emission, i.e. when the work began) this bounds the window
+    /// in which a series was actually doing something; for a phase still running
+    /// that window ends at "just now" and keeps growing.
+    TLastChangeOverTime,
     StddevOverTime, StdvarOverTime,
 }
 
@@ -1112,6 +1126,9 @@ impl RollupFn {
             "count_over_time"  => Some(Self::CountOverTime),
             "last_over_time"   => Some(Self::LastOverTime),
             "first_over_time"  => Some(Self::FirstOverTime),
+            "tfirst_over_time" => Some(Self::TFirstOverTime),
+            "tlast_over_time"  => Some(Self::TLastOverTime),
+            "tlast_change_over_time"  => Some(Self::TLastChangeOverTime),
             "stddev_over_time" => Some(Self::StddevOverTime),
             "stdvar_over_time" => Some(Self::StdvarOverTime),
             _ => None,
@@ -1273,6 +1290,16 @@ fn reduce_rollup(
         RollupFn::CountOverTime => xs.len() as f64,
         RollupFn::LastOverTime => xs.last().unwrap().value,
         RollupFn::FirstOverTime => xs.first().unwrap().value,
+        // Samples arrive ordered by time, so first/last are the window's edges.
+        // Seconds, not milliseconds: that is what MetricsQL's t*_over_time return,
+        // and it makes `tlast - tfirst` read directly as elapsed seconds.
+        RollupFn::TFirstOverTime => xs.first().unwrap().timestamp_ms as f64 / 1000.0,
+        RollupFn::TLastOverTime => xs.last().unwrap().timestamp_ms as f64 / 1000.0,
+        RollupFn::TLastChangeOverTime => xs.windows(2)
+            .filter(|w| w[1].value != w[0].value)
+            .next_back()
+            .map(|w| w[1].timestamp_ms as f64 / 1000.0)
+            .unwrap_or(xs.first().unwrap().timestamp_ms as f64 / 1000.0),
         RollupFn::StddevOverTime => {
             let vals: Vec<f64> = xs.iter().map(|s| s.value).collect();
             population_variance(&vals).sqrt()
@@ -2300,7 +2327,35 @@ mod tests {
         assert_eq!(go("max_over_time(v[20ms])"), 7.0);
         assert_eq!(go("count_over_time(v[20ms])"), 3.0);
         assert_eq!(go("first_over_time(v[20ms])"), 1.0);
+        // t*_over_time report WHEN, not what: Unix seconds of the window's edge
+        // samples (0ms and 20ms here), which is what makes elapsed-so-far
+        // computable for a phase that has not finished.
+        assert_eq!(go("tfirst_over_time(v[20ms])"), 0.0);
+        assert_eq!(go("tlast_over_time(v[20ms])"), 0.020);
+        assert_eq!(go("tlast_over_time(v[20ms])") - go("tfirst_over_time(v[20ms])"), 0.020);
+        // Values here move at every sample, so first/last change are the 10ms and
+        // 20ms samples — the first sample cannot be a "change", having nothing before it.
+        assert_eq!(go("tlast_change_over_time(v[20ms])"), 0.020);
         assert_eq!(go("last_over_time(v[20ms])"), 4.0);
+    }
+
+    /// A series that stops moving must report the moment it stopped, not the end
+    /// of the recording. Metric instances keep being sampled at their last value
+    /// long after the work feeding them ends, so "last sample" and "last change"
+    /// are different questions and only the second one bounds activity.
+    #[test]
+    fn change_timestamps_ignore_repeated_values() {
+        let ds = WindowedDataSource {
+            series: vec![series(&[("__name__", "v")], &[(0, 1.0), (10, 5.0), (20, 5.0), (30, 5.0)])],
+        };
+        let ctx = EvalContext { data: &ds, start_ms: 30, end_ms: 30, step_ms: 1, lookback_ms: None, query_start_ms: None, query_end_ms: None };
+        let go = |q: &str| -> f64 {
+            evaluate(&ctx, &parse(q).expect("parse")).expect("eval")[0].samples[0].value
+        };
+        assert_eq!(go("tlast_over_time(v[30ms])"), 0.030, "last SAMPLE is the flat tail");
+        assert_eq!(go("tlast_change_over_time(v[30ms])"), 0.010, "last CHANGE is when it stopped moving");
+        // Elapsed-while-active, which is what a still-running phase needs.
+        assert_eq!(go("tlast_change_over_time(v[30ms])") - go("tfirst_over_time(v[30ms])"), 0.010);
     }
 
     #[test]

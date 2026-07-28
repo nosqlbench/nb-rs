@@ -173,6 +173,9 @@ pub const ROLLUP_FUNCTIONS: &[RollupFunction] = &[
     RollupFunction { name: "stddev_over_time",   support: EvalSupport::ParserAndEval, summary: "standard deviation over the range" },
     RollupFunction { name: "stdvar_over_time",   support: EvalSupport::ParserAndEval, summary: "variance over the range" },
     RollupFunction { name: "sum_over_time",      support: EvalSupport::ParserAndEval, summary: "sum of samples over the range" },
+    RollupFunction { name: "tfirst_over_time",   support: EvalSupport::ParserAndEval, summary: "Unix seconds of the first sample in the range" },
+    RollupFunction { name: "tlast_change_over_time",  support: EvalSupport::ParserAndEval, summary: "Unix seconds of the last value CHANGE in the range" },
+    RollupFunction { name: "tlast_over_time",    support: EvalSupport::ParserAndEval, summary: "Unix seconds of the last sample in the range" },
 ];
 
 // =====================================================================
@@ -257,8 +260,7 @@ pub const EXTRA_ROLLUP_FUNCTIONS_SPEC: &[&str] = &[
     "share_eq_over_time", "share_gt_over_time", "share_le_over_time",
     "stale_samples_over_time", "sum2_over_time",
     "sum_eq_over_time", "sum_gt_over_time", "sum_le_over_time",
-    "tfirst_over_time", "timestamp", "timestamp_with_name",
-    "tlast_change_over_time", "tlast_over_time",
+    "timestamp", "timestamp_with_name",
     "tmax_over_time", "tmin_over_time", "zscore_over_time",
 ];
 
