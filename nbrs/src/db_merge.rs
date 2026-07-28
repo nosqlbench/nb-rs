@@ -90,6 +90,12 @@ pub fn merge_dbs(inputs: &[PathBuf]) -> Result<PathBuf, String> {
     let conn = Connection::open(&temp_path)
         .map_err(|e| format!("open merged db: {e}"))?;
 
+    // The merged db is a disposable temp file — it is read once by the renderer
+    // and never recovered after a crash — so durability buys nothing here while
+    // costing an fsync per statement. With the row-wise loops below that was the
+    // dominant cost: merging a 13 MB session db took minutes.
+    let _ = conn.pragma_update(None, "synchronous", "OFF");
+
     // Step 2: strip session labels from the seed db's
     // metric_instance.spec. Done in-place so subsequent
     // inserts with stripped specs collide.
@@ -116,13 +122,19 @@ fn strip_session_labels_in_place(conn: &Connection) -> rusqlite::Result<()> {
         .filter_map(|r| r.ok())
         .collect();
     drop(stmt);
-    let mut update = conn.prepare("UPDATE metric_instance SET spec = ?1 WHERE id = ?2")?;
-    for (id, spec) in rows {
-        let stripped = strip_session_label(&spec);
-        if stripped != spec {
-            update.execute(params![stripped, id])?;
+    // One transaction for the whole rewrite. Per-row autocommit made this one
+    // durable write per instance row.
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut update = conn.prepare("UPDATE metric_instance SET spec = ?1 WHERE id = ?2")?;
+        for (id, spec) in rows {
+            let stripped = strip_session_label(&spec);
+            if stripped != spec {
+                update.execute(params![stripped, id])?;
+            }
         }
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -154,6 +166,15 @@ pub fn strip_session_label(spec: &str) -> String {
 fn merge_one(merged: &Connection, src_path: &Path) -> rusqlite::Result<()> {
     merged.execute("ATTACH DATABASE ? AS src",
         params![src_path.to_string_lossy().as_ref()])?;
+    // Every insert below runs in ONE transaction. The `sample_value` copy is one
+    // statement per sample row, so autocommit made it one durable write per
+    // sample — the reason a two-db merge read as a hang rather than a wait.
+    //
+    // The transaction is opened AFTER `ATTACH` and committed BEFORE `DETACH`:
+    // SQLite rejects both statements inside a transaction. On an error return the
+    // guard drops and rolls back, and `src` stays attached to a connection whose
+    // temp file the caller abandons.
+    let tx = merged.unchecked_transaction()?;
 
     // Insert metric_family rows that don't already exist
     // (UNIQUE(name, type) handles dedup).
@@ -260,6 +281,7 @@ fn merge_one(merged: &Connection, src_path: &Path) -> rusqlite::Result<()> {
         [],
     )?;
 
+    tx.commit()?;
     merged.execute("DETACH DATABASE src", [])?;
     Ok(())
 }
@@ -267,6 +289,71 @@ fn merge_one(merged: &Connection, src_path: &Path) -> rusqlite::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two populated dbs actually merge: samples from both survive, and the
+    /// same logical instance from two sessions collapses onto one row.
+    ///
+    /// Every other test here checks `strip_session_label` on strings — nothing
+    /// ran a merge, which is how a merge slow enough to look like a hang went
+    /// unnoticed. This also pins the transaction restructuring: `ATTACH` and
+    /// `DETACH` now bracket a transaction, and SQLite rejects either inside one,
+    /// so a mistake there fails this test rather than only slow paths in the
+    /// field.
+    #[test]
+    fn merges_two_populated_dbs() {
+        use nbrs_metrics::labels::Labels;
+        use nbrs_metrics::snapshot::MetricSet;
+        use nbrs_metrics::reporters::sqlite::SqliteReporter;
+        use nbrs_metrics::scheduler::Reporter;
+        use std::time::{Duration, Instant};
+
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("nbrs-merge-test-{n:x}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut paths = Vec::new();
+        for (session, value) in [("s1", 0.80_f64), ("s2", 0.90)] {
+            let db = dir.join(format!("{session}.db"));
+            {
+                let mut reporter = SqliteReporter::new(&db).unwrap();
+                let mut snap = MetricSet::new(Duration::from_secs(1));
+                // Same logical instance in both, differing only by `session`.
+                snap.insert_gauge(
+                    "recall_mean",
+                    Labels::of("session", session).with("k", "10"),
+                    value,
+                    Instant::now(),
+                );
+                reporter.report(&snap);
+                reporter.flush();
+            }
+            paths.push(db);
+        }
+
+        let merged = merge_dbs(&paths).expect("merge should succeed");
+        let conn = Connection::open(&merged).unwrap();
+
+        let instances: i64 = conn.query_row(
+            "SELECT count(*) FROM metric_instance WHERE spec LIKE 'recall_mean%'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(instances, 1,
+            "the two sessions' identical label set must collapse to one instance");
+
+        let samples: i64 = conn.query_row(
+            "SELECT count(*) FROM sample_value", [], |r| r.get(0)).unwrap();
+        assert_eq!(samples, 2, "both sessions' samples must survive the merge");
+
+        let specs: Vec<String> = conn
+            .prepare("SELECT spec FROM metric_instance").unwrap()
+            .query_map([], |r| r.get(0)).unwrap()
+            .filter_map(|r| r.ok()).collect();
+        assert!(specs.iter().all(|s| !s.contains("session=")),
+            "session labels must be stripped on both sides: {specs:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&merged);
+    }
 
     #[test]
     fn strips_session_label_in_middle() {

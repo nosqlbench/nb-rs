@@ -34,10 +34,29 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
     // path (item lookup in db, forwarded render commands,
     // markdown output, text-section writes) sees the same
     // session dir. Read-side only — never mutates `logs/latest`.
-    let session_dir: Option<PathBuf> =
+    let flagged_session: Option<PathBuf> =
         nbrs_runtime::session::read_session_dir(args);
-    let session_db: Option<PathBuf> =
-        session_dir.as_ref().map(|d| d.join("metrics.db"));
+    // An explicit `--db <path>` names a session as surely as `--session <dir>`
+    // does — the db's directory IS the session. Considering only `--session*`
+    // before, a `--db` invocation resolved items and wrote output under
+    // `sessions/latest` while the renderer read data from the named db: two
+    // different sessions in one command, with the item list from the wrong one.
+    // `--session` still wins when both appear, being the more explicit intent.
+    let flagged_db: Option<PathBuf> = db_flag_path(args);
+    // The db path is carried, not rebuilt from the session dir: a `--db` need
+    // not be named `metrics.db`, and rebuilding would point at a sibling that
+    // may not exist.
+    let session_db: Option<PathBuf> = match (&flagged_session, &flagged_db) {
+        (Some(dir), _) => Some(dir.join("metrics.db")),
+        (None, Some(db)) => Some(db.clone()),
+        (None, None) => None,
+    };
+    let session_dir: Option<PathBuf> = flagged_session.or_else(|| {
+        flagged_db.as_deref()
+            .and_then(Path::parent)
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    });
     let output_root: PathBuf = session_dir
         .clone()
         .unwrap_or_else(nbrs_runtime::session::latest_session_dir);
@@ -838,6 +857,28 @@ pub(crate) struct ResolvedItem {
     pub with_tables: Vec<String>,
 }
 
+/// The first db named by a `--db` flag, or `None`.
+///
+/// Accepts `--db <path>` and `--db=<path>`, and takes the first entry of a
+/// comma-separated list — the same spellings the downstream renderer's parser
+/// accepts, and the same "first is primary" rule it uses to anchor output.
+fn db_flag_path(args: &[String]) -> Option<PathBuf> {
+    let mut iter = args.iter();
+    while let Some(a) = iter.next() {
+        let list = if a == "--db" {
+            iter.next().map(String::as_str)
+        } else {
+            a.strip_prefix("--db=")
+        };
+        if let Some(list) = list {
+            if let Some(first) = list.split(',').map(str::trim).find(|s| !s.is_empty()) {
+                return Some(PathBuf::from(first));
+            }
+        }
+    }
+    None
+}
+
 fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
     // Global flags consumed elsewhere (`--session*` by
     // `read_session_dir`, `workload=` here, startup flags by
@@ -1566,7 +1607,15 @@ fn render_one(
     // `passthrough`, neither containing the original `--session`
     // since `extract_workload` peeled it off) reads from the
     // user-named session and not from `logs/latest`.
-    if let Some(db) = session_db {
+    //
+    // Skipped when the operator already supplied a `--db`, the same guard
+    // `forward_renderer_flags` uses. Injecting a second one made the renderer
+    // see TWO dbs, which routes through `db_merge` — so `session=<dir> --db
+    // <same dir>/metrics.db` merged a database with itself, turning a
+    // seconds-long render into a multi-minute one that looks like a hang.
+    let passthrough_has_db = passthrough.iter()
+        .any(|a| a == "--db" || a.starts_with("--db="));
+    if let (Some(db), false) = (session_db, passthrough_has_db) {
         base.push("--db".into());
         base.push(db.to_string_lossy().into_owned());
     }
@@ -2653,6 +2702,34 @@ pub fn table_alias_spec() -> crate::cli_spec::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// `--db` names a session as surely as `--session` does. Read only from
+    /// `--session*` before, so a `--db` invocation resolved its item list and
+    /// wrote its output under `sessions/latest` while the renderer read data from
+    /// the named db — two sessions in one command, item list from the wrong one.
+    #[test]
+    fn db_flag_supplies_the_session_anchor() {
+        assert_eq!(db_flag_path(&v(&["--db", "/tmp/s/metrics.db"])),
+            Some(PathBuf::from("/tmp/s/metrics.db")));
+        assert_eq!(db_flag_path(&v(&["--db=/tmp/s/metrics.db"])),
+            Some(PathBuf::from("/tmp/s/metrics.db")));
+        // Comma list: the first entry is primary, matching how the renderer
+        // anchors output when it merges several dbs.
+        assert_eq!(db_flag_path(&v(&["--db=/tmp/a.db,/tmp/b.db"])),
+            Some(PathBuf::from("/tmp/a.db")));
+        // A db need not be named `metrics.db` — the path is carried as given
+        // rather than rebuilt from the parent directory.
+        assert_eq!(db_flag_path(&v(&["--db", "/tmp/s/custom.db"])),
+            Some(PathBuf::from("/tmp/s/custom.db")));
+        assert_eq!(db_flag_path(&v(&["--name=x"])), None);
+        // Trailing `--db` with no value must not panic or invent a path.
+        assert_eq!(db_flag_path(&v(&["--db"])), None);
+    }
+
 
     /// `refresh_session_index` writes `index.md` listing every
     /// non-skipped file in the directory, organised by category,
