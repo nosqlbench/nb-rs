@@ -3408,11 +3408,10 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                 opts.y_min = lo; opts.y_max = hi;
             }
             "--verbose" | "-v" => opts.verbose = true,
-            // Global flags consumed at startup
-            // (`apply_session_directory_at_startup`, SRD-15
-            // strict mode). The plot parser sees them in the
-            // arg list but has nothing to do — silently
-            // accept and skip the value when one is expected.
+            // Session flags are resolved ABOVE via `read_session_dir` (which sets
+            // `opts.db`), and SRD-15 strict mode is read separately. This arm only
+            // has to keep them from being mistaken for a positional spec, so it
+            // accepts and skips the value.
             "--session" | "--session-name" | "--session-path"
             | "--session-reuse" | "--session-keep" | "--session-shelflife" => {
                 let _ = iter.next();

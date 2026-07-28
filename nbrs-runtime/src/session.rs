@@ -795,10 +795,12 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
 /// caller falls back to its own default (typically
 /// `logs/latest`).
 ///
-/// **Unlike** [`apply_session_directory_at_startup`] this never
-/// mutates the filesystem (no `logs/latest` symlink rewrite,
-/// no purge). It's a pure path computation: read-side tools
-/// shouldn't have side effects on the active session symlink.
+/// Never mutates the filesystem: no symlink rewrite, no purge. A pure path
+/// computation, because read-side tools must not have side effects on the active
+/// session symlink. This is now the ONLY way `--session` reaches a read command —
+/// the startup hook used to additionally repoint `sessions/latest` at the named
+/// session, which is exactly the side effect this doc warned against. See
+/// [`purge_stale_sessions_at_startup`].
 pub fn read_session_dir(args: &[String]) -> Option<PathBuf> {
     let spec = resolve_session_dir(args);
     if spec.is_empty() || spec.needs_auto_id() {
@@ -1055,28 +1057,49 @@ pub fn purge_stale_sessions(
     }
 }
 
-/// Apply session-dir overrides at binary startup so every
-/// subcommand (`run`, `plot`, `report`, `summary`, `tui`, …)
-/// sees consistent session wiring.
+/// Run session-lifecycle cleanup at binary startup, honouring
+/// `--sessions-max` / `--sessions-shelflife`.
 ///
-/// **Effect when a fully-resolvable path is set** (i.e. no
-/// `SESSION` token, or `--session` provides the name): updates
-/// the `logs/latest` symlink to point at the resolved path.
-/// Every read-side command that defaults to
-/// `logs/latest/metrics.db` etc. now targets the configured
-/// session automatically.
+/// # What this used to also do, and why it no longer does
 ///
-/// **Effect when `SESSION` token is present and no
-/// `--session`** is given: no-op at startup (the auto-id isn't
-/// known yet). The write-side [`Session::new`] resolves the
-/// token at run creation and updates the symlink there.
+/// It used to REPOINT the `sessions/latest` symlink at whatever `--session`
+/// named, on the theory that read-side commands defaulting to
+/// `sessions/latest/metrics.db` would then target the right session for free.
+/// That made `--session` work by mutating shared state: a read-only
+/// `nbrs table … --session=sessions/foo` left `latest` pointing at `foo`
+/// afterwards, so a later bare `nbrs report` — or a `--resume-latest` — silently
+/// operated on `foo` instead of the newest real run. It also only worked for
+/// sessions living under `sessions/`, so `--session=/tmp/x` behaved differently
+/// from `--session=sessions/x` for no reason a caller could see.
 ///
-/// **Effect when no flags / env are set:** no-op. Existing
-/// behavior preserved.
+/// Every command that legitimately OWNS `latest` claims it itself —
+/// [`Session::new_with_args`] for a fresh run, [`Session::reattach`] for a
+/// resume, [`init_empty_session`] for `session init` — so nothing was relying on
+/// this to write the link. The read side now resolves `--session` locally
+/// ([`read_session_dir`], and the per-command `resolve_db` helpers), which works
+/// for any path and leaves `latest` alone.
 ///
-/// Idempotent. Failures log Warn and return; this is a
-/// convenience surface, not a hard dependency.
-pub fn apply_session_directory_at_startup(args: &[String]) {
+/// A dry-run's deliberate refusal to claim `latest` is what made the cost of the
+/// old behaviour concrete: see `args_request_dryrun` and SRD-44.
+///
+/// # Why this only runs for session-CREATING commands
+///
+/// The cleanup DELETES session directories (keeping the `--sessions-max` most
+/// recent, and dropping anything past `--sessions-shelflife`). It used to run on
+/// every invocation, so a read-only `nbrs table …` could destroy old sessions —
+/// the destructive counterpart of the symlink rewrite described above. Retiring
+/// old sessions belongs where sessions are ADDED, which is the only moment the
+/// count grows; observing a session must never delete one.
+///
+/// `creating_session` comes from the caller, which knows the subcommand. Passing
+/// `false` for an unrecognised command fails safe: cleanup is skipped, and the
+/// next writing command performs it.
+///
+/// Failures log Warn and return; cleanup is best-effort.
+pub fn purge_stale_sessions_at_startup(args: &[String], creating_session: bool) {
+    if !creating_session {
+        return;
+    }
     let spec = resolve_session_dir(args);
 
     // Lifecycle cleanup runs unconditionally — it consults
@@ -1093,48 +1116,6 @@ pub fn apply_session_directory_at_startup(args: &[String]) {
         default_sessions_root()
     };
     purge_stale_sessions(&cleanup_parent, spec.session_keep, spec.session_shelflife);
-
-    if spec.is_empty() || spec.needs_auto_id() {
-        return;
-    }
-    // `auto_id` won't be consumed because `needs_auto_id()` is
-    // false above; pass an empty placeholder for the contract.
-    let Some((path, _id)) = spec.resolve("") else { return; };
-    let logs = default_sessions_root();
-    // Only touch `logs/` when the resolved session path lives
-    // under it. A `--session-path /tmp/x` (or any path the user
-    // redirected outside `logs/`) is an explicit opt-out:
-    // - The mkdir below would otherwise create a stray
-    //   `<cwd>/logs/` directory in test sandboxes / CI
-    //   working trees that don't want it (the
-    //   `feedback_tests_no_project_root` rule), and
-    // - hijacking `logs/latest` to point there would dangle
-    //   the moment the external dir is cleaned up — exactly
-    //   what test fixtures do when they wipe their own
-    //   tempdirs.
-    if !target_is_under(&logs, &path) {
-        return;
-    }
-    if let Err(e) = std::fs::create_dir_all(&logs) {
-        crate::observer::log(crate::observer::LogLevel::Warn, &format!(
-            "warning: --session-dir startup hook: failed to create logs/: {e}",
-        ));
-        return;
-    }
-    let latest = logs.join("latest");
-    // Symlink target is computed RELATIVE to the link's parent
-    // (`logs/`) so the link survives directory moves and stays
-    // readable in `ls -la` output as `logs/latest -> foo_2026...`
-    // rather than `logs/latest -> /home/.../nb-rs/logs/foo_2026...`.
-    // See `relative_symlink_target` for the path-arithmetic.
-    let relative_target = relative_symlink_target(&latest, &path);
-    let _ = std::fs::remove_file(&latest);
-    if let Err(e) = std::os::unix::fs::symlink(&relative_target, &latest) {
-        crate::observer::log(crate::observer::LogLevel::Warn, &format!(
-            "warning: --session-dir: failed to update logs/latest → {}: {e}",
-            relative_target.display(),
-        ));
-    }
 }
 
 /// True when `target`'s absolute path is `logs_dir`'s absolute

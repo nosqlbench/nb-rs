@@ -198,6 +198,21 @@ struct ParsedArgs {
     range: Option<String>,
 }
 
+/// The db to read: an explicit `--db`, else the session named on the line, else
+/// the latest session.
+///
+/// The middle step was missing. Both parsers below SWALLOWED `--session*` and its
+/// value and then fell back to the latest session, working only because the
+/// startup hook repointed the `sessions/latest` symlink at the named session —
+/// which made a read command mutate global state and only worked for sessions
+/// under `sessions/`. Resolving locally works for any path and mutates nothing.
+fn resolve_db(db_flag: Option<PathBuf>, args: &[String]) -> PathBuf {
+    db_flag
+        .or_else(|| nbrs_runtime::session::read_session_dir(args)
+            .map(|d| d.join("metrics.db")))
+        .unwrap_or_else(nbrs_runtime::session::latest_metrics_db)
+}
+
 fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
     let mut db_path: Option<PathBuf> = None;
     let mut queries: Vec<String> = Vec::new();
@@ -289,7 +304,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
         return Err("metricsql expression or metric family name(s) required \
                     (positional argument)".to_string());
     }
-    let db_path = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
+    let db_path = resolve_db(db_path, args);
     Ok(ParsedArgs {
         db_path, queries, anchor_ms, lookback_ms, step_ms,
         stale_window_ms, latest_only, range,
@@ -667,7 +682,7 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
         }
     }
     let query = query.ok_or("metricsql expression required (positional argument)")?;
-    let db_path = db_path.unwrap_or_else(nbrs_runtime::session::latest_metrics_db);
+    let db_path = resolve_db(db_path, args);
     Ok(WatchArgs { db_path, query, interval_ms, warmup_ms, latest_only, no_clear })
 }
 

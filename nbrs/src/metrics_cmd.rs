@@ -24,9 +24,13 @@
 //!   - substring filter via `~`: `{profile=~label}` or
 //!     `recall{profile=~label}`
 //!
-//! Honors the `--session <path>` umbrella (consumed at startup
-//! via `apply_session_directory_at_startup`); the active db
-//! defaults to `logs/latest/metrics.db`. `--db <path>` overrides.
+//! Honors `--session <path>` / `--session-name` / `--session-path`, and the bare
+//! `session=<path>` spelling, resolved locally by `resolve_db`; the active db
+//! defaults to `sessions/latest/metrics.db`. `--db <path>` overrides all of them.
+//!
+//! These used to be swallowed here and applied by a startup hook that repointed
+//! the `sessions/latest` symlink — so a read mutated shared state, and only
+//! sessions under `sessions/` worked at all.
 //!
 //! Output formats (`--format <name>` on `list` / `show`):
 //!   - `plain`       hierarchical tree (default)

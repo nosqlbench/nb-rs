@@ -881,8 +881,8 @@ fn db_flag_path(args: &[String]) -> Option<PathBuf> {
 
 fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
     // Global flags consumed elsewhere (`--session*` by
-    // `read_session_dir`, `workload=` here, startup flags by
-    // `apply_session_directory_at_startup`). Peel them so the
+    // `read_session_dir`, `workload=` here, lifecycle flags by
+    // `purge_stale_sessions_at_startup`). Peel them so the
     // dispatch loop's `rest.first()` classification sees only
     // the report-subcommand vocabulary (`all`, `figure`,
     // glob, `--name`, etc.). Without this, `nbrs report

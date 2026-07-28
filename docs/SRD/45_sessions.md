@@ -117,24 +117,37 @@ Always maintained. Points at the active session.
 
 ## Process-startup wiring
 
-`apply_session_directory_at_startup(args)` runs first in
-`nbrs::main()`. It resolves the spec, applies lifecycle
-cleanup, and (when the path is fully concrete at startup)
-updates `logs/latest` so subsequent subcommands —
-`plot`, `report`, `summary`, `tui` — target the configured
-session automatically.
+`purge_stale_sessions_at_startup(args)` runs first in `nbrs::main()`. It resolves
+the spec and applies lifecycle cleanup (`--sessions-max` /
+`--sessions-shelflife`). That is all it does.
 
-If the path needs the auto-id (e.g. `--session-path`
-contains a `SESSION` token and no `--session-name` is given),
-the symlink is updated later when `Session::new` resolves the
-token. The startup hook is a no-op for that case.
+**It does not touch `logs/latest`.** It used to: when the path was concrete at
+startup it repointed the symlink so that read-side subcommands defaulting to
+`logs/latest/metrics.db` would target the named session for free. That made
+`--session` work by mutating shared state — after a read-only
+`nbrs report --session=logs/old`, `latest` stayed on `old`, so a later bare
+`nbrs report`, or a `--resume-latest`, silently operated on `old` instead of the
+newest real run. It also only worked for sessions under `logs/`, so
+`--session=/tmp/x` and `--session=logs/x` behaved differently for no reason a
+caller could see.
+
+Responsibility is now split along the read/write line:
+
+- **Writers claim the link.** `Session::new_with_args` (fresh run),
+  `Session::reattach` (resume), and `init_empty_session` (`session init`) each
+  point `latest` at the session they own. A dry-run deliberately does not — see
+  SRD-44 — which is what makes the old startup behaviour visibly wrong.
+- **Readers resolve locally and mutate nothing.** `read_session_dir` is a pure
+  path computation; each read-side command turns it into a db path (`report`,
+  `summary`, `plot`, and the `resolve_db` helpers in `metrics` / `metricsql`),
+  which works for any path, inside `logs/` or not.
 
 ```
 $ export NBRS_SESSION_PATH=/data/runs/today
-$ nbrs run workload=foo.yaml
-$ nbrs plot     # reads /data/runs/today/metrics.db
-$ nbrs report   # ditto
-$ nbrs run workload=foo.yaml --session=resume   # resumes today
+$ nbrs run workload=foo.yaml                    # claims latest -> today
+$ nbrs plot                                     # reads /data/runs/today/metrics.db
+$ nbrs report --session=logs/older              # reads older; latest stays on today
+$ nbrs run workload=foo.yaml --resume-latest    # still resumes today
 ```
 
 ---

@@ -79,15 +79,25 @@ fn main() {
     // them; their values are applied to the thread-pool config below.
     let thread_overrides = extract_thread_overrides(&mut args);
 
-    // SRD-45 startup hook: honors `--session`, `--session-path`,
-    // `--session-name`, …, plus the `NBRS_SESSION*` env vars.
-    // Updates `logs/latest` to point at the resolved session
-    // directory so subsequent subcommands (`run`, `report`,
-    // `plot`, `summary`, `tui`, …) see consistent session
-    // wiring. Must run before subcommand dispatch — read-side
-    // commands (plot, report) resolve their default
-    // `logs/latest/metrics.db` paths immediately on entry.
-    nbrs_runtime::session::apply_session_directory_at_startup(&args);
+    // SRD-45 startup hook: session-lifecycle cleanup, honouring
+    // `--sessions-max` / `--sessions-shelflife` (and the
+    // `NBRS_SESSION*` env vars) to purge aged-out session dirs.
+    //
+    // It no longer repoints `sessions/latest` at whatever `--session` names. That
+    // made `--session` work by mutating shared state — a read-only
+    // `nbrs table … --session=sessions/foo` left `latest` on `foo`, so a later
+    // bare `nbrs report` or `--resume-latest` silently used `foo` instead of the
+    // newest real run — and it only worked for sessions under `sessions/`. Each
+    // command that owns `latest` claims it itself, and read-side commands resolve
+    // `--session` locally.
+    // Only a command that CREATES a session may retire old ones: the cleanup
+    // deletes directories, and a read must never delete data. Unrecognised
+    // subcommands count as non-creating, which fails safe (cleanup is skipped and
+    // the next writing command does it).
+    let creates_session = matches!(
+        args.first().map(String::as_str),
+        Some("run" | "check" | "refine" | "session" | "bench" | "daemon"));
+    nbrs_runtime::session::purge_stale_sessions_at_startup(&args, creates_session);
 
     // SRD-102: resolve the physical thread-pool config — CLI `--threads.*`
     // flags over NBRS_THREADS_* env over core-count-derived defaults — and
