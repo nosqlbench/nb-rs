@@ -2143,7 +2143,8 @@ impl Activity {
                                     let mut guard = dispenser_component.write()
                                         .unwrap_or_else(|e| e.into_inner());
                                     crate::wrappers::MetricsDispenser::wrap_with_slots(
-                                        current.clone(), &template.metrics, &mut guard, &mut fx,
+                                        current.clone(), &template.metrics, &mut guard,
+                                        &dispenser_component, &mut fx,
                                     )
                                 };
                                 match wrap_result {

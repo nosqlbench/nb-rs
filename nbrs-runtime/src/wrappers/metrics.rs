@@ -123,7 +123,10 @@ pub(crate) fn publish_gauges_lenient(
     wires: &dyn crate::wires::WireSource,
 ) {
     for slot in slots {
-        let MetricInstrument::Gauge(g) = &slot.instrument else { continue };
+        // Cell-placed metrics are skipped: their instrument depends on a
+        // coordinate resolved from the cycle's wires, which this lenient
+        // path has no basis to choose.
+        let Some(MetricInstrument::Gauge(g)) = &slot.instrument else { continue };
         let Some(value) = wires.get(&slot.binding_name) else {
             crate::diag!(crate::observer::LogLevel::Debug,
                 "poll gauge '{}': binding '{}' unresolved this iteration",
@@ -162,7 +165,34 @@ pub(crate) struct MetricSlot {
     format: Option<nbrs_workload::metric_format::FormatSpec>,
     /// Resolved instrument storage — exactly one variant is
     /// populated per slot, matching `MetricSpec.kind`.
-    instrument: MetricInstrument,
+    /// The instrument, for a metric that registers ONCE on the dispenser's
+    /// own component. `None` when the metric is cell-placed: its instruments
+    /// are materialised per coordinate in [`CellPlacement`], because each cell
+    /// is a distinct identity and therefore a distinct instrument.
+    instrument: Option<MetricInstrument>,
+    /// Dimensional placement, when the metric declared `cell:`.
+    placement: Option<CellPlacement>,
+}
+
+/// Per-coordinate instrument materialisation for a cell-placed metric.
+///
+/// The parent is the component this metric would otherwise have registered on,
+/// so a cell REFINES that identity rather than replacing part of it. Nothing
+/// ambient is consulted.
+pub(crate) struct CellPlacement {
+    /// `(dimension, synthesised coordinate wire)`, in the workload's declared
+    /// order. The wire is `__cell_<metric>__<dim>` — see
+    /// `crate::scope::synthesize_cell_binding_name`.
+    dims: Vec<(String, String)>,
+    /// The registration site whose identity each cell refines.
+    parent: Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
+    kind: nbrs_workload::model::MetricKind,
+    unit: Option<String>,
+    /// Instruments already materialised, keyed by the coordinate's canonical
+    /// rendering. Steady state is a hash lookup: the registry write and the
+    /// component attach happen once per distinct coordinate, never per cycle.
+    instances: std::sync::Mutex<
+        std::collections::HashMap<String, MetricInstrument>>,
 }
 
 /// Kind-specialised instrument storage owned by a [`MetricSlot`].
@@ -231,9 +261,11 @@ impl MetricsDispenser {
         inner: Arc<dyn OpDispenser>,
         metrics: &HashMap<String, nbrs_workload::model::MetricSpec>,
         component: &mut nbrs_metrics::component::Component,
+        component_arc: &Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<Arc<dyn OpDispenser>, String> {
-        Self::wrap_with_slots(inner, metrics, component, fx).map(|(d, _)| d)
+        Self::wrap_with_slots(inner, metrics, component, component_arc, fx)
+            .map(|(d, _)| d)
     }
 
     /// As [`Self::wrap`], additionally returning the compiled slot
@@ -245,6 +277,10 @@ impl MetricsDispenser {
         inner: Arc<dyn OpDispenser>,
         metrics: &HashMap<String, nbrs_workload::model::MetricSpec>,
         component: &mut nbrs_metrics::component::Component,
+        // The same component, as the handle cells attach under. A cell refines
+        // THIS identity, so the parent comes from the registration site rather
+        // than from anything ambient.
+        component_arc: &Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<(Arc<dyn OpDispenser>, Option<Arc<Vec<MetricSlot>>>), String> {
         if metrics.is_empty() {
@@ -322,23 +358,138 @@ impl MetricsDispenser {
             // optional `unit` rides through to drive the
             // `_<unit>` suffix on `metric_family.name` and the
             // `unit` column at capture time (SRD-40a §4.3).
-            component.register_instrument_with_unit(
-                family.clone(),
-                spec.unit.clone(),
-                instrument.as_ref(),
-            )?;
+            // Cell-placed metrics register PER CELL, at first sight of each
+            // coordinate — not here. Registering on the dispenser's own
+            // component as well would claim the family for the un-refined
+            // identity, and the first cell to materialise would then collide
+            // with it on this same duplicate-family check.
+            let placement = if spec.cell.is_empty() {
+                component.register_instrument_with_unit(
+                    family.clone(),
+                    spec.unit.clone(),
+                    instrument.as_ref(),
+                )?;
+                None
+            } else {
+                let mut dims = Vec::with_capacity(spec.cell.len());
+                for dim in spec.cell.keys() {
+                    let wire = crate::scope::synthesize_cell_binding_name(name, dim);
+                    let _ = fx.register_pull(&wire).map_err(|e| {
+                        format!(
+                            "metric '{name}' cell '{dim}': {e} (synthesised \
+                             coordinate binding '{wire}' should have been \
+                             registered by the op-template kernel synthesiser \
+                             — this is a bug)")
+                    })?;
+                    dims.push((dim.clone(), wire));
+                }
+                Some(CellPlacement {
+                    dims,
+                    parent: component_arc.clone(),
+                    kind,
+                    unit: spec.unit.clone(),
+                    instances: std::sync::Mutex::new(std::collections::HashMap::new()),
+                })
+            };
 
             slots.push(MetricSlot {
                 family,
                 value_expr: spec.value.clone(),
                 binding_name,
                 format,
-                instrument,
+                instrument: if placement.is_some() { None } else { Some(instrument) },
+                placement,
             });
         }
 
         let slots = Arc::new(slots);
         Ok((Arc::new(Self { inner, slots: slots.clone() }), Some(slots)))
+    }
+}
+
+impl CellPlacement {
+    /// The instrument for this cycle's coordinate, materialising the cell and
+    /// registering the family on first sight of each distinct coordinate.
+    ///
+    /// Steady state is a hash lookup. The component attach and the registry
+    /// write happen once per coordinate, never per cycle — which is what keeps
+    /// a per-row metric off the component write lock.
+    fn resolve(
+        &self,
+        wires: &dyn crate::wires::WireSource,
+        family: &str,
+        cycle: u64,
+    ) -> Result<MetricInstrument, ExecutionError> {
+        let mut coord = nbrs_metrics::labels::Labels::default();
+        for (dim, wire) in &self.dims {
+            let Some(value) = wires.get(wire) else {
+                return Err(ExecutionError::Op(crate::adapter::AdapterError {
+                    error_name: "metric_cell_unresolved".into(),
+                    message: format!(
+                        "metric '{family}' on cycle {cycle}: coordinate binding \
+                         '{wire}' for dimension '{dim}' did not resolve through \
+                         ctx.wires — this is a wiring bug between scope \
+                         synthesis and the metrics wrapper"),
+                    retryable: false,
+                }));
+            };
+            // A label value is a string. Anything else would key cells on
+            // formatting rather than on identity, so it is refused here rather
+            // than stringified behind the author's back.
+            let polydat::ast::Value::Str(text) = &value else {
+                return Err(ExecutionError::Op(crate::adapter::AdapterError {
+                    error_name: "metric_cell_not_a_string".into(),
+                    message: format!(
+                        "metric '{family}' cell '{dim}' on cycle {cycle}: \
+                         coordinate resolved to a non-string {disc:?}. A \
+                         dimension's values are label values, which are \
+                         strings — convert the expression explicitly.",
+                        disc = std::mem::discriminant(&value)),
+                    retryable: false,
+                }));
+            };
+            coord = coord.with(dim.clone(), text.to_string());
+        }
+
+        let key = coord.to_prometheus();
+        {
+            let cache = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(found) = cache.get(&key) {
+                return Ok(found.clone());
+            }
+        }
+
+        // First sight of this coordinate: materialise the cell, build the
+        // instrument carrying the cell's FULL effective labels, and register
+        // the family there. The duplicate-family check runs per cell, which is
+        // exactly where it belongs.
+        let cell = nbrs_metrics::cells::resolve_under(&self.parent, &coord);
+        let cell_labels = {
+            let g = cell.read().unwrap_or_else(|e| e.into_inner());
+            g.effective_labels().clone()
+        };
+        let instr_labels = cell_labels.with("family", family.to_string());
+        let instrument = match self.kind {
+            nbrs_workload::model::MetricKind::Gauge => MetricInstrument::Gauge(
+                Arc::new(nbrs_metrics::instruments::gauge::ValueGauge::new(instr_labels))),
+            nbrs_workload::model::MetricKind::Histogram => MetricInstrument::Histogram(
+                Arc::new(nbrs_metrics::instruments::histogram::Histogram::new(instr_labels))),
+            nbrs_workload::model::MetricKind::Counter => MetricInstrument::Counter(
+                Arc::new(nbrs_metrics::instruments::counter::Counter::new(instr_labels))),
+        };
+        {
+            let mut g = cell.write().unwrap_or_else(|e| e.into_inner());
+            g.register_instrument_with_unit(
+                family.to_string(), self.unit.clone(), instrument.as_ref())
+                .map_err(|e| ExecutionError::Op(crate::adapter::AdapterError {
+                    error_name: "metric_cell_family_collision".into(),
+                    message: format!(
+                        "metric '{family}' cell {key}: {e}"),
+                    retryable: false,
+                }))?;
+        }
+        let mut cache = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(cache.entry(key).or_insert(instrument).clone())
     }
 }
 
@@ -358,7 +509,8 @@ pub(crate) fn test_gauge_slot(
             value_expr: binding_name.to_string(),
             binding_name: binding_name.to_string(),
             format: None,
-            instrument: MetricInstrument::Gauge(g.clone()),
+            instrument: Some(MetricInstrument::Gauge(g.clone())),
+            placement: None,
         },
         g,
     )
@@ -429,7 +581,18 @@ impl OpDispenser for MetricsDispenser {
                     }
                 };
                 let sanitised = slot.format.as_ref().map(|f| f.apply(raw)).unwrap_or(raw);
-                match &slot.instrument {
+                // A cell-placed metric resolves its coordinate from this
+                // cycle's wires and lands on the instrument for THAT cell.
+                let instrument = match (&slot.instrument, &slot.placement) {
+                    (Some(i), _) => std::borrow::Cow::Borrowed(i),
+                    (None, Some(p)) => match p.resolve(ctx.wires, &slot.family, cycle) {
+                        Ok(i) => std::borrow::Cow::Owned(i),
+                        Err(e) => return Err(e),
+                    },
+                    (None, None) => unreachable!(
+                        "a slot has either an instrument or a placement"),
+                };
+                match instrument.as_ref() {
                     MetricInstrument::Gauge(g) => g.set(sanitised),
                     MetricInstrument::Histogram(h) => h.record(sanitised as u64),
                     MetricInstrument::Counter(c) => {
@@ -478,6 +641,26 @@ mod tests {
         )
     }
 
+    /// A component as the production path holds it: an `Arc` (cells attach
+    /// under it) plus the `&mut` borrow registration needs.
+    fn fresh_component_arc()
+        -> Arc<std::sync::RwLock<nbrs_metrics::component::Component>>
+    {
+        Arc::new(std::sync::RwLock::new(fresh_component()))
+    }
+
+    /// `MetricsDispenser::wrap` with the component handled the way the
+    /// activity does it.
+    fn wrap_on(
+        inner: Arc<dyn OpDispenser>,
+        decl: &HashMap<String, MetricSpec>,
+        comp: &Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
+        fx: &mut crate::fixture::ScopeFixture,
+    ) -> Result<Arc<dyn OpDispenser>, String> {
+        let mut guard = comp.write().unwrap();
+        MetricsDispenser::wrap(inner, decl, &mut guard, comp, fx)
+    }
+
     fn fresh_fixture() -> crate::fixture::ScopeFixture {
         use polydat::compile::assembly::{PolydatAssembler, WireRef};
         use polydat::library::identity::Identity;
@@ -503,10 +686,10 @@ mod tests {
     fn metrics_dispenser_empty_returns_inner_unchanged() {
         let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let inner_ptr = Arc::as_ptr(&inner);
-        let mut comp = fresh_component();
+        let comp = fresh_component_arc();
         let mut fx = fresh_fixture();
-        let wrapped = MetricsDispenser::wrap(
-            inner.clone(), &HashMap::new(), &mut comp, &mut fx,
+        let wrapped = wrap_on(
+            inner.clone(), &HashMap::new(), &comp, &mut fx,
         ).unwrap();
         assert_eq!(Arc::as_ptr(&wrapped), inner_ptr);
     }
@@ -518,19 +701,19 @@ mod tests {
     /// the wrapper writes through.
     impl MetricsDispenser {
         fn slot_gauge(&self, family: &str) -> Option<Arc<nbrs_metrics::instruments::gauge::ValueGauge>> {
-            self.slots.iter().find(|s| s.family == family).and_then(|s| match &s.instrument {
+            self.slots.iter().find(|s| s.family == family).and_then(|s| match s.instrument.as_ref()? {
                 MetricInstrument::Gauge(g) => Some(g.clone()),
                 _ => None,
             })
         }
         fn slot_histogram(&self, family: &str) -> Option<Arc<nbrs_metrics::instruments::histogram::Histogram>> {
-            self.slots.iter().find(|s| s.family == family).and_then(|s| match &s.instrument {
+            self.slots.iter().find(|s| s.family == family).and_then(|s| match s.instrument.as_ref()? {
                 MetricInstrument::Histogram(h) => Some(h.clone()),
                 _ => None,
             })
         }
         fn slot_counter(&self, family: &str) -> Option<Arc<nbrs_metrics::instruments::counter::Counter>> {
-            self.slots.iter().find(|s| s.family == family).and_then(|s| match &s.instrument {
+            self.slots.iter().find(|s| s.family == family).and_then(|s| match s.instrument.as_ref()? {
                 MetricInstrument::Counter(c) => Some(c.clone()),
                 _ => None,
             })
@@ -610,7 +793,8 @@ mod tests {
                 value_expr: spec.value.clone(),
                 binding_name,
                 format,
-                instrument,
+                instrument: Some(instrument),
+                placement: None,
             });
         }
         let typed = Arc::new(MetricsDispenser { inner, slots: Arc::new(slots) });
@@ -704,8 +888,8 @@ mod tests {
     #[test]
     fn metrics_dispenser_duplicate_family_errors() {
         let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
-        let mut comp = fresh_component();
-        comp.register_instrument(
+        let comp = fresh_component_arc();
+        comp.write().unwrap().register_instrument(
             "recall_at_10",
             nbrs_metrics::component::InstrumentRef::Counter(Arc::new(
                 nbrs_metrics::instruments::counter::Counter::new(
@@ -718,7 +902,7 @@ mod tests {
         decl.insert("recall_at_10".into(), make_spec("recall_at_10", MetricKind::Gauge, None));
 
         let (_kernel, mut fx) = kernel_with_const_outputs(&[("recall_at_10", 0.0)]);
-        let err = match MetricsDispenser::wrap(inner, &decl, &mut comp, &mut fx) {
+        let err = match wrap_on(inner, &decl, &comp, &mut fx) {
             Ok(_) => panic!("expected duplicate-family error, got Ok"),
             Err(e) => e,
         };
@@ -760,8 +944,8 @@ mod tests {
         );
 
         let (mut kernel, mut fx) = kernel_with_const_outputs(&[("computed", 6.0)]);
-        let mut comp = fresh_component();
-        let _ = MetricsDispenser::wrap(inner, &decl, &mut comp, &mut fx)
+        let comp = fresh_component_arc();
+        let _ = wrap_on(inner, &decl, &comp, &mut fx)
             .expect("arbitrary Polydat expression should wrap cleanly");
         let plan = fx.seal();
         kernel.set_inputs(&[0]);
@@ -778,8 +962,8 @@ mod tests {
         );
 
         let (_kernel, mut fx) = kernel_with_const_outputs(&[("present", 1.0)]);
-        let mut comp = fresh_component();
-        let err = MetricsDispenser::wrap(inner, &decl, &mut comp, &mut fx)
+        let comp = fresh_component_arc();
+        let err = wrap_on(inner, &decl, &comp, &mut fx)
             .err()
             .expect("missing-wire metric should error at init");
         assert!(err.contains("absent_wire"), "msg: {err}");

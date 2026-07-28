@@ -1,6 +1,18 @@
 # Metric dimensions from query data
 
-*Proposal — not yet an SRD. Written 2026-07-28.*
+*Proposal — not yet an SRD. Written 2026-07-28; implemented the same day.*
+
+**Status: implemented.** Verified end to end — a cell-placed metric emits one
+series per dimension value, each carrying its registration site's labels plus
+the dimension:
+
+```text
+bytes_out{exec_id="1",op="probe",phase="t",tier="even",workload="w"} = 12
+bytes_out{exec_id="1",op="probe",phase="t",tier="odd",workload="w"}  = 13
+```
+
+`op=` retained, `tier=` added: the cell refines the identity rather than
+replacing part of it.
 
 ## What we want
 
@@ -134,6 +146,13 @@ program's manifest carries the declared dimension names, which is what makes
 every check below possible.
 
 ### 4. Runtime
+
+Implemented in `wrappers/metrics.rs` as `CellPlacement`. A metric declaring
+`cell:` does **not** register on the dispenser's own component at wrap time:
+that would claim the family for the un-refined identity, and the first cell to
+materialise would then collide with it on the very duplicate-family check this
+design preserves. Its slot carries no instrument; instruments are materialised
+per coordinate instead.
 
 **The parent is the component the metric registers on** — never an ambient one.
 

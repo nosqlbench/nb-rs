@@ -14,9 +14,18 @@
 //! at load — rather than surfacing later as a component-tree attach panic, or
 //! not at all.
 //!
-//! These tests cover the load-time surface. Runtime consumption of the
-//! coordinate (resolving the cell and registering the family on it) is a
-//! separate layer.
+//! Covered here: the load-time surface (declaration, placement, rejection)
+//! AND the runtime path — a cell-placed metric emitting one series per
+//! dimension value, each carrying the registration site's labels plus the
+//! dimension. That last part is the identity claim made concrete:
+//!
+//! ```text
+//! bytes_out{op="probe",phase="t",tier="even",…} = 12
+//! bytes_out{op="probe",phase="t",tier="odd",…}  = 13
+//! ```
+//!
+//! `op=` is retained and `tier=` is added — the cell REFINES the identity
+//! rather than standing in for part of it.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -260,5 +269,95 @@ phases:
         out.contains("str"),
         "an unsupported dimension type must be rejected with the supported \
          one named:\n{out}"
+    );
+}
+
+/// The whole path: a cell-placed metric must emit ONE SERIES PER VALUE, each
+/// carrying the dimension as a label, with the family name shared.
+///
+/// This is the identity claim made concrete — `bytes_out{tier="a"}` and
+/// `bytes_out{tier="b"}` are two identities of one measurement, not two
+/// measurements.
+#[test]
+fn a_cell_placed_metric_emits_one_series_per_dimension_value() {
+    let sb = Sandbox::new("series");
+    // `cycle` alternates the tier so two coordinates materialise in one run.
+    let out = sb.run(
+        r#"
+params:
+  adapter: stdout
+phases:
+  t:
+    cycles: 4
+    dimensions:
+      tier: str
+    ops:
+      probe:
+        bindings: |
+          tier_name := if(cycle % 2 == 0, "even", "odd")
+          measured := 10.0
+        metrics:
+          bytes_out:
+            kind: gauge
+            value: measured
+            cell: { tier: tier_name }
+        stmt: "c={cycle} tier={tier_name}"
+"#,
+    );
+    assert!(
+        out.contains("tier=even") && out.contains("tier=odd"),
+        "both coordinates must be exercised, else this proves nothing:\n{out}"
+    );
+    assert!(
+        !out.to_lowercase().contains("error"),
+        "a cell-placed metric must run clean:\n{out}"
+    );
+
+    // The series are what matter: query the session db for the family and
+    // assert both label values are present under it.
+    let q = Command::new(env!("CARGO_BIN_EXE_nbrs"))
+        .args(["metrics", "query", "bytes_out"])
+        .current_dir(&sb.path)
+        .output()
+        .expect("spawn nbrs metrics query");
+    let series = format!(
+        "{}{}",
+        String::from_utf8_lossy(&q.stdout),
+        String::from_utf8_lossy(&q.stderr)
+    );
+    assert!(
+        series.contains("tier=\"even\"") && series.contains("tier=\"odd\""),
+        "one series per dimension value, both under the same family:\n{series}"
+    );
+}
+
+/// A dimension's values are label values, which are strings. A numeric
+/// coordinate is refused rather than stringified silently — keying cells on
+/// formatting is not identity.
+#[test]
+fn a_non_string_coordinate_is_refused_at_runtime() {
+    let sb = Sandbox::new("numeric-coord");
+    let out = sb.run(
+        r#"
+params:
+  adapter: stdout
+phases:
+  t:
+    cycles: 1
+    dimensions:
+      tier: str
+    ops:
+      probe:
+        bindings: |
+          tier_num := 24
+          measured := 1.0
+        metrics:
+          bytes_out: { kind: gauge, value: measured, cell: { tier: tier_num } }
+        stmt: "x"
+"#,
+    );
+    assert!(
+        out.contains("non-string") || out.contains("metric_cell_not_a_string"),
+        "a numeric coordinate must be refused with a clear reason:\n{out}"
     );
 }

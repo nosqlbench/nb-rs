@@ -67,10 +67,14 @@ impl CellMap {
         if let Some(existing) = map.get(&key) {
             return existing.clone();
         }
-        let child = Arc::new(RwLock::new(Component::new(
-            coord.clone(),
-            HashMap::new(),
-        )));
+        let mut component = Component::new(coord.clone(), HashMap::new());
+        // Running from birth. `Component::new` starts in `Starting`, and the
+        // cadence walk captures only `Running` components — a cell left
+        // `Starting` would accept samples and emit none of them. A cell exists
+        // because data is already flowing into it, so there is no window in
+        // which `Starting` would be the honest state.
+        component.set_state(crate::component::ComponentState::Running);
+        let child = Arc::new(RwLock::new(component));
         crate::component::attach(parent, &child);
         map.insert(key, child.clone());
         child
