@@ -80,7 +80,7 @@ fn main() {
     let thread_overrides = extract_thread_overrides(&mut args);
 
     // SRD-45 startup hook: session-lifecycle cleanup, honouring
-    // `--sessions-max` / `--sessions-shelflife` (and the
+    // `--session-keep` / `--session-shelflife` (and the
     // `NBRS_SESSION*` env vars) to purge aged-out session dirs.
     //
     // It no longer repoints `sessions/latest` at whatever `--session` names. That

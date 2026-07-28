@@ -181,9 +181,9 @@ fn a_read_does_not_change_what_resume_latest_resumes() {
 /// vacuously. With three, one non-latest directory is over the cap and the old
 /// code would delete it.
 ///
-/// The flag spelling matters too: the docs say `--sessions-max`, but only
-/// `--session-keep` / `--session=keep:<n>` is parsed, and an unrecognised flag
-/// would also make this vacuous.
+/// The flag spelling matters too: `--session-keep` is canonical (`--sessions-max`
+/// is now an accepted alias, but was documented-only and parsed nowhere when this
+/// was written), and an unrecognised flag would make this vacuous.
 #[test]
 fn a_read_command_does_not_purge_sessions() {
     let sb = Sandbox::new("purge");

@@ -991,9 +991,10 @@ pub fn standard_run_flags() -> Vec<Flag> {
             repeatable: false,
         },
         Flag {
-            long: "--session-path", short: None, aliases: &[],
+            long: "--session-path", short: None, aliases: &["--session-dir"],
             arity: Arity::Value, value: ValueProvider::Path,
-            help: "Override session directory.",
+            help: "Override session directory. Env: NBRS_SESSION_PATH \
+                   (legacy SESSION_DIRECTORY still honoured).",
             repeatable: false,
         },
         Flag {
@@ -1003,16 +1004,21 @@ pub fn standard_run_flags() -> Vec<Flag> {
             help: "Reuse policy for the chosen session.",
             repeatable: false,
         },
+        // The `--sessions-*` spellings are aliases: the user guide documented only
+        // those, so declaring them is what stops a documented invocation from being
+        // parsed as an unknown flag and ignored.
         Flag {
-            long: "--session-keep", short: None, aliases: &[],
+            long: "--session-keep", short: None, aliases: &["--sessions-max"],
             arity: Arity::Value, value: ValueProvider::None,
-            help: "Retention policy.",
+            help: "How many sessions to keep (0 disables count-based purge). \
+                   Env: NBRS_SESSION_KEEP.",
             repeatable: false,
         },
         Flag {
-            long: "--session-shelflife", short: None, aliases: &[],
+            long: "--session-shelflife", short: None, aliases: &["--sessions-shelflife"],
             arity: Arity::Value, value: ValueProvider::None,
-            help: "Time-based retention window.",
+            help: "Age past which sessions are purged, e.g. 2w (0 disables). \
+                   Env: NBRS_SESSION_SHELFLIFE.",
             repeatable: false,
         },
         Flag {
@@ -1149,6 +1155,19 @@ mod flag_declaration_tests {
             "flags read from argv but not declared in a command spec — they \
              will not appear in --help or completion. Declare them in \
              standard_run_flags(), or add an `exempt()` reason: {undeclared:?}");
+    }
+
+    /// Aliases must be DECLARED, not just parsed: the walker validates against
+    /// the spec, and `--help` / completion read from it. A flag the runtime
+    /// honours but the spec omits reads as unsupported.
+    #[test]
+    fn documented_aliases_are_declared_in_the_spec() {
+        let declared = declared();
+        for alias in ["--sessions-max", "--sessions-shelflife", "--session-dir"] {
+            assert!(declared.contains(&alias),
+                "{alias} is accepted by the parser and named in the user guide, \
+                 so it must appear in the spec");
+        }
     }
 
     #[test]

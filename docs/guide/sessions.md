@@ -151,26 +151,31 @@ the message. See SRD-44 for the resume model itself.
 ## Automatic cleanup
 
 By default, the runtime keeps the **10 most recent** sessions
-under each session-parent directory. Older sessions are
-purged on the next `nbrs` startup. Tunable:
+under each session-parent directory. Older sessions are purged
+at the start of the next command that CREATES a session — a
+read-only command never deletes one. Tunable:
 
 ```
-$ nbrs run workload=foo.yaml --sessions-max=5     # keep just 5
-$ nbrs run workload=foo.yaml --sessions-max=0     # never purge by count
+$ nbrs run workload=foo.yaml --session-keep=5     # keep just 5
+$ nbrs run workload=foo.yaml --session-keep=0     # never purge by count
 ```
 
 Sessions older than **4 weeks** are also purged regardless of
 the count cap. Tunable:
 
 ```
-$ nbrs run workload=foo.yaml --sessions-shelflife=2w  # keep 2 weeks
-$ nbrs run workload=foo.yaml --sessions-shelflife=0   # never purge by age
+$ nbrs run workload=foo.yaml --session-shelflife=2w  # keep 2 weeks
+$ nbrs run workload=foo.yaml --session-shelflife=0   # never purge by age
 ```
 
 Duration syntax: `<n>s|m|h|d|w` (seconds / minutes / hours /
 days / weeks). Bare integers are seconds.
 
-Env-var equivalents: `SESSIONS_MAX`, `SESSIONS_SHELFLIFE`.
+Env-var equivalents: `NBRS_SESSION_KEEP`, `NBRS_SESSION_SHELFLIFE`.
+
+`--sessions-max` / `--sessions-shelflife` are accepted as aliases
+for the two flags above, which is what earlier versions of this
+page documented.
 
 The active session (`logs/latest` and its target) is never
 purged regardless of policy. Symlinks at the parent level
@@ -180,20 +185,26 @@ are skipped.
 
 ## CLI quick reference
 
+Env-var names are derived from the flag: `--foo-bar` → `NBRS_FOO_BAR`.
+
 | Flag | Env | Default | Use it when… |
 | --- | --- | --- | --- |
-| `--session <name>` | — | auto | You want a memorable session id. |
-| `--logs-dir <path>` | — | `logs` | All sessions should go under a custom parent. |
-| `--session-dir <path>` | `SESSION_DIRECTORY` | unset | You want full control over the path; use `SESSION` token for per-run templating. |
-| `--session-reuse <mode>` | — | `error` | A session dir already exists and you've decided what to do with it (`error` / `restart` / `resume`). |
-| `--sessions-max <N>` | `SESSIONS_MAX` | `10` | Custom retention count (`0` disables). |
-| `--sessions-shelflife <dur>` | `SESSIONS_SHELFLIFE` | `4w` | Custom retention age (`0` disables). |
-| `--resume[ <id>]` | — | unset | Continue a prior session from where it stopped. |
-| `--resume-latest` | — | unset | Continue from `logs/latest`. |
+| `--session <name\|k:v,…>` | `NBRS_SESSION` | auto | You want a memorable session id, or want to set several session settings at once (`--session=name:x,keep:5`). |
+| `--session-name <name>` | `NBRS_SESSION_NAME` | auto | Only the id needs overriding. |
+| `--session-path <path>` | `NBRS_SESSION_PATH` | unset | You want full control over the path; use the `SESSION` token for per-run templating. Alias: `--session-dir`. Legacy env `SESSION_DIRECTORY` is still honoured (with a deprecation warning). |
+| `--session-reuse <mode>` | `NBRS_SESSION_REUSE` | `error` | A session dir already exists and you've decided what to do with it (`error` / `restart` / `resume`). |
+| `--session-keep <N>` | `NBRS_SESSION_KEEP` | `10` | Custom retention count (`0` disables). Alias: `--sessions-max`. |
+| `--session-shelflife <dur>` | `NBRS_SESSION_SHELFLIFE` | `4w` | Custom retention age (`0` disables). Alias: `--sessions-shelflife`. |
+| `--resume[ <id>]` | `NBRS_RESUME` | unset | Continue a prior session from where it stopped. |
+| `--resume-latest` | — | unset | Continue from `sessions/latest`. |
 
 The env vars are shorthand for the equivalent flag — useful in
 shell sessions that want consistent wiring across multiple
-`nbrs` invocations.
+`nbrs` invocations. Setting both the flag and its env var is a
+configuration conflict and exits rather than silently picking one.
+
+There is no `--logs-dir`. To put sessions under a custom parent,
+give the parent in the path: `--session-path=/data/runs/SESSION`.
 
 ---
 

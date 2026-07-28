@@ -720,6 +720,27 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
 ///    keys override earlier ones).
 /// 3. Env var equivalents.
 /// 4. Default.
+/// Resolve a flag written either canonically or under a documented alias.
+///
+/// Several spellings appeared only in the docs and were parsed nowhere, so an
+/// invocation copied from the guide was read as an unknown flag and ignored — the
+/// setting silently stayed at its default. The canonical spelling wins when both
+/// appear; a differing alias value is reported rather than dropped, since two
+/// disagreeing values on one command line means the operator expected something
+/// this cannot deliver.
+fn aliased_flag(args: &[String], canonical: &str, alias: &str) -> Option<String> {
+    let canon = resolve_flag(args, canonical);
+    let aliased = resolve_flag(args, alias);
+    match (&canon, &aliased) {
+        (Some(c), Some(a)) if c != a => crate::observer::log(
+            crate::observer::LogLevel::Warn,
+            &format!("{canonical}={c} and {alias}={a} disagree; using {canonical}={c}"),
+        ),
+        _ => {}
+    }
+    canon.or(aliased)
+}
+
 pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
     // Each flag goes through `resolve_flag` which checks both
     // CLI and the auto-derived `NBRS_<FLAG>` env var. Setting
@@ -749,7 +770,13 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
     if let Some(v) = resolve_flag(args, "--session-name") {
         spec.session_name = Some(v);
     }
-    if let Some(v) = resolve_flag(args, "--session-path") {
+    // `--session-dir` is an alias for `--session-path`. `Session::new_with_args`'s
+    // own doc, and the user guide's flag table, both named `--session-dir` as the
+    // way to set the directory — but nothing parsed it, so it was silently ignored
+    // and the session landed at the default path. (`SESSION_DIRECTORY`, the legacy
+    // env spelling the guide pairs with it, WAS honoured, which made the gap look
+    // like an env-only feature.)
+    if let Some(v) = aliased_flag(args, "--session-path", "--session-dir") {
         validate_session_path_or_exit(&v, "`--session-path` flag (or NBRS_SESSION_PATH env)");
         spec.session_path = Some(v);
     }
@@ -757,11 +784,18 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
         && let Ok(r) = SessionReuse::parse(&v) {
             spec.reuse = r;
         }
-    if let Some(v) = resolve_flag(args, "--session-keep")
+    // Retention. `--session-keep` / `--session-shelflife` are canonical: they match
+    // the rest of the `--session-*` family and the umbrella's `keep:` / `shelflife:`
+    // sub-keys. The `--sessions-max` / `--sessions-shelflife` spellings are accepted
+    // as aliases because the user guide documented ONLY those, so every invocation
+    // written against it — `nbrs run … --sessions-max=5` — was parsed as an unknown
+    // flag and silently ignored, leaving retention at its default while the operator
+    // believed they had changed it.
+    if let Some(v) = aliased_flag(args, "--session-keep", "--sessions-max")
         && let Ok(n) = v.trim().parse::<usize>() {
             spec.session_keep = n;
         }
-    if let Some(v) = resolve_flag(args, "--session-shelflife")
+    if let Some(v) = aliased_flag(args, "--session-shelflife", "--sessions-shelflife")
         && let Ok(d) = parse_duration(&v) {
             spec.session_shelflife = d;
         }
@@ -854,13 +888,14 @@ pub fn resolve_active(args: &[String]) -> Result<PathBuf, String> {
     )
 }
 
-/// Default for `--sessions-max`: keep the 10 most-recent
-/// sessions, purge older ones at startup.
+/// Default for `--session-keep` (alias `--sessions-max`): keep the
+/// 10 most-recent sessions, purging older ones at the start of the
+/// next session-creating command.
 pub const DEFAULT_SESSIONS_MAX: usize = 10;
 
-/// Default for `--sessions-shelflife`: 4 weeks. Sessions older
-/// than this are purged at startup regardless of the
-/// `--sessions-max` cap.
+/// Default for `--session-shelflife` (alias `--sessions-shelflife`):
+/// 4 weeks. Sessions older than this are purged regardless of the
+/// `--session-keep` cap.
 pub const DEFAULT_SESSIONS_SHELFLIFE: std::time::Duration =
     std::time::Duration::from_secs(60 * 60 * 24 * 7 * 4);
 
@@ -1058,7 +1093,7 @@ pub fn purge_stale_sessions(
 }
 
 /// Run session-lifecycle cleanup at binary startup, honouring
-/// `--sessions-max` / `--sessions-shelflife`.
+/// `--session-keep` / `--session-shelflife`.
 ///
 /// # What this used to also do, and why it no longer does
 ///
@@ -1084,8 +1119,8 @@ pub fn purge_stale_sessions(
 ///
 /// # Why this only runs for session-CREATING commands
 ///
-/// The cleanup DELETES session directories (keeping the `--sessions-max` most
-/// recent, and dropping anything past `--sessions-shelflife`). It used to run on
+/// The cleanup DELETES session directories (keeping the `--session-keep` most
+/// recent, and dropping anything past `--session-shelflife`). It used to run on
 /// every invocation, so a read-only `nbrs table …` could destroy old sessions —
 /// the destructive counterpart of the symlink rewrite described above. Retiring
 /// old sessions belongs where sessions are ADDED, which is the only moment the
@@ -1103,7 +1138,7 @@ pub fn purge_stale_sessions_at_startup(args: &[String], creating_session: bool) 
     let spec = resolve_session_dir(args);
 
     // Lifecycle cleanup runs unconditionally — it consults
-    // `--sessions-max` / `--sessions-shelflife` (with defaults).
+    // `--session-keep` / `--session-shelflife` (with defaults).
     // Targets the parent dir: `--logs-dir` if specified, else
     // `logs/` under cwd. When `--session-dir` is explicit, its
     // *parent* directory is the cleanup target.
@@ -1653,6 +1688,43 @@ mod tests {
         let (path, id) = spec.resolve("auto-id").unwrap();
         assert_eq!(path.to_str(), Some("/tmp/explicit"));
         assert_eq!(id, "explicit");
+    }
+
+    /// Flags that the docs named but nothing parsed.
+    ///
+    /// The user guide's quick reference listed `--sessions-max`,
+    /// `--sessions-shelflife` and `--session-dir`; none were parsed, so an
+    /// invocation copied from the guide was read as an unknown flag and IGNORED —
+    /// retention silently stayed at 10 sessions / 4 weeks, and the session landed
+    /// at the default path. They are aliases now, with the `--session-*` family
+    /// spellings canonical.
+    #[test]
+    fn documented_flag_aliases_are_honoured() {
+        let _g = env_test_lock();
+        clear_session_env();
+
+        let spec = resolve_session_dir(&["--sessions-max=5".to_string()]);
+        assert_eq!(spec.session_keep, 5, "`--sessions-max` must set the keep cap");
+
+        let spec = resolve_session_dir(&["--sessions-shelflife=2w".to_string()]);
+        assert_eq!(spec.session_shelflife, std::time::Duration::from_secs(14 * 24 * 3600),
+            "`--sessions-shelflife` must set the retention window");
+
+        let spec = resolve_session_dir(&["--session-dir=/tmp/explicit".to_string()]);
+        let (path, id) = spec.resolve("auto").unwrap();
+        assert_eq!(path.to_str(), Some("/tmp/explicit"),
+            "`--session-dir` must set the session path");
+        assert_eq!(id, "explicit");
+
+        // The canonical spellings keep working, and win when both are given.
+        let spec = resolve_session_dir(&["--session-keep=7".to_string()]);
+        assert_eq!(spec.session_keep, 7);
+        let spec = resolve_session_dir(&[
+            "--session-keep=7".to_string(),
+            "--sessions-max=99".to_string(),
+        ]);
+        assert_eq!(spec.session_keep, 7,
+            "the canonical spelling must win over the alias");
     }
 
     #[test]

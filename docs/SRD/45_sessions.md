@@ -118,7 +118,8 @@ Always maintained. Points at the active session.
 ## Process-startup wiring
 
 `purge_stale_sessions_at_startup(args)` runs first in `nbrs::main()`. It resolves
-the spec and applies lifecycle cleanup (`--sessions-max` /
+the spec and applies lifecycle cleanup (`--session-keep` /
+`--session-shelflife`, aliases `--sessions-max` /
 `--sessions-shelflife`). That is all it does.
 
 **It does not touch `logs/latest`.** It used to: when the path was concrete at
