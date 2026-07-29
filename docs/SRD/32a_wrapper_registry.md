@@ -57,7 +57,7 @@ Three problems:
    "swap polling and conditional" (the recent fix) is a code
    change, not a config knob.
 3. **Order is non-discoverable.** A user who wants
-   "op_rate outside the conditional" has no surface to
+   "rate outside the conditional" has no surface to
    configure that, and no way to inspect the current order
    from `nbrs describe`.
 
@@ -142,7 +142,7 @@ pub struct WrapperName(&'static str);
 
 pub struct WrapperRegistration {
     /// Stable name (`"tries"`, `"validate"`, `"poll"`,
-    /// `"op_rate"`, `"if"`, `"result"`, `"errors"`).
+    /// `"rate"`, `"if"`, `"result"`, `"errors"`).
     pub name: WrapperName,
     /// Op-template field names this wrapper exclusively
     /// owns. Listed for parse-time validation: a misplaced
@@ -216,7 +216,7 @@ with the `inventory::submit!` blocks in `wrappers/*.rs` and
 | `result` | (none — reads `result:` wires) | always (no-op when empty) | `traverse` | — | — |
 | `metrics` | (none) | op declares `metrics:` | — | (inner wrappers) | — |
 | `memo` | `memo` | `memo:` set | `traverse` | — | — |
-| `op_rate` | `rate` | `rate:` set | — | — | — |
+| `rate` | `rate` | `rate:` set | — | — | — |
 | `while` | `while` | `while:` set | — | — | — |
 | `dryrun` | `dryrun` | injected `dryrun:` param (see §"Session-injected template parameters") | — | (everything else — absolute outermost) | — |
 | `fields` | `fields` | `fields: true` | — | — | — |
@@ -355,7 +355,7 @@ resolver enforces per level.
 | `poll` | ✓ | | | | |
 | `if` | ✓ | | | | |
 | `while` | ✓ | | | | |
-| `op_rate` | ✓ | | | | |
+| `rate` | ✓ | | | | |
 | `result` | ✓ | | | | |
 | `metrics` | ✓ | | | | |
 | `memo` | ✓ | | | | |
@@ -399,7 +399,7 @@ op template
 ├── adapter fields     → DriverAdapter::map_op (SRD-30)
 └── core fields
     ├── traverse fields → unowned (always-on)
-    ├── op_rate fields  → OpRateWrapper
+    ├── rate fields  → OpRateWrapper
     ├── validate fields → ValidatingDispenser
     ├── poll fields     → PollingDispenser
     ├── if fields       → ConditionalDispenser
@@ -561,7 +561,7 @@ leave a choice. The runtime ships a built-in default that
 matches today's behaviour:
 
 ```
-[tries, traverse, delay, validate, poll, if, result, metrics, memo, op_rate, while, dryrun, fields, errors]
+[tries, traverse, delay, validate, poll, if, result, metrics, memo, rate, while, dryrun, fields, errors]
 ```
 
 `dryrun` is the absolute outermost so its short-circuit
@@ -621,7 +621,7 @@ same chain as the current hand-rolled if-let cascade:
 ```text
 Adapter base
   └─ traverse (always)
-     └─ op_rate  (when rate set)
+     └─ rate  (when rate set)
         └─ validate (when verify/relevancy)
            └─ poll      (when poll: set)
               └─ if      (when if: set)
@@ -964,7 +964,7 @@ the mistake if they try.
 $ nbrs describe wrappers
 NAME       RANK  OWNED FIELDS                                                                        TRIGGER
 traverse   -100  (none — always-on)                                                                  always
-op_rate       0  rate                                                                                rate set
+rate       0  rate                                                                                rate set
 validate    100  verify, relevancy, strict                                                           verify/relevancy
 poll        200  poll, poll_interval_ms, timeout_ms, poll_max_error_retries, poll_metric_name        poll: set
 if          300  if                                                                                  if: set
@@ -1026,7 +1026,7 @@ the shape concrete:
   flips) overrides per-op with `wrappers: { order:
   [traverse, if, poll, …] }`. Both orders are valid
   topologically; the override picks.
-- **`validate` outside `op_rate` (default, not
+- **`validate` outside `rate` (default, not
   constraint).** Same shape — independent triggers, the
   default order is the tiebreaker, and the override
   surface lets users invert it.

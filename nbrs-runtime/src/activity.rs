@@ -2072,14 +2072,14 @@ impl Activity {
                                     }
                                 }
                             }
-                            crate::wrappers::op_rate::NAME => {
+                            crate::wrappers::rate::NAME => {
                                 // Per-op rate limiter, independent
                                 // of the activity-level rate AND of
                                 // every other op's per-op limiter.
                                 // Each instance owns its own
                                 // RateLimiter.
                                 let rate_spec = template.rate.as_deref()
-                                    .expect("op_rate triggered → rate set");
+                                    .expect("rate triggered → rate set");
                                 match crate::wrappers::OpRateWrapper::wrap(
                                     current.clone(), rate_spec,
                                 ) {

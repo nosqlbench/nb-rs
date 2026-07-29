@@ -33,7 +33,7 @@ use crate::wrapper_registry::{WrapperName, WrapperRegistration, WrapperSubject};
 use nbrs_rate::{RateLimiter, RateSpec};
 
 /// Wrapper name.
-pub const NAME: WrapperName = WrapperName::new("op_rate");
+pub const NAME: WrapperName = WrapperName::new("rate");
 
 /// Trigger: op declares a `rate:` field.
 fn triggers(s: WrapperSubject) -> bool {

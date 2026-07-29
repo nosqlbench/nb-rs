@@ -171,7 +171,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
             for (key, value) in params {
                 // Same SRD-32a exclusion as the inherited-params merge: a CLI
                 // `rate=…` / `cycles=…` is a phase/activity override, not an op
-                // field — don't leak it into op params (would trip op_rate).
+                // field — don't leak it into op params (would trip rate).
                 if ACTIVITY_PARAM_KEYS.contains(&key.as_str()) {
                     continue;
                 }
@@ -1677,7 +1677,7 @@ fn parse_ops_field(
     // SRD-32a: activity/phase-scope param keys (cycles / concurrency /
     // rate / errors / error_rate_max) are consumed at phase/activity scope,
     // never as op fields. Strip them from the inherited params before they
-    // reach any op, so an inherited `rate` doesn't collide with the `op_rate`
+    // reach any op, so an inherited `rate` doesn't collide with the `rate`
     // wrapper's field-ownership guard. A genuine op-level `rate:` reaches the
     // op via the typed `ParsedOp.rate` field, which is untouched.
     let op_scope_params = exclude_activity_keys(params);
@@ -2987,7 +2987,7 @@ fn merge_string_maps(parent: &HashMap<String, String>, child: &HashMap<String, S
 
 /// Activity/phase-scope param keys that must never be blast-merged onto ops.
 /// They are consumed at phase/activity scope; leaking them into op `params`
-/// makes an inherited `rate` collide with the `op_rate` wrapper's
+/// makes an inherited `rate` collide with the `rate` wrapper's
 /// field-ownership guard (SRD-32a). The op-level `rate:` field reaches ops via
 /// the typed [`ParsedOp::rate`] path, not params, so this exclusion is safe.
 const ACTIVITY_PARAM_KEYS: &[&str] =

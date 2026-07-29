@@ -39,7 +39,7 @@ fn slow_stdout_workload() -> (TempDir, PathBuf) {
     let yaml_path = dir.path().join("toggle.yaml");
     std::fs::write(
         &yaml_path,
-        // `rate:` paces the op (op_rate wrapper) so the 20-cycle run takes a
+        // `rate:` paces the op (rate wrapper) so the 20-cycle run takes a
         // couple of seconds rather than ~50ms — otherwise the tick lines scroll
         // the startup banner off the 30-row screen before the stepper can
         // observe it (the fixture's "runs slowly enough" comment requires it).

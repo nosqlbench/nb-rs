@@ -64,10 +64,10 @@ const FORBIDS_OUTER: &[WrapperName] = &[
     // must short-circuit BEFORE the loop or the dry-run pass
     // would burn cycles iterating a no-op stand-in.
     super::r#while::NAME,
-    // `op_rate` introduces a per-iteration wait; dryrun must
+    // `rate` introduces a per-iteration wait; dryrun must
     // short-circuit BEFORE the wait or the dry-run pass would
     // sit on the rate-limiter for nothing.
-    super::op_rate::NAME,
+    super::rate::NAME,
 ];
 
 inventory::submit! {
