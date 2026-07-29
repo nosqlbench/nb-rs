@@ -24,12 +24,12 @@
 //! | YAML | module | what it does |
 //! |------|--------|--------------|
 //! | `tries:` | [`tries`] | Attempt loop. The absolute innermost layer: wraps the raw adapter dispenser, owns the retry budget and the per-attempt panic catch. Absent `tries:`, it is not constructed at all and the op runs once. |
-//! | — | [`traverse`] | Result traversal. Always present. Counts result elements and bytes, walks declared capture points, and writes extracted values onto the per-fiber op-template kernel. Every wrapper that reads result data depends on it. |
+//! | _(none yet)_ | [`traverse`] | Result traversal. Always present. Counts result elements and bytes, walks declared capture points, and writes extracted values onto the per-fiber op-template kernel. Every wrapper that reads result data depends on it. Unlike `result:` it has NO YAML override — its behaviour cannot be tuned from a workload today. |
 //! | `delay:` | [`delay`] | Sleeps before and/or after the inner op, reading the interval per cycle through the pull plan. `u64` is nanoseconds, `f64` is milliseconds. |
-//! | `poll:` | [`poll`] | Re-executes the inner op until its row count — optionally projected through a JSON Pointer — lands in `[min_rows, max_rows]`, or the timeout fires. The await primitive for backend state such as a compaction drain. |
+//! | `poll:` | [`poll`] | Re-executes the inner op until its ROW COUNT — optionally projected through a JSON Pointer — lands in `[min_rows, max_rows]`, or the timeout fires. The await primitive for backend state such as a compaction drain. Note the asymmetry with PHASE-level `poll:` ([`nbrs_workload::model::PhasePollSpec`]), whose `until:` is a polydat boolean expression re-evaluated per iteration; the op-level wrapper has no such condition form and can only test a row count. |
 //! | `if:` | `r#if` | Conditional execution. A falsy per-cycle value skips the op entirely — no inner execution, no adapter call — and counts a skip. |
 //! | `while:` | `r#while` | Loops the inner op while a per-cycle predicate holds. |
-//! | — | [`result`] | Exposes declared op-result fields, plus the magic externs `body` / `count` / `ok`, as Polydat wires on the op-template kernel. |
+//! | `result:` | [`result`] | Exposes op-result fields, plus the magic externs `body` / `count` / `ok`, as Polydat wires on the op-template kernel. Always installed; the optional `result:` block OVERRIDES which fields are exposed rather than enabling the wrapper — which is why it is not in the registry's `owned_fields`. |
 //! | `metrics:` | [`metrics`] | Records synthetic metrics. After the adapter returns, pulls each declared metric's value through the op-template kernel and writes it to the instrument. Also resolves `cell:` placement, materialising one dimensional cell per coordinate value. |
 //! | `rate:` | [`rate`] | Per-op rate limiter, independent of the activity-level limiter and of every other op's. Each instance owns its own limiter and acquires on every dispatch. |
 //! | `fields:` | [`fields`] | Prints the rendered op text per cycle — the "what did this op actually send" surface. |
@@ -37,7 +37,7 @@
 //! | `memo:` | [`memo`] | Publishes a short human-visible string to the activity's memo slot before and/or after the op — the `[[ … ]]` line. |
 //! | `gutter:` | [`gutter`] | Publishes the phase's contextual left-gutter cell from polydat templates. Distinct from `memo`, which owns the memo line. |
 //! | `errors:` | [`errors`] | Error routing. The outermost OP-level wrapper: it sees the one terminal outcome of the whole stack and applies the op's error policy (warn / count / stop). |
-//! | `dryrun=` | [`dryrun`] | Short-circuit. Installed outermost when the runner is in dryrun mode; returns an empty result without calling the adapter. It `forbids_outer` on `memo` and `gutter`, which is why those two hold explicit slots in the default order. |
+//! | `dryrun:` | [`dryrun`] | Short-circuit: returns an empty result without calling the adapter. Its field is spelled like the others, but is normally INJECTED by the runner onto every op template from the CLI `dryrun=<mode>` param rather than written in a workload. It `forbids_outer` on `memo` and `gutter`, which is why those two hold explicit slots in the default order. |
 //! | `interval:` / `repeat:` | [`interval`] | The one PHASE-level wrapper. Re-runs a whole phase, dwelling `interval` between runs and bounded by `repeat`. Not an `OpDispenser` — it wraps the phase seam, so there is no dispenser type to re-export.
 //!
 //! Composition order is not alphabetical or declaration order: it comes from
