@@ -1091,17 +1091,23 @@ phases:
       # moved, so the two together give recent-completed and in-flight work in
       # one place instead of a live view that forgets.
       #
-      # WINDOW, not tier. Every metric published here inherits this phase's
-      # `{tier}` label, but the bound below is a rolling 24h window, not this
-      # tier's start. Measured 2026-07-28: `phase_start` IS on the op's wires
-      # but reads 0 during ops (the executor sets it at the completion-time
-      # metric pull, after the ops have run); `elapsed_millis()` works here but
-      # anchors to SESSION start, not phase start; `elapsed_ms` is a
-      # stop-condition wire and does not compile in an op binding. So read
-      # these as "completed compactions in the last 24h, as of this tier" — a
-      # window wider than a tier's finalize includes the previous tier's work.
-      # The per-tier attribution is done report-side instead, by joining each
-      # history row's compacted_at to the tier whose phase window contains it.
+      # PER TIER, exactly. The lower bound is this tier's own finalize start,
+      # so the rows counted are the compactions THIS tier ran and nothing
+      # earlier. Attribution needs nothing further: the tier is already a
+      # structural label (`p=`) owned by the partition tier and inherited down,
+      # so every metric below carries it. A metric `cell:` would be the wrong
+      # tool here — that exists for a dimension whose values arrive from data,
+      # and declaring one an ancestor already owns is what `Component::attach`
+      # refuses.
+      #
+      # This was a rolling 24h window until 2026-07-29, because three separate
+      # defects stood in the way, all now fixed: `phase_start` was an extern
+      # filled only at the completion-time metric pull (so an op reading it got
+      # 0 and computed against the epoch); an op binding failed bind-point
+      # validation against the wrong program; and the scylla dispensers
+      # returned `None` from `canonical_kernel()`, which left this op's
+      # PullPlan resolving against the phase kernel — one metric silently read
+      # the phase's `__metric_time_to_index`, the next two panicked.
       read_compaction_history:
         adapter: cql
         readout: visible
@@ -1109,17 +1115,15 @@ phases:
         # Monitoring, not load: a failure here must not fail the tier.
         errors: ".*:warn,counter"
         bindings: |
+          # This tier's finalize start as integer epoch-ms — the exact lower
+          # bound for "compactions this tier ran". `phase_start_millis()` is
+          # the runtime's phase-scoped clock node: populated from the phase's
+          # first op onward, and anchored to THIS phase rather than to the
+          # session (which is what `elapsed_millis()` would give).
+          volatile history_since := phase_start_millis()
           extern history_events:    u64 = 0
           extern history_bytes_in:  u64 = 0
           extern history_bytes_out: u64 = 0
-        # The 24h bound is computed SERVER-SIDE rather than interpolated from a
-        # binding, because an op-level binding does not resolve as a bind point
-        # in `raw:`/`stmt:` when the enclosing phase declares its own
-        # `bindings:` block — as finalize_index does. (Verified 2026-07-28: the
-        # same op binding resolves in a phase without one, and fails with
-        # "unresolved bind point" in a phase with one.) The `(bigint)` hint is
-        # required: without it Cassandra rejects the subtraction as ambiguous.
-        #
         # ~19 rows node-wide behind `id uuid PRIMARY KEY`, so ALLOW FILTERING
         # here scans a table that fits in one page — not the usual trap.
         raw: |
@@ -1127,7 +1131,7 @@ phases:
             FROM system.compaction_history
            WHERE keyspace_name = '{keyspace}'
              AND columnfamily_name = '{table}'
-             AND compacted_at > currentTimestamp() - (bigint) 86400000
+             AND compacted_at > {history_since}
           ALLOW FILTERING
         # The aggregate returns exactly one row; `:sum` over it is that row.
         capture:
@@ -1135,12 +1139,15 @@ phases:
           history_bytes_in:  ":sum(bin)"
           history_bytes_out: ":sum(bout)"
         metrics:
-          compaction_recent_events:    { kind: gauge, value: history_events }
-          compaction_recent_bytes_in:  { kind: gauge, value: history_bytes_in }
-          compaction_recent_bytes_out: { kind: gauge, value: history_bytes_out }
+          # Per tier by inheritance — these carry the phase's `p=` label — and
+          # per tier by construction, since the query is bounded to this tier's
+          # own finalize window.
+          compaction_tier_events:    { kind: gauge, value: history_events }
+          compaction_tier_bytes_in:  { kind: gauge, value: history_bytes_in }
+          compaction_tier_bytes_out: { kind: gauge, value: history_bytes_out }
         memo:
-          before: "finalize step 5/5b — reading recently-completed compactions from system.compaction_history"
-          after:  "finalize step 5/5b — {history_events} compaction(s) completed in the window: {history_bytes_in} B in → {history_bytes_out} B out"
+          before: "finalize step 5/5b — reading this tier's completed compactions from system.compaction_history"
+          after:  "finalize step 5/5b — {history_events} compaction(s) completed this tier: {history_bytes_in} B in → {history_bytes_out} B out"
         request_timeout_ms: 60000
 
   # Recall against the post-compaction index AT THIS TIER'S SIZE, using
