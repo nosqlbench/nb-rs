@@ -1439,22 +1439,45 @@ phases:
 # Reports. Rendered from the SESSION DB, which is written continuously, so the
 # same command gives the same view during a run and after it — the view is a
 # function of recorded state, not of run lifecycle. `nbrs table compaction_shape`
-# mid-run shows every tier finished so far; the in-flight tier appears with a
-# zero duration (its cycle has not closed yet) and therefore an infinite rate,
-# which is the honest rendering of "not finished" rather than a guess.
+# mid-run shows every tier finished so far; the in-flight tier renders `-` for
+# anything derived from the phase duration (`finalize_time`,
+# `index_bytes_per_ms`), because its phase has not closed and the value does not
+# exist yet — absent rather than guessed.
+#
+# NOTE: a bare `nbrs table compaction_shape` resolves the definition from the
+# session db (`report.*` rows, snapshotted when the run started), so edits here
+# do not show up in an already-running session. Pass
+# `workload=adapters/cql/workloads/compaction_demo_derived.yaml` to render the
+# current definition against the same data.
 # ---------------------------------------------------------------------------
 report:
   compaction_shape_section: |
     file compaction_shape.md as 'Compaction shape and throughput per tier'
 
     text compaction_shape_heading as "What this shows":
-     One row per size tier, in tier order. `segments` is how many vector-index
-     sstables the tier's major compaction merged — the K in cost-over-K, and the
-     number that separates "one big source plus a tail of flush segments" from
-     "a dozen equal ones". `vector_index_bytes` and `sai_shared_bytes` are the
-     merged input sizes. `duration_ms` is the
-     finalize phase's cycle service time, which spans flush through drain.
-     `index_bytes_per_ms` is achieved throughput over that span.
+     One row per size tier, in tier order.
+
+     `segments` is how many vector-index sstables the tier's major compaction
+     merged — the K in cost-over-K, and the number that separates "one big
+     source plus a tail of flush segments" from "a dozen equal ones".
+     `vector_index_bytes` and `sai_shared_bytes` are the merged input sizes.
+
+     `finalize_time` is the finalize phase's wall clock — flush through drain —
+     and `index_bytes_per_ms` is achieved throughput over that span.
+     `age` is NOT that: it measures time since the tier started, so for a
+     finished tier it keeps growing. Read `finalize_time` for how long the work
+     took, `age` for how long ago it was.
+
+     Progress is reported PER UNIT, because the two tasks the drain watches are
+     not commensurable: `index_parts_done`/`index_parts_total` are the vector
+     index build in token range parts, `data_bytes_done` is the data compaction
+     in bytes. They were once a single summed column, which added bytes to parts
+     and moved with how many tasks happened to be registered at sample time.
+     `live_parts_per_s` divides parts by `age`, so it means something only for
+     the tier still running.
+
+     `state` says whether a tier finished, and is derived from a datum that only
+     exists once it has — not from `done_pct`, which is a polled gauge.
 
      Read K against throughput: at fixed segment count the per-byte rate should
      hold, and where it falls off with size the merge has left the page cache
@@ -1513,7 +1536,7 @@ report:
       # For a FINISHED tier this is its age rather than its duration -- read
       # finalize_ms for that, which is exact. For the tier still running it is the
       # elapsed time, accurate to the second.
-      query: age: max(tlast_over_time(compaction_index_parts_done[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
+      query: age: max(tlast_over_time(compaction_completion_ratio[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
       # The live gauge already reaches a true 1.0: system_views.sstable_tasks
       # keeps a completed task listed for a while after it finishes (verified
       # on the node: kind=compaction at completion_ratio=1 alongside a still-
@@ -1552,7 +1575,7 @@ report:
       # Task units (mixed, see above) over AGE (not duration) — so for a
       # finished tier the denominator keeps growing and this keeps falling.
       # Meaningful only for the tier currently running.
-      query: live_parts_per_s: max(compaction_index_parts_done) by (p) / (1000 * (max(tlast_over_time(compaction_index_parts_done[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)))
+      query: live_parts_per_s: max(compaction_index_parts_done) by (p) / (1000 * (max(tlast_over_time(compaction_completion_ratio[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)))
       # ONE finalize column, in h:m:s like `elapsed_time`.
       #
       # There were two — `finalize_seconds` (mean per-cycle SERVICE time) and
