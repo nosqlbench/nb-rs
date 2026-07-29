@@ -4248,12 +4248,6 @@ extern keyspace: String
         }
     }
 
-    /// A phase with a `metrics:` block (and no poll) synthesises an
-    /// `extern phase_start: u64 = 0` origin wire (set by the executor
-    /// at the completion-time pull) plus one
-    /// `volatile __metric_<name> := <value>` per metric. The phase's
-    /// own bindings are appended verbatim.
-    #[test]
     /// A metric's `cell:` is reified as a compiled kernel binding beside its
     /// value — the whole point of the design. If this did not compile, a
     /// coordinate would have to be a runtime string, which is the
@@ -4298,6 +4292,14 @@ extern keyspace: String
                    synthesize_cell_binding_name("bytes_in", "tier"));
     }
 
+    /// A phase with a `metrics:` block (and no poll) synthesises a
+    /// `volatile phase_start := phase_start_millis()` origin binding plus one
+    /// `volatile __metric_<name> := <value>` per metric. The phase's own
+    /// bindings are appended verbatim.
+    ///
+    /// `phase_start` was an `extern … = 0` filled by the executor at the
+    /// completion-time pull, which meant anything reading it while the phase
+    /// ran got the default.
     #[test]
     fn synthesize_phase_scope_bindings_emits_metric_bindings() {
         use nbrs_workload::model::{BindingsDef, MetricSpec, WorkloadPhase};

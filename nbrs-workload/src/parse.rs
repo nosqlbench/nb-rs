@@ -2412,7 +2412,7 @@ fn validate_cell_dimensions(
                 dimensions.keys().cloned().collect::<Vec<_>>().join(", "))
         }
     };
-    let mut check = |site: &str, metric: &str, spec: &MetricSpec| -> Result<(), String> {
+    let check = |site: &str, metric: &str, spec: &MetricSpec| -> Result<(), String> {
         for dim in spec.cell.keys() {
             if !dimensions.contains_key(dim) {
                 return Err(format!(
