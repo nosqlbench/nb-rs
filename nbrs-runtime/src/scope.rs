@@ -4351,6 +4351,7 @@ extern keyspace: String
         let mut op = ParsedOp::simple("read_state", "noop");
         op.captures = vec![
             CapturePoint {
+                row_filter: None,
                 source_name: "sstables".into(),
                 as_name: "sstables".into(),
                 cast_type: None,
@@ -4360,6 +4361,7 @@ extern keyspace: String
                 agg: None,
             },
             CapturePoint {
+                row_filter: None,
                 source_name: "active_for_cf".into(),
                 as_name: "active_for_cf".into(),
                 cast_type: None,
@@ -4411,6 +4413,7 @@ extern keyspace: String
         use nbrs_workload::model::{BindingsDef, ParsedOp, PhasePollSpec, WorkloadPhase};
         let mut op = ParsedOp::simple("read_state", "noop");
         op.captures = vec![CapturePoint {
+            row_filter: None,
             source_name: "sstables".into(),
             as_name: "sstables".into(),
             cast_type: None,

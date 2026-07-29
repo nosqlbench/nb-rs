@@ -479,6 +479,21 @@ pub struct CapturePoint {
     /// `count`, only honoured on the declarative capture form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agg: Option<CaptureAgg>,
+    /// Row predicate for an aggregate: `(field, value)`, from the
+    /// `where <field>='<value>'` clause of a capture suffix — e.g.
+    /// `":sum(progress where kind='secondary index build')"`. Rows whose
+    /// `field` does not equal `value` are excluded before folding.
+    ///
+    /// Exists because a result set can hold rows that are not commensurable.
+    /// `system_views.sstable_tasks` lists a data compaction reporting
+    /// `unit=bytes` beside a vector index build reporting
+    /// `unit=token range parts`; summing across them adds unlike quantities,
+    /// and the total silently depends on how many tasks were registered at
+    /// sample time. The predicate cannot live in the query — Cassandra allows
+    /// `GROUP BY` only on PRIMARY KEY columns, and narrowing the poll's own
+    /// `WHERE` would change which rows the drain waits for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_filter: Option<(String, String)>,
 }
 
 /// Result of parsing capture points from a string.
@@ -603,6 +618,8 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
             if i < chars.len() && chars[i] == ']' {
                 i += 1;
                 captures.push(CapturePoint {
+                    // Bracket syntax carries no aggregate, so no predicate.
+                    row_filter: None,
                     source_name: source_name.clone(),
                     as_name,
                     cast_type,

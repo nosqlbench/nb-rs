@@ -2138,11 +2138,11 @@ fn normalize_op_object(
                  `:count` suffix). Got {kind}.",
                 kind = eval_value_kind(spec_val),
             ))?;
-            let (path, count, agg) = match raw.strip_suffix(":count") {
-                Some(p) => (p.to_string(), true, None),
+            let (path, count, agg, row_filter) = match raw.strip_suffix(":count") {
+                Some(p) => (p.to_string(), true, None, None),
                 None => match parse_capture_agg_suffix(raw) {
-                    Some((p, a)) => (p, false, Some(a)),
-                    None => (raw.to_string(), false, None),
+                    Some((p, a, f)) => (p, false, Some(a), f),
+                    None => (raw.to_string(), false, None, None),
                 },
             };
             if !path.is_empty() && !path.starts_with('/') {
@@ -2154,6 +2154,7 @@ fn normalize_op_object(
                 ));
             }
             captures.push(crate::bindpoints::CapturePoint {
+                row_filter,
                 source_name: wire_name.clone(),
                 as_name: wire_name.clone(),
                 cast_type: None,
@@ -2217,7 +2218,41 @@ fn normalize_op_object(
 /// declarative capture path, returning `(path_prefix, agg)`. The path
 /// prefix may be empty (root = the whole rows array). Returns `None`
 /// when the spec carries no recognized aggregation suffix.
-fn parse_capture_agg_suffix(raw: &str) -> Option<(String, crate::bindpoints::CaptureAgg)> {
+/// Split an optional `where <field>='<value>'` predicate off the tail of an
+/// aggregate's argument, returning `(field_expr, predicate)`.
+///
+/// `progress where kind='secondary index build'` →
+/// `("progress", Some(("kind", "secondary index build")))`.
+///
+/// Single or double quotes; the value may contain spaces, which is why it is
+/// quoted rather than whitespace-delimited.
+fn split_capture_row_filter(arg: &str) -> (String, Option<(String, String)>) {
+    let lower = arg.to_ascii_lowercase();
+    let Some(idx) = lower.find(" where ") else {
+        return (arg.trim().to_string(), None);
+    };
+    let field = arg[..idx].trim().to_string();
+    let pred = arg[idx + " where ".len()..].trim();
+    let Some((k, v)) = pred.split_once('=') else {
+        return (arg.trim().to_string(), None);
+    };
+    let k = k.trim();
+    let v = v.trim();
+    let unquoted = v
+        .strip_prefix('\'').and_then(|r| r.strip_suffix('\''))
+        .or_else(|| v.strip_prefix('"').and_then(|r| r.strip_suffix('"')));
+    match unquoted {
+        Some(val) if !k.is_empty() => (field, Some((k.to_string(), val.to_string()))),
+        // An unquoted or malformed predicate is left alone rather than
+        // silently half-applied — the caller then treats the whole string as a
+        // field name and the unknown-field error names it.
+        _ => (arg.trim().to_string(), None),
+    }
+}
+
+fn parse_capture_agg_suffix(
+    raw: &str,
+) -> Option<(String, crate::bindpoints::CaptureAgg, Option<(String, String)>)> {
     use crate::bindpoints::CaptureAgg;
     if !raw.ends_with(')') {
         return None;
@@ -2228,9 +2263,10 @@ fn parse_capture_agg_suffix(raw: &str) -> Option<(String, crate::bindpoints::Cap
         (":sum(", CaptureAgg::Sum as fn(String) -> CaptureAgg),
     ] {
         if let Some(idx) = raw.rfind(tag) {
-            let field = &raw[idx + tag.len()..raw.len() - 1];
+            let arg = &raw[idx + tag.len()..raw.len() - 1];
+            let (field, row_filter) = split_capture_row_filter(arg);
             if !field.is_empty() && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                return Some((raw[..idx].to_string(), make(field.to_string())));
+                return Some((raw[..idx].to_string(), make(field), row_filter));
             }
         }
     }

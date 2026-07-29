@@ -118,7 +118,7 @@ fn extract_captures_from_json(
             let value = if spec.count {
                 polydat::ast::Value::U64(count_of_subtree(sub))
             } else if let Some(agg) = &spec.agg {
-                aggregate_rows(sub, agg)
+                aggregate_rows(sub, agg, spec.row_filter.as_ref())
             } else {
                 match sub {
                     Some(v) => json_subtree_to_value(v),
@@ -196,7 +196,11 @@ fn count_of_subtree(v: Option<&serde_json::Value>) -> u64 {
 /// capture). Sum stays integral (`U64`) while every contributing
 /// value is a non-negative integer, else widens to `F64`; min/max
 /// return the winning row's value with its original JSON type.
-fn aggregate_rows(sub: Option<&serde_json::Value>, agg: &bindpoints::CaptureAgg) -> polydat::ast::Value {
+fn aggregate_rows(
+    sub: Option<&serde_json::Value>,
+    agg: &bindpoints::CaptureAgg,
+    row_filter: Option<&(String, String)>,
+) -> polydat::ast::Value {
     use bindpoints::CaptureAgg;
     let rows = match sub {
         Some(serde_json::Value::Array(rows)) => rows,
@@ -205,7 +209,22 @@ fn aggregate_rows(sub: Option<&serde_json::Value>, agg: &bindpoints::CaptureAgg)
     let field = match agg {
         CaptureAgg::Min(f) | CaptureAgg::Max(f) | CaptureAgg::Sum(f) => f.as_str(),
     };
+    // `where <field>='<value>'` — drop rows that are not commensurable before
+    // folding. A result set can mix them: `system_views.sstable_tasks` lists a
+    // data compaction in `unit=bytes` beside an index build in
+    // `unit=token range parts`, and summing across both adds unlike
+    // quantities. Compared as strings so it works on any scalar column
+    // without the capture layer needing the column's type.
+    let keep = |row: &serde_json::Value| -> bool {
+        let Some((k, want)) = row_filter else { return true };
+        match row.get(k.as_str()) {
+            Some(serde_json::Value::String(s)) => s == want,
+            Some(other) => other.to_string().trim_matches('"') == want,
+            None => false,
+        }
+    };
     let nums: Vec<&serde_json::Number> = rows.iter()
+        .filter(|row| keep(row))
         .filter_map(|row| row.get(field))
         .filter_map(|v| v.as_number())
         .collect();
@@ -338,6 +357,7 @@ mod tests {
 
     fn cap(source: &str, alias: &str, slurp: bool) -> bindpoints::CapturePoint {
         bindpoints::CapturePoint {
+            row_filter: None,
             source_name: source.into(),
             as_name: alias.into(),
             cast_type: None,
@@ -450,7 +470,72 @@ mod tests {
             path: Some(path.into()),
             count,
             agg: None,
+            row_filter: None,
         }
+    }
+
+    /// The same shape, folded PER KIND. Summing across the two rows adds
+    /// bytes to token range parts — dimensionally meaningless, and its
+    /// magnitude depends on how many tasks were registered at sample time.
+    /// `where kind='…'` keeps each fold to one unit.
+    #[test]
+    fn aggregate_captures_filter_rows_by_kind() {
+        let body = JsonBody(serde_json::json!([
+            {"kind": "compaction",            "progress": 47048035855u64},
+            {"kind": "secondary index build", "progress": 4855601u64},
+        ]));
+        fn cap_filtered(
+            name: &str,
+            field: &str,
+            filter: Option<(&str, &str)>,
+        ) -> bindpoints::CapturePoint {
+            bindpoints::CapturePoint {
+                source_name: name.into(),
+                as_name: name.into(),
+                cast_type: None,
+                slurp: false,
+                path: Some(String::new()),
+                count: false,
+                agg: Some(bindpoints::CaptureAgg::Sum(field.into())),
+                row_filter: filter.map(|(k, v)| (k.to_string(), v.to_string())),
+            }
+        }
+        let specs = vec![
+            cap_filtered("all",   "progress", None),
+            cap_filtered("index", "progress", Some(("kind", "secondary index build"))),
+            cap_filtered("data",  "progress", Some(("kind", "compaction"))),
+        ];
+        let caps = extract_captures_from_json(&body, &specs);
+        let num = |k: &str| caps[k].as_u64();
+        assert_eq!(num("index"), 4_855_601, "index build only");
+        assert_eq!(num("data"), 47_048_035_855, "data compaction only");
+        // The unfiltered fold is the sum of unlike quantities — kept as the
+        // record of what the old capture actually produced.
+        assert_eq!(num("all"), num("index") + num("data"));
+    }
+
+    /// A predicate that matches nothing folds to absent, not to zero — zero
+    /// would read as "measured, and it was none".
+    #[test]
+    fn aggregate_filter_matching_no_rows_yields_none() {
+        let body = JsonBody(serde_json::json!([
+            {"kind": "compaction", "progress": 5u64},
+        ]));
+        let specs = vec![bindpoints::CapturePoint {
+            source_name: "x".into(),
+            as_name: "x".into(),
+            cast_type: None,
+            slurp: false,
+            path: Some(String::new()),
+            count: false,
+            agg: Some(bindpoints::CaptureAgg::Sum("progress".into())),
+            row_filter: Some(("kind".into(), "nonesuch".into())),
+        }];
+        let caps = extract_captures_from_json(&body, &specs);
+        assert!(
+            matches!(caps["x"], polydat::ast::Value::None),
+            "no matching rows must not fold to 0; got {:?}", caps["x"]
+        );
     }
 
     #[test]
@@ -472,6 +557,7 @@ mod tests {
                 path: Some(String::new()),
                 count: false,
                 agg: Some(agg),
+                row_filter: None,
             }
         }
         let specs = vec![

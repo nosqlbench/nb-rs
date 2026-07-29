@@ -997,15 +997,17 @@ phases:
         bindings: |
           extern active_compactions: u64 = 0
           extern completion_ratio:   f64 = 0.0
-          extern progress:           u64 = 0
-          extern total:              u64 = 0
+          extern index_parts_done:   u64 = 0
+          extern index_parts_total:  u64 = 0
+          extern data_bytes_done:    u64 = 0
+          extern data_bytes_total:   u64 = 0
           # Drain speed in the memo's own units (units/s): per-second rate of
-          # the compaction_progress_parts gauge over a trailing 2m window
+          # the compaction_index_parts_done gauge over a trailing 2m window
           # (one sample lands per 5s poll below). rate()'s counter-reset
           # handling absorbs the drain's task switches (each new task's
           # progress restarts at 0), and finished tiers' series go static
           # (rate 0), so the sum self-scopes to the active drain.
-          units_per_s := round_u64(metricsql_scalar("sum(rate(compaction_progress_parts[2m]))"))
+          units_per_s := round_u64(metricsql_scalar("sum(rate(compaction_index_parts_done[2m]))"))
         # NO kind filter (2026-07-24): the drain must hold for the WHOLE
         # compaction, not only its index-build tail. During the merge's
         # row-ingest pass the only registered row is the byte-denominated
@@ -1016,7 +1018,7 @@ phases:
         # merge left an index-less sstable that scheduled a full
         # 40-thread index rebuild — the flush-starvation storm.
         raw: |
-          SELECT completion_ratio, progress, total
+          SELECT completion_ratio, progress, total, kind, unit
             FROM system_views.sstable_tasks
            WHERE keyspace_name = '{keyspace}'
              AND table_name   = '{table}'
@@ -1031,11 +1033,27 @@ phases:
         # multi-minute merges. min(ratio) reads the least-complete task —
         # the drain's true state; sum(progress) keeps the units/s gutter
         # moving whichever task is advancing.
+        # Per-kind, because the rows are NOT commensurable: the data
+        # compaction reports `unit=bytes` and the vector index build reports
+        # `unit=token range parts`. Summing across them added unlike
+        # quantities, and the total silently depended on how many tasks were
+        # registered when the sample landed — tier 16 reported ~12.5G against
+        # 45-58G for its neighbours purely because one task had deregistered
+        # by its last sample.
+        #
+        # The predicate belongs here rather than in the query: Cassandra
+        # allows GROUP BY only on PRIMARY KEY columns, and narrowing the
+        # poll's own WHERE would change which rows the drain waits for — the
+        # mistake that caused the flush-starvation storm (see the `raw:` note).
         capture:
           active_compactions: ":count"
           completion_ratio:   ":min(completion_ratio)"
-          progress:           ":sum(progress)"
-          total:              ":sum(total)"
+          # Vector index build — token range parts.
+          index_parts_done:   ":sum(progress where kind='secondary index build')"
+          index_parts_total:  ":sum(total where kind='secondary index build')"
+          # Data compaction — bytes.
+          data_bytes_done:    ":sum(progress where kind='compaction')"
+          data_bytes_total:   ":sum(total where kind='compaction')"
         # Live drain-speed cell, refreshed per poll iteration (the poll
         # wrapper republishes the during form each poll — the op itself
         # completes only once, at drain end). The phase's ✓ outcome line
@@ -1058,20 +1076,23 @@ phases:
           # Re-rendered after every poll against that poll's captures, so the
           # memo shows the live measured state of the drain instead of the
           # static `before:` text for the (potentially hours-long) wait.
-          memo: "finalize step 5/5 — {keyspace}.{table} compaction draining: ratio {completion_ratio}, {progress}/{total} units, {active_compactions} task(s) in flight | merging {segments} segment(s), index total {seg_mib_total} MiB (max {seg_mib_max} MiB)"
+          memo: "finalize step 5/5 — {keyspace}.{table} compaction draining: ratio {completion_ratio}, index {index_parts_done}/{index_parts_total} parts, data {data_bytes_done}/{data_bytes_total} bytes, {active_compactions} task(s) in flight | merging {segments} segment(s), index total {seg_mib_total} MiB (max {seg_mib_max} MiB)"
           # The measured fractional completion drives this phase's completion
           # bar/percentage (derived-progress override) — the cycle-based bar
           # would otherwise sit at 0% for the whole drain.
           progress: "{completion_ratio}"
         metrics:
-          compaction_completion_ratio: { kind: gauge, value: completion_ratio }
-          # Unit is token range parts (the 'secondary index build' task), not bytes.
-          compaction_progress_parts:   { kind: gauge, value: progress }
-          compaction_total_parts:      { kind: gauge, value: total }
-          compaction_pending_tasks:    { kind: gauge, value: active_compactions }
+          compaction_completion_ratio:   { kind: gauge, value: completion_ratio }
+          # Token range parts — the vector index build only.
+          compaction_index_parts_done:   { kind: gauge, value: index_parts_done }
+          compaction_index_parts_total:  { kind: gauge, value: index_parts_total }
+          # Bytes — the data compaction only.
+          compaction_data_bytes_done:    { kind: gauge, value: data_bytes_done }
+          compaction_data_bytes_total:   { kind: gauge, value: data_bytes_total }
+          compaction_pending_tasks:      { kind: gauge, value: active_compactions }
         memo:
           before: "finalize step 5/5 — waiting for {keyspace}.{table} vector index build to drain (await_empty; polls system_views.sstable_tasks kind='secondary index build' every 5s)"
-          after:  "finalize step 5/5 — {keyspace}.{table} index build at ratio {completion_ratio}, {progress}/{total} token range parts ({active_compactions} task(s) in flight)"
+          after:  "finalize step 5/5 — {keyspace}.{table} index build at ratio {completion_ratio}, {index_parts_done}/{index_parts_total} token range parts ({active_compactions} task(s) in flight)"
         request_timeout_ms: 60000
       # The completed-compaction counterpart to the live view above
       # (2026-07-28). `system_views.sstable_tasks` shows only what is RUNNING,
@@ -1492,7 +1513,7 @@ report:
       # For a FINISHED tier this is its age rather than its duration -- read
       # finalize_ms for that, which is exact. For the tier still running it is the
       # elapsed time, accurate to the second.
-      query: age: max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
+      query: age: max(tlast_over_time(compaction_index_parts_done[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
       # The live gauge already reaches a true 1.0: system_views.sstable_tasks
       # keeps a completed task listed for a while after it finishes (verified
       # on the node: kind=compaction at completion_ratio=1 alongside a still-
@@ -1514,8 +1535,9 @@ report:
       # A per-kind capture is not expressible today — capture aggregates are
       # `:min`/`:max`/`:sum` over a field with no predicate, and filtering the
       # poll's query by kind breaks the drain (see the `raw:` note above).
-      query: task_units_done: max(compaction_progress_parts) by (p)
-      query: task_units_total: max(compaction_total_parts) by (p)
+      query: index_parts_done: max(compaction_index_parts_done) by (p)
+      query: index_parts_total: max(compaction_index_parts_total) by (p)
+      query: data_bytes_done: max(compaction_data_bytes_done) by (p)
       # Throughput over elapsed-so-far, so a running tier reports the rate it is
       # achieving now instead of nothing. For a finished tier this equals the
       # completed rate; `finalize_ms` is kept beside it as the completion-time
@@ -1530,7 +1552,7 @@ report:
       # Task units (mixed, see above) over AGE (not duration) — so for a
       # finished tier the denominator keeps growing and this keeps falling.
       # Meaningful only for the tier currently running.
-      query: live_units_per_s: max(compaction_progress_parts) by (p) / (1000 * (max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)))
+      query: live_parts_per_s: max(compaction_index_parts_done) by (p) / (1000 * (max(tlast_over_time(compaction_index_parts_done[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)))
       # ONE finalize column, in h:m:s like `elapsed_time`.
       #
       # There were two — `finalize_seconds` (mean per-cycle SERVICE time) and
