@@ -1492,7 +1492,7 @@ report:
       # For a FINISHED tier this is its age rather than its duration -- read
       # finalize_ms for that, which is exact. For the tier still running it is the
       # elapsed time, accurate to the second.
-      query: elapsed_time: max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
+      query: age: max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
       # The live gauge already reaches a true 1.0: system_views.sstable_tasks
       # keeps a completed task listed for a while after it finishes (verified
       # on the node: kind=compaction at completion_ratio=1 alongside a still-
@@ -1500,8 +1500,22 @@ report:
       # before the row ages out. 186 of 187 stored samples for tier 0 are
       # exactly 1.0.
       query: done_pct: 100 * max(compaction_completion_ratio) by (p)
-      query: parts_done: max(compaction_progress_parts) by (p)
-      query: parts_total: max(compaction_total_parts) by (p)
+      # NOT "parts". This is `:sum(progress)` over EVERY task row registered
+      # at sample time, and those rows are in DIFFERENT UNITS: the data
+      # compaction reports `unit=bytes`, the vector index build reports
+      # `unit=token range parts`. So the number is a sum of unlike quantities,
+      # and its magnitude depends on how many tasks happened to be registered
+      # when the sample was taken.
+      #
+      # Tier 16 is the proof: every tier peaks at 2 concurrent tasks, but 16's
+      # final sample landed after one deregistered, so it reports ~12.5G where
+      # its neighbours report 45-58G. It did not do less work.
+      #
+      # A per-kind capture is not expressible today — capture aggregates are
+      # `:min`/`:max`/`:sum` over a field with no predicate, and filtering the
+      # poll's query by kind breaks the drain (see the `raw:` note above).
+      query: task_units_done: max(compaction_progress_parts) by (p)
+      query: task_units_total: max(compaction_total_parts) by (p)
       # Throughput over elapsed-so-far, so a running tier reports the rate it is
       # achieving now instead of nothing. For a finished tier this equals the
       # completed rate; `finalize_ms` is kept beside it as the completion-time
@@ -1513,7 +1527,10 @@ report:
       # On the long-running tier this table exists to measure, the live figure is
       # the only rate there is.
       query: index_bytes_per_ms: max(compaction_input_index_bytes) by (p) / max(time_to_index) by (p)
-      query: live_bytes_per_ms: max(compaction_progress_parts) by (p) / (1000 * (max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)))
+      # Task units (mixed, see above) over AGE (not duration) — so for a
+      # finished tier the denominator keeps growing and this keeps falling.
+      # Meaningful only for the tier currently running.
+      query: live_units_per_s: max(compaction_progress_parts) by (p) / (1000 * (max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)))
       # ONE finalize column, in h:m:s like `elapsed_time`.
       #
       # There were two — `finalize_seconds` (mean per-cycle SERVICE time) and
