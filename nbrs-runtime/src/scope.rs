@@ -3668,6 +3668,38 @@ mod tests {
             result.err());
     }
 
+    /// Localises the metric-wiring defect: when an op-template kernel is
+    /// materialised, does the synthesised `__metric_<name>` binding surface as
+    /// an output on THAT kernel? The metrics wrapper reads it through
+    /// `ctx.wires`, so if it is absent the wrapper reports
+    /// "did not resolve through ctx.wires".
+    #[test]
+    fn op_template_kernel_exposes_synthesised_metric_bindings() {
+        use nbrs_workload::model::MetricSpec;
+        let parent = parent_kernel_with_load();
+        let manifest = polydat::kernel::extract_manifest(parent.program())
+            .into_iter()
+            .map(|e| crate::runner::ManifestEntry {
+                name: e.name, port_type: e.port_type, modifier: e.modifier,
+            })
+            .collect::<Vec<_>>();
+        let mut op = op_with_body("m_op", "measured := add(cycle, 1)\n");
+        op.metrics.insert("bytes_out".to_string(), MetricSpec {
+            value: "measured".into(),
+            family: None, kind: None, unit: None, format: None,
+            cell: Default::default(),
+        });
+        let kernel = build_op_template_scope_kernel(
+            &op, &manifest, &parent,
+            &HashMap::new(),
+            Vec::new(), None, false, polydat::kernel::KernelOptLevel::Release, "test",
+        ).expect("op-template kernel builds");
+        let outs = kernel.program().output_names();
+        assert!(outs.contains(&"__metric_bytes_out"),
+            "the synthesised metric binding must be an output of the \
+             op-template kernel; outputs: {outs:?}");
+    }
+
     #[test]
     fn op_template_referencing_constant_output_is_accepted() {
         let parent = parent_kernel_with_load();

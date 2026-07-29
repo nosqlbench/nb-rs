@@ -212,6 +212,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
 
         match mode {
             OpMode::Raw => Ok(Box::new(raw::ScyllaRawDispenser::new(
+                                           parent.clone(),
                 self.session.clone(),
                 self.consistency,
                 stmt_text,
@@ -378,6 +379,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
 
                 match mode {
                     OpMode::Prepared => Ok(Box::new(prepared::ScyllaPreparedDispenser::new(
+                                                        parent.clone(),
                         self.session.clone(),
                         prepared_arc,
                         prepared_text,
@@ -441,6 +443,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
                                 op_modifier::ScyllaModifierFactory<scylla::statement::batch::Batch>
                             >(&parent, template.name.clone())?;
                         Ok(Box::new(batch::ScyllaBatchDispenser::new(
+                                        parent.clone(),
                             self.session.clone(),
                             prepared_arc,
                             prepared_text,

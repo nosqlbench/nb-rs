@@ -961,8 +961,14 @@ impl FiberBuilder {
         plan: &crate::fixture::PullPlan,
     ) -> crate::fixture::ResolvedPulls {
         match self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) {
-            Some(kernel) => plan.resolve(kernel.state()),
-            None => plan.resolve(self.main_kernel.state()),
+            Some(kernel) => {
+                plan.check_program_match(kernel.program(), template_idx);
+                plan.resolve(kernel.state())
+            }
+            None => {
+                plan.check_program_match(self.main_kernel.program(), template_idx);
+                plan.resolve(self.main_kernel.state())
+            }
         }
     }
 

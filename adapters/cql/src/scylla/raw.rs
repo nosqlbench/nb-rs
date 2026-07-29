@@ -20,6 +20,17 @@ use scylla::statement::{Consistency, Statement};
 use super::{ScyllaResultBody, format_cql_error, op_error};
 
 pub(super) struct ScyllaRawDispenser {
+    /// The op-template kernel this dispenser was mapped against
+    /// (SRD-13d §"op templates are scopes").
+    ///
+    /// Load-bearing, not decorative: the executor materialises one per-fiber
+    /// kernel per dispenser FROM this program, and the wrapper-side `PullPlan`
+    /// is built against the very same op-template program. Returning `None`
+    /// here leaves the per-op slot empty, the plan falls back to the phase
+    /// kernel, and its output indices then address the WRONG program — reading
+    /// a neighbouring metric where the index happens to be in range and
+    /// panicking the pull plan where it is not.
+    canonical_kernel: Arc<polydat::kernel::PolydatKernel>,
     session: Arc<Session>,
     consistency: Consistency,
     /// Original statement template, with `{name}` placeholders
@@ -35,16 +46,21 @@ pub(super) struct ScyllaRawDispenser {
 
 impl ScyllaRawDispenser {
     pub fn new(
+        canonical_kernel: Arc<polydat::kernel::PolydatKernel>,
         session: Arc<Session>,
         consistency: Consistency,
         stmt_template: String,
         modifiers: ModifierChain<Statement>,
     ) -> Self {
-        Self { session, consistency, stmt_template, modifiers }
+        Self { session, consistency, stmt_template, modifiers, canonical_kernel }
     }
 }
 
 impl OpDispenser for ScyllaRawDispenser {
+
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<polydat::kernel::PolydatKernel>> {
+        Some(&self.canonical_kernel)
+    }
     fn execute<'a>(
         &'a self,
         _cycle: u64,

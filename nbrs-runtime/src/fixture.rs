@@ -165,6 +165,47 @@ pub struct PullPlan {
 }
 
 impl PullPlan {
+    /// Assert this plan is being resolved against the program it was BUILT
+    /// against.
+    ///
+    /// A plan holds resolved indices, not names — `Output { output_idx: 7 }`.
+    /// Resolving it against a different program silently reindexes every read:
+    /// where the index happens to be in range it returns a NEIGHBOURING wire's
+    /// value (a different metric, reported under this one's name), and where it
+    /// is out of range it panics deep in the engine as
+    /// "index out of bounds", naming nothing that points back here.
+    ///
+    /// Both happened: a CQL dispenser that returned `None` from
+    /// `canonical_kernel()` left its per-op slot empty, so plans built against
+    /// the op-template program fell back to the phase kernel. One metric read
+    /// its phase's `__metric_time_to_index`; the next two panicked.
+    ///
+    /// The check is an `Arc` pointer comparison per op per cycle — cheaper than
+    /// the first index it protects.
+    pub(crate) fn check_program_match(
+        &self,
+        program: &Arc<PolydatProgram>,
+        template_idx: usize,
+    ) {
+        if Arc::ptr_eq(&self.program, program) {
+            return;
+        }
+        panic!(
+            "pull plan for op #{template_idx} was built against a different \
+             program than the kernel it is being resolved against — every \
+             index in it addresses the wrong wire.\n  \
+             plan program outputs:   {:?}\n  \
+             kernel program outputs: {:?}\n\
+             This is a wiring bug, not a workload error. The usual cause is a \
+             dispenser whose `canonical_kernel()` returns `None` (so no per-op \
+             kernel is materialised and the plan falls back to the phase \
+             kernel) — every leaf dispenser must return the op-template kernel \
+             it was mapped against.",
+            self.program.output_names(),
+            program.output_names(),
+        );
+    }
+
     /// Number of distinct names in this plan.
     pub fn len(&self) -> usize {
         self.entries.len()
