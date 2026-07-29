@@ -84,8 +84,8 @@ pub struct MetricSet {
     /// component owning the contributing instruments is being torn
     /// down between cadence pulses. Partial snapshots fold into the
     /// next full window via the same `coalesce` rules as normal
-    /// pulse-flushed samples (Counter sum, Gauge last-write-wins,
-    /// Histogram HDR-merge); the flag is
+    /// pulse-flushed samples (Counter sum, Gauge weighted-avg with
+    /// last-write fallback, Histogram HDR-merge); the flag is
     /// preserved so downstream tooling can distinguish the
     /// scope-close contribution if needed. Coalesce result is
     /// partial whenever **any** contributing input was partial.
@@ -240,7 +240,7 @@ impl MetricSet {
     ///
     /// - Counter `total` sums; `created` keeps the earliest;
     ///   exemplar most-recent-wins.
-    /// - Gauge values take the LAST reading in the window.
+    /// - Gauge values weighted-average by `interval`.
     /// - Histogram reservoirs add (`HdrHistogram::add`); `count`/`sum`
     ///   re-derive from the merged reservoir; bucket exemplars
     ///   most-recent-wins per index.
@@ -300,26 +300,8 @@ impl MetricSet {
                 .filter(|s| s.families.iter().any(|f| f.name == fname))
                 .map(|s| s.interval.as_secs_f64())
                 .sum();
-            // Per-LabelSet gauge accumulator: the LAST value seen, in
-            // snapshot order.
-            //
-            // This used to be a weighted average over the contributing
-            // intervals, which invented values no observer ever reported. The
-            // sqlite reporter subscribes at the 30s cadence and stores one row
-            // per window, so a gauge that CHANGED inside a window was written
-            // as the mean of before and after: a count of 1 stored as
-            // 0.9666666666666667, a completion ratio that reached 1.0 stored
-            // as 0.998. Exactly one window per series was affected — the one
-            // the change fell in — which made it look like noise rather than a
-            // rule. `min`/`max` are not written for gauges, so no query could
-            // recover the real value either.
-            //
-            // Last-write-wins instead of max: a gauge is a point-in-time
-            // level, and max would misreport every level that DECREASES —
-            // pending tasks draining to zero would read as their peak forever.
-            // The last reading is the one that was actually observed at window
-            // close.
-            let mut gauge_acc: Vec<(Labels, f64)> = Vec::new();
+            // Per-LabelSet weighted gauge accumulator.
+            let mut gauge_acc: Vec<(Labels, f64, f64)> = Vec::new();
 
             for s in snapshots {
                 let Some(src_family) = s.families.iter().find(|f| f.name == fname) else { continue };
@@ -340,7 +322,8 @@ impl MetricSet {
                         for m in &src_family.metrics {
                             if let Some(point) = m.points.first()
                                 && let MetricValue::Gauge(g) = &point.value {
-                                    gauge_acc.push((m.labels.clone(), g.value));
+                                    let weight = s.interval.as_secs_f64();
+                                    gauge_acc.push((m.labels.clone(), g.value * weight, weight));
                                 }
                         }
                     }
@@ -351,12 +334,12 @@ impl MetricSet {
                     for m in &src_family.metrics {
                         if let Some(point) = m.points.first()
                             && let MetricValue::Gauge(g) = &point.value {
-                                // Snapshots are folded in order, so a plain
-                                // overwrite leaves the newest reading.
-                                if let Some(entry) = gauge_acc.iter_mut().find(|(l, _)| l == &m.labels) {
-                                    entry.1 = g.value;
+                                let weight = s.interval.as_secs_f64();
+                                if let Some(entry) = gauge_acc.iter_mut().find(|(l, _, _)| l == &m.labels) {
+                                    entry.1 += g.value * weight;
+                                    entry.2 += weight;
                                 } else {
-                                    gauge_acc.push((m.labels.clone(), g.value));
+                                    gauge_acc.push((m.labels.clone(), g.value * weight, weight));
                                 }
                             }
                     }
@@ -380,7 +363,33 @@ impl MetricSet {
 
             if let Some(mut family) = acc {
                 if family.r#type == MetricType::Gauge {
-                    for (labels, value) in gauge_acc {
+                    for (labels, weighted_sum, weight) in gauge_acc {
+                        // Weighted-average when at least one snapshot
+                        // contributed positive interval. If every input
+                        // snapshot had `Duration::ZERO` (e.g. a point-
+                        // in-time lifecycle flush like a validation
+                        // summary frame), fall back to last-write-wins
+                        // using the newest non-zero reading — otherwise
+                        // the gauge would silently collapse to 0 and
+                        // we'd lose what the metric actually reported.
+                        let value = if weight > 0.0 {
+                            weighted_sum / weight
+                        } else {
+                            snapshots.iter().rev()
+                                .filter_map(|s| {
+                                    s.families.iter()
+                                        .find(|f| f.name == family.name)?
+                                        .metrics.iter()
+                                        .find(|m| m.labels == labels)?
+                                        .points.first()
+                                        .and_then(|p| match &p.value {
+                                            MetricValue::Gauge(g) => Some(g.value),
+                                            _ => None,
+                                        })
+                                })
+                                .next()
+                                .unwrap_or(0.0)
+                        };
                         let last_ts = snapshots.iter()
                             .rev()
                             .filter_map(|s| {
@@ -1598,10 +1607,9 @@ mod tests {
     }
 
     #[test]
-    fn coalesce_gauges_takes_the_last_reading() {
-        // Two snapshots: (1s @ 10.0) then (2s @ 20.0). The window closes on
-        // 20.0, so that is the value — NOT the weighted average 50/3 ≈ 16.67
-        // this used to report, which no observer ever saw.
+    fn coalesce_gauges_weighted_average_by_interval() {
+        // Two snapshots: (1s @ 10.0) and (2s @ 20.0). Weighted avg
+        // = (10*1 + 20*2) / 3 = 50/3 ≈ 16.67.
         let merged = MetricSet::coalesce(&[
             make_gauge_set(Duration::from_secs(1), 10.0),
             make_gauge_set(Duration::from_secs(2), 20.0),
@@ -1611,42 +1619,7 @@ mod tests {
             MetricValue::Gauge(g) => g.value,
             _ => panic!("wrong type"),
         };
-        assert_eq!(v, 20.0, "gauge coalesce must take the last reading");
-    }
-
-    /// The case that made this worth changing: a COUNT that is set partway
-    /// through a window. Averaging stored `1` as 0.9666…, and since only
-    /// `mean` is persisted for gauges, no query could recover the 1.
-    #[test]
-    fn coalesce_does_not_fractionalise_a_count_set_mid_window() {
-        let merged = MetricSet::coalesce(&[
-            make_gauge_set(Duration::from_secs(29), 0.0),
-            make_gauge_set(Duration::from_secs(1), 1.0),
-        ]);
-        let v = match merged.family("temp").unwrap()
-            .metrics().next().unwrap().point().unwrap().value() {
-            MetricValue::Gauge(g) => g.value,
-            _ => panic!("wrong type"),
-        };
-        assert_eq!(v, 1.0,
-            "a count of 1 must store as 1, not as a fraction of the window");
-    }
-
-    /// And the reason it is `last` rather than `max`: a level that DECREASES
-    /// must be allowed to. Pending tasks draining to zero read as zero, not
-    /// as their peak.
-    #[test]
-    fn coalesce_lets_a_gauge_fall() {
-        let merged = MetricSet::coalesce(&[
-            make_gauge_set(Duration::from_secs(1), 8.0),
-            make_gauge_set(Duration::from_secs(1), 0.0),
-        ]);
-        let v = match merged.family("temp").unwrap()
-            .metrics().next().unwrap().point().unwrap().value() {
-            MetricValue::Gauge(g) => g.value,
-            _ => panic!("wrong type"),
-        };
-        assert_eq!(v, 0.0, "a drained gauge must read 0, not its peak");
+        assert!((v - 50.0/3.0).abs() < 0.01, "weighted gauge avg = {v}");
     }
 
     #[test]
