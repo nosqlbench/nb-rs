@@ -194,6 +194,9 @@ fn render_metricsql_table(
     db_path: &Path,
     cfg: &SummaryConfig,
     format: &str,
+    // Table name, for diagnostics only — a `group_by` that matches nothing is
+    // reported against the table the operator named.
+    table_name: &str,
 ) -> Result<TableRendering, String> {
     use nbrs_metrics::queryapi::sqlite::SqliteDataSource;
     use nbrs_metricsql::eval::{EvalContext, evaluate};
@@ -243,6 +246,12 @@ fn render_metricsql_table(
     // along the same dimensions the plot's series do.
     let group_keys: &[String] = cfg.group_by.as_slice();
     let mut by_group: BTreeMap<String, Vec<Option<f64>>> = BTreeMap::new();
+    // Label keys the results actually carry, and how many series carried each
+    // `group_by` key. Collected during the fold that already walks every
+    // series, so the check below costs a set insert per label.
+    let mut labels_present: std::collections::BTreeSet<String> = Default::default();
+    let mut group_key_hits: BTreeMap<String, usize> = BTreeMap::new();
+    let mut series_seen: usize = 0;
     let n_cols = cfg.metricsql_columns.len();
     for (col_idx, (_col_name, expr)) in cfg.metricsql_columns.iter().enumerate() {
         let parsed = nbrs_metricsql::parse(expr)
@@ -250,6 +259,15 @@ fn render_metricsql_table(
         let series = evaluate(&ctx, &parsed)
             .map_err(|e| format!("evaluate '{expr}': {e}"))?;
         for s in series {
+            series_seen += 1;
+            for (k, _) in &s.labels {
+                labels_present.insert(k.clone());
+            }
+            for key in group_keys {
+                if s.labels.iter().any(|(k, _)| k == key) {
+                    *group_key_hits.entry(key.clone()).or_insert(0) += 1;
+                }
+            }
             let group_val: String = if group_keys.is_empty() {
                 String::new()
             } else {
@@ -295,6 +313,56 @@ fn render_metricsql_table(
     // absence means it is still going. Presence is the test rather than a
     // threshold on progress, because a progress gauge keeps its last polled value
     // after the work ends and can sit below 100 on a row that completed.
+    // A `group_by` key that no result carries is almost always a rename or a
+    // typo, and it fails SILENTLY: the fold above resolves a missing label to
+    // "" (`unwrap_or("")`), so every series lands under one key and the table
+    // renders a single row that LOOKS like data. That is how a tier label
+    // renamed `p` -> `part` turned 20 tiers into one blank-keyed row with no
+    // indication anything was wrong.
+    //
+    // Listing the labels that ARE present is the load-bearing half — seeing
+    // `p` sitting next to a `group_by: part` is the whole diagnosis.
+    //
+    // A warning, not an error: mid-run a metric may not have been emitted
+    // yet, and a table that renders with a caveat beats one that refuses.
+    for key in group_keys {
+        match group_key_hits.get(key).copied().unwrap_or(0) {
+            0 => {
+                // The evaluated series are no help here: `… by (part)` strips
+                // every label the aggregation did not group on, so a result
+                // that failed to group carries no labels at all. Ask the
+                // session what labels its instances actually have — that is
+                // the list with `p` in it, which is the answer.
+                let available: Vec<String> = conn
+                    .prepare("SELECT DISTINCT key FROM instance_label ORDER BY key")
+                    .and_then(|mut st| {
+                        st.query_map([], |r| r.get::<_, String>(0))?
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .unwrap_or_default();
+                let present = if available.is_empty() {
+                    labels_present.iter().cloned().collect::<Vec<_>>()
+                } else {
+                    available
+                };
+                eprintln!(
+                    "nbrs summary: table '{table_name}' groups by `{key}`, but no \
+                     result series carries that label — {series} series collapsed \
+                     into {rows} row(s). Labels in this session: {present}",
+                    series = series_seen,
+                    rows = by_group.len(),
+                    present = present.join(", "),
+                );
+            }
+            hits if hits < series_seen => eprintln!(
+                "nbrs summary: table '{table_name}' groups by `{key}`, but only \
+                 {hits} of {series_seen} result series carry it; the rest are \
+                 grouped under an empty key."
+            ),
+            _ => {}
+        }
+    }
+
     let state_by_group: std::collections::BTreeMap<String, bool> = match &cfg.state_query {
         None => Default::default(),
         Some(expr) => {
@@ -941,7 +1009,7 @@ pub fn summary_command(args: &[String]) {
         // dedicated renderer; legacy DSL tables stay on the
         // SqliteReporter path.
         let rendered = if !cfg.metricsql_columns.is_empty() {
-            match render_metricsql_table(&db_path, cfg, &format) {
+            match render_metricsql_table(&db_path, cfg, &format, name) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("nbrs summary: metricsql table '{name}' failed: {e}");
