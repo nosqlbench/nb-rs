@@ -82,16 +82,7 @@ impl ConditionalDispenser {
 }
 
 /// Test whether a resolved field value is truthy.
-fn is_truthy(value: &polydat::ast::Value) -> bool {
-    match value {
-        polydat::ast::Value::None => false,
-        polydat::ast::Value::U64(v) => *v != 0,
-        polydat::ast::Value::F64(v) => *v != 0.0,
-        polydat::ast::Value::Bool(v) => *v,
-        polydat::ast::Value::Str(s) => !s.is_empty(),
-        _ => true,
-    }
-}
+
 
 impl WrappingDispenser for ConditionalDispenser {}
 
@@ -106,7 +97,7 @@ impl OpDispenser for ConditionalDispenser {
             // the cycle's ResolvedPulls. Adapter never sees the
             // condition — it's not in fields, so no strip step.
             let value = ctx.pulls.get(self.condition_handle);
-            if !is_truthy(value) {
+            if !crate::wrappers::condition::is_truthy(value) {
                 self.metrics.skips_total.inc();
                 return Ok(OpResult::skipped());
             }

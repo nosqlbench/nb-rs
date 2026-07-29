@@ -1006,11 +1006,13 @@ pub struct Activity {
 /// or timeout) or rewind and run another iteration.
 #[derive(Clone)]
 pub struct PhasePollContext {
-    /// Handle to the phase scope kernel. The fiber loop
-    /// calls `kernel.lookup("__poll_until")` after each
-    /// iteration; a `Value::Bool(true)` ends the loop. Any
-    /// other result (false, None, missing) keeps iterating
-    /// until the wall-clock deadline.
+    /// Handle to the phase scope kernel. After each iteration the fiber loop
+    /// resolves [`crate::wrappers::condition::UNTIL_BINDING`] through
+    /// `CycleWires` over the per-fiber kernel — the same call an op-level
+    /// `poll:` makes — and ends the loop when it reads truthy per
+    /// [`crate::wrappers::condition::is_truthy`]. `lookup` would not do: the
+    /// predicate is a DYNAMIC binding fed by per-iteration capture writes, so
+    /// it has to be pulled or it returns the last-evaluated value forever.
     pub kernel: Arc<polydat::kernel::PolydatKernel>,
     /// Sleep between iterations (after a predicate check
     /// returns "not done").
@@ -2009,6 +2011,14 @@ impl Activity {
                                 // makes the final sample say what the view no
                                 // longer can.
                                 let on_done = crate::wrappers::poll::parse_on_done(cfg);
+                                // `until:` — a polydat predicate replacing the
+                                // row-count window. Scope synthesis lowered the
+                                // expression into this node's kernel; the
+                                // wrapper only needs to know that it exists.
+                                let until = cfg
+                                    .and_then(|m| m.get("until"))
+                                    .and_then(|v| v.as_str())
+                                    .is_some_and(|s| !s.trim().is_empty());
                                 let (each_gutter, _) = crate::wrappers::gutter::parse_specs(
                                     template.params.get("gutter"));
                                 let (d, _pm) = crate::wrappers::PollingDispenser::wrap_with_status(
@@ -2018,11 +2028,14 @@ impl Activity {
                                     each_gutter, Some(activity.gutter.clone()),
                                     Some(poll_iteration_gauges.clone()),
                                     on_done.clone(),
+                                    until,
                                     activity.stop_view(),
                                 );
                                 crate::diag!(crate::observer::LogLevel::Debug,
-                                    "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={}, rows=[{}..={}], json_path={:?}, on_done={:?})",
-                                    template.name, interval, timeout, max_error_retries, min_rows, max_rows, json_path,
+                                    "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={}, done_on={}, json_path={:?}, on_done={:?})",
+                                    template.name, interval, timeout, max_error_retries,
+                                    if until { "until-predicate".to_string() } else { format!("rows=[{min_rows}..={max_rows}]") },
+                                    json_path,
                                     on_done.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>());
                                 current = d;
                                 false
@@ -3672,15 +3685,26 @@ async fn executor_task(
                     // is wired to the SAME SharedCells the
                     // captures wrote to (so its pull returns
                     // the live value).
+                    // SAME call the op-level poll makes. An execution node is
+                    // an execution node: the predicate is resolved through one
+                    // interface (`CycleWires`, which PULLS and so re-evaluates
+                    // a dynamic binding) and judged by one truthiness rule.
+                    //
+                    // This was a third, divergent implementation — an inline
+                    // match whose `_ => false` arm made a non-empty string
+                    // falsy here and truthy under `if:` / `while:` / op-poll,
+                    // for the same expression.
                     let satisfied = {
-                        let predicate_value = fiber.main_kernel_mut()
-                            .pull("__poll_until")
-                            .clone();
-                        match predicate_value {
-                            polydat::ast::Value::Bool(b) => b,
-                            polydat::ast::Value::U64(n) => n != 0,
-                            polydat::ast::Value::F64(n) => n != 0.0,
-                            _ => false,
+                        let wires = crate::wires::CycleWires::new(fiber.main_kernel_mut());
+                        match crate::wrappers::condition::holds(
+                            &wires, crate::wrappers::condition::UNTIL_BINDING)
+                        {
+                            Some(v) => v,
+                            // Unresolved is a wiring fault, not a false
+                            // predicate. Keep waiting rather than silently
+                            // declaring the phase done; the timeout below
+                            // reports it with the predicate named.
+                            None => false,
                         }
                     };
                     if satisfied {

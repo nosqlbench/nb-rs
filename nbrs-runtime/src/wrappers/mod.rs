@@ -52,6 +52,8 @@
 // SRD-82/92 — the first PHASE-level wrapper. Unlike the rest it is not an
 // `OpDispenser`: a phase layer wraps the phase seam (`PhaseShell::run`), so
 // there is no dispenser type to re-export.
+// The one predicate mechanism, shared by `if:` / `while:` / `poll:`.
+pub mod condition;
 pub mod interval;
 pub mod dryrun;
 pub use dryrun::DryRunWrapper;

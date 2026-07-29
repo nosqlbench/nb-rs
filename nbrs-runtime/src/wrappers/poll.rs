@@ -178,6 +178,15 @@ pub struct PollingDispenser {
     /// dispenser is built (metrics wraps outside poll), hence the
     /// late-bound swap; empty/`None` when the op has no metrics.
     iteration_gauges: Option<Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>>>,
+    /// When set, the poll is DONE the first time this predicate reads truthy,
+    /// and the row-count window is not consulted.
+    ///
+    /// The predicate itself lives in the executing node's kernel under
+    /// [`crate::wrappers::condition::UNTIL_BINDING`], put there by scope
+    /// synthesis. This wrapper never learns whether that kernel belongs to an
+    /// op template or a phase — it reads one wire through `ctx.wires`, and
+    /// scoping decides which binding answers.
+    until: bool,
     /// Values written to the wires on the TERMINATING poll only,
     /// as `(wire_name, expression)` pairs from `poll.on_done:`.
     ///
@@ -250,7 +259,7 @@ impl PollingDispenser {
         Self::wrap_with_status(
             inner, poll_interval_ms, timeout_ms, max_error_retries,
             metric_name, min_rows, max_rows, json_path,
-            None, None, None, None, None, None, None, Vec::new(),
+            None, None, None, None, None, None, None, Vec::new(), false,
             crate::session_signals::StopView::default(),
         )
     }
@@ -280,6 +289,7 @@ impl PollingDispenser {
         gutter_state: Option<Arc<arc_swap::ArcSwapOption<crate::wrappers::gutter::GutterSpec>>>,
         iteration_gauges: Option<Arc<arc_swap::ArcSwapOption<Vec<crate::wrappers::metrics::MetricSlot>>>>,
         on_done: Vec<(String, String)>,
+        until: bool,
         stop: crate::session_signals::StopView,
     ) -> (Arc<dyn OpDispenser>, Arc<PollingMetrics>) {
         let metrics = Arc::new(PollingMetrics::new());
@@ -300,6 +310,7 @@ impl PollingDispenser {
             gutter_state,
             iteration_gauges,
             on_done,
+            until,
             stop,
             metrics: metrics.clone(),
         });
@@ -504,7 +515,31 @@ impl OpDispenser for PollingDispenser {
                     (Some(body), None) => body.element_count(),
                     (None, _) => 0,
                 };
-                let is_done = row_count >= self.min_rows && row_count <= self.max_rows;
+                // A declared `until:` REPLACES the row-count window: the
+                // workload stated the completion condition, so counting rows
+                // would be second-guessing it. An unresolved predicate is a
+                // wiring fault, not a false one — failing loudly beats
+                // spinning to the timeout with no explanation.
+                let is_done = if self.until {
+                    match crate::wrappers::condition::holds(
+                        ctx.wires, crate::wrappers::condition::UNTIL_BINDING)
+                    {
+                        Some(done) => done,
+                        None => {
+                            return Err(ExecutionError::Op(crate::adapter::AdapterError {
+                                error_name: "poll_until_unresolved".into(),
+                                message: format!(
+                                    "poll `until:` predicate did not resolve through \
+                                     ctx.wires (binding '{}') — scope synthesis should \
+                                     have lowered it into this node's kernel",
+                                    crate::wrappers::condition::UNTIL_BINDING),
+                                retryable: false,
+                            }));
+                        }
+                    }
+                } else {
+                    row_count >= self.min_rows && row_count <= self.max_rows
+                };
 
                 self.metrics.poll_metric.store(row_count, std::sync::atomic::Ordering::Relaxed);
 
@@ -832,6 +867,7 @@ mod status_publish_tests {
             gutter_state: None,
             iteration_gauges: None,
             on_done: Vec::new(),
+            until: false,
             stop: crate::session_signals::StopView::default(),
             metrics: Arc::new(PollingMetrics::new()),
         }

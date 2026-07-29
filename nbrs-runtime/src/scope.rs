@@ -1829,6 +1829,17 @@ pub fn build_op_template_scope_kernel(
             }
         }
     }
+    // Poll predicate. `poll.until:` lowers to the SAME binding name the
+    // phase-level poll uses (`condition::UNTIL_BINDING`), in the op's own
+    // kernel — so the poll wrapper reads one wire and never asks which kind of
+    // node it is running under. Ordinary scoping does the rest: an op's
+    // predicate shadows its phase's, as any other wire would.
+    if let Some(until) = template_poll_until(op) {
+        result_source.push_str(&format!(
+            "{} := {until}\n",
+            crate::wrappers::condition::UNTIL_BINDING,
+        ));
+    }
     // While-wrapper predicate. Synthesised as `__while := <expr>`
     // so `add_result_bindings` walks the expression, injects
     // magic externs for any captured wires it references, and
@@ -1875,6 +1886,21 @@ pub fn build_op_template_scope_kernel(
 /// at cycle time via `ctx.wires.get` — the prefix keeps these
 /// internal bindings from colliding with workload-declared output
 /// names and lets diagnostic surfaces filter them out by prefix.
+/// The `until:` expression from an op's `poll:` map, if it declared one.
+///
+/// Returns `None` for the row-count form (`mode` / `min_rows` / `max_rows`),
+/// which stays supported — a workload that counts rows keeps working and a
+/// workload that states a condition gets the condition.
+fn template_poll_until(op: &nbrs_workload::model::ParsedOp) -> Option<String> {
+    op.params
+        .get("poll")?
+        .as_object()?
+        .get("until")?
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 pub fn synthesize_metric_binding_name(metric_name: &str) -> String {
     format!("__metric_{metric_name}")
 }
@@ -4400,7 +4426,8 @@ extern keyspace: String
         // RHS references resolve through the local shared
         // declarations before the dynamic binding evaluates).
         let shared_pos = src.find("shared sstables").expect("shared sstables present");
-        let until_pos = src.find("__poll_until").expect("__poll_until present");
+        let until_binding = crate::wrappers::condition::UNTIL_BINDING;
+        let until_pos = src.find(until_binding).expect("poll predicate binding present");
         assert!(shared_pos < until_pos,
             "shared captures must precede __poll_until in the synthesized source");
     }

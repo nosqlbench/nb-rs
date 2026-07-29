@@ -147,16 +147,7 @@ impl WhileWrapper {
 /// `ConditionalDispenser::is_truthy` — the two wrappers
 /// share a semantic: 0/false/empty-string/None is falsy,
 /// everything else is truthy.
-fn is_truthy(value: &polydat::ast::Value) -> bool {
-    match value {
-        polydat::ast::Value::None => false,
-        polydat::ast::Value::U64(v) => *v != 0,
-        polydat::ast::Value::F64(v) => *v != 0.0,
-        polydat::ast::Value::Bool(v) => *v,
-        polydat::ast::Value::Str(s) => !s.is_empty(),
-        _ => true,
-    }
-}
+
 
 impl WrappingDispenser for WhileWrapper {}
 
@@ -189,7 +180,7 @@ impl OpDispenser for WhileWrapper {
                     return Ok(last_result.unwrap_or_else(OpResult::skipped));
                 }
                 let cond = ctx.pulls.get(self.cond_handle);
-                if !is_truthy(cond) {
+                if !crate::wrappers::condition::is_truthy(cond) {
                     return Ok(last_result.unwrap_or_else(OpResult::skipped));
                 }
                 match self.inner.execute(cycle, ctx).await {
@@ -209,28 +200,12 @@ impl OpDispenser for WhileWrapper {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
-    // is_truthy unit tests — mirrors ConditionalDispenser's
-    // truthy semantics so a regression in either wrapper
-    // surfaces here too.
-    #[test]
-    fn is_truthy_handles_value_variants() {
-        use polydat::ast::Value;
-        assert!(!is_truthy(&Value::None));
-        assert!(!is_truthy(&Value::U64(0)));
-        assert!(is_truthy(&Value::U64(1)));
-        assert!(!is_truthy(&Value::F64(0.0)));
-        assert!(is_truthy(&Value::F64(1.5)));
-        assert!(is_truthy(&Value::F64(-1.0)));  // non-zero
-        assert!(!is_truthy(&Value::Bool(false)));
-        assert!(is_truthy(&Value::Bool(true)));
-        assert!(!is_truthy(&Value::Str(String::new().into())));
-        assert!(is_truthy(&Value::Str(<std::sync::Arc<str>>::from("anything"))));
-    }
+    // Truthiness itself is not tested here — it lives in
+    // `super::condition` and is tested there. Duplicating it was how the two
+    // implementations drifted apart in the first place.
 
-    // Proptest F4 — termination bounds. With a finite iteration
-    // ceiling and a stuck-truthy predicate, every loop terminates
+    // The `while` loop halts: given a ceiling and a stop flag, the loop exits
     // after at most `ceiling` iterations. Models the wrapper's
     // loop bookkeeping synchronously (no tokio) since the
     // arithmetic is what we're exercising.
