@@ -58,6 +58,9 @@ pub struct TraversingDispenser {
     /// Capture points parsed from the template at init time.
     /// Empty if no captures are declared.
     captures: Vec<bindpoints::CapturePoint>,
+    /// The op's `traverse:` block, if it declared one. Absent means defaults —
+    /// the layer is always installed, so this only tunes it.
+    spec: Option<nbrs_workload::model::TraverseSpec>,
 }
 
 impl TraversingDispenser {
@@ -76,6 +79,7 @@ impl TraversingDispenser {
             inner,
             stats,
             captures: template.captures.clone(),
+            spec: template.traverse.clone(),
         })
     }
 }
@@ -98,14 +102,38 @@ impl TraversingDispenser {
 /// The body's `.to_json()` form is the source of truth — adapters
 /// that produce typed-row data render to a JSON array of row
 /// objects.
+#[cfg(test)]
 fn extract_captures_from_json(
     body: &dyn crate::adapter::ResultBody,
     specs: &[bindpoints::CapturePoint],
 ) -> HashMap<String, polydat::ast::Value> {
+    extract_captures_rooted(body, specs, None)
+}
+
+/// As [`extract_captures_from_json`], with an optional `traverse.path:` base
+/// pointer applied to the body FIRST.
+///
+/// Re-roots the document rather than prefixing each capture: every capture
+/// then addresses relative to the base, which is the whole point of the knob
+/// (`{value, status, …}` envelopes force the same prefix onto every capture).
+/// A base that does not resolve yields no captures at all — the caller's
+/// `on_missing` policy decides whether that is worth saying out loud.
+fn extract_captures_rooted(
+    body: &dyn crate::adapter::ResultBody,
+    specs: &[bindpoints::CapturePoint],
+    base: Option<&str>,
+) -> HashMap<String, polydat::ast::Value> {
     if specs.is_empty() {
         return HashMap::new();
     }
-    let json = body.to_json();
+    let full = body.to_json();
+    let json = match base.filter(|b| !b.is_empty()) {
+        None => full,
+        Some(b) => match full.pointer(b) {
+            Some(sub) => sub.clone(),
+            None => return HashMap::new(),
+        },
+    };
     let mut captures = HashMap::new();
     for spec in specs {
         // Declarative `capture:` block form: JSON-Pointer path
@@ -338,7 +366,46 @@ impl OpDispenser for TraversingDispenser {
             // them through wires.get on the same cycle.
             if !self.captures.is_empty()
                 && let Some(body) = &result.body {
-                    let extracted = extract_captures_from_json(body.as_ref(), &self.captures);
+                    let base = self.spec.as_ref().and_then(|s| s.path.as_deref());
+                    let extracted = extract_captures_rooted(
+                        body.as_ref(), &self.captures, base);
+                    // `on_missing:` — a capture that resolved to nothing reads
+                    // exactly like one that measured an absence, which is how a
+                    // renamed column or a changed schema hides. Default stays
+                    // `ignore` so existing workloads are unaffected.
+                    let policy = self.spec.as_ref()
+                        .map(|s| s.on_missing)
+                        .unwrap_or_default();
+                    if !matches!(policy, nbrs_workload::model::OnMissing::Ignore) {
+                        for cp in &self.captures {
+                            let missing = match extracted.get(&cp.as_name) {
+                                None => true,
+                                Some(polydat::ast::Value::None) => true,
+                                Some(_) => false,
+                            };
+                            if !missing { continue; }
+                            let detail = format!(
+                                "op capture '{}' resolved to nothing{}",
+                                cp.as_name,
+                                match base {
+                                    Some(b) => format!(" (traverse path '{b}')"),
+                                    None => String::new(),
+                                });
+                            match policy {
+                                nbrs_workload::model::OnMissing::Warn => crate::diag!(
+                                    crate::observer::LogLevel::Warn, "{detail}"),
+                                nbrs_workload::model::OnMissing::Error => {
+                                    return Err(ExecutionError::Op(
+                                        crate::adapter::AdapterError {
+                                            error_name: "capture_missing".into(),
+                                            message: detail,
+                                            retryable: false,
+                                        }));
+                                }
+                                nbrs_workload::model::OnMissing::Ignore => {}
+                            }
+                        }
+                    }
                     for (name, value) in extracted {
                         let _ = ctx.wires.write(&name, value);
                     }
@@ -472,6 +539,54 @@ mod tests {
             agg: None,
             row_filter: None,
         }
+    }
+
+    /// `traverse.path:` re-roots the body, so a capture addresses relative to
+    /// it instead of repeating the envelope prefix on every line.
+    #[test]
+    fn traverse_path_re_roots_the_document() {
+        let body = JsonBody(serde_json::json!({
+            "status": 200,
+            "value": [{"progress": 7u64}],
+        }));
+        let spec = |name: &str, path: &str| bindpoints::CapturePoint {
+            source_name: name.into(),
+            as_name: name.into(),
+            cast_type: None,
+            slurp: false,
+            path: Some(path.to_string()),
+            count: false,
+            agg: None,
+            row_filter: None,
+        };
+        // Without the base, the capture must carry the whole prefix.
+        let long = extract_captures_rooted(
+            &body, &[spec("p", "/value/0/progress")], None);
+        assert_eq!(long["p"].as_u64(), 7);
+
+        // With it, the same value is addressed relative to `/value`.
+        let short = extract_captures_rooted(
+            &body, &[spec("p", "/0/progress")], Some("/value"));
+        assert_eq!(short["p"].as_u64(), 7);
+    }
+
+    /// A base path that does not resolve yields no captures — the caller's
+    /// `on_missing` decides whether that is worth saying out loud.
+    #[test]
+    fn an_unresolvable_traverse_path_yields_nothing() {
+        let body = JsonBody(serde_json::json!({"value": 1}));
+        let spec = bindpoints::CapturePoint {
+            source_name: "x".into(),
+            as_name: "x".into(),
+            cast_type: None,
+            slurp: false,
+            path: Some("/x".into()),
+            count: false,
+            agg: None,
+            row_filter: None,
+        };
+        let caps = extract_captures_rooted(&body, &[spec], Some("/nonesuch"));
+        assert!(caps.is_empty(), "unresolvable base must not invent values");
     }
 
     /// The same shape, folded PER KIND. Summing across the two rows adds

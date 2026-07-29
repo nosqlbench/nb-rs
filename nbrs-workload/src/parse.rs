@@ -1783,6 +1783,7 @@ fn normalize_op_entry(
             let mut op_fields = HashMap::new();
             op_fields.insert("stmt".to_string(), JVal::Array(arr.clone()));
             let mut op = ParsedOp {
+                traverse: None,
                 name: key.to_string(),
                 description: None,
                 op: op_fields,
@@ -1880,7 +1881,7 @@ fn normalize_op_object(
     // returns `None` from `known_op_fields()` (open vocabulary)
     // which masked this for the existing workloads.
     let reserved = ["name", "description", "desc", "bindings", "params", "tags", "if", "delay",
-        "evaluations", "capture", "metrics", "result",
+        "evaluations", "capture", "metrics", "result", "traverse",
         // Daemon-op declaration + loop / rate primitives:
         // consumed by the runtime in normalize_op_object below;
         // mustn't fall through to the adapter's op-fields surface
@@ -2102,6 +2103,7 @@ fn normalize_op_object(
 
     let metrics = parse_metrics_field(map.get("metrics"), &name, &mut op_bindings)
         .map_err(|e| format!("op '{name}' metrics: {e}"))?;
+    let traverse = parse_traverse_field(map.get("traverse"), &name)?;
     let result = parse_result_field(map.get("result"), &name)
         .map_err(|e| format!("op '{name}' result: {e}"))?;
 
@@ -2181,6 +2183,7 @@ fn normalize_op_object(
     }
 
     Ok(ParsedOp {
+        traverse,
         name,
         description,
         op: op_fields,
@@ -2756,6 +2759,60 @@ fn has_binding_named(src: &str, name: &str) -> bool {
 ///   `ResultSpec` (recursively); fragments concatenate.
 /// - **Mapping** — named-key short-forms; each value is a
 ///   string parsed as `count` / `ok` / path-expr / Polydat expr.
+/// Parse an op's `traverse:` block.
+///
+/// Customises the always-installed traversal layer; it does not select it, so
+/// absence means "defaults", not "no traversal". Unknown keys are rejected
+/// rather than dropped — a silently ignored `on_missing:` would leave the
+/// author believing absent captures are being policed when they are not.
+fn parse_traverse_field(
+    val: Option<&JVal>,
+    op_name: &str,
+) -> Result<Option<crate::model::TraverseSpec>, String> {
+    use crate::model::{OnMissing, TraverseSpec};
+    let Some(v) = val else { return Ok(None) };
+    let JVal::Object(map) = v else {
+        return Err(format!(
+            "op '{op_name}' traverse: expected a mapping, got {v:?}"));
+    };
+    const KNOWN: &[&str] = &["path", "on_missing"];
+    for k in map.keys() {
+        if !KNOWN.contains(&k.as_str()) {
+            return Err(format!(
+                "op '{op_name}' traverse: unknown field `{k}`. Recognised \
+                 fields: path, on_missing"));
+        }
+    }
+    let path = match map.get("path") {
+        None => None,
+        Some(JVal::String(p)) => {
+            let p = p.trim();
+            if !p.is_empty() && !p.starts_with('/') {
+                return Err(format!(
+                    "op '{op_name}' traverse: path '{p}' must start with '/' \
+                     (RFC 6901 JSON-Pointer); an empty path addresses the root"));
+            }
+            Some(p.to_string())
+        }
+        Some(other) => return Err(format!(
+            "op '{op_name}' traverse: path expected a string, got {other:?}")),
+    };
+    let on_missing = match map.get("on_missing") {
+        None => OnMissing::default(),
+        Some(JVal::String(s)) => match s.trim().to_ascii_lowercase().as_str() {
+            "ignore" => OnMissing::Ignore,
+            "warn" => OnMissing::Warn,
+            "error" | "fail" => OnMissing::Error,
+            other => return Err(format!(
+                "op '{op_name}' traverse: on_missing '{other}': expected one of \
+                 ignore / warn / error")),
+        },
+        Some(other) => return Err(format!(
+            "op '{op_name}' traverse: on_missing expected a string, got {other:?}")),
+    };
+    Ok(Some(TraverseSpec { path, on_missing }))
+}
+
 fn parse_result_field(
     val: Option<&JVal>,
     op_name: &str,

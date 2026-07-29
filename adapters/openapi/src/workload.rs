@@ -88,6 +88,7 @@ pub fn generate_ops(
         }
 
         let parsed = ParsedOp {
+            traverse: None,
             name: api_op.operation_id.clone(),
             description: if api_op.summary.is_empty() { None } else { Some(api_op.summary.clone()) },
             op: op_fields,

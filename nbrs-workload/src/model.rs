@@ -1677,6 +1677,11 @@ pub struct ParsedOp {
     /// no-op for this op.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<ResultSpec>,
+    /// Optional `traverse:` block — CUSTOMISES the always-installed result
+    /// traversal layer; it does not select it. Like `result:`, absence means
+    /// "default behaviour", not "no traversal".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traverse: Option<TraverseSpec>,
     /// SRD-32a Push 3 — per-op wrapper-composition override.
     /// When present, this op uses the named order instead of
     /// the workload-root or runtime-default tiebreaker order.
@@ -2241,6 +2246,44 @@ mod daemon_spec_tests {
     }
 }
 
+/// `traverse:` — knobs on the result-traversal layer.
+///
+/// The layer itself is always installed (`result:` and `metrics:` declare it
+/// as `requires_inner`, and the composition resolver enforces that at init),
+/// so this block only tunes behaviour that is otherwise fixed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraverseSpec {
+    /// Base JSON Pointer (RFC 6901) applied to the result body BEFORE any
+    /// capture is resolved, re-rooting the document.
+    ///
+    /// Every capture otherwise repeats the same prefix — `/value/0/x`,
+    /// `/value/0/y` — which is the shape envelope responses force
+    /// (`{value, status, …}`). `poll.json_path` already exists for exactly
+    /// this reason on exactly this data; this is the same idea for captures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// What to do when a declared capture resolves to nothing.
+    #[serde(default)]
+    pub on_missing: OnMissing,
+}
+
+/// Policy for a capture that resolved to nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnMissing {
+    /// Bind `None` and continue — the historical behaviour, and the default
+    /// so existing workloads are unaffected.
+    #[default]
+    Ignore,
+    /// Log it. For a capture that is legitimately sometimes absent but whose
+    /// absence you still want to see.
+    Warn,
+    /// Fail the op. For a capture whose absence means the query or the schema
+    /// changed under you — which otherwise reads identically to "measured,
+    /// and it was absent".
+    Error,
+}
+
 /// SRD-40b §1 schema for one synthetic-metric declaration on
 /// an op template.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2454,6 +2497,7 @@ impl ParsedOp {
         let mut op = HashMap::new();
         op.insert("stmt".to_string(), serde_json::Value::String(stmt.to_string()));
         Self {
+            traverse: None,
             name: name.to_string(),
             description: None,
             op,
