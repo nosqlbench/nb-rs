@@ -853,20 +853,6 @@ phases:
       volatile now_ms := current_epoch_millis()
     metrics:
       time_to_index: { kind: gauge, value: "now_ms - phase_start" }
-      # The terminal completion signal, and the reason the table can show a
-      # finished tier as actually finished.
-      #
-      # The live `compaction_completion_ratio` gauge cannot do it: it is sampled
-      # every cadence tick and coalesced as a weighted MEAN over the interval,
-      # so every sub-1.0 sample taken while the drain was still running dilutes
-      # it permanently — a tier that finished cleanly reads 99.88%, and no
-      # amount of publishing 1.0 at the end changes that, because the end is one
-      # sample among many.
-      #
-      # A phase-level metric is emitted ONCE, at phase completion, so there is
-      # nothing for the mean to dilute it against. Reaching this line at all
-      # means the finalize phase completed for this tier.
-      compaction_final_ratio: { kind: gauge, value: "1.0" }
     ops:
       flush:
         adapter: http
@@ -1077,16 +1063,6 @@ phases:
           # bar/percentage (derived-progress override) — the cycle-based bar
           # would otherwise sit at 0% for the whole drain.
           progress: "{completion_ratio}"
-          # Proxied completion measurement (2026-07-28). system_views.sstable_tasks
-          # lists RUNNING tasks only, so the observation that ends this poll is an
-          # empty read — the finished tier's row, and its ratio, are gone. Without
-          # this the last sample ever published for a tier is its final incomplete
-          # one, and the report's `max(compaction_completion_ratio) by (p)` shows a
-          # long-finished tier at 93%. `active_compactions` (":count" over zero
-          # rows) correctly publishes 0 on the same sample; only the ratio needs
-          # the proxy, since "no rows" cannot say what the rows would have said.
-          on_done:
-            completion_ratio: 1.0
         metrics:
           compaction_completion_ratio: { kind: gauge, value: completion_ratio }
           # Unit is token range parts (the 'secondary index build' task), not bytes.
@@ -1517,15 +1493,13 @@ report:
       # finalize_ms for that, which is exact. For the tier still running it is the
       # elapsed time, accurate to the second.
       query: elapsed_time: max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
-      # Prefer the phase-emitted terminal ratio, falling back to the live one.
-      # The live gauge cannot read 100 for a finished tier no matter what the
-      # poll publishes: it is sampled per cadence and coalesced as a weighted
-      # MEAN, so the sub-1.0 samples from before the drain finished dilute it
-      # forever (99.88%). `compaction_final_ratio` is a phase-level metric —
-      # one sample, emitted once at phase completion — so there is nothing to
-      # average it against. `or` keeps the live value for the tier still
-      # running, which has no terminal sample yet.
-      query: done_pct: 100 * (max(compaction_final_ratio) by (p) or max(compaction_completion_ratio) by (p))
+      # The live gauge already reaches a true 1.0: system_views.sstable_tasks
+      # keeps a completed task listed for a while after it finishes (verified
+      # on the node: kind=compaction at completion_ratio=1 alongside a still-
+      # running index build), so the drain's polls capture the finished state
+      # before the row ages out. 186 of 187 stored samples for tier 0 are
+      # exactly 1.0.
+      query: done_pct: 100 * max(compaction_completion_ratio) by (p)
       query: parts_done: max(compaction_progress_parts) by (p)
       query: parts_total: max(compaction_total_parts) by (p)
       # Throughput over elapsed-so-far, so a running tier reports the rate it is

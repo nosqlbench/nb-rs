@@ -264,23 +264,27 @@ fn render_metricsql_table(
                     .collect::<Vec<_>>()
                     .join("|")
             };
-            // Mean across every sample in the evaluation
-            // window — matches the plot renderer's
-            // `bucket_rows`+`aggregate(mean, …)` pipeline so
-            // a companion table shows the same number the
-            // plot's curve sits at. Previously we took the
-            // latest sample, which silently diverged from
-            // the plot whenever the time series wasn't
-            // perfectly flat across the run window.
-            let finite: Vec<f64> = s.samples.iter()
+            // The cell is the value the COLUMN'S EXPRESSION computed — the
+            // last sample it produced. The renderer does not reduce.
+            //
+            // It used to take the mean of every sample in the window, to make
+            // a table cell match the curve of a companion plot. That silently
+            // overrode what each column asked for: `max(compaction_completion_ratio)
+            // by (p)` evaluates to 1.0 for a finished tier and the table
+            // rendered 99.96, because the mean folded in the samples from
+            // while it was still running. No expression could win, since the
+            // averaging happened after evaluation.
+            //
+            // There is no need for a per-column aggregate setting either: the
+            // MetricsQL engine already spells all of them —
+            // `avg_over_time(x[5m])`, `min_over_time`, `max_over_time`,
+            // `last_over_time`. A column that wants the plot's mean asks for
+            // it; a column that wants the current value says nothing and gets
+            // the last sample, which is what an instant query returns anyway.
+            let value = s.samples.iter()
+                .rev()
                 .map(|s| s.value)
-                .filter(|v| v.is_finite())
-                .collect();
-            let value = if finite.is_empty() {
-                None
-            } else {
-                Some(finite.iter().sum::<f64>() / finite.len() as f64)
-            };
+                .find(|v| v.is_finite());
             let row = by_group.entry(group_val).or_insert_with(|| vec![None; n_cols]);
             row[col_idx] = value;
         }
