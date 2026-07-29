@@ -853,6 +853,20 @@ phases:
       volatile now_ms := current_epoch_millis()
     metrics:
       time_to_index: { kind: gauge, value: "now_ms - phase_start" }
+      # The terminal completion signal, and the reason the table can show a
+      # finished tier as actually finished.
+      #
+      # The live `compaction_completion_ratio` gauge cannot do it: it is sampled
+      # every cadence tick and coalesced as a weighted MEAN over the interval,
+      # so every sub-1.0 sample taken while the drain was still running dilutes
+      # it permanently — a tier that finished cleanly reads 99.88%, and no
+      # amount of publishing 1.0 at the end changes that, because the end is one
+      # sample among many.
+      #
+      # A phase-level metric is emitted ONCE, at phase completion, so there is
+      # nothing for the mean to dilute it against. Reaching this line at all
+      # means the finalize phase completed for this tier.
+      compaction_final_ratio: { kind: gauge, value: "1.0" }
     ops:
       flush:
         adapter: http
@@ -1455,7 +1469,12 @@ report:
       # finished. Not derived from done_pct: that gauge keeps its last polled
       # value after the work ends, so a finished tier can read well below 100.
       state: max(time_to_index) by (p)
-      query: segments: max(compaction_input_segments) by (p)
+      # `round()` because this is a COUNT and the storage averages gauges: the
+      # cadence cascade coalesces a gauge as a weighted mean over its interval
+      # (`coalesce_gauges_weighted_average_by_interval`), so a tier whose count
+      # was set partway through a window reads 0.9994 rather than 1. Correct
+      # for a level gauge, wrong for a count — round recovers the integer.
+      query: segments: round(max(compaction_input_segments) by (p))
       query: vector_index_bytes: max(compaction_input_index_bytes) by (p)
       query: sai_shared_bytes: max(compaction_input_table_bytes) by (p)
       # Rollups are wrapped in min()/max(): `by (p)` groups an AGGREGATION, and a
@@ -1498,7 +1517,15 @@ report:
       # finalize_ms for that, which is exact. For the tier still running it is the
       # elapsed time, accurate to the second.
       query: elapsed_time: max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
-      query: done_pct: 100 * max(compaction_completion_ratio) by (p)
+      # Prefer the phase-emitted terminal ratio, falling back to the live one.
+      # The live gauge cannot read 100 for a finished tier no matter what the
+      # poll publishes: it is sampled per cadence and coalesced as a weighted
+      # MEAN, so the sub-1.0 samples from before the drain finished dilute it
+      # forever (99.88%). `compaction_final_ratio` is a phase-level metric —
+      # one sample, emitted once at phase completion — so there is nothing to
+      # average it against. `or` keeps the live value for the tier still
+      # running, which has no terminal sample yet.
+      query: done_pct: 100 * (max(compaction_final_ratio) by (p) or max(compaction_completion_ratio) by (p))
       query: parts_done: max(compaction_progress_parts) by (p)
       query: parts_total: max(compaction_total_parts) by (p)
       # Throughput over elapsed-so-far, so a running tier reports the rate it is
@@ -1513,5 +1540,13 @@ report:
       # the only rate there is.
       query: index_bytes_per_ms: max(compaction_input_index_bytes) by (p) / max(time_to_index) by (p)
       query: live_bytes_per_ms: max(compaction_progress_parts) by (p) / (1000 * (max(tlast_over_time(compaction_progress_parts[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)))
-      query: finalize_seconds: max(cycles_servicetime_mean{phase="finalize_index"}) by (p)
-      query: finalize_ms: max(time_to_index) by (p)
+      # ONE finalize column, in h:m:s like `elapsed_time`.
+      #
+      # There were two — `finalize_seconds` (mean per-cycle SERVICE time) and
+      # `finalize_ms` (phase WALL-CLOCK duration). Same-looking names, different
+      # measurements, and therefore numbers that never reconciled: 0.341 s
+      # against 2.17 s for the same tier, the gap being the 2 s `drain_grace`
+      # delay, which is wall time but not service time. Wall clock is the one
+      # this table is about, so the service-time column is gone rather than
+      # renamed; re-add it deliberately if per-cycle service time is wanted.
+      query: finalize_time: max(time_to_index) by (p) / 1000

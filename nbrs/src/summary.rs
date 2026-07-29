@@ -404,11 +404,11 @@ fn render_metricsql_table(
         }
         match (value, unit) {
             (None, _)            => "-".to_string(),
-            (Some(v), Some(u))   => format!("{:.3}", v / u.divisor),
+            (Some(v), Some(u))   => format_sig(v / u.divisor),
             (Some(v), None)      => match (secs, si) {
                 (true, _)         => format_hms(v),
-                (false, Some(si)) => format!("{:.2}", v / si.divisor),
-                (false, None)     => format!("{v:.4}"),
+                (false, Some(si)) => format_sig(v / si.divisor),
+                (false, None)     => format_sig(v),
             },
         }
     }
@@ -507,6 +507,44 @@ struct TimeUnit {
 /// "0.50 (min)" beside another at "4.50 (min)" hides that these are 30 seconds
 /// and 4½ minutes. `HH:MM:SS` is unambiguous, sorts correctly, and every row
 /// carries the same shape.
+/// Render a measurement at four significant digits, without trailing noise.
+///
+/// Fixed decimals were the wrong tool: `{:.4}` renders a count of two segments
+/// as `2.0000` and a completion of 99.88% as `99.8788`, spending four digits on
+/// precision the measurement does not have and burying the magnitude that does
+/// matter. Significant digits track the value instead of the format string —
+/// `2`, `99.88`, `0.3410`, `124.5`.
+///
+/// Whole numbers render without a decimal point at all, so a count reads as a
+/// count.
+fn format_sig(v: f64) -> String {
+    if !v.is_finite() {
+        return "-".to_string();
+    }
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    // An exact integer is a count (or has been rounded to one) — never dress it
+    // up with a fractional part it does not have.
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        return format!("{v:.0}");
+    }
+    const SIG: i32 = 4;
+    let magnitude = v.abs().log10().floor() as i32;
+    // Digits after the point that leave SIG significant ones. Clamped at 0 so a
+    // large value never grows a fractional tail, and at 6 so a very small one
+    // does not run away.
+    let decimals = (SIG - 1 - magnitude).clamp(0, 6) as usize;
+    let rendered = format!("{v:.decimals$}");
+    // Trim the zeros that rounding leaves behind (`0.3410` stays, `2.5000`
+    // becomes `2.5`), but never leave a bare trailing point.
+    if rendered.contains('.') {
+        let trimmed = rendered.trim_end_matches('0').trim_end_matches('.');
+        return trimmed.to_string();
+    }
+    rendered
+}
+
 fn format_hms(total_seconds: f64) -> String {
     if !total_seconds.is_finite() || total_seconds < 0.0 {
         return "-".to_string();
@@ -520,6 +558,29 @@ fn format_hms(total_seconds: f64) -> String {
 /// this catches what that rejection leaves behind.
 fn is_seconds_domain_query(expr: &str) -> bool {
     let lower = expr.to_ascii_lowercase();
+
+    // Rule 2 — an explicit millisecond→second conversion: the whole expression
+    // divided by a bare literal 1000. Narrow on purpose. `live_bytes_per_ms`
+    // also contains "1000", but as `/ (1000 * (…))` — a parenthesised divisor,
+    // not a trailing literal — so it stays a rate, which is the distinction the
+    // rest of this function exists to protect.
+    if let Some(head) = lower.trim_end().strip_suffix("1000") {
+        let head = head.trim_end();
+        if let Some(before) = head.strip_suffix('/') {
+            let mut depth = 0i32;
+            for c in before.chars() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if depth == 0 {
+                return true;
+            }
+        }
+    }
+
     const MOMENT_FNS: &[&str] = &["tfirst_over_time", "tlast_over_time", "tlast_change_over_time"];
     if !MOMENT_FNS.iter().any(|f| lower.contains(f)) { return false; }
     // Seconds come from SUBTRACTING one moment from another. A rate that merely

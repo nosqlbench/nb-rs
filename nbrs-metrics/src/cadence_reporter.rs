@@ -1856,7 +1856,11 @@ mod tests {
             MetricValue::Gauge(g) => g.value,
             _ => panic!("expected gauge, got {:?}", g),
         };
-        assert!((value - 6.0).abs() < 1e-9, "expected 6.0, got {value}");
+        // 8.0, the LAST reading — not 6.0, the average of 4 and 8. A gauge is
+        // a point-in-time level, so a coalesced window reports the value it
+        // closed on; averaging reported a level no observer ever saw, and for
+        // a count or a saturating ratio it was simply wrong.
+        assert!((value - 8.0).abs() < 1e-9, "expected 8.0 (last), got {value}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

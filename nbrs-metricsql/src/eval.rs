@@ -849,6 +849,82 @@ pub(crate) fn align_and_combine(
     out
 }
 
+/// Element-wise transforms: same series, same timestamps, one value mapped.
+///
+/// Distinct from an aggregate (which collapses series) and a rollup (which
+/// collapses a range window). The evaluator had neither surface, so a query
+/// using one failed with "non-aggregate / non-rollup function calls is not yet
+/// implemented" even though the grammar accepted it.
+///
+/// `round` is the one with teeth here. The metrics store coalesces a gauge as a
+/// weighted MEAN over its cadence interval, which is right for a level but
+/// wrong for a COUNT: a count set partway through a window reads 0.9994 instead
+/// of 1, forever. `round()` at query time is how a count-valued gauge is read
+/// back as the integer it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransformFn {
+    /// `round(q[, nearest])` — nearest multiple of `nearest` (default 1).
+    Round,
+    Abs,
+    Ceil,
+    Floor,
+}
+
+impl TransformFn {
+    fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "round" => Some(Self::Round),
+            "abs" => Some(Self::Abs),
+            "ceil" => Some(Self::Ceil),
+            "floor" => Some(Self::Floor),
+            _ => None,
+        }
+    }
+}
+
+fn evaluate_transform(
+    ctx: &EvalContext<'_>,
+    f: &FuncExpr,
+    t: TransformFn,
+) -> Result<Vec<Series>, EvalError> {
+    let Some(arg) = f.args.first() else {
+        return Err(EvalError::NotYetImplemented(
+            "transform function called with no argument"));
+    };
+    // `round`'s optional second argument is the multiple to snap to. Evaluated
+    // as a literal rather than a series: MetricsQL allows an expression there,
+    // but a non-constant nearest has no sensible per-sample meaning here and
+    // silently varying it would be worse than refusing.
+    let nearest = match (t, f.args.get(1)) {
+        (TransformFn::Round, Some(Expr::Number(n))) => n.value,
+        (TransformFn::Round, Some(_)) => {
+            return Err(EvalError::NotYetImplemented(
+                "round() with a non-literal `nearest` argument"));
+        }
+        _ => 1.0,
+    };
+    if nearest == 0.0 || !nearest.is_finite() {
+        return Err(EvalError::NotYetImplemented(
+            "round() with a zero or non-finite `nearest` argument"));
+    }
+
+    let mut series = evaluate(ctx, arg)?;
+    for s in &mut series {
+        for sample in &mut s.samples {
+            let v = sample.value;
+            sample.value = match t {
+                // Divide-round-multiply so `nearest` works, and so plain
+                // `round(x)` is exactly `x.round()`.
+                TransformFn::Round => (v / nearest).round() * nearest,
+                TransformFn::Abs => v.abs(),
+                TransformFn::Ceil => v.ceil(),
+                TransformFn::Floor => v.floor(),
+            };
+        }
+    }
+    Ok(series)
+}
+
 /// Dispatch [`FuncExpr`] by name. Aggregate functions
 /// (sum/avg/min/max/count and friends) handle their `by` /
 /// `without` modifiers here; transform / rollup functions
@@ -871,6 +947,9 @@ fn evaluate_func(ctx: &EvalContext<'_>, f: &FuncExpr) -> Result<Vec<Series>, Eva
     // — 2-arg form. Lift it out of the 1-arg dispatch above.
     if f.name.eq_ignore_ascii_case("quantile_over_time") {
         return evaluate_quantile_over_time(ctx, f);
+    }
+    if let Some(t) = TransformFn::from_name(&f.name) {
+        return evaluate_transform(ctx, f, t);
     }
     Err(EvalError::NotYetImplemented("non-aggregate / non-rollup function calls"))
 }
