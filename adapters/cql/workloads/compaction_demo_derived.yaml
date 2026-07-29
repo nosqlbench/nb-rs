@@ -16,17 +16,17 @@
 #   - `profile_partitions("{dataset}", "{profile_pattern}")` partitions
 #     the dataset's vector space by the profiles matching the pattern,
 #     treated as cumulative size tiers in ascending order. Each partition
-#     `p` spans `[previous tier size, this tier size)` — the incremental
-#     range — so `range(start_of(p), end_of(p))` loads ONLY the delta. A
+#     `part` spans `[previous tier size, this tier size)` — the incremental
+#     range — so `range(start_of(part), end_of(part))` loads ONLY the delta. A
 #     partition carries its own start, so no cross-iteration carry is
 #     needed.
 #   - `profile_pattern` follows the literal / glob / regex promotion
 #     (`pattern_match`): `*m` and `*mi` select different suffix series so
 #     their progressions aren't mixed.
 #   - per-tier ground truth: name the tier with
-#     `matching_profile_name_at(..., idx_of(p))`, prebuffer its own
+#     `matching_profile_name_at(..., idx_of(part))`, prebuffer its own
 #     facets, and recall with `query_vector_at` / `neighbor_indices_at`.
-#   - `continue_if: "end_of(p) <= effective_max_size"` (SRD-101) caps the
+#   - `continue_if: "end_of(part) <= effective_max_size"` (SRD-101) caps the
 #     sweep: a pre-entry gate on the tier loop stops BEFORE the first tier
 #     whose cumulative size would exceed the cap (sizes ascend; the last
 #     in-budget profile is the natural end), ending the sweep gracefully.
@@ -241,7 +241,7 @@ bindings: |
   # dataset", resolved here to the dataset's actual base-vector count
   # (`vector_count` auto-opens the base facet); a positive `max_size`
   # CLI override caps below that. Effectively-const (bound once at
-  # scope init), read by the `continue_if: "end_of(p) <=
+  # scope init), read by the `continue_if: "end_of(part) <=
   # effective_max_size"` sweep gate on the tier loop below (SRD-101).
   const effective_max_size := if(max_size > 0, max_size, vector_count("{dataset}:{profile}"))
   # Workload-root SHARED cell for the measured insert batch stride
@@ -297,9 +297,9 @@ scenarios:
     - measure_batch
     # Walk the masked profiles smallest-first as cumulative size tiers.
     # `profile_partitions` yields one partition per matching profile;
-    # partition `p` spans `[previous tier size, this tier size)` — the
-    # incremental range — and carries its masked position as `idx_of(p)`.
-    - for: "p in profile_partitions('{dataset}', '{profile_pattern}')"
+    # partition `part` spans `[previous tier size, this tier size)` — the
+    # incremental range — and carries its masked position as `idx_of(part)`.
+    - for: "part in profile_partitions('{dataset}', '{profile_pattern}')"
       # SRD-101 — bound the sweep: a pre-entry gate on the tier iteration. The
       # walker evaluates this before entering each tier; the moment a tier's
       # cumulative base-vector count would exceed `effective_max_size` (the
@@ -308,7 +308,7 @@ scenarios:
       # `continue_if:` marker recording the actual coordinate. `each` defaults
       # to `scenario` (this tier loop). Replaces the three per-op `if:` gates
       # that used to no-op past the cap while still iterating every tier.
-      continue_if: "end_of(p) <= effective_max_size"
+      continue_if: "end_of(part) <= effective_max_size"
       phases:
         # Each tier is FOUR sibling sub-scopes (SRD-82 Part 6 daemon
         # isolation), capturing recall BEFORE and AFTER compaction:
@@ -337,9 +337,9 @@ scenarios:
   # recall check). `concurrent_query` is listed FIRST so it is spawned in
   # daemon mode (off the foreground budget) BEFORE the ingestion phase and
   # runs at 1/s for the whole build, then stops cleanly when
-  # `finalize_index` completes. The for-loop tier `p` is in scope here
+  # `finalize_index` completes. The for-loop tier `part` is in scope here
   # (inherited from the enclosing `for:`), so the phases resolve
-  # `idx_of(p)` / `start_of(p)` / `end_of(p)` unchanged.
+  # `idx_of(part)` / `start_of(part)` / `end_of(part)` unchanged.
   tier_load:
     - concurrent_query
     # Freeze the measured batch stride for THIS tier's load. `const stride`
@@ -372,9 +372,9 @@ scenarios:
 
   # Recall-only against an ALREADY-LOADED tier — no teardown / schema /
   # load / compact, so the data in the table is untouched. `recall_check`
-  # resolves its tier from the loop variable `p` (its `idx_of(p)` ground
+  # resolves its tier from the loop variable `part` (its `idx_of(part)` ground
   # truth), so it CANNOT run as a bare single-phase scenario; the single-
-  # element `for:` binds the `p` it needs. `profile_pattern` picks the tier:
+  # element `for:` binds the `part` it needs. `profile_pattern` picks the tier:
   # filter it to one profile (`profile_pattern='^900m$'`) so the loop yields
   # exactly that tier and recall runs at 900M against the existing table.
   # For a periodic measurement, drive it from a shell loop (nbrs runs a
@@ -386,7 +386,7 @@ scenarios:
   # (Without the `profile_pattern` override this runs a recall pass for
   # every decade tier in sequence — the `^900m$` filter pins it to 900M.)
   recall:
-    - for: "p in profile_partitions('{dataset}', '{profile_pattern}')"
+    - for: "part in profile_partitions('{dataset}', '{profile_pattern}')"
       phases:
         - recall_check
 
@@ -564,7 +564,7 @@ phases:
     rate: 1
     bindings: |
       # This tier's own query set (the same prebuffer as recall_check).
-      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(part))
       const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
       const base := query_count(prebuffered)
       # Open-extent cursor: wrap the query set for up to query_budget_ms;
@@ -734,21 +734,21 @@ phases:
     # net. Restore by uncommenting:
     # rate: 100
     bindings: |
-      # `p` is the active masked profile tier from `profile_partitions`:
-      # `[start_of(p), end_of(p))` is the incremental delta since the
+      # `part` is the active masked profile tier from `profile_partitions`:
+      # `[start_of(part), end_of(part))` is the incremental delta since the
       # previous tier — a partition carries its own start ordinal, so no
-      # cross-iteration carry is needed. `idx_of(p)` is the masked
+      # cross-iteration carry is needed. `idx_of(part)` is the masked
       # position, used to name this tier's own prebuffer.
-      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(part))
       const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
-      # The cursor bounds this tier to `cardinality(p)` cycles (the delta
+      # The cursor bounds this tier to `cardinality(part)` cycles (the delta
       # this_count - prev_count). The ABSOLUTE base-vector ordinal is
-      # `at(p, cycle)` = `start_of(p) + cycle`, so keys/vectors span the
+      # `at(part, cycle)` = `start_of(part) + cycle`, so keys/vectors span the
       # incremental `[prev_count, this_count)` — never `[0, delta)`. (A
       # cursor's value wire is the local index; the absolute ordinal comes
       # from the partition accessor.)
-      cursor row = range(start_of(p), end_of(p))
-      ord := at(p, cycle)
+      cursor row = range(start_of(part), end_of(part))
+      ord := at(part, cycle)
       id := format_u64(ord, 10)
       train_vector := vector_at(prebuffered, ord)
     ops:
@@ -1105,7 +1105,7 @@ phases:
       # PER TIER, exactly. The lower bound is this tier's own finalize start,
       # so the rows counted are the compactions THIS tier ran and nothing
       # earlier. Attribution needs nothing further: the tier is already a
-      # structural label (`p=`) owned by the partition tier and inherited down,
+      # structural label (`part=`) owned by the partition tier and inherited down,
       # so every metric below carries it. A metric `cell:` would be the wrong
       # tool here — that exists for a dimension whose values arrive from data,
       # and declaring one an ancestor already owns is what `Component::attach`
@@ -1150,7 +1150,7 @@ phases:
           history_bytes_in:  ":sum(bin)"
           history_bytes_out: ":sum(bout)"
         metrics:
-          # Per tier by inheritance — these carry the phase's `p=` label — and
+          # Per tier by inheritance — these carry the phase's `part=` label — and
           # per tier by construction, since the query is bounded to this tier's
           # own finalize window.
           compaction_tier_events:    { kind: gauge, value: history_events }
@@ -1198,8 +1198,8 @@ phases:
         at:      workload
     bindings: |
       # Same masked tier as the load: name it by its masked position
-      # idx_of(p), prebuffer the tier's own ground-truth facets.
-      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
+      # idx_of(part), prebuffer the tier's own ground-truth facets.
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(part))
       const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
       const base := query_count(prebuffered)
       # Standard measurement: ONE pass over the tier's full query set (the
@@ -1282,8 +1282,8 @@ phases:
         at:      workload
     bindings: |
       # Same masked tier as the load: name it by its masked position
-      # idx_of(p), prebuffer the tier's own ground-truth facets.
-      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
+      # idx_of(part), prebuffer the tier's own ground-truth facets.
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(part))
       const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
       const base := query_count(prebuffered)
       # Standard measurement: ONE pass over the tier's full query set (the
@@ -1372,8 +1372,8 @@ phases:
         at:      workload
     bindings: |
       # Same masked tier as the load: name it by its masked position
-      # idx_of(p), prebuffer the tier's own ground-truth facets.
-      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(p))
+      # idx_of(part), prebuffer the tier's own ground-truth facets.
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(part))
       const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
       const base := query_count(prebuffered)
       # Standard measurement: ONE pass over the tier's full query set (the
@@ -1484,20 +1484,20 @@ report:
      and gone IO-bound.
 
     table compaction_shape:
-      group_by: p
+      group_by: part
       # Complete vs active, keyed on a datum that only exists once a tier has
       # finished. Not derived from done_pct: that gauge keeps its last polled
       # value after the work ends, so a finished tier can read well below 100.
-      state: max(time_to_index) by (p)
+      state: max(time_to_index) by (part)
       # `round()` because this is a COUNT and the storage averages gauges: the
       # cadence cascade coalesces a gauge as a weighted mean over its interval
       # (`coalesce_gauges_weighted_average_by_interval`), so a tier whose count
       # was set partway through a window reads 0.9994 rather than 1. Correct
       # for a level gauge, wrong for a count — round recovers the integer.
-      query: segments: round(max(compaction_input_segments) by (p))
-      query: vector_index_bytes: max(compaction_input_index_bytes) by (p)
-      query: sai_shared_bytes: max(compaction_input_table_bytes) by (p)
-      # Rollups are wrapped in min()/max(): `by (p)` groups an AGGREGATION, and a
+      query: segments: round(max(compaction_input_segments) by (part))
+      query: vector_index_bytes: max(compaction_input_index_bytes) by (part)
+      query: sai_shared_bytes: max(compaction_input_table_bytes) by (part)
+      # Rollups are wrapped in min()/max(): `by (part)` groups an AGGREGATION, and a
       # bare rollup keeps every label, so an unwrapped t*_over_time silently fails
       # to align with the aggregated columns it is combined with.
       # WHEN each tier ran. `started` is the instance's first emission, which is
@@ -1506,8 +1506,8 @@ report:
       # re-sampled at its final value until the run ends, so "last sample" is the
       # end of the run for every tier and says nothing. A tier whose last_progress
       # is recent and whose done_pct is below 100 is the one still running.
-      query: started: min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
-      query: last_progress: max(tlast_change_over_time(compaction_completion_ratio[7d])) by (p)
+      query: started: min(tfirst_over_time(compaction_completion_ratio[7d])) by (part)
+      query: last_progress: max(tlast_change_over_time(compaction_completion_ratio[7d])) by (part)
       # How long this tier has been going (rendered HH:MM:SS), as of the most
       # recent activity ANYWHERE
       # in the run -- which, for the tier currently working, is now.
@@ -1536,14 +1536,14 @@ report:
       # For a FINISHED tier this is its age rather than its duration -- read
       # finalize_ms for that, which is exact. For the tier still running it is the
       # elapsed time, accurate to the second.
-      query: age: max(tlast_over_time(compaction_completion_ratio[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)
+      query: age: max(tlast_over_time(compaction_completion_ratio[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (part)
       # The live gauge already reaches a true 1.0: system_views.sstable_tasks
       # keeps a completed task listed for a while after it finishes (verified
       # on the node: kind=compaction at completion_ratio=1 alongside a still-
       # running index build), so the drain's polls capture the finished state
       # before the row ages out. 186 of 187 stored samples for tier 0 are
       # exactly 1.0.
-      query: done_pct: 100 * max(compaction_completion_ratio) by (p)
+      query: done_pct: 100 * max(compaction_completion_ratio) by (part)
       # NOT "parts". This is `:sum(progress)` over EVERY task row registered
       # at sample time, and those rows are in DIFFERENT UNITS: the data
       # compaction reports `unit=bytes`, the vector index build reports
@@ -1558,9 +1558,9 @@ report:
       # A per-kind capture is not expressible today — capture aggregates are
       # `:min`/`:max`/`:sum` over a field with no predicate, and filtering the
       # poll's query by kind breaks the drain (see the `raw:` note above).
-      query: index_parts_done: max(compaction_index_parts_done) by (p)
-      query: index_parts_total: max(compaction_index_parts_total) by (p)
-      query: data_bytes_done: max(compaction_data_bytes_done) by (p)
+      query: index_parts_done: max(compaction_index_parts_done) by (part)
+      query: index_parts_total: max(compaction_index_parts_total) by (part)
+      query: data_bytes_done: max(compaction_data_bytes_done) by (part)
       # Throughput over elapsed-so-far, so a running tier reports the rate it is
       # achieving now instead of nothing. For a finished tier this equals the
       # completed rate; `finalize_ms` is kept beside it as the completion-time
@@ -1571,11 +1571,11 @@ report:
       #   live_bytes_per_ms   work done so far over running_for, available at once
       # On the long-running tier this table exists to measure, the live figure is
       # the only rate there is.
-      query: index_bytes_per_ms: max(compaction_input_index_bytes) by (p) / max(time_to_index) by (p)
+      query: index_bytes_per_ms: max(compaction_input_index_bytes) by (part) / max(time_to_index) by (part)
       # Task units (mixed, see above) over AGE (not duration) — so for a
       # finished tier the denominator keeps growing and this keeps falling.
       # Meaningful only for the tier currently running.
-      query: live_parts_per_s: max(compaction_index_parts_done) by (p) / (1000 * (max(tlast_over_time(compaction_completion_ratio[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (p)))
+      query: live_parts_per_s: max(compaction_index_parts_done) by (part) / (1000 * (max(tlast_over_time(compaction_completion_ratio[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (part)))
       # ONE finalize column, in h:m:s like `elapsed_time`.
       #
       # There were two — `finalize_seconds` (mean per-cycle SERVICE time) and
@@ -1585,4 +1585,4 @@ report:
       # delay, which is wall time but not service time. Wall clock is the one
       # this table is about, so the service-time column is gone rather than
       # renamed; re-add it deliberately if per-cycle service time is wanted.
-      query: finalize_time: max(time_to_index) by (p) / 1000
+      query: finalize_time: max(time_to_index) by (part) / 1000
