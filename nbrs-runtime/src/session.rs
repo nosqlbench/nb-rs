@@ -1653,6 +1653,11 @@ mod tests {
 
     #[test]
     fn session_id_format() {
+        // Session construction installs the process-global session root as a
+        // side effect (see `new_with_args`), racing every control-node test
+        // that reads through it. Hold the same guard those tests hold.
+        let _root_guard =
+            crate::polydat_nodes::runtime_context::session_root_test_guard();
         let _g = env_test_lock();
         unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
         let session = Session::new("fknn_rampup");
@@ -1665,6 +1670,11 @@ mod tests {
 
     #[test]
     fn session_paths() {
+        // Session construction installs the process-global session root as a
+        // side effect (see `new_with_args`), racing every control-node test
+        // that reads through it. Hold the same guard those tests hold.
+        let _root_guard =
+            crate::polydat_nodes::runtime_context::session_root_test_guard();
         let _g = env_test_lock();
         unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
         let session = Session::new("smoke");

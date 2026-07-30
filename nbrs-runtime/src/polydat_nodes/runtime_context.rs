@@ -41,6 +41,23 @@ static SESSION_ROOT: LazyLock<Mutex<Option<Arc<RwLock<Component>>>>> =
 /// Install the session root for every runtime-context node that
 /// reads tree state. Call once at scenario bootstrap; subsequent
 /// calls overwrite.
+/// Test-only serialization for the process-global session root.
+///
+/// `SESSION_ROOT` is one global; the parallel test runner is many threads.
+/// Every test that INSTALLS a root — directly, or by constructing a
+/// [`crate::session::Session`], whose constructor installs one as a side
+/// effect — must hold this guard, and so must every test that READS controls
+/// through the root. It lives here, beside the global it protects, precisely
+/// because the offender that motivated it was in another module: a
+/// session-construction test stomping the control tests' root through the
+/// constructor side effect, which a module-private test lock could never
+/// exclude.
+#[cfg(test)]
+pub(crate) fn session_root_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn set_session_root(root: Arc<RwLock<Component>>) {
     *SESSION_ROOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(root);
 }
@@ -518,13 +535,11 @@ mod tests {
     use std::sync::{Mutex, MutexGuard};
 
     /// Serializes test access to the global `SESSION_ROOT` and the
-    /// thread-locals. Every test that mutates a global holds this
-    /// mutex for its entire body so writes don't interleave across
-    /// the parallel test runner.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
+    /// thread-locals — the crate-wide guard hoisted next to the global
+    /// itself, so session-construction tests in OTHER modules can hold the
+    /// same lock (see `session_root_test_guard`).
     fn serial_test() -> MutexGuard<'static, ()> {
-        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        super::session_root_test_guard()
     }
 
     /// Build a session root with a declared control, install it
