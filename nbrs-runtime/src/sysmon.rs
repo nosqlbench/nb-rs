@@ -3,40 +3,50 @@
 
 //! Session-level system-performance sampler.
 //!
-//! Reads `/proc` directly on a fixed interval (default 5 s) and publishes
-//! host-side utilization as session-scoped gauges plus a live observer
-//! callback for display surfaces. One task per session, spawned by the
-//! runner when `--sysmon` / `sysmon=` asks for it — measurement of the
-//! machine under the workload, not of the workload.
+//! Enabled per session with `sysmon=<categories>` — `sysmon=all` or any
+//! comma list of `cpu,io,ram,rambw,storage`. Reads `/proc` (and statvfs)
+//! on a fixed interval (default 5 s, `sysmon-interval=<seconds>`) and
+//! publishes host-side utilization as session-scoped gauges plus a live
+//! observer callback for display surfaces: measurement of the machine
+//! under the workload, not of the workload.
 //!
-//! What is measured, and from where:
+//! The categories:
 //!
-//! - **Disk** — `/proc/diskstats`, every line. Utilization per device is
+//! - **cpu** — `/proc/stat`. Two separate measures: the MEAN utilization
+//!   from the aggregate `cpu ` line, and the MAXIMUM single-core saturation
+//!   from the `cpuN` lines (with the core named). A pinned compaction thread
+//!   can saturate one core while the mean reads 3% — both facts matter and
+//!   neither substitutes for the other.
+//! - **io** — `/proc/diskstats`, every line. Utilization per device is
 //!   `Δio_ticks / Δwall` (io_ticks is the 10th stat field: milliseconds the
-//!   device had I/O in flight — the same quantity `iostat -x %util` reports).
-//!   Only the HIGHEST device utilization is recorded, with the device named
-//!   beside it. On NVMe this saturates as an idle-detector rather than a
+//!   device had I/O in flight — the same quantity `iostat -x %util`
+//!   reports). Only the HIGHEST device utilization is recorded, with the
+//!   device named. On NVMe this saturates as an idle-detector rather than a
 //!   capacity meter (dozens of requests run in parallel), which is exactly
 //!   what a "is the disk the bottleneck" glance wants.
-//! - **CPU** — `/proc/stat`. Two separate measures: the MEAN utilization from
-//!   the aggregate `cpu ` line, and the MAXIMUM single-core saturation from
-//!   the `cpuN` lines (with the core named). A pinned compaction thread can
-//!   saturate one core while the mean reads 3% — both facts matter and
-//!   neither substitutes for the other.
-//! - **Memory** — `/proc/meminfo`. Two separate measures:
+//! - **ram** — `/proc/meminfo`. Two separate measures:
 //!   `(MemTotal − MemAvailable) / MemTotal` (committed: what is actually
 //!   claimed and not readily reclaimable — the kernel's own estimate) and
 //!   `(MemTotal − MemFree) / MemTotal` (everything, page cache included).
 //!   On a database host the second sits near 100% by design; the pair reads
 //!   as "how much is spoken for" vs "how much is touched".
-//! - **Memory bandwidth** — resctrl MBM (`/sys/fs/resctrl/mon_data`), IF
-//!   available. Requires the resctrl filesystem mounted and a configured
-//!   peak (`sysmon-membw-gbps=`) to turn bytes/s into a utilization. Absent
-//!   either, the item is omitted rather than guessed.
+//! - **rambw** — memory bandwidth via resctrl MBM
+//!   (`/sys/fs/resctrl/mon_data`). REQUIRED-EXPLICIT when enabled: if the
+//!   resctrl interface is not mounted (or `sysmon-membw-gbps=` is not set to
+//!   provide the peak reference), the session ABORTS with instructions —
+//!   never a silent skip. `sysmon=all` includes it, so `all` on a host
+//!   without resctrl aborts; a host without it runs
+//!   `sysmon=cpu,io,ram,storage`.
+//! - **storage** — filesystem SPACE utilization: statvfs over every
+//!   `/dev/`-backed mount in `/proc/mounts` (deduplicated by source device),
+//!   `1 − available/total` per mount, only the highest recorded, mount
+//!   point named. Space is the disk measure `io` cannot see: a device can
+//!   be I/O-idle and one write from full.
 //!
-//! Counters are cumulative, so every utilization here is a pairwise delta
-//! over the sample window; the published gauge is the latest window's value
-//! and any windowing beyond that belongs to MetricsQL at query time.
+//! Counters are cumulative, so every rate-like utilization here is a
+//! pairwise delta over the sample window; the published gauge is the latest
+//! window's value and any windowing beyond that belongs to MetricsQL at
+//! query time.
 
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -45,41 +55,131 @@ use std::time::Duration;
 use nbrs_metrics::component::Component;
 use nbrs_metrics::instruments::gauge::ValueGauge;
 
-/// One completed sample window, as handed to display surfaces.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SysmonSample {
-    /// Highest per-device utilization this window, 0..1.
-    pub disk_util: f64,
-    /// The device that had it.
-    pub disk_top: String,
-    /// Mean CPU utilization across the machine, 0..1.
-    pub cpu_mean: f64,
-    /// The single most saturated core's utilization, 0..1.
-    pub cpu_max_core: f64,
-    /// Which core that was.
-    pub cpu_top_core: usize,
-    /// (MemTotal − MemAvailable) / MemTotal — claimed memory.
-    pub mem_committed: f64,
-    /// (MemTotal − MemFree) / MemTotal — everything, page cache included.
-    pub mem_cached: f64,
-    /// Memory-bandwidth utilization, when resctrl MBM and a configured peak
-    /// make it computable. `None` means "not available", never "zero".
-    pub membw_util: Option<f64>,
+/// Which categories a `sysmon=` setting enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Categories {
+    pub cpu: bool,
+    pub io: bool,
+    pub ram: bool,
+    pub rambw: bool,
+    pub storage: bool,
 }
 
-/// Sampler configuration, resolved by the runner from session args.
+impl Categories {
+    pub const ALL: Categories = Categories {
+        cpu: true,
+        io: true,
+        ram: true,
+        rambw: true,
+        storage: true,
+    };
+
+    pub fn any(&self) -> bool {
+        self.cpu || self.io || self.ram || self.rambw || self.storage
+    }
+}
+
+/// Parse a `sysmon=` value: `all`, or a comma list of category names.
+/// Unknown names are errors that NAME the valid set — a typo silently
+/// monitoring nothing would be the failure mode this surface exists to
+/// avoid.
+pub fn parse_categories(value: &str) -> Result<Categories, String> {
+    if value.trim().eq_ignore_ascii_case("all") {
+        return Ok(Categories::ALL);
+    }
+    let mut cats = Categories::default();
+    for token in value.split(',') {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "cpu" => cats.cpu = true,
+            "io" => cats.io = true,
+            "ram" => cats.ram = true,
+            "rambw" => cats.rambw = true,
+            "storage" => cats.storage = true,
+            "" => {}
+            other => {
+                return Err(format!(
+                    "sysmon: unknown category '{other}'. Valid: all, or a \
+                     comma list of cpu, io, ram, rambw, storage"
+                ));
+            }
+        }
+    }
+    if !cats.any() {
+        return Err(
+            "sysmon: no categories enabled. Use `sysmon=all` or a comma \
+             list of cpu, io, ram, rambw, storage"
+                .to_string(),
+        );
+    }
+    Ok(cats)
+}
+
+/// Per-category CPU readings: the mean and the hottest core, separately.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CpuReading {
+    pub mean: f64,
+    pub max_core: f64,
+    pub top_core: usize,
+}
+
+/// One completed sample window. Each field is `Some` exactly when its
+/// category was enabled — a disabled category is absent, not zero.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SysmonSample {
+    pub cpu: Option<CpuReading>,
+    /// (device, utilization) — the busiest device this window.
+    pub io: Option<(String, f64)>,
+    /// (committed, everything-including-page-cache).
+    pub ram: Option<(f64, f64)>,
+    /// Memory-bandwidth utilization against the configured peak.
+    pub rambw: Option<f64>,
+    /// (mount point, space utilization) — the fullest filesystem.
+    pub storage: Option<(String, f64)>,
+}
+
+/// Sampler configuration, resolved by the runner from session params.
 #[derive(Debug, Clone)]
 pub struct SysmonConfig {
-    /// Sample window. Default 5 s.
+    pub cats: Categories,
+    /// Sample window. Default 5 s (`sysmon-interval=<seconds>`).
     pub interval: Duration,
-    /// Peak memory bandwidth in bytes/s, for the resctrl item.
+    /// Peak memory bandwidth in bytes/s — the reference that turns rambw
+    /// bytes/s into a utilization. Required when `rambw` is enabled.
     pub membw_peak_bytes_per_s: Option<f64>,
 }
 
-impl Default for SysmonConfig {
-    fn default() -> Self {
-        Self { interval: Duration::from_secs(5), membw_peak_bytes_per_s: None }
+/// The rambw prerequisites, checked BEFORE the session starts so an
+/// unsupported host aborts with instructions instead of silently monitoring
+/// less than was asked for.
+pub fn check_rambw_requirements(config: &SysmonConfig) -> Result<(), String> {
+    if !config.cats.rambw {
+        return Ok(());
     }
+    if read_membw_bytes().is_none() {
+        return Err("\
+sysmon: rambw was requested, but the kernel resctrl interface is not \
+available at /sys/fs/resctrl/mon_data.
+
+To enable memory-bandwidth monitoring:
+  1. The CPU must support bandwidth monitoring (Intel RDT / AMD QoS) —
+     check for the `cqm_mbm_total` flag:  grep -m1 cqm_mbm_total /proc/cpuinfo
+  2. The kernel must be built with CONFIG_X86_CPU_RESCTRL (standard on
+     mainstream distro kernels).
+  3. Mount the interface:  sudo mount -t resctrl resctrl /sys/fs/resctrl
+
+If this host cannot support it (most VMs cannot), run without the rambw
+category:  sysmon=cpu,io,ram,storage"
+            .to_string());
+    }
+    if config.membw_peak_bytes_per_s.is_none() {
+        return Err("\
+sysmon: rambw needs a peak-bandwidth reference to turn bytes/s into a \
+utilization. Set it with  sysmon-membw-gbps=<peak>  (the host's rated \
+memory bandwidth in GB/s), or run without the rambw category:  \
+sysmon=cpu,io,ram,storage"
+            .to_string());
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -139,9 +239,7 @@ pub struct CpuTicks {
     pub total: u64,
 }
 
-/// Aggregate + per-core cumulative ticks from `/proc/stat`. The aggregate
-/// `cpu ` line is index `None`-equivalent (returned separately); cores come
-/// back in `cpuN` order.
+/// Aggregate + per-core cumulative ticks from `/proc/stat`.
 pub fn parse_proc_stat(text: &str) -> Option<(CpuTicks, Vec<CpuTicks>)> {
     let mut aggregate: Option<CpuTicks> = None;
     let mut cores: Vec<(usize, CpuTicks)> = Vec::new();
@@ -227,9 +325,67 @@ pub fn mem_utils(m: MemInfo) -> (f64, f64) {
     (committed.clamp(0.0, 1.0), cached.clamp(0.0, 1.0))
 }
 
+/// WRITABLE `/dev/`-backed mount points from `/proc/mounts`, deduplicated by
+/// source device (bind mounts and btrfs subvolumes re-list one device many
+/// times; space is a per-DEVICE fact).
+///
+/// Read-only mounts are excluded, and it matters: snap images are
+/// `/dev/loop*` squashfs mounts that are 100% full BY CONSTRUCTION, so one
+/// installed snap would pin the storage item at bright-orange forever.
+/// Verified on this host — `/dev/loop0 /snap/... ro,...` at 100% while the
+/// fullest writable filesystem sat at 40%. A read-only filesystem cannot
+/// fill up, so its fullness is not a utilization.
+pub fn parse_dev_mounts(text: &str) -> Vec<String> {
+    let mut seen_sources: Vec<&str> = Vec::new();
+    let mut mounts = Vec::new();
+    for line in text.lines() {
+        let mut t = line.split_whitespace();
+        let (Some(source), Some(mount), _fstype, Some(options)) =
+            (t.next(), t.next(), t.next(), t.next())
+        else {
+            continue;
+        };
+        if !source.starts_with("/dev/") || seen_sources.contains(&source) {
+            continue;
+        }
+        let read_only = options.split(',').any(|o| o == "ro");
+        if read_only {
+            continue;
+        }
+        seen_sources.push(source);
+        // /proc/mounts octal-escapes spaces in mount points (\040).
+        mounts.push(mount.replace("\\040", " "));
+    }
+    mounts
+}
+
+/// Space utilization of one filesystem: `1 − available/total`, matching what
+/// `df` calls Use%. `None` on statvfs failure or a zero-block pseudo-fs.
+fn statvfs_util(mount: &str) -> Option<f64> {
+    let c_mount = std::ffi::CString::new(mount).ok()?;
+    let mut vfs: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c_mount.as_ptr(), &mut vfs) } != 0 {
+        return None;
+    }
+    if vfs.f_blocks == 0 {
+        return None;
+    }
+    Some((1.0 - vfs.f_bavail as f64 / vfs.f_blocks as f64).clamp(0.0, 1.0))
+}
+
+/// The fullest `/dev/`-backed filesystem right now: (mount point, util).
+fn max_storage_util() -> Option<(String, f64)> {
+    let mounts = std::fs::read_to_string("/proc/mounts")
+        .map(|t| parse_dev_mounts(&t))
+        .unwrap_or_default();
+    mounts
+        .into_iter()
+        .filter_map(|m| statvfs_util(&m).map(|u| (m, u)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+}
+
 /// Sum of resctrl MBM total-bytes counters across mon_data groups, when the
-/// resctrl filesystem is mounted with monitoring. `None` when unavailable —
-/// which is the common case (needs a resctrl mount and CPU support).
+/// resctrl filesystem is mounted with monitoring. `None` when unavailable.
 fn read_membw_bytes() -> Option<u64> {
     let root = std::path::Path::new("/sys/fs/resctrl/mon_data");
     let entries = std::fs::read_dir(root).ok()?;
@@ -251,70 +407,87 @@ fn read_membw_bytes() -> Option<u64> {
 // The sampler task.
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 struct Gauges {
-    disk: Arc<ValueGauge>,
-    cpu_mean: Arc<ValueGauge>,
-    cpu_core_max: Arc<ValueGauge>,
-    mem_committed: Arc<ValueGauge>,
-    mem_cached: Arc<ValueGauge>,
-    membw: Option<Arc<ValueGauge>>,
+    io: Option<Arc<ValueGauge>>,
+    cpu_mean: Option<Arc<ValueGauge>>,
+    cpu_core_max: Option<Arc<ValueGauge>>,
+    ram_committed: Option<Arc<ValueGauge>>,
+    ram_cached: Option<Arc<ValueGauge>>,
+    rambw: Option<Arc<ValueGauge>>,
+    storage: Option<Arc<ValueGauge>>,
 }
 
-/// Register the sysmon gauge family on the session component. Direct
-/// registration on the session root — no child component, no new labels: the
-/// samples describe the whole host, which is exactly the session's
-/// dimensional cell.
+/// Register gauges for the ENABLED categories on the session component.
+/// Direct registration on the session root — no child component, no new
+/// labels: the samples describe the whole host, which is exactly the
+/// session's dimensional cell.
 fn register_gauges(
     component: &Arc<RwLock<Component>>,
-    membw_available: bool,
+    cats: Categories,
 ) -> Result<Gauges, String> {
     let mut guard = component.write().unwrap_or_else(|e| e.into_inner());
     let labels = guard.effective_labels().clone();
-    let mut mk = |family: &str| -> Result<Arc<ValueGauge>, String> {
+    let mut mk = |family: &str| -> Result<Option<Arc<ValueGauge>>, String> {
         let g = Arc::new(ValueGauge::new(labels.with("family", family)));
         guard.register_instrument(
             family,
             nbrs_metrics::component::InstrumentRef::Gauge(g.clone()),
         )?;
-        Ok(g)
+        Ok(Some(g))
     };
-    Ok(Gauges {
-        disk: mk("sysmon_disk_util")?,
-        cpu_mean: mk("sysmon_cpu_util")?,
-        cpu_core_max: mk("sysmon_cpu_core_max")?,
-        mem_committed: mk("sysmon_mem_util")?,
-        mem_cached: mk("sysmon_mem_util_cached")?,
-        membw: if membw_available {
-            Some(mk("sysmon_membw_util")?)
-        } else {
-            None
-        },
-    })
+    let mut gauges = Gauges::default();
+    if cats.io {
+        gauges.io = mk("sysmon_io_util")?;
+    }
+    if cats.cpu {
+        gauges.cpu_mean = mk("sysmon_cpu_util")?;
+        gauges.cpu_core_max = mk("sysmon_cpu_core_max")?;
+    }
+    if cats.ram {
+        gauges.ram_committed = mk("sysmon_ram_util")?;
+        gauges.ram_cached = mk("sysmon_ram_util_cached")?;
+    }
+    if cats.rambw {
+        gauges.rambw = mk("sysmon_rambw_util")?;
+    }
+    if cats.storage {
+        gauges.storage = mk("sysmon_storage_util")?;
+    }
+    Ok(gauges)
 }
 
-/// Spawn the sampler. Runs until session shutdown; publishes each window to
-/// the session gauges and to `observer.sysmon_update`.
+/// Spawn the sampler. `check_rambw_requirements` must have passed first —
+/// the runner aborts the session on its Err rather than calling this.
+/// Runs until session shutdown; publishes each window to the session gauges
+/// and to `observer.sysmon_update`.
 pub fn spawn(
     config: SysmonConfig,
     component: Arc<RwLock<Component>>,
     observer: Arc<dyn crate::observer::RunObserver>,
 ) -> Result<tokio::task::JoinHandle<()>, String> {
-    // Probe availability ONCE: the item either exists for the session or it
-    // does not. A resctrl mount appearing mid-run is not a case worth
-    // chasing samples for.
-    let membw_available =
-        config.membw_peak_bytes_per_s.is_some() && read_membw_bytes().is_some();
-    let gauges = register_gauges(&component, membw_available)?;
+    check_rambw_requirements(&config)?;
+    let gauges = register_gauges(&component, config.cats)?;
+    let cats = config.cats;
 
     let mut shutdown = crate::session_signals::subscribe_shutdown();
     Ok(tokio::spawn(async move {
-        let mut prev_disks = std::fs::read_to_string("/proc/diskstats")
-            .map(|t| parse_diskstats(&t))
+        let mut prev_disks = cats
+            .io
+            .then(|| {
+                std::fs::read_to_string("/proc/diskstats")
+                    .map(|t| parse_diskstats(&t))
+                    .unwrap_or_default()
+            })
             .unwrap_or_default();
-        let mut prev_cpu = std::fs::read_to_string("/proc/stat")
-            .ok()
-            .and_then(|t| parse_proc_stat(&t));
-        let mut prev_membw = read_membw_bytes();
+        let mut prev_cpu = if cats.cpu {
+            std::fs::read_to_string("/proc/stat")
+                .ok()
+                .and_then(|t| parse_proc_stat(&t))
+        } else {
+            None
+        };
+        let mut prev_membw = if cats.rambw { read_membw_bytes() } else { None };
         let mut prev_at = std::time::Instant::now();
 
         loop {
@@ -326,74 +499,80 @@ pub fn spawn(
             let dt = now.duration_since(prev_at);
             let dt_ms = dt.as_secs_f64() * 1000.0;
             prev_at = now;
+            let mut sample = SysmonSample::default();
 
-            let cur_disks = std::fs::read_to_string("/proc/diskstats")
-                .map(|t| parse_diskstats(&t))
-                .unwrap_or_default();
-            let cur_cpu = std::fs::read_to_string("/proc/stat")
-                .ok()
-                .and_then(|t| parse_proc_stat(&t));
-            let mem = std::fs::read_to_string("/proc/meminfo")
-                .ok()
-                .and_then(|t| parse_meminfo(&t));
-
-            let (disk_top, disk_util) =
-                max_disk_util(&prev_disks, &cur_disks, dt_ms)
-                    .unwrap_or_else(|| (String::new(), 0.0));
-            prev_disks = cur_disks;
-
-            let (cpu_mean, cpu_top_core, cpu_max_core) =
-                match (&prev_cpu, &cur_cpu) {
-                    (Some((pa, pc)), Some((ca, cc))) => {
-                        let mean = cpu_util(*pa, *ca);
-                        let (idx, max) =
-                            max_core_util(pc, cc).unwrap_or((0, 0.0));
-                        (mean, idx, max)
-                    }
-                    _ => (0.0, 0, 0.0),
-                };
-            prev_cpu = cur_cpu;
-
-            let (mem_committed, mem_cached) =
-                mem.map(mem_utils).unwrap_or((0.0, 0.0));
-
-            let membw_util = match (&gauges.membw, config.membw_peak_bytes_per_s) {
-                (Some(_), Some(peak)) if peak > 0.0 => {
-                    let cur = read_membw_bytes();
-                    let util = match (prev_membw, cur) {
-                        (Some(p), Some(c)) => Some(
-                            ((c.saturating_sub(p)) as f64
-                                / dt.as_secs_f64().max(1e-9)
-                                / peak)
-                                .clamp(0.0, 1.0),
-                        ),
-                        _ => None,
-                    };
-                    prev_membw = cur;
-                    util
+            if cats.io {
+                let cur = std::fs::read_to_string("/proc/diskstats")
+                    .map(|t| parse_diskstats(&t))
+                    .unwrap_or_default();
+                sample.io = max_disk_util(&prev_disks, &cur, dt_ms);
+                prev_disks = cur;
+            }
+            if cats.cpu {
+                let cur = std::fs::read_to_string("/proc/stat")
+                    .ok()
+                    .and_then(|t| parse_proc_stat(&t));
+                if let (Some((pa, pc)), Some((ca, cc))) = (&prev_cpu, &cur) {
+                    let (top_core, max_core) =
+                        max_core_util(pc, cc).unwrap_or((0, 0.0));
+                    sample.cpu = Some(CpuReading {
+                        mean: cpu_util(*pa, *ca),
+                        max_core,
+                        top_core,
+                    });
                 }
-                _ => None,
-            };
-
-            gauges.disk.set(disk_util);
-            gauges.cpu_mean.set(cpu_mean);
-            gauges.cpu_core_max.set(cpu_max_core);
-            gauges.mem_committed.set(mem_committed);
-            gauges.mem_cached.set(mem_cached);
-            if let (Some(g), Some(u)) = (&gauges.membw, membw_util) {
-                g.set(u);
+                prev_cpu = cur;
+            }
+            if cats.ram {
+                sample.ram = std::fs::read_to_string("/proc/meminfo")
+                    .ok()
+                    .and_then(|t| parse_meminfo(&t))
+                    .map(mem_utils);
+            }
+            if cats.rambw
+                && let Some(peak) = config.membw_peak_bytes_per_s
+            {
+                let cur = read_membw_bytes();
+                if let (Some(p), Some(c)) = (prev_membw, cur) {
+                    sample.rambw = Some(
+                        ((c.saturating_sub(p)) as f64
+                            / dt.as_secs_f64().max(1e-9)
+                            / peak)
+                            .clamp(0.0, 1.0),
+                    );
+                }
+                prev_membw = cur;
+            }
+            if cats.storage {
+                sample.storage = max_storage_util();
             }
 
-            observer.sysmon_update(&SysmonSample {
-                disk_util,
-                disk_top: disk_top.clone(),
-                cpu_mean,
-                cpu_max_core,
-                cpu_top_core,
-                mem_committed,
-                mem_cached,
-                membw_util,
-            });
+            if let (Some(g), Some((_, u))) = (&gauges.io, &sample.io) {
+                g.set(*u);
+            }
+            if let (Some(g), Some(c)) = (&gauges.cpu_mean, &sample.cpu) {
+                g.set(c.mean);
+            }
+            if let (Some(g), Some(c)) = (&gauges.cpu_core_max, &sample.cpu) {
+                g.set(c.max_core);
+            }
+            if let (Some(g), Some((committed, _))) =
+                (&gauges.ram_committed, &sample.ram)
+            {
+                g.set(*committed);
+            }
+            if let (Some(g), Some((_, cached))) = (&gauges.ram_cached, &sample.ram)
+            {
+                g.set(*cached);
+            }
+            if let (Some(g), Some(u)) = (&gauges.rambw, sample.rambw) {
+                g.set(u);
+            }
+            if let (Some(g), Some((_, u))) = (&gauges.storage, &sample.storage) {
+                g.set(*u);
+            }
+
+            observer.sysmon_update(&sample);
         }
     }))
 }
@@ -401,6 +580,73 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `all` and the full comma list mean the same thing — the user's words.
+    #[test]
+    fn all_equals_the_full_category_list() {
+        assert_eq!(parse_categories("all").unwrap(), Categories::ALL);
+        assert_eq!(
+            parse_categories("cpu,io,ram,rambw,storage").unwrap(),
+            Categories::ALL
+        );
+    }
+
+    #[test]
+    fn category_subsets_parse_and_typos_are_named_errors() {
+        let c = parse_categories("cpu, io").unwrap();
+        assert!(c.cpu && c.io && !c.ram && !c.rambw && !c.storage);
+        let err = parse_categories("cpu,ramb").unwrap_err();
+        assert!(err.contains("ramb") && err.contains("rambw"),
+            "the error names the typo and the valid set: {err}");
+        assert!(parse_categories("").is_err(), "empty enables nothing");
+    }
+
+    /// rambw enabled on a host without resctrl is an ABORT with instructions,
+    /// not a skip. (This box has no resctrl, so this exercises the real
+    /// probe.)
+    #[test]
+    fn rambw_without_resctrl_aborts_with_instructions() {
+        let config = SysmonConfig {
+            cats: parse_categories("rambw").unwrap(),
+            interval: Duration::from_secs(5),
+            membw_peak_bytes_per_s: Some(100e9),
+        };
+        if std::path::Path::new("/sys/fs/resctrl/mon_data").exists() {
+            // Host actually has resctrl — the gate passes instead; nothing
+            // to assert about instructions here.
+            return;
+        }
+        let err = check_rambw_requirements(&config).unwrap_err();
+        assert!(err.contains("mount -t resctrl"),
+            "the abort must tell the user HOW to enable it: {err}");
+        assert!(err.contains("sysmon=cpu,io,ram,storage"),
+            "…and how to run without it: {err}");
+    }
+
+    /// rambw with resctrl but no peak reference is equally an abort — a
+    /// bytes/s figure with no denominator is not a utilization.
+    #[test]
+    fn rambw_without_a_peak_reference_aborts() {
+        let config = SysmonConfig {
+            cats: parse_categories("rambw").unwrap(),
+            interval: Duration::from_secs(5),
+            membw_peak_bytes_per_s: None,
+        };
+        let err = check_rambw_requirements(&config).unwrap_err();
+        assert!(err.contains("sysmon-membw-gbps") || err.contains("resctrl"),
+            "must name the missing prerequisite: {err}");
+    }
+
+    /// Disabled rambw asks nothing of the host.
+    #[test]
+    fn no_rambw_no_requirements() {
+        let config = SysmonConfig {
+            cats: parse_categories("cpu,io,ram,storage").unwrap(),
+            interval: Duration::from_secs(5),
+            membw_peak_bytes_per_s: None,
+        };
+        assert!(check_rambw_requirements(&config).is_ok());
+    }
 
     /// Real lines from this host's /proc/diskstats — io_ticks is token 12.
     #[test]
@@ -477,5 +723,25 @@ cpu2 0 0 0 8000 0 0 0 0 0 0";
         let d = vec![("a".to_string(), 5_u64)];
         assert!(max_disk_util(&d, &d, 0.0).is_none());
         assert!(max_disk_util(&[], &d, 1000.0).is_none());
+    }
+
+    /// Only WRITABLE /dev/-backed mounts count for storage, deduplicated by
+    /// source. Pseudo-filesystems are not disks; a read-only squashfs snap
+    /// image is 100% full by construction and would pin the item forever.
+    #[test]
+    fn dev_mounts_are_filtered_and_deduplicated() {
+        let mounts = "\
+proc /proc proc rw 0 0
+/dev/nvme0n1p1 / ext4 rw 0 0
+tmpfs /tmp tmpfs rw 0 0
+/dev/loop0 /snap/core22/2045 squashfs ro,nodev 0 0
+/dev/nvme1n1 /mnt/nvme xfs rw 0 0
+/dev/nvme1n1 /mnt/alias xfs rw 0 0
+/dev/mapper/vg-data /data\\040dir ext4 rw 0 0";
+        assert_eq!(parse_dev_mounts(mounts), vec![
+            "/".to_string(),
+            "/mnt/nvme".to_string(),
+            "/data dir".to_string(),
+        ]);
     }
 }

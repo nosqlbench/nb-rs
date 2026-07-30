@@ -593,46 +593,42 @@ fn build_session_metrics(
     //   * `--metrics-log[=<path>]` flag on the CLI
     //   * `metrics-log=<path|true>` in workload params
     //   * `NBRS_METRICS_LOG=<path|1>` env var
-    // Session-level system-performance sampler (host disk/cpu/memory
-    // utilization from /proc). Same opt-in surface as the metrics log:
-    //   * `--sysmon[=<seconds>]` on the CLI
-    //   * `sysmon=<seconds|true>` in workload params
-    // Off by default; the value, when not a bare enable, is the sample
-    // interval in seconds (default 5).
-    let sysmon_setting: Option<String> = args.iter()
-        .find_map(|a| a.strip_prefix("--sysmon").and_then(|rest| {
-            // `--sysmon-...` would belong to a sibling flag; only a bare
-            // `--sysmon` or `--sysmon=<v>` selects this one.
-            match rest.strip_prefix('=') {
-                Some(v) => Some(v.to_string()),
-                None => rest.is_empty().then(|| "true".to_string()),
-            }
-        }))
-        .or_else(|| params.get("sysmon").cloned());
-    let sysmon_interval: Option<std::time::Duration> = match sysmon_setting.as_deref() {
-        None | Some("0") | Some("false") | Some("no") | Some("off") | Some("") => None,
-        Some("1") | Some("true") | Some("yes") | Some("on") =>
-            Some(std::time::Duration::from_secs(5)),
-        Some(v) => match v.trim_end_matches('s').parse::<f64>() {
-            Ok(secs) if secs > 0.0 => Some(std::time::Duration::from_secs_f64(secs)),
-            _ => return Err(format!(
-                "sysmon: expected a sample interval in seconds (e.g. `--sysmon=5`), got '{v}'")),
-        },
-    };
-    if let Some(interval) = sysmon_interval {
-        let membw_peak_bytes_per_s = params.get("sysmon-membw-gbps")
-            .and_then(|v| v.parse::<f64>().ok())
-            .map(|gbps| gbps * 1e9);
-        match crate::sysmon::spawn(
-            crate::sysmon::SysmonConfig { interval, membw_peak_bytes_per_s },
-            session.component.clone(),
-            observer.clone(),
-        ) {
-            Ok(_) => crate::diag!(crate::observer::LogLevel::Info,
-                "sysmon: sampling host disk/cpu/memory every {interval:?}"),
-            Err(e) => crate::diag!(crate::observer::LogLevel::Warn,
-                "sysmon: not started: {e}"),
-        }
+    // Session-level system-performance sampler (host utilization from
+    // /proc). Enabled per session with `sysmon=all` or a comma list of
+    // categories (`sysmon=cpu,io,ram,rambw,storage`); off when absent.
+    // Interval via `sysmon-interval=<seconds>` (default 5).
+    //
+    // rambw is REQUIRED-EXPLICIT once enabled: an unsupported host aborts
+    // the session with enable instructions rather than silently monitoring
+    // less than was asked for — `check_rambw_requirements` is the gate.
+    if let Some(setting) = params.get("sysmon") {
+        let cats = crate::sysmon::parse_categories(setting)?;
+        let interval = match params.get("sysmon-interval") {
+            None => std::time::Duration::from_secs(5),
+            Some(v) => match v.trim_end_matches('s').parse::<f64>() {
+                Ok(secs) if secs > 0.0 => std::time::Duration::from_secs_f64(secs),
+                _ => return Err(format!(
+                    "sysmon-interval: expected seconds (e.g. `sysmon-interval=5`), got '{v}'")),
+            },
+        };
+        let membw_peak_bytes_per_s = match params.get("sysmon-membw-gbps") {
+            None => None,
+            Some(v) => match v.parse::<f64>() {
+                Ok(gbps) if gbps > 0.0 => Some(gbps * 1e9),
+                _ => return Err(format!(
+                    "sysmon-membw-gbps: expected the host's peak memory bandwidth \
+                     in GB/s, got '{v}'")),
+            },
+        };
+        let config = crate::sysmon::SysmonConfig { cats, interval, membw_peak_bytes_per_s };
+        // The rambw gate runs before spawn so the failure is a clean session
+        // abort with instructions. The session directory already exists at
+        // this point (Session::start ran) — the same is true of every config
+        // error raised from here, and the next run gets its own directory.
+        crate::sysmon::check_rambw_requirements(&config)?;
+        crate::sysmon::spawn(config, session.component.clone(), observer.clone())?;
+        crate::diag!(crate::observer::LogLevel::Info,
+            "sysmon: sampling {setting} every {interval:?}");
     }
 
     let metrics_log_setting: Option<String> = args.iter()
@@ -5171,7 +5167,6 @@ const RECOGNIZED_BARE_FLAGS: &[&str] = &[
     "--resume-latest",       // SRD-44: resume from logs/latest.
     "--force-retry-failed",  // SRD-44: prepend retry,warn to errors.
     "--refine",              // SRD-77: enable refine-mode skip-plan loading.
-    "--sysmon",              // Session-level /proc sampler, default 5s window.
 ];
 
 /// Strip a single layer of matching outer quotes (single or

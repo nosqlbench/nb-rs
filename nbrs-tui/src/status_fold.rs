@@ -213,46 +213,64 @@ pub fn render_active_status_with_gutters(
 }
 
 
-/// Display order + glyphs for the sysmon strip. Glyphs follow the
-/// [`crate::widgets::TIMING_MARK`] rule: single-cell, text-presentation
-/// symbols — an emoji-presentation glyph would occupy two terminal cells and
-/// shift every divider on the row.
+/// Display order + glyphs for the sysmon strip, in the category order the
+/// setting names them: cpu, io, ram, rambw, storage. Only enabled
+/// categories appear — a `Some` field is an enabled category with a
+/// measurement; absent is absent, not zero.
 ///
-/// ⛃ disk (stacked-discs shape), ⚙ cpu, ▤ memory (bank rows), ⇅ memory
-/// bandwidth (transfer). The bandwidth item appears only when resctrl made it
-/// measurable — absent is absent, not zero.
+/// Glyphs follow the [`crate::widgets::TIMING_MARK`] rule: single-cell,
+/// text-presentation symbols — an emoji-presentation glyph would occupy two
+/// terminal cells and shift every divider on the row. ⚙ cpu, ⛃ io (busy
+/// platters), ▤ ram (bank rows), ⇅ rambw (transfer), ⛁ storage (space on
+/// the same platters, hollow).
 pub fn sysmon_items(s: &nbrs_runtime::sysmon::SysmonSample) -> Vec<(char, f64)> {
-    let mut items = vec![
-        ('⛃', s.disk_util),
-        ('⚙', s.cpu_mean),
-        ('▤', s.mem_committed),
-    ];
-    if let Some(bw) = s.membw_util {
+    let mut items = Vec::new();
+    if let Some(c) = &s.cpu {
+        items.push(('⚙', c.mean));
+    }
+    if let Some((_, u)) = &s.io {
+        items.push(('⛃', *u));
+    }
+    if let Some((committed, _)) = &s.ram {
+        items.push(('▤', *committed));
+    }
+    if let Some(bw) = s.rambw {
         items.push(('⇅', bw));
+    }
+    if let Some((_, u)) = &s.storage {
+        items.push(('⛁', *u));
     }
     items
 }
 
 /// The right-side body for the sysmon detail row: the latest numbers with
-/// their subjects named — which device was hottest, which core was most
-/// saturated, and both memory measures. The strip answers "how much"; this
-/// line answers "of what".
+/// their subjects named — which device was busiest, which core was most
+/// saturated, which filesystem is fullest. The strip answers "how much";
+/// this line answers "of what".
 pub fn sysmon_detail_line(s: &nbrs_runtime::sysmon::SysmonSample) -> String {
     let pct = |f: f64| format!("{:.0}%", f * 100.0);
-    let disk = if s.disk_top.is_empty() {
-        format!("disk {}", pct(s.disk_util))
-    } else {
-        format!("disk {} {}", s.disk_top, pct(s.disk_util))
-    };
-    let mut line = format!(
-        "  sys: {disk} · cpu {} (max c{} {}) · mem {} (+cache {})",
-        pct(s.cpu_mean), s.cpu_top_core, pct(s.cpu_max_core),
-        pct(s.mem_committed), pct(s.mem_cached),
-    );
-    if let Some(bw) = s.membw_util {
-        line.push_str(&format!(" · membw {}", pct(bw)));
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(c) = &s.cpu {
+        parts.push(format!(
+            "cpu {} (max c{} {})", pct(c.mean), c.top_core, pct(c.max_core)));
     }
-    line
+    if let Some((dev, u)) = &s.io {
+        parts.push(if dev.is_empty() {
+            format!("io {}", pct(*u))
+        } else {
+            format!("io {dev} {}", pct(*u))
+        });
+    }
+    if let Some((committed, cached)) = &s.ram {
+        parts.push(format!("ram {} (+cache {})", pct(*committed), pct(*cached)));
+    }
+    if let Some(bw) = s.rambw {
+        parts.push(format!("rambw {}", pct(bw)));
+    }
+    if let Some((mount, u)) = &s.storage {
+        parts.push(format!("storage {mount} {}", pct(*u)));
+    }
+    format!("  sys: {}", parts.join(" · "))
 }
 
 /// SRD-92 R1 — the header row's margin: this node's OWN timing triad
@@ -621,14 +639,12 @@ mod tests {
         assert_eq!(base_lines.split('\n').count(), base_gutters.len());
 
         with.sysmon = Some(nbrs_runtime::sysmon::SysmonSample {
-            disk_util: 0.97,
-            disk_top: "nvme1n1".into(),
-            cpu_mean: 0.34,
-            cpu_max_core: 0.89,
-            cpu_top_core: 7,
-            mem_committed: 0.41,
-            mem_cached: 0.93,
-            membw_util: None,
+            cpu: Some(nbrs_runtime::sysmon::CpuReading {
+                mean: 0.34, max_core: 0.89, top_core: 7 }),
+            io: Some(("nvme1n1".into(), 0.97)),
+            ram: Some((0.41, 0.93)),
+            rambw: None,
+            storage: Some(("/mnt/nvme".into(), 0.71)),
         });
         let (lines, gutters) =
             render_active_status_with_gutters(&with).expect("renders");
@@ -651,20 +667,22 @@ mod tests {
     #[test]
     fn sysmon_strip_omits_unavailable_bandwidth() {
         let mut sample = nbrs_runtime::sysmon::SysmonSample {
-            disk_util: 0.5,
-            disk_top: "sda".into(),
-            cpu_mean: 0.2,
-            cpu_max_core: 0.3,
-            cpu_top_core: 0,
-            mem_committed: 0.4,
-            mem_cached: 0.8,
-            membw_util: None,
+            cpu: Some(nbrs_runtime::sysmon::CpuReading {
+                mean: 0.2, max_core: 0.3, top_core: 0 }),
+            io: Some(("sda".into(), 0.5)),
+            ram: Some((0.4, 0.8)),
+            rambw: None,
+            storage: None,
         };
-        assert_eq!(sysmon_items(&sample).len(), 3);
-        sample.membw_util = Some(0.12);
+        assert_eq!(sysmon_items(&sample).len(), 3,
+            "disabled categories are absent, not zero");
+        sample.rambw = Some(0.12);
+        sample.storage = Some(("/".into(), 0.7));
         let items = sysmon_items(&sample);
-        assert_eq!(items.len(), 4);
-        assert_eq!(items[3].0, '⇅');
+        assert_eq!(items.len(), 5);
+        // Category order is the order the setting names them.
+        assert_eq!(items.iter().map(|(g, _)| *g).collect::<Vec<_>>(),
+                   vec!['⚙', '⛃', '▤', '⇅', '⛁']);
     }
 
     #[test]

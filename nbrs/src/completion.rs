@@ -144,6 +144,7 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
     crate::cli_spec::KvParam { key: "tui=", provider: static_tui },
     crate::cli_spec::KvParam { key: "format=", provider: static_stdout_format },
     crate::cli_spec::KvParam { key: "dryrun=", provider: static_dryrun },
+    crate::cli_spec::KvParam { key: "sysmon=", provider: static_sysmon },
     crate::cli_spec::KvParam { key: "watch=", provider: static_watch },
     crate::cli_spec::KvParam { key: "scope=", provider: static_scope },
     crate::cli_spec::KvParam { key: "on_removed=", provider: static_on_removed },
@@ -1285,6 +1286,18 @@ fn static_tui(partial: &str, _ctx: &[&str]) -> Vec<String> {
 /// parser, its error message, and completion stay in lockstep.
 fn static_stdout_format(partial: &str, _ctx: &[&str]) -> Vec<String> {
     filter_prefix(nbrs_adapter_stdout::FORMAT_NAMES, partial)
+}
+
+fn static_sysmon(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    // Comma lists complete per segment: `sysmon=cpu,i<TAB>` completes `io`.
+    let (done, part) = match partial.rfind(',') {
+        Some(i) => (&partial[..=i], &partial[i + 1..]),
+        None => ("", partial),
+    };
+    filter_prefix(&["all", "cpu", "io", "ram", "rambw", "storage"], part)
+        .into_iter()
+        .map(|c| format!("{done}{c}"))
+        .collect()
 }
 
 fn static_dryrun(partial: &str, _ctx: &[&str]) -> Vec<String> {

@@ -134,14 +134,12 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
             let mut f = || parts.next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
             let (disk, cpu, maxcore, mem, cache) = (f(), f(), f(), f(), f());
             handle.send(RunStateCmd::Sysmon(nbrs_runtime::sysmon::SysmonSample {
-                disk_util: disk,
-                disk_top: "nvme1n1".into(),
-                cpu_mean: cpu,
-                cpu_max_core: maxcore,
-                cpu_top_core: 7,
-                mem_committed: mem,
-                mem_cached: cache,
-                membw_util: None,
+                cpu: Some(nbrs_runtime::sysmon::CpuReading {
+                    mean: cpu, max_core: maxcore, top_core: 7 }),
+                io: Some(("nvme1n1".into(), disk)),
+                ram: Some((mem, cache)),
+                rambw: None,
+                storage: None,
             }));
         }
         Some("done") => {
