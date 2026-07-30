@@ -1122,6 +1122,10 @@ pub(crate) fn draw_footer_at_cursor<W: Write>(
                     ctx_margin_owned = text_gutter(t, blank_w, use_color_now);
                     &ctx_margin_owned
                 }
+                Some(crate::status_fold::RowGutter::Sysmon { items }) => {
+                    ctx_margin_owned = sysmon_gutter(items, blank_w, use_color_now);
+                    &ctx_margin_owned
+                }
                 Some(crate::status_fold::RowGutter::Labeled { name, value }) => {
                     ctx_margin_owned = labeled_gutter(name, value, blank_w, use_color_now);
                     &ctx_margin_owned
@@ -1337,6 +1341,83 @@ fn bar_text_gutter(frac: f64, text: &str, w: usize, color: bool) -> String {
 /// a left-aligned leaf duration put the same quantity in a different column
 /// depending on the row type. Values now line up vertically whatever the row.
 /// (The doc-comment always claimed right alignment; the code did not.)
+/// Braille utilization meter: two cells, so 4 dot-columns × 4 dot-rows =
+/// 16 dots of resolution (6.25% per dot). Fill is column-major left→right,
+/// each column bottom-up, so the meter grows like a bar.
+///
+/// Braille dot numbering puts dots 1-3 + 7 in a cell's left column (top to
+/// bottom) and 4-6 + 8 in the right; the bottom-up bit orders below are
+/// exactly those columns reversed.
+fn braille_meter(frac: f64) -> [char; 2] {
+    const COL_BOTTOM_UP: [[u8; 4]; 2] = [
+        [0x40, 0x04, 0x02, 0x01], // dots 7,3,2,1 — a cell's left column
+        [0x80, 0x20, 0x10, 0x08], // dots 8,6,5,4 — a cell's right column
+    ];
+    let dots = (frac.clamp(0.0, 1.0) * 16.0).round() as usize;
+    let mut cells = [0u8; 2];
+    for col in 0..4 {
+        let filled = dots.saturating_sub(col * 4).min(4);
+        for bit in &COL_BOTTOM_UP[col % 2][..filled] {
+            cells[col / 2] |= bit;
+        }
+    }
+    [
+        char::from_u32(0x2800 + cells[0] as u32).expect("braille block"),
+        char::from_u32(0x2800 + cells[1] as u32).expect("braille block"),
+    ]
+}
+
+/// Utilization color ramp: bright orange above 90%, dim orange above 80%,
+/// yellow above 50%, bright white above 25%, terminal-normal below. Orange
+/// has no basic-ANSI slot, so the two orange tiers are 256-color (208
+/// bold-bright / 166 dim); the rest stay on basic codes.
+fn util_color(frac: f64) -> &'static str {
+    if frac > 0.90 {
+        "\x1b[1;38;5;208m"
+    } else if frac > 0.80 {
+        "\x1b[38;5;166m"
+    } else if frac > 0.50 {
+        "\x1b[33m"
+    } else if frac > 0.25 {
+        "\x1b[97m"
+    } else {
+        ""
+    }
+}
+
+/// The sysmon strip: per item a single-cell glyph + a two-cell braille
+/// meter, colored by that item's utilization, space-separated and
+/// right-aligned against the divider like every other gutter cell.
+fn sysmon_gutter(items: &[(char, f64)], w: usize, color: bool) -> String {
+    let reset = if color { "\x1b[0m" } else { "" };
+    let mut body = String::new();
+    let mut visible = 0usize;
+    for (i, (glyph, frac)) in items.iter().enumerate() {
+        if i > 0 {
+            body.push(' ');
+            visible += 1;
+        }
+        let c = if color { util_color(*frac) } else { "" };
+        let [m0, m1] = braille_meter(*frac);
+        if !c.is_empty() {
+            body.push_str(c);
+        }
+        body.push(*glyph);
+        body.push(m0);
+        body.push(m1);
+        if !c.is_empty() {
+            body.push_str(reset);
+        }
+        visible += 3;
+    }
+    // Same shape as `text_gutter`: one column of right margin before the
+    // divider; visible width counted OURSELVES because the body carries
+    // per-item color escapes that a char count would miscount.
+    let inner = w.saturating_sub(1);
+    let pad = inner.saturating_sub(visible);
+    format!("{:pad$}{body} │ ", "")
+}
+
 fn text_gutter(text: &str, w: usize, color: bool) -> String {
     let dim   = if color { "\x1b[2m"  } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
@@ -1571,6 +1652,52 @@ mod redraw_tests {
     //! the absolute-positioning invariants that produced the
     //! "stacked status snapshots" bug.
     use super::*;
+
+    /// 16 dots across two braille cells, column-major bottom-up: empty at 0,
+    /// first cell full at 50%, everything at 100%.
+    #[test]
+    fn braille_meter_fills_column_major() {
+        assert_eq!(braille_meter(0.0), ['\u{2800}', '\u{2800}']);
+        // 25% = 4 dots = the first column: dots 7,3,2,1 = 0x47.
+        assert_eq!(braille_meter(0.25), ['\u{2847}', '\u{2800}']);
+        // 50% = first cell solid (all 8 dots = 0xFF).
+        assert_eq!(braille_meter(0.5), ['\u{28FF}', '\u{2800}']);
+        assert_eq!(braille_meter(1.0), ['\u{28FF}', '\u{28FF}']);
+        // Clamped: nonsense inputs stay in range.
+        assert_eq!(braille_meter(7.0), ['\u{28FF}', '\u{28FF}']);
+        assert_eq!(braille_meter(-1.0), ['\u{2800}', '\u{2800}']);
+    }
+
+    /// The ramp the user reads at a glance: bright orange over 90, dim orange
+    /// over 80, yellow over 50, bright white over 25, plain below.
+    #[test]
+    fn util_colors_step_at_the_declared_thresholds() {
+        assert_eq!(util_color(0.95), "\x1b[1;38;5;208m");
+        assert_eq!(util_color(0.85), "\x1b[38;5;166m");
+        assert_eq!(util_color(0.55), "\x1b[33m");
+        assert_eq!(util_color(0.30), "\x1b[97m");
+        assert_eq!(util_color(0.10), "");
+        // Boundaries are exclusive: exactly 90 is the dim-orange tier, etc.
+        assert_eq!(util_color(0.90), "\x1b[38;5;166m");
+        assert_eq!(util_color(0.80), "\x1b[33m");
+        assert_eq!(util_color(0.50), "\x1b[97m");
+        assert_eq!(util_color(0.25), "");
+    }
+
+    /// The strip's VISIBLE width must line up with every other gutter cell —
+    /// per-item color escapes must not count, and each item is exactly one
+    /// glyph cell + two meter cells.
+    #[test]
+    fn sysmon_gutter_is_width_aligned_with_text_gutter() {
+        let items = vec![('⛃', 0.97), ('⚙', 0.34), ('▤', 0.61)];
+        let w = 27;
+        let ours = crate::status_fold::strip_ansi(&sysmon_gutter(&items, w, true));
+        let reference = crate::status_fold::strip_ansi(&text_gutter("x", w, true));
+        assert_eq!(ours.chars().count(), reference.chars().count(),
+            "sysmon cell must occupy the same columns as a text cell:\n{ours:?}\n{reference:?}");
+        // 3 items × 3 cells + 2 separators = 11 visible strip chars.
+        assert!(ours.contains('⛃') && ours.contains('⚙') && ours.contains('▤'));
+    }
 
     /// The continuation blank margin is a gutter of the row-0 width
     /// with the `│` in the same column, so a phase's detail rows align

@@ -290,6 +290,11 @@ impl TuiObserver {
 }
 
 impl nbrs_runtime::observer::RunObserver for TuiObserver {
+    fn sysmon_update(&self, sample: &nbrs_runtime::sysmon::SysmonSample) {
+        // Ambient session state, not a display trigger: no ensure_tui_started.
+        self.state.send(RunStateCmd::Sysmon(sample.clone()));
+    }
+
     fn phase_starting(&self, scene_node_id: nbrs_runtime::scene_tree::SceneNodeId, name: &str, labels: &str, op_templates: usize, total_cycles: u64, concurrency: usize) {
         self.ensure_tui_started();
         self.state.send(RunStateCmd::PhaseStarting {

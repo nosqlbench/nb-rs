@@ -113,6 +113,8 @@ impl Drop for ScrollbackReceiver {
 /// adding a variant and a handler arm, by design.
 #[derive(Debug)]
 pub enum RunStateCmd {
+    /// Latest sysmon sample window (session-level host utilization).
+    Sysmon(nbrs_runtime::sysmon::SysmonSample),
     /// Replace the scenario tree wholesale (called once after
     /// pre-mapping).
     InstallTree(SceneTree),
@@ -603,6 +605,9 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         // Intercepted by `handle_cmd` (acked there); a stray one
         // reaching the state-mutation fold is a harmless no-op.
         RunStateCmd::Barrier(_) => {}
+        RunStateCmd::Sysmon(sample) => {
+            state.sysmon = Some(sample);
+        }
         RunStateCmd::InstallTree(tree) => {
             state.install_tree(tree);
         }

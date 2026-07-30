@@ -321,6 +321,10 @@ pub struct RunState {
     /// child summaries cheaply. Side-map (rather than baked into
     /// `SceneNode`) so the tree itself stays small / serializable.
     pub summaries: HashMap<SceneNodeId, PhaseSummary>,
+    /// Latest sysmon sample window (host utilization), when the session-level
+    /// sampler is enabled. Refreshed every sample interval; `None` when the
+    /// sampler is off, so display surfaces add nothing.
+    pub sysmon: Option<nbrs_runtime::sysmon::SysmonSample>,
     /// Side-map of the session clock reading captured when each leaf
     /// reached a terminal state (completed/failed), keyed by
     /// `SceneNodeId`. Mirrors `summaries`; feeds `PhaseEntry::session_elapsed`
@@ -438,6 +442,7 @@ impl RunState {
             limit: "none".to_string(),
             tree: SceneTree::new(),
             summaries: HashMap::new(),
+            sysmon: None,
             phase_session_elapsed: HashMap::new(),
             phase_session_started: HashMap::new(),
             phase_ops: HashMap::new(),

@@ -129,6 +129,21 @@ fn dispatch(line: &str, handle: &RunStateHandle) -> bool {
                 });
             }
         }
+        Some("sysmon") => {
+            // `sysmon <disk> <cpu> <maxcore> <mem> <cache>` — fractions.
+            let mut f = || parts.next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            let (disk, cpu, maxcore, mem, cache) = (f(), f(), f(), f(), f());
+            handle.send(RunStateCmd::Sysmon(nbrs_runtime::sysmon::SysmonSample {
+                disk_util: disk,
+                disk_top: "nvme1n1".into(),
+                cpu_mean: cpu,
+                cpu_max_core: maxcore,
+                cpu_top_core: 7,
+                mem_committed: mem,
+                mem_cached: cache,
+                membw_util: None,
+            }));
+        }
         Some("done") => {
             if let Some(name) = parts.next() {
                 handle.send(RunStateCmd::PhaseCompleted {

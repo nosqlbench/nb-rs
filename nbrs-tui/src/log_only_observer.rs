@@ -256,6 +256,12 @@ fn level_to_severity(level: LogLevel) -> LogSeverity {
 }
 
 impl RunObserver for LogOnlyObserver {
+    fn sysmon_update(&self, sample: &nbrs_runtime::sysmon::SysmonSample) {
+        // Same forward the full-TUI observer does: the sample is ambient
+        // session state consumed by the status fold at repaint.
+        self.state.send(crate::run_state_actor::RunStateCmd::Sysmon(sample.clone()));
+    }
+
     fn scenario_pre_mapped(&self, tree: &nbrs_runtime::scene_tree::SceneTree) {
         // Forward the pre-mapped scene tree to the actor so
         // `print_post_run_summary` (and any future sink reading

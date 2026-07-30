@@ -135,6 +135,41 @@ fn blank_shape(s: &str) -> Vec<bool> {
 /// wrote command echo/response straight to stderr scrollback,
 /// which this guards against.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sysmon_detail_line_renders_under_the_active_phase() {
+    // Drive the REAL sink: install a tree, start a phase, feed one sysmon
+    // sample, and assert the phase block grew the utilization detail line —
+    // body naming the subjects, gutter carrying glyph + braille meter.
+    let mut stepper = SteppableTerminal::start(harness_config()).await
+        .expect("spawn harness under shadow terminal");
+    // An active phase with a literal render body — the harness's canonical
+    // way to make the fold produce a phase block (a bare `start` carries no
+    // render handle, so it folds to nothing).
+    cmd(&stepper, "status alpha-live-line");
+    wait_for(&mut stepper, "alpha-live-line", Duration::from_secs(5)).await;
+
+    cmd(&stepper, "sysmon 0.97 0.34 0.89 0.41 0.93");
+    let screen = settled_screen(
+        &mut stepper,
+        "sysmon detail line rendered",
+        |s| s.contains("sys: disk nvme1n1 97%"),
+        Duration::from_secs(5),
+    ).await;
+
+    assert!(screen.contains("cpu 34% (max c7 89%)"),
+        "body must name the hot core:\n{screen}");
+    assert!(screen.contains("mem 41% (+cache 93%)"),
+        "body must carry both memory measures:\n{screen}");
+    for glyph in ['⛃', '⚙', '▤'] {
+        assert!(screen.contains(glyph),
+            "gutter must carry the {glyph} item:\n{screen}");
+    }
+    // The braille meter for 97% disk is a solid-plus cell; at minimum SOME
+    // braille dots must be on screen (U+2800 block, nonzero pattern).
+    assert!(screen.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)),
+        "at least one non-empty braille meter cell must render:\n{screen}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn console_output_is_contained_in_frame() {
     const MARKER: &str = "CONSOLEMARKERZZ";
 

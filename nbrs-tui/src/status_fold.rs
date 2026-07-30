@@ -104,6 +104,10 @@ pub enum RowGutter {
     /// cell between ops instead of restating the same value every
     /// redraw tick.
     LatencyHist { key: String, p50: u64, count: u64 },
+    /// Session-level host-utilization strip (sysmon): one `(glyph, frac)`
+    /// per item, rendered as a single-cell symbol + a two-cell braille
+    /// meter, colored by utilization. Items arrive in display order.
+    Sysmon { items: Vec<(char, f64)> },
 }
 
 /// Row roles within one rendered block (SRD-92): the header leads,
@@ -188,6 +192,13 @@ pub fn render_active_status_with_gutters(
                     RowRole::KeyMetrics => metric_cell.clone(),
                 });
             }
+            // Session-level host utilization, shown per phase while the
+            // sysmon sampler runs: the gutter carries the glyph+meter strip,
+            // the body carries the latest numbers with their subjects named.
+            if let Some(sm) = &snap.sysmon {
+                lines.push(sysmon_detail_line(sm));
+                gutters.push(RowGutter::Sysmon { items: sysmon_items(sm) });
+            }
             for (leaf, cell) in render_op_leaves(snap, p) {
                 lines.push(leaf);
                 gutters.push(cell);
@@ -199,6 +210,49 @@ pub fn render_active_status_with_gutters(
     } else {
         Some((lines.join("\n"), gutters))
     }
+}
+
+
+/// Display order + glyphs for the sysmon strip. Glyphs follow the
+/// [`crate::widgets::TIMING_MARK`] rule: single-cell, text-presentation
+/// symbols — an emoji-presentation glyph would occupy two terminal cells and
+/// shift every divider on the row.
+///
+/// ⛃ disk (stacked-discs shape), ⚙ cpu, ▤ memory (bank rows), ⇅ memory
+/// bandwidth (transfer). The bandwidth item appears only when resctrl made it
+/// measurable — absent is absent, not zero.
+pub fn sysmon_items(s: &nbrs_runtime::sysmon::SysmonSample) -> Vec<(char, f64)> {
+    let mut items = vec![
+        ('⛃', s.disk_util),
+        ('⚙', s.cpu_mean),
+        ('▤', s.mem_committed),
+    ];
+    if let Some(bw) = s.membw_util {
+        items.push(('⇅', bw));
+    }
+    items
+}
+
+/// The right-side body for the sysmon detail row: the latest numbers with
+/// their subjects named — which device was hottest, which core was most
+/// saturated, and both memory measures. The strip answers "how much"; this
+/// line answers "of what".
+pub fn sysmon_detail_line(s: &nbrs_runtime::sysmon::SysmonSample) -> String {
+    let pct = |f: f64| format!("{:.0}%", f * 100.0);
+    let disk = if s.disk_top.is_empty() {
+        format!("disk {}", pct(s.disk_util))
+    } else {
+        format!("disk {} {}", s.disk_top, pct(s.disk_util))
+    };
+    let mut line = format!(
+        "  sys: {disk} · cpu {} (max c{} {}) · mem {} (+cache {})",
+        pct(s.cpu_mean), s.cpu_top_core, pct(s.cpu_max_core),
+        pct(s.mem_committed), pct(s.mem_cached),
+    );
+    if let Some(bw) = s.membw_util {
+        line.push_str(&format!(" · membw {}", pct(bw)));
+    }
+    line
 }
 
 /// SRD-92 R1 — the header row's margin: this node's OWN timing triad
@@ -551,6 +605,66 @@ mod tests {
             render_active_status(&s).as_deref(),
             Some("A-status\nB-status"),
         );
+    }
+
+    /// With a sysmon sample present, EVERY phase block grows one detail row
+    /// whose gutter is the utilization strip — and rows/gutters stay index-
+    /// aligned, which is the invariant the sink's zip depends on.
+    #[test]
+    fn sysmon_adds_one_aligned_detail_row_per_phase() {
+        let mut with = state_with(vec![
+            literal_phase("a", Some(1), Some("A")),
+            literal_phase("b", Some(2), Some("B")),
+        ]);
+        let (base_lines, base_gutters) =
+            render_active_status_with_gutters(&with).expect("baseline renders");
+        assert_eq!(base_lines.split('\n').count(), base_gutters.len());
+
+        with.sysmon = Some(nbrs_runtime::sysmon::SysmonSample {
+            disk_util: 0.97,
+            disk_top: "nvme1n1".into(),
+            cpu_mean: 0.34,
+            cpu_max_core: 0.89,
+            cpu_top_core: 7,
+            mem_committed: 0.41,
+            mem_cached: 0.93,
+            membw_util: None,
+        });
+        let (lines, gutters) =
+            render_active_status_with_gutters(&with).expect("renders");
+        let lines: Vec<&str> = lines.split('\n').collect();
+        assert_eq!(lines.len(), gutters.len(), "rows and gutters must stay zipped");
+        let strips: Vec<usize> = gutters.iter().enumerate()
+            .filter(|(_, g)| matches!(g, RowGutter::Sysmon { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(strips.len(), 2, "one strip row per phase block");
+        for i in strips {
+            let body = lines[i];
+            assert!(body.contains("nvme1n1") && body.contains("max c7 89%"),
+                "the body names the subjects: {body:?}");
+        }
+    }
+
+    /// The bandwidth item exists only when it was measured. Three items
+    /// without resctrl, four with.
+    #[test]
+    fn sysmon_strip_omits_unavailable_bandwidth() {
+        let mut sample = nbrs_runtime::sysmon::SysmonSample {
+            disk_util: 0.5,
+            disk_top: "sda".into(),
+            cpu_mean: 0.2,
+            cpu_max_core: 0.3,
+            cpu_top_core: 0,
+            mem_committed: 0.4,
+            mem_cached: 0.8,
+            membw_util: None,
+        };
+        assert_eq!(sysmon_items(&sample).len(), 3);
+        sample.membw_util = Some(0.12);
+        let items = sysmon_items(&sample);
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[3].0, '⇅');
     }
 
     #[test]
