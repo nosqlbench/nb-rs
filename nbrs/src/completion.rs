@@ -1294,7 +1294,7 @@ fn static_sysmon(partial: &str, _ctx: &[&str]) -> Vec<String> {
         Some(i) => (&partial[..=i], &partial[i + 1..]),
         None => ("", partial),
     };
-    filter_prefix(&["all", "cpu", "io", "ram", "rambw", "storage"], part)
+    filter_prefix(&["all", "any", "cpu", "io", "ram", "rambw", "storage"], part)
         .into_iter()
         .map(|c| format!("{done}{c}"))
         .collect()

@@ -602,7 +602,7 @@ fn build_session_metrics(
     // the session with enable instructions rather than silently monitoring
     // less than was asked for — `check_rambw_requirements` is the gate.
     if let Some(setting) = params.get("sysmon") {
-        let cats = crate::sysmon::parse_categories(setting)?;
+        let selection = crate::sysmon::parse_selection(setting)?;
         let interval = match params.get("sysmon-interval") {
             None => std::time::Duration::from_secs(5),
             Some(v) => match v.trim_end_matches('s').parse::<f64>() {
@@ -620,12 +620,33 @@ fn build_session_metrics(
                      in GB/s, got '{v}'")),
             },
         };
-        let config = crate::sysmon::SysmonConfig { cats, interval, membw_peak_bytes_per_s };
-        // The rambw gate runs before spawn so the failure is a clean session
-        // abort with instructions. The session directory already exists at
-        // this point (Session::start ran) — the same is true of every config
-        // error raised from here, and the next run gets its own directory.
-        crate::sysmon::check_rambw_requirements(&config)?;
+        let mut config = crate::sysmon::SysmonConfig {
+            cats: crate::sysmon::Categories::ALL,
+            interval,
+            membw_peak_bytes_per_s,
+        };
+        match selection {
+            // `any` — best-effort by stated request: enable what the host
+            // supports and ANNOUNCE each skip, one line per subsystem.
+            crate::sysmon::Selection::Any => {
+                let (cats, skipped) = crate::sysmon::resolve_any(&config);
+                config.cats = cats;
+                for reason in skipped {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "sysmon: skipping a subsystem: {reason}");
+                }
+            }
+            // Named categories are REQUIRED: the rambw gate runs before
+            // spawn so an unsupported host is a clean session abort with
+            // instructions. The session directory already exists at this
+            // point (Session::start ran) — the same is true of every config
+            // error raised from here, and the next run gets its own
+            // directory.
+            crate::sysmon::Selection::Cats(cats) => {
+                config.cats = cats;
+                crate::sysmon::check_rambw_requirements(&config)?;
+            }
+        }
         crate::sysmon::spawn(config, session.component.clone(), observer.clone())?;
         crate::diag!(crate::observer::LogLevel::Info,
             "sysmon: sampling {setting} every {interval:?}");

@@ -3,8 +3,12 @@
 
 //! Session-level system-performance sampler.
 //!
-//! Enabled per session with `sysmon=<categories>` — `sysmon=all` or any
-//! comma list of `cpu,io,ram,rambw,storage`. Reads `/proc` (and statvfs)
+//! Enabled per session with `sysmon=<categories>` — `sysmon=all`,
+//! `sysmon=any`, or a comma list of `cpu,io,ram,rambw,storage`. `all` and
+//! `any` differ in exactly one way: `all` ABORTS when a subsystem is
+//! unavailable, `any` enables what the host supports and NAMES what it
+//! skipped — an explicit opt-in to best-effort, so the skip is announced
+//! rather than silent. Reads `/proc` (and statvfs)
 //! on a fixed interval (default 5 s, `sysmon-interval=<seconds>`) and
 //! publishes host-side utilization as session-scoped gauges plus a live
 //! observer callback for display surfaces: measurement of the machine
@@ -79,10 +83,40 @@ impl Categories {
     }
 }
 
-/// Parse a `sysmon=` value: `all`, or a comma list of category names.
-/// Unknown names are errors that NAME the valid set — a typo silently
-/// monitoring nothing would be the failure mode this surface exists to
-/// avoid.
+/// What a `sysmon=` value asked for: a fixed category set, or "whatever
+/// this host supports".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selection {
+    /// Named categories (including `all`): every one is REQUIRED, and an
+    /// unavailable subsystem aborts the session with instructions.
+    Cats(Categories),
+    /// `sysmon=any`: enable every available subsystem, skip-and-announce
+    /// the rest. The stated opt-in is what makes the skip acceptable.
+    Any,
+}
+
+/// Parse a `sysmon=` value: `all`, `any`, or a comma list of category
+/// names. Unknown names are errors that NAME the valid set — a typo
+/// silently monitoring nothing would be the failure mode this surface
+/// exists to avoid.
+pub fn parse_selection(value: &str) -> Result<Selection, String> {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("any") {
+        return Ok(Selection::Any);
+    }
+    if trimmed.to_ascii_lowercase().split(',').any(|t| t.trim() == "any") {
+        return Err(
+            "sysmon: `any` stands alone (it means \"every available \
+             subsystem\") — combining it with named categories is \
+             ambiguous. Use `sysmon=any`, or name the categories."
+                .to_string(),
+        );
+    }
+    parse_categories(trimmed).map(Selection::Cats)
+}
+
+/// Parse a fixed category list (`all` or comma names). See
+/// [`parse_selection`] for the `any` form.
 pub fn parse_categories(value: &str) -> Result<Categories, String> {
     if value.trim().eq_ignore_ascii_case("all") {
         return Ok(Categories::ALL);
@@ -168,7 +202,8 @@ To enable memory-bandwidth monitoring:
   3. Mount the interface:  sudo mount -t resctrl resctrl /sys/fs/resctrl
 
 If this host cannot support it (most VMs cannot), run without the rambw
-category:  sysmon=cpu,io,ram,storage"
+category:  sysmon=cpu,io,ram,storage  — or use  sysmon=any  to enable
+every subsystem this host supports."
             .to_string());
     }
     if config.membw_peak_bytes_per_s.is_none() {
@@ -176,10 +211,32 @@ category:  sysmon=cpu,io,ram,storage"
 sysmon: rambw needs a peak-bandwidth reference to turn bytes/s into a \
 utilization. Set it with  sysmon-membw-gbps=<peak>  (the host's rated \
 memory bandwidth in GB/s), or run without the rambw category:  \
-sysmon=cpu,io,ram,storage"
+sysmon=cpu,io,ram,storage  — or use  sysmon=any"
             .to_string());
     }
     Ok(())
+}
+
+/// Resolve `sysmon=any` against THIS host: every category the host
+/// supports, plus one human-readable line per category that had to be
+/// skipped and why. cpu/io/ram/storage are /proc-backed and always
+/// available on Linux; rambw carries real prerequisites.
+///
+/// The skip lines exist because `any` is best-effort, not silent-effort:
+/// the runner logs each one, so a session that monitored four of five
+/// categories says so.
+pub fn resolve_any(config: &SysmonConfig) -> (Categories, Vec<String>) {
+    let mut cats = Categories::ALL;
+    let mut skipped = Vec::new();
+    let rambw_probe = SysmonConfig { cats, ..config.clone() };
+    if let Err(reason) = check_rambw_requirements(&rambw_probe) {
+        cats.rambw = false;
+        // First line of the full instructions — the one that names the
+        // missing prerequisite. `sysmon=rambw` gets the complete text.
+        let first = reason.lines().next().unwrap_or("unavailable").to_string();
+        skipped.push(format!("{first} (run `sysmon=rambw` for the enable steps)"));
+    }
+    (cats, skipped)
 }
 
 // ---------------------------------------------------------------------------
@@ -407,15 +464,78 @@ fn read_membw_bytes() -> Option<u64> {
 // The sampler task.
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
+/// A gauge family whose series are one-per-SUBJECT — the device, core, or
+/// mount the measurement is about. Each distinct subject value materialises
+/// a dimensional cell under the session component
+/// ([`nbrs_metrics::cells::resolve_under`]) and registers the family there
+/// once; after that a sample is a hash lookup and a `set`.
+///
+/// This is what "submitted to metrics with the appropriate dimensional
+/// labels, keyed by the session component" means concretely:
+/// `sysmon_io_util{session="…",device="nvme1n1"}` — the subject is a label,
+/// the cell refines the session's identity, and a sweep that shifts between
+/// devices yields one honestly-labeled series per device rather than one
+/// anonymous series whose subject silently changes.
+struct SubjectGauge {
+    family: &'static str,
+    /// The dimension this family's subject occupies (`device`, `core`,
+    /// `mount`).
+    label_key: &'static str,
+    parent: Arc<RwLock<Component>>,
+    /// Instruments already materialised, by subject value.
+    instances: std::collections::HashMap<String, Arc<ValueGauge>>,
+}
+
+impl SubjectGauge {
+    fn new(
+        family: &'static str,
+        label_key: &'static str,
+        parent: Arc<RwLock<Component>>,
+    ) -> Self {
+        Self { family, label_key, parent, instances: Default::default() }
+    }
+
+    fn set(&mut self, subject: &str, value: f64) {
+        if let Some(g) = self.instances.get(subject) {
+            g.set(value);
+            return;
+        }
+        let coord = nbrs_metrics::labels::Labels::of(self.label_key, subject);
+        let cell = nbrs_metrics::cells::resolve_under(&self.parent, &coord);
+        let labels = {
+            let guard = cell.read().unwrap_or_else(|e| e.into_inner());
+            guard.effective_labels().clone()
+        };
+        let g = Arc::new(ValueGauge::new(labels.with("family", self.family)));
+        let registered = cell
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .register_instrument(
+                self.family,
+                nbrs_metrics::component::InstrumentRef::Gauge(g.clone()),
+            );
+        if let Err(e) = registered {
+            // One cell, one family: a second registration here is a
+            // programming error worth hearing about once, not per sample.
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "sysmon: {family} cell {subject}: {e}", family = self.family);
+        }
+        g.set(value);
+        self.instances.insert(subject.to_string(), g);
+    }
+}
+
 struct Gauges {
-    io: Option<Arc<ValueGauge>>,
+    /// Host-scalar measures — no subject, so they live on the session root
+    /// itself and carry exactly its labels.
     cpu_mean: Option<Arc<ValueGauge>>,
-    cpu_core_max: Option<Arc<ValueGauge>>,
     ram_committed: Option<Arc<ValueGauge>>,
     ram_cached: Option<Arc<ValueGauge>>,
     rambw: Option<Arc<ValueGauge>>,
-    storage: Option<Arc<ValueGauge>>,
+    /// Subject-dimensioned measures — one cell per device / core / mount.
+    io: Option<SubjectGauge>,
+    cpu_core_max: Option<SubjectGauge>,
+    storage: Option<SubjectGauge>,
 }
 
 /// Register gauges for the ENABLED categories on the session component.
@@ -436,13 +556,17 @@ fn register_gauges(
         )?;
         Ok(Some(g))
     };
-    let mut gauges = Gauges::default();
-    if cats.io {
-        gauges.io = mk("sysmon_io_util")?;
-    }
+    let mut gauges = Gauges {
+        cpu_mean: None,
+        ram_committed: None,
+        ram_cached: None,
+        rambw: None,
+        io: None,
+        cpu_core_max: None,
+        storage: None,
+    };
     if cats.cpu {
         gauges.cpu_mean = mk("sysmon_cpu_util")?;
-        gauges.cpu_core_max = mk("sysmon_cpu_core_max")?;
     }
     if cats.ram {
         gauges.ram_committed = mk("sysmon_ram_util")?;
@@ -451,8 +575,21 @@ fn register_gauges(
     if cats.rambw {
         gauges.rambw = mk("sysmon_rambw_util")?;
     }
+    drop(guard);
+    // Subject-dimensioned families register per cell at first sight of each
+    // subject, NOT here — registering on the root as well would claim the
+    // family for the un-refined identity and collide with the first cell.
+    if cats.io {
+        gauges.io = Some(SubjectGauge::new(
+            "sysmon_io_util", "device", component.clone()));
+    }
+    if cats.cpu {
+        gauges.cpu_core_max = Some(SubjectGauge::new(
+            "sysmon_cpu_core_max", "core", component.clone()));
+    }
     if cats.storage {
-        gauges.storage = mk("sysmon_storage_util")?;
+        gauges.storage = Some(SubjectGauge::new(
+            "sysmon_storage_util", "mount", component.clone()));
     }
     Ok(gauges)
 }
@@ -467,7 +604,7 @@ pub fn spawn(
     observer: Arc<dyn crate::observer::RunObserver>,
 ) -> Result<tokio::task::JoinHandle<()>, String> {
     check_rambw_requirements(&config)?;
-    let gauges = register_gauges(&component, config.cats)?;
+    let mut gauges = register_gauges(&component, config.cats)?;
     let cats = config.cats;
 
     let mut shutdown = crate::session_signals::subscribe_shutdown();
@@ -547,14 +684,14 @@ pub fn spawn(
                 sample.storage = max_storage_util();
             }
 
-            if let (Some(g), Some((_, u))) = (&gauges.io, &sample.io) {
-                g.set(*u);
+            if let (Some(g), Some((dev, u))) = (&mut gauges.io, &sample.io) {
+                g.set(dev, *u);
             }
             if let (Some(g), Some(c)) = (&gauges.cpu_mean, &sample.cpu) {
                 g.set(c.mean);
             }
-            if let (Some(g), Some(c)) = (&gauges.cpu_core_max, &sample.cpu) {
-                g.set(c.max_core);
+            if let (Some(g), Some(c)) = (&mut gauges.cpu_core_max, &sample.cpu) {
+                g.set(&c.top_core.to_string(), c.max_core);
             }
             if let (Some(g), Some((committed, _))) =
                 (&gauges.ram_committed, &sample.ram)
@@ -568,8 +705,8 @@ pub fn spawn(
             if let (Some(g), Some(u)) = (&gauges.rambw, sample.rambw) {
                 g.set(u);
             }
-            if let (Some(g), Some((_, u))) = (&gauges.storage, &sample.storage) {
-                g.set(*u);
+            if let (Some(g), Some((mount, u))) = (&mut gauges.storage, &sample.storage) {
+                g.set(mount, *u);
             }
 
             observer.sysmon_update(&sample);
@@ -646,6 +783,67 @@ mod tests {
             membw_peak_bytes_per_s: None,
         };
         assert!(check_rambw_requirements(&config).is_ok());
+    }
+
+    /// `any` stands alone; combined with names it is ambiguous and refused.
+    #[test]
+    fn any_parses_alone_and_refuses_combination() {
+        assert_eq!(parse_selection("any").unwrap(), Selection::Any);
+        assert_eq!(parse_selection("ANY").unwrap(), Selection::Any);
+        assert!(parse_selection("any,cpu").is_err());
+        assert!(matches!(parse_selection("all").unwrap(),
+            Selection::Cats(c) if c == Categories::ALL));
+    }
+
+    /// On a host without resctrl, `any` yields everything but rambw and
+    /// SAYS SO; the skip line points at the full instructions. (This box
+    /// has no resctrl; a host that has it passes the gate instead.)
+    #[test]
+    fn any_downgrades_rambw_with_an_announced_reason() {
+        let config = SysmonConfig {
+            cats: Categories::ALL,
+            interval: Duration::from_secs(5),
+            membw_peak_bytes_per_s: None,
+        };
+        let (cats, skipped) = resolve_any(&config);
+        assert!(cats.cpu && cats.io && cats.ram && cats.storage);
+        if std::path::Path::new("/sys/fs/resctrl/mon_data").exists() {
+            return; // host genuinely supports it; nothing to skip here
+        }
+        assert!(!cats.rambw, "unavailable rambw is disabled under `any`");
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].contains("sysmon=rambw"),
+            "the skip points at the full enable steps: {}", skipped[0]);
+    }
+
+    /// A subject-dimensioned gauge materialises ONE cell per subject under
+    /// the session component, each series carrying the subject as a label —
+    /// and re-setting an existing subject attaches no twin.
+    #[test]
+    fn subject_gauges_dimension_by_cell_under_the_session_component() {
+        let session = Arc::new(RwLock::new(
+            nbrs_metrics::component::Component::new(
+                nbrs_metrics::labels::Labels::of("session", "s1"),
+                std::collections::HashMap::new(),
+            ),
+        ));
+        let mut g = SubjectGauge::new("sysmon_io_util", "device", session.clone());
+        g.set("nvme1n1", 0.97);
+        g.set("nvme2n1", 0.40);
+        g.set("nvme1n1", 0.98);
+
+        let guard = session.read().unwrap();
+        assert_eq!(guard.child_count(), 2,
+            "one cell per device, re-sets attach no twin");
+        drop(guard);
+        assert_eq!(g.instances.len(), 2);
+        // The series carries session + device + family — the session's
+        // identity refined by the subject, never replaced.
+        let labels = g.instances["nvme1n1"].labels().to_prometheus();
+        for owned in ["session=", "device=\"nvme1n1\"", "family="] {
+            assert!(labels.contains(owned),
+                "{owned} missing from {labels}");
+        }
     }
 
     /// Real lines from this host's /proc/diskstats — io_ticks is token 12.
