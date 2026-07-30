@@ -9,6 +9,13 @@ in = "install --path nbrs"
 # Direct all test temp files to target/test-tmp/ instead of /tmp.
 [env]
 TMPDIR = { value = "target/test-tmp", relative = true }
+# Widen the example-workload sweep's in-process concurrency for workspace
+# test runs. The sweep (nbrs/tests/example_workloads_in_process.rs) reads
+# this and defaults to 10; this box has 64 cores and the examples are
+# grouped for serial isolation where they need it, so the cap — not the
+# work — was the wall time. `force = false` (default): an explicit
+# NBRS_TEST_CONCURRENCY in the environment still wins.
+NBRS_TEST_CONCURRENCY = "24"
 # Linker search path for the vendored libcassandra static
 # archive. Built once via `bash adapters/cql/build.sh driver`
 # — Docker pulls the C++ driver source, builds, extracts to

@@ -532,7 +532,7 @@ mod tests {
     use nbrs_metrics::controls::{BranchScope, ControlBuilder};
     use nbrs_metrics::labels::Labels;
     use std::collections::HashMap;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
 
     /// Serializes test access to the global `SESSION_ROOT` and the
     /// thread-locals — the crate-wide guard hoisted next to the global
