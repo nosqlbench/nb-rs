@@ -71,6 +71,10 @@ pub use crate::scene_tree::NodeKind as PreMapKind;
 
 /// Lifecycle events from the executor.
 pub trait RunObserver: Send + Sync {
+    /// A completed sysmon sample window (session-level host utilization).
+    /// Display surfaces override; everything else ignores it.
+    fn sysmon_update(&self, _sample: &crate::sysmon::SysmonSample) {}
+
     /// A phase is about to start executing.
     ///
     /// `op_templates` is the count of op definitions in the phase

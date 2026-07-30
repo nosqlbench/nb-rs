@@ -106,6 +106,7 @@ pub mod refine_plan;
 pub mod checkpoint;
 pub(crate) mod scheduler;
 pub(crate) mod profiler;
+pub mod sysmon;
 pub mod session_signals;
 pub mod execution_context;
 pub mod concurrent;

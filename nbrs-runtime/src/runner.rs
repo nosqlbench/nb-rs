@@ -593,6 +593,48 @@ fn build_session_metrics(
     //   * `--metrics-log[=<path>]` flag on the CLI
     //   * `metrics-log=<path|true>` in workload params
     //   * `NBRS_METRICS_LOG=<path|1>` env var
+    // Session-level system-performance sampler (host disk/cpu/memory
+    // utilization from /proc). Same opt-in surface as the metrics log:
+    //   * `--sysmon[=<seconds>]` on the CLI
+    //   * `sysmon=<seconds|true>` in workload params
+    // Off by default; the value, when not a bare enable, is the sample
+    // interval in seconds (default 5).
+    let sysmon_setting: Option<String> = args.iter()
+        .find_map(|a| a.strip_prefix("--sysmon").and_then(|rest| {
+            // `--sysmon-...` would belong to a sibling flag; only a bare
+            // `--sysmon` or `--sysmon=<v>` selects this one.
+            match rest.strip_prefix('=') {
+                Some(v) => Some(v.to_string()),
+                None => rest.is_empty().then(|| "true".to_string()),
+            }
+        }))
+        .or_else(|| params.get("sysmon").cloned());
+    let sysmon_interval: Option<std::time::Duration> = match sysmon_setting.as_deref() {
+        None | Some("0") | Some("false") | Some("no") | Some("off") | Some("") => None,
+        Some("1") | Some("true") | Some("yes") | Some("on") =>
+            Some(std::time::Duration::from_secs(5)),
+        Some(v) => match v.trim_end_matches('s').parse::<f64>() {
+            Ok(secs) if secs > 0.0 => Some(std::time::Duration::from_secs_f64(secs)),
+            _ => return Err(format!(
+                "sysmon: expected a sample interval in seconds (e.g. `--sysmon=5`), got '{v}'")),
+        },
+    };
+    if let Some(interval) = sysmon_interval {
+        let membw_peak_bytes_per_s = params.get("sysmon-membw-gbps")
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|gbps| gbps * 1e9);
+        match crate::sysmon::spawn(
+            crate::sysmon::SysmonConfig { interval, membw_peak_bytes_per_s },
+            session.component.clone(),
+            observer.clone(),
+        ) {
+            Ok(_) => crate::diag!(crate::observer::LogLevel::Info,
+                "sysmon: sampling host disk/cpu/memory every {interval:?}"),
+            Err(e) => crate::diag!(crate::observer::LogLevel::Warn,
+                "sysmon: not started: {e}"),
+        }
+    }
+
     let metrics_log_setting: Option<String> = args.iter()
         .find_map(|a| a.strip_prefix("--metrics-log").map(|rest| {
             rest.strip_prefix('=').unwrap_or("true").to_string()
@@ -5129,6 +5171,7 @@ const RECOGNIZED_BARE_FLAGS: &[&str] = &[
     "--resume-latest",       // SRD-44: resume from logs/latest.
     "--force-retry-failed",  // SRD-44: prepend retry,warn to errors.
     "--refine",              // SRD-77: enable refine-mode skip-plan loading.
+    "--sysmon",              // Session-level /proc sampler, default 5s window.
 ];
 
 /// Strip a single layer of matching outer quotes (single or

@@ -1058,6 +1058,17 @@ pub fn standard_run_flags() -> Vec<Flag> {
             help: "Also write one file per (metric, label-tuple).",
             repeatable: false,
         },
+        // Bool for the same reason as --metrics-log: only the `=` spelling
+        // carries a value (the sample interval in seconds), so advertising a
+        // space-separated value would eat the scenario positional.
+        Flag {
+            long: "--sysmon", short: None, aliases: &[],
+            arity: Arity::Bool, value: ValueProvider::None,
+            help: "Sample host disk/cpu/memory utilization from /proc at the \
+                   session level (`=<seconds>`; bare ⇒ every 5s). Publishes \
+                   sysmon_* gauges and a per-phase utilization strip.",
+            repeatable: false,
+        },
         Flag {
             long: "--report-openmetrics-to", short: None, aliases: &[],
             arity: Arity::Value, value: ValueProvider::None,
@@ -1175,7 +1186,7 @@ mod flag_declaration_tests {
         // Both were honoured by the runner while absent from the spec, which is
         // exactly how `--per-instance-metrics` stayed undocumented.
         let declared = declared();
-        for flag in ["--metrics-log", "--per-instance-metrics"] {
+        for flag in ["--metrics-log", "--per-instance-metrics", "--sysmon"] {
             assert!(declared.contains(&flag), "{flag} must be declared");
         }
     }
