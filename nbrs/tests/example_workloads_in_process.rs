@@ -264,6 +264,15 @@ async fn verify_examples_in_process(
     summary
 }
 
+// Superseded in the DEFAULT test mix by `example_workload_cases` (a
+// harness=false target where every discovered workload is its own
+// nextest-scheduled test running the real `nbrs check`). This sweep remains
+// the only place the WHOLE example tree runs as concurrent in-process
+// executions in one process, so it stays runnable — explicitly:
+//   cargo nextest run -p nbrs --test example_workloads_in_process --run-ignored all
+// The shared-session concurrency PROPERTY itself is covered per-run by
+// example_workloads_concurrent.rs.
+#[ignore = "superseded by example_workload_cases in the default mix; run explicitly for the full in-process sweep"]
 #[test]
 fn all_example_workloads_match_their_rules_in_process() {
     // Stability knobs (default to the CI shape, overridable for the

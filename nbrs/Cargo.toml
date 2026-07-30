@@ -146,3 +146,13 @@ shadow-terminal = "0.2"
 # tempdir helper for filesystem-touching unit tests
 # (currently the `nbrs report` index.md generation tests).
 tempfile = "3"
+libtest-mimic = "0.8.2"
+
+# Auto-discovered example-workload checks as INDIVIDUALLY SCHEDULABLE tests.
+# harness = false: the target speaks libtest's list/run protocol through
+# libtest-mimic, so nextest sees one named test per discovered workload and
+# schedules them in the general mix — instead of one 26s monolith that
+# serializes the whole sweep inside a single test.
+[[test]]
+name = "example_workload_cases"
+harness = false

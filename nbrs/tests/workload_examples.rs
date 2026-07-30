@@ -97,6 +97,8 @@ fn optimizer_control_nests_inside_a_coordinate_sweep() {
     // clean continuous phase. (Inner sweep is a single setting so the test stays
     // to one settle per rerun.)
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 scenarios:
   sweep:
     - for: "batch in 1, 2"
@@ -117,7 +119,7 @@ phases:
       servo: conc
     bindings: |
       input cycle: u64
-      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      err_rate := metricsql_scalar("sum(rate(errors_total[400ms]))")
       score := 0 - err_rate
     ops:
       insert:
@@ -156,6 +158,8 @@ fn optimizer_hybrid_iterates_coordinate_and_servos_control() {
     // control subspace interior to each cell. (Single control value keeps the
     // test to one settle per cell.)
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 phases:
   saturate:
     cycles: 60000
@@ -170,7 +174,7 @@ phases:
       servo: conc
     bindings: |
       input cycle: u64
-      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      err_rate := metricsql_scalar("sum(rate(errors_total[400ms]))")
       score := 0 - err_rate
     ops:
       insert:
@@ -212,6 +216,8 @@ fn optimizer_servo_without_control_field_is_rejected() {
     // with an actionable error — surfacing the half-specified-servo mistake
     // rather than silently downgrading to a coordinate.
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 phases:
   bad:
     cycles: 4
@@ -250,7 +256,12 @@ fn optimizer_servos_a_control_directly_by_name() {
     // control), with no `{var}`-bind wire. `for_each: "concurrency in …"` +
     // `servo: concurrency` servos the concurrency control itself. (`concurrency:
     // 16` is just the warmup the daemon retargets from.)
+    // Same fast idiom as the mixed-resolution test below (and
+    // examples/workloads/optimizer/*.yaml): 50ms cadence, 400ms objective
+    // window. On the 1s default this was 22s of wall for two evals.
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 phases:
   saturate:
     cycles: 60000
@@ -265,7 +276,7 @@ phases:
       servo: concurrency
     bindings: |
       input cycle: u64
-      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      err_rate := metricsql_scalar("sum(rate(errors_total[400ms]))")
       score := 0 - err_rate
     ops:
       insert:
@@ -300,7 +311,15 @@ fn optimizer_servos_mixed_direct_and_indirect_controls() {
     // the daemon retargets both live controls per setting on ONE continuous
     // phase. This is the resolution variant the all-direct
     // `optimizer_multiservo.yaml` doesn't cover.
+    // Timing follows the optimizer examples' fast idiom (see
+    // examples/workloads/optimizer/multiservo.yaml): a 50ms metrics cadence
+    // and a 400ms objective window, so each of the 4 grid evals settles in
+    // well under a second instead of ~10s on the default 1s cadence. This
+    // was the workspace's single longest test (42s) for no property-related
+    // reason — the assertions below are unchanged.
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 phases:
   saturate:
     cycles: 120000
@@ -315,7 +334,7 @@ phases:
       servo: [conc, rate]
     bindings: |
       input cycle: u64
-      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      err_rate := metricsql_scalar("sum(rate(errors_total[400ms]))")
       score := 0 - err_rate
     ops:
       insert:
@@ -372,6 +391,8 @@ fn optimizer_servos_the_rate_control_directly() {
     // the budget carries generous slack — the optimizer concludes the
     // phase after its evals, so slack costs no wall time.
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 phases:
   saturate:
     cycles: 200000
@@ -386,7 +407,7 @@ phases:
       servo: rate
     bindings: |
       input cycle: u64
-      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      err_rate := metricsql_scalar("sum(rate(errors_total[400ms]))")
       score := 0 - err_rate
     ops:
       insert:
@@ -420,6 +441,8 @@ fn optimizer_servo_rate_without_rate_field_is_rejected() {
     // a clean pre-run error, symmetric to the windowed-objective check, NOT a runtime
     // phase failure when the daemon can't find the control.
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 phases:
   bad:
     cycles: 60000
@@ -432,7 +455,7 @@ phases:
       servo: rate
     bindings: |
       input cycle: u64
-      err_rate := metricsql_scalar("sum(rate(errors_total[3s]))")
+      err_rate := metricsql_scalar("sum(rate(errors_total[400ms]))")
       score := 0 - err_rate
     ops:
       probe:
@@ -463,6 +486,8 @@ fn phase_for_each_multi_clause_cartesian() {
     // two-clause phase for_each produces the full cartesian, consistent
     // with scenario-level `for:`.
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 phases:
   walk:
     cycles: 1
@@ -913,6 +938,8 @@ fn write_inline_workload(name: &str, yaml: &str) -> (PathBuf, SessionDir) {
 #[test]
 fn conditional_under_materialised_op_template() {
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 phases:
   predict:
     cycles: 10
@@ -969,6 +996,8 @@ phases:
 #[test]
 fn throttle_under_materialised_op_template() {
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 phases:
   predict:
     cycles: 4
@@ -1017,6 +1046,8 @@ phases:
 #[test]
 fn validation_under_materialised_op_template() {
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 phases:
   predict:
     cycles: 4
@@ -1198,6 +1229,8 @@ fn comprehension_iterates_partition_list_per_partition() {
     // phases, where `mod_in(cycle, p)` (or `over p` on a cursor
     // decl) consumes it as an Ext-typed wire.
     let yaml = r#"
+params:
+  metrics_cadence: 50ms
 scenarios:
   sweep:
     - for: "p in partitions(\"linear:3\", 99)"
