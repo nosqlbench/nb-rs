@@ -213,6 +213,23 @@ pub fn render_active_status_with_gutters(
 }
 
 
+/// The sysmon glyphs, defined ONCE.
+///
+/// The gutter strip and the detail-line body both render them, and the whole
+/// point of repeating a glyph beside its named measurement is that the reader
+/// can tie the two together — so a strip glyph that disagreed with its body
+/// glyph would actively mislead. One constant per category makes that
+/// impossible by construction; `strip_and_body_agree_on_every_glyph` pins it.
+///
+/// Single-cell, text-presentation characters per the
+/// [`crate::widgets::TIMING_MARK`] rule: an emoji-presentation glyph would
+/// occupy two terminal cells and shift every divider on the row.
+pub const GLYPH_CPU: char = '⚙';
+pub const GLYPH_IO: char = '⛃';
+pub const GLYPH_RAM: char = '▤';
+pub const GLYPH_RAMBW: char = '⇅';
+pub const GLYPH_STORAGE: char = '⛁';
+
 /// Display order + glyphs for the sysmon strip, in the category order the
 /// setting names them: cpu, io, ram, rambw, storage. Only enabled
 /// categories appear — a `Some` field is an enabled category with a
@@ -226,19 +243,19 @@ pub fn render_active_status_with_gutters(
 pub fn sysmon_items(s: &nbrs_runtime::sysmon::SysmonSample) -> Vec<(char, f64)> {
     let mut items = Vec::new();
     if let Some(c) = &s.cpu {
-        items.push(('⚙', c.mean));
+        items.push((GLYPH_CPU, c.mean));
     }
     if let Some((_, u)) = &s.io {
-        items.push(('⛃', *u));
+        items.push((GLYPH_IO, *u));
     }
     if let Some((committed, _)) = &s.ram {
-        items.push(('▤', *committed));
+        items.push((GLYPH_RAM, *committed));
     }
     if let Some(bw) = s.rambw {
-        items.push(('⇅', bw));
+        items.push((GLYPH_RAMBW, bw));
     }
     if let Some((_, u)) = &s.storage {
-        items.push(('⛁', *u));
+        items.push((GLYPH_STORAGE, *u));
     }
     items
 }
@@ -250,25 +267,30 @@ pub fn sysmon_items(s: &nbrs_runtime::sysmon::SysmonSample) -> Vec<(char, f64)> 
 pub fn sysmon_detail_line(s: &nbrs_runtime::sysmon::SysmonSample) -> String {
     let pct = |f: f64| format!("{:.0}%", f * 100.0);
     let mut parts: Vec<String> = Vec::new();
+    // Each measurement is PREFIXED with the same glyph its meter carries in
+    // the gutter, so the strip stops being a private code: a reader seeing
+    // an orange ⛁ two columns to the left can find `⛁ storage / 91%` on the
+    // right without being told the mapping.
     if let Some(c) = &s.cpu {
         parts.push(format!(
-            "cpu {} (max c{} {})", pct(c.mean), c.top_core, pct(c.max_core)));
+            "{GLYPH_CPU} cpu {} (max c{} {})", pct(c.mean), c.top_core, pct(c.max_core)));
     }
     if let Some((dev, u)) = &s.io {
         parts.push(if dev.is_empty() {
-            format!("io {}", pct(*u))
+            format!("{GLYPH_IO} io {}", pct(*u))
         } else {
-            format!("io {dev} {}", pct(*u))
+            format!("{GLYPH_IO} io {dev} {}", pct(*u))
         });
     }
     if let Some((committed, cached)) = &s.ram {
-        parts.push(format!("ram {} (+cache {})", pct(*committed), pct(*cached)));
+        parts.push(format!(
+            "{GLYPH_RAM} ram {} (+cache {})", pct(*committed), pct(*cached)));
     }
     if let Some(bw) = s.rambw {
-        parts.push(format!("rambw {}", pct(bw)));
+        parts.push(format!("{GLYPH_RAMBW} rambw {}", pct(bw)));
     }
     if let Some((mount, u)) = &s.storage {
-        parts.push(format!("storage {mount} {}", pct(*u)));
+        parts.push(format!("{GLYPH_STORAGE} storage {mount} {}", pct(*u)));
     }
     format!("  sys: {}", parts.join(" · "))
 }
@@ -660,6 +682,58 @@ mod tests {
             assert!(body.contains("nvme1n1") && body.contains("max c7 89%"),
                 "the body names the subjects: {body:?}");
         }
+    }
+
+    /// The edification contract: every glyph in the gutter strip appears in
+    /// the body beside its named measurement, in the same order. If these
+    /// ever diverge the strip becomes a private code that the body
+    /// mis-explains — worse than no legend at all.
+    #[test]
+    fn strip_and_body_agree_on_every_glyph() {
+        let sample = nbrs_runtime::sysmon::SysmonSample {
+            cpu: Some(nbrs_runtime::sysmon::CpuReading {
+                mean: 0.02, max_core: 0.70, top_core: 5 }),
+            io: Some(("loop0".into(), 0.0)),
+            ram: Some((0.22, 0.61)),
+            rambw: Some(0.33),
+            storage: Some(("/".into(), 0.40)),
+        };
+        let body = sysmon_detail_line(&sample);
+        let strip: Vec<char> = sysmon_items(&sample).iter().map(|(g, _)| *g).collect();
+
+        // Same glyphs, same order, on both sides.
+        let in_body: Vec<char> = body.chars().filter(|c| strip.contains(c)).collect();
+        assert_eq!(in_body, strip,
+            "body must echo every strip glyph once, in strip order:\n{body}");
+
+        // And each one actually labels its own measurement.
+        for (glyph, name) in [
+            (GLYPH_CPU, "cpu"), (GLYPH_IO, "io"), (GLYPH_RAM, "ram"),
+            (GLYPH_RAMBW, "rambw"), (GLYPH_STORAGE, "storage"),
+        ] {
+            assert!(body.contains(&format!("{glyph} {name}")),
+                "{glyph} must sit immediately before `{name}`:\n{body}");
+        }
+    }
+
+    /// A category that was not measured contributes NO glyph to either side —
+    /// the legend never advertises something the strip does not show.
+    #[test]
+    fn disabled_categories_appear_in_neither_strip_nor_body() {
+        let sample = nbrs_runtime::sysmon::SysmonSample {
+            cpu: Some(nbrs_runtime::sysmon::CpuReading {
+                mean: 0.5, max_core: 0.5, top_core: 0 }),
+            io: None,
+            ram: None,
+            rambw: None,
+            storage: None,
+        };
+        let body = sysmon_detail_line(&sample);
+        assert!(body.contains(&format!("{GLYPH_CPU} cpu")));
+        for absent in [GLYPH_IO, GLYPH_RAM, GLYPH_RAMBW, GLYPH_STORAGE] {
+            assert!(!body.contains(absent), "{absent} must not appear:\n{body}");
+        }
+        assert_eq!(sysmon_items(&sample).len(), 1);
     }
 
     /// The bandwidth item exists only when it was measured. Three items

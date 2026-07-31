@@ -151,13 +151,13 @@ async fn sysmon_detail_line_renders_under_the_active_phase() {
     let screen = settled_screen(
         &mut stepper,
         "sysmon detail line rendered",
-        |s| s.contains("io nvme1n1 97%"),
+        |s| s.contains("\u{26C3} io nvme1n1 97%"),
         Duration::from_secs(5),
     ).await;
 
-    assert!(screen.contains("cpu 34% (max c7 89%)"),
+    assert!(screen.contains("\u{2699} cpu 34% (max c7 89%)"),
         "body must name the hot core:\n{screen}");
-    assert!(screen.contains("ram 41% (+cache 93%)"),
+    assert!(screen.contains("\u{25A4} ram 41% (+cache 93%)"),
         "body must carry both memory measures:\n{screen}");
     for glyph in ['⛃', '⚙', '▤'] {
         assert!(screen.contains(glyph),
