@@ -196,7 +196,26 @@ impl AssertionSpec {
 
         let json = match &result.body {
             Some(body) => body.to_json(),
-            None => return matches!(self.predicate, AssertionPredicate::IsNull),
+            // No body at all. A field predicate constrains the VALUE of
+            // something in the response, so with no response it is vacuous —
+            // it passes rather than failing. A succeeding op that returns
+            // nothing (HTTP 204, or `on_timeout: accept`, where the server is
+            // still working and the poll layer is the real observer) must not
+            // be failed by a `field: status, eq: 200` clause that was written
+            // to check a body when one arrives.
+            //
+            // Requiring a body is available, but must be ASKED for, and the
+            // two spellings already exist:
+            //   `is: not_null`  — this field must be present
+            //   `min_rows: 1`   — the result must carry at least one row
+            // Both of those constrain PRESENCE, not value, so both still fail
+            // here. That is the whole distinction: value predicates go quiet
+            // when there is nothing to read; presence predicates are exactly
+            // the ones that shouldn't.
+            None => return !matches!(
+                self.predicate,
+                AssertionPredicate::NotNull | AssertionPredicate::MalformedBound { .. }
+            ),
         };
 
         let field_val = extract_field_from_json(&json, &self.field);
@@ -1817,6 +1836,57 @@ mod tests {
         let err = parse_relevancy(&template, None, None).unwrap_err();
         assert!(err.contains("'k' is not a valid non-negative integer"),
             "diagnostic should describe the parse failure: {err}");
+    }
+
+    /// A succeeding op that returns NO body must not be failed by a value
+    /// predicate. `on_timeout: accept` (the server is still working; the poll
+    /// layer observes it) and HTTP 204 both land here, and a
+    /// `field: status, eq: 200` clause written for the normal response was
+    /// failing them — it cost a live benchmark run at tier 6.
+    #[test]
+    fn value_predicates_are_vacuous_without_a_body() {
+        let result = OpResult { body: None, ..Default::default() };
+        for predicate in [
+            AssertionPredicate::Eq("200".into()),
+            AssertionPredicate::Lte(5.0),
+            AssertionPredicate::Gte(1.0),
+            AssertionPredicate::Contains("ok".into()),
+            AssertionPredicate::IsNull,
+        ] {
+            let spec = AssertionSpec { field: "status".into(), predicate };
+            assert!(spec.check(&result),
+                "a value predicate has nothing to contradict it: {:?}", spec.predicate);
+        }
+    }
+
+    /// Presence predicates are the explicit "a body is required" spelling, so
+    /// they must still fail when none arrives — otherwise there would be no
+    /// way to demand one.
+    #[test]
+    fn presence_predicates_still_fail_without_a_body() {
+        let result = OpResult { body: None, ..Default::default() };
+        let not_null = AssertionSpec {
+            field: "status".into(), predicate: AssertionPredicate::NotNull };
+        assert!(!not_null.check(&result),
+            "`is: not_null` is how an author demands the field exist");
+        let min_rows = AssertionSpec {
+            field: String::new(), predicate: AssertionPredicate::MinRows(1) };
+        assert!(!min_rows.check(&result),
+            "`min_rows: 1` is how an author demands a non-empty result");
+    }
+
+    /// A malformed bound can never pass, body or no body — otherwise a typo
+    /// would turn into a silently-skipped check on exactly the ops that
+    /// return nothing.
+    #[test]
+    fn malformed_bounds_fail_even_without_a_body() {
+        let result = OpResult { body: None, ..Default::default() };
+        let spec = AssertionSpec {
+            field: "value".into(),
+            predicate: AssertionPredicate::MalformedBound {
+                key: "lte".into(), raw: "{unresolved}".into() },
+        };
+        assert!(!spec.check(&result));
     }
 
     /// A quoted numeric bound means the same as an unquoted one. YAML makes

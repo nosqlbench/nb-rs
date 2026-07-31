@@ -479,13 +479,14 @@ impl OpDispenser for HttpDispenser {
                     if e.is_timeout() && self.on_timeout_accept {
                         // Diagnostic: this branch is the ONLY way
                         // the HTTP adapter returns `body: None`.
-                        // Without this log, a downstream
-                        // `validation_failed` with
-                        // `<no body returned by op>` is opaque
-                        // because the verify clause can't tell
-                        // why the body is missing. Surfacing the
-                        // accept here makes the chain obvious in
-                        // session.log without changing the
+                        // Value predicates downstream go vacuous
+                        // rather than failing, so without this log
+                        // an accepted timeout would be entirely
+                        // silent — and "the call timed out but the
+                        // server is still working" is exactly the
+                        // state an operator needs to see. Surfacing
+                        // the accept here makes the chain obvious
+                        // in session.log without changing the
                         // success-shape semantics.
                         let elapsed_ms = request_start.elapsed().as_millis();
                         let configured_ms = self.per_op_timeout_ms
@@ -499,9 +500,10 @@ impl OpDispenser for HttpDispenser {
                                  (configured per_op_timeout_ms={configured_ms}) \
                                  → returning Ok(body=None). \
                                  URL={full_url}. \
-                                 If a downstream verify clause expected a \
-                                 body, the field assertion will fail with \
-                                 `<no body returned by op>`."
+                                 Value predicates in a downstream `verify:` \
+                                 go vacuous (nothing to read); `is: not_null` \
+                                 or `min_rows:` still fail, which is how to \
+                                 demand a body here."
                             ),
                         );
                         return Ok(OpResult { body: None, skipped: false });
