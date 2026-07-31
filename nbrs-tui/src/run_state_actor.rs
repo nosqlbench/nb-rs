@@ -170,6 +170,12 @@ pub enum RunStateCmd {
         op_name: String,
     },
     /// An op-level status leaf completed; `duration_secs` is its execution time.
+    /// The op's key measurable, arriving just before its completion.
+    OpMeasure {
+        parent: nbrs_runtime::scene_tree::SceneNodeId,
+        op_name: String,
+        text: String,
+    },
     OpCompleted {
         parent: SceneNodeId,
         op_name: String,
@@ -777,6 +783,9 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         }
         RunStateCmd::OpStarting { parent, op_name } => {
             state.op_starting(parent, &op_name);
+        }
+        RunStateCmd::OpMeasure { parent, op_name, text } => {
+            state.op_measure(parent, &op_name, &text);
         }
         RunStateCmd::OpCompleted { parent, op_name, duration_secs } => {
             state.op_completed(parent, &op_name, duration_secs);

@@ -290,6 +290,12 @@ impl TuiObserver {
 }
 
 impl nbrs_runtime::observer::RunObserver for TuiObserver {
+    fn op_measure(&self, parent_phase: nbrs_runtime::scene_tree::SceneNodeId,
+                  op_name: &str, text: &str) {
+        self.state.send(crate::run_state_actor::RunStateCmd::OpMeasure {
+            parent: parent_phase, op_name: op_name.to_string(), text: text.to_string() });
+    }
+
     fn session_dir_ready(&self, dir: &std::path::Path) {
         // Opens <dir>/transcript.log in the actor and flushes everything
         // buffered since actor start.

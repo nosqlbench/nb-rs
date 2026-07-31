@@ -286,6 +286,11 @@ pub struct OpEntry {
     /// Computed as a session-clock delta (`session_elapsed -
     /// session_started`) so it reconciles with the session column.
     pub duration_secs: Option<f64>,
+    /// The op's key measurable, rendered from its `measure:` template at
+    /// completion ("12 sstables", "1.4 GiB"). Shown in the leaf's gutter cell
+    /// ahead of the duration: a reader usually wants what the step PRODUCED,
+    /// and the duration alone cannot say.
+    pub measure: Option<String>,
     /// Session clock captured at the op's terminal boundary.
     pub session_elapsed: Option<f64>,
     /// Arrival order within the parent phase (0-based).
@@ -711,8 +716,14 @@ impl RunState {
                 PhaseStatus::Failed(_) => "✗",
                 _ => "—",
             };
+            // Same form as the live leaf: what the step produced, then how
+            // long it took. The settled scrollback row is where this matters
+            // most — it is the copy a reader comes back to.
             let duration_cell = op.duration_secs
-                .map(crate::widgets::format_dur_compact)
+                .map(|d| match op.measure.as_deref() {
+                    Some(m) => format!("[{m}] {}", crate::widgets::format_dur_compact(d)),
+                    None => crate::widgets::format_dur_compact(d),
+                })
                 .unwrap_or_else(|| "—".to_string());
             let stamp = match op.session_elapsed {
                 Some(v) => format!("  @ {}", crate::widgets::format_dur_compact(v)),
@@ -804,6 +815,7 @@ impl RunState {
         } else {
             let seq = ops.len();
             ops.push(OpEntry {
+                measure: None,
                 name: name.to_string(),
                 status: PhaseStatus::Running,
                 started_at: Instant::now(),
@@ -817,6 +829,16 @@ impl RunState {
 
     /// An op-level status leaf completed; persists its execution time and the
     /// session clock at completion.
+    /// Record an op's key measurable. Arrives just before completion, so the
+    /// leaf row has it the moment it settles.
+    pub fn op_measure(&mut self, parent: SceneNodeId, op_name: &str, text: &str) {
+        if let Some(ops) = self.phase_ops.get_mut(&parent)
+            && let Some(op) = ops.iter_mut().find(|o| o.name == op_name)
+        {
+            op.measure = Some(text.to_string());
+        }
+    }
+
     pub fn op_completed(&mut self, parent: SceneNodeId, name: &str, duration_secs: f64) {
         let session_now = self.elapsed_secs();
         if let Some(ops) = self.phase_ops.get_mut(&parent) {
@@ -1012,5 +1034,71 @@ mod resolve_tests {
             .filter(|e| matches!(e.status, PhaseStatus::Failed(_))).count();
         assert_eq!(failed, 1, "exactly the live iteration-2 row failed");
         assert_eq!(running_count(&s), 0, "no row left stranded Running");
+    }
+}
+
+#[cfg(test)]
+mod measure_tests {
+    use super::*;
+
+    /// A settled leaf row carries WHAT the step produced ahead of how long it
+    /// took. Duration alone answers "did it hang" — the less interesting
+    /// question once a step is done.
+    #[test]
+    fn settled_leaf_shows_measure_before_duration() {
+        let mut st = RunState::new("w.yaml", "s", "stdout");
+        let node: SceneNodeId = 1;
+        st.phases.push(PhaseEntry {
+            node_id: node,
+            name: "finalize".into(),
+            labels: String::new(),
+            status: PhaseStatus::Running,
+            kind: EntryKind::Phase,
+            op_count: 1,
+            duration_secs: None,
+            session_elapsed: None,
+            session_started: None,
+            depth: 0,
+            summary: None,
+            op_names: Vec::new(),
+            seq: None,
+        });
+        st.op_starting(node, "read_sstables");
+        st.op_measure(node, "read_sstables", "12 sst");
+        st.op_completed(node, "read_sstables", 0.3);
+
+        let leaves = st.final_op_leaves("finalize", "");
+        assert_eq!(leaves.len(), 1);
+        let (_, cell) = &leaves[0];
+        assert!(cell.starts_with("[12 sst] "),
+            "measure precedes the duration in the gutter cell: {cell:?}");
+    }
+
+    /// An op with no `measure:` renders exactly as before — the feature is
+    /// additive, and every existing workload keeps its current output.
+    #[test]
+    fn leaf_without_measure_is_unchanged() {
+        let mut st = RunState::new("w.yaml", "s", "stdout");
+        let node: SceneNodeId = 1;
+        st.phases.push(PhaseEntry {
+            node_id: node,
+            name: "finalize".into(),
+            labels: String::new(),
+            status: PhaseStatus::Running,
+            kind: EntryKind::Phase,
+            op_count: 1,
+            duration_secs: None,
+            session_elapsed: None,
+            session_started: None,
+            depth: 0,
+            summary: None,
+            op_names: Vec::new(),
+            seq: None,
+        });
+        st.op_starting(node, "plain");
+        st.op_completed(node, "plain", 0.3);
+
+        let (_, cell) = &st.final_op_leaves("finalize", "")[0];
+        assert!(!cell.contains('['), "no brackets without a measure: {cell:?}");
     }
 }

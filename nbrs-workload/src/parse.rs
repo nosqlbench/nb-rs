@@ -1881,7 +1881,7 @@ fn normalize_op_object(
     // returns `None` from `known_op_fields()` (open vocabulary)
     // which masked this for the existing workloads.
     let reserved = ["name", "description", "desc", "bindings", "params", "tags", "if", "delay",
-        "evaluations", "capture", "metrics", "result", "traverse",
+        "evaluations", "capture", "metrics", "result", "traverse", "measure",
         // Daemon-op declaration + loop / rate primitives:
         // consumed by the runtime in normalize_op_object below;
         // mustn't fall through to the adapter's op-fields surface

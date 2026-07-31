@@ -62,11 +62,20 @@ inventory::submit! {
 pub struct ReadoutDispenser {
     inner: Arc<dyn OpDispenser>,
     op_name: String,
+    /// Optional `measure:` template — the op's key measurable, rendered against
+    /// the wires at completion. `None` when the op declares none, in which case
+    /// the leaf row shows only its duration, exactly as before.
+    measure: Option<String>,
 }
 
 impl ReadoutDispenser {
     pub fn wrap(inner: Arc<dyn OpDispenser>, op_name: String) -> Arc<dyn OpDispenser> {
-        Arc::new(Self { inner, op_name })
+        Self::wrap_with_measure(inner, op_name, None)
+    }
+
+    pub fn wrap_with_measure(inner: Arc<dyn OpDispenser>, op_name: String,
+                             measure: Option<String>) -> Arc<dyn OpDispenser> {
+        Arc::new(Self { inner, op_name, measure })
     }
 }
 
@@ -88,6 +97,16 @@ impl OpDispenser for ReadoutDispenser {
             let result = self.inner.execute(cycle, ctx).await;
             let dur = start.elapsed().as_secs_f64();
             if let (Some(p), Some(o)) = (parent, obs.as_ref()) {
+                // The op's key measurable, rendered against the wires the op just
+                // populated (captures included). Emitted before completion so the
+                // display has it when the leaf row settles.
+                if let Some(t) = self.measure.as_deref() {
+                    match crate::wires::substitute_via_wires(t, ctx.wires) {
+                        Ok(text) => o.op_measure(p, &self.op_name, &text),
+                        Err(e) => crate::diag!(crate::observer::LogLevel::Debug,
+                            "measure: substitution failed for '{t}': {e}"),
+                    }
+                }
                 match &result {
                     Ok(_) => o.op_completed(p, &self.op_name, dur),
                     Err(e) => o.op_failed(p, &self.op_name, &format!("{e}")),

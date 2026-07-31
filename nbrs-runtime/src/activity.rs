@@ -2288,9 +2288,12 @@ impl Activity {
                                 // run time from the task-local CURRENT_PHASE. Only
                                 // `readout: visible` triggers it (see the wrapper's
                                 // `triggers`), so this arm always wraps when reached.
-                                current = crate::wrappers::ReadoutDispenser::wrap(
+                                current = crate::wrappers::ReadoutDispenser::wrap_with_measure(
                                     current.clone(),
                                     template.name.clone(),
+                                    template.params.get("measure")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string()),
                                 );
                                 crate::diag!(crate::observer::LogLevel::Debug,
                                     "  op '{}': readout visible (op-level status line)",

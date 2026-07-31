@@ -446,9 +446,16 @@ fn render_op_leaves(snap: &RunState, phase: &ActivePhase) -> Vec<(String, RowGut
             // Duration is the leaf's GUTTER CELL (cumulative while
             // running, final once terminal); terminal rows keep their
             // session finish-stamp in the body — its only home.
-            let cell = match leaf {
-                Some(v) => RowGutter::Text(format_dur_compact(v)),
-                None => RowGutter::Blank,
+            // The gutter cell carries WHAT the step produced ahead of how long
+            // it took: `[12 sstables] 0.3s`. Duration alone answers "did it
+            // hang", which is the less interesting question once a step has
+            // settled. Ops with no `measure:` render exactly as before.
+            let cell = match (op.measure.as_deref(), leaf) {
+                (Some(m), Some(v)) => RowGutter::Text(
+                    format!("[{m}] {}", format_dur_compact(v))),
+                (Some(m), None) => RowGutter::Text(format!("[{m}]")),
+                (None, Some(v)) => RowGutter::Text(format_dur_compact(v)),
+                (None, None) => RowGutter::Blank,
             };
             let stamp = match sess {
                 Some(v) => format!("  @ {}", format_dur_compact(v)),
@@ -817,6 +824,7 @@ mod tests {
             node_id,
             vec![
                 OpEntry {
+                    measure: None,
                     name: "encode".into(),
                     status: PhaseStatus::Completed,
                     started_at: Instant::now(),
@@ -826,6 +834,7 @@ mod tests {
                     seq: 0,
                 },
                 OpEntry {
+                    measure: None,
                     name: "write".into(),
                     status: PhaseStatus::Running,
                     started_at: Instant::now(),

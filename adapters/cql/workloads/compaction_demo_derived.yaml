@@ -905,6 +905,8 @@ phases:
         capture:
           # Jolokia wraps the attribute value in `{value: N, status: 200}`.
           sstables: "/value"
+        # Key measurable for the leaf row: the count this step exists to read.
+        measure: "{sstables} sst"
         metrics:
           table_live_sstables: { kind: gauge, value: sstables }
         memo:
@@ -980,6 +982,9 @@ phases:
             FROM system_views.sstable_indexes
            WHERE keyspace_name = '{keyspace}'
              AND index_name = '{table}{vector_idx_suffix}'
+        # Key measurable: how many segments are being merged and their total -
+        # the K-vs-size shape this step exists to reveal.
+        measure: "{segments} seg {seg_mib_total} MiB"
         capture:
           # Aggregates via the row-set folds (:count / :min / :max / :sum).
           segments:        ":count"
@@ -1197,6 +1202,8 @@ phases:
              AND compacted_at > {history_since}
           ALLOW FILTERING
         # The aggregate returns exactly one row; `:sum` over it is that row.
+        # Key measurable: what the completed compactions actually moved.
+        measure: "{history_events} cmp"
         capture:
           history_events:    ":sum(n)"
           history_bytes_in:  ":sum(bin)"
@@ -1239,6 +1246,8 @@ phases:
           - field: value
             lte: "{max_postfinal_segments}"
         strict: true
+        # Key measurable: the settled count against the bound it must meet.
+        measure: "{postfinal_segments}/{max_postfinal_segments} sst"
         capture:
           # JSON Pointer into the Jolokia read response, whose scalar result
           # is the `value` member (verify's `field:` is a bare name; capture

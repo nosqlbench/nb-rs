@@ -119,6 +119,15 @@ pub trait RunObserver: Send + Sync {
     /// cumulative execution time. Default no-op.
     fn op_completed(&self, _parent_phase: crate::scene_tree::SceneNodeId, _op_name: &str, _duration_secs: f64) {}
 
+    /// The op's KEY MEASURABLE, rendered from its `measure:` template at
+    /// completion — "12 sstables", "1.4 GiB", "98.1%".
+    ///
+    /// A leaf row already carries how LONG a step took; this carries what it
+    /// actually produced, which is the number a reader is usually after. Sent
+    /// as its own hook (rather than widening `op_completed`) so every existing
+    /// observer keeps compiling and ignoring it costs nothing.
+    fn op_measure(&self, _parent_phase: crate::scene_tree::SceneNodeId, _op_name: &str, _text: &str) {}
+
     /// An op-level execution leaf failed. Default no-op.
     fn op_failed(&self, _parent_phase: crate::scene_tree::SceneNodeId, _op_name: &str, _error: &str) {}
 
