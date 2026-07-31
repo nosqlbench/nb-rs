@@ -593,6 +593,13 @@ fn build_session_metrics(
     //   * `--metrics-log[=<path>]` flag on the CLI
     //   * `metrics-log=<path|true>` in workload params
     //   * `NBRS_METRICS_LOG=<path|1>` env var
+    // Tell display surfaces where the session lives, so the one that keeps a
+    // durable transcript can open it and flush what it buffered before the
+    // directory existed. Default-on: the settled half of the display is
+    // already sequenced, append-only data, so persisting it costs one file
+    // handle and answers "what did the run actually show me" after the fact.
+    observer.session_dir_ready(&session.output_dir);
+
     // Session-level system-performance sampler (host utilization from
     // /proc). Enabled per session with `sysmon=all` or a comma list of
     // categories (`sysmon=cpu,io,ram,rambw,storage`); off when absent.

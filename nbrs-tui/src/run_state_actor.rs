@@ -113,6 +113,9 @@ impl Drop for ScrollbackReceiver {
 /// adding a variant and a handler arm, by design.
 #[derive(Debug)]
 pub enum RunStateCmd {
+    /// Session directory is ready — open `<dir>/transcript.log` and flush any
+    /// lines buffered since actor start.
+    OpenTranscript(std::path::PathBuf),
     /// Latest sysmon sample window (session-level host utilization).
     Sysmon(nbrs_runtime::sysmon::SysmonSample),
     /// Replace the scenario tree wholesale (called once after
@@ -398,6 +401,63 @@ impl RunStateHandle {
 /// dropped — `Receiver::recv` returns `Err`, the loop falls
 /// through, and the final state is published one more time so
 /// post-shutdown readers see `finished = true`.
+/// Durable transcript of the display surface.
+///
+/// The settled half of the TUI — everything that has scrolled past an active
+/// phase — is exactly the [`LogLine`] stream: sequenced, append-only, and
+/// already carrying the actor-stamped `margin_body` (the gutter). The ACTIVE
+/// half is re-derived from the snapshot every render tick and never appended,
+/// so there is nothing to persist there and no boundary to guess at. Teeing
+/// here, at the one place margins are stamped, yields a file that is ordered
+/// and complete by construction — no second consumer of the scrollback
+/// stream, which a sink has exclusively taken.
+///
+/// The session directory is not known when the actor spawns (the runner
+/// creates it later), so lines are BUFFERED until
+/// [`RunStateCmd::OpenTranscript`] arrives and then flushed in order. Without
+/// that buffer the transcript would silently lose its opening lines — which
+/// are the ones naming the session, the workload, and the resolved params.
+#[derive(Default)]
+pub(crate) struct Transcript {
+    file: Option<std::io::BufWriter<std::fs::File>>,
+    pending: Vec<String>,
+}
+
+impl Transcript {
+    /// Render one settled line the way the terminal shows it: the gutter body,
+    /// a divider, then the message. Uncolored — a transcript is read later, by
+    /// tools as often as by people.
+    fn format(line: &LogLine) -> String {
+        format!("{:>27} │ {}", line.margin_body, line.entry.message)
+    }
+
+    fn record(&mut self, line: &LogLine) {
+        let text = Self::format(line);
+        match &mut self.file {
+            Some(f) => {
+                use std::io::Write;
+                let _ = writeln!(f, "{text}");
+                // Flushed per line: a transcript's whole value is being
+                // readable WHILE the run is in flight, and a run that dies is
+                // exactly when its tail matters most.
+                let _ = f.flush();
+            }
+            None => self.pending.push(text),
+        }
+    }
+
+    fn open(&mut self, path: &std::path::Path) {
+        let Ok(f) = std::fs::File::create(path) else { return };
+        let mut w = std::io::BufWriter::new(f);
+        use std::io::Write;
+        for line in self.pending.drain(..) {
+            let _ = writeln!(w, "{line}");
+        }
+        let _ = w.flush();
+        self.file = Some(w);
+    }
+}
+
 pub fn spawn_run_state_actor(
     initial: RunState,
 ) -> (RunStateHandle, JoinHandle<()>) {
@@ -425,6 +485,7 @@ pub fn spawn_run_state_actor(
         .name("run-state-actor".into())
         .spawn(move || {
             let mut state = initial;
+            let mut transcript = Transcript::default();
             // recv() blocks the actor thread when the inbox is
             // empty — fine, this is a dedicated OS thread, not a
             // tokio worker. SRD-02 §"No Blocking Primitives in
@@ -432,14 +493,14 @@ pub fn spawn_run_state_actor(
             // tokio.
             while let Ok(first) = rx.recv() {
                 handle_cmd(&mut state, &frame_sync_for_thread, &log_tx,
-                    &log_stream_active_for_thread, first);
+                    &log_stream_active_for_thread, &mut transcript, first);
                 // Coalesce: drain any further-pending commands
                 // before publishing. Cuts publish cost when the
                 // executor bursts updates; readers always see
                 // the latest published state anyway.
                 while let Ok(more) = rx.try_recv() {
                     handle_cmd(&mut state, &frame_sync_for_thread, &log_tx,
-                        &log_stream_active_for_thread, more);
+                        &log_stream_active_for_thread, &mut transcript, more);
                 }
                 snapshot_for_thread.store(Arc::new(state.clone()));
             }
@@ -468,9 +529,13 @@ fn handle_cmd(
     frame_sync: &FrameSync,
     log_tx: &mpsc::Sender<LogLine>,
     log_stream_active: &AtomicBool,
+    transcript: &mut Transcript,
     cmd: RunStateCmd,
 ) {
     match cmd {
+        RunStateCmd::OpenTranscript(path) => {
+            transcript.open(&path);
+        }
         RunStateCmd::Barrier(tx) => {
             // All prior commands are already applied (ordered inbox);
             // ack immediately. Receiver may have timed out — ignore.
@@ -499,11 +564,16 @@ fn handle_cmd(
                 severity, message, category,
                 at: std::time::SystemTime::now(),
             };
-            // Feed the durable stream only once a terminal-mode sink
-            // has claimed it — otherwise the line lives in the ring +
-            // session.log and the stream would just grow unbounded
-            // with no drainer (tui=on / tui=off / tui=formatted).
-            if log_stream_active.load(Ordering::Acquire) {
+            // The line is ALWAYS stamped and recorded to the transcript —
+            // the durable transcript is a property of the run, not of which
+            // display sink happens to be attached, so `tui=off` and
+            // `tui=formatted` produce the same file as `tui=terminal`.
+            //
+            // The in-memory STREAM, by contrast, is fed only once a
+            // terminal-mode sink has claimed it: with no drainer it would
+            // grow unbounded. So the stamping is unconditional and only the
+            // `send` is gated.
+            {
                 let stream_entry = entry.clone();
                 // gutter/final: a ✓ outcome block for a phase whose
                 // render handle carries a final gutter spec gets that
@@ -551,9 +621,11 @@ fn handle_cmd(
                 // replays it into the restored scrollback.
                 let margin_body = margin_body
                     .unwrap_or_else(|| state.margin_body_stamp());
-                let _ = log_tx.send(LogLine { seq, entry: stream_entry, margin_body, detail_gutter });
-            } else {
-                state.push_log_entry(entry);
+                let line = LogLine { seq, entry: stream_entry, margin_body, detail_gutter };
+                transcript.record(&line);
+                if log_stream_active.load(Ordering::Acquire) {
+                    let _ = log_tx.send(line);
+                }
             }
         }
         RunStateCmd::PhaseCompleted { exec_id, scene_node_id, name, labels, duration_secs } => {
@@ -587,11 +659,13 @@ fn handle_cmd(
                     let stream_entry = entry.clone();
                     let seq = state.push_log_entry(entry);
                     let margin_body = state.margin_body_stamp();
-                    let _ = log_tx.send(LogLine {
+                    let line = LogLine {
                         seq, entry: stream_entry, margin_body,
                         detail_gutter: Some(
                             nbrs_runtime::wrappers::gutter::GutterSpec::Text(duration_cell)),
-                    });
+                    };
+                    transcript.record(&line);
+                    let _ = log_tx.send(line);
                 }
             }
             apply(state, RunStateCmd::PhaseCompleted { exec_id, scene_node_id, name, labels, duration_secs });
@@ -605,6 +679,8 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         // Intercepted by `handle_cmd` (acked there); a stray one
         // reaching the state-mutation fold is a harmless no-op.
         RunStateCmd::Barrier(_) => {}
+        // Handled in `handle_cmd` (it owns the writer); no snapshot state.
+        RunStateCmd::OpenTranscript(_) => {}
         RunStateCmd::Sysmon(sample) => {
             state.sysmon = Some(sample);
         }
@@ -962,5 +1038,79 @@ mod scrollback_stream_tests {
         drop(rx);
         drop(handle);
         let _ = join.join();
+    }
+}
+
+#[cfg(test)]
+mod transcript_tests {
+    use super::Transcript;
+
+    /// Lines logged BEFORE the session directory exists — the banner naming
+    /// the session, the workload, the resolved params — are exactly the ones
+    /// worth keeping, so they buffer and flush in order rather than being
+    /// dropped for arriving early.
+    #[test]
+    fn buffers_until_opened_then_flushes_in_order() {
+        let dir = std::env::temp_dir().join(format!(
+            "nbrs-transcript-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("transcript.log");
+
+        let mut t = Transcript::default();
+        for msg in ["first", "second"] {
+            t.record(&super::LogLine {
+                seq: 0,
+                entry: crate::state::LogEntry {
+                    severity: crate::state::LogSeverity::Info,
+                    message: msg.into(),
+                    category: crate::state::LogCategory::Diagnostic,
+                    at: std::time::SystemTime::now(),
+                },
+                margin_body: "m".into(),
+                detail_gutter: None,
+            });
+        }
+        assert!(!path.exists(), "nothing is written before open");
+        t.open(&path);
+        t.record(&super::LogLine {
+            seq: 2,
+            entry: crate::state::LogEntry {
+                severity: crate::state::LogSeverity::Info,
+                message: "third".into(),
+                category: crate::state::LogCategory::Diagnostic,
+                at: std::time::SystemTime::now(),
+            },
+            margin_body: "m".into(),
+            detail_gutter: None,
+        });
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        let msgs: Vec<&str> = body.lines()
+            .map(|l| l.rsplit('│').next().unwrap().trim())
+            .collect();
+        assert_eq!(msgs, vec!["first", "second", "third"],
+            "buffered lines flush ahead of live ones, in order:\n{body}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The transcript carries the GUTTER, which is the whole reason it is not
+    /// just session.log: the margin is what ties a line to the phase and
+    /// clock position the operator saw it at.
+    #[test]
+    fn each_line_carries_its_margin_and_divider() {
+        let rendered = Transcript::format(&super::LogLine {
+            seq: 0,
+            entry: crate::state::LogEntry {
+                severity: crate::state::LogSeverity::Info,
+                message: "phase done".into(),
+                category: crate::state::LogCategory::Diagnostic,
+                at: std::time::SystemTime::now(),
+            },
+            margin_body: "◷ 12.1s [1/4]".into(),
+            detail_gutter: None,
+        });
+        assert!(rendered.contains("◷ 12.1s [1/4]"), "{rendered}");
+        assert!(rendered.contains('│'), "divider separates gutter from message: {rendered}");
+        assert!(rendered.trim_end().ends_with("phase done"), "{rendered}");
     }
 }

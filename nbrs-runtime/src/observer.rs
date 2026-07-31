@@ -75,6 +75,11 @@ pub trait RunObserver: Send + Sync {
     /// Display surfaces override; everything else ignores it.
     fn sysmon_update(&self, _sample: &crate::sysmon::SysmonSample) {}
 
+    /// The session directory now exists. Display surfaces that persist a
+    /// transcript open it here — the runner creates the directory well after
+    /// the observer is built, so this is the first moment the path is known.
+    fn session_dir_ready(&self, _dir: &std::path::Path) {}
+
     /// A phase is about to start executing.
     ///
     /// `op_templates` is the count of op definitions in the phase

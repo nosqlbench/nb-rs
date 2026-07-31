@@ -256,6 +256,13 @@ fn level_to_severity(level: LogLevel) -> LogSeverity {
 }
 
 impl RunObserver for LogOnlyObserver {
+    fn session_dir_ready(&self, dir: &std::path::Path) {
+        // Opens <dir>/transcript.log in the actor and flushes everything
+        // buffered since actor start.
+        self.state.send(crate::run_state_actor::RunStateCmd::OpenTranscript(
+            dir.join("transcript.log")));
+    }
+
     fn sysmon_update(&self, sample: &nbrs_runtime::sysmon::SysmonSample) {
         // Same forward the full-TUI observer does: the sample is ambient
         // session state consumed by the status fold at repaint.

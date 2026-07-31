@@ -228,7 +228,8 @@ impl DriverAdapter for HttpAdapter {
         // synchronous `forceKeyspaceCompaction`, where the
         // poll layer is the actual waiter / observer).
         Some(&["method", "content_type", "uri", "url", "body", "headers",
-               "request_timeout_ms", "on_timeout", "connect_timeout"])
+               "request_timeout_ms", "on_timeout", "connect_timeout",
+               "expect_body"])
     }
 
     fn map_op<'a>(
@@ -290,6 +291,17 @@ impl DriverAdapter for HttpAdapter {
         // refused, body read errors, non-2xx responses) still
         // surface normally. The modifier only translates
         // client-side request-timeout firings.
+        // `expect_body: false` DECLARES that a body-less success is a normal
+        // outcome for this op — the fire-and-forget trigger whose work the
+        // poll layer observes, or any 204. The accept-timeout diagnostic
+        // below exists to explain a SURPRISE; an op that has said it expects
+        // no body is not surprised, and on a 256-phase sweep that warning is
+        // pure noise repeated once per tier. Declaring it drops the line to
+        // Debug rather than removing it, so `--log-level=debug` can still
+        // recover the timing.
+        let expect_body = template.op.get("expect_body")
+            .and_then(|v: &serde_json::Value| v.as_bool())
+            .unwrap_or(true);
         let on_timeout_accept = template.op.get("on_timeout")
             .and_then(|v| v.as_str())
             .map(|s| s.eq_ignore_ascii_case("accept"))
@@ -321,6 +333,7 @@ impl DriverAdapter for HttpAdapter {
             headers_template,
             per_op_timeout_ms,
             on_timeout_accept,
+            expect_body,
         }) as Box<dyn OpDispenser>)
         })
     }
@@ -356,6 +369,8 @@ struct HttpDispenser {
     /// the server keeps working server-side regardless of
     /// whether the client is still listening.
     on_timeout_accept: bool,
+    /// False when the workload declared `expect_body: false`.
+    expect_body: bool,
 }
 
 
@@ -493,7 +508,16 @@ impl OpDispenser for HttpDispenser {
                             .map(|n| n.to_string())
                             .unwrap_or_else(|| "client-default".to_string());
                         nbrs_runtime::observer::log(
-                            nbrs_runtime::observer::LogLevel::Warn,
+                            // An op that declared `expect_body: false` has said a
+                            // body-less success is its normal outcome, so this is
+                            // not news - Debug, not Warn. Without that declaration
+                            // it stays a warning: a silently swallowed timeout IS
+                            // worth seeing.
+                            if self.expect_body {
+                                nbrs_runtime::observer::LogLevel::Warn
+                            } else {
+                                nbrs_runtime::observer::LogLevel::Debug
+                            },
                             &format!(
                                 "http: `on_timeout: accept` swallowed a \
                                  request timeout after {elapsed_ms}ms \

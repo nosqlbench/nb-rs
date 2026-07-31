@@ -290,6 +290,13 @@ impl TuiObserver {
 }
 
 impl nbrs_runtime::observer::RunObserver for TuiObserver {
+    fn session_dir_ready(&self, dir: &std::path::Path) {
+        // Opens <dir>/transcript.log in the actor and flushes everything
+        // buffered since actor start.
+        self.state.send(crate::run_state_actor::RunStateCmd::OpenTranscript(
+            dir.join("transcript.log")));
+    }
+
     fn sysmon_update(&self, sample: &nbrs_runtime::sysmon::SysmonSample) {
         // Ambient session state, not a display trigger: no ensure_tui_started.
         self.state.send(RunStateCmd::Sysmon(sample.clone()));

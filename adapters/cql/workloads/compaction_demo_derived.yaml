@@ -945,6 +945,11 @@ phases:
         # op, so a genuine failure to START a compaction is still an error.
         request_timeout_ms: 30000
         on_timeout: accept
+        # This op's normal outcome IS a body-less success: it fires the
+        # compaction and returns, and `await_compaction` below is what
+        # observes the work. Declaring that keeps the adapter from warning
+        # once per tier about a timeout that is the designed path.
+        expect_body: false
         # `verify` runs on a real response; the accepted-timeout path has no
         # body to check, which is why proof-of-compaction lives in
         # `verify_segments` rather than here.
@@ -1039,6 +1044,16 @@ phases:
           # progress restarts at 0), and finished tiers' series go static
           # (rate 0), so the sum self-scopes to the active drain.
           nodes_per_s := round_u64(metricsql_scalar("sum(rate(compaction_index_nodes_done[2m]))"))
+          # The OTHER task kind. system_views.sstable_tasks carries two
+          # logically distinct drains and they do not overlap in time: the
+          # data compaction (kind='compaction', unit=bytes) and the vector
+          # index build (kind='secondary index build', unit=graph nodes).
+          # Reporting only one of them made the gutter read `≈0 units/s`
+          # for minutes at a stretch — truthfully, since the index build
+          # genuinely was not running, while 171 MB/s of data compaction
+          # was in flight and invisible. Two rates, always both shown, in
+          # the order the work happens.
+          mib_per_s := round_u64(metricsql_scalar("sum(rate(compaction_data_bytes_done[2m]))") / 1048576)
         # NO kind filter (2026-07-24): the drain must hold for the WHOLE
         # compaction, not only its index-build tail. During the merge's
         # row-ingest pass the only registered row is the byte-denominated
@@ -1093,7 +1108,9 @@ phases:
         # (This cell replaces the auto completion bar on the stats row;
         # the header meter still shows the ratio-driven percentage.)
         gutter:
-          text: "≈{nodes_per_s} nodes/s"
+          # Both drains, ordered data-then-index, so an idle one reads as a
+          # zero NEXT TO a live number rather than as the whole readout.
+          text: "≈{mib_per_s} MiB/s ≈{nodes_per_s} n/s"
         poll:
           mode: await_empty
           interval_ms: 5000
@@ -1107,7 +1124,7 @@ phases:
           # Re-rendered after every poll against that poll's captures, so the
           # memo shows the live measured state of the drain instead of the
           # static `before:` text for the (potentially hours-long) wait.
-          memo: "finalize step 5/5 — {keyspace}.{table} compaction draining: ratio {completion_ratio}, index {index_nodes_done}/{index_nodes_total} nodes, data {data_bytes_done}/{data_bytes_total} bytes, {active_compactions} task(s) in flight | merging {segments} segment(s), index total {seg_mib_total} MiB (max {seg_mib_max} MiB)"
+          memo: "finalize step 5/5 — {keyspace}.{table} compaction draining: ratio {completion_ratio}, data {data_bytes_done}/{data_bytes_total} bytes (≈{mib_per_s} MiB/s), index {index_nodes_done}/{index_nodes_total} nodes (≈{nodes_per_s} n/s), {active_compactions} task(s) in flight | merging {segments} segment(s), index total {seg_mib_total} MiB (max {seg_mib_max} MiB)"
           # The measured fractional completion drives this phase's completion
           # bar/percentage (derived-progress override) — the cycle-based bar
           # would otherwise sit at 0% for the whole drain.
