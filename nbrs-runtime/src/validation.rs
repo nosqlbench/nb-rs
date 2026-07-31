@@ -165,6 +165,14 @@ pub enum AssertionPredicate {
     Lte(f64),
     /// String: field contains substring.
     Contains(String),
+    /// A numeric bound (`gte:` / `lte:`) whose value is not a number.
+    ///
+    /// Carried rather than dropped, and ALWAYS fails: the previous
+    /// `as_f64().unwrap_or(0.0)` silently turned `lte: "5"` — or any
+    /// unresolved placeholder — into `<= 0`, which then failed against
+    /// perfectly good data with a message quoting a threshold the author
+    /// never wrote. A bound nobody can evaluate must say so, not pick zero.
+    MalformedBound { key: String, raw: String },
     /// Body-level: result must contain at least N rows
     /// (`element_count() >= N`). Use to make a SELECT
     /// failsafe — empty result sets surface as a hard error
@@ -208,6 +216,7 @@ impl AssertionSpec {
             AssertionPredicate::Contains(substr) => {
                 field_val.is_some_and(|v| json_value_as_string(v).contains(substr.as_str()))
             }
+            AssertionPredicate::MalformedBound { .. } => false,
             AssertionPredicate::MinRows(_) => unreachable!(
                 "MinRows handled in early-return above"
             ),
@@ -756,6 +765,14 @@ fn describe_assertion_failure(assertion: &AssertionSpec, result: &OpResult) -> S
                 "field '{}' >= {t} failed (observed: {observed_repr}){body_tail}",
                 assertion.field
             ),
+        AssertionPredicate::MalformedBound { key, raw } =>
+            format!(
+                "field '{}': `{key}: {raw}` is not a number — a numeric bound \
+                 must be a number (`{key}: 5`) or a string holding one \
+                 (`{key}: \"5\"`). If that is a `{{placeholder}}`, it did not \
+                 resolve.",
+                assertion.field
+            ),
         AssertionPredicate::Lte(t) =>
             format!(
                 "field '{}' <= {t} failed (observed: {observed_repr}){body_tail}",
@@ -877,6 +894,19 @@ fn truncate_for_message(s: &str, max: usize) -> String {
 /// and require `field:`. The body-level `min_rows:` predicate is
 /// the exception — it asserts on the result's row count rather
 /// than any specific field, so it has no `field:` key.
+/// A `gte:` / `lte:` threshold, from either a JSON number or a string
+/// holding one.
+///
+/// YAML makes the string form easy to reach by accident — quoting, or a
+/// `{placeholder}` that substitutes to text — and the two spellings plainly
+/// mean the same bound, so both are accepted. What is NOT accepted is
+/// anything else: `None` here becomes a
+/// [`AssertionPredicate::MalformedBound`] that fails loudly, rather than the
+/// old silent `0.0`.
+fn numeric_bound(v: &serde_json::Value) -> Option<f64> {
+    v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+}
+
 fn parse_assertions(template: &nbrs_workload::model::ParsedOp) -> Vec<AssertionSpec> {
     let Some(verify) = template.params.get("verify") else {
         return Vec::new();
@@ -906,9 +936,17 @@ fn parse_assertions(template: &nbrs_workload::model::ParsedOp) -> Vec<AssertionS
         let predicate = if let Some(v) = obj.get("eq") {
             AssertionPredicate::Eq(json_value_as_string(v))
         } else if let Some(v) = obj.get("gte") {
-            AssertionPredicate::Gte(v.as_f64().unwrap_or(0.0))
+            match numeric_bound(v) {
+                Some(t) => AssertionPredicate::Gte(t),
+                None => AssertionPredicate::MalformedBound {
+                    key: "gte".into(), raw: json_value_as_string(v) },
+            }
         } else if let Some(v) = obj.get("lte") {
-            AssertionPredicate::Lte(v.as_f64().unwrap_or(0.0))
+            match numeric_bound(v) {
+                Some(t) => AssertionPredicate::Lte(t),
+                None => AssertionPredicate::MalformedBound {
+                    key: "lte".into(), raw: json_value_as_string(v) },
+            }
         } else if let Some(v) = obj.get("contains") {
             AssertionPredicate::Contains(json_value_as_string(v))
         } else if let Some(v) = obj.get("is") {
@@ -1779,6 +1817,54 @@ mod tests {
         let err = parse_relevancy(&template, None, None).unwrap_err();
         assert!(err.contains("'k' is not a valid non-negative integer"),
             "diagnostic should describe the parse failure: {err}");
+    }
+
+    /// A quoted numeric bound means the same as an unquoted one. YAML makes
+    /// the string form easy to reach — quoting, or a `{placeholder}` that
+    /// substitutes to text — and it used to silently become `<= 0`, failing
+    /// good data against a threshold nobody wrote. Cost a live benchmark run.
+    #[test]
+    fn numeric_bounds_accept_quoted_numbers() {
+        let mut template = nbrs_workload::model::ParsedOp::simple("t", "noop");
+        template.params.insert("verify".into(), serde_json::json!([
+            {"field": "value", "lte": "5"},
+            {"field": "value", "gte": " 2 "},
+            {"field": "other", "lte": 7},
+        ]));
+        let a = parse_assertions(&template);
+        assert!(matches!(a[0].predicate, AssertionPredicate::Lte(t) if t == 5.0),
+            "quoted lte must parse: {:?}", a[0].predicate);
+        assert!(matches!(a[1].predicate, AssertionPredicate::Gte(t) if t == 2.0),
+            "surrounding whitespace is not a malformed bound: {:?}", a[1].predicate);
+        assert!(matches!(a[2].predicate, AssertionPredicate::Lte(t) if t == 7.0),
+            "the unquoted form is unchanged: {:?}", a[2].predicate);
+    }
+
+    /// A bound that is not a number at all must FAIL LOUDLY and name itself —
+    /// never default to zero, which reads as a real threshold in the failure
+    /// message and sends the reader hunting for a data problem that does not
+    /// exist.
+    #[test]
+    fn non_numeric_bounds_are_malformed_not_zero() {
+        let mut template = nbrs_workload::model::ParsedOp::simple("t", "noop");
+        template.params.insert("verify".into(), serde_json::json!([
+            {"field": "value", "lte": "{unresolved}"},
+            {"field": "value", "gte": "abc"},
+        ]));
+        let a = parse_assertions(&template);
+        for spec in &a {
+            match &spec.predicate {
+                AssertionPredicate::MalformedBound { raw, .. } => {
+                    assert!(!raw.is_empty(), "the offending text is carried for the message");
+                }
+                other => panic!("expected MalformedBound, got {other:?}"),
+            }
+        }
+        // And the rendered failure names the malformed bound rather than
+        // quoting a threshold the author never wrote.
+        let msg = format!("{:?}", a[0].predicate);
+        assert!(msg.contains("MalformedBound"),
+            "the predicate stays malformed all the way to reporting: {msg}");
     }
 
     #[test]
