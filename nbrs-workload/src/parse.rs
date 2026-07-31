@@ -2147,14 +2147,38 @@ fn normalize_op_object(
                     None => (raw.to_string(), false, None, None),
                 },
             };
-            if !path.is_empty() && !path.starts_with('/') {
+            // Two accepted spellings, one meaning — but never a guess in
+            // between:
+            //
+            //   `/value`, `/0/name`  RFC 6901 JSON-Pointer, used verbatim.
+            //   `value`              a bare top-level member name, which is
+            //                        exactly `/value` and normalized to it
+            //                        here, so runtime has one form to resolve.
+            //   ``                   the root document.
+            //
+            // A bare name may contain neither `/` nor `~`, and that is the
+            // whole anti-ambiguity rule: `a/b` could be a pointer someone
+            // forgot to lead with '/', or a member literally named "a/b"
+            // (RFC 6901 spells that `/a~1b`), and `~0`/`~1` are pointer
+            // escapes. Rather than pick a reading, name both and let the
+            // author say which. `verify:`'s `field:` is a bare name by
+            // definition, so an author moving between the two blocks lands
+            // on the bare form naturally — it now works rather than erroring.
+            let path = if path.is_empty() || path.starts_with('/') {
+                path
+            } else if !path.contains('/') && !path.contains('~') {
+                format!("/{path}")
+            } else {
                 return Err(format!(
                     "op '{name}' (block '{block_name}'): \
-                     `capture.{wire_name}` path '{path}' must start with \
-                     '/' (RFC 6901 JSON-Pointer). An empty path \
-                     addresses the root document."
+                     `capture.{wire_name}` path '{path}' is ambiguous. Write \
+                     a JSON-Pointer starting with '/' (e.g. '/{first}/...', \
+                     escaping '~' as '~0' and '/' as '~1'), or a bare \
+                     top-level member name containing neither '/' nor '~'. \
+                     An empty path addresses the root document.",
+                    first = path.split('/').next().unwrap_or(&path),
                 ));
-            }
+            };
             captures.push(crate::bindpoints::CapturePoint {
                 row_filter,
                 source_name: wire_name.clone(),
@@ -4683,10 +4707,14 @@ phases:
             "expected error to require until:; got: {err}");
     }
 
-    /// A JSON-Pointer path that doesn't begin with `/` is a
-    /// classic transcription bug (e.g. writing `0/value`
-    /// instead of `/0/value`). Surface it at parse time, not
-    /// as silent capture-misses at runtime.
+    /// A path that contains `/` but doesn't begin with one is the
+    /// ambiguous case: `0/value` is either a JSON-Pointer missing its
+    /// leading slash (the classic transcription bug) or a member
+    /// literally named "0/value" (which RFC 6901 spells `/0~1value`).
+    /// Both readings are defensible, so the parser refuses rather than
+    /// picking one — surfaced at parse time, not as silent
+    /// capture-misses at runtime. Bare names WITHOUT a `/` are
+    /// unambiguous and accepted; see the tests below.
     #[test]
     fn rejects_capture_path_without_leading_slash() {
         let yaml = r#"
@@ -4709,6 +4737,70 @@ phases:
             .expect_err("path without leading / must error");
         assert!(err.contains("`capture.bad`") && err.contains("'/'"),
             "expected parse error to name the offending capture and require '/'; got: {err}");
+    }
+
+    /// A bare top-level member name means exactly `/name`, and is
+    /// normalized to it at parse time so runtime resolves one form. This
+    /// is the spelling `verify:`'s `field:` uses, so an author moving
+    /// between the two blocks on one op writes the same thing twice.
+    #[test]
+    fn accepts_bare_member_name_as_capture_path() {
+        let yaml = r#"
+scenarios:
+  default:
+    - probe
+phases:
+  probe:
+    cycles: 1
+    ops:
+      read_state:
+        adapter: http
+        method: GET
+        uri: "http://h:8778/"
+        capture:
+          bare: "value"
+          pointer: "/value"
+          rooted: ""
+"#;
+        let wl = super::parse_workload(yaml, &HashMap::new())
+            .expect("both spellings must parse");
+        let op = wl.phases.get("probe").expect("phase")
+            .ops.iter().find(|o| o.name == "read_state").expect("op");
+        let path_of = |wire: &str| op.captures.iter()
+            .find(|c| c.as_name == wire)
+            .unwrap_or_else(|| panic!("capture {wire} missing"))
+            .path.clone().expect("declarative capture carries a path");
+        assert_eq!(path_of("bare"), "/value",
+            "a bare name normalizes to the equivalent pointer");
+        assert_eq!(path_of("pointer"), "/value",
+            "and is indistinguishable from the pointer spelling downstream");
+        assert_eq!(path_of("rooted"), "",
+            "empty still addresses the root document");
+    }
+
+    /// `~` is a JSON-Pointer escape introducer (`~0` = `~`, `~1` = `/`), so
+    /// a bare name containing one is ambiguous for the same reason `/` is.
+    #[test]
+    fn rejects_bare_name_containing_pointer_escape_char() {
+        let yaml = r#"
+scenarios:
+  default:
+    - probe
+phases:
+  probe:
+    cycles: 1
+    ops:
+      read_state:
+        adapter: http
+        method: GET
+        uri: "http://h:8778/"
+        capture:
+          bad: "a~1b"
+"#;
+        let err = super::parse_workload(yaml, &HashMap::new())
+            .expect_err("a bare name with '~' must error");
+        assert!(err.contains("`capture.bad`") && err.contains("ambiguous"),
+            "expected an ambiguity error naming the capture; got: {err}");
     }
 
     #[test]

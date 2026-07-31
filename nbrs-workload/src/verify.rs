@@ -309,6 +309,22 @@ pub fn check_case_output(
     Ok(())
 }
 
+/// Whether a workload is REQUIRED to declare verification rules.
+///
+/// True for anything under an `examples/` directory: those files are the
+/// documented, CI-gated surface, and one arriving without rules is a
+/// regression in the documentation itself. Everywhere else rules are
+/// optional — an unruled workload is skipped, not failed.
+///
+/// Path-component matching, not substring: a workload at
+/// `/home/me/examples-scratch/w.yaml` is not under `examples/`, while
+/// `/repo/examples/optimizer/w.yaml` is.
+pub fn requires_verification_rules(run_ref: &str) -> bool {
+    std::path::Path::new(run_ref)
+        .components()
+        .any(|c| c.as_os_str() == "examples")
+}
+
 /// Verify a workload from its rule text + run reference: parse the rules, run
 /// every case, return one `(label, Outcome)` per case (or a single Skip / Fail
 /// for the whole workload). `run_ref` is what to pass as `workload=` — an
@@ -328,11 +344,28 @@ pub fn verify_source(
         return vec![(label_root.to_string(), Outcome::Skip(reason))];
     }
     if plan.cases.is_empty() {
+        // A workload with no rules is not a failure in general — it is a
+        // workload nobody asked to be checked. `nbrs check <dir>` walks every
+        // YAML it finds, and most of those (adapter workloads, operational
+        // ones like compaction_demo_derived) exist to be RUN against real
+        // infrastructure, not to self-verify; failing them made the walk's
+        // result meaningless and trained people to ignore it.
+        //
+        // Under `examples/` the opposite holds: those files are the
+        // documentation CI gates, and one landing without rules is exactly
+        // the regression this check exists to catch. So there, silence is a
+        // failure.
         return vec![(
             label_root.to_string(),
-            Outcome::Fail(
-                "no verification rules — add `#@ expect …` comments or a `verify:` block".into(),
-            ),
+            if requires_verification_rules(run_ref) {
+                Outcome::Fail(
+                    "no verification rules — every workload under `examples/` must \
+                     declare them (add `#@ expect …` comments or a `verify:` block)"
+                        .into(),
+                )
+            } else {
+                Outcome::Skip("no verification rules — nothing to check".into())
+            },
         )];
     }
     plan.cases
@@ -640,6 +673,39 @@ fn collect_yaml(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if p.extension().is_some_and(|x| x == "yaml" || x == "yml") {
             out.push(p);
         }
+    }
+}
+
+#[cfg(test)]
+mod rules_required_tests {
+    use super::requires_verification_rules;
+
+    /// Under `examples/`, rules are the point — a file without them is a
+    /// documentation regression, so the check must fail rather than skip.
+    #[test]
+    fn examples_require_rules() {
+        assert!(requires_verification_rules("/repo/examples/optimizer/control.yaml"));
+        assert!(requires_verification_rules("examples/w.yaml"));
+        assert!(requires_verification_rules("/repo/examples/modules/module_test.yaml"));
+    }
+
+    /// Everywhere else rules are optional: adapter and operational workloads
+    /// exist to be RUN against real infrastructure, not to self-verify.
+    #[test]
+    fn other_locations_do_not_require_rules() {
+        assert!(!requires_verification_rules(
+            "/repo/adapters/cql/workloads/compaction_demo_derived.yaml"));
+        assert!(!requires_verification_rules("/tmp/scratch.yaml"));
+        assert!(!requires_verification_rules("some_catalog_name"));
+    }
+
+    /// Component matching, not substring — a sibling directory whose name
+    /// merely starts with "examples" is not the examples tree.
+    #[test]
+    fn matches_path_components_not_substrings() {
+        assert!(!requires_verification_rules("/home/me/examples-scratch/w.yaml"));
+        assert!(!requires_verification_rules("/home/me/myexamples/w.yaml"));
+        assert!(requires_verification_rules("/home/me/examples/scratch/w.yaml"));
     }
 }
 

@@ -222,6 +222,17 @@ params:
   enable_finalize: 0   # the finalize_index phase (flush + sstable read + compaction)
   enable_compact: 0    # the forced major compaction (inside finalize_index)
 
+  # Proof-of-compaction bound. When `enable_compact=1`, the last finalize op
+  # asserts the table settled to at most this many sstables; more than this
+  # means the compaction never ran, died, or left the table unmerged, and the
+  # workload fails rather than reporting timings for an uncompacted shape.
+  # Only meaningful when compaction is explicitly requested — with
+  # `enable_compact=0` nothing promised a segment count, and the check is
+  # skipped. The trigger call itself is fire-once and may legitimately time
+  # out client-side (the server keeps working), so this assertion — not the
+  # call's return — is what proves the compaction happened.
+  max_postfinal_segments: 5
+
   # When set (=1), pin the table's STCS min/max thresholds to 100000 in
   # the CREATE TABLE DDL so the size-tier compactor never fires
   # spontaneously mid-load — the test owns compaction timing explicitly.
@@ -903,12 +914,23 @@ phases:
         adapter: http
         readout: visible
         daemon: true
-        # 15s connect budget only — the request itself may run the full
-        # compaction (request_timeout_ms below); this bounds just the connect.
+        # 15s connect budget only — this bounds the connect, not the work.
         connect_timeout: 15s
         # Forced compaction: only when finalize AND compaction are
         # enabled AND there is more than one sstable to merge.
         if: "enable_finalize != 0 && enable_compact != 0 && sstables > 1"
+        # FIRE ONCE. `forceKeyspaceCompaction` is synchronous server-side, but
+        # holding the call open until it returns buys nothing — `await_compaction`
+        # below is the actual waiter, and `verify_segments` at the end of the
+        # phase is the actual proof. Retrying it is worse than useless: the
+        # inherited root `tries` used to re-fire this op after a client-side
+        # timeout while the server's compaction was still running, and each late
+        # re-trigger landed on an already-compacted table — a single-sstable
+        # input, which the merge path rejects (it needs >= 2 sources), forcing a
+        # full OFF_HEAP_REBUILD of every vector in the tier. Observed
+        # 2026-07-30: build decisions 12s apart on the same sstable, then a
+        # 29.3M-row single-input rebuild.
+        tries: 1
         uri: "http://{host}:8778/jolokia/"
         method: POST
         body: |
@@ -916,14 +938,23 @@ phases:
            "mbean":"org.apache.cassandra.db:type=StorageService",
            "operation":"forceKeyspaceCompaction(boolean,java.lang.String,[Ljava.lang.String;)",
            "arguments":[false,"{keyspace}",["{table}"]]}
-        request_timeout_ms: 3600000
+        # Deliberately SHORT (30s): once the compaction has started server-side,
+        # the call has done its job. `on_timeout: accept` converts exactly this
+        # client-side request timeout into a successful empty result — and only
+        # that: a refused connection, a body error, or a non-2xx still fails the
+        # op, so a genuine failure to START a compaction is still an error.
+        request_timeout_ms: 30000
+        on_timeout: accept
+        # `verify` runs on a real response; the accepted-timeout path has no
+        # body to check, which is why proof-of-compaction lives in
+        # `verify_segments` rather than here.
         verify:
           - field: status
             eq: "200"
         strict: true
         memo:
-          before: "finalize step 3/5 — triggering major compaction of {keyspace}.{table} ({sstables} sstables → 1; merges the vector graph segments and NVQ-refines them). Synchronous — returns when compaction completes."
-          after:  "finalize step 3/5 — major compaction of {keyspace}.{table} returned"
+          before: "finalize step 3/5 — triggering major compaction of {keyspace}.{table} ({sstables} sstables → 1; merges the vector graph segments and NVQ-refines them). Fire-once, 30s call budget — the drain poll waits, not this call."
+          after:  "finalize step 3/5 — major compaction of {keyspace}.{table} triggered"
       # Size distribution of the vector-index segments this compaction is merging.
       # Runs AFTER trigger_compact, which is `daemon: true` — so it reads while the
       # compaction is in flight, and the inputs are still on disk (a major compaction
@@ -1160,6 +1191,45 @@ phases:
           before: "finalize step 5/5b — reading this tier's completed compactions from system.compaction_history"
           after:  "finalize step 5/5b — {history_events} compaction(s) completed this tier: {history_bytes_in} B in → {history_bytes_out} B out"
         request_timeout_ms: 60000
+      # PROOF that the compaction we asked for actually happened. `trigger_compact`
+      # is deliberately fire-once with a short, timeout-accepted call budget, so its
+      # return value proves only that the request was accepted — never that the work
+      # completed. This op is the assertion: after the drain has emptied, the table
+      # must have settled to at most `max_postfinal_segments` sstables.
+      #
+      # Only valid when compaction was explicitly requested: with `enable_compact=0`
+      # nothing promised any particular segment count, so the check does not run.
+      # A failure here is a real failure — timings measured against an uncompacted
+      # table describe a shape the test did not ask for, and reporting them as if
+      # they did is worse than stopping.
+      verify_segments:
+        adapter: http
+        readout: visible
+        if: "enable_finalize != 0 && enable_compact != 0"
+        uri: "http://{host}:8778/jolokia/read/org.apache.cassandra.metrics:type=Table,keyspace={keyspace},scope={table},name=LiveSSTableCount/Value"
+        method: GET
+        connect_timeout: 15s
+        request_timeout_ms: 60000
+        # `extern` declares the captured value as a wire so the memo and the
+        # metric can name it (same idiom as read_compaction_history above).
+        bindings: |
+          extern postfinal_segments: u64 = 0
+        verify:
+          - field: value
+            lte: "{max_postfinal_segments}"
+        strict: true
+        capture:
+          # JSON Pointer into the Jolokia read response, whose scalar result
+          # is the `value` member (verify's `field:` is a bare name; capture
+          # is RFC 6901 — they are different addressing schemes).
+          postfinal_segments: /value
+        metrics:
+          # The settled segment count per tier — the shape every other finalize
+          # metric was measured against.
+          compaction_postfinal_segments: { kind: gauge, value: postfinal_segments }
+        memo:
+          before: "finalize step 5/5c — verifying {keyspace}.{table} settled to ≤ {max_postfinal_segments} sstables"
+          after:  "finalize step 5/5c — {postfinal_segments} sstable(s) after compaction (max {max_postfinal_segments})"
 
   # Recall against the post-compaction index AT THIS TIER'S SIZE, using
   # THIS tier's own ground truth (query set + neighbor indices from the
