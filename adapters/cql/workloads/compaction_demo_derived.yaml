@@ -1754,6 +1754,23 @@ report:
       # Task units (mixed, see above) over AGE (not duration) — so for a
       # finished tier the denominator keeps growing and this keeps falling.
       # Meaningful only for the tier currently running.
+      # How long the compaction sat INVISIBLE before doing anything: the gap
+      # between the drain's first poll and the first poll that saw a task.
+      #
+      # This is real, not instrument error. forceKeyspaceCompaction submits its
+      # task to the CompactionExecutor — a bounded pool (concurrent_compactors:
+      # 4 here) backed by a BlockingQueue — and a task registers in
+      # system_views.sstable_tasks only when a thread PICKS IT UP and
+      # task.execute() runs. While the four slots are busy with flush-triggered
+      # compactions and SAI index builds, the major compaction is queued and
+      # nothing is observable: the JMX call has returned nothing, the drain
+      # polls an empty table, and the tier looks idle while work is pending.
+      # That window is what made a 2.2s "drain complete" possible, and it is
+      # the wait the start-evidence assertion exists to cover.
+      #
+      # 0 means the first poll already saw the task (grace covered the queue).
+      query: start_latency_s: tfirst_over_time((compaction_pending_tasks > 0)[7d]) - tfirst_over_time(compaction_pending_tasks[7d])
+
       query: live_nodes_per_s: max(compaction_index_nodes_done) by (part) / (1000 * (max(tlast_over_time(compaction_completion_ratio[7d])) - on() group_right() min(tfirst_over_time(compaction_completion_ratio[7d])) by (part)))
       # ONE finalize column, in h:m:s like `elapsed_time`.
       #
