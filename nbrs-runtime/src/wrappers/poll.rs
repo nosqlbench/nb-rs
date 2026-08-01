@@ -355,10 +355,21 @@ impl PollingDispenser {
             });
             // Default (no template / render failure): keep the memo the
             // operator already sees and append the measurement to it.
-            let text = rendered.unwrap_or_else(|| format!(
-                "{base_memo} — measured {row_count} row(s) [target {}..={}] · poll {polls}, {elapsed_secs:.0}s",
-                self.min_rows, self.max_rows,
-            ));
+            let text = rendered.unwrap_or_else(|| if self.until {
+                // A declared `until:` REPLACED the row-count window, so quoting
+                // that window here would describe a gate that is not in effect —
+                // and worse, "measured 0 row(s) [target 0..=0]" reads as ALREADY
+                // SATISFIED while the poll keeps waiting, which is the most
+                // confusing thing a status line can say. Report the condition
+                // that is actually holding it, and the observation feeding it.
+                format!(
+                    "{base_memo} — waiting on `until:` (not yet satisfied) · \
+                     {row_count} row(s) observed · poll {polls}, {elapsed_secs:.0}s")
+            } else {
+                format!(
+                    "{base_memo} — measured {row_count} row(s) [target {}..={}] · poll {polls}, {elapsed_secs:.0}s",
+                    self.min_rows, self.max_rows)
+            });
             memo.store(Arc::new(text));
         }
         // Gauges first: the gutter/memo templates may read metricsql
@@ -1070,6 +1081,27 @@ mod status_publish_tests {
 
 #[cfg(test)]
 mod poll_wire_tests {
+    /// With a declared `until:`, the memo must NOT quote the row-count window.
+    /// "measured 0 row(s) [target 0..=0]" reads as satisfied while the poll is
+    /// still waiting — the single most misleading thing a status line can say,
+    /// and exactly what an operator saw during a 1m28s drain.
+    #[test]
+    fn until_memo_does_not_quote_the_unused_row_window() {
+        let src = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/wrappers/poll.rs"))
+            .expect("read own source");
+        let until_arm = src.find("waiting on `until:` (not yet satisfied)")
+            .expect("the until: memo arm must exist");
+        let window_arm = src.find("measured {row_count} row(s) [target")
+            .expect("the row-window memo arm must exist");
+        assert!(until_arm < window_arm,
+            "the until: arm must be the FIRST branch, so a declared condition \
+             never falls through to the row-window text");
+        // And the two must be distinct branches of one `if self.until`.
+        assert!(src.contains("if self.until {"),
+            "the memo must branch on whether an until: was declared");
+    }
+
     /// `poll_elapsed_ms` and `poll_count` must be WRITTEN before the predicate
     /// is evaluated, not after. A condition that bounds its own patience
     /// (`... || poll_elapsed_ms >= 60000`) is the only way to assert something
