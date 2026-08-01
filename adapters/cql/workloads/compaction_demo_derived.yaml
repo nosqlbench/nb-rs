@@ -233,12 +233,6 @@ params:
   # call's return — is what proves the compaction happened.
   max_postfinal_segments: 5
 
-  # How long the drain waits for EVIDENCE that a compaction actually started
-  # before accepting an empty task list. Bounds the start-observed assertion:
-  # a compaction that finishes between two polls is never observed, and without
-  # this the assertion would wait to `timeout_ms` (48h). Past this, an empty
-  # list is accepted on the reasoning that the compaction was too fast to catch.
-  start_evidence_ms: 60000
 
   # When set (=1), pin the table's STCS min/max thresholds to 100000 in
   # the CREATE TABLE DDL so the size-tier compactor never fires
@@ -1056,6 +1050,17 @@ phases:
         # existence, not the ratio, is the drain condition.
         errors: ".*:warn,counter"
         bindings: |
+          # How long the drain waits for EVIDENCE that a compaction actually
+          # started before accepting an empty task list.
+          #
+          # A typed binding here, NOT a workload param. Params reach polydat as
+          # STRINGS, so `poll_elapsed_ms >= start_evidence_ms` compared a u64
+          # against a string and was never true — the escape arm never fired and
+          # the drain waited on a condition that could not become satisfiable.
+          # (`const` is not accepted in an OP-level bindings block — it parses as
+          # a wire reference named "const" and fails at execution, which dryrun
+          # does NOT catch. A plain assignment is the working form here.)
+          start_evidence_ms := 60000
           extern active_compactions: u64 = 0
           # Published by the poll wrapper each iteration — lets the condition
           # bound its own patience instead of relying on timeout_ms.
