@@ -52,3 +52,28 @@ phases:
           # failed, and the check fails rather than passing slowly.
           timeout_ms: 30000
         measure: "{poll_count} polls {poll_elapsed_ms}ms"
+
+      # The escape must be a TOP-LEVEL disjunct, not nested inside a guard on
+      # observed state. Here the state guard is permanently false — exactly what
+      # a stale, wrong, or never-zero task count does in a real drain — so the
+      # only way out is the elapsed clause.
+      #
+      # Nesting it (`(guard && (observed || elapsed)) || ...`) makes the escape
+      # unreachable whenever the guard is dead, and the poll waits out
+      # `timeout_ms`. That is not hypothetical: it hung a live compaction drain
+      # for 275s+ against a 48-hour timeout. Measured A/B under identical
+      # conditions: hoisted 2s, nested full timeout + failure.
+      escape_survives_a_stuck_guard:
+        adapter: stdout
+        readout: visible
+        stmt: "tick"
+        bindings: |
+          evidence_ms := 1500
+          extern poll_elapsed_ms: u64 = 0
+          # Never becomes 0 — the guard can never open.
+          active_things := 7
+          observed := 0
+        poll:
+          until: "(active_things == 0 && observed != 0) || poll_elapsed_ms >= evidence_ms"
+          interval_ms: 250
+          timeout_ms: 30000

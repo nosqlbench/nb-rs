@@ -1155,7 +1155,15 @@ phases:
         poll:
           # The drain is done when no task is registered AND either
           #   (a) a task was actually OBSERVED this tier, or
-          #   (b) we have waited `start_evidence_ms` without seeing one.
+          #   (b) we have waited `start_evidence_ms`, FULL STOP.
+          #
+          # (b) is a TOP-LEVEL disjunct, deliberately. It was originally nested
+          # inside the `active_compactions == 0` guard, which made the escape
+          # depend on the very state it exists to protect against: if the task
+          # count is wrong, stale, or simply never reads zero, the conjunct is
+          # dead and the escape can never be reached — the poll then waits to
+          # `timeout_ms` (48h) with a bounded-patience clause that cannot fire.
+          # A give-up clause must not be gated on the thing it is giving up on.
           #
           # (a) is the real assertion: a JMX-triggered compaction does not
           # register in sstable_tasks instantly, and a poll landing in that gap
@@ -1168,7 +1176,7 @@ phases:
           # The third disjunct is the caveat: when there was nothing to compact
           # (`sstables <= 1`, so trigger_compact's `if:` never fired), no task
           # will ever appear and an empty list is immediately correct.
-          until: "(active_compactions == 0 && (compaction_observed != 0 || poll_elapsed_ms >= start_evidence_ms)) || sstables <= 1"
+          until: "(active_compactions == 0 && compaction_observed != 0) || poll_elapsed_ms >= start_evidence_ms || sstables <= 1"
           interval_ms: 5000
           # 48h. Gracious enough that even the largest (~1B-vector) tier's compaction
           # drain won't hit it under normal progress (was 4h, which the 60-70M tier blew
