@@ -854,7 +854,23 @@ phases:
       # the first drain poll could run before trigger_compact's JMX call
       # registers its compaction task — an empty first read would satisfy
       # `await_empty` instantly and release the tier early.
-      const drain_grace := 2000.0
+      # Delay before the FIRST drain poll. This is the start-race guard: a
+      # major compaction triggered via JMX does not register in
+      # system_views.sstable_tasks instantly, and a poll that lands in that gap
+      # sees an empty list and declares the drain finished. Observed
+      # 2026-08-01 at the old 2000ms: await_compaction returned in 2.2s while
+      # the compaction was in fact just starting, and verify_segments then ran
+      # against an unsettled table.
+      #
+      # A HARD "must observe a task before accepting empty" assertion was
+      # implemented and then REJECTED: a compaction that finishes between two
+      # 5s polls is never observed, and the assertion would convert it into a
+      # wait to the poll timeout — 48 hours. That failure mode is not
+      # hypothetical: `max_over_time(compaction_pending_tasks{part=...})` reads
+      # 0 for real tiers in recorded sessions. Widening the grace narrows the
+      # race without being able to hang; `verify_segments` is the assertion
+      # that the compaction actually achieved anything.
+      const drain_grace := 15000.0
       # Cross-op cell: `read_sstables` writes it, `trigger_compact`'s
       # `if:` reads it. Since 2026-07-23 the cell is declared at the
       # WORKLOAD ROOT (not re-declared here) so the write-through
@@ -1117,7 +1133,7 @@ phases:
           # zero NEXT TO a live number rather than as the whole readout.
           text: "≈{mib_per_s} MiB/s ≈{nodes_per_s} n/s"
         poll:
-          mode: await_empty
+          # NOT gated on "a task was observed", deliberately — see below.
           interval_ms: 5000
           # 48h. Gracious enough that even the largest (~1B-vector) tier's compaction
           # drain won't hit it under normal progress (was 4h, which the 60-70M tier blew
@@ -1231,28 +1247,40 @@ phases:
       # table describe a shape the test did not ask for, and reporting them as if
       # they did is worse than stopping.
       verify_segments:
-        adapter: http
+        adapter: cql
         readout: visible
         if: "enable_finalize != 0 && enable_compact != 0"
-        uri: "http://{host}:8778/jolokia/read/org.apache.cassandra.metrics:type=Table,keyspace={keyspace},scope={table},name=LiveSSTableCount/Value"
-        method: GET
-        connect_timeout: 15s
+        # CQL, NOT Jolokia. `forceKeyspaceCompaction` is synchronous server-side
+        # and runs ON the Jolokia worker thread, of which there is one — so for
+        # the whole duration of a major compaction every other Jolokia request
+        # queues behind it. Observed 2026-08-01: this op sat 1m35s burning its
+        # timeout and a retry while the endpoint was monopolized, with CQL
+        # answering instantly the entire time. A verification step must not
+        # depend on the same thread as the work it verifies.
+        #
+        # Counts vector-index SEGMENTS (rows in sstable_indexes, the same source
+        # and the same notion of "segment" that `segment_sizes` measures) rather
+        # than table sstables. That is the quantity this test is about, and it
+        # keeps the before/after pair commensurable.
+        raw: |
+          SELECT COUNT(*) AS n FROM system_views.sstable_indexes
+           WHERE keyspace_name = '{keyspace}'
+             AND table_name = '{table}'
+             AND index_name = '{table}{vector_idx_suffix}'
+           ALLOW FILTERING
         request_timeout_ms: 60000
         # `extern` declares the captured value as a wire so the memo and the
         # metric can name it (same idiom as read_compaction_history above).
         bindings: |
           extern postfinal_segments: u64 = 0
         verify:
-          - field: value
+          - field: n
             lte: "{max_postfinal_segments}"
         strict: true
         # Key measurable: the settled count against the bound it must meet.
-        measure: "{postfinal_segments}/{max_postfinal_segments} sst"
+        measure: "{postfinal_segments}/{max_postfinal_segments} seg"
         capture:
-          # JSON Pointer into the Jolokia read response, whose scalar result
-          # is the `value` member (verify's `field:` is a bare name; capture
-          # is RFC 6901 — they are different addressing schemes).
-          postfinal_segments: /value
+          postfinal_segments: ":max(n)"
         metrics:
           # The settled segment count per tier — the shape every other finalize
           # metric was measured against.
