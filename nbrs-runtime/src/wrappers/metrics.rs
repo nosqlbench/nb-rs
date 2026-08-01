@@ -556,6 +556,19 @@ impl OpDispenser for MetricsDispenser {
                         retryable: false,
                     }));
                 };
+                // `None` is the absence of a measurement, not a bad one. A
+                // conditional aggregate that matched nothing this cycle
+                // (`:sum(x where kind='y')` with no matching rows) resolves to
+                // None by design — "absent, not zero". Publishing no sample is
+                // the honest response; erroring turns every conditional
+                // aggregate into a run-ending fault the first cycle its subject
+                // is idle, which is exactly when a drain is being watched.
+                //
+                // Genuinely non-numeric TYPES (Str, vector, handle) still fail
+                // loudly below — those are wiring mistakes, not absences.
+                if matches!(value, polydat::ast::Value::None) {
+                    continue;
+                }
                 let raw = match value_to_f64(&value) {
                     Some(v) => v,
                     None => {
@@ -612,6 +625,37 @@ impl OpDispenser for MetricsDispenser {
         })
     }
     fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
+}
+
+#[cfg(test)]
+mod absent_value_tests {
+    /// A gauge whose binding resolved to `None` must publish NO SAMPLE, not
+    /// fail the run. `None` is the absence of a measurement: a conditional
+    /// aggregate like `:sum(progress where kind='secondary index build')`
+    /// yields it by design whenever no row has that kind, which is precisely
+    /// when a drain is idle and being watched. Erroring there killed a
+    /// 58-minute run at tier 19 with
+    /// `metric_value_non_numeric ... variant Discriminant(19)`.
+    ///
+    /// Genuinely non-numeric TYPES must still fail loudly — those are wiring
+    /// mistakes, not absences — so the skip is matched on `Value::None`
+    /// specifically, never on "failed to coerce".
+    #[test]
+    fn absent_binding_skips_the_sample_but_bad_types_still_fail() {
+        let src = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/wrappers/metrics.rs"))
+            .expect("read own source");
+        let skip = src.find("if matches!(value, polydat::ast::Value::None) {")
+            .expect("None must be skipped explicitly");
+        let coerce = src.find("let raw = match value_to_f64(&value) {")
+            .expect("the coercion site must still exist");
+        assert!(skip < coerce,
+            "the None skip must come BEFORE the coercion, or an absent value \
+             still reaches the error path");
+        assert!(src.contains("metric_value_non_numeric"),
+            "non-numeric TYPES must still raise metric_value_non_numeric — \
+             the skip is for absence, not for bad wiring");
+    }
 }
 
 #[cfg(test)]

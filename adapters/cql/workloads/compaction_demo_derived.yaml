@@ -1155,15 +1155,23 @@ phases:
         poll:
           # The drain is done when no task is registered AND either
           #   (a) a task was actually OBSERVED this tier, or
-          #   (b) we have waited `start_evidence_ms`, FULL STOP.
+          #   (b) we have waited `start_evidence_ms` WHILE IDLE without one.
           #
-          # (b) is a TOP-LEVEL disjunct, deliberately. It was originally nested
-          # inside the `active_compactions == 0` guard, which made the escape
-          # depend on the very state it exists to protect against: if the task
-          # count is wrong, stale, or simply never reads zero, the conjunct is
-          # dead and the escape can never be reached — the poll then waits to
-          # `timeout_ms` (48h) with a bounded-patience clause that cannot fire.
-          # A give-up clause must not be gated on the thing it is giving up on.
+          # (b) is nested inside the idle guard on purpose, and this is the
+          # subtle part. Hoisting it to a top-level disjunct — which was tried,
+          # 2026-08-01 — makes it fire at `start_evidence_ms` unconditionally,
+          # INCLUDING while a compaction is actively running. The drain then
+          # exits mid-merge and verify_segments correctly fails on a table that
+          # was never given time to settle (observed: 9 polls, 61.9s, then 12
+          # segments against a bound of 5).
+          #
+          # Hoisting was a workaround for `active_compactions` never reading
+          # zero, which had a real cause: capture extraction was skipped
+          # entirely when a query returned no rows, so the wire kept its last
+          # nonzero value forever. That is fixed at the source (an empty result
+          # now publishes count/sum identities), so the guard opens honestly
+          # and the escape belongs back inside it. Waiting is only unbounded if
+          # the IDLE state is unobservable, which it no longer is.
           #
           # (a) is the real assertion: a JMX-triggered compaction does not
           # register in sstable_tasks instantly, and a poll landing in that gap
@@ -1176,7 +1184,7 @@ phases:
           # The third disjunct is the caveat: when there was nothing to compact
           # (`sstables <= 1`, so trigger_compact's `if:` never fired), no task
           # will ever appear and an empty list is immediately correct.
-          until: "(active_compactions == 0 && compaction_observed != 0) || poll_elapsed_ms >= start_evidence_ms || sstables <= 1"
+          until: "(active_compactions == 0 && (compaction_observed != 0 || poll_elapsed_ms >= start_evidence_ms)) || sstables <= 1"
           interval_ms: 5000
           # 48h. Gracious enough that even the largest (~1B-vector) tier's compaction
           # drain won't hit it under normal progress (was 4h, which the 60-70M tier blew
