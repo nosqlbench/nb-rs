@@ -520,6 +520,24 @@ impl OpDispenser for PollingDispenser {
                 // would be second-guessing it. An unresolved predicate is a
                 // wiring fault, not a false one — failing loudly beats
                 // spinning to the timeout with no explanation.
+                // Publish the poll's own progress as wires BEFORE evaluating the
+                // predicate, so an `until:` can bound its own patience. Without
+                // these a condition can only describe the observed world, never
+                // "and give up waiting for it" — which turns any never-satisfied
+                // predicate into a wait to `timeout_ms`. `poll_elapsed_ms` is
+                // the time spent polling THIS invocation; `poll_count` is the
+                // number of iterations completed.
+                //
+                // Written through the same `WireSource::write` path captures
+                // use, so the names resolve exactly like any other wire and an
+                // `extern poll_elapsed_ms: u64 = 0` declaration picks them up.
+                // A workload that never mentions them has no slot, the write
+                // is a no-op, and nothing changes.
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                ctx.wires.write("poll_elapsed_ms",
+                    polydat::ast::Value::U64(elapsed_ms));
+                ctx.wires.write("poll_count",
+                    polydat::ast::Value::U64(polls));
                 let is_done = if self.until {
                     match crate::wrappers::condition::holds(
                         ctx.wires, crate::wrappers::condition::UNTIL_BINDING)
@@ -1047,5 +1065,30 @@ mod status_publish_tests {
         assert_eq!(gutter_state.load().as_deref(),
             Some(&crate::wrappers::gutter::GutterSpec::Text("ratio 0.75".into())),
             "render failure must not clobber the cell");
+    }
+}
+
+#[cfg(test)]
+mod poll_wire_tests {
+    /// `poll_elapsed_ms` and `poll_count` must be WRITTEN before the predicate
+    /// is evaluated, not after. A condition that bounds its own patience
+    /// (`... || poll_elapsed_ms >= 60000`) is the only way to assert something
+    /// that may never be observed without risking a wait to `timeout_ms` —
+    /// which in the compaction drain is 48 hours. Publishing them a moment too
+    /// late would leave the first evaluation reading 0 forever.
+    #[test]
+    fn poll_progress_wires_are_published_before_the_predicate() {
+        let src = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/wrappers/poll.rs"))
+            .expect("read own source");
+        let write_at = src.find("ctx.wires.write(\"poll_elapsed_ms\"")
+            .expect("poll_elapsed_ms must be published");
+        let predicate_at = src.find("let is_done = if self.until {")
+            .expect("predicate evaluation site");
+        assert!(write_at < predicate_at,
+            "the poll-progress wires must be written BEFORE the until: predicate \
+             is evaluated, or a self-bounding condition reads a stale 0");
+        assert!(src.contains("ctx.wires.write(\"poll_count\""),
+            "poll_count must be published alongside poll_elapsed_ms");
     }
 }

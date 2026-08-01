@@ -233,6 +233,13 @@ params:
   # call's return — is what proves the compaction happened.
   max_postfinal_segments: 5
 
+  # How long the drain waits for EVIDENCE that a compaction actually started
+  # before accepting an empty task list. Bounds the start-observed assertion:
+  # a compaction that finishes between two polls is never observed, and without
+  # this the assertion would wait to `timeout_ms` (48h). Past this, an empty
+  # list is accepted on the reasoning that the compaction was too fast to catch.
+  start_evidence_ms: 60000
+
   # When set (=1), pin the table's STCS min/max thresholds to 100000 in
   # the CREATE TABLE DDL so the size-tier compactor never fires
   # spontaneously mid-load — the test owns compaction timing explicitly.
@@ -862,15 +869,12 @@ phases:
       # the compaction was in fact just starting, and verify_segments then ran
       # against an unsettled table.
       #
-      # A HARD "must observe a task before accepting empty" assertion was
-      # implemented and then REJECTED: a compaction that finishes between two
-      # 5s polls is never observed, and the assertion would convert it into a
-      # wait to the poll timeout — 48 hours. That failure mode is not
-      # hypothetical: `max_over_time(compaction_pending_tasks{part=...})` reads
-      # 0 for real tiers in recorded sessions. Widening the grace narrows the
-      # race without being able to hang; `verify_segments` is the assertion
-      # that the compaction actually achieved anything.
-      const drain_grace := 15000.0
+      # The start race is now ASSERTED in the drain's `until:` (see
+      # await_compaction) rather than merely narrowed here, bounded by
+      # `start_evidence_ms` so a compaction too fast to observe cannot hang the
+      # poll. This grace just avoids spending a poll on a list that cannot yet
+      # be populated.
+      const drain_grace := 2000.0
       # Cross-op cell: `read_sstables` writes it, `trigger_compact`'s
       # `if:` reads it. Since 2026-07-23 the cell is declared at the
       # WORKLOAD ROOT (not re-declared here) so the write-through
@@ -1053,6 +1057,17 @@ phases:
         errors: ".*:warn,counter"
         bindings: |
           extern active_compactions: u64 = 0
+          # Published by the poll wrapper each iteration — lets the condition
+          # bound its own patience instead of relying on timeout_ms.
+          extern poll_elapsed_ms: u64 = 0
+          # "Has a compaction been seen this tier?" — answered from the metric
+          # HISTORY rather than a latch variable, because polydat bindings form
+          # a DAG and `x := x || ...` is a cycle. compaction_pending_tasks is
+          # this op's own published task count, so max_over_time over it is
+          # exactly "did any poll see a task", and the `part` filter scopes it
+          # to THIS tier so a previous tier's drain cannot answer for this one.
+          compaction_observed := round_u64(metricsql_scalar(
+              "max_over_time(compaction_pending_tasks{part=\"{part}\"}[6h])"))
           extern completion_ratio:   f64 = 0.0
           extern index_nodes_done:   u64 = 0
           extern index_nodes_total:  u64 = 0
@@ -1133,7 +1148,22 @@ phases:
           # zero NEXT TO a live number rather than as the whole readout.
           text: "≈{mib_per_s} MiB/s ≈{nodes_per_s} n/s"
         poll:
-          # NOT gated on "a task was observed", deliberately — see below.
+          # The drain is done when no task is registered AND either
+          #   (a) a task was actually OBSERVED this tier, or
+          #   (b) we have waited `start_evidence_ms` without seeing one.
+          #
+          # (a) is the real assertion: a JMX-triggered compaction does not
+          # register in sstable_tasks instantly, and a poll landing in that gap
+          # would otherwise call the drain finished 2s after triggering it.
+          # (b) is what makes (a) safe: a compaction finishing between two 5s
+          # polls is never observed — verified, `max_over_time` reads 0 for real
+          # tiers — and without the escape the assertion converts a FAST
+          # compaction into a wait to timeout_ms, which is 48 hours.
+          #
+          # The third disjunct is the caveat: when there was nothing to compact
+          # (`sstables <= 1`, so trigger_compact's `if:` never fired), no task
+          # will ever appear and an empty list is immediately correct.
+          until: "(active_compactions == 0 && (compaction_observed != 0 || poll_elapsed_ms >= start_evidence_ms)) || sstables <= 1"
           interval_ms: 5000
           # 48h. Gracious enough that even the largest (~1B-vector) tier's compaction
           # drain won't hit it under normal progress (was 4h, which the 60-70M tier blew
