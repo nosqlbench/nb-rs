@@ -224,6 +224,41 @@ fn count_of_subtree(v: Option<&serde_json::Value>) -> u64 {
 /// capture). Sum stays integral (`U64`) while every contributing
 /// value is a non-negative integer, else widens to `F64`; min/max
 /// return the winning row's value with its original JSON type.
+/// The capture values an op should publish when it SUCCEEDED but returned no
+/// body at all — an empty CQL result set, an HTTP 204, an accepted timeout.
+///
+/// Skipping the write (the previous behaviour) leaves every capture holding
+/// its PREVIOUS value, so a wire that is being watched for "went to zero" can
+/// never read zero once it has been nonzero. That pinned a compaction drain's
+/// task count above zero permanently and hung the poll: cqlsh showed an empty
+/// table while the workload's wire still read the last nonzero count.
+///
+/// An empty measurement is a measurement. Counting and summing nothing has an
+/// unambiguous identity, so those write it. `min`/`max` of nothing has no
+/// honest value, so they write `None` — which CLEARS the wire rather than
+/// leaving a stale reading that looks like a real observation.
+fn captures_for_empty_result(
+    specs: &[bindpoints::CapturePoint],
+) -> std::collections::HashMap<String, polydat::ast::Value> {
+    use bindpoints::CaptureAgg;
+    let mut out = std::collections::HashMap::new();
+    for spec in specs {
+        let value = if spec.count {
+            polydat::ast::Value::U64(0)
+        } else {
+            match &spec.agg {
+                Some(CaptureAgg::Sum(_)) => polydat::ast::Value::U64(0),
+                Some(CaptureAgg::Min(_)) | Some(CaptureAgg::Max(_)) => {
+                    polydat::ast::Value::None
+                }
+                None => polydat::ast::Value::None,
+            }
+        };
+        out.insert(spec.as_name.clone(), value);
+    }
+    out
+}
+
 fn aggregate_rows(
     sub: Option<&serde_json::Value>,
     agg: &bindpoints::CaptureAgg,
@@ -257,6 +292,11 @@ fn aggregate_rows(
         .filter_map(|v| v.as_number())
         .collect();
     if nums.is_empty() {
+        // Absent, NOT zero — a fold over rows that exist but match nothing is
+        // a different statement from "there was no result at all". Zero would
+        // read as "measured, and it was none". This value IS written to the
+        // wire (unlike the no-body path, which used to skip the write
+        // entirely), so it clears rather than leaving a stale reading.
         return polydat::ast::Value::None;
     }
     match agg {
@@ -364,6 +404,15 @@ impl OpDispenser for TraversingDispenser {
             // on the per-fiber kernel's input slot via ctx.wires.write;
             // wrappers above this layer (e.g. MetricsDispenser) see
             // them through wires.get on the same cycle.
+            // A SUCCEEDING op that returned no body still measured something:
+            // zero rows. Publish the identity values rather than skipping the
+            // write, or every capture silently keeps its previous reading and a
+            // "wait for it to reach zero" poll can never succeed.
+            if !self.captures.is_empty() && result.body.is_none() {
+                for (name, value) in captures_for_empty_result(&self.captures) {
+                    let _ = ctx.wires.write(&name, value);
+                }
+            }
             if !self.captures.is_empty()
                 && let Some(body) = &result.body {
                     let base = self.spec.as_ref().and_then(|s| s.path.as_deref());
@@ -421,6 +470,81 @@ impl OpDispenser for TraversingDispenser {
 mod tests {
     use super::*;
     use crate::adapter::ResultBody;
+
+    fn agg_cap(alias: &str, agg: Option<bindpoints::CaptureAgg>, count: bool)
+        -> bindpoints::CapturePoint {
+        bindpoints::CapturePoint {
+            row_filter: None,
+            source_name: alias.into(),
+            as_name: alias.into(),
+            cast_type: None,
+            slurp: false,
+            path: Some(String::new()),
+            count,
+            agg,
+        }
+    }
+
+    /// An op that SUCCEEDS with no body measured zero rows, and must publish
+    /// that. Skipping the write leaves every capture holding its previous
+    /// reading, so a wire watched for "went to zero" can never reach zero once
+    /// it has been nonzero — which pinned a compaction drain's task count above
+    /// zero permanently and hung its poll for 275s+ against a 48h timeout,
+    /// while cqlsh showed the table empty.
+    #[test]
+    fn empty_result_publishes_identity_for_count_and_sum() {
+        let specs = vec![
+            agg_cap("n", None, true),
+            agg_cap("s", Some(bindpoints::CaptureAgg::Sum("x".into())), false),
+        ];
+        let out = super::captures_for_empty_result(&specs);
+        assert!(matches!(out.get("n"), Some(polydat::ast::Value::U64(0))),
+            "counting nothing is 0, not 'leave the old count': {:?}", out.get("n"));
+        assert!(matches!(out.get("s"), Some(polydat::ast::Value::U64(0))),
+            "summing nothing is 0: {:?}", out.get("s"));
+    }
+
+    /// min/max of nothing has NO honest value, so they publish None — which
+    /// clears the wire rather than leaving a stale reading that is
+    /// indistinguishable from a real observation. Writing 0 would be a lie:
+    /// zero is a plausible minimum.
+    #[test]
+    fn empty_result_clears_min_and_max_rather_than_inventing_a_value() {
+        let specs = vec![
+            agg_cap("lo", Some(bindpoints::CaptureAgg::Min("x".into())), false),
+            agg_cap("hi", Some(bindpoints::CaptureAgg::Max("x".into())), false),
+        ];
+        let out = super::captures_for_empty_result(&specs);
+        assert!(matches!(out.get("lo"), Some(polydat::ast::Value::None)),
+            "min of nothing must not invent 0: {:?}", out.get("lo"));
+        assert!(matches!(out.get("hi"), Some(polydat::ast::Value::None)),
+            "max of nothing must not invent 0: {:?}", out.get("hi"));
+    }
+
+    /// A plain (non-aggregate) capture over an empty result is simply absent.
+    #[test]
+    fn empty_result_leaves_plain_captures_absent() {
+        let specs = vec![agg_cap("v", None, false)];
+        let out = super::captures_for_empty_result(&specs);
+        assert!(matches!(out.get("v"), Some(polydat::ast::Value::None)));
+    }
+
+    /// Rows that EXIST but match nothing stay `None`, deliberately — a
+    /// different statement from "there was no result at all", and the
+    /// pre-existing rule (`aggregate_filter_matching_no_rows_yields_none`).
+    /// That case was never the staleness bug: this value IS written to the
+    /// wire, so it clears. Only the no-body path skipped the write.
+    #[test]
+    fn empty_fold_over_present_rows_stays_absent_not_zero() {
+        let rows = serde_json::json!([{"other": 1}, {"other": 2}]);
+        for agg in [bindpoints::CaptureAgg::Sum("missing".into()),
+                    bindpoints::CaptureAgg::Min("missing".into()),
+                    bindpoints::CaptureAgg::Max("missing".into())] {
+            let v = super::aggregate_rows(Some(&rows), &agg, None);
+            assert!(matches!(v, polydat::ast::Value::None),
+                "an empty fold over present rows is absent, not zero: {v:?}");
+        }
+    }
 
     fn cap(source: &str, alias: &str, slurp: bool) -> bindpoints::CapturePoint {
         bindpoints::CapturePoint {
