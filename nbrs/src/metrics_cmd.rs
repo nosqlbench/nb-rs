@@ -221,8 +221,17 @@ fn list_or_show_flags() -> Vec<Flag> {
     out
 }
 
-/// `show`'s flag surface: the shared list/summarize flags plus the
-/// one-release `--values` deprecation bridge to `summarize`.
+/// `list`'s flag surface: the shared flags minus `--list` — a names
+/// view of a names view is a no-op, so completion doesn't offer it
+/// (the imperative parser still accepts it for old scripts).
+fn list_cmd_flags() -> Vec<Flag> {
+    list_or_show_flags().into_iter()
+        .filter(|f| f.long != "--list")
+        .collect()
+}
+
+/// The deprecated `show` alias's flag surface: `list`'s flags plus
+/// the one-release `--values` bridge to `summarize`.
 fn show_flags() -> Vec<Flag> {
     let mut out = list_or_show_flags();
     out.push(Flag {
@@ -335,10 +344,29 @@ pub fn spec() -> Command {
         completion_override: None,
         subcommands: vec![
             Command {
-                name: "show",
+                name: "list",
                 help: "List metric families + label dimensions (structure \
                        only, never touches sample data — SRD-93). For \
                        per-leaf value summaries use `summarize`.",
+                category: Category::Tools, level: Level::Secondary,
+                flags: list_cmd_flags(),
+                kv_params: SESSION_KV,
+        dynamic_options: None,
+        positionals: vec![crate::cli_spec::Positional {
+                    name: "expr",
+                    help: "Optional filter (family-glob or `family{labels}`).",
+                    value: crate::cli_spec::ValueProvider::Custom(crate::completion::metric_family_provider),
+                    kind: crate::cli_spec::PositionalKind::ZeroOrOne,
+                }],
+                subcommands: Vec::new(),
+                handler: Some(Handler::Sync(handle_list)),
+                raw_args: false,
+                completion_override: None,
+            },
+            Command {
+                name: "show",
+                help: "DEPRECATED alias of `list` (SRD-93 renamed the \
+                       structure view); `--values` bridges to `summarize`.",
                 category: Category::Tools, level: Level::Secondary,
                 flags: show_flags(),
                 kv_params: SESSION_KV,
@@ -470,16 +498,27 @@ pub fn spec() -> Command {
 
 // ── handlers ──────────────────────────────────────────────
 
-fn handle_show(p: ParsedCommand) -> Result<(), String> {
-    // SRD-93 stage 1 — `show` is structure-only: families + label
+fn handle_list(p: ParsedCommand) -> Result<(), String> {
+    // SRD-93 stage 1/5 — `list` is structure-only: families + label
     // dimensions from the naming scaffold, never touching
-    // `sample_value`. The former show-with-values behavior lives in
-    // `summarize`; `--values` bridges one release for muscle memory.
+    // `sample_value`. Value summaries live in `summarize`.
+    list_from_parsed(&p, false);
+    Ok(())
+}
+
+fn handle_show(p: ParsedCommand) -> Result<(), String> {
+    // Deprecated alias of `list` (SRD-93 renamed the structure
+    // view); `--values` bridges one release to `summarize`.
     let values = p.bool("--values");
     if values {
         eprintln!(
             "nbrs metrics: `show --values` is deprecated — \
              use `nbrs metrics summarize`."
+        );
+    } else {
+        eprintln!(
+            "nbrs metrics: `show` is deprecated — \
+             use `nbrs metrics list`."
         );
     }
     list_from_parsed(&p, values);
@@ -656,10 +695,15 @@ pub fn metrics_command(args: &[String]) {
     let sub = args.first().map(String::as_str);
     let rest = args.get(1..).unwrap_or(&[]);
     match sub {
-        // `list` is consolidated into `show --list` (names only).
-        // SRD-93 stage 1: `show` is structure-only; `summarize`
-        // carries the per-leaf value summaries.
-        Some("show") => list(rest, false),
+        // SRD-93: `list` is the structure view (`show` is its
+        // deprecated alias); `summarize` carries the per-leaf
+        // value summaries.
+        Some("list") => list(rest, false),
+        Some("show") => {
+            eprintln!("nbrs metrics: `show` is deprecated — \
+                       use `nbrs metrics list`.");
+            list(rest, false)
+        }
         Some("summarize") => list(rest, true),
         Some("match") => match_specs(rest),
         Some("groups") => groups_command(rest),
@@ -681,10 +725,11 @@ pub fn metrics_command(args: &[String]) {
 fn print_metrics_usage() {
     eprintln!();
     eprintln!("Usage:");
-    eprintln!("  nbrs metrics show  [<expr>]  Metric families + label dimensions");
+    eprintln!("  nbrs metrics list  [<expr>]  Metric families + label dimensions");
     eprintln!("                               (structure only — fast on any db,");
     eprintln!("                               live or finished). Add --tree for");
-    eprintln!("                               a nested view.");
+    eprintln!("                               a nested view. (`show` is a");
+    eprintln!("                               deprecated alias.)");
     eprintln!("  nbrs metrics summarize [<expr>]");
     eprintln!("                               Same layout with a value summary");
     eprintln!("                               at each leaf, computed in one");
