@@ -3,8 +3,8 @@
 
 //! Session-wide signal handling — the THREE-LEVEL shutdown ladder.
 //!
-//! A Ctrl-C (SIGINT, or the raw-mode key-watcher's translated
-//! keystroke) advances one rung at a time:
+//! A Ctrl-C (SIGINT or SIGTERM, or the raw-mode key-watcher's
+//! translated keystroke) advances one rung at a time:
 //!
 //! - **Level 1 — graceful, cooperative.** The session-stop flag is
 //!   set; active fiber loops observe it at their cycle boundary and
@@ -29,6 +29,35 @@
 //! The state is intentionally global: there is one session per
 //! process by construction. Tests shouldn't need to install or
 //! consult it (no `RunObserver` test sets up signals).
+//!
+//! ## SRD-93 M7 — the detached-console signal contract
+//!
+//! The ladder MUST be reachable from outside the process even when
+//! the async runtime is wedged (SRD-93 A8: the stop door never
+//! depends on runtime health — the 2026-08-03 incident proved a
+//! tokio-task watcher is unreachable exactly when it matters). So
+//! signal watching runs on a dedicated OS thread: `main` calls
+//! [`block_shutdown_signals`] before any thread spawns (every later
+//! thread inherits the block) and [`spawn_signal_dispatcher`] owns
+//! the signals via `sigwait`, advancing the ladder synchronously.
+//!
+//! - `SIGINT` / `SIGTERM` — one rung per signal; past the cancel
+//!   rung the dispatcher force-exits `128 + signo` (130 / 143) on
+//!   its own thread, so the hard floor works even when nothing
+//!   else does. Unarmed (no run in progress) they exit
+//!   `128 + signo` directly — CLI commands keep their default
+//!   interrupt semantics.
+//! - `SIGHUP` — NEVER a stop. Armed: console-loss (log, run the
+//!   [`set_console_loss_hook`] if installed, continue headless).
+//!   Unarmed: exit 129.
+//! - `SIGQUIT` — diagnostics dump (ladder level, stop flags, plus
+//!   the [`set_diag_dump_hook`] inventory if installed); no state
+//!   change. Unarmed: exit 131.
+//!
+//! The tokio `ctrl_c` watcher in [`install_signal_handler`] remains
+//! as a redundant door for embeddings whose `main` never blocked
+//! the signals; when the dispatcher owns them, that watcher simply
+//! never fires (the two are mutually exclusive by construction).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -138,8 +167,13 @@ pub fn mark_shutdown_complete() {
 /// SAME ladder as Ctrl-C, so it must not be reported as a Ctrl-C.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownOrigin {
-    /// The SIGINT / Ctrl-C watcher (`install_signal_handler`).
+    /// The SIGINT / Ctrl-C watcher (`install_signal_handler`) or the
+    /// dispatcher thread receiving SIGINT (SRD-93 M7).
     CtrlC,
+    /// The dispatcher thread receiving SIGTERM (SRD-93 M7) — the
+    /// canonical orchestrator graceful-terminate (systemd / Docker /
+    /// Kubernetes send it ahead of their grace-period SIGKILL).
+    Term,
     /// A `stop_when` condition with `action: abort` (SRD-83 follow-up).
     StopAction,
 }
@@ -152,6 +186,8 @@ impl ShutdownOrigin {
         match self {
             ShutdownOrigin::CtrlC =>
                 "session: graceful shutdown requested (Ctrl-C).",
+            ShutdownOrigin::Term =>
+                "session: graceful shutdown requested (SIGTERM).",
             ShutdownOrigin::StopAction =>
                 "session: shutdown requested by stop action `abort`.",
         }
@@ -161,6 +197,7 @@ impl ShutdownOrigin {
     fn trigger(self) -> &'static str {
         match self {
             ShutdownOrigin::CtrlC => "Ctrl-C",
+            ShutdownOrigin::Term => "SIGTERM",
             ShutdownOrigin::StopAction => "stop action `abort`",
         }
     }
@@ -444,6 +481,9 @@ impl StopView {
 /// Idempotent — only the first call wins; subsequent calls are
 /// no-ops. Must be called from inside a tokio runtime context.
 pub fn install_signal_handler() {
+    // SRD-93 M7 — arm the dispatcher's ladder routing (idempotent,
+    // and meaningful on every call: a run is now in progress).
+    LADDER_ARMED.store(true, Ordering::Relaxed);
     static INSTALLED: OnceLock<()> = OnceLock::new();
     if INSTALLED.set(()).is_err() {
         return;
@@ -476,6 +516,186 @@ pub fn install_signal_handler() {
         }
     });
 }
+
+// ─── SRD-93 M7 — dedicated signal dispatcher (the A8 stop door) ──────
+
+/// True once a run has armed the ladder ([`install_signal_handler`]).
+/// Unarmed, the dispatcher preserves default CLI interrupt semantics
+/// (exit `128 + signo`); armed, signals drive the ladder.
+static LADDER_ARMED: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+fn ladder_armed() -> bool {
+    LADDER_ARMED.load(Ordering::Relaxed)
+}
+
+/// Console-loss hook (SIGHUP while armed). The TUI installs a closure
+/// that restores the terminal and switches rendering headless; without
+/// one, the dispatcher just logs and continues — the run survives
+/// terminal loss either way.
+static CONSOLE_LOSS_HOOK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// Install the console-loss hook. First call wins (one console).
+pub fn set_console_loss_hook(hook: Box<dyn Fn() + Send + Sync>) {
+    let _ = CONSOLE_LOSS_HOOK.set(hook);
+}
+
+/// Diagnostics-dump hook (SIGQUIT while armed). The runner installs a
+/// closure that logs the per-activity / component inventory; the
+/// dispatcher always logs the ladder + stop-flag line first.
+static DIAG_DUMP_HOOK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// Install the diagnostics-dump hook. First call wins.
+pub fn set_diag_dump_hook(hook: Box<dyn Fn() + Send + Sync>) {
+    let _ = DIAG_DUMP_HOOK.set(hook);
+}
+
+/// The signal set the dispatcher owns. SIGINT/SIGTERM drive the
+/// ladder; SIGHUP is console-loss (never a stop); SIGQUIT dumps
+/// diagnostics.
+#[cfg(unix)]
+const DISPATCHED_SIGNALS: [libc::c_int; 4] =
+    [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+
+/// What the dispatcher does with one received signal. Pure decision,
+/// separated from the thread loop so the routing is unit-testable
+/// without raising real signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalAction {
+    /// Exit `128 + signo` now (unarmed default semantics).
+    Exit(i32),
+    /// Advance the ladder one rung.
+    Escalate(ShutdownOrigin),
+    /// Past the cancel rung: announce and exit `128 + signo`.
+    ForceExit(i32),
+    /// SIGHUP armed: log, run the console-loss hook, continue.
+    ConsoleLoss,
+    /// SIGQUIT armed: log ladder + stop flags, run the dump hook,
+    /// continue.
+    DiagDump,
+}
+
+/// Route one signal by (signo, armed, current ladder level).
+#[cfg(unix)]
+fn dispatch_decision(signo: libc::c_int, armed: bool, level: u8) -> SignalAction {
+    let exit_code = 128 + signo as i32;
+    match signo {
+        libc::SIGINT | libc::SIGTERM => {
+            let origin = if signo == libc::SIGTERM {
+                ShutdownOrigin::Term
+            } else {
+                ShutdownOrigin::CtrlC
+            };
+            if !armed {
+                SignalAction::Exit(exit_code)
+            } else if level >= 2 {
+                SignalAction::ForceExit(exit_code)
+            } else {
+                SignalAction::Escalate(origin)
+            }
+        }
+        libc::SIGHUP if armed => SignalAction::ConsoleLoss,
+        libc::SIGQUIT if armed => SignalAction::DiagDump,
+        _ => SignalAction::Exit(exit_code),
+    }
+}
+
+/// Block the dispatched signals in the calling thread. MUST run first
+/// thing in `main`, before any thread spawns, so every later thread
+/// inherits the block and delivery can only land in the dispatcher's
+/// `sigwait`. This also makes the ladder immune to a third-party
+/// library later installing its own `sigaction` for these signals —
+/// `sigwait` consumes a blocked signal before any handler would run.
+/// (Child processes are unaffected: `std::process::Command` resets
+/// the child's signal mask and dispositions.)
+#[cfg(unix)]
+pub fn block_shutdown_signals() {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for s in DISPATCHED_SIGNALS {
+            libc::sigaddset(&mut set, s);
+        }
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    }
+}
+
+#[cfg(not(unix))]
+pub fn block_shutdown_signals() {}
+
+/// Spawn the dedicated dispatcher thread (SRD-93 M7 / A8). Pair with
+/// [`block_shutdown_signals`] — without the block, `sigwait` never
+/// receives anything and the legacy tokio watcher keeps the door.
+/// Idempotent.
+#[cfg(unix)]
+pub fn spawn_signal_dispatcher() {
+    static SPAWNED: OnceLock<()> = OnceLock::new();
+    if SPAWNED.set(()).is_err() {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("signal-dispatch".into())
+        .spawn(|| {
+            let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+            unsafe {
+                libc::sigemptyset(&mut set);
+                for s in DISPATCHED_SIGNALS {
+                    libc::sigaddset(&mut set, s);
+                }
+            }
+            loop {
+                let mut signo: libc::c_int = 0;
+                if unsafe { libc::sigwait(&set, &mut signo) } != 0 {
+                    // EINVAL on the fixed set can't happen; if it
+                    // somehow does, retiring the thread just reverts
+                    // to the legacy watcher door.
+                    return;
+                }
+                match dispatch_decision(signo, ladder_armed(), shutdown_level()) {
+                    SignalAction::Exit(code) => std::process::exit(code),
+                    SignalAction::Escalate(origin) => {
+                        escalate_shutdown(origin);
+                    }
+                    SignalAction::ForceExit(code) => {
+                        crate::diag!(
+                            crate::observer::LogLevel::Warn,
+                            "session: force-exit (signal past the cancel rung) — \
+                             profiler output and metrics may be incomplete."
+                        );
+                        std::process::exit(code);
+                    }
+                    SignalAction::ConsoleLoss => {
+                        crate::diag!(
+                            crate::observer::LogLevel::Warn,
+                            "session: SIGHUP — controlling terminal lost; \
+                             continuing headless (the run is unaffected)."
+                        );
+                        if let Some(hook) = CONSOLE_LOSS_HOOK.get() {
+                            hook();
+                        }
+                    }
+                    SignalAction::DiagDump => {
+                        crate::diag!(
+                            crate::observer::LogLevel::Info,
+                            "session: SIGQUIT diagnostics — shutdown ladder level {}, \
+                             session stop {}, graceful stop {}, fault stop {}.",
+                            shutdown_level(),
+                            stop_requested(),
+                            graceful_stop_requested(),
+                            fault_stop_requested()
+                        );
+                        if let Some(hook) = DIAG_DUMP_HOOK.get() {
+                            hook();
+                        }
+                    }
+                }
+            }
+        })
+        .expect("spawn signal-dispatch thread");
+}
+
+#[cfg(not(unix))]
+pub fn spawn_signal_dispatcher() {}
 
 /// Test-only: serialize the tests that touch the process-global
 /// `SESSION_STOP` flag. `SESSION_STOP` is a never-reset
@@ -607,5 +827,40 @@ mod tests {
 
         clear_session_stop_for_test();
         reset_shutdown_ladder_for_test();
+    }
+
+    /// SRD-93 M7 — the dispatcher's pure routing. Unarmed, every
+    /// signal keeps its default CLI exit semantics (`128 + signo`);
+    /// armed, INT/TERM climb the ladder and force-exit past the
+    /// cancel rung with the origin-correct code (130 / 143), HUP is
+    /// console-loss (never a stop), QUIT is a diagnostics dump.
+    #[cfg(unix)]
+    #[test]
+    fn dispatch_routes_by_signal_arming_and_rung() {
+        use SignalAction::*;
+
+        // Unarmed: default exit codes, any level.
+        assert_eq!(dispatch_decision(libc::SIGINT, false, 0), Exit(130));
+        assert_eq!(dispatch_decision(libc::SIGTERM, false, 0), Exit(143));
+        assert_eq!(dispatch_decision(libc::SIGHUP, false, 0), Exit(129));
+        assert_eq!(dispatch_decision(libc::SIGQUIT, false, 0), Exit(131));
+
+        // Armed, below the cancel rung: one rung per signal, with
+        // the origin carrying the trigger name.
+        assert_eq!(dispatch_decision(libc::SIGINT, true, 0),
+            Escalate(ShutdownOrigin::CtrlC));
+        assert_eq!(dispatch_decision(libc::SIGTERM, true, 1),
+            Escalate(ShutdownOrigin::Term));
+
+        // Armed, at/past the cancel rung: the hard floor, exit code
+        // by the signal that delivered the final blow.
+        assert_eq!(dispatch_decision(libc::SIGINT, true, 2), ForceExit(130));
+        assert_eq!(dispatch_decision(libc::SIGTERM, true, 2), ForceExit(143));
+
+        // Armed HUP/QUIT never stop and never escalate.
+        assert_eq!(dispatch_decision(libc::SIGHUP, true, 0), ConsoleLoss);
+        assert_eq!(dispatch_decision(libc::SIGHUP, true, 2), ConsoleLoss);
+        assert_eq!(dispatch_decision(libc::SIGQUIT, true, 0), DiagDump);
+        assert_eq!(dispatch_decision(libc::SIGQUIT, true, 2), DiagDump);
     }
 }

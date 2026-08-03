@@ -44,6 +44,16 @@ mod web_push;
 mod openapi;
 
 fn main() {
+    // SRD-93 M7 — own the shutdown signals BEFORE any thread spawns:
+    // block SIGINT/SIGTERM/SIGHUP/SIGQUIT here so every later thread
+    // inherits the block, and receive them on the dedicated dispatcher
+    // thread. Unarmed (no run in progress) the dispatcher preserves
+    // default CLI semantics (exit 128+signo); once a run arms the
+    // ladder, signals drive it — reachable even with the async
+    // runtime wedged (A8).
+    nbrs_runtime::session_signals::block_shutdown_signals();
+    nbrs_runtime::session_signals::spawn_signal_dispatcher();
+
     // Build the canonical CLI spec once. `cli_spec::root` pulls
     // every subcommand's `spec()` so this single value drives
     // both completion and dispatch — there is no second list

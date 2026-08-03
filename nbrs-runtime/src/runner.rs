@@ -829,6 +829,37 @@ fn build_session_metrics(
     // safe to call again on retry / reentry paths.
     crate::session_signals::install_signal_handler();
 
+    // SRD-93 M7 — SIGQUIT inventory: log every Running component's
+    // labels + instrument count, so "why is nothing moving" is
+    // answerable from outside even when the run is wedged. Runs on
+    // the signal-dispatch thread; read-only over the tree.
+    let dump_root = session.component.clone();
+    crate::session_signals::set_diag_dump_hook(Box::new(move || {
+        fn walk(
+            node: &std::sync::Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
+            out: &mut Vec<String>,
+        ) {
+            let g = node.read().unwrap_or_else(|e| e.into_inner());
+            if g.state() == nbrs_metrics::component::ComponentState::Running {
+                out.push(format!(
+                    "{} ({} instrument(s))",
+                    g.effective_labels(),
+                    g.instruments().len(),
+                ));
+            }
+            for child in g.children() {
+                walk(child, out);
+            }
+        }
+        let mut lines = Vec::new();
+        walk(&dump_root, &mut lines);
+        crate::diag!(crate::observer::LogLevel::Info,
+            "session: SIGQUIT inventory — {} running component(s)", lines.len());
+        for line in lines {
+            crate::diag!(crate::observer::LogLevel::Info, "  {line}");
+        }
+    }));
+
     Ok((cadence_reporter, cadence_tree, metrics_query, stop_handle))
 }
 
@@ -3314,6 +3345,19 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // half-open clusters would otherwise leak FDs into the
         // next session in TUI / `metrics watch` host processes.
         exec_ctx.resource_pool.shutdown().await;
+        // SRD-93 stage 6 — a ladder-driven interrupt (level 1/2)
+        // unwinds the walk as an `Err`, which the `?` below would
+        // propagate PAST the SRD-77 row close-out at the end of this
+        // function — leaving `disposition` NULL, the marker reserved
+        // for genuinely unclean exits (force-exit, panic, SIGKILL). A
+        // cooperative drain IS a clean shutdown: stamp the row with
+        // the scene tree's computed disposition (interrupted / failed
+        // / …) before the error propagates. `update_execution_end`
+        // keys on `ended_at_nanos IS NULL`, so the normal-completion
+        // stamp below stays a no-op after this one.
+        if scheduler_result.is_err() {
+            close_execution_row(&sqlite_reporter, &session_id, exec_id);
+        }
         scheduler_result?;
 
         // Workload-end lifecycle boundary: every phase in the
@@ -3525,31 +3569,15 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         }
     }
 
-    // SRD-77 — close out the executions row with the
-    // computed disposition + end timestamp. Walks the scene
-    // tree's session disposition (success iff every phase
-    // ended cleanly) and writes both into the in-flight row.
-    // Uncleanly-exiting runs (Ctrl-C, panic) skip this step;
-    // their `ended_at_nanos` stays NULL, which the read side
-    // surfaces as "execution in flight / unclean exit"
-    // distinct from a recorded SUCCESS/FAILURE outcome.
-    {
-        let disposition = crate::scene_tree::with_global(|t| {
-            t.session_disposition().label()
-        }).unwrap_or("UNKNOWN");
-        let ended_at_nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as i64)
-            .unwrap_or(0);
-        if let Ok(mut g) = sqlite_reporter.lock()
-            && let Some(r) = g.as_mut()
-        {
-            r.update_execution_end(
-                &session_id, exec_id,
-                ended_at_nanos, disposition,
-            );
-        }
-    }
+    // SRD-77 / SRD-93 stage 6 — close out the executions row with
+    // the computed disposition + end timestamp. Both clean-exit
+    // paths stamp it: normal completion here, and a ladder-driven
+    // interrupt at the walk-error site above (which then propagates
+    // out before reaching this line). Only genuinely unclean exits
+    // (force-exit, panic, SIGKILL) leave `ended_at_nanos` NULL,
+    // which the read side surfaces as "execution in flight /
+    // unclean exit" distinct from a recorded outcome.
+    close_execution_row(&sqlite_reporter, &session_id, exec_id);
 
     // WAL consolidation runs from the RAII shutdown guard
     // bound at the top of this function (`_sqlite_shutdown_guard`).
@@ -3561,6 +3589,30 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // `session_signals`.
 
     Ok(())
+}
+
+/// SRD-77 / SRD-93 stage 6 — close the in-flight executions row with
+/// the scene tree's session disposition + an end timestamp. Idempotent
+/// (`update_execution_end` keys on `ended_at_nanos IS NULL`), so the
+/// interrupt-path caller and the normal-completion caller compose:
+/// whichever runs first wins, the other is a no-op.
+fn close_execution_row(
+    sqlite_reporter: &std::sync::Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
+    session_id: &str,
+    exec_id: u64,
+) {
+    let disposition = crate::scene_tree::with_global(|t| {
+        t.session_disposition().label()
+    }).unwrap_or("UNKNOWN");
+    let ended_at_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
+    if let Ok(mut g) = sqlite_reporter.lock()
+        && let Some(r) = g.as_mut()
+    {
+        r.update_execution_end(session_id, exec_id, ended_at_nanos, disposition);
+    }
 }
 
 /// Core runner: set up the shared session host, run one execution, tear down.
