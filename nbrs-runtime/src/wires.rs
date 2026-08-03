@@ -118,6 +118,18 @@ pub trait WireSource: Send + Sync {
         WriteOutcome::NoSlot
     }
 
+    /// Reset the named input slot to its DECLARED initial value —
+    /// the author's identity element for that wire. The capture
+    /// layer uses this for min/max-of-nothing (SRD-93-era fold
+    /// totality): an empty measurement restores the wire to its
+    /// declared unit rather than parking `Value::None` on a typed
+    /// slot, where every downstream consumer would have to be
+    /// None-aware. Default impl returns `NoSlot` (read-only
+    /// sources have nothing to reset).
+    fn reset(&self, _name: &str) -> WriteOutcome {
+        WriteOutcome::NoSlot
+    }
+
     /// Advance the underlying kernel state to coordinate `coord`
     /// and invalidate any memoized pulls so subsequent `get`
     /// calls produce values for this coord.
@@ -260,6 +272,28 @@ impl<'a> WireSource for CycleWires<'a> {
             .cloned()
             .collect();
         Box::new(outputs.into_iter().chain(inputs_only))
+    }
+
+    fn reset(&self, name: &str) -> WriteOutcome {
+        use polydat::kernel::{Dataflow, WriteError};
+        let mut k = self.kernel.lock().expect("CycleWires mutex poisoned");
+        let Some(idx) = k.program().find_input(name) else {
+            return WriteOutcome::NoSlot;
+        };
+        // The declared default is by construction the slot's own
+        // type, so this write cannot mismatch; the typed boundary
+        // is still used rather than poking state directly.
+        let default = match k.program().input_default_by_idx(idx) {
+            Some(d) => d.clone(),
+            None => return WriteOutcome::NoSlot,
+        };
+        match k.set_wire_idx(idx, default) {
+            Ok(()) => WriteOutcome::Stored,
+            Err(WriteError::UnknownWire { .. }) => WriteOutcome::NoSlot,
+            Err(e @ WriteError::TypeMismatch { .. }) => {
+                WriteOutcome::TypeMismatch { reason: e.to_string() }
+            }
+        }
     }
 
     fn write(&self, name: &str, value: Value) -> WriteOutcome {
@@ -739,6 +773,29 @@ mod tests {
         assert_eq!(wires.get("folded").map(|v| v.as_u64()), Some(42));
         // Coordinate input still resolves.
         assert_eq!(wires.get("cycle").map(|v| v.as_u64()), Some(7));
+    }
+
+    /// SRD-93-era fold totality: `reset` restores a wire to its
+    /// DECLARED initial value — the author's identity element — so an
+    /// empty min/max fold never parks `Value::None` on a typed slot
+    /// and never leaves a stale prior reading.
+    #[test]
+    fn cycle_wires_reset_restores_declared_default() {
+        let mut k = compile_polydat(
+            "input cycle: u64\nextern pressure: u64 = 7\nx := pressure + 1\n",
+        ).unwrap();
+        let cw = CycleWires::new(&mut k);
+        let wires: &dyn WireSource = &cw;
+
+        assert_eq!(wires.write("pressure", Value::U64(42)), WriteOutcome::Stored);
+        assert_eq!(wires.get("pressure").map(|v| v.as_u64()), Some(42));
+
+        assert_eq!(wires.reset("pressure"), WriteOutcome::Stored,
+            "reset writes the declared default through the typed boundary");
+        assert_eq!(wires.get("pressure").map(|v| v.as_u64()), Some(7),
+            "the wire returns to its declared initial value, not to None/0");
+
+        assert_eq!(wires.reset("nonesuch"), WriteOutcome::NoSlot);
     }
 
     #[test]

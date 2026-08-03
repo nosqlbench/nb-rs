@@ -227,16 +227,27 @@ fn count_of_subtree(v: Option<&serde_json::Value>) -> u64 {
 /// The capture values an op should publish when it SUCCEEDED but returned no
 /// body at all — an empty CQL result set, an HTTP 204, an accepted timeout.
 ///
-/// Skipping the write (the previous behaviour) leaves every capture holding
+/// Skipping the write (the original behaviour) leaves every capture holding
 /// its PREVIOUS value, so a wire that is being watched for "went to zero" can
 /// never read zero once it has been nonzero. That pinned a compaction drain's
 /// task count above zero permanently and hung the poll: cqlsh showed an empty
 /// table while the workload's wire still read the last nonzero count.
 ///
-/// An empty measurement is a measurement. Counting and summing nothing has an
-/// unambiguous identity, so those write it. `min`/`max` of nothing has no
-/// honest value, so they write `None` — which CLEARS the wire rather than
-/// leaving a stale reading that looks like a real observation.
+/// An empty measurement is a measurement, and every fold is a commutative
+/// monoid — the empty fold publishes the monoid's identity, TOTALLY:
+///
+/// - `count` / `sum` — the identity is mathematically forced: **0**.
+/// - `min` / `max` — over an unbounded domain the identity is an extreme
+///   (⊤ / ⊥) that would poison displays and metric series; the AUTHOR's
+///   identity is the wire's own declared initial value. These return
+///   `Value::None` here as a *reset marker*, and [`publish_capture`]
+///   translates it into `wires.reset(name)` — the wire returns to its
+///   declared unit instead of holding a raw `None` that every downstream
+///   consumer would have to be None-aware of.
+///
+/// Folding any later real observation into a reset wire behaves as folding
+/// into the unit — the monoid law the drain polls and the SRD-93 pressure
+/// servo both lean on.
 fn captures_for_empty_result(
     specs: &[bindpoints::CapturePoint],
 ) -> std::collections::HashMap<String, polydat::ast::Value> {
@@ -257,6 +268,22 @@ fn captures_for_empty_result(
         out.insert(spec.as_name.clone(), value);
     }
     out
+}
+
+/// The single capture-publish chokepoint: a real value writes; the
+/// `Value::None` reset marker (an empty min/max fold, or a plain capture
+/// that resolved to nothing) RESTORES the wire to its declared initial
+/// value. No path parks a raw `None` on a typed wire.
+fn publish_capture(
+    ctx: &crate::adapter::ExecCtx<'_>,
+    name: &str,
+    value: polydat::ast::Value,
+) {
+    if matches!(value, polydat::ast::Value::None) {
+        let _ = ctx.wires.reset(name);
+    } else {
+        let _ = ctx.wires.write(name, value);
+    }
 }
 
 fn aggregate_rows(
@@ -292,12 +319,18 @@ fn aggregate_rows(
         .filter_map(|v| v.as_number())
         .collect();
     if nums.is_empty() {
-        // Absent, NOT zero — a fold over rows that exist but match nothing is
-        // a different statement from "there was no result at all". Zero would
-        // read as "measured, and it was none". This value IS written to the
-        // wire (unlike the no-body path, which used to skip the write
-        // entirely), so it clears rather than leaving a stale reading.
-        return polydat::ast::Value::None;
+        // Same totality contract as `captures_for_empty_result`, applied to
+        // the rows-present-but-none-match case — the two empty paths used to
+        // disagree (`:sum` gave 0 with no body but None past a `where` that
+        // matched nothing), and a `None` parked on a typed wire forced every
+        // downstream consumer to be None-aware. `sum` publishes its forced
+        // identity 0; `min`/`max` return the `None` RESET MARKER, which
+        // `publish_capture` turns into a reset to the wire's declared
+        // initial value (the author's identity element).
+        return match agg {
+            CaptureAgg::Sum(_) => polydat::ast::Value::U64(0),
+            CaptureAgg::Min(_) | CaptureAgg::Max(_) => polydat::ast::Value::None,
+        };
     }
     match agg {
         CaptureAgg::Sum(_) => {
@@ -410,7 +443,7 @@ impl OpDispenser for TraversingDispenser {
             // "wait for it to reach zero" poll can never succeed.
             if !self.captures.is_empty() && result.body.is_none() {
                 for (name, value) in captures_for_empty_result(&self.captures) {
-                    let _ = ctx.wires.write(&name, value);
+                    publish_capture(&ctx, &name, value);
                 }
             }
             if !self.captures.is_empty()
@@ -456,7 +489,7 @@ impl OpDispenser for TraversingDispenser {
                         }
                     }
                     for (name, value) in extracted {
-                        let _ = ctx.wires.write(&name, value);
+                        publish_capture(&ctx, &name, value);
                     }
                 }
 
@@ -535,14 +568,22 @@ mod tests {
     /// That case was never the staleness bug: this value IS written to the
     /// wire, so it clears. Only the no-body path skipped the write.
     #[test]
-    fn empty_fold_over_present_rows_stays_absent_not_zero() {
+    fn empty_fold_totality_sum_is_zero_min_max_are_reset_markers() {
+        // The monoid contract (SRD-93-era fold totality): sum-of-nothing
+        // publishes its forced identity 0; min/max-of-nothing return the
+        // `None` RESET MARKER that `publish_capture` translates into a
+        // reset to the wire's declared initial value — no path parks a
+        // raw None on a typed wire, and no path leaves a stale reading.
         let rows = serde_json::json!([{"other": 1}, {"other": 2}]);
-        for agg in [bindpoints::CaptureAgg::Sum("missing".into()),
-                    bindpoints::CaptureAgg::Min("missing".into()),
+        let v = super::aggregate_rows(
+            Some(&rows), &bindpoints::CaptureAgg::Sum("missing".into()), None);
+        assert!(matches!(v, polydat::ast::Value::U64(0)),
+            "sum-of-nothing is its identity 0: {v:?}");
+        for agg in [bindpoints::CaptureAgg::Min("missing".into()),
                     bindpoints::CaptureAgg::Max("missing".into())] {
             let v = super::aggregate_rows(Some(&rows), &agg, None);
             assert!(matches!(v, polydat::ast::Value::None),
-                "an empty fold over present rows is absent, not zero: {v:?}");
+                "min/max-of-nothing is the reset marker: {v:?}");
         }
     }
 
@@ -756,7 +797,7 @@ mod tests {
     /// A predicate that matches nothing folds to absent, not to zero — zero
     /// would read as "measured, and it was none".
     #[test]
-    fn aggregate_filter_matching_no_rows_yields_none() {
+    fn aggregate_filter_matching_no_rows_folds_to_sum_identity() {
         let body = JsonBody(serde_json::json!([
             {"kind": "compaction", "progress": 5u64},
         ]));
@@ -771,9 +812,12 @@ mod tests {
             row_filter: Some(("kind".into(), "nonesuch".into())),
         }];
         let caps = extract_captures_from_json(&body, &specs);
+        // Fold totality: a `where` that matches nothing sums to the
+        // identity 0 — the same statement the no-body path makes, where
+        // the two paths used to disagree (0 vs a stale-prone None).
         assert!(
-            matches!(caps["x"], polydat::ast::Value::None),
-            "no matching rows must not fold to 0; got {:?}", caps["x"]
+            matches!(caps["x"], polydat::ast::Value::U64(0)),
+            "a filtered-empty sum folds to its identity 0; got {:?}", caps["x"]
         );
     }
 

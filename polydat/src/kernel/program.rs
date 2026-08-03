@@ -779,6 +779,15 @@ impl PolydatProgram {
     /// Lookup the declared name of an input by index. Used by
     /// the typed-write API to render diagnostic messages
     /// referencing the slot the caller addressed.
+    /// The declared default for input `idx` — the wire's initial
+    /// element. The capture layer's reset semantics (an empty
+    /// min/max fold restores the wire to its author-declared
+    /// identity rather than leaving `Value::None` on a typed slot)
+    /// read it through this accessor.
+    pub fn input_default_by_idx(&self, idx: usize) -> Option<&Value> {
+        self.input_defs.get(idx).map(|d| &d.default)
+    }
+
     pub fn input_name_by_idx(&self, idx: usize) -> Option<&str> {
         self.input_defs.get(idx).map(|d| d.name.as_str())
     }
