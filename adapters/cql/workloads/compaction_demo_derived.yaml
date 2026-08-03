@@ -891,15 +891,16 @@ phases:
   # never per insert cycle. `if: cycle == 0` spawns it exactly once
   # (a stanza's ops run every cycle; the guard makes the spawn a
   # one-shot), and the daemon-pool drain cancels it cleanly when
-  # the loader completes. Rate units are op invocations/s; each
-  # invocation writes `stride` rows, so the servo divides the
-  # rows/s target by the frozen stride. The initial `rate: 1000`
-  # is deliberately far above capacity (≈ no throttle at any
-  # plausible stride) — the servo takes over within its first poll.
+  # the loader completes. Rate units are ROWS/s: the limiter paces
+  # batch ELEMENTS (measured live 2026-08-03 — rate=120 produced
+  # exactly 120 rows/s; `stride` only sizes the server round-trip),
+  # so the servo sets the rows/s target directly. The initial
+  # `rate: 100000` is deliberately far above capacity (≈ no
+  # throttle) — the servo takes over within its first poll.
   load_increment_adaptive:
     checkpoint: idempotent
     concurrency: concurrency
-    rate: 1000
+    rate: 100000
     tries:
       count: 20
       backoff:
@@ -935,19 +936,18 @@ phases:
       # `compaction_watch` daemon maintains (fold totality resets
       # them to 0 when the pool is unreadable or idle, so pressure
       # honestly decays); weight from the studies-derived rational
-      # polynomial; target in rows/s → op-rate via the frozen
-      # stride. Evaluated per cycle, DISPATCHED on change only
-      # (control_set's committed-gauge fixpoint elision).
+      # polynomial. The `rate` control paces batch ELEMENTS — i.e.
+      # ROWS/s directly (measured live 2026-08-03: rate=120 gave
+      # exactly 120 rows/s; `stride` only sizes the round-trip) —
+      # so the target needs no stride conversion. Evaluated per
+      # cycle, DISPATCHED on change only (control_set's
+      # committed-gauge fixpoint elision).
       pressure := to_f64(active_compactions_live) + pending_weight * to_f64(pending_compactions_live)
       load_weight := 1.0 / (1.0 + pow(pressure / backoff_half, backoff_power))
       # f64 clamps via select_f64 (the stdlib `max` is u64-only).
       weighted_rows := base_rows_rate * load_weight
       target_rows_rate := select_f64(weighted_rows < floor_rows_rate, floor_rows_rate, weighted_rows)
-      # `stride` is already f64 (the measured-probe cell type).
-      stride_f := select_f64(stride < 1.0, 1.0, stride)
-      op_rate_raw := target_rows_rate / stride_f
-      target_op_rate := select_f64(op_rate_raw < 1.0, 1.0, op_rate_raw)
-      rate_servo := control_set("rate", target_op_rate)
+      rate_servo := control_set("rate", target_rows_rate)
     ops:
       insert:
         batch: stride
@@ -973,7 +973,6 @@ phases:
           servo_pressure:   { kind: gauge, value: pressure }
           load_weight:      { kind: gauge, value: load_weight }
           target_rows_rate: { kind: gauge, value: target_rows_rate }
-          target_op_rate:   { kind: gauge, value: target_op_rate }
           rate_servo_sent:  { kind: gauge, value: rate_servo }
 
   # One-shot insert-batch-stride probe (SRD-103 / Change 1). Insert a
