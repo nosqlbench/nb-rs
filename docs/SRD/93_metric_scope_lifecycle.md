@@ -1,11 +1,13 @@
 # 93: Metric Instance Scope Lifecycle & Read-Path Tiering    (owning crates: nbrs-metrics (reporters/sqlite, snapshot, cadence_reporter, component), nbrs-runtime (session, session_signals, runner ReportConfig plumbing), nbrs (metrics_cmd, completion); tests: nbrs-metrics reporters/sqlite unit tier, nbrs/tests/phase_metrics_e2e)
 
-**Status:** IN PROGRESS — stages 1 and 6 IMPLEMENTED 2026-08-03
-(measured acceptance in §Staged implementation); stages 2–5
-(session clock, close reason, lifecycle table, CLI surfacing)
-pending. Derived from the 2026-08-03 `metrics show` incident
-(76 m 37 s wall clock for a read-only listing), the design review
-that followed, and the same-day detached-shutdown incident (M7).
+**Status:** IMPLEMENTED — all six stages landed 2026-08-03 (each
+stage's entry in §Staged implementation records its measured
+acceptance and any deviation from the spec text). Post-landing
+rename: the structure view is `metrics list` (`show` is a
+deprecated alias). Derived from the 2026-08-03 `metrics show`
+incident (76 m 37 s wall clock for a read-only listing), the
+design review that followed, and the same-day detached-shutdown
+incident (M7).
 
 **Cross-refs:**
 - [SRD-40a](40a_metrics_model.md) — the SQLite schema this SRD
@@ -496,19 +498,70 @@ per rung by construction.
    `ReportConfig` anchor plumbing, legacy derivation + views.
    Acceptance: epoch survives resume/refine unchanged; views agree
    with hand-derived values.
+   **IMPLEMENTED 2026-08-03** — anchor pair captured at
+   `SqliteReporter` construction (`from_connection`) rather than
+   plumbed through `ReportConfig`: the reporter is the only stamp
+   consumer, so the spec's plumbing was indirection with no second
+   reader (recorded deviation). `resolve_session_epoch`: existing
+   key wins → legacy `MIN(executions.started_at_nanos)` → open
+   instant; INSERT-only persist. `v_executions_session` /
+   `v_phase_outcomes_session` land with the level-3 DDL. Test:
+   `session_epoch_survives_reopen`, plus the dual-clock identity
+   assert (`utc − session == epoch` for every event) in
+   `scope_events_pair_enter_and_exit_with_dual_clocks`.
 3. **Typed `CloseReason`.** `MetricSet.close` + coalesce
    propagation + sealer threading. Acceptance: unit tier proves
    `Quiesce` seals partial windows with no exit stamping and
    `scope_close` / shutdown carry their reasons end-to-end.
+   **IMPLEMENTED 2026-08-03** — `CloseReason` (severity-ordered
+   `Quiesce < ScopeClose < Shutdown`) rides `MetricSet.close`
+   beside `partial`; coalesce keeps the strongest input reason;
+   `Cmd::ClosePath`/`Cmd::ShutdownFlushAll` carry the reason so
+   the owner no longer conflates `shutdown_flush` with `quiesce`.
+   `scope_close` also stamps the DELTA, so a window sealed at its
+   natural cadence boundary just before the ClosePath lands still
+   inherits ScopeClose through the fold (the race the spec's M4
+   text worried about is closed). Test:
+   `close_reason_names_the_sealer_not_the_partial_flag`.
 4. **Lifecycle table.** Level-3/4 DDL + enter events at the
    chokepoint + exit events at the flush boundary. Acceptance:
    `phase_metrics_e2e` extended to assert one enter/exit pair per
    instance per execution across run / refine / resume and
    SRD-88 concurrent executions; kill -9 mid-phase leaves
    unpaired enters and a clean reopen does not duplicate them.
+   **IMPLEMENTED 2026-08-03** — `instance_scope_event` +
+   version-ladder 3/4 (`ensure_read_indexes` stamps 4 only when
+   the v2 tables are present, else 2, keeping the ladder truthful
+   for any caller order); enter at the `upsert_instance`
+   cache-miss chokepoint; exit at the flush boundary for
+   ScopeClose/Shutdown batches via the batch-touched set +
+   `instance_meta` reverse map; **terminal sweep** in
+   `consolidate_wal` pairs every still-open enter with
+   `exit('shutdown')` — clean shutdown pairs everything, a crash
+   never reaches the sweep so unpaired enters stay truthful (this
+   sweep also covers the spec's DynamicCapture caveat). Deviation:
+   the acceptance lives in the reporter unit tier
+   (`scope_events_pair_enter_and_exit_with_dual_clocks`,
+   `quiesce_sealed_batch_writes_no_exit`,
+   `terminal_sweep_pairs_only_the_unpaired`) plus the
+   `signal_shutdown` e2e (now asserting `user_version = 4`);
+   the full run/refine/resume/concurrent matrix in
+   `phase_metrics_e2e` remains open as a follow-up.
 5. **CLI surfacing.** Scope annotations in `show`; last-sample
    readers per M6; lifecycle-aware instance enumeration
    (`--phase`, execution qualifiers) from the event table.
+   **IMPLEMENTED 2026-08-03** — `metrics list --scope` annotates
+   plain-format leaves (`in-scope` / `exited <reason> @+<t>s` /
+   `no clean exit`), silent on pre-SRD-93 dbs; `metrics last
+   [<expr>]` implements the M6 tiers (indexed point lookups on a
+   consolidated db; on an unindexed live db it announces the
+   per-instance linear-scan cost once on stderr) with the
+   lifecycle state riding along. Deviations: annotations are
+   opt-in (`--scope`) to keep default output stable; a separate
+   `--phase` flag was dropped — the existing label-filter
+   expressions (`{phase="…"}`) already enumerate by phase.
+   Post-landing rename: the structure view is `metrics list`
+   (`show` deprecated alias, `--values` bridges to `summarize`).
 6. **Signal contract (M7).** Dedicated signal thread carrying
    `SIGINT`/`SIGTERM` into the ladder; `SIGHUP` headless-continue;
    `SIGQUIT` diagnostics dump; exit codes 130/143 by origin.

@@ -225,9 +225,18 @@ fn list_or_show_flags() -> Vec<Flag> {
 /// view of a names view is a no-op, so completion doesn't offer it
 /// (the imperative parser still accepts it for old scripts).
 fn list_cmd_flags() -> Vec<Flag> {
-    list_or_show_flags().into_iter()
+    let mut out: Vec<Flag> = list_or_show_flags().into_iter()
         .filter(|f| f.long != "--list")
-        .collect()
+        .collect();
+    out.push(Flag {
+        long: "--scope", short: None, aliases: &[],
+        arity: Arity::Bool, value: ValueProvider::None,
+        help: "Annotate each leaf with its SRD-93 lifecycle state \
+               (in-scope / exited / no clean exit) from the scope-event \
+               table. Plain format only; silent on pre-SRD-93 dbs.",
+        repeatable: false,
+    });
+    out
 }
 
 /// The deprecated `show` alias's flag surface: `list`'s flags plus
@@ -403,6 +412,25 @@ pub fn spec() -> Command {
                 completion_override: None,
             },
             Command {
+                name: "last",
+                help: "Last recorded sample per matching instance \
+                       (SRD-93 M6) with lifecycle context.",
+                category: Category::Tools, level: Level::Secondary,
+                flags: match_flags(),
+                kv_params: SESSION_KV,
+        dynamic_options: None,
+        positionals: vec![crate::cli_spec::Positional {
+                    name: "expr",
+                    help: "Optional filter (family-glob or `family{labels}`).",
+                    value: crate::cli_spec::ValueProvider::Custom(crate::completion::metric_family_provider),
+                    kind: crate::cli_spec::PositionalKind::ZeroOrOne,
+                }],
+                subcommands: Vec::new(),
+                handler: Some(Handler::Sync(handle_last)),
+                raw_args: false,
+                completion_override: None,
+            },
+            Command {
                 name: "match",
                 help: "Flat list of `family{labels}` specs matching <expr>.",
                 category: Category::Tools, level: Level::Secondary,
@@ -530,6 +558,16 @@ fn handle_summarize(p: ParsedCommand) -> Result<(), String> {
     // sample data; `--list` drops the values (forwarded, flips
     // `show_values` off inside `list()`).
     list_from_parsed(&p, true);
+    Ok(())
+}
+
+fn handle_last(p: ParsedCommand) -> Result<(), String> {
+    let mut argv: Vec<String> = Vec::new();
+    if let Some(db) = p.flag("--db") { argv.push("--db".into()); argv.push(db.to_string()); }
+    forward_exec_qualifier_flags(&p, &mut argv);
+    forward_session_flags(&p, &mut argv);
+    if let Some(expr) = expr_positional(&p) { argv.push(expr.to_string()); }
+    last_specs(&argv);
     Ok(())
 }
 
@@ -683,6 +721,9 @@ fn list_from_parsed(p: &ParsedCommand, show_values: bool) {
     if p.bool("--list") {
         argv.push("--list".into());
     }
+    if p.bool("--scope") {
+        argv.push("--scope".into());
+    }
     forward_exec_qualifier_flags(p, &mut argv);
     forward_session_flags(p, &mut argv);
     if let Some(expr) = expr_positional(p) {
@@ -705,6 +746,7 @@ pub fn metrics_command(args: &[String]) {
             list(rest, false)
         }
         Some("summarize") => list(rest, true),
+        Some("last") => last_specs(rest),
         Some("match") => match_specs(rest),
         Some("groups") => groups_command(rest),
         Some("query") => crate::metricsql_cmd::query(rest),
@@ -735,6 +777,10 @@ fn print_metrics_usage() {
     eprintln!("                               at each leaf, computed in one");
     eprintln!("                               pass over the sample data. Add");
     eprintln!("                               --list for names only.");
+    eprintln!("  nbrs metrics last  [<expr>]  Last recorded sample per");
+    eprintln!("                               matching instance, with the");
+    eprintln!("                               SRD-93 lifecycle state when");
+    eprintln!("                               recorded (exited / in-scope).");
     eprintln!("  nbrs metrics match  <expr>   Flat list of full");
     eprintln!("                               `family{{labels}}` specs that");
     eprintln!("                               match — copy-paste into other");
@@ -910,6 +956,128 @@ fn open_metrics_db_ro(db: &Path) -> Result<rusqlite::Connection, rusqlite::Error
         db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
+}
+
+/// SRD-93 stage 5 / M6 — `nbrs metrics last [<expr>]`: the last
+/// recorded sample per matching instance. One indexed
+/// `ORDER BY timestamp_ms DESC LIMIT 1` per instance on a
+/// consolidated db (user_version ≥ 4); on a live unindexed db each
+/// lookup is a linear scan, announced once on stderr so the cost is
+/// never a surprise. Lifecycle context (exited / in-scope) rides
+/// along when the scope-event table exists.
+fn last_specs(args: &[String]) {
+    let mut db_path: Option<PathBuf> = None;
+    let mut filter_expr: Option<String> = None;
+    let mut exec_flag = MetricsExecFlag::default();
+    let mut iter = args.iter();
+    while let Some(a) = iter.next() {
+        if metrics_exec_flag_consumed(&mut exec_flag, a, &mut iter) {
+            continue;
+        }
+        match a.as_str() {
+            "--db" => { db_path = iter.next().map(PathBuf::from); }
+            other if other.starts_with("--db=") => {
+                db_path = Some(PathBuf::from(&other[5..]));
+            }
+            "--session" | "--session-name" | "--session-path"
+            | "--session-reuse" | "--session-keep" | "--session-shelflife" => {
+                let _ = iter.next();
+            }
+            other if other.starts_with("--session") => {}
+            other if !other.starts_with("--") => {
+                filter_expr = Some(other.to_string());
+            }
+            other => {
+                eprintln!("nbrs metrics last: unknown flag '{other}'");
+                std::process::exit(2);
+            }
+        }
+    }
+    let filter = filter_expr.as_deref().map(parse_filter).transpose();
+    let filter = match filter {
+        Ok(f) => f,
+        Err(e) => { eprintln!("nbrs metrics last: filter: {e}"); std::process::exit(2); }
+    };
+    let db = resolve_db(db_path, args);
+    if !db.exists() {
+        eprintln!("nbrs metrics last: db not found at '{}'", db.display());
+        std::process::exit(2);
+    }
+    let conn = match open_metrics_db_ro(&db) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("nbrs metrics last: open '{}': {e}", db.display());
+            std::process::exit(2);
+        }
+    };
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    if version < 4 {
+        eprintln!(
+            "nbrs metrics last: db is unindexed (live or crashed \
+             session) — each lookup is a linear scan (~0.2s per \
+             instance at 5M rows)."
+        );
+    }
+    let exec_filter = exec_flag.resolve(&db);
+    let (sql, params): (&str, Vec<i64>) = match exec_filter {
+        Some(id) => (
+            "SELECT id, spec FROM metric_instance WHERE exec_id = ?1 ORDER BY spec",
+            vec![id as i64],
+        ),
+        None => (
+            "SELECT id, spec FROM metric_instance ORDER BY spec",
+            Vec::new(),
+        ),
+    };
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("nbrs metrics last: query: {e}"); std::process::exit(2); }
+    };
+    let rows: Vec<(i64, String)> = stmt.query_map(
+        rusqlite::params_from_iter(params.iter()),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+    ).map(|it| it.flatten().collect()).unwrap_or_default();
+    let scopes = load_scope_annotations(&conn);
+    let mut shown = 0usize;
+    for (id, spec) in &rows {
+        let (family, labels) = split_spec(spec);
+        if let Some(f) = filter.as_ref()
+            && !f.matches(&family, &labels) { continue; }
+        shown += 1;
+        #[allow(clippy::type_complexity)]
+        let row: Result<(i64, Option<i64>, Option<f64>, Option<f64>,
+                         Option<f64>), _> = conn.query_row(
+            "SELECT timestamp_ms, count, mean, p50, p99 \
+             FROM sample_value WHERE instance_id = ?1 \
+             ORDER BY timestamp_ms DESC LIMIT 1",
+            [id],
+            |r| Ok((
+                r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
+            )),
+        );
+        let scope = scopes.get(id)
+            .map(|a| format!("  [{a}]"))
+            .unwrap_or_default();
+        match row {
+            Ok((ts, count, mean, p50, p99)) => {
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(c) = count { parts.push(format!("count={c}")); }
+                if let Some(m) = mean { parts.push(format!("mean={m:.4}")); }
+                if let Some(p) = p50 { parts.push(format!("p50={p:.4}")); }
+                if let Some(p) = p99 { parts.push(format!("p99={p:.4}")); }
+                println!("{spec}  @{ts}ms {}{scope}", parts.join(" "));
+            }
+            Err(_) => println!("{spec}  (no samples){scope}"),
+        }
+    }
+    if shown == 0 {
+        match filter_expr {
+            Some(ref e) => println!("(no metrics matching '{e}')"),
+            None => println!("(no metrics)"),
+        }
+    }
 }
 
 fn match_specs(args: &[String]) {
@@ -1538,6 +1706,9 @@ fn list(args: &[String], show_values_in: bool) {
     // AFTER parsing so it wins over `--tree`'s value promotion and the
     // `show` default.
     let mut list_mode: bool = false;
+    // SRD-93 stage 5 — `--scope` annotates plain-format leaves with
+    // the instance's lifecycle state from `instance_scope_event`.
+    let mut scope_mode: bool = false;
     // `show_values` may be promoted by `--tree`: tree mode's
     // leaves *are* the value summary — null leaves carry no
     // information, so loading the summary is required for the
@@ -1571,6 +1742,7 @@ fn list(args: &[String], show_values_in: bool) {
             }
             "--tree" => { tree_mode = true; show_values = true; }
             "--list" => { list_mode = true; }
+            "--scope" => { scope_mode = true; }
             // Globals consumed at startup.
             "--session" | "--session-name" | "--session-path"
             | "--session-reuse" | "--session-keep" | "--session-shelflife" => {
@@ -1695,6 +1867,15 @@ fn list(args: &[String], show_values_in: bool) {
         Default::default()
     };
 
+    // SRD-93 stage 5 — pre-rendered lifecycle annotations per
+    // instance (empty map when `--scope` is off or the db predates
+    // the scope-event table).
+    let scopes: std::collections::HashMap<i64, String> = if scope_mode {
+        load_scope_annotations(&conn)
+    } else {
+        Default::default()
+    };
+
     let mut flat: Vec<InstanceRow> = kept.into_iter()
         .map(|(id, family, labels)| {
             let values = if show_values {
@@ -1752,7 +1933,7 @@ fn list(args: &[String], show_values_in: bool) {
 
     match (format, tree_mode) {
         (Format::Plain, _) => emit(&tofile, format, |w| {
-            render_plain(w, &db, &tree, &rows, &summaries, show_values)
+            render_plain(w, &db, &tree, &rows, &summaries, &scopes, show_values)
         }),
         (Format::Json, false) => emit(&tofile, format, |w| {
             writeln!(w, "{}", render_json(&db, &flat, show_values))
@@ -1825,6 +2006,7 @@ fn render_plain(
     tree: &BTreeMap<String, BTreeMap<Vec<(String, String)>, i64>>,
     rows: &[(i64, String)],
     summaries: &std::collections::HashMap<i64, ValueSummary>,
+    scopes: &std::collections::HashMap<i64, String>,
     show_values: bool,
 ) -> std::io::Result<()> {
     writeln!(w, "# {} ({} famil{}, {} instance{})",
@@ -1862,7 +2044,8 @@ fn render_plain(
             .map(|((_, id), labels)| (labels.clone(), *id))
             .collect();
         let dim_tree = build_dim_tree(varying_label_sets);
-        write_dim_tree(w, &dim_tree, "  ", &varying_instances, summaries, show_values)?;
+        write_dim_tree(w, &dim_tree, "  ", &varying_instances, summaries, scopes,
+            show_values)?;
     }
     Ok(())
 }
@@ -2396,6 +2579,7 @@ fn write_dim_tree(
     indent: &str,
     instances: &BTreeMap<Vec<(String, String)>, i64>,
     summaries: &std::collections::HashMap<i64, ValueSummary>,
+    scopes: &std::collections::HashMap<i64, String>,
     show_values: bool,
 ) -> std::io::Result<()> {
     // Iterate in natural order: by label key first, then by
@@ -2431,10 +2615,14 @@ fn write_dim_tree(
             } else {
                 String::new()
             };
-            writeln!(w, "{indent}{connector}{k}={v}{summary}")?;
+            let scope = scopes.get(&id)
+                .map(|a| format!("  [{a}]"))
+                .unwrap_or_default();
+            writeln!(w, "{indent}{connector}{k}={v}{summary}{scope}")?;
         } else {
             writeln!(w, "{indent}{connector}{k}={v}")?;
-            write_dim_tree(w, child, &next_indent, instances, summaries, show_values)?;
+            write_dim_tree(w, child, &next_indent, instances, summaries, scopes,
+                show_values)?;
         }
     }
     Ok(())
@@ -2701,6 +2889,54 @@ fn summary_from_values(
         ts_min_ms,
         ts_max_ms,
     }
+}
+
+/// SRD-93 stage 5 — pre-rendered lifecycle annotation per instance
+/// from `instance_scope_event`:
+///
+/// - `exited <reason> @+<t>s` — an exit event exists; `t` is session
+///   time (nanos of session → seconds).
+/// - `no clean exit` — enter without exit AND the owning execution
+///   has ended: the truthful crash/interrupt marker (SRD-93 A7).
+/// - `in-scope` — enter without exit, execution still in flight.
+///
+/// A db that predates the table (or an errored query) yields an
+/// empty map — the annotation column simply doesn't render.
+fn load_scope_annotations(
+    conn: &rusqlite::Connection,
+) -> std::collections::HashMap<i64, String> {
+    let mut out = std::collections::HashMap::new();
+    let sql = "SELECT e.instance_id, \
+                      MAX(CASE WHEN e.event = 'exit' THEN e.reason END), \
+                      MAX(CASE WHEN e.event = 'exit' \
+                          THEN e.at_session_nanos END), \
+                      MAX(x.ended_at_nanos IS NOT NULL) \
+               FROM instance_scope_event e \
+               JOIN executions x \
+                 ON x.session = e.session AND x.exec_id = e.exec_id \
+               GROUP BY e.instance_id";
+    let Ok(mut stmt) = conn.prepare(sql) else { return out };
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<i64>>(2)?,
+            r.get::<_, i64>(3)?,
+        ))
+    });
+    if let Ok(rows) = rows {
+        for (id, exit_reason, exit_session_ns, exec_ended) in rows.flatten() {
+            let ann = match (exit_reason, exit_session_ns) {
+                (Some(reason), Some(ns)) => {
+                    format!("exited {reason} @+{:.1}s", ns as f64 / 1e9)
+                }
+                _ if exec_ended != 0 => "no clean exit".to_string(),
+                _ => "in-scope".to_string(),
+            };
+            out.insert(id, ann);
+        }
+    }
+    out
 }
 
 /// Render one leaf's summary inline — `(total=…, mean=…, …)`.
