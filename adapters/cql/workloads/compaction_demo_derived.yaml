@@ -117,8 +117,17 @@ params:
   # the CLI (`result_failure_backstop=0.05`).
   result_failure_backstop: 0.025
   adapter: cql
-  host: 18.215.16.255
-  dataset: changeme
+  # ── Environment defaults captured from `runtest` (2026-08-03) ──
+  # The standing test environment, promoted from the wrapper script so
+  # `nbrs run workload=compaction_demo_derived scenario=serialized_baseline`
+  # reproduces it with no extra script. CLI overrides still win. (These
+  # are adapter/runner-tier params — a scenario-level `set:` cannot
+  # reach driver selection or the sysmon subsystem, which is why they
+  # live here rather than inside the scenario.)
+  host: server1
+  dataset: ibm-datapile-1b
+  cqldriver: cassandra-cpp
+  sysmon: any
   profile: default
   keyspace: baselines
   # `table` is NOT a param — it is derived (sanitized) from the dataset
@@ -241,6 +250,96 @@ params:
   # server's default STCS behaviour applies (background compactions run).
   disable_auto_compaction: 0
 
+  # When set (=1) together with disable_auto_compaction=0, the CREATE
+  # TABLE emits BARE SizeTieredCompactionStrategy — the server's own
+  # STCS defaults (min_threshold 4, max_threshold 32, buckets 0.5/1.5)
+  # — instead of the tuned 5/8 + liberal-bucket variant. This is the
+  # `stcs_adaptive` scenario's compaction posture: real STCS defaults,
+  # background compactions fully in charge.
+  stcs_defaults: 0
+
+  # ── stcs_adaptive: compaction-pressure ingest servo ──────────
+  # Derived 2026-08-03 from the two most recent large studies
+  # (keepsessions/default_20260801_043336 — 5.1M samples, 36-tier
+  # 100k→300M serialized sweep; corroborated by
+  # keepsessions/default_20260719_013407):
+  #
+  #   probe ANN latency (median of per-window means):
+  #     idle                 58 ms
+  #     compaction only     307 ms   (×5.3 over idle)
+  #     ingest only         766 ms   (×13.2 over idle)
+  #   unthrottled ingest   ≈15.2k rows/s (p25 14.9k, p95 15.9k)
+  #   compaction drain     ≈75 MiB/s median (p90 249 MiB/s)
+  #
+  # Reading: INGEST, not compaction, is the dominant read-latency
+  # driver — so when a compaction is running, throttling ingest both
+  # protects read latency and frees the compactor to finish. One
+  # RUNNING compaction is the "somewhat encumbered" state (reads
+  # already inflate ~5× over idle; multiple sstables alone are
+  # normal and carry no penalty here). A growing PENDING queue means
+  # the compactor is falling behind — ingest must taper hard or the
+  # sstable count runs away.
+  #
+  # The weight is a bounded rational polynomial (Hill form) of the
+  # compaction pressure, computed per loader cycle from the shared
+  # wires the `compaction_watch` daemon maintains:
+  #
+  #   pressure    = active + pending_weight × pending
+  #   load_weight = 1 / (1 + (pressure / backoff_half) ^ backoff_power)
+  #   rows/s      = max(floor_rows_rate, base_rows_rate × load_weight)
+  #
+  # With the defaults (half 1.25, power 1.5, pending_weight 2.0):
+  #   active=0 pending=0 → 1.00   full base rate
+  #   active=1 pending=0 → 0.58   somewhat encumbered
+  #   active=1 pending=1 → 0.21
+  #   active=1 pending=2 → 0.11   tapering hard
+  #   active=1 pending=4 → 0.05   → floor
+  #
+  # Named control points (tune on the CLI):
+  #   backoff_half   — pressure at which ingest HALVES. Lower =
+  #                    stronger backoff (0.75 is aggressive; 2.0 lets
+  #                    two concurrent compactions ride at half rate).
+  #   backoff_power  — taper steepness past the half point. Higher =
+  #                    sharper knee (1.0 = gentle 1/x tail; 2.5 =
+  #                    near-cliff once the queue forms).
+  #   pending_weight — how much heavier a QUEUED compaction weighs
+  #                    than a running one (queue growth = falling
+  #                    behind; 2.0 from the studies' drain margins).
+  # All three are f64-literal text (note the decimals) because params
+  # interpolate into polydat source as literal tokens.
+  backoff_half: 1.25
+  backoff_power: 1.5
+  pending_weight: 2.0
+  # base_rows_rate ≈ 80% of the measured unthrottled capacity —
+  # nominal utilization with steady headroom, instead of the
+  # saturation point where read latency sat at ~766ms. floor keeps a
+  # trickle so the pipeline never fully parks (rate() windows stay
+  # alive and recovery is observable).
+  base_rows_rate: 12000.0
+  floor_rows_rate: 300.0
+  # compaction_watch daemon poll rate (polls/s; 0.5 = every 2s — the
+  # servo reacts within ~2 polls, well inside STCS's minutes-scale
+  # compaction cadence).
+  compaction_watch_rate: 0.5
+  # Adaptive sweep shape: start straight at the 10M-row decade tiers
+  # (skip 100k/1m — this configuration studies compaction under
+  # sustained bulk ingest, and the small tiers stay memtable-resident)
+  # and cap at 40M vectors. `final_recall_pattern` MUST name the last
+  # in-budget tier (the post-flush recall measures against its ground
+  # truth) — keep it in sync when changing adaptive_max_size.
+  adaptive_profile_pattern: "^[1-9]0m$"
+  adaptive_max_size: 40000000
+  final_recall_pattern: "^40m$"
+
+  # ── tune_cluster knobs (paramized 2026-08-03) ────────────────
+  # Historical hardcoded values preserved as defaults: throughput 0
+  # (Cassandra's "no rate limit" sentinel) + 10 concurrent compactors.
+  # The adaptive scenario's lever when compaction needs restraining is
+  # `compaction_throughput_mbps=64` (etc.) on the CLI — the ingest
+  # servo then sees longer-running compactions and holds the taper.
+  compaction_throughput_mbps: 0
+  concurrent_compactors: 10
+
 # Derived identifiers, visible to every phase's op text. The CQL table
 # holds the cumulative vectors for this dataset+profile, so its name is
 # sanitized from them (every character outside [a-zA-Z0-9_] → '_')
@@ -292,6 +391,16 @@ bindings: |
   # sizes being merged, not just their summary. Carried as a string because the
   # value is a list, not a scalar.
   shared seg_index_bytes: String := "[]"
+
+  # ── stcs_adaptive live-pressure wires (SRD-93-era) ────────────
+  # Written through by the `compaction_watch` daemon each poll; read
+  # per cycle by `load_increment_adaptive`'s rate servo. Root-scoped so
+  # the daemon (one scope) and the loader (a sibling scope) share them.
+  # Distinct from `sstables` above (finalize's one-shot read) — these
+  # are the LIVE view while ingest and background STCS run together.
+  shared live_sstables:             u64 := 0
+  shared active_compactions_live:   u64 := 0
+  shared pending_compactions_live:  u64 := 0
 
 scenarios:
   # Default: the incremental size-tier sweep.
@@ -381,6 +490,86 @@ scenarios:
   reset:   [teardown]
   ddl:     [schema]
   compact: [finalize_index]
+
+  # ── serialized_baseline — the `runtest` protocol, captured ────
+  # The exact configuration the `runtest` wrapper script emitted
+  # (2026-08-03): the incremental sweep with every post-load step
+  # forced serialized — per-tier flush, finalize (flush + sstable
+  # read + forced major compaction + drain) — under STCS-enabled
+  # background compaction (disable_auto_compaction=0). Environment
+  # params (host/dataset/cqldriver/sysmon) are the workload defaults
+  # above, so this runs scriptless:
+  #   nbrs run workload=compaction_demo_derived scenario=serialized_baseline
+  serialized_baseline:
+    - set: { disable_auto_compaction: 0, enable_finalize: 1, enable_flush: 1, enable_compact: 1 }
+      phases:
+        - scenario: incremental
+
+  # ── stcs_adaptive — compaction-pressure-adaptive bulk ingest ──
+  # The deserialized protocol: STCS DEFAULTS own compaction timing
+  # (no scheduled flush, no finalize, no forced per-tier compaction),
+  # while the ingest rate adapts to live compaction pressure via the
+  # weighting polynomial (see the params block for the derivation and
+  # control points). Per tier:
+  #   - `compaction_watch` daemon polls the virtual tables
+  #     (system_views.thread_pools / sstable_indexes) into the shared
+  #     pressure wires,
+  #   - `concurrent_query` probes read latency at 1/s (the
+  #     "not overly penalizing the read latency" evidence),
+  #   - `load_increment_adaptive` ingests with its rate servo'd by
+  #     the pressure weight.
+  # Ingest STOPS for each recall measurement (the daemons stop when
+  # the tier's ingest scope completes; recall runs in the sibling
+  # step) — but there is deliberately NO pre/post-flush recall pair:
+  # one recall per tier, measured over whatever mix of memtable +
+  # naturally-flushed sstables STCS has produced. Multiple sstables
+  # during recall are NORMAL here. At the end: ONE forced large
+  # flush, then one additional post-flush recall at the final tier.
+  stcs_adaptive:
+    - set: { disable_auto_compaction: 0, stcs_defaults: 1, enable_flush: 1, enable_finalize: 0, enable_compact: 0 }
+      phases:
+        - teardown
+        - schema
+        - tune_cluster
+        - bindings: |
+            const profile_pattern := "{adaptive_profile_pattern}"
+          phases:
+            - measure_batch
+            - for: "part in profile_partitions('{dataset}', '{profile_pattern}')"
+              continue_if: "end_of(part) <= adaptive_max_size"
+              phases:
+                - scenario: tier_ingest_adaptive
+                - recall_check
+        # The single forced large flush: everything still
+        # memtable-resident at the end of the sweep rolls to disk in
+        # one shot (natural size-pressure flushes already happened
+        # along the way; this captures the tail so the final recall
+        # measures a fully on-disk table).
+        - flush
+        # One additional post-flush recall, against the final tier's
+        # own ground truth. STCS may react to the flush with further
+        # compactions; the measurement proceeds regardless — the
+        # encumbered state, if any, is visible in the recorded
+        # compaction_pool_* gauges from the preceding tiers and in
+        # this phase's own latency timers.
+        - bindings: |
+            const profile_pattern := "{final_recall_pattern}"
+          phases:
+            - for: "part in profile_partitions('{dataset}', '{profile_pattern}')"
+              phases:
+                - recall_check
+
+  # One adaptive tier's ingest scope: both daemons spawn first (off
+  # the foreground budget), then the servo'd loader runs; the scope
+  # completing stops the daemons — which is exactly what quiesces
+  # ingest before the sibling recall step.
+  tier_ingest_adaptive:
+    - compaction_watch
+    - concurrent_query
+    - bindings: |
+        const stride := if(batch_size > 0, batch_size, measured)
+      phases:
+        - load_increment_adaptive
 
   # Recall-only against an ALREADY-LOADED tier — no teardown / schema /
   # load / compact, so the data in the table is untouched. `recall_check`
@@ -477,11 +666,24 @@ phases:
           WITH compaction = {'class': 'SizeTieredCompactionStrategy', 'min_threshold': '100000', 'max_threshold': '100000'}
           AND compression = {'enabled': 'false'}
       create_table_default:
-        if: "disable_auto_compaction == 0"
+        if: "disable_auto_compaction == 0 && stcs_defaults == 0"
         raw: |
           CREATE TABLE IF NOT EXISTS {keyspace}.{table}
           (key text PRIMARY KEY, value vector<float, {dim}>)
           WITH compaction = {'class': 'SizeTieredCompactionStrategy', 'min_threshold': '5', 'max_threshold': '8', 'bucket_low': '0.3', 'bucket_high': '2.0'}
+          AND compression = {'enabled': 'false'}
+      # stcs_defaults — BARE SizeTieredCompactionStrategy, the server's
+      # own defaults (min 4 / max 32 / buckets 0.5..1.5). The
+      # `stcs_adaptive` scenario's posture: background compaction fully
+      # in charge, the ingest servo compensating (still explicit about
+      # the CLASS — this build defaults to UCS, which is pathological
+      # for vector SAI builds; see create_table_default's note).
+      create_table_stcs:
+        if: "disable_auto_compaction == 0 && stcs_defaults != 0"
+        raw: |
+          CREATE TABLE IF NOT EXISTS {keyspace}.{table}
+          (key text PRIMARY KEY, value vector<float, {dim}>)
+          WITH compaction = {'class': 'SizeTieredCompactionStrategy'}
           AND compression = {'enabled': 'false'}
       create_vector_index:
         raw: |
@@ -514,15 +716,15 @@ phases:
           {"type":"write",
            "mbean":"org.apache.cassandra.db:type=StorageService",
            "attribute":"CompactionThroughputMbPerSec",
-           "value":0}
+           "value":{compaction_throughput_mbps}}
         request_timeout_ms: 10000
         verify:
           - field: status
             eq: "200"
         strict: true
         memo:
-          before: "tuning: CompactionThroughputMbPerSec -> 0 (unlimited)"
-          after:  "tuned: CompactionThroughputMbPerSec -> 0 (unlimited)"
+          before: "tuning: CompactionThroughputMbPerSec -> {compaction_throughput_mbps} (0 = unlimited)"
+          after:  "tuned: CompactionThroughputMbPerSec -> {compaction_throughput_mbps} (0 = unlimited)"
       set_concurrent_compactors:
         adapter: http
         uri: "http://{host}:8778/jolokia/"
@@ -531,15 +733,15 @@ phases:
           {"type":"write",
            "mbean":"org.apache.cassandra.db:type=StorageService",
            "attribute":"ConcurrentCompactors",
-           "value":10}
+           "value":{concurrent_compactors}}
         request_timeout_ms: 10000
         verify:
           - field: status
             eq: "200"
         strict: true
         memo:
-          before: "tuning: ConcurrentCompactors -> 10"
-          after:  "tuned: ConcurrentCompactors -> 10"
+          before: "tuning: ConcurrentCompactors -> {concurrent_compactors}"
+          after:  "tuned: ConcurrentCompactors -> {concurrent_compactors}"
 
   # Concurrent ANN query probe — an SRD-82 Part 6 DAEMON phase. Runs at
   # 1/s alongside the foreground load → flush → finalize of this tier (it
@@ -596,6 +798,148 @@ phases:
           probe_rows:
             kind: gauge
             value: count
+
+  # ── stcs_adaptive: background virtual-tables reader ──────────
+  # An SRD-82 Part 6 DAEMON phase (spawned first in
+  # `tier_ingest_adaptive`, off the foreground budget; stops when the
+  # tier's ingest scope completes). Each poll reads TWO virtual
+  # tables and writes THROUGH to the workload-root shared wires the
+  # ingest servo consumes:
+  #   system_views.thread_pools (CompactionExecutor row)
+  #       → active_compactions_live, pending_compactions_live
+  #   system_views.sstable_indexes (this table's SAI index)
+  #       → live_sstables (one row per sstable carrying the index)
+  # The same values are published as gauges so the servo's input is
+  # in metrics.db next to its output (load_weight / rate) — the
+  # post-run story of every backoff decision is reconstructible.
+  # Reads are advisory: an errored poll warns and keeps the last
+  # wire values; it must never fail a tier.
+  compaction_watch:
+    checkpoint: idempotent
+    adapter: cql
+    daemon: true
+    concurrency: 1
+    tries: 1
+    errors: ".*:warn,counter"
+    # polls/s (0.5 = every 2s). Numeric-parsing param, same contract
+    # as concurrent_query's `rate:`.
+    rate: "{compaction_watch_rate}"
+    bindings: |
+      # Open-extent clock cursor, cut by the daemon stop when the
+      # tier's foreground completes (same pattern as concurrent_query).
+      cursor t = until_elapsed(1000000000, query_budget_ms)
+    ops:
+      read_compaction_pool:
+        timeout: 10s
+        raw: |
+          SELECT active_tasks, pending_tasks
+            FROM system_views.thread_pools
+           WHERE name = 'CompactionExecutor'
+        capture:
+          # :max folds are exact over the single CompactionExecutor row
+          # and publish zero-identities on an empty result (the
+          # 2026-08-01 empty-result fix), so an unreadable pool reads
+          # as pressure 0 rather than a stuck stale value.
+          active_compactions_live:  ":max(active_tasks)"
+          pending_compactions_live: ":max(pending_tasks)"
+        metrics:
+          compaction_pool_active:  { kind: gauge, value: active_compactions_live }
+          compaction_pool_pending: { kind: gauge, value: pending_compactions_live }
+      read_live_sstables:
+        timeout: 10s
+        raw: |
+          SELECT sstable_name
+            FROM system_views.sstable_indexes
+           WHERE keyspace_name = '{keyspace}'
+             AND index_name = '{table}{vector_idx_suffix}'
+        capture:
+          live_sstables: ":count"
+        measure: "{active_compactions_live}A {pending_compactions_live}P {live_sstables}sst"
+        metrics:
+          table_sstables_live: { kind: gauge, value: live_sstables }
+
+  # ── stcs_adaptive: pressure-servo'd incremental load ──────────
+  # `load_increment` with the compaction-pressure rate servo. The
+  # weighting polynomial and its derivation from the 2026-07/08
+  # studies live in the params block ("stcs_adaptive:
+  # compaction-pressure ingest servo"); the shape in one line:
+  #   rows/s = max(floor, base × 1/(1 + (pressure/half)^power)),
+  #   pressure = active + pending_weight×pending.
+  # The servo lives IN THIS PHASE (not the watch daemon) because
+  # `control_set` writes to the calling fiber's OWN phase-tier
+  # control (SRD-89 anti-crosstalk) — the daemon updates the shared
+  # wires, and this phase retargets its own `rate` control from
+  # them. Rate units are op invocations/s; each invocation writes
+  # `stride` rows, so the servo divides the rows/s target by the
+  # frozen stride. The initial `rate: 1000` is deliberately far
+  # above capacity (≈ no throttle at any plausible stride) — the
+  # servo takes over within the first cycles.
+  load_increment_adaptive:
+    checkpoint: idempotent
+    concurrency: concurrency
+    rate: 1000
+    tries:
+      count: 20
+      backoff:
+        ratio: 2.0
+        min: 100ms
+        max: 10s
+    # Same sanity backstops as `load_increment` (see its notes): a
+    # single terminal failure is missing coverage only past a rate
+    # floor; attempt-level sickness aborts while the servo still has
+    # operating room. The SERVO is the first responder here — these
+    # trip only when adapting was not enough.
+    errors: ".*:warn,counter"
+    stop_when:
+      - condition: "(result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {result_failure_backstop}))"
+        pulse:   continuous
+        per:     self
+        action:  abort
+        at:      workload
+      - condition: "(attempt_total > 200) & (to_f64(attempt_failure) > (to_f64(attempt_total) * {attempt_failure_backstop}))"
+        pulse:   continuous
+        per:     self
+        action:  abort
+        at:      workload
+    bindings: |
+      const tier := matching_profile_name_at('{dataset}', '{profile_pattern}', idx_of(part))
+      const prebuffered := dataset_prebuffer(str_concat('{dataset}:', tier))
+      cursor row = range(start_of(part), end_of(part))
+      ord := at(part, cycle)
+      id := format_u64(ord, 10)
+      train_vector := vector_at(prebuffered, ord)
+      # ── the ingest servo ──
+      # Pressure from the shared wires the compaction_watch daemon
+      # maintains; weight from the studies-derived rational
+      # polynomial; target in rows/s → op-rate via the frozen stride.
+      pressure := to_f64(active_compactions_live) + pending_weight * to_f64(pending_compactions_live)
+      load_weight := 1.0 / (1.0 + pow(pressure / backoff_half, backoff_power))
+      # f64 clamps via select_f64 (the stdlib `max` is u64-only).
+      weighted_rows := base_rows_rate * load_weight
+      target_rows_rate := select_f64(weighted_rows < floor_rows_rate, floor_rows_rate, weighted_rows)
+      # `stride` is already f64 (the measured-probe cell type).
+      stride_f := select_f64(stride < 1.0, 1.0, stride)
+      op_rate_raw := target_rows_rate / stride_f
+      target_op_rate := select_f64(op_rate_raw < 1.0, 1.0, op_rate_raw)
+      rate_servo := control_set("rate", target_op_rate)
+    ops:
+      insert:
+        batch: stride
+        max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
+        batchtype: unlogged
+        timeout: 60s
+        prepared: |
+          INSERT INTO {keyspace}.{table} (key, value)
+          VALUES ('{id}', {train_vector})
+        # The servo's inputs and outputs, recorded beside each other:
+        # every backoff decision is reconstructible post-run. The
+        # gauges also DEMAND the binding chain per cycle, which is
+        # what dispatches `control_set` (SideChannel nodes evaluate
+        # when pulled — the metric is the pull).
+        metrics:
+          load_weight_x1000: { kind: gauge, value: "load_weight * 1000.0" }
+          target_rows_rate:  { kind: gauge, value: target_rows_rate }
+          rate_servo_sent:   { kind: gauge, value: rate_servo }
 
   # One-shot insert-batch-stride probe (SRD-103 / Change 1). Insert a
   # byte-budgeted UNLOGGED batch over a small leading slice of the base
