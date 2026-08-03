@@ -514,7 +514,11 @@ impl PolydatProgram {
         let mut deps = vec![Vec::new(); num_inputs];
         for (node_idx, &prov) in provenance.iter().enumerate() {
             for (input_idx, dep) in deps.iter_mut().enumerate() {
-                if prov & (1u64 << input_idx) != 0 {
+                // Inputs ≥ 63 alias the saturated top bit (see
+                // `compute_provenance`), so their dependent lists are
+                // the union over every high input — over-invalidation,
+                // never under.
+                if prov & (1u64 << input_idx.min(63)) != 0 {
                     dep.push(node_idx);
                 }
             }
@@ -533,7 +537,18 @@ impl PolydatProgram {
             for source in &wiring[i] {
                 match source {
                     WireSource::Input(idx) => {
-                        prov[i] |= 1u64 << idx;
+                        // One provenance word: inputs ≥ 63 SATURATE
+                        // into bit 63 rather than overflowing the
+                        // shift (a >64-input scope kernel is real —
+                        // a workload root's params + shared wires
+                        // crossed it 2026-08-03). Aliased high inputs
+                        // conservatively share provenance: any of
+                        // them changing invalidates the union of
+                        // their dependents — more recompute, never
+                        // stale values. Same convention as the JIT's
+                        // step provenance (jit/kernels.rs) and the
+                        // SRD-105 64-input cone bound.
+                        prov[i] |= 1u64 << (*idx).min(63);
                     }
                     WireSource::NodeOutput(upstream, _) => {
                         prov[i] |= prov[*upstream];

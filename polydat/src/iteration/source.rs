@@ -700,7 +700,11 @@ impl Cursors {
         let mut seen_sources = std::collections::HashSet::new();
 
         for (idx, input_name) in input_names.iter().enumerate() {
-            if combined_provenance & (1u64 << idx) == 0 { continue; }
+            // Inputs ≥ 63 share the saturated provenance bit (see
+            // `Program::compute_provenance`): a high cursor input may
+            // over-match here, attaching a reader the fields don't
+            // reference — conservative and idle, never a missed one.
+            if combined_provenance & (1u64 << idx.min(63)) == 0 { continue; }
 
             // Check if this input is a source projection ({source}__ordinal)
             if let Some(source_name) = input_name.strip_suffix("__ordinal") {
