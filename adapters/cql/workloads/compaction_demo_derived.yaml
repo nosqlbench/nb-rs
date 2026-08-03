@@ -401,6 +401,8 @@ bindings: |
   shared live_sstables:             u64 := 0
   shared active_compactions_live:   u64 := 0
   shared pending_compactions_live:  u64 := 0
+  shared flush_pending_live:        u64 := 0
+  shared flush_blocked_live:        u64 := 0
 
 scenarios:
   # Default: the incremental size-tier sweep.
@@ -538,6 +540,13 @@ scenarios:
             - for: "part in profile_partitions('{dataset}', '{profile_pattern}')"
               continue_if: "end_of(part) <= adaptive_max_size"
               phases:
+                # The watch daemon lives at TIER scope — listed first so
+                # it spawns off the foreground budget and shadows BOTH
+                # the ingest scope and the recall step: the recorded
+                # pool/sstable gauges cover the recall windows too, so
+                # post-run analysis can correlate recall latency with
+                # live compaction state (the encumbered-read evidence).
+                - compaction_watch
                 - scenario: tier_ingest_adaptive
                 - recall_check
         # The single forced large flush: everything still
@@ -559,12 +568,13 @@ scenarios:
               phases:
                 - recall_check
 
-  # One adaptive tier's ingest scope: both daemons spawn first (off
-  # the foreground budget), then the servo'd loader runs; the scope
-  # completing stops the daemons — which is exactly what quiesces
-  # ingest before the sibling recall step.
+  # One adaptive tier's ingest scope: the latency probe spawns first
+  # (off the foreground budget), then the servo'd loader runs; the
+  # scope completing stops the probe AND the loader's in-phase servo
+  # daemon — which is exactly what quiesces ingest before the sibling
+  # recall step. (The compaction watch lives one scope up, at tier
+  # level, so it keeps recording through recall.)
   tier_ingest_adaptive:
-    - compaction_watch
     - concurrent_query
     - bindings: |
         const stride := if(batch_size > 0, batch_size, measured)
@@ -831,20 +841,28 @@ phases:
     ops:
       read_compaction_pool:
         timeout: 10s
+        # Both pools in one partition-key IN read: the compaction
+        # queue (the servo's signal) and the flush writers (the
+        # EARLIER signal — dirty-memtable pressure leads the
+        # compaction queue, so the auto-scaling dataset records it
+        # from day one even though the current weight ignores it).
         raw: |
-          SELECT active_tasks, pending_tasks
+          SELECT name, active_tasks, pending_tasks, blocked_tasks
             FROM system_views.thread_pools
-           WHERE name = 'CompactionExecutor'
+           WHERE name IN ('CompactionExecutor', 'MemtableFlushWriter')
         capture:
-          # :max folds are exact over the single CompactionExecutor row
-          # and publish zero-identities on an empty result (the
-          # 2026-08-01 empty-result fix), so an unreadable pool reads
-          # as pressure 0 rather than a stuck stale value.
-          active_compactions_live:  ":max(active_tasks)"
-          pending_compactions_live: ":max(pending_tasks)"
+          # Per-pool `where` folds; an empty fold resets each wire to
+          # its declared 0 (fold-totality contract, wrappers/traverse) —
+          # an unreadable pool reads as pressure 0, never a stale value.
+          active_compactions_live:  ":max(active_tasks where name='CompactionExecutor')"
+          pending_compactions_live: ":max(pending_tasks where name='CompactionExecutor')"
+          flush_pending_live:       ":max(pending_tasks where name='MemtableFlushWriter')"
+          flush_blocked_live:       ":max(blocked_tasks where name='MemtableFlushWriter')"
         metrics:
           compaction_pool_active:  { kind: gauge, value: active_compactions_live }
           compaction_pool_pending: { kind: gauge, value: pending_compactions_live }
+          flush_pool_pending:      { kind: gauge, value: flush_pending_live }
+          flush_pool_blocked:      { kind: gauge, value: flush_blocked_live }
       read_live_sstables:
         timeout: 10s
         raw: |
@@ -859,21 +877,25 @@ phases:
           table_sstables_live: { kind: gauge, value: live_sstables }
 
   # ── stcs_adaptive: pressure-servo'd incremental load ──────────
-  # `load_increment` with the compaction-pressure rate servo. The
+  # `load_increment` plus the compaction-pressure rate servo. The
   # weighting polynomial and its derivation from the 2026-07/08
   # studies live in the params block ("stcs_adaptive:
   # compaction-pressure ingest servo"); the shape in one line:
   #   rows/s = max(floor, base × 1/(1 + (pressure/half)^power)),
   #   pressure = active + pending_weight×pending.
-  # The servo lives IN THIS PHASE (not the watch daemon) because
+  # The servo is the `pressure_servo` DAEMON OP inside this phase:
+  # it must live here (not in the watch daemon phase) because
   # `control_set` writes to the calling fiber's OWN phase-tier
-  # control (SRD-89 anti-crosstalk) — the daemon updates the shared
-  # wires, and this phase retargets its own `rate` control from
-  # them. Rate units are op invocations/s; each invocation writes
-  # `stride` rows, so the servo divides the rows/s target by the
-  # frozen stride. The initial `rate: 1000` is deliberately far
-  # above capacity (≈ no throttle at any plausible stride) — the
-  # servo takes over within the first cycles.
+  # control (SRD-89 anti-crosstalk) — but it runs at POLL cadence
+  # (one thread_pools read + one control_set dispatch per ~2s),
+  # never per insert cycle. `if: cycle == 0` spawns it exactly once
+  # (a stanza's ops run every cycle; the guard makes the spawn a
+  # one-shot), and the daemon-pool drain cancels it cleanly when
+  # the loader completes. Rate units are op invocations/s; each
+  # invocation writes `stride` rows, so the servo divides the
+  # rows/s target by the frozen stride. The initial `rate: 1000`
+  # is deliberately far above capacity (≈ no throttle at any
+  # plausible stride) — the servo takes over within its first poll.
   load_increment_adaptive:
     checkpoint: idempotent
     concurrency: concurrency
@@ -908,21 +930,71 @@ phases:
       ord := at(part, cycle)
       id := format_u64(ord, 10)
       train_vector := vector_at(prebuffered, ord)
-      # ── the ingest servo ──
-      # Pressure from the shared wires the compaction_watch daemon
-      # maintains; weight from the studies-derived rational
-      # polynomial; target in rows/s → op-rate via the frozen stride.
-      pressure := to_f64(active_compactions_live) + pending_weight * to_f64(pending_compactions_live)
-      load_weight := 1.0 / (1.0 + pow(pressure / backoff_half, backoff_power))
-      # f64 clamps via select_f64 (the stdlib `max` is u64-only).
-      weighted_rows := base_rows_rate * load_weight
-      target_rows_rate := select_f64(weighted_rows < floor_rows_rate, floor_rows_rate, weighted_rows)
-      # `stride` is already f64 (the measured-probe cell type).
-      stride_f := select_f64(stride < 1.0, 1.0, stride)
-      op_rate_raw := target_rows_rate / stride_f
-      target_op_rate := select_f64(op_rate_raw < 1.0, 1.0, op_rate_raw)
-      rate_servo := control_set("rate", target_op_rate)
     ops:
+      # The ingest servo — a one-shot daemon op, poll-paced. Reads
+      # the CompactionExecutor pool itself (self-contained: no race
+      # against the tier-scope watch daemon's wires), computes the
+      # weight, and retargets THIS phase's `rate` control — one
+      # control_set dispatch per poll, not per cycle. Cancelled by
+      # the daemon-pool drain when the loader's foreground finishes.
+      pressure_servo:
+        if: "cycle == 0"
+        daemon: true
+        tries: 1
+        # Advisory: a failed poll iteration warns and keeps the last
+        # rate; the backstops on the insert op below carry the
+        # sanity net.
+        errors: ".*:warn,counter"
+        timeout: 10s
+        raw: |
+          SELECT active_tasks, pending_tasks
+            FROM system_views.thread_pools
+           WHERE name = 'CompactionExecutor'
+        capture:
+          servo_active:  ":max(active_tasks)"
+          servo_pending: ":max(pending_tasks)"
+        bindings: |
+          # Op-level bindings: plain assignments only (`const` is not
+          # accepted here — see await_compaction's note). Externs are
+          # the capture targets; an empty read resets them to 0 (fold
+          # totality), so pressure honestly decays when the pool is
+          # unreadable or idle.
+          extern servo_active:  u64 = 0
+          extern servo_pending: u64 = 0
+          pressure := to_f64(servo_active) + pending_weight * to_f64(servo_pending)
+          load_weight := 1.0 / (1.0 + pow(pressure / backoff_half, backoff_power))
+          # f64 clamps via select_f64 (the stdlib `max` is u64-only).
+          weighted_rows := base_rows_rate * load_weight
+          target_rows_rate := select_f64(weighted_rows < floor_rows_rate, floor_rows_rate, weighted_rows)
+          # `stride` is already f64 (the measured-probe cell type).
+          stride_f := select_f64(stride < 1.0, 1.0, stride)
+          op_rate_raw := target_rows_rate / stride_f
+          target_op_rate := select_f64(op_rate_raw < 1.0, 1.0, op_rate_raw)
+          rate_servo := control_set("rate", target_op_rate)
+        # Weight as a live percentage in the readout gutter while the
+        # tier ingests.
+        gutter:
+          text: "w≈{load_weight} rate→{target_op_rate}/s"
+        poll:
+          # Never self-satisfied — the servo runs until the daemon
+          # drain cancels it at loader completion. The 48h cap
+          # mirrors await_compaction's ceiling; a tier outlasting it
+          # has long since tripped the ingest backstops.
+          until: "1 == 0"
+          interval_ms: 2000
+          timeout_ms: 172800000
+        # The servo's inputs and outputs, recorded beside each other
+        # once per poll: every backoff decision is reconstructible
+        # post-run. The gauges also DEMAND the binding chain each
+        # iteration, which is what dispatches `control_set`
+        # (SideChannel nodes evaluate when pulled — the metric is
+        # the pull).
+        metrics:
+          servo_pool_active:  { kind: gauge, value: servo_active }
+          servo_pool_pending: { kind: gauge, value: servo_pending }
+          load_weight_x1000:  { kind: gauge, value: "load_weight * 1000.0" }
+          target_rows_rate:   { kind: gauge, value: target_rows_rate }
+          rate_servo_sent:    { kind: gauge, value: rate_servo }
       insert:
         batch: stride
         max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
@@ -931,15 +1003,6 @@ phases:
         prepared: |
           INSERT INTO {keyspace}.{table} (key, value)
           VALUES ('{id}', {train_vector})
-        # The servo's inputs and outputs, recorded beside each other:
-        # every backoff decision is reconstructible post-run. The
-        # gauges also DEMAND the binding chain per cycle, which is
-        # what dispatches `control_set` (SideChannel nodes evaluate
-        # when pulled — the metric is the pull).
-        metrics:
-          load_weight_x1000: { kind: gauge, value: "load_weight * 1000.0" }
-          target_rows_rate:  { kind: gauge, value: target_rows_rate }
-          rate_servo_sent:   { kind: gauge, value: rate_servo }
 
   # One-shot insert-batch-stride probe (SRD-103 / Change 1). Insert a
   # byte-budgeted UNLOGGED batch over a small leading slice of the base
