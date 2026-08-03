@@ -930,79 +930,25 @@ phases:
       ord := at(part, cycle)
       id := format_u64(ord, 10)
       train_vector := vector_at(prebuffered, ord)
+      # ── the ingest servo ──
+      # Pressure from the shared wires the tier-scope
+      # `compaction_watch` daemon maintains (fold totality resets
+      # them to 0 when the pool is unreadable or idle, so pressure
+      # honestly decays); weight from the studies-derived rational
+      # polynomial; target in rows/s → op-rate via the frozen
+      # stride. Evaluated per cycle, DISPATCHED on change only
+      # (control_set's committed-gauge fixpoint elision).
+      pressure := to_f64(active_compactions_live) + pending_weight * to_f64(pending_compactions_live)
+      load_weight := 1.0 / (1.0 + pow(pressure / backoff_half, backoff_power))
+      # f64 clamps via select_f64 (the stdlib `max` is u64-only).
+      weighted_rows := base_rows_rate * load_weight
+      target_rows_rate := select_f64(weighted_rows < floor_rows_rate, floor_rows_rate, weighted_rows)
+      # `stride` is already f64 (the measured-probe cell type).
+      stride_f := select_f64(stride < 1.0, 1.0, stride)
+      op_rate_raw := target_rows_rate / stride_f
+      target_op_rate := select_f64(op_rate_raw < 1.0, 1.0, op_rate_raw)
+      rate_servo := control_set("rate", target_op_rate)
     ops:
-      # The ingest servo — a one-shot daemon op, poll-paced. Reads
-      # the CompactionExecutor pool itself (self-contained: no race
-      # against the tier-scope watch daemon's wires), computes the
-      # weight, and retargets THIS phase's `rate` control — one
-      # control_set dispatch per poll, not per cycle. Cancelled by
-      # the daemon-pool drain when the loader's foreground finishes.
-      pressure_servo:
-        if: "cycle == 0"
-        daemon: true
-        tries: 1
-        # Advisory: a failed poll iteration warns and keeps the last
-        # rate; the backstops on the insert op below carry the
-        # sanity net.
-        errors: ".*:warn,counter"
-        timeout: 10s
-        raw: |
-          SELECT active_tasks, pending_tasks
-            FROM system_views.thread_pools
-           WHERE name = 'CompactionExecutor'
-        capture:
-          servo_active:  ":max(active_tasks)"
-          servo_pending: ":max(pending_tasks)"
-        bindings: |
-          # Op-level bindings: plain assignments only (`const` is not
-          # accepted here — see await_compaction's note). Externs are
-          # the capture targets; an empty read resets them to 0 (fold
-          # totality), so pressure honestly decays when the pool is
-          # unreadable or idle.
-          extern servo_active:  u64 = 0
-          extern servo_pending: u64 = 0
-          pressure := to_f64(servo_active) + pending_weight * to_f64(servo_pending)
-          load_weight := 1.0 / (1.0 + pow(pressure / backoff_half, backoff_power))
-          # f64 clamps via select_f64 (the stdlib `max` is u64-only).
-          weighted_rows := base_rows_rate * load_weight
-          target_rows_rate := select_f64(weighted_rows < floor_rows_rate, floor_rows_rate, weighted_rows)
-          # `stride` is already f64 (the measured-probe cell type).
-          stride_f := select_f64(stride < 1.0, 1.0, stride)
-          op_rate_raw := target_rows_rate / stride_f
-          target_op_rate := select_f64(op_rate_raw < 1.0, 1.0, op_rate_raw)
-          rate_servo := control_set("rate", target_op_rate)
-        # Weight as a live percentage in the readout gutter while the
-        # tier ingests.
-        gutter:
-          text: "w≈{load_weight} rate→{target_op_rate}/s"
-        poll:
-          # Never self-satisfied — the servo runs until the daemon
-          # drain cancels it at loader completion. The 48h cap
-          # mirrors await_compaction's ceiling; a tier outlasting it
-          # has long since tripped the ingest backstops.
-          until: "1 == 0"
-          interval_ms: 2000
-          timeout_ms: 172800000
-        # The servo's inputs and outputs, recorded beside each other
-        # once per poll: every backoff decision is reconstructible
-        # post-run. The gauges also DEMAND the binding chain each
-        # iteration, which is what dispatches `control_set`
-        # (SideChannel nodes evaluate when pulled — the metric is
-        # the pull).
-        metrics:
-          # The WHOLE weight computation, one gauge per stage —
-          # inputs (pool counts), the composite pressure, the raw
-          # 0..1 weight (gauges are f64-native; no millis scaling),
-          # and both rate targets — so the fit for the next
-          # control-point revision reads the full chain from
-          # metrics.db without reconstructing any arithmetic.
-          servo_pool_active:  { kind: gauge, value: servo_active }
-          servo_pool_pending: { kind: gauge, value: servo_pending }
-          servo_pressure:     { kind: gauge, value: pressure }
-          load_weight:        { kind: gauge, value: load_weight }
-          target_rows_rate:   { kind: gauge, value: target_rows_rate }
-          target_op_rate:     { kind: gauge, value: target_op_rate }
-          rate_servo_sent:    { kind: gauge, value: rate_servo }
       insert:
         batch: stride
         max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
@@ -1011,6 +957,24 @@ phases:
         prepared: |
           INSERT INTO {keyspace}.{table} (key, value)
           VALUES ('{id}', {train_vector})
+        # The WHOLE weight computation, one gauge per stage —
+        # composite pressure, the raw 0..1 weight (gauges are
+        # f64-native), both rate targets, and the dispatch count
+        # (mostly 0 thanks to the elision; a 1 marks the cycle that
+        # actually retargeted the limiter) — so the fit for the next
+        # control-point revision reads the full chain from
+        # metrics.db without reconstructing any arithmetic. The pool
+        # INPUTS are recorded by the tier-scope watch daemon's own
+        # gauges. These gauges also DEMAND the binding chain per
+        # cycle, which is what evaluates `control_set` (SideChannel
+        # nodes evaluate when pulled — the metric is the pull; the
+        # elision keeps the pull cheap between wire changes).
+        metrics:
+          servo_pressure:   { kind: gauge, value: pressure }
+          load_weight:      { kind: gauge, value: load_weight }
+          target_rows_rate: { kind: gauge, value: target_rows_rate }
+          target_op_rate:   { kind: gauge, value: target_op_rate }
+          rate_servo_sent:  { kind: gauge, value: rate_servo }
 
   # One-shot insert-batch-stride probe (SRD-103 / Change 1). Insert a
   # byte-budgeted UNLOGGED batch over a small leading slice of the base

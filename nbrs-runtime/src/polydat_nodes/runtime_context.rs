@@ -193,8 +193,10 @@ fn capture_binding(name: &str) -> String {
 }
 
 /// Polydat write node: submit an f64 write against the named control via the
-/// session root's walk-up. Returns `1` if dispatched, `0` if no session root
-/// is installed (outside a running scenario / pure-kernel test).
+/// session root's walk-up. Returns `1` if dispatched, `0` if not — either no
+/// session root is installed (outside a running scenario / pure-kernel test)
+/// or the control already reads exactly the requested value (idempotent
+/// writes are elided; see the fixpoint check in the body).
 ///
 /// Signature: `control_set(name: const str, value: f64) -> u64`. Authored
 /// via `#[polydat::polydat_node]` (SRD-80b).
@@ -231,6 +233,23 @@ fn control_set(
     let Some(erased) = resolve_control(name.0) else {
         return 0;
     };
+    // Idempotent-write elision (SRD-93-era servo support): a feedback
+    // binding that re-evaluates per cycle recomputes the SAME target
+    // between changes of its inputs, and re-dispatching that write
+    // buys nothing while costing a spawn + the confirmed-apply
+    // pipeline every cycle. The committed gauge projection is the
+    // fixpoint check: when the control already reads exactly the
+    // requested value, the write is elided and the node reports 0
+    // (not dispatched — same code as the no-root case). Exact
+    // equality on purpose: between input changes the recomputation is
+    // bit-identical, and any real change, however small, must
+    // dispatch. Controls without a reified gauge (`gauge_f64() ==
+    // None`) never match and keep the always-dispatch behavior. An
+    // in-flight uncommitted write can let one duplicate through —
+    // harmless, it commits the same value.
+    if erased.gauge_f64() == Some(value) {
+        return 0;
+    }
     let name = name.0.to_string();
     let binding = binding.clone();
 
@@ -685,6 +704,24 @@ mod tests {
             committed.origin,
             nbrs_metrics::controls::ControlOrigin::Polydat { .. }
         ));
+
+        // Idempotent-write elision: the control now reads 64.0, so a
+        // second write of the SAME value is a fixpoint — elided, 0
+        // (not dispatched), revision unmoved. A different value
+        // dispatches again.
+        let rev_before = c.get().rev;
+        node.eval(&[Value::F64(64.0)], &mut out);
+        assert_eq!(out[0].as_u64(), 0,
+            "write of the committed value must be elided");
+        assert_eq!(c.get().rev, rev_before,
+            "an elided write must not touch the control");
+        node.eval(&[Value::F64(32.0)], &mut out);
+        assert_eq!(out[0].as_u64(), 1, "a real change dispatches");
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+            if c.value() == 32u32 { break; }
+        }
+        assert_eq!(c.value(), 32u32);
     }
 
     #[test]
