@@ -990,10 +990,18 @@ phases:
         # (SideChannel nodes evaluate when pulled — the metric is
         # the pull).
         metrics:
+          # The WHOLE weight computation, one gauge per stage —
+          # inputs (pool counts), the composite pressure, the raw
+          # 0..1 weight (gauges are f64-native; no millis scaling),
+          # and both rate targets — so the fit for the next
+          # control-point revision reads the full chain from
+          # metrics.db without reconstructing any arithmetic.
           servo_pool_active:  { kind: gauge, value: servo_active }
           servo_pool_pending: { kind: gauge, value: servo_pending }
-          load_weight_x1000:  { kind: gauge, value: "load_weight * 1000.0" }
+          servo_pressure:     { kind: gauge, value: pressure }
+          load_weight:        { kind: gauge, value: load_weight }
           target_rows_rate:   { kind: gauge, value: target_rows_rate }
+          target_op_rate:     { kind: gauge, value: target_op_rate }
           rate_servo_sent:    { kind: gauge, value: rate_servo }
       insert:
         batch: stride
