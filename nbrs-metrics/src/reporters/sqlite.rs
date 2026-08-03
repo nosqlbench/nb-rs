@@ -113,6 +113,25 @@ mod inner {
         /// post-cutover schema (SRD: hard cutover, denormalised
         /// — no more `label_set` indirection).
         instance_cache: HashMap<String, i64>,
+        /// SRD-93 M2 — process-monotonic clock anchor captured at
+        /// open: event stamps derive `utc = anchor_utc + elapsed`
+        /// (no NTP steps mid-run) and
+        /// `session = utc − session_epoch_utc_nanos`.
+        anchor_instant: std::time::Instant,
+        anchor_utc_nanos: i64,
+        /// The session's durable epoch (session_metadata key
+        /// `session_epoch_utc_nanos`; INSERT-only — resume/refine
+        /// never move it).
+        session_epoch_utc_nanos: i64,
+        /// SRD-93 M4 — `instance_id → (session, exec_id, spec)`,
+        /// populated beside `instance_cache` so flush-boundary exit
+        /// events resolve join-free. Same lifetime as the cache: a
+        /// cold reopen repopulates on the re-sight (miss) path.
+        instance_meta: HashMap<i64, (String, i64, String)>,
+        /// Instance ids the current `report()` batch touched — the
+        /// exit-event target set when the batch carries a lifecycle
+        /// close reason.
+        batch_touched: std::collections::HashSet<i64>,
     }
 
     impl SqliteReporter {
@@ -133,13 +152,66 @@ mod inner {
                  PRAGMA wal_autocheckpoint=1000;\
                  PRAGMA foreign_keys=ON;"
             ).map_err(|e| format!("failed to set SQLite pragmas: {e}"))?;
-            let mut reporter = Self {
+            let mut reporter = Self::from_connection(conn)?;
+            reporter.create_schema()?;
+            reporter.session_epoch_utc_nanos =
+                Self::resolve_session_epoch(&reporter.conn, reporter.anchor_utc_nanos);
+            Ok(reporter)
+        }
+
+        /// Shared constructor tail: capture the SRD-93 M2 monotonic
+        /// anchor pair at open. The epoch field is finalized by the
+        /// caller after `create_schema` (session_metadata must exist).
+        fn from_connection(conn: Connection) -> Result<Self, String> {
+            let anchor_instant = std::time::Instant::now();
+            let anchor_utc_nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i64)
+                .unwrap_or(0);
+            Ok(Self {
                 conn,
                 family_cache: HashMap::new(),
                 instance_cache: HashMap::new(),
-            };
-            reporter.create_schema()?;
-            Ok(reporter)
+                anchor_instant,
+                anchor_utc_nanos,
+                session_epoch_utc_nanos: anchor_utc_nanos,
+                instance_meta: HashMap::new(),
+                batch_touched: std::collections::HashSet::new(),
+            })
+        }
+
+        /// SRD-93 M2 — the session's durable epoch. Existing key
+        /// wins (the epoch NEVER moves once set); a legacy db
+        /// without the key derives it from the earliest recorded
+        /// execution start; a fresh db anchors at open. Whatever is
+        /// resolved is persisted INSERT-only.
+        fn resolve_session_epoch(conn: &Connection, anchor_utc_nanos: i64) -> i64 {
+            if let Ok(v) = conn.query_row(
+                "SELECT CAST(value AS INTEGER) FROM session_metadata \
+                 WHERE key = 'session_epoch_utc_nanos'",
+                [], |r| r.get::<_, i64>(0))
+            {
+                return v;
+            }
+            let derived: Option<i64> = conn.query_row(
+                "SELECT MIN(started_at_nanos) FROM executions \
+                 WHERE started_at_nanos > 0",
+                [], |r| r.get(0)).ok().flatten();
+            let epoch = derived.unwrap_or(anchor_utc_nanos);
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO session_metadata (key, value) \
+                 VALUES ('session_epoch_utc_nanos', ?1)",
+                params![epoch.to_string()]);
+            epoch
+        }
+
+        /// SRD-93 A5 — one event-time stamp pair `(utc_nanos,
+        /// session_nanos)`, both derived from the same monotonic
+        /// anchor so the two columns always agree.
+        fn clock_now(&self) -> (i64, i64) {
+            let utc = self.anchor_utc_nanos
+                + self.anchor_instant.elapsed().as_nanos() as i64;
+            (utc, utc - self.session_epoch_utc_nanos)
         }
 
         pub fn in_memory() -> Result<Self, String> {
@@ -154,12 +226,10 @@ mod inner {
             // shape.
             conn.execute_batch("PRAGMA foreign_keys=ON;")
                 .map_err(|e| format!("failed to set foreign_keys pragma: {e}"))?;
-            let mut reporter = Self {
-                conn,
-                family_cache: HashMap::new(),
-                instance_cache: HashMap::new(),
-            };
+            let mut reporter = Self::from_connection(conn)?;
             reporter.create_schema()?;
+            reporter.session_epoch_utc_nanos =
+                Self::resolve_session_epoch(&reporter.conn, reporter.anchor_utc_nanos);
             Ok(reporter)
         }
 
@@ -259,13 +329,19 @@ mod inner {
         /// the relevant constant when the layout changes so an existing db
         /// re-runs just the missing migration on its next open.
         ///
-        /// - [`Self::SCHEMA_VERSION`] (1): tables present. A write-time open
-        ///   leaves the db here — indexes are DEFERRED off the hot write path
-        ///   (per-row B-tree maintenance is what amplifies WAL volume).
-        /// - [`Self::INDEXED_VERSION`] (2): tables + all current read indexes,
-        ///   built by [`Self::ensure_indexes`] on first read / at shutdown.
-        const SCHEMA_VERSION: i64 = 1;
-        const INDEXED_VERSION: i64 = 2;
+        /// - 1: v1 tables. A write-time open leaves the db here — indexes
+        ///   are DEFERRED off the hot write path (per-row B-tree
+        ///   maintenance is what amplifies WAL volume).
+        /// - 2: v1 tables + all v1 read indexes.
+        /// - [`Self::SCHEMA_VERSION`] (3): v2 tables — adds the SRD-93
+        ///   `instance_scope_event` lifecycle table + the session-time
+        ///   views. A v1/v2 db converges on its next read-write open
+        ///   (all DDL is IF NOT EXISTS).
+        /// - [`Self::INDEXED_VERSION`] (4): v2 tables + read indexes,
+        ///   built by [`Self::ensure_read_indexes`] at shutdown / by a
+        ///   read-write maintenance opener.
+        const SCHEMA_VERSION: i64 = 3;
+        const INDEXED_VERSION: i64 = 4;
 
         /// All read-path indexes, `IF NOT EXISTS` so a partially-indexed db
         /// converges. Built by [`Self::ensure_read_indexes`] — never on the
@@ -305,11 +381,17 @@ mod inner {
             }
             conn.execute_batch(Self::READ_INDEX_DDL)
                 .map_err(|e| format!("index creation failed: {e}"))?;
-            conn.execute_batch(&format!(
-                "PRAGMA user_version = {};",
+            // Stamp what is now TRUE of this db: indexed-v2 (4) only
+            // if the v2 tables are present; a caller that indexed a
+            // v1-table db records indexed-v1 (2) so the next
+            // read-write open still runs the v2 table DDL.
+            let stamp = if version >= Self::SCHEMA_VERSION {
                 Self::INDEXED_VERSION
-            ))
-            .map_err(|e| format!("failed to stamp index version: {e}"))?;
+            } else {
+                2
+            };
+            conn.execute_batch(&format!("PRAGMA user_version = {stamp};"))
+                .map_err(|e| format!("failed to stamp index version: {e}"))?;
             Ok(())
         }
 
@@ -577,7 +659,58 @@ mod inner {
                     at_nanos     INTEGER NOT NULL,
                     retryable    INTEGER NOT NULL,
                     PRIMARY KEY (session, exec_id, phase_name, phase_labels, seq)
-                );"
+                );
+                -- SRD-93 M1 — instance scope lifecycle: exactly one
+                -- enter and at most one exit row per (instance,
+                -- execution). Append-only, O(instance-lifetime)
+                -- writes at the flush boundary — never O(pulse).
+                -- `instance_id` piggybacks the existing
+                -- normalization (no label_set indirection in this
+                -- schema); `spec` is retained denormalized exactly
+                -- as exemplar.labels_spec so the event feed is
+                -- self-describing without joins. Dual temporal
+                -- columns per SRD-93 A5: UTC epoch nanos + nanos of
+                -- session time (both stamped at event time from the
+                -- writer's monotonic anchor). enter reason:
+                -- 'first_sample'; exit reasons: 'scope_close' |
+                -- 'shutdown'. An enter with no exit after session
+                -- end is a truthful crash/interrupt marker (A7).
+                CREATE TABLE IF NOT EXISTS instance_scope_event (
+                    instance_id      INTEGER NOT NULL REFERENCES metric_instance(id),
+                    session          TEXT    NOT NULL,
+                    exec_id          INTEGER NOT NULL,
+                    event            TEXT    NOT NULL CHECK (event IN ('enter','exit')),
+                    reason           TEXT    NOT NULL,
+                    at_utc_nanos     INTEGER NOT NULL,
+                    at_session_nanos INTEGER NOT NULL,
+                    spec             TEXT    NOT NULL,
+                    PRIMARY KEY (instance_id, exec_id, event)
+                ) WITHOUT ROWID;
+                -- SRD-93 M2 — session time over the legacy tables is
+                -- a pure derivation from the durable epoch; views
+                -- instead of columns so the hot tables don't change.
+                CREATE VIEW IF NOT EXISTS v_executions_session AS
+                    SELECT e.*,
+                           e.started_at_nanos - (SELECT CAST(value AS INTEGER)
+                               FROM session_metadata
+                               WHERE key = 'session_epoch_utc_nanos')
+                               AS started_at_session_nanos,
+                           e.ended_at_nanos - (SELECT CAST(value AS INTEGER)
+                               FROM session_metadata
+                               WHERE key = 'session_epoch_utc_nanos')
+                               AS ended_at_session_nanos
+                    FROM executions e;
+                CREATE VIEW IF NOT EXISTS v_phase_outcomes_session AS
+                    SELECT p.*,
+                           p.started_at_nanos - (SELECT CAST(value AS INTEGER)
+                               FROM session_metadata
+                               WHERE key = 'session_epoch_utc_nanos')
+                               AS started_at_session_nanos,
+                           p.ended_at_nanos - (SELECT CAST(value AS INTEGER)
+                               FROM session_metadata
+                               WHERE key = 'session_epoch_utc_nanos')
+                               AS ended_at_session_nanos
+                    FROM phase_outcomes p;"
             ).map_err(|e| format!("schema creation failed: {e}"))?;
             // Tables done — stamp SCHEMA_VERSION so a reopen skips the table
             // DDL. Indexes are deferred (a higher version) to `ensure_indexes`.
@@ -1092,6 +1225,7 @@ mod inner {
             let canonical = Self::canonical_labels(family_name, raw_labels);
             let spec = canonical.to_canonical_spec(family_name);
             if let Some(&id) = self.instance_cache.get(&spec) {
+                self.batch_touched.insert(id);
                 return id;
             }
             // SRD-77 — extract session + exec_id from the
@@ -1194,6 +1328,27 @@ mod inner {
                         0
                     });
                 }
+                // SRD-93 M3 — first storage sight of this spec IS
+                // the enter-scope event; this cache-miss branch is
+                // the documented single chokepoint, and `report()`'s
+                // transaction is already open around it. A cold-cache
+                // re-sight (SRD-44 resume / SRD-77 refine reopen) is
+                // a no-op via the (instance, exec, event) PK (A7).
+                let (at_utc, at_session) = self.clock_now();
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO instance_scope_event \
+                     (instance_id, session, exec_id, event, reason, \
+                      at_utc_nanos, at_session_nanos, spec) \
+                     VALUES (?1, ?2, ?3, 'enter', 'first_sample', ?4, ?5, ?6)",
+                    params![id, session, exec_id, at_utc, at_session, &spec],
+                ).unwrap_or_else(|e| {
+                    crate::diag::warn(&format!(
+                        "warning: scope-event insert failed: {e}"));
+                    0
+                });
+                self.instance_meta.insert(
+                    id, (session.to_string(), exec_id, spec.clone()));
+                self.batch_touched.insert(id);
                 self.instance_cache.insert(spec, id);
             }
             id
@@ -2538,6 +2693,38 @@ mod inner {
                     self.insert_metric(snapshot, family, metric);
                 }
             }
+            // SRD-93 M4 — a lifecycle-sealed window carries its exit
+            // events in the SAME transaction as its final samples.
+            // Quiesce (and naturally-closed windows) seal without
+            // exiting scope (A6). Coverage is the batch's touched
+            // set: the scope_close drain enumerates every registered
+            // instrument of the closing component, so the batch IS
+            // the component's instrument set.
+            let exit_reason = match snapshot.close_reason() {
+                Some(crate::snapshot::CloseReason::ScopeClose) => Some("scope_close"),
+                Some(crate::snapshot::CloseReason::Shutdown) => Some("shutdown"),
+                _ => None,
+            };
+            if let Some(reason) = exit_reason {
+                let (at_utc, at_session) = self.clock_now();
+                for id in self.batch_touched.iter() {
+                    let Some((session, exec_id, spec)) =
+                        self.instance_meta.get(id) else { continue };
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO instance_scope_event \
+                         (instance_id, session, exec_id, event, reason, \
+                          at_utc_nanos, at_session_nanos, spec) \
+                         VALUES (?1, ?2, ?3, 'exit', ?4, ?5, ?6, ?7)",
+                        params![*id, session, exec_id, reason,
+                                at_utc, at_session, spec],
+                    ).unwrap_or_else(|e| {
+                        crate::diag::warn(&format!(
+                            "warning: scope-event insert failed: {e}"));
+                        0
+                    });
+                }
+            }
+            self.batch_touched.clear();
             if batched {
                 if let Err(e) = self.conn.execute_batch("COMMIT") {
                     crate::diag::warn(&format!("sqlite snapshot commit failed: {e}"));
@@ -2585,6 +2772,31 @@ mod inner {
         /// rollback-journal mode for any subsequent writes,
         /// so callers must not write after this fires.
         pub fn consolidate_wal(&self) {
+            // SRD-93 M4 — terminal sweep: a CLEAN shutdown pairs every
+            // still-open enter with exit('shutdown'), catching windows
+            // whose dispatch didn't land before teardown and dynamic-
+            // capture instruments a hook omitted on the drain pass. A
+            // crash never reaches this line, so its unpaired enters
+            // remain the truthful record (A7). Set-based; stamped from
+            // the same clock as every other event.
+            {
+                let (at_utc, at_session) = self.clock_now();
+                let _ = self.conn.execute(
+                    "INSERT OR IGNORE INTO instance_scope_event \
+                     (instance_id, session, exec_id, event, reason, \
+                      at_utc_nanos, at_session_nanos, spec) \
+                     SELECT e.instance_id, e.session, e.exec_id, 'exit', \
+                            'shutdown', ?1, ?2, e.spec \
+                     FROM instance_scope_event e \
+                     WHERE e.event = 'enter' AND NOT EXISTS ( \
+                         SELECT 1 FROM instance_scope_event x \
+                         WHERE x.instance_id = e.instance_id \
+                           AND x.exec_id = e.exec_id \
+                           AND x.event = 'exit')",
+                    params![at_utc, at_session],
+                ).map_err(|e| crate::diag::warn(&format!(
+                    "sqlite scope-event terminal sweep failed: {e}")));
+            }
             // Build the deferred read indexes before the final checkpoint so
             // the durable, externally-readable db is fully indexed (no-op if a
             // read already triggered them). Best-effort: a failure here must
@@ -4001,11 +4213,7 @@ mod inner {
             // run create_schema, and verify the FK-parent guard.
             let conn = rusqlite::Connection::open_in_memory().unwrap();
             conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-            let mut r = super::SqliteReporter {
-                conn,
-                family_cache: std::collections::HashMap::new(),
-                instance_cache: std::collections::HashMap::new(),
-            };
+            let mut r = super::SqliteReporter::from_connection(conn).unwrap();
             r.create_schema().unwrap();
             // No executions row up front. The metric write must
             // provision a placeholder parent and commit the sample.
@@ -4112,6 +4320,153 @@ mod inner {
             // Idempotent + self-healing: a second call is a no-op.
             r.consolidate_wal();
             assert_eq!(idx_count(&r), 7);
+        }
+
+        // ── SRD-93 stages 2 + 4 — session clock + scope lifecycle ──
+
+        fn scope_events(r: &SqliteReporter) -> Vec<(String, String, i64, i64)> {
+            let mut stmt = r.conn.prepare(
+                "SELECT event, reason, at_utc_nanos, at_session_nanos \
+                 FROM instance_scope_event ORDER BY event, at_utc_nanos",
+            ).unwrap();
+            let rows = stmt.query_map([], |row| Ok((
+                row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?, row.get::<_, i64>(3)?,
+            ))).unwrap();
+            rows.flatten().collect()
+        }
+
+        fn labeled_snapshot(count: u64) -> MetricSet {
+            let mut s = MetricSet::new(Duration::from_secs(1));
+            s.insert_counter(
+                "ops_total",
+                Labels::of("session", "s").with("exec_id", "1"),
+                count,
+                Instant::now(),
+            );
+            s
+        }
+
+        /// SRD-93 M3/M4 — first storage sight writes the enter event;
+        /// a ScopeClose-sealed batch writes the exit in the same
+        /// transaction; re-sights and re-closes are idempotent (A7);
+        /// and both temporal columns agree through the durable epoch
+        /// (A5: `utc − session == session_epoch_utc_nanos`, exactly,
+        /// for every event — one clock, two projections).
+        #[test]
+        fn scope_events_pair_enter_and_exit_with_dual_clocks() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.insert_execution_start("s", 1, "run", None, 0, "", "");
+
+            r.report(&labeled_snapshot(1));
+            let ev = scope_events(&r);
+            assert_eq!(ev.len(), 1, "first sight = one enter event");
+            assert_eq!((ev[0].0.as_str(), ev[0].1.as_str()),
+                ("enter", "first_sample"));
+
+            let mut closing = labeled_snapshot(2);
+            closing.mark_close(crate::snapshot::CloseReason::ScopeClose);
+            r.report(&closing);
+            let ev = scope_events(&r);
+            assert_eq!(ev.len(), 2, "scope-close batch adds the exit");
+            assert_eq!((ev[1].0.as_str(), ev[1].1.as_str()),
+                ("exit", "scope_close"));
+
+            // Idempotent under a repeated close and a re-sight.
+            r.report(&closing);
+            r.report(&labeled_snapshot(3));
+            assert_eq!(scope_events(&r).len(), 2);
+
+            let epoch: i64 = r.conn.query_row(
+                "SELECT CAST(value AS INTEGER) FROM session_metadata \
+                 WHERE key = 'session_epoch_utc_nanos'",
+                [], |row| row.get(0)).unwrap();
+            for (event, _, utc, session) in scope_events(&r) {
+                assert_eq!(utc - session, epoch,
+                    "{event}: utc − session must equal the durable epoch");
+            }
+        }
+
+        /// SRD-93 A6 — quiesce seals windows without ending scope:
+        /// a Quiesce-sealed batch MUST NOT write exit events.
+        #[test]
+        fn quiesce_sealed_batch_writes_no_exit() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.insert_execution_start("s", 1, "run", None, 0, "", "");
+            let mut quiescing = labeled_snapshot(1);
+            quiescing.mark_close(crate::snapshot::CloseReason::Quiesce);
+            r.report(&quiescing);
+            let ev = scope_events(&r);
+            assert_eq!(ev.len(), 1, "enter only");
+            assert_eq!(ev[0].0, "enter");
+        }
+
+        /// SRD-93 M4 — the terminal sweep at clean shutdown pairs
+        /// every still-open enter with exit('shutdown'), and leaves
+        /// already-paired instances alone (their scope_close reason
+        /// survives). A crash never reaches the sweep, so unpaired
+        /// enters remain the truthful record — untestable here except
+        /// by omission: no sweep call, no exit rows.
+        #[test]
+        fn terminal_sweep_pairs_only_the_unpaired() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.insert_execution_start("s", 1, "run", None, 0, "", "");
+
+            // Instance A enters and exits mid-run via scope_close.
+            let mut a = MetricSet::new(Duration::from_secs(1));
+            a.insert_counter("a_total",
+                Labels::of("session", "s").with("exec_id", "1"), 1,
+                Instant::now());
+            a.mark_close(crate::snapshot::CloseReason::ScopeClose);
+            r.report(&a);
+            // Instance B only enters.
+            let mut b = MetricSet::new(Duration::from_secs(1));
+            b.insert_counter("b_total",
+                Labels::of("session", "s").with("exec_id", "1"), 1,
+                Instant::now());
+            r.report(&b);
+
+            r.consolidate_wal();
+
+            let by_reason = |reason: &str| -> i64 {
+                r.conn.query_row(
+                    "SELECT COUNT(*) FROM instance_scope_event \
+                     WHERE event = 'exit' AND reason = ?1",
+                    [reason], |row| row.get(0)).unwrap()
+            };
+            assert_eq!(by_reason("scope_close"), 1, "A keeps its reason");
+            assert_eq!(by_reason("shutdown"), 1, "B swept at shutdown");
+            let unpaired: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM instance_scope_event e \
+                 WHERE e.event = 'enter' AND NOT EXISTS ( \
+                     SELECT 1 FROM instance_scope_event x \
+                     WHERE x.instance_id = e.instance_id \
+                       AND x.exec_id = e.exec_id AND x.event = 'exit')",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(unpaired, 0, "clean shutdown pairs everything");
+        }
+
+        /// SRD-93 M2 — the durable epoch is INSERT-only: a reopen of
+        /// the same db (resume/refine) keeps the original value, so
+        /// session time never re-anchors mid-session.
+        #[test]
+        fn session_epoch_survives_reopen() {
+            let dir = std::env::temp_dir().join(format!(
+                "nbrs-epoch-{}-{}", std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap().as_nanos()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let db = dir.join("metrics.db");
+
+            let first = SqliteReporter::new(&db).unwrap()
+                .session_epoch_utc_nanos;
+            std::thread::sleep(Duration::from_millis(10));
+            let second = SqliteReporter::new(&db).unwrap()
+                .session_epoch_utc_nanos;
+            assert_eq!(first, second,
+                "the epoch must never move once set");
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 }

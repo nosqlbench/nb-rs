@@ -74,6 +74,23 @@ use crate::labels::Labels;
 /// These are intentionally not in any `MetricPoint`; consumers that
 /// project to OpenMetrics on-wire format should read the per-point
 /// timestamps and `_created` fields instead.
+/// SRD-93 M4/A6 — why a snapshot's window was sealed by a lifecycle
+/// boundary rather than closing naturally on its cadence. Typed so
+/// durable sinks act on the *reason*, never inferring lifecycle from
+/// the `partial` flag (`Quiesce` seals partials without ending scope
+/// and MUST NOT produce exit events). Variant order is severity —
+/// coalesce keeps the strongest reason across inputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CloseReason {
+    /// Mid-session quiesce: windows sealed so readers see complete
+    /// data; the owning components continue. Never an exit signal.
+    Quiesce,
+    /// The owning component is being torn down (`scope_close`).
+    ScopeClose,
+    /// Session shutdown flush: every path seals for the last time.
+    Shutdown,
+}
+
 #[derive(Clone, Debug)]
 pub struct MetricSet {
     captured_at: Instant,
@@ -90,6 +107,12 @@ pub struct MetricSet {
     /// scope-close contribution if needed. Coalesce result is
     /// partial whenever **any** contributing input was partial.
     partial: bool,
+    /// SRD-93 M4 — the lifecycle reason this window was sealed, when
+    /// sealed by a boundary (`None` for naturally-closed windows).
+    /// Rides beside `partial` rather than replacing it: `partial`
+    /// answers "is this window shorter than its cadence", `close`
+    /// answers "what lifecycle event sealed it".
+    close: Option<CloseReason>,
     /// SRD-102 §6: the nominal cadence deadline this snapshot was
     /// *scheduled* to fire at, when produced by the cadence scheduler.
     /// `captured_at` is the *actual* fire instant; the pair lets
@@ -107,6 +130,7 @@ impl Default for MetricSet {
             captured_at: Instant::now(),
             interval: Duration::ZERO,
             partial: false,
+            close: None,
             scheduled_ts: None,
             families: Vec::new(),
         }
@@ -121,6 +145,7 @@ impl MetricSet {
             captured_at: Instant::now(),
             interval,
             partial: false,
+            close: None,
             scheduled_ts: None,
             families: Vec::new(),
         }
@@ -129,7 +154,7 @@ impl MetricSet {
     /// Construct an empty snapshot stamped with an explicit
     /// `captured_at` (e.g., for tests reproducing a known instant).
     pub fn at(captured_at: Instant, interval: Duration) -> Self {
-        Self { captured_at, interval, partial: false, scheduled_ts: None, families: Vec::new() }
+        Self { captured_at, interval, partial: false, close: None, scheduled_ts: None, families: Vec::new() }
     }
 
     pub fn captured_at(&self) -> Instant { self.captured_at }
@@ -162,6 +187,17 @@ impl MetricSet {
     /// Idempotent. Once set, `coalesce` carries the flag forward —
     /// any output that includes this snapshot will be partial too.
     pub fn mark_partial(&mut self) { self.partial = true; }
+
+    /// SRD-93 M4 — the lifecycle reason this window was sealed, if a
+    /// boundary (rather than the cadence) sealed it.
+    pub fn close_reason(&self) -> Option<CloseReason> { self.close }
+
+    /// Stamp the lifecycle close reason. Monotone by severity: a
+    /// stronger reason overwrites a weaker one, never the reverse
+    /// (matching the coalesce fold, so stamp order can't matter).
+    pub fn mark_close(&mut self, reason: CloseReason) {
+        self.close = Some(self.close.map_or(reason, |c| c.max(reason)));
+    }
 
     /// Set the represented interval. Used when a coalesce path
     /// promotes a snapshot to a coarser cadence's window.
@@ -208,6 +244,7 @@ impl MetricSet {
             captured_at: self.captured_at,
             interval: self.interval,
             partial: self.partial,
+            close: self.close,
             scheduled_ts: self.scheduled_ts,
             families: self
                 .families
@@ -280,7 +317,10 @@ impl MetricSet {
         // combined tick snapshot after coalescing (SRD-102 §6).
         let scheduled_ts = None;
 
-        let mut out = MetricSet { captured_at, interval, partial, scheduled_ts, families: Vec::new() };
+        // SRD-93 M4 — the strongest lifecycle reason across inputs
+        // survives the fold (severity order on the enum).
+        let close = snapshots.iter().filter_map(|s| s.close).max();
+        let mut out = MetricSet { captured_at, interval, partial, close, scheduled_ts, families: Vec::new() };
 
         // Family identity is `name`. For each unique family name
         // across inputs, fold its metrics in identity order.

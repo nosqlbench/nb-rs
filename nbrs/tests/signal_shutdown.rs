@@ -133,7 +133,8 @@ fn sigterm_drives_graceful_shutdown_with_consolidated_db() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("read user_version");
-    assert_eq!(version, 2, "shutdown must leave the db fully indexed");
+    assert_eq!(version, 4,
+        "shutdown must leave the db at v2-tables + indexes (SRD-93 ladder)");
     let disposition: Option<String> = conn
         .query_row(
             "SELECT disposition FROM executions WHERE verb != 'pending' LIMIT 1",

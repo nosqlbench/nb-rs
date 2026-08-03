@@ -37,7 +37,7 @@ use arc_swap::ArcSwap;
 use crate::cadence::{CadenceLayer, CadenceTree, Cadences};
 use crate::labels::Labels;
 use crate::scheduler::Reporter;
-use crate::snapshot::MetricSet;
+use crate::snapshot::{CloseReason, MetricSet};
 
 /// Distribution (HDR-reservoir) retention, expressed as a count of
 /// closed windows per `(component_path, cadence)` ring. The heavy part
@@ -200,7 +200,7 @@ impl CadenceWindow {
     /// stamped `partial=true` so downstream consumers can
     /// distinguish a scope-close contribution from a naturally
     /// pulse-flushed window.
-    fn force_close(&mut self) -> Option<Arc<MetricSet>> {
+    fn force_close(&mut self, reason: CloseReason) -> Option<Arc<MetricSet>> {
         let mut buf = self.prebuffer.take()?;
         if buf.is_empty() {
             return None;
@@ -208,8 +208,11 @@ impl CadenceWindow {
         // `interval` already reflects accumulated time from the
         // input snapshots' interval sum. Stamp the partial flag —
         // by definition force_close fires before the cadence
-        // window naturally closed.
+        // window naturally closed — and the typed lifecycle reason
+        // (SRD-93 M4) so durable sinks act on the reason instead of
+        // inferring lifecycle from `partial`.
         buf.mark_partial();
+        buf.mark_close(reason);
         let arc = Arc::new(buf);
         self.latest = Some(arc.clone());
         self.ring.push_back(arc.clone());
@@ -502,6 +505,10 @@ enum Cmd {
     ClosePath {
         path: String,
         ack: Option<crossbeam_channel::Sender<()>>,
+        /// SRD-93 M4 — the lifecycle reason stamped on the sealed
+        /// windows (`ScopeClose` from `scope_close`, `Quiesce` from
+        /// a bare `close_path` boundary seal).
+        reason: CloseReason,
     },
     /// Force-close every prebuffer and fan out to every subscriber.
     /// Used by `shutdown_flush` (sync) and `quiesce` (async); the sender
@@ -509,6 +516,9 @@ enum Cmd {
     /// channel so the same command serves both runtime flavors.
     ShutdownFlushAll {
         ack: FlushAck,
+        /// SRD-93 M4 — `Shutdown` from `shutdown_flush`, `Quiesce`
+        /// from `quiesce`; the owner can no longer conflate the two.
+        reason: CloseReason,
     },
     /// No-op barrier used by tests / explicit synchronization
     /// callers. The owner thread acks after publishing the
@@ -777,10 +787,17 @@ impl CadenceReporter {
     /// block — and it's called once at the end of the run, not
     /// from any tokio worker on the hot path.
     pub fn close_path(&self, labels: &Labels) {
+        // A bare path seal is a boundary flush, not a component
+        // teardown — `Quiesce`, never an exit signal (SRD-93 A6).
+        self.close_path_reason(labels, CloseReason::Quiesce);
+    }
+
+    fn close_path_reason(&self, labels: &Labels, reason: CloseReason) {
         let path = component_path_of(labels);
         let _ = self.cmd_tx.send(Cmd::ClosePath {
             path,
             ack: None,
+            reason,
         });
     }
 
@@ -804,10 +821,16 @@ impl CadenceReporter {
     /// gets force-closed even when this scope contributed nothing.
     pub fn scope_close(&self, labels: &Labels, mut partial_delta: MetricSet) {
         partial_delta.mark_partial();
+        // Stamp the reason on the DELTA too (not just the ClosePath):
+        // if the delta's ingest happens to seal the smallest window at
+        // its natural cadence boundary before the ClosePath lands, the
+        // published window still inherits ScopeClose through the
+        // coalesce fold — no exit-scope signal lost to that race.
+        partial_delta.mark_close(CloseReason::ScopeClose);
         if !partial_delta.is_empty() {
             self.ingest(labels, partial_delta);
         }
-        self.close_path(labels);
+        self.close_path_reason(labels, CloseReason::ScopeClose);
     }
 
     /// Force-close every prebuffer in cascade order at shutdown.
@@ -831,7 +854,10 @@ impl CadenceReporter {
         // very task that produces the ack. Awaiting yields the thread so the
         // owner runs. Callers (the scheduler's final flush) are async.
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        let _ = self.cmd_tx.send(Cmd::ShutdownFlushAll { ack: FlushAck::Async(ack_tx) });
+        let _ = self.cmd_tx.send(Cmd::ShutdownFlushAll {
+            ack: FlushAck::Async(ack_tx),
+            reason: CloseReason::Shutdown,
+        });
         let _ = ack_rx.await;
     }
 
@@ -860,7 +886,10 @@ impl CadenceReporter {
         //    current-thread runtime: the owner task and delivery fibers
         //    share the thread, so a blocking wait would deadlock / panic.
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        let _ = self.cmd_tx.send(Cmd::ShutdownFlushAll { ack: FlushAck::Async(ack_tx) });
+        let _ = self.cmd_tx.send(Cmd::ShutdownFlushAll {
+            ack: FlushAck::Async(ack_tx),
+            reason: CloseReason::Quiesce,
+        });
         let _ = ack_rx.await;
         // 2. Wait for every in-flight delivery fiber to land what was
         //    queued, yielding between polls so the fibers get scheduled.
@@ -1064,14 +1093,14 @@ async fn run_owner(
                     fanout_owner(&subscriptions, &closed_by_cadence);
                     if let Some(a) = ack { acks.push(FlushAck::Sync(a)); }
                 }
-                Cmd::ClosePath { path, ack } => {
+                Cmd::ClosePath { path, ack, reason } => {
                     let closed_by_cadence = close_path_cascade(
-                        &mut windows, &layers, &path,
+                        &mut windows, &layers, &path, reason,
                     );
                     fanout_owner(&subscriptions, &closed_by_cadence);
                     if let Some(a) = ack { acks.push(FlushAck::Sync(a)); }
                 }
-                Cmd::ShutdownFlushAll { ack } => {
+                Cmd::ShutdownFlushAll { ack, reason } => {
                     let paths: Vec<String> = {
                         let mut set: std::collections::HashSet<String> =
                             std::collections::HashSet::new();
@@ -1081,7 +1110,7 @@ async fn run_owner(
                     let mut all_closed = Vec::new();
                     for path in &paths {
                         all_closed.extend(close_path_cascade(
-                            &mut windows, &layers, path,
+                            &mut windows, &layers, path, reason,
                         ));
                     }
                     fanout_owner(&subscriptions, &all_closed);
@@ -1155,6 +1184,7 @@ fn close_path_cascade(
     windows: &mut HashMap<(String, usize), CadenceWindow>,
     layers: &[CadenceLayer],
     path: &str,
+    reason: CloseReason,
 ) -> Vec<(Duration, Arc<MetricSet>)> {
     let mut closed: Vec<(Duration, Arc<MetricSet>)> = Vec::new();
     let mut to_propagate: Option<(usize, Arc<MetricSet>)> = None;
@@ -1167,7 +1197,7 @@ fn close_path_cascade(
                 let _ = entry.ingest((*carry).clone());
             }
         if let Some(window) = windows.get_mut(&key)
-            && let Some(snap) = window.force_close() {
+            && let Some(snap) = window.force_close(reason) {
                 closed.push((layers[idx].interval, snap.clone()));
                 if idx + 1 < layers.len() {
                     to_propagate = Some((idx + 1, snap));
@@ -1763,6 +1793,55 @@ mod tests {
         assert_eq!(first_counter_total(&latest), 7);
         assert!(latest.interval() < Duration::from_secs(1),
             "partial interval must be < cadence, got {:?}", latest.interval());
+        assert_eq!(latest.close_reason(), Some(CloseReason::ScopeClose),
+            "scope_close must stamp the typed reason (SRD-93 M4)");
+    }
+
+    /// SRD-93 M4/A6 — the typed close reason distinguishes the three
+    /// sealers: `scope_close` → ScopeClose, `quiesce` → Quiesce (a
+    /// seal, NEVER an exit signal), `shutdown_flush` → Shutdown; and
+    /// severity survives the coalesce fold (Shutdown ≥ ScopeClose ≥
+    /// Quiesce). A naturally-closed window carries no reason.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_reason_names_the_sealer_not_the_partial_flag() {
+        let cadences = Cadences::new(&[Duration::from_millis(100)]).unwrap();
+        let reporter = CadenceReporter::new(CadenceTree::plan_default(cadences));
+
+        // Natural close: two 50ms deltas fill the 100ms window.
+        let nat = Labels::of("phase", "natural");
+        for _ in 0..2 {
+            let mut d = MetricSet::new(Duration::from_millis(50));
+            d.insert_counter("ops", Labels::default(), 1, Instant::now());
+            reporter.ingest(&nat, d);
+        }
+        reporter.flush_for_tests();
+        let w = reporter.latest(&nat, Duration::from_millis(100)).unwrap();
+        assert_eq!(w.close_reason(), None,
+            "a cadence-closed window carries no lifecycle reason");
+
+        // Quiesce seals a partial but is not an exit signal.
+        let qui = Labels::of("phase", "quiescing");
+        let mut d = MetricSet::new(Duration::from_millis(10));
+        d.insert_counter("ops", Labels::default(), 2, Instant::now());
+        reporter.ingest(&qui, d);
+        reporter.quiesce(Duration::from_secs(5)).await;
+        let w = reporter.latest(&qui, Duration::from_millis(100)).unwrap();
+        assert!(w.is_partial());
+        assert_eq!(w.close_reason(), Some(CloseReason::Quiesce));
+
+        // Shutdown outranks: a later shutdown_flush over a fresh
+        // partial stamps Shutdown.
+        let end = Labels::of("phase", "ending");
+        let mut d = MetricSet::new(Duration::from_millis(10));
+        d.insert_counter("ops", Labels::default(), 3, Instant::now());
+        reporter.ingest(&end, d);
+        reporter.shutdown_flush().await;
+        let w = reporter.latest(&end, Duration::from_millis(100)).unwrap();
+        assert_eq!(w.close_reason(), Some(CloseReason::Shutdown));
+
+        // Severity ordering is what coalesce leans on.
+        assert!(CloseReason::Shutdown > CloseReason::ScopeClose);
+        assert!(CloseReason::ScopeClose > CloseReason::Quiesce);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
