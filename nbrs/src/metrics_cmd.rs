@@ -221,6 +221,20 @@ fn list_or_show_flags() -> Vec<Flag> {
     out
 }
 
+/// `show`'s flag surface: the shared list/summarize flags plus the
+/// one-release `--values` deprecation bridge to `summarize`.
+fn show_flags() -> Vec<Flag> {
+    let mut out = list_or_show_flags();
+    out.push(Flag {
+        long: "--values", short: None, aliases: &[],
+        arity: Arity::Bool, value: ValueProvider::None,
+        help: "DEPRECATED — per-leaf value summaries moved to \
+               `nbrs metrics summarize`.",
+        repeatable: false,
+    });
+    out
+}
+
 fn match_flags() -> Vec<Flag> {
     let mut out = vec![Flag {
         long: "--db", short: None, aliases: &[],
@@ -322,8 +336,29 @@ pub fn spec() -> Command {
         subcommands: vec![
             Command {
                 name: "show",
-                help: "List metric families + label dimensions with a value \
-                       summary at each leaf; `--list` omits the values.",
+                help: "List metric families + label dimensions (structure \
+                       only, never touches sample data — SRD-93). For \
+                       per-leaf value summaries use `summarize`.",
+                category: Category::Tools, level: Level::Secondary,
+                flags: show_flags(),
+                kv_params: SESSION_KV,
+        dynamic_options: None,
+        positionals: vec![crate::cli_spec::Positional {
+                    name: "expr",
+                    help: "Optional filter (family-glob or `family{labels}`).",
+                    value: crate::cli_spec::ValueProvider::Custom(crate::completion::metric_family_provider),
+                    kind: crate::cli_spec::PositionalKind::ZeroOrOne,
+                }],
+                subcommands: Vec::new(),
+                handler: Some(Handler::Sync(handle_show)),
+                raw_args: false,
+                completion_override: None,
+            },
+            Command {
+                name: "summarize",
+                help: "Metric families + label dimensions with a value \
+                       summary at each leaf (one pass over the sample \
+                       data); `--list` omits the values.",
                 category: Category::Tools, level: Level::Secondary,
                 flags: list_or_show_flags(),
                 kv_params: SESSION_KV,
@@ -335,7 +370,7 @@ pub fn spec() -> Command {
                     kind: crate::cli_spec::PositionalKind::ZeroOrOne,
                 }],
                 subcommands: Vec::new(),
-                handler: Some(Handler::Sync(handle_show)),
+                handler: Some(Handler::Sync(handle_summarize)),
                 raw_args: false,
                 completion_override: None,
             },
@@ -436,9 +471,25 @@ pub fn spec() -> Command {
 // ── handlers ──────────────────────────────────────────────
 
 fn handle_show(p: ParsedCommand) -> Result<(), String> {
-    // `show` renders the value summary by default; `--list` drops the
-    // values (the former `metrics list` subcommand, now a flag). The
-    // forwarded `--list` flips `show_values` off inside `list()`.
+    // SRD-93 stage 1 — `show` is structure-only: families + label
+    // dimensions from the naming scaffold, never touching
+    // `sample_value`. The former show-with-values behavior lives in
+    // `summarize`; `--values` bridges one release for muscle memory.
+    let values = p.bool("--values");
+    if values {
+        eprintln!(
+            "nbrs metrics: `show --values` is deprecated — \
+             use `nbrs metrics summarize`."
+        );
+    }
+    list_from_parsed(&p, values);
+    Ok(())
+}
+
+fn handle_summarize(p: ParsedCommand) -> Result<(), String> {
+    // Value summaries at each leaf, computed in one pass over the
+    // sample data; `--list` drops the values (forwarded, flips
+    // `show_values` off inside `list()`).
     list_from_parsed(&p, true);
     Ok(())
 }
@@ -606,7 +657,10 @@ pub fn metrics_command(args: &[String]) {
     let rest = args.get(1..).unwrap_or(&[]);
     match sub {
         // `list` is consolidated into `show --list` (names only).
-        Some("show") => list(rest, true),
+        // SRD-93 stage 1: `show` is structure-only; `summarize`
+        // carries the per-leaf value summaries.
+        Some("show") => list(rest, false),
+        Some("summarize") => list(rest, true),
         Some("match") => match_specs(rest),
         Some("groups") => groups_command(rest),
         Some("query") => crate::metricsql_cmd::query(rest),
@@ -628,9 +682,14 @@ fn print_metrics_usage() {
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  nbrs metrics show  [<expr>]  Metric families + label dimensions");
-    eprintln!("                               with a value summary at each leaf.");
-    eprintln!("                               Add --list for names only (no");
-    eprintln!("                               values); --tree for a nested view.");
+    eprintln!("                               (structure only — fast on any db,");
+    eprintln!("                               live or finished). Add --tree for");
+    eprintln!("                               a nested view.");
+    eprintln!("  nbrs metrics summarize [<expr>]");
+    eprintln!("                               Same layout with a value summary");
+    eprintln!("                               at each leaf, computed in one");
+    eprintln!("                               pass over the sample data. Add");
+    eprintln!("                               --list for names only.");
     eprintln!("  nbrs metrics match  <expr>   Flat list of full");
     eprintln!("                               `family{{labels}}` specs that");
     eprintln!("                               match — copy-paste into other");
@@ -797,6 +856,17 @@ fn resolve_db(db_flag: Option<PathBuf>, args: &[String]) -> PathBuf {
         .unwrap_or_else(nbrs_runtime::session::latest_metrics_db)
 }
 
+/// SRD-93 A4 — every `nbrs metrics` subcommand is a read view, so the
+/// db opens READ-ONLY: an RO handle cannot perturb a live session's
+/// WAL, and a typo'd write anywhere downstream fails instead of
+/// mutating the session.
+fn open_metrics_db_ro(db: &Path) -> Result<rusqlite::Connection, rusqlite::Error> {
+    rusqlite::Connection::open_with_flags(
+        db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+}
+
 fn match_specs(args: &[String]) {
     let mut db_path: Option<PathBuf> = None;
     let mut filter_expr: Option<String> = None;
@@ -840,7 +910,7 @@ fn match_specs(args: &[String]) {
         eprintln!("nbrs metrics match: db not found at '{}'", db.display());
         std::process::exit(2);
     }
-    let conn = match rusqlite::Connection::open(&db) {
+    let conn = match open_metrics_db_ro(&db) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("nbrs metrics match: open '{}': {e}", db.display());
@@ -1039,7 +1109,7 @@ fn groups_command(args: &[String]) {
         eprintln!("nbrs metrics groups: db not found at '{}'", db.display());
         std::process::exit(2);
     }
-    let conn = match rusqlite::Connection::open(&db) {
+    let conn = match open_metrics_db_ro(&db) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("nbrs metrics groups: open '{}': {e}", db.display());
@@ -1514,7 +1584,7 @@ fn list(args: &[String], show_values_in: bool) {
         eprintln!("nbrs metrics: db not found at '{}'", db.display());
         std::process::exit(2);
     }
-    let conn = match rusqlite::Connection::open(&db) {
+    let conn = match open_metrics_db_ro(&db) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("nbrs metrics: open '{}': {e}", db.display());
@@ -1557,7 +1627,7 @@ fn list(args: &[String], show_values_in: bool) {
     // Bucket by family then by sorted label tuple. Used by the
     // tree renderer; structured renderers walk the flat list.
     let mut tree: BTreeMap<String, BTreeMap<Vec<(String, String)>, i64>> = BTreeMap::new();
-    let mut flat: Vec<InstanceRow> = Vec::new();
+    let mut kept: Vec<(i64, String, Vec<(String, String)>)> = Vec::new();
     for (id, spec) in &rows {
         let (family, labels) = split_spec(spec);
         if let Some(f) = filter.as_ref()
@@ -1565,13 +1635,31 @@ fn list(args: &[String], show_values_in: bool) {
         let mut sorted = labels.clone();
         sorted.sort();
         tree.entry(family.clone()).or_default().insert(sorted, *id);
-        let values = if show_values {
-            Some(load_value_summary(&conn, *id))
-        } else {
-            None
-        };
-        flat.push(InstanceRow { family, labels, values });
+        kept.push((*id, family, labels));
     }
+
+    // SRD-93 stage 1 — value summaries are computed ONCE, by a single
+    // ordered pass over `sample_value`, and shared by every renderer
+    // (the plain tree renderer used to recompute each leaf with its
+    // own per-instance query storm).
+    let summaries: std::collections::HashMap<i64, ValueSummary> = if show_values {
+        let ids: std::collections::HashSet<i64> =
+            kept.iter().map(|(id, _, _)| *id).collect();
+        load_all_value_summaries(&conn, &ids)
+    } else {
+        Default::default()
+    };
+
+    let mut flat: Vec<InstanceRow> = kept.into_iter()
+        .map(|(id, family, labels)| {
+            let values = if show_values {
+                Some(summaries.get(&id).cloned().unwrap_or_default())
+            } else {
+                None
+            };
+            InstanceRow { family, labels, values }
+        })
+        .collect();
 
     // Natural-order sort the flat list: family by natural compare
     // (so `recall@2.mean` < `recall@10.mean`), then by label
@@ -1619,7 +1707,7 @@ fn list(args: &[String], show_values_in: bool) {
 
     match (format, tree_mode) {
         (Format::Plain, _) => emit(&tofile, format, |w| {
-            render_plain(w, &db, &tree, &rows, &conn, show_values)
+            render_plain(w, &db, &tree, &rows, &summaries, show_values)
         }),
         (Format::Json, false) => emit(&tofile, format, |w| {
             writeln!(w, "{}", render_json(&db, &flat, show_values))
@@ -1691,7 +1779,7 @@ fn render_plain(
     db: &Path,
     tree: &BTreeMap<String, BTreeMap<Vec<(String, String)>, i64>>,
     rows: &[(i64, String)],
-    conn: &rusqlite::Connection,
+    summaries: &std::collections::HashMap<i64, ValueSummary>,
     show_values: bool,
 ) -> std::io::Result<()> {
     writeln!(w, "# {} ({} famil{}, {} instance{})",
@@ -1729,7 +1817,7 @@ fn render_plain(
             .map(|((_, id), labels)| (labels.clone(), *id))
             .collect();
         let dim_tree = build_dim_tree(varying_label_sets);
-        write_dim_tree(w, &dim_tree, "  ", &varying_instances, conn, show_values)?;
+        write_dim_tree(w, &dim_tree, "  ", &varying_instances, summaries, show_values)?;
     }
     Ok(())
 }
@@ -1906,7 +1994,7 @@ fn nest_label_tree(
 /// where `<kind>` is `obs` (summary), `total` (counter) or
 /// `samples` (gauge/scalar) per [`CountKind`]. The five moments
 /// are computed over the value set appropriate to the kind (see
-/// [`load_value_summary`]). Unknown fields render as `?` so the
+/// [`load_all_value_summaries`]). Unknown fields render as `?` so the
 /// format stays positional (a reader can `cut`/`awk` it without a
 /// header).
 fn tree_leaf_summary(v: &ValueSummary) -> String {
@@ -2262,7 +2350,7 @@ fn write_dim_tree(
     node: &DimNode,
     indent: &str,
     instances: &BTreeMap<Vec<(String, String)>, i64>,
-    conn: &rusqlite::Connection,
+    summaries: &std::collections::HashMap<i64, ValueSummary>,
     show_values: bool,
 ) -> std::io::Result<()> {
     // Iterate in natural order: by label key first, then by
@@ -2293,14 +2381,15 @@ fn write_dim_tree(
             && child.children.is_empty() {
             let id = instances.get(ls).copied().unwrap_or(-1);
             let summary = if show_values {
-                format!("  {}", value_summary_string(conn, id))
+                let vs = summaries.get(&id).cloned().unwrap_or_default();
+                format!("  {}", value_summary_string(&vs))
             } else {
                 String::new()
             };
             writeln!(w, "{indent}{connector}{k}={v}{summary}")?;
         } else {
             writeln!(w, "{indent}{connector}{k}={v}")?;
-            write_dim_tree(w, child, &next_indent, instances, conn, show_values)?;
+            write_dim_tree(w, child, &next_indent, instances, summaries, show_values)?;
         }
     }
     Ok(())
@@ -2308,6 +2397,22 @@ fn write_dim_tree(
 
 /// Which statistic semantics a leaf's [`ValueSummary`] should
 /// carry, decided by the metric family's declared type.
+///
+/// The five moments (`min/mean/max/median/stddev`) aren't quantiles —
+/// only the median is — so they're well-defined over any scalar
+/// series:
+///
+/// - **summary** → stored reservoir moments from the most-observed
+///   window (within-window observation distribution); `count` is
+///   the cumulative observation count (`obs`).
+/// - **gauge / scalar** → moments over the *series of readings*
+///   (the `mean` column across windows); `count` is the number of
+///   readings (`samples`).
+/// - **counter / histogram / info** → moments over the *per-window
+///   increments* of the cumulative `count` column (throughput-
+///   per-window distribution); `count` is the cumulative total
+///   (`total`).
+#[derive(Debug, Clone, Copy)]
 enum LeafKind {
     /// `summary` — the stored HDR-reservoir moments describe the
     /// observation distribution within a window.
@@ -2321,96 +2426,192 @@ enum LeafKind {
     Counter,
 }
 
-/// Build the leaf [`ValueSummary`] for an instance, choosing the
-/// statistic semantics by metric kind. The five moments
-/// (`min/mean/max/median/stddev`) aren't quantiles — only the
-/// median is — so they're well-defined over any scalar series;
-/// earlier this read the reservoir columns unconditionally, so
-/// every non-summary leaf rendered `(?,?,?,?,?)`.
-///
-/// - **summary** → stored reservoir moments from the most-observed
-///   window (within-window observation distribution); `count` is
-///   the cumulative observation count (`obs`).
-/// - **gauge / scalar** → moments over the *series of readings*
-///   (the `mean` column across windows); `count` is the number of
-///   readings (`samples`).
-/// - **counter / histogram / info** → moments over the *per-window
-///   increments* of the cumulative `count` column (throughput-
-///   per-window distribution); `count` is the cumulative total
-///   (`total`).
-fn load_value_summary(conn: &rusqlite::Connection, instance_id: i64) -> ValueSummary {
-    if instance_id < 0 { return ValueSummary::default(); }
-    let (ts_min_ms, ts_max_ms) = load_timespan(conn, instance_id);
-    match family_kind(conn, instance_id) {
-        LeafKind::Distribution =>
-            load_reservoir_summary(conn, instance_id, ts_min_ms, ts_max_ms),
-        LeafKind::Gauge => {
-            let xs = load_scalar_series(conn, instance_id, "mean");
-            let n = Some(xs.len() as i64);
-            summary_from_values(xs, n, CountKind::Samples, ts_min_ms, ts_max_ms)
-        }
-        LeafKind::Counter => {
-            let cum = load_scalar_series(conn, instance_id, "count");
-            let total = if cum.is_empty() {
-                None
-            } else {
-                Some(cum.iter().cloned().fold(f64::NEG_INFINITY, f64::max) as i64)
-            };
-            let deltas = window_increments(&cum);
-            summary_from_values(deltas, total, CountKind::Total, ts_min_ms, ts_max_ms)
+impl LeafKind {
+    /// Map a `metric_family.type` string to the leaf statistic kind.
+    fn from_family_type(ty: &str) -> Self {
+        match ty {
+            "summary" => LeafKind::Distribution,
+            "counter" | "histogram" | "gaugehistogram" | "info" => LeafKind::Counter,
+            // gauge, stateset, unknown, and anything else: each
+            // row's `mean` is one scalar reading.
+            _ => LeafKind::Gauge,
         }
     }
 }
 
-/// Map an instance's family `type` to the leaf statistic kind.
-fn family_kind(conn: &rusqlite::Connection, instance_id: i64) -> LeafKind {
-    let ty: String = conn.query_row(
-        "SELECT mf.type FROM metric_instance mi \
-         JOIN metric_family mf ON mi.family_id = mf.id \
-         WHERE mi.id = ?1",
-        [instance_id],
-        |r| r.get(0),
-    ).unwrap_or_default();
-    match ty.as_str() {
-        "summary" => LeafKind::Distribution,
-        "counter" | "histogram" | "gaugehistogram" | "info" => LeafKind::Counter,
-        // gauge, stateset, unknown, and anything else: each row's
-        // `mean` is one scalar reading.
-        _ => LeafKind::Gauge,
+/// SRD-93 stage 1 — every requested instance's [`ValueSummary`] from
+/// ONE ordered pass over `sample_value` (O(table) total, index-free —
+/// a live session's db has its read indexes deferred to shutdown),
+/// replacing the per-instance query storm that scaled
+/// O(instances × table) and produced the 76-minute `metrics show`.
+/// Rows stream grouped by `instance_id`; each group finalizes through
+/// the same per-kind statistics as the old per-instance path.
+/// Instances in `ids` with no sample rows get the kind-appropriate
+/// empty summary.
+fn load_all_value_summaries(
+    conn: &rusqlite::Connection,
+    ids: &std::collections::HashSet<i64>,
+) -> std::collections::HashMap<i64, ValueSummary> {
+    use std::collections::HashMap;
+
+    // Family kind per instance — one batched join, not one query
+    // per instance.
+    let mut kinds: HashMap<i64, LeafKind> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT mi.id, mf.type FROM metric_instance mi \
+         JOIN metric_family mf ON mi.family_id = mf.id")
+        && let Ok(it) = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })
+    {
+        for (id, ty) in it.flatten() {
+            kinds.insert(id, LeafKind::from_family_type(&ty));
+        }
     }
-}
 
-/// `(min, max)` sample timestamps for an instance — the span its
-/// data covers.
-fn load_timespan(conn: &rusqlite::Connection, instance_id: i64)
-    -> (Option<i64>, Option<i64>)
-{
-    conn.query_row(
-        "SELECT MIN(timestamp_ms), MAX(timestamp_ms) \
-         FROM sample_value WHERE instance_id = ?1",
-        [instance_id],
-        |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?)),
-    ).unwrap_or((None, None))
-}
+    /// Streaming per-group state: raw material for every kind, so
+    /// the row loop stays branch-light and finalize picks by kind.
+    #[derive(Default)]
+    struct Accum {
+        ts_min: Option<i64>,
+        ts_max: Option<i64>,
+        /// Gauge readings — the `mean` column per row, in ts order.
+        readings: Vec<f64>,
+        /// Cumulative counter values — the `count` column per row.
+        cum: Vec<f64>,
+        /// Peak-`count` reservoir row (summary families): the stored
+        /// moments from the most-observed window.
+        peak: Option<(i64, ValueSummary)>,
+    }
 
-/// Time-ordered, non-null values of one scalar column for an
-/// instance. `col` is a fixed internal column name (never user
-/// input), so direct interpolation is safe.
-fn load_scalar_series(conn: &rusqlite::Connection, instance_id: i64, col: &str)
-    -> Vec<f64>
-{
-    let sql = format!(
-        "SELECT {col} FROM sample_value \
-         WHERE instance_id = ?1 AND {col} IS NOT NULL \
-         ORDER BY timestamp_ms"
-    );
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
+    fn finalize(kind: LeafKind, acc: Accum) -> ValueSummary {
+        let (ts_min_ms, ts_max_ms) = (acc.ts_min, acc.ts_max);
+        match kind {
+            LeafKind::Distribution => match acc.peak {
+                Some((_, mut v)) => {
+                    v.ts_min_ms = ts_min_ms;
+                    v.ts_max_ms = ts_max_ms;
+                    v
+                }
+                None => ValueSummary {
+                    count_kind: CountKind::Obs, ts_min_ms, ts_max_ms,
+                    ..Default::default()
+                },
+            },
+            LeafKind::Gauge => {
+                let n = Some(acc.readings.len() as i64);
+                summary_from_values(
+                    acc.readings, n, CountKind::Samples, ts_min_ms, ts_max_ms)
+            }
+            LeafKind::Counter => {
+                let total = if acc.cum.is_empty() {
+                    None
+                } else {
+                    Some(acc.cum.iter().cloned()
+                        .fold(f64::NEG_INFINITY, f64::max) as i64)
+                };
+                let deltas = window_increments(&acc.cum);
+                summary_from_values(
+                    deltas, total, CountKind::Total, ts_min_ms, ts_max_ms)
+            }
+        }
+    }
+
+    let mut out: HashMap<i64, ValueSummary> = HashMap::new();
+    // Backfill: any requested instance the scan produced no summary
+    // for (no sample rows, or a prepare/query error) gets the
+    // kind-appropriate empty summary — the old per-instance path's
+    // output for a data-less instance.
+    let backfill = |out: &mut HashMap<i64, ValueSummary>| {
+        for &id in ids {
+            if !out.contains_key(&id) {
+                let kind = kinds.get(&id).copied().unwrap_or(LeafKind::Gauge);
+                out.insert(id, finalize(kind, Accum::default()));
+            }
+        }
     };
-    stmt.query_map([instance_id], |r| r.get::<_, f64>(0))
-        .map(|it| it.filter_map(Result::ok).collect())
-        .unwrap_or_default()
+
+    let mut stmt = match conn.prepare(
+        "SELECT instance_id, timestamp_ms, count, mean, \
+                p50, p99, min, max, stddev \
+         FROM sample_value ORDER BY instance_id, timestamp_ms")
+    {
+        Ok(s) => s,
+        Err(_) => {
+            backfill(&mut out);
+            return out;
+        }
+    };
+    #[allow(clippy::type_complexity)]
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,            // instance_id
+            r.get::<_, i64>(1)?,            // timestamp_ms
+            r.get::<_, Option<i64>>(2)?,    // count
+            r.get::<_, Option<f64>>(3)?,    // mean
+            r.get::<_, Option<f64>>(4)?,    // p50
+            r.get::<_, Option<f64>>(5)?,    // p99
+            r.get::<_, Option<f64>>(6)?,    // min
+            r.get::<_, Option<f64>>(7)?,    // max
+            r.get::<_, Option<f64>>(8)?,    // stddev
+        ))
+    });
+
+    let mut cur_id: Option<i64> = None;
+    let mut cur_kind = LeafKind::Gauge;
+    let mut cur_wanted = false;
+    let mut acc = Accum::default();
+    if let Ok(rows) = rows {
+        for (id, ts, count, mean, p50, p99, min, max, stddev) in rows.flatten() {
+            if cur_id != Some(id) {
+                if let Some(pid) = cur_id
+                    && cur_wanted
+                {
+                    out.insert(pid, finalize(cur_kind, std::mem::take(&mut acc)));
+                } else {
+                    acc = Accum::default();
+                }
+                cur_id = Some(id);
+                cur_kind = kinds.get(&id).copied().unwrap_or(LeafKind::Gauge);
+                cur_wanted = ids.contains(&id);
+            }
+            if !cur_wanted {
+                continue;
+            }
+            acc.ts_min = Some(acc.ts_min.map_or(ts, |t| t.min(ts)));
+            acc.ts_max = Some(acc.ts_max.map_or(ts, |t| t.max(ts)));
+            match cur_kind {
+                LeafKind::Gauge => {
+                    if let Some(m) = mean { acc.readings.push(m); }
+                }
+                LeafKind::Counter => {
+                    if let Some(c) = count { acc.cum.push(c as f64); }
+                }
+                LeafKind::Distribution => {
+                    // Mirror `ORDER BY count DESC LIMIT 1`: highest
+                    // non-null count wins; NULL counts rank lowest.
+                    let rank = count.unwrap_or(i64::MIN);
+                    let better = acc.peak.as_ref()
+                        .map_or(true, |(best, _)| rank > *best);
+                    if better {
+                        acc.peak = Some((rank, ValueSummary {
+                            count, count_kind: CountKind::Obs,
+                            mean, p50, p99, min, max, stddev,
+                            ts_min_ms: None, ts_max_ms: None,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(pid) = cur_id
+        && cur_wanted
+    {
+        out.insert(pid, finalize(cur_kind, acc));
+    }
+
+    backfill(&mut out);
+    out
 }
 
 /// Per-window increments of a cumulative series, each clamped at
@@ -2457,47 +2658,8 @@ fn summary_from_values(
     }
 }
 
-/// Distribution summary for a `summary` family: the stored HDR
-/// reservoir moments from the most-observed window (peak `count`).
-fn load_reservoir_summary(
-    conn: &rusqlite::Connection,
-    instance_id: i64,
-    ts_min_ms: Option<i64>,
-    ts_max_ms: Option<i64>,
-) -> ValueSummary {
-    #[allow(clippy::type_complexity)]
-    let row: Result<(
-        Option<f64>, Option<f64>, Option<f64>, Option<f64>,
-        Option<f64>, Option<i64>, Option<f64>,
-    ), _> = conn.query_row(
-        "SELECT mean, p50, p99, min, max, count, stddev \
-         FROM sample_value WHERE instance_id = ?1 \
-         ORDER BY count DESC LIMIT 1",
-        [instance_id],
-        |r| Ok((
-            r.get::<_, Option<f64>>(0)?,
-            r.get::<_, Option<f64>>(1)?,
-            r.get::<_, Option<f64>>(2)?,
-            r.get::<_, Option<f64>>(3)?,
-            r.get::<_, Option<f64>>(4)?,
-            r.get::<_, Option<i64>>(5)?,
-            r.get::<_, Option<f64>>(6)?,
-        )),
-    );
-    match row {
-        Ok((mean, p50, p99, min, max, count, stddev)) => ValueSummary {
-            count, count_kind: CountKind::Obs,
-            mean, p50, p99, min, max, stddev,
-            ts_min_ms, ts_max_ms,
-        },
-        Err(_) => ValueSummary {
-            count_kind: CountKind::Obs, ts_min_ms, ts_max_ms, ..Default::default()
-        },
-    }
-}
-
-fn value_summary_string(conn: &rusqlite::Connection, instance_id: i64) -> String {
-    let v = load_value_summary(conn, instance_id);
+/// Render one leaf's summary inline — `(total=…, mean=…, …)`.
+fn value_summary_string(v: &ValueSummary) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(c) = v.count { parts.push(format!("{}={c}", v.count_kind.word())); }
     if let Some(m) = v.mean { parts.push(format!("mean={m:.4}")); }
@@ -2821,5 +2983,73 @@ mod tests {
         assert_eq!(CountKind::Samples.word(), "samples");
         assert_eq!(CountKind::Total.word(), "total");
         assert_eq!(CountKind::Obs.word(), "obs");
+    }
+
+    /// SRD-93 stage 1 — the one-pass loader reproduces the retired
+    /// per-instance path's semantics for every leaf kind: gauge
+    /// moments over the readings series, counter moments over
+    /// per-window increments with a cumulative total, summary
+    /// moments from the peak-count reservoir row, and an instance
+    /// with no samples gets the kind-appropriate empty summary.
+    #[test]
+    fn one_pass_summaries_match_per_kind_semantics() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE metric_family (
+                 id INTEGER PRIMARY KEY, name TEXT, type TEXT);
+             CREATE TABLE metric_instance (
+                 id INTEGER PRIMARY KEY, family_id INTEGER, spec TEXT);
+             CREATE TABLE sample_value (
+                 instance_id INTEGER, timestamp_ms INTEGER,
+                 count INTEGER, mean REAL, p50 REAL, p99 REAL,
+                 min REAL, max REAL, stddev REAL);
+             INSERT INTO metric_family VALUES
+                 (1,'g','gauge'), (2,'c','counter'), (3,'s','summary');
+             INSERT INTO metric_instance VALUES
+                 (10,1,'g{}'), (20,2,'c{}'), (30,3,'s{}'), (40,1,'g2{}');
+             -- gauge readings 1,3,5 (mean column)
+             INSERT INTO sample_value VALUES
+                 (10, 1000, NULL, 1.0, NULL,NULL,NULL,NULL,NULL),
+                 (10, 2000, NULL, 3.0, NULL,NULL,NULL,NULL,NULL),
+                 (10, 3000, NULL, 5.0, NULL,NULL,NULL,NULL,NULL);
+             -- counter cumulative 5,15,15 → increments 5,10,0
+             INSERT INTO sample_value VALUES
+                 (20, 1000, 5,  NULL, NULL,NULL,NULL,NULL,NULL),
+                 (20, 2000, 15, NULL, NULL,NULL,NULL,NULL,NULL),
+                 (20, 3000, 15, NULL, NULL,NULL,NULL,NULL,NULL);
+             -- summary: peak-count row (count=90) carries the moments
+             INSERT INTO sample_value VALUES
+                 (30, 1000, 40, 1.0, 1.5, 9.0, 0.5, 10.0, 0.1),
+                 (30, 2000, 90, 2.0, 2.5, 9.9, 0.4, 11.0, 0.2);",
+        ).unwrap();
+
+        let ids: std::collections::HashSet<i64> =
+            [10, 20, 30, 40].into_iter().collect();
+        let out = load_all_value_summaries(&conn, &ids);
+
+        let g = &out[&10];
+        assert_eq!(g.count_kind, CountKind::Samples);
+        assert_eq!(g.count, Some(3));
+        assert_eq!(g.mean, Some(3.0));
+        assert_eq!((g.min, g.max), (Some(1.0), Some(5.0)));
+        assert_eq!((g.ts_min_ms, g.ts_max_ms), (Some(1000), Some(3000)));
+
+        let c = &out[&20];
+        assert_eq!(c.count_kind, CountKind::Total);
+        assert_eq!(c.count, Some(15), "counter headline is the cumulative total");
+        assert_eq!(c.mean, Some(5.0), "moments are over increments 5,10,0");
+        assert_eq!((c.min, c.max), (Some(0.0), Some(10.0)));
+
+        let s = &out[&30];
+        assert_eq!(s.count_kind, CountKind::Obs);
+        assert_eq!(s.count, Some(90), "peak-count window wins");
+        assert_eq!(s.p99, Some(9.9));
+        assert_eq!((s.ts_min_ms, s.ts_max_ms), (Some(1000), Some(2000)),
+            "timespan covers the whole series, not just the peak row");
+
+        let empty = &out[&40];
+        assert_eq!(empty.count_kind, CountKind::Samples);
+        assert_eq!(empty.count, Some(0), "gauge with no rows reads 0 samples");
+        assert_eq!(empty.mean, None);
     }
 }
