@@ -305,11 +305,34 @@ params:
   #   pending_weight — how much heavier a QUEUED compaction weighs
   #                    than a running one (queue growth = falling
   #                    behind; 2.0 from the studies' drain margins).
-  # All three are f64-literal text (note the decimals) because params
-  # interpolate into polydat source as literal tokens.
+  # All control points are f64-literal text (note the decimals)
+  # because params reach polydat as typed literals.
   backoff_half: 1.25
   backoff_power: 1.5
   pending_weight: 2.0
+  # ── flush term (added from the 2026-08-04 calibration run,
+  #    keepsessions/stcs_adaptive_20260804_005327) ──
+  # The 40M calibration confirmed the compaction control points at
+  # their designed values — w(A=1)=0.583 held 75.8% of the run,
+  # w(A=2)=0.331 for 4.7%, compaction pending NEVER >0, probe ANN
+  # medians 7.6/17.6/8.6 ms at A=0/1/2 (the A=2 inversion: backing
+  # ingest off protects reads) — and exposed the one blind spot:
+  # FLUSH backlog. Measured ingest capacity by MemtableFlushWriter
+  # active count, in compaction-free windows:
+  #     FA=0  12,004 rows/s      FA=1  12,004 rows/s  (free)
+  #     FA=2..3  transient passthrough (n=2/1)
+  #     FA=4  0 rows/s (n=32)   — the memtable-cap CLIFF
+  # One active flush is the normal pipeline and costs nothing
+  # (flush_grace = 1.0, empirically exact). Beyond it there is no
+  # measured gradient — only the cliff — so the linear ramp is a
+  # safety interpolation whose job is to taper HARD before FA can
+  # reach 4: pressure += flush_weight × max(0, FA − flush_grace).
+  # flush_weight defaults to 2.0 by the same principle as
+  # pending_weight: work the pipeline cannot start counts double.
+  # With the defaults: FA=2 → w 0.33, FA=3 → w 0.10, FA=4 → w
+  # 0.05 ≈ floor; combined A=1+FA=2 → pressure 3 → w 0.21.
+  flush_weight: 2.0
+  flush_grace: 1.0
   # base_rows_rate ≈ 80% of the measured unthrottled capacity —
   # nominal utilization with steady headroom, instead of the
   # saturation point where read latency sat at ~766ms. floor keeps a
@@ -949,7 +972,9 @@ phases:
       # so the target needs no stride conversion. Evaluated per
       # cycle, DISPATCHED on change only (control_set's
       # committed-gauge fixpoint elision).
-      pressure := to_f64(active_compactions_live) + pending_weight * to_f64(pending_compactions_live)
+      flush_over := to_f64(flush_active_live) - flush_grace
+      flush_term := select_f64(flush_over < 0.0, 0.0, flush_over) * flush_weight
+      pressure := to_f64(active_compactions_live) + pending_weight * to_f64(pending_compactions_live) + flush_term
       load_weight := 1.0 / (1.0 + pow(pressure / backoff_half, backoff_power))
       # f64 clamps via select_f64 (the stdlib `max` is u64-only).
       weighted_rows := base_rows_rate * load_weight
@@ -977,6 +1002,7 @@ phases:
         # nodes evaluate when pulled — the metric is the pull; the
         # elision keeps the pull cheap between wire changes).
         metrics:
+          servo_flush_term: { kind: gauge, value: flush_term }
           servo_pressure:   { kind: gauge, value: pressure }
           load_weight:      { kind: gauge, value: load_weight }
           target_rows_rate: { kind: gauge, value: target_rows_rate }
