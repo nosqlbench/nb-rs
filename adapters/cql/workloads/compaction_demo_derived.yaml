@@ -401,6 +401,7 @@ bindings: |
   shared live_sstables:             u64 := 0
   shared active_compactions_live:   u64 := 0
   shared pending_compactions_live:  u64 := 0
+  shared flush_active_live:         u64 := 0
   shared flush_pending_live:        u64 := 0
   shared flush_blocked_live:        u64 := 0
 
@@ -856,11 +857,17 @@ phases:
           # an unreadable pool reads as pressure 0, never a stale value.
           active_compactions_live:  ":max(active_tasks where name='CompactionExecutor')"
           pending_compactions_live: ":max(pending_tasks where name='CompactionExecutor')"
+          # ACTIVE is the flush signal that matters: observed live
+          # 2026-08-04, a single active MemtableFlushWriter task (the
+          # serial SAI graph serialization) stalled ingest for
+          # minutes while pending/blocked both read 0.
+          flush_active_live:        ":max(active_tasks where name='MemtableFlushWriter')"
           flush_pending_live:       ":max(pending_tasks where name='MemtableFlushWriter')"
           flush_blocked_live:       ":max(blocked_tasks where name='MemtableFlushWriter')"
         metrics:
           compaction_pool_active:  { kind: gauge, value: active_compactions_live }
           compaction_pool_pending: { kind: gauge, value: pending_compactions_live }
+          flush_pool_active:       { kind: gauge, value: flush_active_live }
           flush_pool_pending:      { kind: gauge, value: flush_pending_live }
           flush_pool_blocked:      { kind: gauge, value: flush_blocked_live }
       read_live_sstables:
