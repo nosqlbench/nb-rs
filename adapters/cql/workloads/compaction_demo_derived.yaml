@@ -340,10 +340,12 @@ params:
   # alive and recovery is observable).
   base_rows_rate: 12000.0
   floor_rows_rate: 300.0
-  # compaction_watch daemon poll rate (polls/s; 0.5 = every 2s — the
-  # servo reacts within ~2 polls, well inside STCS's minutes-scale
-  # compaction cadence).
-  compaction_watch_rate: 0.5
+  # (compaction_watch's poll rate is a LITERAL `rate: 0.5` on the
+  # phase, not a param: the `rate:` field does not interpolate, and
+  # an unparseable rate is silently IGNORED — the interpolated form
+  # ran the watch unthrottled at 268-504 polls/s in every run
+  # through 2026-08-04, ~500-1000 parasitic virtual-table queries/s.
+  # Measured in keepsessions/stcs_adaptive_20260804_005327.)
   # Adaptive sweep shape: start straight at the 10M-row decade tiers
   # (skip 100k/1m — this configuration studies compaction under
   # sustained bulk ingest, and the small tiers stay memtable-resident)
@@ -855,9 +857,12 @@ phases:
     concurrency: 1
     tries: 1
     errors: ".*:warn,counter"
-    # polls/s (0.5 = every 2s). Numeric-parsing param, same contract
-    # as concurrent_query's `rate:`.
-    rate: "{compaction_watch_rate}"
+    # LITERAL numeric — the `rate:` field does not interpolate, and
+    # an unparseable rate is IGNORED (the daemon then polls at server
+    # speed: observed 268-504/s before this was a literal). 0.5 =
+    # one poll per 2s; the servo reacts within ~2 polls, well inside
+    # STCS's minutes-scale compaction cadence.
+    rate: 0.5
     bindings: |
       # Open-extent clock cursor, cut by the daemon stop when the
       # tier's foreground completes (same pattern as concurrent_query).
