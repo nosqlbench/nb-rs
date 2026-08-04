@@ -110,3 +110,43 @@ visual contract agree.
   triad; rows ≥ 1 get the blank divider margin, except cells explicitly
   attached (the ✓ block's `final:` cell on the counters row). A multi-row
   entry never repeats the triad.
+
+## R6 — tier-owned bands (2026-08-04 amendment; SRD-93-adjacent)
+
+**The ownership rule.** A readout row belongs to the tier that owns
+its signal, exactly as a metric instance belongs to its owning
+dimensional cell. A session-tier signal (host utilization from the
+sysmon sampler, and any future ambient measure) renders **once per
+frame** in the **session band** — it is never embedded into phase
+blocks. Before this amendment the fold pushed the sysmon strip into
+*every* active phase's block ("shown per phase"), so N concurrent
+phases rendered N copies of one session-tier sample per frame, and
+the copies leaked into the persisted status record. That was the
+presentation-layer version of denormalization without a
+normalization model: the metrics side stores sysmon exactly once at
+the session root; the fold re-duplicated it because a flat per-leaf
+block was the only surface it had.
+
+**The session band.** One row group that LEADS the folded status
+(above the first phase block): body = the named-subject detail line,
+gutter = the glyph+meter strip (`RowGutter::Sysmon`). Phase blocks
+below it carry only what they own. The band is the ancestor surface
+phase views inherit by *position*, not by value — the fold-level
+analog of `effective_labels` vs `labels` and of scope synthesis's
+`inherited_outputs` ("defined here" vs "visible here through
+inheritance").
+
+**Phase-terminal ambient imprint (the historic view).** The
+requirement "the sysmon imprint persists with each phase's terminal
+state" is a **join at the lifecycle boundary, not a copy**:
+`phase_outcomes.ended_at_nanos` timestamps every phase's terminal
+instant, and the session-tier series sits in metrics.db on the
+SRD-93 session clock — "sysmon as-of phase end" is an exact,
+derivable read today with zero new writes (join the phase-outcome
+timestamp against the sysmon gauge series; the SRD-93 epoch makes
+the two clocks commensurable). If join-free reads are ever wanted,
+the sanctioned materialization is a once-per-phase-outcome stamp at
+the phase-end event — the `instance_scope_event` pattern,
+O(lifecycle event) — and NEVER a per-frame or per-phase-block copy.
+Deferred until a consumer needs it; the derivable join is the
+contract.

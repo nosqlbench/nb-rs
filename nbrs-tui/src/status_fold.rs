@@ -107,6 +107,8 @@ pub enum RowGutter {
     /// Session-level host-utilization strip (sysmon): one `(glyph, frac)`
     /// per item, rendered as a single-cell symbol + a two-cell braille
     /// meter, colored by utilization. Items arrive in display order.
+    /// SRD-92 R6: rendered ONCE per frame as the SESSION BAND leading
+    /// the fold — never embedded into phase blocks.
     Sysmon { items: Vec<(char, f64)> },
 }
 
@@ -176,6 +178,16 @@ pub fn render_active_status_with_gutters(
     let mut lines: Vec<String> = Vec::new();
     let mut gutters: Vec<RowGutter> = Vec::new();
     let session_now = snap.elapsed_secs();
+    // SRD-92 R6 — the SESSION BAND leads the fold: session-tier
+    // signals render once per frame here, above every phase block,
+    // and phase blocks carry only what they own. (Sysmon used to be
+    // embedded per phase — N active phases rendered N copies of one
+    // session-tier sample, and the copies leaked into the persisted
+    // status record.)
+    if let Some(sm) = &snap.sysmon {
+        lines.push(sysmon_detail_line(sm));
+        gutters.push(RowGutter::Sysmon { items: sysmon_items(sm) });
+    }
     for p in active_phases_ordered(snap) {
         if let Some((status, chips)) = render_phase_status_parts(p, session_now) {
             let block: Vec<&str> = status.split('\n').collect();
@@ -191,13 +203,6 @@ pub fn render_active_status_with_gutters(
                     RowRole::Standard => ctx_gutter.clone(),
                     RowRole::KeyMetrics => metric_cell.clone(),
                 });
-            }
-            // Session-level host utilization, shown per phase while the
-            // sysmon sampler runs: the gutter carries the glyph+meter strip,
-            // the body carries the latest numbers with their subjects named.
-            if let Some(sm) = &snap.sysmon {
-                lines.push(sysmon_detail_line(sm));
-                gutters.push(RowGutter::Sysmon { items: sysmon_items(sm) });
             }
             for (leaf, cell) in render_op_leaves(snap, p) {
                 lines.push(leaf);
@@ -654,11 +659,13 @@ mod tests {
         );
     }
 
-    /// With a sysmon sample present, EVERY phase block grows one detail row
-    /// whose gutter is the utilization strip — and rows/gutters stay index-
-    /// aligned, which is the invariant the sink's zip depends on.
+    /// SRD-92 R6 — with a sysmon sample present, the utilization strip
+    /// renders EXACTLY ONCE, as the session band LEADING the fold,
+    /// regardless of how many phases are active — a session-tier signal
+    /// is never embedded per phase block. Rows/gutters stay index-
+    /// aligned, the invariant the sink's zip depends on.
     #[test]
-    fn sysmon_adds_one_aligned_detail_row_per_phase() {
+    fn sysmon_renders_once_as_the_leading_session_band() {
         let mut with = state_with(vec![
             literal_phase("a", Some(1), Some("A")),
             literal_phase("b", Some(2), Some("B")),
@@ -683,12 +690,14 @@ mod tests {
             .filter(|(_, g)| matches!(g, RowGutter::Sysmon { .. }))
             .map(|(i, _)| i)
             .collect();
-        assert_eq!(strips.len(), 2, "one strip row per phase block");
-        for i in strips {
-            let body = lines[i];
-            assert!(body.contains("nvme1n1") && body.contains("max c7 89%"),
-                "the body names the subjects: {body:?}");
-        }
+        assert_eq!(strips, vec![0],
+            "one session band, leading the fold — never per phase");
+        let body = lines[0];
+        assert!(body.contains("nvme1n1") && body.contains("max c7 89%"),
+            "the band body names the subjects: {body:?}");
+        // The band is additive: exactly one row over the baseline.
+        assert_eq!(lines.len(), base_lines.split('\n').count() + 1,
+            "two active phases add exactly ONE band row, not two");
     }
 
     /// The edification contract: every glyph in the gutter strip appears in
