@@ -584,10 +584,15 @@ per rung by construction.
    exit 143. Two recorded deltas from the spec text: (a) the
    parked-op e2e parks *ops*, not tokio workers — the true
    wedged-runtime reproduction needs a blocking-stub harness,
-   deferred; (b) SIGHUP is consumed + logged and the run survives,
-   but the TUI console-loss teardown closure
-   (`set_console_loss_hook`) is not yet installed by the TUI —
-   hook infrastructure only. Also amended en route: a
+   deferred; (b) RESOLVED 2026-08-04: the TUI console-loss
+   teardown is wired — `SinkSupervisor::spawn` installs
+   `set_console_loss_hook`, and on SIGHUP the supervisor demotes to
+   headless (permanent terminal-write suppression, sink teardown,
+   raw-mode restore) while the run continues. Found the hard way:
+   PTY test harnesses kill children via SIGHUP (portable-pty), and
+   an M7-surviving run that kept rendering to the dead pty
+   deadlocked the harness — the demote is what makes SIGHUP
+   survival compatible with anything that owns the terminal. Also amended en route: a
    ladder-driven interrupt now stamps `executions.disposition` on
    its way out (`close_execution_row` on the walk-error path,
    `nbrs-runtime/src/runner.rs`) — previously ANY interrupt left

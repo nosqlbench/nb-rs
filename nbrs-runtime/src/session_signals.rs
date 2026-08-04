@@ -665,14 +665,18 @@ pub fn spawn_signal_dispatcher() {
                         std::process::exit(code);
                     }
                     SignalAction::ConsoleLoss => {
+                        // Hook FIRST: it suppresses terminal-bound
+                        // writes (the terminal is gone — a subsequent
+                        // stderr write could fail hard), so the diag
+                        // below reaches only the file sinks.
+                        if let Some(hook) = CONSOLE_LOSS_HOOK.get() {
+                            hook();
+                        }
                         crate::diag!(
                             crate::observer::LogLevel::Warn,
                             "session: SIGHUP — controlling terminal lost; \
                              continuing headless (the run is unaffected)."
                         );
-                        if let Some(hook) = CONSOLE_LOSS_HOOK.get() {
-                            hook();
-                        }
                     }
                     SignalAction::DiagDump => {
                         crate::diag!(

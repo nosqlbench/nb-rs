@@ -75,6 +75,10 @@ impl SinkSupervisor {
         state: RunStateHandle,
         runtime: Option<tokio::runtime::Handle>,
     ) -> Self {
+        // SRD-93 M7 — arm the console-loss demote before any sink
+        // touches the terminal, so a SIGHUP at any point in the
+        // supervised lifetime lands on the flag the loop polls.
+        install_console_loss_hook();
         let (done_tx, done_rx) = mpsc::channel::<()>();
         let join = std::thread::Builder::new()
             .name("sink-supervisor".into())
@@ -117,6 +121,29 @@ enum ActiveSink {
         sink_handle: Box<dyn SinkHandle>,
         sync: TuiSinkSync,
     },
+}
+
+/// SRD-93 M7 — set by the console-loss hook (SIGHUP received by the
+/// signal dispatcher: the controlling pty/ssh is GONE). The
+/// supervisor polls it each tick and demotes to headless: the run
+/// continues, only the display dies. Process-global and one-way,
+/// like the console itself.
+static CONSOLE_LOST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Install the M7 console-loss hook. Idempotent (first install
+/// wins in `session_signals`); called at supervisor spawn so every
+/// `tui=terminal` run demotes cleanly instead of rendering to a
+/// dead terminal. The hook runs on the signal-dispatch thread —
+/// one relaxed store, nothing blocking.
+pub fn install_console_loss_hook() {
+    nbrs_runtime::session_signals::set_console_loss_hook(Box::new(|| {
+        CONSOLE_LOST.store(true, std::sync::atomic::Ordering::Relaxed);
+    }));
+}
+
+fn console_lost() -> bool {
+    CONSOLE_LOST.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn run_supervision(
@@ -171,6 +198,29 @@ fn run_supervision(
         match done_rx.try_recv() {
             Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
             Err(mpsc::TryRecvError::Empty) => {}
+        }
+
+        // SRD-93 M7 — console lost (SIGHUP): the pty/ssh is gone and
+        // is never coming back. Demote to headless: permanently
+        // suppress every terminal-bound write (logs continue through
+        // the session.log sink), tear the active sink down
+        // best-effort, restore the (dead) terminal's modes for
+        // hygiene, and hold until the RUNNER — which is unaffected —
+        // finishes. Before this seam existed, a pty-spawned run
+        // survived SIGHUP per the M7 contract but kept rendering to
+        // the dead terminal; the PTY test harnesses then deadlocked
+        // behind a child that never exited (observed 2026-08-04:
+        // 39-minute orphaned test runs at 100% CPU).
+        if console_lost() {
+            sink_active_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            inline_suppress.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = crossterm::terminal::disable_raw_mode();
+            match active {
+                ActiveSink::Terminal { sink_handle, .. } => sink_handle.shutdown(),
+                ActiveSink::Tui { sink_handle, .. } => sink_handle.shutdown(),
+            }
+            wait_for_done(&done_rx);
+            return;
         }
 
         // Per-state handling. Each branch may swap `active`
