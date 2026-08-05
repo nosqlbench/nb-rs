@@ -105,6 +105,46 @@ pub fn average_precision(relevant: &[i64], actual: &[i64]) -> f64 {
     }
 }
 
+/// NDCG@k — normalized discounted cumulative gain, **standard form**:
+/// gain is positioned by the item's RESULT rank, with binary relevance
+/// (membership in `relevant`).
+///
+/// `actual` must be in result order (not sorted). Each item of
+/// `actual` that appears in `relevant` contributes `1/log2(i+2)` at
+/// its own rank `i` — first occurrence only, so duplicate ids in a
+/// result cannot inflate the score past 1.0. The ideal DCG places all
+/// `|relevant|` items at the top ranks: `Σ_{i<|relevant|} 1/log2(i+2)`.
+///
+/// Composition with the k-recall@r window (the validation layer
+/// truncates `relevant` to k and `actual` to r ≥ k): the gain sum
+/// runs over the full retrieved window against the k-truncated ground
+/// truth, so a relevant item recovered deep in the r-window earns its
+/// (heavily discounted) gain instead of vanishing — the same
+/// rationale as the k-recall@r denominator fix — and `ndcg ≤ 1`
+/// always holds because late ranks discount below every ideal slot.
+///
+/// Deviation note: at least one external benchmark's "NDCG" positions
+/// gain by the id's rank in the GROUND TRUTH rather than the result —
+/// a different formula rewarding retrieval of well-ranked GT items
+/// regardless of returned order. This is the standard form; comparing
+/// scores across the two requires labeling, never blending.
+pub fn ndcg(relevant: &[i64], actual: &[i64]) -> f64 {
+    if relevant.is_empty() {
+        return 0.0;
+    }
+    let mut remaining: HashSet<i64> = relevant.iter().copied().collect();
+    let mut dcg = 0.0f64;
+    for (i, &item) in actual.iter().enumerate() {
+        if remaining.remove(&item) {
+            dcg += 1.0 / (i as f64 + 2.0).log2();
+        }
+    }
+    let idcg: f64 = (0..relevant.len())
+        .map(|i| 1.0 / (i as f64 + 2.0).log2())
+        .sum();
+    if idcg == 0.0 { 0.0 } else { dcg / idcg }
+}
+
 /// Truncate a slice to at most `k` elements and return a sorted copy.
 pub fn truncate_and_sort(items: &[i64], k: usize) -> Vec<i64> {
     let end = items.len().min(k);
@@ -121,6 +161,7 @@ pub enum RelevancyFn {
     F1,
     ReciprocalRank,
     AveragePrecision,
+    Ndcg,
 }
 
 impl RelevancyFn {
@@ -134,6 +175,7 @@ impl RelevancyFn {
             "average_precision" | "averageprecision" | "ap" | "map" => {
                 Some(Self::AveragePrecision)
             }
+            "ndcg" => Some(Self::Ndcg),
             _ => None,
         }
     }
@@ -146,6 +188,7 @@ impl RelevancyFn {
             Self::F1 => "f1",
             Self::ReciprocalRank => "reciprocal_rank",
             Self::AveragePrecision => "average_precision",
+            Self::Ndcg => "ndcg",
         }
     }
 
@@ -167,6 +210,7 @@ impl RelevancyFn {
             Self::F1 => f1(relevant_sorted, actual_sorted, k),
             Self::ReciprocalRank => reciprocal_rank(relevant_sorted, actual_ordered),
             Self::AveragePrecision => average_precision(relevant_sorted, actual_ordered),
+            Self::Ndcg => ndcg(relevant_sorted, actual_ordered),
         }
     }
 }
@@ -370,6 +414,60 @@ mod tests {
     }
 
     #[test]
+    fn ndcg_perfect_order_is_one() {
+        // All relevant items at the top ranks = the ideal arrangement.
+        let relevant = vec![1, 2, 3];
+        let actual = vec![1, 2, 3, 7, 8];
+        assert!((ndcg(&relevant, &actual) - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn ndcg_rank_position_discounts_by_result_rank() {
+        // One relevant item of one: at rank 0 → 1.0; at rank 2 →
+        // (1/log2(4)) / (1/log2(2)) = 0.5. RESULT rank drives the
+        // discount — the standard-form pin.
+        let relevant = vec![9];
+        assert!((ndcg(&relevant, &[9, 4, 5]) - 1.0).abs() < 1e-10);
+        assert!((ndcg(&relevant, &[4, 5, 9]) - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn ndcg_known_interleaved_value() {
+        // relevant = [1,2], actual = [1, 7, 2]:
+        // dcg  = 1/log2(2) + 1/log2(4) = 1.0 + 0.5 = 1.5
+        // idcg = 1/log2(2) + 1/log2(3) = 1.0 + 0.63093 = 1.63093
+        // ndcg = 1.5 / 1.63093 = 0.91972
+        let score = ndcg(&[1, 2], &[1, 7, 2]);
+        assert!((score - 0.91972).abs() < 1e-4, "ndcg={score}");
+    }
+
+    #[test]
+    fn ndcg_duplicate_results_do_not_inflate() {
+        // The same relevant id returned twice earns gain ONCE (first
+        // occurrence) — a duplicated row cannot push ndcg past 1.0.
+        let relevant = vec![1];
+        let score = ndcg(&relevant, &[1, 1, 1]);
+        assert!((score - 1.0).abs() < 1e-10, "ndcg={score}");
+    }
+
+    #[test]
+    fn ndcg_no_hits_and_empty_relevant_are_zero() {
+        assert_eq!(ndcg(&[1, 2, 3], &[4, 5, 6]), 0.0);
+        assert_eq!(ndcg(&[], &[1, 2, 3]), 0.0);
+    }
+
+    #[test]
+    fn ndcg_deep_r_window_recovery_stays_bounded() {
+        // k-recall@r composition: k=2 GT items recovered deep in an
+        // r=8 window still earn (discounted) gain, and the score
+        // stays strictly inside (0, 1).
+        let relevant = vec![100, 200];
+        let actual = vec![1, 2, 3, 4, 5, 6, 100, 200];
+        let score = ndcg(&relevant, &actual);
+        assert!(score > 0.0 && score < 1.0, "ndcg={score}");
+    }
+
+    #[test]
     fn relevancy_fn_parse() {
         assert_eq!(RelevancyFn::parse("recall"), Some(RelevancyFn::Recall));
         assert_eq!(RelevancyFn::parse("PRECISION"), Some(RelevancyFn::Precision));
@@ -379,6 +477,8 @@ mod tests {
         assert_eq!(RelevancyFn::parse("average_precision"), Some(RelevancyFn::AveragePrecision));
         assert_eq!(RelevancyFn::parse("ap"), Some(RelevancyFn::AveragePrecision));
         assert_eq!(RelevancyFn::parse("map"), Some(RelevancyFn::AveragePrecision));
+        assert_eq!(RelevancyFn::parse("ndcg"), Some(RelevancyFn::Ndcg));
+        assert_eq!(RelevancyFn::parse("NDCG"), Some(RelevancyFn::Ndcg));
         assert_eq!(RelevancyFn::parse("unknown"), None);
     }
 
