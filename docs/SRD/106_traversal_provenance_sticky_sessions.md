@@ -34,7 +34,7 @@ path of least resistance, loudly announced.
 | Need | Existing mechanism | Where |
 |---|---|---|
 | Per-phase provenance identity | `PhaseIdentity { yaml_path, coords }` + program chain-hash sufficiency | SRD-44, `checkpoint::identity` |
-| "Did the phase change?" oracle | chain-hash on `PhaseOutcome` (`phase_hash` column); `refine --scope=changed` | SRD-77 §Phase fingerprint |
+| "Did the phase change?" oracle | composed provenance hash on `PhaseOutcome` (`phase_hash` column; formula in Part 1); `refine --scope=changed` | SRD-77 §Phase fingerprint, `checkpoint::compose_phase_hash` |
 | Skip-eligibility declaration | `checkpoint:` phase field (`idempotent`, `hashed`, `verify`) | SRD-44 §Forms |
 | Resume skip machinery | `ResumePlan` / `ResumeAction`, consulted by the executor before dispatch | `checkpoint::resume` |
 | Session re-attachment + skip set from prior outcomes | `nbrs refine`, `refine_plan` (skip set + next `exec_id` from `phase_outcomes` rows) | SRD-77, `refine_plan` |
@@ -56,8 +56,8 @@ placement in the traversal:
   builds. Declared `checkpoint: idempotent`. Skip-valid on
   re-attachment when a prior outcome for the same identity is
   `Completed+Succeeded` AND its `phase_hash` equals the freshly
-  computed chain-hash (params, bindings, op templates unchanged — the
-  hash covers all of it per SRD-77). Anything else re-runs.
+  computed provenance hash (params, bindings, op templates unchanged
+  — see "The provenance hash" below). Anything else re-runs.
 - **measurement** — probes, sweeps, staged/streamed observations.
   NEVER skip-eligible (no `checkpoint:` declaration): every
   invocation is a new datum; re-running is the point. Executions
@@ -71,9 +71,30 @@ placement in the traversal:
 **The accuracy invariant, stated once:** skipping is legal only for
 phases whose *entire effect* is the produced target state, whose
 production is idempotent by declaration, and whose validity is
-anchored to the program chain-hash. A skipped prereq can therefore
+anchored to the provenance hash. A skipped prereq can therefore
 never change what a measurement observes — and the cheap always-run
 settle check (below) verifies the state is actually there.
+
+**The provenance hash (established by D2):** one composed formula
+(`checkpoint::compose_phase_hash`) carried by every store and gate —
+the checkpoint document, the persisted phase-outcome row, and the
+resume planner's candidates:
+
+- the **ancestor-chain instance hash**: every installed ancestor
+  kernel from the immediate parent scope up through the workload
+  root AND the session-level workload-params module (installed on
+  the scope tree's session node exactly so param VALUES participate
+  — they are const slots on that module's program);
+- the **phase-config digest**: a canonical serialization of the
+  phase's full declared configuration — ops (statement templates
+  included), bindings, cycles, concurrency, rate, stop conditions.
+  This covers matter the compiled-program chain cannot see (an op's
+  statement text never enters a polydat program).
+
+Both inputs are computable at pre-map time, so saved and fresh
+values compare directly — no deferred-compile asymmetry. A param
+change, a bindings edit, an op-template edit, or a cycle-count
+change each flip the hash and re-run the phase.
 
 **Runtime re-validation:** the index-wait phase (`await_index` in the
 suite) is deliberately NOT skip-eligible even though it is idempotent
@@ -173,7 +194,11 @@ named-form equivalent.
 2. Skip-validity: ensure the resume/refine gate demands
    `Completed+Succeeded` + hash equality for `checkpoint: idempotent`
    phases re-attached via `reuse=resume` / `refine` (compose existing
-   `ResumePlan` + `refine_plan`; no new store).
+   `ResumePlan` + `refine_plan`; no new store). Established rules:
+   a phase the `phases=` filter names always runs (selection is
+   intent to run); an idempotent prereq under refine never takes the
+   no-hash fast path — it skips only through the hash gate; under
+   refine, a checkpoint-resume `Skip` defers to that same gate.
 3. Workload model: `stick_session` top-level attribute + CLI
    override; session resolution rung; `--session new` bare token.
 4. `session_notice` readout + SessionStart binding + ACCENT

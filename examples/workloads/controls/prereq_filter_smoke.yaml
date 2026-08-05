@@ -20,6 +20,14 @@
 # Self-contained: default adapter, no params. Run under a sandbox
 # --session-path; never from the project root.
 
+# `run_tag` exists purely to flip the provenance hash from the CLI
+# (`run_tag=b`): param values live as const slots on the session-level
+# workload-params module, which every phase's ancestor-chain hash
+# includes — so a changed value invalidates every phase's provenance.
+# The refine validity tests use it to prove a stale prereq re-runs.
+params:
+  run_tag: "a"
+
 scenarios:
   default:
     - prep
@@ -35,6 +43,11 @@ phases:
     checkpoint: idempotent
     cycles: 1
     concurrency: 1
+    # `tag` keeps {run_tag} referenced for the unused-param
+    # validator; provenance coverage of the VALUE comes from the
+    # params module in the ancestor chain, not this binding.
+    bindings: |
+      const tag := "{run_tag}"
     ops:
       t:
         stmt: "PREP_TICK"

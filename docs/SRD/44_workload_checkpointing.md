@@ -143,35 +143,46 @@ enum PathSegment {
 }
 ```
 
-### Why hash the compiled program, not the YAML body
+### What the hash covers (the composed formula)
 
-A phase whose body references a workload param via `{dataset}`
-produces different work for `dataset=sift1m` vs. `dataset=sift10m`
-even though its YAML bytes are byte-identical. Hashing the YAML
-body alone would silently skip the phase across that param
-change — wrong. The compiled `PolydatProgram` already incorporates
-substituted-in param values, transitively-referenced binding
-values, and all fold-able compile-time state. Hashing its
-canonical re-emission catches:
+The phase hash is `checkpoint::compose_phase_hash` over two
+pre-map-computable digests (SRD-106 D2 — one formula shared by
+the checkpoint document, the persisted outcome row, and the
+resume planner's candidates, so saved and fresh values compare
+directly):
 
-- phase body edits;
-- workload-param value changes that this phase reads;
-- workload-level binding edits that this phase transitively pulls;
-- adapter / driver flag changes that affect compilation.
+1. **Ancestor-chain instance hash** — the canonical_hash of
+   every installed ancestor kernel, from the immediate parent
+   scope up through the workload root AND the session-level
+   workload-params module. Param VALUES are const slots on the
+   params module's program, so `dataset=sift1m` vs.
+   `dataset=sift10m` produce different chains even when every
+   YAML byte is identical. Upstream binding edits land in the
+   root / intermediate-scope programs the same way.
+2. **Phase-config digest** — a canonical serialization of the
+   phase's full declared configuration (ops with their statement
+   templates, bindings source, cycles, concurrency, rate, stop
+   conditions — every `WorkloadPhase` field). This covers matter
+   that never enters a compiled polydat program, most notably an
+   op's statement text.
 
-A phase that doesn't transitively reference a particular param
-won't see hash drift when that param changes — it correctly
-remains skip-eligible.
+Param coverage is deliberately **whole-module, not per-phase**:
+any param-value change invalidates every phase's provenance.
+That is the safe direction — over-invalidation re-runs work; a
+missed reference would let a stale skip corrupt a measurement.
+Measurement sweep knobs belong in `dimensions:` / sweep cells,
+which carry their own per-cell identity (`coords`) and so never
+touch other phases' provenance.
 
-### Why canonical re-emission, not raw bytes
+### Why canonical serialization, not raw bytes
 
 Bytes-of-the-source hashing is brittle: a formatter pass, a
 comment-only edit, or a YAML re-emit with reordered keys all
 produce hash mismatches that don't correspond to semantic
-changes. The canonical re-emission walks the parsed model,
-emits with sorted keys, normalised whitespace, and no comments
-— a `CanonicalEmit` trait on the workload model and the
-compiled program.
+changes. Both digest components hash canonical forms: the chain
+hashes each program's canonical re-emission, and the config
+digest serializes the parsed model with recursively sorted keys
+(comments and formatting never survive parsing).
 
 ### Identity matching at resume
 

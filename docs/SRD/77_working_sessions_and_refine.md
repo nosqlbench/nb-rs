@@ -246,11 +246,12 @@ The "did this phase change?" oracle for `--scope=changed`
 is the existing infrastructure:
 
 - `PhaseIdentity { yaml_path, coords, phase_hash }` (SRD-44)
-- `GkProgram::instance_hash(ancestors)` — the chain-hash
-  over own program + the ancestor chain (workload → scope →
-  phase). Two phases with the same `instance_hash` are
-  guaranteed to produce equivalent output for equivalent
-  per-cycle inputs.
+- `checkpoint::compose_phase_hash` — the composed provenance
+  hash (SRD-44 §"What the hash covers"): the ancestor-chain
+  instance hash (workload-params module → workload root →
+  intermediate scopes) composed with the canonical
+  phase-config digest (ops, bindings, cycles — every
+  declared `WorkloadPhase` field).
 
 SRD-77 lifts this from "stored in the checkpoint event
 log" to "stored on `PhaseOutcome` as well" — so
@@ -258,24 +259,25 @@ log" to "stored on `PhaseOutcome` as well" — so
 hash against the freshly-computed hash without needing the
 checkpoint log to be the source of truth.
 
-The chain-hash covers:
-- Workload-root program (parameter values, top-level
-  bindings, transitive `const` folds)
-- Scope-tree node programs (for_each / for_combinations /
-  bindings scopes between root and phase)
-- Phase scope program (phase bindings, iter-var declarations)
-- Op-template programs (per-op kernels)
+The provenance hash covers:
+- Workload-param VALUES (const slots on the session-level
+  params module in the ancestor chain — coverage is
+  whole-module: any param change flips every phase's hash;
+  see SRD-44 for why that direction is the safe one)
+- Workload-root and intermediate scope programs (top-level
+  bindings, for_each / for_combinations / bindings scopes)
+- The phase's declared configuration, op statement templates
+  included (the config digest)
 
 What's NOT in the hash:
-- Workload-level metadata that doesn't affect execution
-  (description text, comments, report:` block)
-- CLI params that are pure descriptive overrides
-- Tags / attributes
+- Workload-level metadata outside the phase declarations
+  (description text, comments, `report:` block)
+- Session plumbing flags (`--session*`, `tui=`, log levels)
 
-Any change to the load-bearing program shape (a binding
-edit, a new const declaration, a changed expression in an
-op-template) flips the hash and `--scope=changed` re-runs
-the affected phases.
+Any change to a load-bearing declaration (a binding edit, a
+param value, a changed statement in an op template, a
+cycle-count change) flips the hash and `--scope=changed`
+re-runs the affected phases.
 
 ---
 

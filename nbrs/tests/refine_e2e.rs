@@ -380,7 +380,7 @@ fn refine_scope_changed_skips_when_workload_unchanged() {
 
     let (_, stderr, ok) = sbx.invoke("refine", &["scope=changed"]);
     assert!(ok, "scope=changed failed: {stderr}");
-    assert!(stderr.contains("scope=changed: prior hash matches"),
+    assert!(stderr.contains("prior completed outcome, hash unchanged"),
         "scope=changed MUST log the hash-match skip; got stderr:\n{stderr}");
 
     // No new phase_outcomes rows from the unchanged refine.

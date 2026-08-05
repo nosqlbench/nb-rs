@@ -66,45 +66,39 @@ pub fn declare_scene_tree_phases(
 /// planner can classify each freshly-pre-mapped phase against
 /// the saved document.
 ///
-/// Each candidate's `phase_hash` is the **ancestor-chain
-/// instance hash** — a SHA-256 over the workload-root program's
-/// canonical_hash plus every intermediate scope kernel's
-/// canonical_hash, in chain order. This is what's computable at
-/// pre-map time (the phase's own program compiles lazily during
-/// `run_phase` and isn't yet available); it captures every
-/// upstream binding edit, which is the dominant source of
-/// resume-time identity drift.
+/// Each candidate's `phase_hash` is [`compose_phase_hash`] over
+/// two pre-map-computable digests (SRD-106 D2 — this is THE
+/// skip-validity anchor, shared verbatim with the executor's
+/// stamped value so saved and fresh compare directly):
 ///
-/// The runtime stamps the **full** instance_hash (own program +
-/// ancestor chain) when the phase compiles, so the saved hash
-/// includes the phase's own program shape. On resume:
-///
-/// - If the workload root or intermediate scope kernel changes
-///   between runs, candidate.phase_hash differs from any saved
-///   hash → IdentityMismatch → ReRun.
-/// - If only the phase's own program changes, the candidate's
-///   ancestor-only hash still matches the saved hash's
-///   ancestor portion (they share that prefix); the hash
-///   carrier is `Some` on both sides but they're different
-///   shapes — `matches_full` falls back to structural equality
-///   in that case (one carries phase+ancestors, the other
-///   just ancestors). This is intentional: the phase's own
-///   program edits are caught by the wholesale-purge + re-run
-///   path (operator-driven workload refactor), not by
-///   identity-mismatch invalidation.
+/// - the **ancestor-chain instance hash** — SHA-256 over the
+///   canonical_hash of every installed ancestor kernel, from
+///   the immediate parent scope up through the workload root
+///   AND the session-level workload-params module. Catches
+///   upstream binding edits and any param-value change (params
+///   live as const slots on the params module).
+/// - the **phase-config digest** ([`phase_config_hash`]) — a
+///   canonical serialization of the phase's full declared
+///   configuration: ops (statement templates included),
+///   bindings, cycles, concurrency, rate, stop conditions —
+///   every `WorkloadPhase` field. Catches edits the compiled
+///   program chain cannot see (an op's statement text, a
+///   cycle-count change).
 pub fn scene_tree_resume_candidates(
     tree: &crate::scene_tree::SceneTree,
     scope_tree: &crate::scope_tree::ScopeTree,
     phases: &std::collections::HashMap<String, nbrs_workload::model::WorkloadPhase>,
 ) -> Vec<(PhaseIdentity, bool)> {
     tree.dfs_phases().map(|node| {
-        let phase_hash = ancestor_chain_hash(scope_tree, &node.name);
+        let phase = phases.get(&node.name);
+        let chain = ancestor_chain_hash(scope_tree, &node.name);
+        let config = phase.map(phase_config_hash).unwrap_or([0u8; 32]);
         let identity = PhaseIdentity {
             yaml_path: node.yaml_path.clone(),
             coords: node.labels.clone(),
-            phase_hash,
+            phase_hash: Some(compose_phase_hash(chain, config)),
         };
-        let idempotent = phases.get(&node.name)
+        let idempotent = phase
             .and_then(|p| p.checkpoint.as_ref())
             .map(|c| c.idempotent)
             .unwrap_or(false);
@@ -112,12 +106,84 @@ pub fn scene_tree_resume_candidates(
     }).collect()
 }
 
-/// Compute a phase candidate's ancestor-chain instance hash by
-/// looking up the scope-tree node and walking its installed
-/// ancestor kernels. Returns `None` if the scope tree has no
-/// installed kernels (defensive — the workload root always has
-/// one in production).
-fn ancestor_chain_hash(
+/// Compose the two provenance digests into the one phase hash
+/// that every store and gate carries: the checkpoint document
+/// (SRD-44 resume classification), the persisted phase-outcome
+/// row (SRD-77 refine hash gate), and the resume planner's
+/// candidates all use this same formula, so a saved hash and a
+/// freshly computed one compare directly.
+pub(crate) fn compose_phase_hash(
+    chain: Option<[u8; 32]>,
+    config: [u8; 32],
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"nbrs-phase-identity-v2\n");
+    match chain {
+        Some(c) => {
+            h.update(b"chain:");
+            h.update(c);
+        }
+        None => h.update(b"chain:none"),
+    }
+    h.update(b"config:");
+    h.update(config);
+    h.finalize().into()
+}
+
+/// Canonical SHA-256 over a phase's full declared configuration
+/// — every `WorkloadPhase` field, ops and bindings included.
+/// Serialized through `serde_json::Value` with recursively
+/// sorted object keys so HashMap-backed fields hash stably
+/// across processes (the workspace enables serde_json's
+/// `preserve_order`, so insertion order alone is NOT stable).
+pub(crate) fn phase_config_hash(
+    phase: &nbrs_workload::model::WorkloadPhase,
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut value = serde_json::to_value(phase)
+        .unwrap_or(serde_json::Value::Null);
+    sort_json_keys(&mut value);
+    let text = serde_json::to_string(&value).unwrap_or_default();
+    let mut h = Sha256::new();
+    h.update(b"nbrs-phase-config-v1\n");
+    h.update(text.as_bytes());
+    h.finalize().into()
+}
+
+fn sort_json_keys(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<(String, serde_json::Value)> =
+                std::mem::take(map).into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            for (_, val) in entries.iter_mut() {
+                sort_json_keys(val);
+            }
+            map.extend(entries);
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                sort_json_keys(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Compute a phase's ancestor-chain instance hash by looking up
+/// the scope-tree node and walking its installed ancestor
+/// kernels — immediate parent first, then up through the
+/// workload root and the session-level workload-params module
+/// (installed on the session node precisely so this chain
+/// covers param values). Returns `None` if the scope tree has
+/// no installed kernels (defensive — the workload root always
+/// has one in production).
+///
+/// Shared by the resume planner's candidates and the executor's
+/// stamped hash ([`compose_phase_hash`] composes it with the
+/// phase-config digest at both sites) — one formula, one walk.
+pub(crate) fn ancestor_chain_hash(
     scope_tree: &crate::scope_tree::ScopeTree,
     phase_name: &str,
 ) -> Option<[u8; 32]> {
@@ -128,12 +194,11 @@ fn ancestor_chain_hash(
     }
     // The chain hash uses PolydatProgram::instance_hash with the
     // first ancestor as the "self" anchor and the rest as
-    // ancestors-of-ancestor. Same shape the runtime produces
-    // for its [own_program, ancestors...] chain — just without
-    // the own_program prefix. The two hashes are *different*
-    // (own_program contributes), so identity match still falls
-    // back to structural equality when one side has the longer
-    // chain — see `scene_tree_resume_candidates` doc.
+    // ancestors-of-ancestor. The phase's OWN program is
+    // deliberately absent (it compiles lazily; its declared
+    // matter is covered by the phase-config digest instead), so
+    // this value is computable at pre-map time and identical at
+    // both compute sites.
     let head = ancestors[0].program();
     let tail: Vec<&polydat::kernel::PolydatProgram> = ancestors[1..]
         .iter().map(|k| k.program().as_ref()).collect();

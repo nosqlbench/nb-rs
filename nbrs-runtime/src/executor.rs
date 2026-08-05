@@ -1576,11 +1576,11 @@ fn execute_node<'a>(
                     // filter doesn't name it. Scope liveness itself
                     // comes from selected phases only — see
                     // `subtree_has_active_phase`.
-                    let prereq_exempt = ctx.phase_filter.is_some()
-                        && ctx.phases.get(name)
-                            .and_then(|p| p.checkpoint.as_ref())
-                            .map(|c| c.idempotent)
-                            .unwrap_or(false);
+                    let is_prereq_class = ctx.phases.get(name)
+                        .and_then(|p| p.checkpoint.as_ref())
+                        .map(|c| c.idempotent)
+                        .unwrap_or(false);
+                    let prereq_exempt = ctx.phase_filter.is_some() && is_prereq_class;
                     let pattern_active = ctx.phase_filter.as_ref()
                         .map(|pat| pat.is_match(name) || prereq_exempt)
                         .unwrap_or(true);
@@ -1600,10 +1600,24 @@ fn execute_node<'a>(
                     // needs the hash, so it falls through into
                     // `run_phase` where the hash is computed and
                     // a deferred skip-gate evaluates there.
+                    //
+                    // SRD-106 carve-outs:
+                    // - A phase the `phases=` filter NAMES is explicit
+                    //   intent to run: selection defeats the skip.
+                    // - A `checkpoint: idempotent` prereq never takes
+                    //   the no-hash fast path — its skip validity
+                    //   requires hash equality (a stale load must
+                    //   re-run), so it defers to the run_phase hash
+                    //   gate exactly like scope=changed.
+                    let explicitly_selected = ctx.phase_filter.as_ref()
+                        .map(|pat| pat.is_match(name))
+                        .unwrap_or(false);
                     let refine_missing_skip = ctx.refine_plan.as_ref()
                         .filter(|p| p.scope == crate::refine_plan::RefineScope::Missing)
                         .map(|p| p.is_completed(name, &phase_labels))
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        && !explicitly_selected
+                        && !is_prereq_class;
                     if !pattern_active {
                         crate::diag!(crate::observer::LogLevel::Debug,
                             "phases=<filter>: skipping phase '{name}' (does not match)");
@@ -3768,6 +3782,19 @@ async fn run_phase_inner(
     };
     let early_identity = phase_identity_for(phase_name, &early_phase_labels);
     match ctx.resume_plan.action_for(&early_identity) {
+        crate::checkpoint::ResumeAction::Skip if ctx.refine_plan.is_some() => {
+            // SRD-106 D2 — under refine, the checkpoint plan's
+            // Skip is anchored to the pre-map ancestor-chain
+            // hash, which cannot see own-program edits (a param
+            // interpolated into this phase's bindings, an op
+            // template change). The deferred refine gate below
+            // compares the FULL instance hash against the prior
+            // outcome row, so it owns the skip decision here;
+            // fall through to compile.
+            crate::diag!(crate::observer::LogLevel::Info,
+                "phase '{phase_name}' [checkpoint-resume skip deferred \
+                 to the refine hash gate]");
+        }
         crate::checkpoint::ResumeAction::Skip => {
             // Surface the skip on the same observer + scene-tree
             // surfaces a normal phase uses, so the TUI tree, the
@@ -4897,31 +4924,21 @@ async fn run_phase_inner(
             Some(&ctx.sqlite_reporter),
         );
     }
-    // Compute the phase's ancestor-chain instance_hash up
-    // front — SRD-44 needs it on the checkpoint writer (when
-    // resumable), SRD-77 needs it on the persisted phase
-    // outcome (always, so `refine --scope=changed` can
-    // compare prior vs current program shape).
-    //
-    // The hash is the workload-root program's canonical_hash
-    // plus every intermediate scope kernel's canonical_hash,
-    // in chain order. The resume planner pre-computes the
-    // same value for its candidates so saved.phase_hash and
-    // candidate.phase_hash compare directly. Doesn't include
-    // this phase's own compiled program (phases compile
-    // lazily) — pure upstream-binding edits caught, pure
-    // phase-body edits not. See SRD-44 §"Identity matching
-    // at resume" + project memory `program_vs_instance_hash`.
-    let phase_hash_bytes = ctx.scope_tree.phase_node_by_name(phase_name)
-        .and_then(|idx| {
-            let ancestors = ctx.scope_tree.ancestor_kernels(idx);
-            if ancestors.is_empty() { return None; }
-            let head = ancestors[0].program();
-            let tail: Vec<&polydat::kernel::PolydatProgram> = ancestors[1..]
-                .iter().map(|k| k.program().as_ref()).collect();
-            Some(head.instance_hash(&tail))
-        })
-        .unwrap_or_else(|| iter_op_builder.program().canonical_hash());
+    // The phase's provenance hash (SRD-106 D2 — THE skip-validity
+    // anchor): [`checkpoint::compose_phase_hash`] over the
+    // ancestor-chain instance hash (immediate parent scopes up
+    // through the workload root and the session-level
+    // workload-params module, so param VALUES participate) and
+    // the canonical phase-config digest (ops, bindings, cycles —
+    // every declared `WorkloadPhase` field). Both inputs are
+    // pre-map computable; the resume planner's candidates use
+    // the exact same formula, so the checkpoint document's saved
+    // hash, the persisted outcome row's hash (refine's gate),
+    // and a fresh run's value all compare directly.
+    let phase_hash_bytes = crate::checkpoint::compose_phase_hash(
+        crate::checkpoint::ancestor_chain_hash(&ctx.scope_tree, phase_name),
+        crate::checkpoint::phase_config_hash(&phase),
+    );
     let phase_hash_hex: String = phase_hash_bytes.iter()
         .map(|b| format!("{b:02x}"))
         .collect();
@@ -4962,13 +4979,28 @@ async fn run_phase_inner(
     // prior outcome, short-circuit the same shape as the
     // structural-walker missing-skip path. `should_skip` is a
     // no-op for non-Changed scopes and for non-refine runs.
+    //
+    // SRD-106 additions: an idempotent prereq under scope=missing
+    // ALSO lands here (its no-hash fast path is disabled — skip
+    // validity requires Completed+Succeeded AND hash equality, so a
+    // stale load re-runs); and a phase the `phases=` filter names
+    // never skips (selection is intent to run).
+    let explicitly_selected = ctx.phase_filter.as_ref()
+        .map(|pat| pat.is_match(phase_name))
+        .unwrap_or(false);
+    let is_prereq_class = phase.checkpoint.as_ref()
+        .map(|c| c.idempotent)
+        .unwrap_or(false);
     if let Some(plan) = ctx.refine_plan.as_ref()
-        && plan.scope == crate::refine_plan::RefineScope::Changed
+        && !explicitly_selected
+        && (plan.scope == crate::refine_plan::RefineScope::Changed
+            || (plan.scope == crate::refine_plan::RefineScope::Missing
+                && is_prereq_class))
         && plan.is_unchanged(phase_name, &phase_labels, &phase_hash_hex)
     {
         crate::diag!(crate::observer::LogLevel::Info,
             "refine: skipping phase '{phase_name}' [{phase_labels}] \
-             (scope=changed: prior hash matches current)");
+             (prior completed outcome, hash unchanged)");
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_running_at(scene_node_id, 0);
             t.set_phase_completed_at(scene_node_id, 0.0);

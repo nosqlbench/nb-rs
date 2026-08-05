@@ -2460,6 +2460,17 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             )));
         }
 
+        // Install the workload-params module on the session node
+        // (the workload root's parent) so identity chains
+        // (`ScopeTree::ancestor_kernels` → the SRD-44/SRD-77
+        // provenance hashes) include the module whose const
+        // slots carry every param VALUE. The workload kernel is
+        // built as a subscope of this module; installing it here
+        // records that same relationship on the tree. Nearest-
+        // ancestor kernel lookups are unaffected — the workload
+        // root always has its own kernel, so walks stop there.
+        scope_tree.install_kernel(scope_tree.root, std::sync::Arc::new(params_kernel));
+
         // Install the canonical workload kernel (SRD 18b §"Iter
         // vars as scope outputs"). After this, intermediate
         // scopes (for_each, for_combinations, …) install their
