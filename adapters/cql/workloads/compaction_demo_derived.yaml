@@ -601,27 +601,76 @@ scenarios:
         # The single forced large flush: everything still
         # memtable-resident at the end of the sweep rolls to disk in
         # one shot (natural size-pressure flushes already happened
-        # along the way; this captures the tail so the final recall
-        # measures a fully on-disk table).
+        # along the way; this captures the tail so the terminal
+        # recalls measure a fully on-disk table).
         - flush
-        # STCS reacts to that flush on its own schedule (no forced
-        # major anywhere in this posture). Hold until
-        # system_views.sstable_tasks drains so the final recall
-        # measures a SETTLED table — comparable with the serialized
-        # baseline's post-compaction recall — instead of racing
-        # whatever merge the flush just scheduled. (Until 2026-08-05
-        # the recall deliberately proceeded regardless; that made the
-        # final number an encumbered-read sample of unknowable
-        # degree, not a baseline.)
-        - settle_compactions
-        # One additional post-settle recall, against the final tier's
-        # own ground truth.
+        # ── terminal recall protocol: 2 recalls × 3 table states ──
+        # Six recalls against the final tier's own ground truth, two
+        # at each post-ingest state the table passes through:
+        #   postflush  — right after the closing flush, while STCS
+        #                reacts on its own schedule: the encumbered
+        #                read, sampled deliberately (the tier-scope
+        #                watch daemon below records the pool state to
+        #                correlate against);
+        #   settled    — after system_views.sstable_tasks drains:
+        #                STCS's steady-state multi-sstable shape;
+        #   compacted  — after a forced major compaction (finalize's
+        #                toggles shadowed ON for that step only):
+        #                the single-sstable fully-merged graph,
+        #                comparable with serialized_baseline's
+        #                post-compaction recalls.
+        # Two per state so pass 1 (cold caches) and pass 2 (warm)
+        # are separable. `recall_round` numbers 1..6 GLOBALLY, not
+        # 1,2 per state: round values land in the phase coords, and
+        # per-state reuse would give two phases identical
+        # (yaml_path, coords) checkpoint identities.
         - bindings: |
             const profile_pattern := "{final_recall_pattern}"
           phases:
             - for: "part in profile_partitions('{dataset}', '{profile_pattern}')"
               phases:
-                - recall_check
+                # Tier-scope watch daemon spans the whole terminal
+                # protocol, so every recall window has pool/sstable
+                # gauges to correlate recall latency against.
+                - compaction_watch
+                # (bindings:, not set:, for the stage labels — the
+                # set: sugar lowers values verbatim, so a bare string
+                # becomes a name reference, not a literal.)
+                - bindings: |
+                    const recall_stage := "postflush"
+                  phases:
+                    - for: "recall_round in 1,2"
+                      phases:
+                        - recall_check
+                # Hold until sstable_tasks drains (same shape as
+                # finalize's drain; observed-or-60s-idle escape
+                # covers STCS scheduling nothing). Inside the part
+                # scope, so its {part}-filtered metricsql reads its
+                # own samples, not another scope's.
+                - settle_compactions
+                - bindings: |
+                    const recall_stage := "settled"
+                  phases:
+                    - for: "recall_round in 3,4"
+                      phases:
+                        - recall_check
+                # Forced major compaction: finalize_index with its
+                # toggles shadowed ON for this subtree only — the
+                # scenario-level enable_finalize=0/enable_compact=0
+                # posture stays authoritative everywhere else.
+                # verify_segments then asserts the table settled to
+                # ≤ {max_postfinal_segments} sstables, so the
+                # compacted-state recalls below run on a PROVEN
+                # merged shape.
+                - bindings: |
+                    const recall_stage := "compacted"
+                    const enable_finalize := 1
+                    const enable_compact := 1
+                  phases:
+                    - finalize_index
+                    - for: "recall_round in 5,6"
+                      phases:
+                        - recall_check
 
   # One adaptive tier's ingest scope: the latency probe spawns first
   # (off the foreground budget), then the servo'd loader runs; the
