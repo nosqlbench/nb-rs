@@ -540,6 +540,7 @@ scenarios:
   reset:   [teardown]
   ddl:     [schema]
   compact: [finalize_index]
+  settle:  [settle_compactions]
 
   # ── serialized_baseline — the `runtest` protocol, captured ────
   # The exact configuration the `runtest` wrapper script emitted
@@ -603,12 +604,18 @@ scenarios:
         # along the way; this captures the tail so the final recall
         # measures a fully on-disk table).
         - flush
-        # One additional post-flush recall, against the final tier's
-        # own ground truth. STCS may react to the flush with further
-        # compactions; the measurement proceeds regardless — the
-        # encumbered state, if any, is visible in the recorded
-        # compaction_pool_* gauges from the preceding tiers and in
-        # this phase's own latency timers.
+        # STCS reacts to that flush on its own schedule (no forced
+        # major anywhere in this posture). Hold until
+        # system_views.sstable_tasks drains so the final recall
+        # measures a SETTLED table — comparable with the serialized
+        # baseline's post-compaction recall — instead of racing
+        # whatever merge the flush just scheduled. (Until 2026-08-05
+        # the recall deliberately proceeded regardless; that made the
+        # final number an encumbered-read sample of unknowable
+        # degree, not a baseline.)
+        - settle_compactions
+        # One additional post-settle recall, against the final tier's
+        # own ground truth.
         - bindings: |
             const profile_pattern := "{final_recall_pattern}"
           phases:
@@ -950,21 +957,34 @@ phases:
   # studies live in the params block ("stcs_adaptive:
   # compaction-pressure ingest servo"); the shape in one line:
   #   rows/s = max(floor, base × 1/(1 + (pressure/half)^power)),
-  #   pressure = active + pending_weight×pending.
-  # The servo is the `pressure_servo` DAEMON OP inside this phase:
-  # it must live here (not in the watch daemon phase) because
-  # `control_set` writes to the calling fiber's OWN phase-tier
-  # control (SRD-89 anti-crosstalk) — but it runs at POLL cadence
-  # (one thread_pools read + one control_set dispatch per ~2s),
-  # never per insert cycle. `if: cycle == 0` spawns it exactly once
-  # (a stanza's ops run every cycle; the guard makes the spawn a
-  # one-shot), and the daemon-pool drain cancels it cleanly when
-  # the loader completes. Rate units are ROWS/s: the limiter paces
+  #   pressure = active + pending_weight×pending + flush term.
+  # The servo is the BINDING CHAIN at the end of this phase's
+  # `bindings:` (flush_over .. rate_servo). It must live in this
+  # phase (not in the watch daemon phase) because `control_set`
+  # writes to the calling fiber's OWN phase-tier control (SRD-89
+  # anti-crosstalk). Its dispatch frequency has no cadence knob —
+  # it is bounded by construction, in two layers:
+  #   1. the only non-const inputs are the shared wires the
+  #      tier-scope `compaction_watch` daemon rewrites at its
+  #      literal `rate: 0.5` — between watch polls the wires are
+  #      frozen, so every cycle computes the same target;
+  #   2. `control_set` elides the dispatch at fixpoint (the
+  #      committed-gauge equality check in runtime_context.rs):
+  #      identical integer wires → bit-identical f64 target →
+  #      return 0, no dispatch. Ceiling: one dispatch per watch
+  #      poll (0.5/s); in practice far fewer, since pool states
+  #      persist across polls. `rate_servo_sent` records each
+  #      cycle's dispatch count, so this is auditable per run.
+  # (History: a `pressure_servo` daemon op was tried first and
+  # abandoned — a stanza's daemon op re-attempts its spawn every
+  # cycle against the fiber cap, and an `if:` guard gates the op
+  # body, not the spawn. Don't reintroduce it.)
+  # Rate units are ROWS/s: the limiter paces
   # batch ELEMENTS (measured live 2026-08-03 — rate=120 produced
   # exactly 120 rows/s; `stride` only sizes the server round-trip),
   # so the servo sets the rows/s target directly. The initial
   # `rate: 100000` is deliberately far above capacity (≈ no
-  # throttle) — the servo takes over within its first poll.
+  # throttle) — the servo takes over at the first watch poll.
   load_increment_adaptive:
     checkpoint: idempotent
     concurrency: concurrency
@@ -1280,6 +1300,126 @@ phases:
         memo:
           before: "flushing keyspace {keyspace} — memtable data + per-segment SAI vector graph build (serial; ~20s per ~1M-row memtable; see cassandra 'Writing graph took' lines)"
           after:  "flushed keyspace {keyspace} (memtables → sstables + vector index)"
+
+  # Post-flush settle for the ADAPTIVE scenario (nothing here forces a
+  # compaction — the posture is real STCS defaults throughout): wait for
+  # whatever background work the final flush scheduled — data merges and
+  # vector index builds — to drain out of system_views.sstable_tasks
+  # before the final recall measures the table. Same drain shape as
+  # finalize_index's await_compaction (same no-kind-filter lesson, same
+  # fold-totality idle detection, same observed-or-idle-grace escape),
+  # minus the trigger coupling: no `sstables <= 1` disjunct, because
+  # that wire is finalize's read_sstables cross-op cell and is never
+  # written in this scenario — referencing it would read a stale
+  # default and release the drain instantly.
+  settle_compactions:
+    # A completed settle skips on resume; an interrupted one re-polls.
+    # Both are correct — the poll is a pure read.
+    checkpoint: idempotent
+    adapter: cql
+    concurrency: 1
+    cycles: 1
+    tries: 1
+    bindings: |
+      # 2s pre-poll grace (f64 = milliseconds, consumed by await_idle's
+      # `delay:`): the background scheduler registers its reaction to
+      # the flush on its next round, not synchronously with the flush
+      # call — a poll landing in that gap sees an empty list. The gap
+      # is ASSERTED in the drain's `until:` (observed-or-idle-grace);
+      # this grace just avoids spending a poll on a list that cannot
+      # yet be populated.
+      const drain_grace := 2000.0
+    ops:
+      await_idle:
+        adapter: cql
+        readout: visible
+        delay: drain_grace
+        # Advisory, like finalize's drain: this is monitoring, not
+        # load — a slow or unreadable view degrades to a logged
+        # warning, never a terminal error in the scenario's tail.
+        errors: ".*:warn,counter"
+        bindings: |
+          # Idle-escape patience: how long the drain waits for EVIDENCE
+          # that background work actually started before accepting an
+          # empty task list as "nothing was scheduled". STCS may
+          # legitimately decide the flushed tail needs no merge — that
+          # silence must release the tail here, bounded, not at
+          # timeout_ms. A typed binding, NOT a workload param (params
+          # reach polydat as strings — see finalize's await_compaction
+          # note), and plain assignment, not `const` (op-level blocks
+          # parse `const` as a wire reference).
+          start_evidence_ms := 60000
+          extern active_compactions: u64 = 0
+          # Published by the poll wrapper each iteration.
+          extern poll_elapsed_ms: u64 = 0
+          # "Was any task seen during THIS settle?" — answered from
+          # metric history (bindings form a DAG; a latch would be a
+          # cycle). settle_pending_tasks is this op's own published
+          # count; the part filter scopes the answer to this phase's
+          # own samples.
+          compaction_observed := round_u64(metricsql_scalar(
+              "max_over_time(settle_pending_tasks{part=\"{part}\"}[6h])"))
+          extern completion_ratio:   f64 = 0.0
+          extern index_nodes_done:   u64 = 0
+          extern index_nodes_total:  u64 = 0
+          extern data_bytes_done:    u64 = 0
+          extern data_bytes_total:   u64 = 0
+          # Drain speed, both task kinds (they do not overlap in time;
+          # see finalize's per-kind capture note). Part-scoped so a
+          # preceding tier's finalize-era series cannot contribute.
+          nodes_per_s := round_u64(metricsql_scalar(
+              "sum(rate(compaction_index_nodes_done{part=\"{part}\"}[2m]))"))
+          mib_per_s := round_u64(metricsql_scalar(
+              "sum(rate(compaction_data_bytes_done{part=\"{part}\"}[2m]))") / 1048576)
+        # NO kind filter — the drain must hold for the WHOLE
+        # compaction, not only its index-build tail (the 2026-07-24
+        # flush-starvation lesson on finalize's await_compaction).
+        raw: |
+          SELECT completion_ratio, progress, total, kind, unit
+            FROM system_views.sstable_tasks
+           WHERE keyspace_name = '{keyspace}'
+             AND table_name   = '{table}'
+          ALLOW FILTERING
+        capture:
+          active_compactions: ":count"
+          completion_ratio:   ":min(completion_ratio)"
+          # Vector index build — graph nodes.
+          index_nodes_done:   ":sum(progress where kind='secondary index build')"
+          index_nodes_total:  ":sum(total where kind='secondary index build')"
+          # Data compaction — bytes.
+          data_bytes_done:    ":sum(progress where kind='compaction')"
+          data_bytes_total:   ":sum(total where kind='compaction')"
+        gutter:
+          # Both drains, data-then-index, so an idle one reads as a
+          # zero NEXT TO a live number rather than as the whole readout.
+          text: "≈{mib_per_s} MiB/s ≈{nodes_per_s} n/s"
+        poll:
+          # Done when nothing is registered AND either background work
+          # was actually observed this settle, or we idled through
+          # start_evidence_ms without any appearing. The escape lives
+          # INSIDE the idle guard — see finalize's await_compaction for
+          # the 2026-08-01 lesson on hoisting it out.
+          until: "active_compactions == 0 && (compaction_observed != 0 || poll_elapsed_ms >= start_evidence_ms)"
+          interval_ms: 5000
+          # 48h, matching finalize's drain: the final tier's settle can
+          # legitimately be a table-scale merge. The op-level `errors:`
+          # turns a poll_timeout into a warning, not a run-ending error.
+          timeout_ms: 172800000
+          max_error_retries: 5
+          metric_name: settle_wait_time_s
+          memo: "settling {keyspace}.{table}: ratio {completion_ratio}, data {data_bytes_done}/{data_bytes_total} bytes (≈{mib_per_s} MiB/s), index {index_nodes_done}/{index_nodes_total} nodes (≈{nodes_per_s} n/s), {active_compactions} task(s) in flight"
+          progress: "{completion_ratio}"
+        metrics:
+          settle_pending_tasks:          { kind: gauge, value: active_compactions }
+          compaction_completion_ratio:   { kind: gauge, value: completion_ratio }
+          compaction_index_nodes_done:   { kind: gauge, value: index_nodes_done }
+          compaction_index_nodes_total:  { kind: gauge, value: index_nodes_total }
+          compaction_data_bytes_done:    { kind: gauge, value: data_bytes_done }
+          compaction_data_bytes_total:   { kind: gauge, value: data_bytes_total }
+        memo:
+          before: "waiting for background compaction/index work on {keyspace}.{table} to go idle (system_views.sstable_tasks, 5s polls; releases after 60s of confirmed idle if STCS schedules nothing)"
+          after:  "{keyspace}.{table} settled — no background compaction or index-build tasks registered"
+        request_timeout_ms: 60000
 
   # Major compaction. One stanza, ops run once each in order:
   #   flush           -> roll any remaining memtable to disk
