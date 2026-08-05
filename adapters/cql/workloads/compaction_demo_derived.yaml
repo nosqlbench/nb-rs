@@ -116,15 +116,21 @@ params:
   # not kill the run — only a sustained terminal-failure rate does. Tune on
   # the CLI (`result_failure_backstop=0.05`).
   result_failure_backstop: 0.025
-  # `result_failure_cap` = the ABSOLUTE terminal-failure ceiling, OR'd
-  # with the proportional backstop above. Scale flaw found 2026-08-05
-  # (local/incident_20260805_server_write_wedge.md): at 37M cycles the
-  # 2.5% proportion needs ~924k failures to trip, so a wedged server
-  # accumulated 7,594 coverage holes while the run merely looked
-  # flaky. Every terminal failure is a missing row; past this many the
-  # tier is invalid no matter how large it is. 5000 would have fired
-  # ~2h into that incident. Tune on the CLI (`result_failure_cap=1000`).
-  result_failure_cap: 5000
+  # `result_failure_window_floor` = the minimum terminal failures INSIDE
+  # THE TRAILING WINDOW for the windowed backstop below (stcs_adaptive
+  # only). The 2026-08-05 wedge exposed the real flaw in the lifetime
+  # backstop pair: its denominator is the WHOLE tier's cycle count, so
+  # a 100%-failing present hid under a healthy past (7,594 holes at
+  # 0.02% lifetime rate; the 2.5% trip needed ~924k). The fix keeps the
+  # rate-with-floor DESIGN but bounds the denominator by TIME: the
+  # compaction_watch daemon publishes 55s-trailing failure/result
+  # counts (55s keeps the metricsql read inside the SRD-90 in-memory
+  # counter horizon — no sqlite touch on a live db), and the loader
+  # aborts when the trailing window holds >= this floor AND the
+  # windowed rate crosses `result_failure_backstop`. Time-bounded
+  # denominators are scale-invariant: the same thresholds mean the
+  # same thing at 100k rows or 1B. Tune on the CLI.
+  result_failure_window_floor: 100
   adapter: cql
   # ── Environment defaults captured from `runtest` (2026-08-03) ──
   # The standing test environment, promoted from the wrapper script so
@@ -438,6 +444,13 @@ bindings: |
   shared flush_active_live:         u64 := 0
   shared flush_pending_live:        u64 := 0
   shared flush_blocked_live:        u64 := 0
+  # Trailing-window loader health (2026-08-05 incident): terminal
+  # failures and terminal results over the last 55s, computed by the
+  # watch daemon from the live metric store. The loader's windowed
+  # abort backstop reads these — cheap wire predicate at continuous
+  # pulse, heavy metricsql only at watch cadence.
+  shared recent_result_failures:    f64 := 0.0
+  shared recent_result_total:       f64 := 0.0
 
 scenarios:
   # Default: the incremental size-tier sweep.
@@ -901,12 +914,23 @@ phases:
           flush_active_live:        ":max(active_tasks where name='MemtableFlushWriter')"
           flush_pending_live:       ":max(pending_tasks where name='MemtableFlushWriter')"
           flush_blocked_live:       ":max(blocked_tasks where name='MemtableFlushWriter')"
+        # Trailing-window loader health, computed at WATCH cadence (the
+        # sensor/guard split of the servo itself): metricsql over the
+        # last 55s of this tier's own result counters — inside the
+        # SRD-90 in-memory horizon, so this never reads sqlite. The
+        # `result:` write-through publishes to the root shared wires
+        # the loader's windowed backstop reads.
+        result: |
+          recent_result_failures := metricsql_scalar("sum(increase(result_failure{part=\"{part}\"}[55s]))")
+          recent_result_total := metricsql_scalar("sum(increase(result_total{part=\"{part}\"}[55s]))")
         metrics:
           compaction_pool_active:  { kind: gauge, value: active_compactions_live }
           compaction_pool_pending: { kind: gauge, value: pending_compactions_live }
           flush_pool_active:       { kind: gauge, value: flush_active_live }
           flush_pool_pending:      { kind: gauge, value: flush_pending_live }
           flush_pool_blocked:      { kind: gauge, value: flush_blocked_live }
+          recent_result_failures:  { kind: gauge, value: recent_result_failures }
+          recent_result_total:     { kind: gauge, value: recent_result_total }
       read_live_sstables:
         timeout: 10s
         raw: |
@@ -958,7 +982,7 @@ phases:
     # trip only when adapting was not enough.
     errors: ".*:warn,counter"
     stop_when:
-      - condition: "((result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {result_failure_backstop}))) | (result_failure >= {result_failure_cap})"
+      - condition: "((result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {result_failure_backstop}))) | ((recent_result_failures >= {result_failure_window_floor}) & (recent_result_failures > (recent_result_total + 1.0) * {result_failure_backstop}))"
         pulse:   continuous
         per:     self
         action:  abort
@@ -1151,7 +1175,7 @@ phases:
       # `result_failure_backstop` (2.5%) AND there are at least 100 of them
       # (the floor keeps a handful of early failures from tripping a
       # not-yet-meaningful rate). Both halves must hold.
-      - condition: "((result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {result_failure_backstop}))) | (result_failure >= {result_failure_cap})"
+      - condition: "(result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {result_failure_backstop}))"
         pulse:   continuous
         per:     self
         action:  abort
