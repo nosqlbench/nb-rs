@@ -116,6 +116,15 @@ params:
   # not kill the run — only a sustained terminal-failure rate does. Tune on
   # the CLI (`result_failure_backstop=0.05`).
   result_failure_backstop: 0.025
+  # `result_failure_cap` = the ABSOLUTE terminal-failure ceiling, OR'd
+  # with the proportional backstop above. Scale flaw found 2026-08-05
+  # (local/incident_20260805_server_write_wedge.md): at 37M cycles the
+  # 2.5% proportion needs ~924k failures to trip, so a wedged server
+  # accumulated 7,594 coverage holes while the run merely looked
+  # flaky. Every terminal failure is a missing row; past this many the
+  # tier is invalid no matter how large it is. 5000 would have fired
+  # ~2h into that incident. Tune on the CLI (`result_failure_cap=1000`).
+  result_failure_cap: 5000
   adapter: cql
   # ── Environment defaults captured from `runtest` (2026-08-03) ──
   # The standing test environment, promoted from the wrapper script so
@@ -949,7 +958,7 @@ phases:
     # trip only when adapting was not enough.
     errors: ".*:warn,counter"
     stop_when:
-      - condition: "(result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {result_failure_backstop}))"
+      - condition: "((result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {result_failure_backstop}))) | (result_failure >= {result_failure_cap})"
         pulse:   continuous
         per:     self
         action:  abort
@@ -1142,7 +1151,7 @@ phases:
       # `result_failure_backstop` (2.5%) AND there are at least 100 of them
       # (the floor keeps a handful of early failures from tripping a
       # not-yet-meaningful rate). Both halves must hold.
-      - condition: "(result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {result_failure_backstop}))"
+      - condition: "((result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * {result_failure_backstop}))) | (result_failure >= {result_failure_cap})"
         pulse:   continuous
         per:     self
         action:  abort
