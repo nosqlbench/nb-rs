@@ -162,12 +162,25 @@ pub fn render_event(e: &CheckpointData) -> String {
                 format_identity(identity),
             ))
         }
-        CheckpointData::PhaseHash { at, identity, hash_hex } => {
+        CheckpointData::PhaseHash { at, identity, hash_hex, params_consumed } => {
             // 12-char hash prefix is enough for visual diffing
-            // without flooding the line.
+            // without flooding the line. SRD-107: show the
+            // consumed-param NAMES (values are digests — the
+            // names are what an operator diffs against a "why
+            // did this re-run?" question).
             let prefix: String = hash_hex.chars().take(12).collect();
+            let params_note = params_consumed.as_deref()
+                .and_then(|j| serde_json::from_str::<
+                    std::collections::BTreeMap<String, String>>(j).ok())
+                .filter(|m| !m.is_empty())
+                .map(|m| format!(
+                    " params=[{}]",
+                    m.keys().cloned().collect::<Vec<_>>().join(","),
+                ))
+                .unwrap_or_default();
             row(at, "phase_hash",
-                &format!("{} hash={prefix}…", format_identity(identity)))
+                &format!("{} hash={prefix}…{params_note}",
+                    format_identity(identity)))
         }
         CheckpointData::ScopeEnter { at, kind, coords, .. } => {
             row(at, "scope_enter", &format!("kind={kind} coords={}", format_coords_map(coords)))

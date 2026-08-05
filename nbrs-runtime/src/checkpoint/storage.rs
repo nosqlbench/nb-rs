@@ -68,6 +68,13 @@ pub struct PhaseEntry {
     /// declaration at all) means the phase always re-runs,
     /// regardless of saved status.
     pub skip_eligible: bool,
+    /// SRD-107 — the consumed-params map as canonical JSON
+    /// (`{"name":"<value sha256 hex>",…}`); the per-param leg of
+    /// resume skip validity. `None` on entries written before
+    /// the field existed (their base hash never matches current
+    /// formulas, so they re-run regardless).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params_consumed: Option<String>,
     /// Lifecycle status at the time of the most recent flush.
     pub status: PhaseStatus,
     /// Wall-clock duration of the *successful* execution.
@@ -338,6 +345,7 @@ fn apply_event(
                 doc.phases.push(PhaseEntry {
                     identity,
                     skip_eligible,
+                    params_consumed: None,
                     status: PhaseStatus::Pending,
                     duration_secs: None,
                     op_counts: None,
@@ -385,11 +393,12 @@ fn apply_event(
             }
             doc.checkpoint_at = at;
         }
-        CheckpointData::PhaseHash { at, identity, hash_hex } => {
+        CheckpointData::PhaseHash { at, identity, hash_hex, params_consumed } => {
             if let Some(entry) = lookup_mut(doc, index, &identity)
                 && let Some(h) = hex_to_hash(&hash_hex)
             {
                 entry.identity.phase_hash = Some(h);
+                entry.params_consumed = params_consumed;
             }
             doc.checkpoint_at = at;
         }

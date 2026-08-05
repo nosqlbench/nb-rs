@@ -343,6 +343,41 @@ mod inner {
         const SCHEMA_VERSION: i64 = 3;
         const INDEXED_VERSION: i64 = 4;
 
+        /// SRD-107 — add `phase_outcomes.params_consumed` to dbs
+        /// created before the column existed. Probed (not blindly
+        /// ALTERed) because SQLite has no ADD COLUMN IF NOT
+        /// EXISTS; skipped entirely on brand-new dbs where the
+        /// CREATE below carries the column.
+        fn ensure_phase_outcomes_params_column(
+            conn: &Connection,
+        ) -> Result<(), String> {
+            let table_exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='table' AND name='phase_outcomes'",
+                [], |r| r.get::<_, i64>(0),
+            ).map(|n| n > 0)
+             .map_err(|e| format!("phase_outcomes probe: {e}"))?;
+            if !table_exists {
+                return Ok(());
+            }
+            let mut stmt = conn.prepare("PRAGMA table_info(phase_outcomes)")
+                .map_err(|e| format!("phase_outcomes pragma: {e}"))?;
+            let mut rows = stmt.query([])
+                .map_err(|e| format!("phase_outcomes pragma query: {e}"))?;
+            while let Ok(Some(r)) = rows.next() {
+                if r.get::<_, String>(1)
+                    .map(|n| n == "params_consumed").unwrap_or(false)
+                {
+                    return Ok(());
+                }
+            }
+            conn.execute(
+                "ALTER TABLE phase_outcomes ADD COLUMN params_consumed TEXT",
+                [],
+            ).map_err(|e| format!("phase_outcomes params migration: {e}"))?;
+            Ok(())
+        }
+
         /// All read-path indexes, `IF NOT EXISTS` so a partially-indexed db
         /// converges. Built by [`Self::ensure_read_indexes`] — never on the
         /// hot write path. Add an index here AND bump [`Self::INDEXED_VERSION`].
@@ -401,6 +436,13 @@ mod inner {
         /// SRD-44 resume/refine reopen that appends in place — is skipped as
         /// wasted parse + catalog work.
         fn create_schema(&mut self) -> Result<(), String> {
+            // SRD-107 — the `params_consumed` column migration runs
+            // on EVERY read-write open, BEFORE the version
+            // early-return: version stamps predate the column, so
+            // gating on them would skip upgrading dbs already at the
+            // current version. One PRAGMA probe (and at most one
+            // ALTER, once per db) per open.
+            Self::ensure_phase_outcomes_params_column(&self.conn)?;
             let version: i64 = self.conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .map_err(|e| format!("failed to read schema version: {e}"))?;
@@ -639,6 +681,11 @@ mod inner {
                     -- panic / operator). NULL for succeeded phases
                     -- and legacy rows.
                     reason_class  TEXT,
+                    -- SRD-107 — consumed-params map as canonical
+                    -- JSON (name -> sha256 hex of the value);
+                    -- the per-param leg of skip validity. NULL
+                    -- for legacy rows and skipped phases.
+                    params_consumed TEXT,
                     PRIMARY KEY (session, exec_id, phase_name, phase_labels)
                 );
                 -- SRD-76: per-error detail rows, 0..N per phase
@@ -751,13 +798,13 @@ mod inner {
                     "INSERT OR REPLACE INTO phase_outcomes \
                      (session, exec_id, phase_name, phase_labels, status, \
                       duration_secs, started_at_nanos, ended_at_nanos, \
-                      phase_hash, reason_class) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                      phase_hash, reason_class, params_consumed) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                     params![
                         row.session, row.exec_id as i64,
                         row.phase_name, row.phase_labels, row.status,
                         row.duration_secs, row.started_at_nanos, row.ended_at_nanos,
-                        row.phase_hash, row.reason_class,
+                        row.phase_hash, row.reason_class, row.params_consumed,
                     ],
                 )?;
                 tx.execute(
@@ -963,12 +1010,19 @@ mod inner {
         /// as NULL — the SRD-82 legacy-read discipline, no migration
         /// write required.
         fn phase_outcomes_has_reason_class(&self) -> bool {
+            self.phase_outcomes_has_column("reason_class")
+        }
+
+        /// SRD-107 shares SRD-83's legacy-read discipline: an
+        /// absent column reads as NULL via a probed column-or-NULL
+        /// SELECT; no migration write on read-only opens.
+        fn phase_outcomes_has_column(&self, name: &str) -> bool {
             let Ok(mut stmt) = self.conn.prepare(
                 "PRAGMA table_info(phase_outcomes)") else { return false };
             let Ok(mut rows) = stmt.query([]) else { return false };
             while let Ok(Some(r)) = rows.next() {
                 if r.get::<_, String>(1)
-                    .map(|n| n == "reason_class").unwrap_or(false)
+                    .map(|n| n == name).unwrap_or(false)
                 {
                     return true;
                 }
@@ -985,13 +1039,18 @@ mod inner {
             } else {
                 "NULL"
             };
+            let pc_col = if self.phase_outcomes_has_column("params_consumed") {
+                "params_consumed"
+            } else {
+                "NULL"
+            };
             let (sql, params): (String, Vec<i64>) = match exec_id_filter {
                 Some(id) => (
                     format!(
                     "SELECT session, exec_id, phase_name, phase_labels, \
                             status, duration_secs, \
                             started_at_nanos, ended_at_nanos, phase_hash, \
-                            {rc_col} \
+                            {rc_col}, {pc_col} \
                      FROM phase_outcomes WHERE exec_id = ?1 \
                      ORDER BY ended_at_nanos, session, exec_id, \
                               phase_name, phase_labels"),
@@ -1002,7 +1061,7 @@ mod inner {
                     "SELECT session, exec_id, phase_name, phase_labels, \
                             status, duration_secs, \
                             started_at_nanos, ended_at_nanos, phase_hash, \
-                            {rc_col} \
+                            {rc_col}, {pc_col} \
                      FROM phase_outcomes \
                      ORDER BY ended_at_nanos, session, exec_id, \
                               phase_name, phase_labels"),
@@ -1028,6 +1087,7 @@ mod inner {
                         ended_at_nanos:    row.get(7)?,
                         phase_hash:        row.get::<_, Option<String>>(8)?,
                         reason_class:      row.get::<_, Option<String>>(9)?,
+                        params_consumed:   row.get::<_, Option<String>>(10)?,
                         errors:            Vec::new(),
                     })
                 });
@@ -1059,10 +1119,15 @@ mod inner {
             } else {
                 "NULL"
             };
+            let pc_col = if self.phase_outcomes_has_column("params_consumed") {
+                "params_consumed"
+            } else {
+                "NULL"
+            };
             let mut row = self.conn.query_row(
                 &format!(
                 "SELECT status, duration_secs, started_at_nanos, ended_at_nanos, \
-                        phase_hash, {rc_col} \
+                        phase_hash, {rc_col}, {pc_col} \
                  FROM phase_outcomes \
                  WHERE session = ?1 AND exec_id = ?2 \
                    AND phase_name = ?3 AND phase_labels = ?4"),
@@ -1078,6 +1143,7 @@ mod inner {
                     ended_at_nanos:    r.get(3)?,
                     phase_hash:        r.get::<_, Option<String>>(4)?,
                     reason_class:      r.get::<_, Option<String>>(5)?,
+                    params_consumed:   r.get::<_, Option<String>>(6)?,
                     errors:            Vec::new(),
                 }),
             ).ok()?;
@@ -1837,6 +1903,11 @@ mod inner {
         /// queries can `GROUP BY` it; `None` for succeeded phases
         /// and for legacy rows written before the column existed.
         pub reason_class: Option<String>,
+        /// SRD-107 — consumed-params map as canonical JSON
+        /// (name -> sha256 hex of the raw value); the per-param
+        /// leg of skip validity. `None` for legacy rows and
+        /// skipped phases.
+        pub params_consumed: Option<String>,
         pub errors: Vec<PhaseErrorRow>,
     }
 
@@ -3169,6 +3240,7 @@ mod inner {
                 started_at_nanos: 1_000_000,
                 ended_at_nanos:   1_001_234_000,
                 phase_hash: None, reason_class: None,
+                params_consumed: None,
                 errors: Vec::new(),
             };
             r.write_phase_outcome(&row);
@@ -3195,6 +3267,7 @@ mod inner {
                 started_at_nanos: 0,
                 ended_at_nanos:   14400 * 1_000_000_000,
                 phase_hash: None, reason_class: None,
+                params_consumed: None,
                 errors: vec![
                     super::PhaseErrorRow {
                         class: "poll_timeout".into(),
@@ -3243,6 +3316,7 @@ mod inner {
                 started_at_nanos: 0,
                 ended_at_nanos: 1,
                 phase_hash: None, reason_class: None,
+                params_consumed: None,
                 errors: vec![super::PhaseErrorRow {
                     class: "A".into(),
                     message: "m".into(),
@@ -3279,6 +3353,7 @@ mod inner {
                     started_at_nanos: exec_id as i64 * 1_000,
                     ended_at_nanos:   exec_id as i64 * 1_000 + 1,
                     phase_hash: None, reason_class: None,
+                    params_consumed: None,
                     errors: Vec::new(),
                 });
             }
@@ -4122,6 +4197,7 @@ mod inner {
                     started_at_nanos: 0,
                     ended_at_nanos: exec_id as i64,
                     phase_hash: None, reason_class: None,
+                    params_consumed: None,
                     errors: Vec::new(),
                 });
             }
@@ -4146,6 +4222,7 @@ mod inner {
                     started_at_nanos: 0,
                     ended_at_nanos: exec_id as i64,
                     phase_hash: None, reason_class: None,
+                    params_consumed: None,
                     errors: Vec::new(),
                 });
             }

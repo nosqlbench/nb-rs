@@ -188,12 +188,13 @@ fn sort_json_keys(v: &mut serde_json::Value) {
 
 /// Compute a phase's ancestor-chain instance hash by looking up
 /// the scope-tree node and walking its installed ancestor
-/// kernels — immediate parent first, then up through the
-/// workload root and the session-level workload-params module
-/// (installed on the session node precisely so this chain
-/// covers param values). Returns `None` if the scope tree has
-/// no installed kernels (defensive — the workload root always
-/// has one in production).
+/// kernels — immediate parent first, up through the workload
+/// root. The session node's kernel (the workload-params module)
+/// is EXCLUDED (SRD-107): param values participate per-phase via
+/// the consumed-params digest, not the chain, so an unrelated
+/// param change cannot flip this hash. Returns `None` if the
+/// scope tree has no installed kernels below the session
+/// (defensive — the workload root always has one in production).
 ///
 /// Shared by the resume planner's candidates and the executor's
 /// stamped hash ([`compose_phase_hash`] composes it with the
@@ -203,7 +204,7 @@ pub(crate) fn ancestor_chain_hash(
     phase_name: &str,
 ) -> Option<[u8; 32]> {
     let idx = scope_tree.phase_node_by_name(phase_name)?;
-    let ancestors = scope_tree.ancestor_kernels(idx);
+    let (ancestors, _params_module) = scope_tree.ancestor_kernels_split(idx);
     if ancestors.is_empty() {
         return None;
     }

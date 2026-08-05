@@ -219,6 +219,7 @@ impl CheckpointWriter {
             let entry = PhaseEntry {
                 identity: identity.clone(),
                 skip_eligible,
+                params_consumed: None,
                 status: PhaseStatus::Pending,
                 duration_secs: None,
                 op_counts: None,
@@ -334,15 +335,22 @@ impl CheckpointWriter {
     }
 
     /// Set the program-canonical hash on a declared phase.
-    pub fn update_phase_hash(&self, identity: &PhaseIdentity, hash: [u8; 32]) {
+    pub fn update_phase_hash(
+        &self,
+        identity: &PhaseIdentity,
+        hash: [u8; 32],
+        params_consumed: Option<String>,
+    ) {
         let updated = self.with_entry(identity, |e| {
             e.identity.phase_hash = Some(hash);
+            e.params_consumed = params_consumed.clone();
         });
         if updated {
             self.append_event(CheckpointData::PhaseHash {
                 at: now_rfc3339(),
                 identity: identity.clone(),
                 hash_hex: hash_to_hex(&hash),
+                params_consumed,
             });
         }
     }

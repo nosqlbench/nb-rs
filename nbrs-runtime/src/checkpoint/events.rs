@@ -111,8 +111,15 @@ pub enum CheckpointData {
         at: String,
         identity: PhaseIdentity,
         /// 32-byte program hash, hex-encoded for human
-        /// readability of the on-disk records.
+        /// readability of the on-disk records. SRD-107: the
+        /// BASE hash (chain below the session node + config
+        /// digest); param values ride in `params_consumed`.
         hash_hex: String,
+        /// SRD-107 — the consumed-params map as canonical JSON
+        /// (`{"name":"<value sha256 hex>",…}`). Absent on
+        /// records written before the field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params_consumed: Option<String>,
     },
 
     /// Reserved for SRD-44a Push 3. The reader already

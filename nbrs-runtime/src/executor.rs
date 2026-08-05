@@ -4928,27 +4928,55 @@ async fn run_phase_inner(
             Some(&ctx.sqlite_reporter),
         );
     }
-    // The phase's provenance hash (SRD-106 D2 — THE skip-validity
-    // anchor): [`checkpoint::compose_phase_hash`] over the
-    // ancestor-chain instance hash (immediate parent scopes up
-    // through the workload root and the session-level
-    // workload-params module, so param VALUES participate) and
-    // the canonical phase-config digest (ops, bindings, cycles —
-    // every declared `WorkloadPhase` field). Both inputs are
-    // pre-map computable; the resume planner's candidates use
-    // the exact same formula, so the checkpoint document's saved
-    // hash, the persisted outcome row's hash (refine's gate),
-    // and a fresh run's value all compare directly.
+    // The phase's provenance identity (SRD-106 D2 + SRD-107 —
+    // THE skip-validity anchor), decomposed:
+    //
+    // - `phase_hash_bytes` — the BASE hash:
+    //   [`checkpoint::compose_phase_hash`] over the
+    //   ancestor-chain instance hash (immediate parent scopes up
+    //   through the workload root; the session-level params
+    //   module is EXCLUDED) and the canonical phase-config
+    //   digest (ops, bindings, cycles — every declared
+    //   `WorkloadPhase` field). Pre-map computable; the resume
+    //   planner's candidates use the same formula.
+    // - `params_consumed_json` — the per-param leg: which params
+    //   this phase's scope actually consumes (GK backward
+    //   closure ∪ textual `{name}` scan) mapped to digests of
+    //   their CURRENT values. An unrelated param change flips
+    //   neither piece; a consumed one flips its digest.
+    let phase_config_text = crate::checkpoint::phase_config_canonical_text(&phase);
     let phase_hash_bytes = crate::checkpoint::compose_phase_hash(
         crate::checkpoint::ancestor_chain_hash(&ctx.scope_tree, phase_name),
-        crate::checkpoint::phase_config_hash(&phase),
+        crate::checkpoint::config_text_hash(&phase_config_text),
     );
     let phase_hash_hex: String = phase_hash_bytes.iter()
         .map(|b| format!("{b:02x}"))
         .collect();
+    let params_consumed_json: Option<String> = {
+        let phase_idx = ctx.scope_tree.phase_node_by_name(phase_name);
+        let ancestors_below = phase_idx
+            .map(|idx| ctx.scope_tree.ancestor_kernels_split(idx).0)
+            .unwrap_or_default();
+        let op_templates: Vec<std::sync::Arc<polydat::kernel::PolydatProgram>> =
+            phase_idx
+                .map(|idx| ctx.scope_tree
+                    .op_template_programs_for_phase(idx)
+                    .into_values()
+                    .collect())
+                .unwrap_or_default();
+        let consumed = crate::checkpoint::params_scope::consumed_params(
+            &iter_op_builder.program(),
+            &op_templates,
+            &ancestors_below,
+            &phase_config_text,
+            &ctx.workload_params,
+        );
+        serde_json::to_string(&consumed).ok()
+    };
     if let Some(writer) = ctx.checkpoint_writer.clone() {
         let identity = phase_identity_for(phase_name, &phase_labels);
-        writer.update_phase_hash(&identity, phase_hash_bytes);
+        writer.update_phase_hash(
+            &identity, phase_hash_bytes, params_consumed_json.clone());
 
         // Wholesale metrics-purge (SRD-44): on resume, before a
         // phase re-runs, delete every sample_value row from the
@@ -6056,7 +6084,8 @@ async fn run_phase_inner(
             ),
             phase_duration,
             errors,
-        ).with_phase_hash(phase_hash_hex.clone());
+        ).with_phase_hash(phase_hash_hex.clone())
+         .with_params_consumed(params_consumed_json.clone());
         // SRD-76 Push 3 — persist before installing on the
         // scene tree so a panic during scene-tree
         // mutation still leaves a durable row on disk. The
@@ -6151,6 +6180,7 @@ async fn run_phase_inner(
         errors: success_errors,
         resume_cursor: None,
         phase_hash: Some(phase_hash_hex.clone()),
+        params_consumed: params_consumed_json.clone(),
     };
     // SRD-76 Push 3 — persist the success outcome. Same
     // best-effort policy as the failure path above; the

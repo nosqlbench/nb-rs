@@ -425,14 +425,24 @@ pub struct PhaseOutcome {
     /// phase doesn't support cursor-resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_cursor: Option<ResumeCursor>,
-    /// SRD-77 `--scope=changed` — the GK chain-hash for this
-    /// phase (`GkProgram::instance_hash` from SRD-44). Hex-
-    /// encoded so the storage layer can round-trip as TEXT.
-    /// `None` for outcomes recorded before the column was
-    /// added (legacy rows) or for skipped phases that never
-    /// computed their hash.
+    /// SRD-77 `--scope=changed` — the phase's provenance BASE
+    /// hash (SRD-107: ancestor chain below the session node
+    /// composed with the config digest; param values live in
+    /// [`Self::params_consumed`] instead). Hex-encoded so the
+    /// storage layer can round-trip as TEXT. `None` for
+    /// outcomes recorded before the column was added (legacy
+    /// rows) or for skipped phases that never computed their
+    /// hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_hash: Option<String>,
+    /// SRD-107 — the phase's consumed-params map as canonical
+    /// JSON (`{"name":"<value sha256 hex>",…}`, sorted keys).
+    /// Skip validity's per-param leg: current values of exactly
+    /// these names must digest to these values. `None` on
+    /// legacy rows (whose base hash never matches current
+    /// formulas anyway) and on skipped phases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params_consumed: Option<String>,
 }
 
 /// Deserialization shape for [`PhaseOutcome`]: accepts BOTH the
@@ -455,6 +465,8 @@ struct PhaseOutcomeWire {
     resume_cursor: Option<ResumeCursor>,
     #[serde(default)]
     phase_hash: Option<String>,
+    #[serde(default)]
+    params_consumed: Option<String>,
 }
 
 /// The retired conflated status, kept ONLY as a deserialization
@@ -496,6 +508,7 @@ impl From<PhaseOutcomeWire> for PhaseOutcome {
             errors: w.errors,
             resume_cursor: w.resume_cursor,
             phase_hash: w.phase_hash,
+            params_consumed: w.params_consumed,
         }
     }
 }
@@ -544,6 +557,7 @@ impl PhaseOutcome {
             errors: Vec::new(),
             resume_cursor: None,
             phase_hash: None,
+            params_consumed: None,
         }
     }
 
@@ -566,6 +580,7 @@ impl PhaseOutcome {
             errors,
             resume_cursor: None,
             phase_hash: None,
+            params_consumed: None,
         }
     }
 
@@ -581,6 +596,7 @@ impl PhaseOutcome {
             errors: Vec::new(),
             resume_cursor: None,
             phase_hash: None,
+            params_consumed: None,
         }
     }
 
@@ -601,6 +617,7 @@ impl PhaseOutcome {
             errors: Vec::new(),
             resume_cursor,
             phase_hash: None,
+            params_consumed: None,
         }
     }
 
@@ -610,6 +627,13 @@ impl PhaseOutcome {
     /// SRD-77-aware callers chain `.completed(...).with_hash(h)`.
     pub fn with_phase_hash(mut self, hex_hash: String) -> Self {
         self.phase_hash = Some(hex_hash);
+        self
+    }
+
+    /// Stamp the SRD-107 consumed-params JSON on this outcome.
+    /// Builder-style, same rationale as [`Self::with_phase_hash`].
+    pub fn with_params_consumed(mut self, json: Option<String>) -> Self {
+        self.params_consumed = json;
         self
     }
 
@@ -675,6 +699,7 @@ impl PhaseOutcome {
             reason_class:     self.reason_class()
                 .map(|c| c.as_str().to_string()),
             phase_hash:       self.phase_hash.clone(),
+            params_consumed:  self.params_consumed.clone(),
             errors:           self.errors.iter().map(|e| {
                 nbrs_metrics::reporters::sqlite::PhaseErrorRow {
                     class:       e.class.clone(),
@@ -797,6 +822,7 @@ mod tests {
             }],
             resume_cursor: None,
             phase_hash: None,
+            params_consumed: None,
         };
         let json = serde_json::to_string(&original).expect("serialise");
         let parsed: PhaseOutcome = serde_json::from_str(&json)

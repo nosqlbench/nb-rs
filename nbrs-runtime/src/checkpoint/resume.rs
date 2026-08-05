@@ -249,6 +249,7 @@ mod tests {
         PhaseEntry {
             identity,
             skip_eligible,
+            params_consumed: None,
             status,
             duration_secs: Some(1.0),
             op_counts: Some(OpCounts::default()),
