@@ -56,6 +56,16 @@ pub struct CheckpointWriter {
     /// `resume_hint` stays silent.
     enabled: bool,
     inner: Mutex<Inner>,
+    /// Set once by [`Self::mark_run_reached_end`] when the runner
+    /// reaches its session-end boundary (both run shapes converge
+    /// there; early error returns never set it). Read by
+    /// [`Self::resume_hint`]: a run that ended cleanly must not
+    /// read declared-but-never-started phases as resumable work —
+    /// the runner declares EVERY pre-mapped phase up front (so a
+    /// resume can tell "didn't run yet" from "wasn't planned"),
+    /// and runtime predicates (`continue_if`, for-loop bounds)
+    /// legitimately leave some of those entries Pending forever.
+    run_reached_end: std::sync::atomic::AtomicBool,
     /// File descriptor of the held flock lockfile
     /// (`logs/<session>/checkpoint.lock`). The descriptor is
     /// owned for the lifetime of the writer; closing it (Drop)
@@ -121,6 +131,7 @@ impl CheckpointWriter {
                 index: HashMap::new(),
                 file,
             }),
+            run_reached_end: std::sync::atomic::AtomicBool::new(false),
             _lock_fd: lock,
         };
         // Per SRD-44a §"File location and format" — the first
@@ -163,6 +174,7 @@ impl CheckpointWriter {
             path,
             enabled: true,
             inner: Mutex::new(Inner { doc, index, file }),
+            run_reached_end: std::sync::atomic::AtomicBool::new(false),
             _lock_fd: lock,
         };
         writer.append_event(CheckpointData::SessionStart {
@@ -201,6 +213,7 @@ impl CheckpointWriter {
                 index: HashMap::new(),
                 file,
             }),
+            run_reached_end: std::sync::atomic::AtomicBool::new(false),
             _lock_fd: None,
         }
     }
@@ -452,6 +465,16 @@ impl CheckpointWriter {
         self.inner.lock().unwrap().doc.clone()
     }
 
+    /// Record that the runner reached its session-end boundary
+    /// (the convergence point right before `run_finished()`).
+    /// Early error returns and interrupts never get here, so the
+    /// flag cleanly separates "the run ended" from "the run was
+    /// cut short" for [`Self::resume_hint`].
+    pub fn mark_run_reached_end(&self) {
+        self.run_reached_end
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// If the workload has incomplete phases declared
     /// `checkpoint: idempotent`, return a multi-line hint string
     /// the runtime can show the operator on exit.
@@ -460,10 +483,27 @@ impl CheckpointWriter {
         if !self.enabled {
             return None;
         }
+        let ended = self.run_reached_end
+            .load(std::sync::atomic::Ordering::Relaxed);
         let cp = self.snapshot();
         let recoverable = cp.phases.iter().any(|e| {
-            e.skip_eligible
-                && !matches!(e.status, PhaseStatus::Completed)
+            e.skip_eligible && match e.status {
+                PhaseStatus::Completed => false,
+                // Failed (and the anomalous started-never-finished)
+                // are actionable regardless of how the run ended.
+                PhaseStatus::Failed | PhaseStatus::Running => true,
+                // Declared-but-never-started is only evidence of
+                // interruption when the run was cut short. Every
+                // pre-mapped phase is declared up front (so resume
+                // can tell "didn't run yet" from "wasn't planned"),
+                // and runtime predicates (`continue_if`, for-loop
+                // bounds) legitimately leave some entries Pending
+                // forever — a clean run end must not read those as
+                // work left behind. (Observed 2026-08-05: a fully
+                // successful 78/78 adaptive run advised resuming
+                // its 28 continue_if-excluded tiers.)
+                PhaseStatus::Pending => !ended,
+            }
         });
         if !recoverable {
             return None;
@@ -683,6 +723,46 @@ mod tests {
         assert!(lines[1].contains("\"type\":\"phase_declared\""));
         assert!(lines[2].contains("\"type\":\"phase_started\""));
         assert!(lines[3].contains("\"type\":\"phase_completed\""));
+    }
+
+    #[test]
+    fn resume_hint_respects_run_end_boundary() {
+        // The 2026-08-05 false positive: every pre-mapped phase is
+        // declared up front, and runtime predicates (continue_if,
+        // for-loop bounds) leave excluded ones Pending forever — a
+        // fully successful 78/78 run advised resuming its 28
+        // excluded tiers. Pending counts as resumable ONLY when the
+        // run never reached its end boundary; Failed counts always.
+        let dir = tempdir();
+        let w = CheckpointWriter::new(
+            dir.join("checkpoint.jsonl"),
+            "sess".into(), "2026-01-01T00:00:00Z".into(), 1,
+        );
+        let ran = ident("tier", "(part=0)");
+        let excluded = ident("tier", "(part=17)");
+        w.declare_phase(ran.clone(), true);
+        w.declare_phase(excluded.clone(), true);
+        w.phase_started(&ran);
+        w.phase_completed(&ran, 1.0);
+
+        // Cut short (no end mark): the Pending entry is resumable.
+        assert!(w.resume_hint().is_some(),
+            "an interrupted run must advise resuming pending phases");
+
+        // Clean end: the same Pending entry was excluded by a
+        // runtime predicate, not left behind.
+        w.mark_run_reached_end();
+        assert!(w.resume_hint().is_none(),
+            "a run that reached its end must not advise resuming \
+             predicate-excluded phases");
+
+        // A failure stays actionable even after a clean end.
+        let failed = ident("tier", "(part=3)");
+        w.declare_phase(failed.clone(), true);
+        w.phase_started(&failed);
+        w.phase_failed(&failed, "boom");
+        assert!(w.resume_hint().is_some(),
+            "failed phases must keep the hint even on a clean end");
     }
 
     #[test]

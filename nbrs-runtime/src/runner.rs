@@ -3418,7 +3418,20 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         impl Drop for EndOfRunNoticeGuard {
             fn drop(&mut self) {
                 if let Some(hint) = self.writer.resume_hint() {
-                    eprintln!("\n{hint}");
+                    // Through the observer, one line per log call —
+                    // NOT a raw eprintln!: this drop can fire while
+                    // the TUI still holds the terminal in raw mode,
+                    // where a bare `\n` does not return the carriage
+                    // and a stderr write bypasses the render sink —
+                    // each line then starts at the previous line's
+                    // end column (the end-of-session staircase,
+                    // observed 2026-08-05). The log path is owned by
+                    // the surface channel (SRD-87) in both TUI and
+                    // plain modes, so it renders correctly in each.
+                    for line in hint.lines() {
+                        crate::diag!(
+                            crate::observer::LogLevel::Info, "{line}");
+                    }
                 }
                 let n = crate::session::forecast_keep_purge(&self.parent, self.keep_cap);
                 if n > 0 {
@@ -3569,6 +3582,16 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             }
         }
 
+        // The run reached its end boundary: every fallible step is
+        // behind us (the epilogue after this block is teardown
+        // only). Tell the checkpoint writer HERE, as the block's
+        // last statement — `_eor_notice_guard` drops when this
+        // block closes, and its resume_hint must read
+        // declared-but-never-started phases as excluded-by-
+        // predicate rather than left-behind (SRD-44a; see
+        // resume_hint). Error `?` returns above skip this, so a
+        // cut-short run still advises resuming pending phases.
+        checkpoint_writer.mark_run_reached_end();
     }
 
     // Session-end lifecycle boundary. Close the session root path
