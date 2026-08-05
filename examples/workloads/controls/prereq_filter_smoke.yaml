@@ -20,13 +20,15 @@
 # Self-contained: default adapter, no params. Run under a sandbox
 # --session-path; never from the project root.
 
-# `run_tag` exists purely to flip the provenance hash from the CLI
-# (`run_tag=b`): param values live as const slots on the session-level
-# workload-params module, which every phase's ancestor-chain hash
-# includes — so a changed value invalidates every phase's provenance.
-# The refine validity tests use it to prove a stale prereq re-runs.
+# Two params with DISJOINT consumers (SRD-107): `run_tag` is
+# consumed only by `prep` (its `{run_tag}` binding ref below);
+# `probe_tag` only by `measure_a`. The refine validity tests flip
+# each from the CLI to prove per-phase precision — a consumed
+# param's change re-runs its consumer (naming the param), while an
+# unconsumed one leaves the prereq's provenance intact.
 params:
   run_tag: "a"
+  probe_tag: "x"
 
 scenarios:
   default:
@@ -43,9 +45,9 @@ phases:
     checkpoint: idempotent
     cycles: 1
     concurrency: 1
-    # `tag` keeps {run_tag} referenced for the unused-param
-    # validator; provenance coverage of the VALUE comes from the
-    # params module in the ancestor chain, not this binding.
+    # The `{run_tag}` ref makes prep CONSUME run_tag (the SRD-107
+    # textual leg) — and keeps the param referenced for the
+    # unused-param validator.
     bindings: |
       const tag := "{run_tag}"
     ops:
@@ -55,6 +57,10 @@ phases:
   measure_a:
     cycles: 2
     concurrency: 1
+    # measure_a consumes probe_tag; prep does not — the
+    # per-phase precision the SRD-107 tests pin.
+    bindings: |
+      const ptag := "{probe_tag}"
     ops:
       t:
         stmt: "A_TICK"

@@ -1,9 +1,24 @@
 # SRD-107 — Param-Scoped Provenance
 
-Status: DRAFT / PLANNED (design only — nothing on this SRD is
-implemented). Refines the SRD-106 D2 provenance hash so that a
-phase's skip validity depends on exactly the parameter values its
-scope consumes — scope-stable idempotency across parameter sets.
+Status: IMPLEMENTED (branch `workload_scaffold`) — Pushes 1–4
+landed. Refines the SRD-106 D2 provenance hash so that a phase's
+skip validity depends on exactly the parameter values its scope
+consumes — scope-stable idempotency across parameter sets.
+
+Implementation deltas from the original draft (both strengthen
+the design in its own direction):
+
+- `params_digest` became PER-PARAM digests: `params_consumed`
+  stores canonical JSON `{"name": "<value sha256>"}`, so the
+  Push 3 diagnostics can name the exact changed param instead of
+  "some param".
+- The closure seeds from each program's OWNED outputs (inherited
+  re-exports excluded), not its declared extern set: the
+  params-injection cascade declares an extern slot AND a
+  passthrough re-export for every param on every scope, and
+  neither declaration nor plumbing is consumption. Discovered
+  empirically in Push 4 — the declared-extern seed reproduced
+  whole-module coverage exactly.
 
 ## Problem
 

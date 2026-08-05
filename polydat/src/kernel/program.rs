@@ -752,17 +752,6 @@ impl PolydatProgram {
         self.input_defs.iter().map(|d| d.name.clone()).collect()
     }
 
-    /// Names of the non-coordinate inputs — the slots an
-    /// enclosing scope satisfies (iteration externs and
-    /// external-write ports), excluding runtime dimensions like
-    /// `cycle`. The seed set for [`Self::extern_closure`] walks
-    /// (SRD-107).
-    pub fn outer_input_names(&self) -> Vec<String> {
-        self.input_defs.iter()
-            .filter(|d| d.kind != super::InputKind::Coordinate)
-            .map(|d| d.name.clone())
-            .collect()
-    }
 
     /// Return the number of coordinate inputs.
     pub fn coord_count(&self) -> usize {

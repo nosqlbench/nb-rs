@@ -111,8 +111,9 @@ fn valid_prereq_skips_and_selection_runs() {
          evidence:\n{evidence}");
 }
 
-/// A param change flips the chain-hash: the prereq's prior outcome is
-/// no longer valid and it re-runs, even though a completed row exists.
+/// A CONSUMED param's change invalidates the prereq's provenance:
+/// prep consumes `run_tag`, so flipping it re-runs prep — and the
+/// diagnostic names the param (SRD-107 Push 3).
 #[test]
 fn hash_flip_reruns_the_prereq() {
     let sandbox = Sandbox::new("flip");
@@ -123,8 +124,35 @@ fn hash_flip_reruns_the_prereq() {
         invoke("refine", &sandbox, &["phases=measure_a", "run_tag=b"]);
     assert!(ok, "refine must complete; evidence:\n{evidence}");
     assert_eq!(ticks(&stdout, "PREP_TICK"), 1,
-        "a hash flip invalidates the prereq's provenance — it must re-run");
+        "a consumed-param flip invalidates the prereq's provenance — \
+         it must re-run");
     assert_eq!(ticks(&stdout, "A_TICK"), 2, "the selection runs");
+    assert!(evidence.contains("param 'run_tag' changed"),
+        "the re-run diagnostic must NAME the changed param; \
+         evidence:\n{evidence}");
+}
+
+/// SRD-107's headline: a param the prereq does NOT consume may
+/// change freely — `probe_tag` feeds only measure_a, so flipping
+/// it leaves prep's provenance intact and the load-shaped phase
+/// skips. (Pre-SRD-107, ANY param change re-ran every phase.)
+#[test]
+fn unconsumed_param_flip_still_skips_the_prereq() {
+    let sandbox = Sandbox::new("unrelated");
+    let (_stdout, evidence, ok) = invoke("run", &sandbox, &[]);
+    assert!(ok, "baseline run must complete; evidence:\n{evidence}");
+
+    let (stdout, evidence, ok) =
+        invoke("refine", &sandbox, &["phases=measure_a", "probe_tag=y"]);
+    assert!(ok, "refine must complete; evidence:\n{evidence}");
+    assert_eq!(ticks(&stdout, "PREP_TICK"), 0,
+        "an unconsumed param's change must NOT invalidate the prereq; \
+         evidence:\n{evidence}");
+    assert_eq!(ticks(&stdout, "A_TICK"), 2,
+        "the selected measurement re-runs (selection is intent to run)");
+    assert!(evidence.contains("prior completed outcome, hash unchanged"),
+        "the prereq skip still routes through the hash gate; \
+         evidence:\n{evidence}");
 }
 
 /// Unfiltered refine keeps SRD-77 semantics: everything with a prior

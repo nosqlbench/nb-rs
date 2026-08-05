@@ -14,10 +14,12 @@
 # announced as the run's first notable event; pass `--session new`
 # for a fresh session. Schema/load phases are `checkpoint:
 # idempotent` (the prereq class): on re-attach they skip when — and
-# only when — their prior outcome is Completed+Succeeded and the
-# provenance hash is unchanged. NOTE: params are provenance-bearing —
-# changing ANY param value invalidates every phase's provenance and
-# re-runs the loads (the safe direction; see SRD-44).
+# only when — their prior outcome is Completed+Succeeded, the
+# provenance base hash is unchanged, AND every param the phase
+# CONSUMES still holds its value (SRD-107). Params a phase does not
+# consume may change freely — sweeping `suite_k=` never re-runs the
+# loads; changing `dataset=` always does, and the diagnostic names
+# the changed param.
 #
 # Table namespaces: the shared measured target lives in
 # vsuite_{profile}; the destructive sections get their own —

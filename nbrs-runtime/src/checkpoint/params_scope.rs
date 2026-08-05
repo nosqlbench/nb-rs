@@ -8,9 +8,12 @@
 //! would drift from the programs and reintroduce stale-skip bugs
 //! by hand):
 //!
-//! - **GK backward closure** — seed with the non-coordinate input
-//!   names of the phase's own program and its op-template
-//!   programs, then resolve upward through each ancestor scope
+//! - **GK backward closure** — seed with the externs reachable
+//!   from the OUTPUTS of the phase's own program and its
+//!   op-template programs (NOT the declared extern set: the
+//!   params-injection cascade declares an extern slot for every
+//!   param on every scope, and a declared-but-unwired slot feeds
+//!   nothing). Then resolve upward through each ancestor scope
 //!   program: a name the ancestor outputs is replaced by that
 //!   output's own extern slice ([`polydat::kernel::PolydatProgram
 //!   ::extern_closure`] — per-output dataflow, so sibling outputs'
@@ -64,13 +67,26 @@ pub(crate) fn consumed_params(
     phase_config_text: &str,
     params: &HashMap<String, String>,
 ) -> BTreeMap<String, String> {
-    // Seed: every outer-satisfied slot of the phase's own scope.
-    let mut unresolved: BTreeSet<String> = own_program
-        .outer_input_names()
+    // Seed: the externs REACHABLE FROM EACH PROGRAM'S OWNED
+    // OUTPUTS — not its declared extern set, and not its
+    // inherited re-exports. The params-injection cascade
+    // declares an extern slot for every workload param on every
+    // scope AND re-exports it as a passthrough output for
+    // descendants; neither declaration nor plumbing is
+    // consumption. What consumes a param is a node graph that
+    // FEEDS an output this scope owns.
+    let mut unresolved: BTreeSet<String> = BTreeSet::new();
+    let own_outputs: Vec<&str> = own_program.output_names()
         .into_iter()
+        .filter(|n| !own_program.is_inherited(n))
         .collect();
+    unresolved.extend(own_program.extern_closure(&own_outputs));
     for prog in op_template_programs {
-        unresolved.extend(prog.outer_input_names());
+        let outs: Vec<&str> = prog.output_names()
+            .into_iter()
+            .filter(|n| !prog.is_inherited(n))
+            .collect();
+        unresolved.extend(prog.extern_closure(&outs));
     }
 
     // Resolve upward. Innermost ancestor wins a name (GK scope
@@ -217,6 +233,27 @@ mod tests {
             &params(&[("p1", "a")]),
         );
         assert!(got.is_empty(), "got: {got:?}");
+    }
+
+    /// The derivation counts a program's extern as consumed only
+    /// when it feeds an output the program OWNS. A bare
+    /// `compile_polydat` re-exports every declared extern as an
+    /// output WITHOUT the `inherited` passthrough marking (that
+    /// marking is applied by the runtime's scope synthesis), so
+    /// this fixture legitimately reads as consumption. The
+    /// production shape — cascade-declared extern slots whose
+    /// re-exports ARE marked inherited and therefore do NOT count
+    /// — is pinned end-to-end by `refine_prereq_validity::
+    /// unconsumed_param_flip_still_skips_the_prereq`.
+    #[test]
+    fn bare_compile_extern_reexport_reads_as_owned() {
+        let phase = kernel("extern p1: String\nout := 1\n");
+        let got = consumed_params(
+            &phase.program(), &[], &[], "",
+            &params(&[("p1", "a")]),
+        );
+        assert_eq!(names(&got), vec!["p1"],
+            "bare-compile re-exports carry no inherited marking");
     }
 
     #[test]

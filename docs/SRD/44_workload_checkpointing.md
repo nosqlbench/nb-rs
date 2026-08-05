@@ -166,15 +166,16 @@ directly):
    that never enters a compiled polydat program, most notably an
    op's statement text.
 
-Param coverage is deliberately **whole-module, not per-phase**:
-any param-value change invalidates every phase's provenance.
-That is the safe direction — over-invalidation re-runs work; a
-missed reference would let a stale skip corrupt a measurement.
-Measurement sweep knobs belong in `dimensions:` / sweep cells,
-which carry their own per-cell identity (`coords`) and so never
-touch other phases' provenance. SRD-107 (planned) refines this
-to per-phase consumed-param precision via a derived closure —
-read it before narrowing the coverage here.
+Param coverage is **per-phase** (SRD-107): the chain excludes
+the session-node params module, and each phase carries a
+DERIVED consumed-params map (`params_consumed` — name to
+value-digest, from the GK backward closure over owned outputs
+unioned with the textual `{name}` scan). Skip validity demands
+the base hash equal AND every stored param's current value
+digest equal; the mismatch diagnostic names the failing
+component or param. A param no phase consumes may change
+freely. Measurement sweep knobs still belong in `dimensions:` /
+sweep cells, which carry their own per-cell identity (`coords`).
 
 ### Why canonical serialization, not raw bytes
 

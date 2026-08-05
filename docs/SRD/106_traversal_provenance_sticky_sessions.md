@@ -98,11 +98,11 @@ resume planner's candidates:
   statement text never enters a polydat program).
 
 Both inputs are computable at pre-map time, so saved and fresh
-values compare directly — no deferred-compile asymmetry. A param
-change, a bindings edit, an op-template edit, or a cycle-count
-change each flip the hash and re-run the phase. (Param coverage
-is whole-module; SRD-107 plans the per-phase consumed-param
-refinement.)
+values compare directly — no deferred-compile asymmetry. A
+bindings edit, an op-template edit, or a cycle-count change each
+flip the hash and re-run the phase. Param coverage is per-phase
+via SRD-107 (implemented): only a CONSUMED param's change
+invalidates, and the diagnostic names it.
 
 **Runtime re-validation:** the index-wait phase (`await_index` in the
 suite) is deliberately NOT skip-eligible even though it is idempotent
