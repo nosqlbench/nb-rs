@@ -282,6 +282,40 @@ fired condition aborts in-flight siblings via the same cooperative path
 > at the workload shell a `fail` returns `Err` (session exits non-zero)
 > and a `stop` requests the graceful walk-halt. Tested:
 > `stop_conditions` unit set + `nbrs/tests/{stop_conditions,workload_shell_e2e}`.
+>
+> **Completed 2026-08-04 — the phase shell adopts the declared effect.**
+> The trip site latches the condition's Outcome on the activity
+> (`Activity::stop_outcome`, first-stopper-wins alongside `stop_reason`),
+> and `run_phase` adopts it: a `stop`-effect trip ends the phase
+> **Interrupted + Succeeded** (per the Part 5 table — not `Completed` as
+> the note above loosely said), keeps its partial result, emits its
+> phase-level `metrics:` (emission now gates on Succeeded validity, not
+> on the bare stop flag), records `status = interrupted` on the
+> persisted outcome row, and the checkpoint logs `phase_completed`.
+> Only a `stop_when` trip latches the outcome — an error-router `stop`
+> verb, a walk-stop broadcast, a poll timeout, or Ctrl-C still derive
+> failure. Tested: `nbrs/tests/stop_conditions.rs`
+> `phase_graceful_stop_exits_zero_and_keeps_metrics` over the
+> `phase_graceful_stop` scenario in
+> `examples/workloads/controls/stop_conditions_coverage.yaml`.
+>
+> **Completed 2026-08-05 — governance `timeout:` + reason classes (C3).**
+> `WorkloadPhase.timeout` (duration / bare seconds / `{param}`)
+> desugars at the phase gather into the synthesized, logged
+> `StopConditionDecl::timeout_guard` (`elapsed_ms > <ms>`, effect
+> `fail`, reason `timeout`) — the `error_rate_max` precedent. Expiry =
+> Interrupted+Failed with reason class `timeout`: GOVERNANCE
+> (disqualified at this tier), deliberately distinct from a budget
+> (bounded cursor / `effect: stop` → Interrupted+Succeeded).
+> `PhaseOutcome::reason_class()` derives the closed `ReasonClass`
+> vocabulary (`timeout | stop_condition | error | panic | operator`)
+> from the first error's class — never stored on the outcome; the
+> sqlite `phase_outcomes.reason_class` column denormalizes it for
+> report GROUP BY (legacy dbs read NULL via PRAGMA detection).
+> `PhaseOutcome::protocol_class()` yields the testing-protocol
+> three-way COMPLETED / OUT-OF-RANGE / FAILED (+SKIPPED). `nbrs
+> replay --json` emits `reason_class`. Tested:
+> `phase_timeout_is_out_of_range_not_generic_failure`.
 > The optimizer (SRD-86) reconfigures the per-point default so a failed
 > probe is a feasibility datum, not a search abort.
 

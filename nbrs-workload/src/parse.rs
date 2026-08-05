@@ -254,6 +254,12 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
             .map_err(|e| format!("invalid top-level `stop_when` block: {e}"))?,
         None => Vec::new(),
     };
+    // SRD-83 Part 5 — the effect verb is a closed vocabulary; an unknown
+    // verb would silently resolve to the shell default at the trip site.
+    for sc in &stop_when {
+        sc.validate()
+            .map_err(|e| format!("top-level `stop_when`: {e}"))?;
+    }
 
     Ok(Workload {
         description, scenarios, ops: all_ops, bindings: doc_bindings,
@@ -1274,6 +1280,38 @@ fn parse_phases(
         let error_rate_max = phase_obj.get("error_rate_max")
             .and_then(|v| v.as_f64());
 
+        // SRD-83 governance `timeout:` (GAP-12). A duration string, a
+        // bare number (fractional seconds), or a `{param}` reference.
+        // Param-bearing values resolve at the phase gather; literal
+        // values must at least LOOK like a time value (non-empty, and
+        // either numeric-leading or brace-opening) so a structural typo
+        // fails at load, not at first dispatch. Full duration parsing
+        // stays runtime-side (single parser: `timeval::parse_time_ms`).
+        let timeout = match phase_obj.get("timeout") {
+            None => None,
+            Some(v) => {
+                let s = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    n if n.is_u64() || n.is_f64() => n.to_string(),
+                    other => return Err(format!(
+                        "phase '{phase_name}': `timeout` must be a duration \
+                         string (e.g. \"2.5h\"), a number of seconds, or a \
+                         {{param}} reference; got: {other}")),
+                };
+                let t = s.trim();
+                if t.is_empty()
+                    || !(t.starts_with('{')
+                        || t.starts_with(|c: char| c.is_ascii_digit()))
+                {
+                    return Err(format!(
+                        "phase '{phase_name}': `timeout: \"{s}\"` is not a \
+                         duration ('{{param}}', \"2.5h\", \"150ms\", or \
+                         seconds)"));
+                }
+                Some(s)
+            }
+        };
+
         // Per-phase total-attempts budget — the phase-level surface of the
         // `tries` sigil (SRD-82 Part 3b). Inherits down to the phase's ops;
         // absent everywhere → no tries wrapper (single attempt). Two forms:
@@ -1306,6 +1344,12 @@ fn parse_phases(
                 .map_err(|e| format!("invalid `stop_when` block: {e}"))?,
             None => Vec::new(),
         };
+        // SRD-83 Part 5 — reject unknown effect verbs at load (a typo'd
+        // verb would otherwise silently become the shell default).
+        for sc in &stop_when {
+            sc.validate()
+                .map_err(|e| format!("phase `stop_when`: {e}"))?;
+        }
 
         let tags = phase_obj.get("tags")
             .and_then(|v| v.as_str())
@@ -1443,12 +1487,33 @@ fn parse_phases(
                         Some(normalized)
                     }
                 };
+                // SRD-75 (C5) — `require:` strict-gate selectors: a
+                // single selector string or a list of them; each must
+                // be a non-empty string.
+                let require: Vec<String> = match map.get("require") {
+                    None => Vec::new(),
+                    Some(serde_json::Value::String(s)) => vec![s.clone()],
+                    Some(serde_json::Value::Array(items)) => items.iter()
+                        .map(|v| v.as_str().map(str::to_string).ok_or_else(|| format!(
+                            "phase '{phase_name}' poll: `require` entries must \
+                             be metric-selector strings. SRD-75.")))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    Some(_) => return Err(format!(
+                        "phase '{phase_name}' poll: `require` must be a \
+                         selector string or a list of them. SRD-75.")),
+                };
+                if let Some(bad) = require.iter().find(|s| s.trim().is_empty()) {
+                    let _ = bad;
+                    return Err(format!(
+                        "phase '{phase_name}' poll: `require` entries must be \
+                         non-empty metric selectors. SRD-75."));
+                }
                 // Reject keys outside the documented surface — a
                 // typo like `tinerval_ms:` should fail loudly, not
                 // silently default. SRD-30 unknown-field hygiene.
-                let allowed: [&str; 6] = ["until", "interval_ms",
+                let allowed: [&str; 7] = ["until", "interval_ms",
                     "timeout_ms", "max_error_retries", "metric_name",
-                    "on_timeout"];
+                    "on_timeout", "require"];
                 for k in map.keys() {
                     if !allowed.contains(&k.as_str()) {
                         return Err(format!(
@@ -1465,6 +1530,7 @@ fn parse_phases(
                     max_error_retries,
                     metric_name,
                     on_timeout,
+                    require,
                 })
             }
         };
@@ -1568,6 +1634,7 @@ fn parse_phases(
                 .and_then(|v| v.as_str().map(str::to_string)),
             repeat: phase_obj.get("repeat").and_then(|v| v.as_u64()),
             error_rate_max,
+            timeout,
             stop_when,
             tags,
             ops: inline_ops,
@@ -4705,6 +4772,55 @@ phases:
             .expect_err("poll: without until: must error");
         assert!(err.contains("until"),
             "expected error to require until:; got: {err}");
+    }
+
+    /// SRD-83 Part 5 — the `effect:`/`action:` verb vocabulary is
+    /// closed. An unknown verb used to fall silently to the shell
+    /// default at the trip site; it is a load error now.
+    #[test]
+    fn rejects_unknown_stop_condition_effect() {
+        let yaml = r#"
+scenarios:
+  default:
+    - work
+phases:
+  work:
+    cycles: 10
+    stop_when:
+      - when: "cycles_total > 5"
+        effect: sotp
+    ops:
+      op1:
+        stmt: "noop"
+"#;
+        let err = super::parse_workload(yaml, &HashMap::new())
+            .expect_err("unknown effect verb must be a load error");
+        assert!(err.contains("sotp") && err.contains("stop|fail|abort"),
+            "expected error to name the verb and the vocabulary; got: {err}");
+    }
+
+    /// The three declared verbs — and the `action:` alias — all load.
+    #[test]
+    fn accepts_declared_stop_condition_effects() {
+        for (key, verb) in [("effect", "stop"), ("effect", "fail"),
+                            ("action", "abort")] {
+            let yaml = format!(r#"
+scenarios:
+  default:
+    - work
+phases:
+  work:
+    cycles: 10
+    stop_when:
+      - when: "cycles_total > 5"
+        {key}: {verb}
+    ops:
+      op1:
+        stmt: "noop"
+"#);
+            super::parse_workload(&yaml, &HashMap::new())
+                .unwrap_or_else(|e| panic!("{key}: {verb} must load: {e}"));
+        }
     }
 
     /// A path that contains `/` but doesn't begin with one is the

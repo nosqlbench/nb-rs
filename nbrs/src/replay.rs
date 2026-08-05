@@ -470,9 +470,11 @@ fn outcome_to_json(
     let mut s = String::with_capacity(256);
     let _ = write!(
         &mut s,
-        r#"{{"session":{:?},"exec_id":{},"phase_name":{:?},"phase_labels":{:?},"status":{:?},"duration_secs":{},"started_at_nanos":{},"ended_at_nanos":{},"errors":["#,
+        r#"{{"session":{:?},"exec_id":{},"phase_name":{:?},"phase_labels":{:?},"status":{:?},"reason_class":{},"duration_secs":{},"started_at_nanos":{},"ended_at_nanos":{},"errors":["#,
         row.session, row.exec_id, row.phase_name, row.phase_labels,
-        row.status, row.duration_secs, row.started_at_nanos, row.ended_at_nanos,
+        row.status,
+        opt_str_json(row.reason_class.as_deref()),
+        row.duration_secs, row.started_at_nanos, row.ended_at_nanos,
     );
     for (i, e) in row.errors.iter().enumerate() {
         if i > 0 { s.push(','); }

@@ -1,0 +1,70 @@
+#!/usr/bin/env nbrs
+# poll_require_smoke.yaml — SRD-75 (C5) strict-gate coverage.
+#
+# A phase-poll gate whose `until:` reads live metrics is only
+# trustworthy if the metric families it names actually exist — an
+# unregistered family reads 0.0 silently, so a typo'd selector makes
+# a `>=` gate pass instantly or a `<` gate hang to timeout. The
+# `require:` list declares the selectors that MUST resolve to
+# registered instruments within one poll interval (the grace window);
+# an unresolved selector past grace is a hard `poll_require` failure.
+#
+# Two scenarios:
+#   gate_resolves — the selector names this phase's own instrument
+#                   family; the gate resolves, the predicate turns
+#                   true after the first tick, exit 0.
+#   gate_typo     — the selector names a family that can never
+#                   register; the gate holds for the grace window
+#                   then fails loudly with class `poll_require`
+#                   (never a silent pass, never a hang to timeout).
+#
+# Self-contained: default adapter, no params. Run under a sandbox
+# --session-path; never from the project root.
+
+scenarios:
+  gate_resolves:
+    - gate_ok
+  gate_typo:
+    - gate_bad
+
+phases:
+
+  # The selector resolves once the phase's own instruments have both
+  # registered AND produced a first cadence frame (the probe reads the
+  # same framed view the `until:` reader consumes). The predicate is
+  # trivially true, so the phase completes exactly when the require
+  # gate RELEASES — which is the C5 contract under test: hold while
+  # unresolved, release on resolution, no spurious poll_require.
+  #
+  # (Deliberately NOT `until: metric('cycles_total', …)`: a phase
+  # reading its OWN activity metrics from inside its poll loop sees
+  # no fresh frames while the loop holds — cross-phase reads, the E7
+  # gate pattern, are the real use; self-reads are not it.)
+  gate_ok:
+    concurrency: 1
+    poll:
+      until: "1 == 1"
+      require: [ "cycles_total" ]
+      interval_ms: 200
+      timeout_ms: 10000
+    ops:
+      tick:
+        stmt: "GATE_OK_TICK"
+
+  # `no_such_family_xyz` never registers: the gate must fail with
+  # `poll_require` right after the one-interval grace — NOT pass on
+  # the silent 0.0 read, and NOT hang until timeout_ms.
+  gate_bad:
+    concurrency: 1
+    poll:
+      until: "metric('no_such_family_xyz', 'count') >= 1"
+      require: [ "no_such_family_xyz" ]
+      interval_ms: 200
+      timeout_ms: 10000
+    ops:
+      tick:
+        stmt: "GATE_BAD_TICK"
+
+# ─── example-walker test directives ───
+#@ run scenario=gate_resolves
+#@ expect completed, 0 failed

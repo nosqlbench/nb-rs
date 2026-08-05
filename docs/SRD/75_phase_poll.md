@@ -546,3 +546,23 @@ peer of `until:` once the evaluator surface is ready.
 - `docs/SRD/70_capture_paths.md` — JSON-Pointer
   shipped in P1 provides the declarative `capture:`
   form this SRD's workload examples use.
+
+## C5 amendment — `require:` strict-gate selectors (2026-08-05)
+
+`poll.require: [<selector>, …]` — each `metric()`-style selector must
+resolve to a registered instrument **visible to the framed
+session-lifetime view the `until:` reader consumes** (an instance with
+a readable point). While any selector is unresolved the gate HOLDS
+(the predicate is not consulted — an unregistered family reads 0.0
+silently, so a `>=` gate would pass spuriously and a `<` gate would
+hang). Grace window = one smallest-cadence frame + one poll interval
+from loop start; past it, an unresolved selector fails the phase with
+error class `poll_require` naming the selectors — loud, never a
+hang-to-timeout. Deliberately poll-only: `stop_when`'s lenient reads
+stay as SRD-83 sanctions. Probe: `nbrs-metrics::polydat_nodes::
+metric_selector_resolves`. Caveat discovered in coverage: a phase
+reading its OWN activity metrics from inside its poll loop sees no
+fresh frames while holding — cross-phase reads (the coordination-gate
+pattern) are the supported shape. Tested:
+`nbrs/tests/poll_require.rs` over
+`examples/workloads/controls/poll_require_smoke.yaml`.

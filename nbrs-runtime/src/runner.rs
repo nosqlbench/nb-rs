@@ -2407,6 +2407,18 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             let wp_names: std::collections::HashSet<String> =
                 workload_params.keys().cloned().collect();
             t.validate_iter_var_uniqueness(&wp_names)?;
+            // SRD-83 follow-up — load-time authoring lints: every
+            // `errors:` router spec must parse (bad verbs fail the
+            // load, not the first runtime error), a router without a
+            // catch-all rule warns, and `metric()` families in
+            // stop/gate predicates are checked against the instrument
+            // namespace (an unregistered family reads 0.0 silently).
+            for w in crate::workload_lint::lint_workload(
+                &workload.stop_when,
+                phases.iter().map(|(k, v)| (k.as_str(), v)),
+            )? {
+                crate::diag!(crate::observer::LogLevel::Warn, "{w}");
+            }
             // SRD-13d Phase 6 — extend the scope tree with
             // op-template children of every Phase node so the
             // op tier is visible to the elision classifier
@@ -6037,7 +6049,7 @@ mod tests {
         let phase = WorkloadPhase {
             dimensions: Default::default(),
             cycles: None, concurrency: None, rate: None, daemon: false,
-            adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, stop_when: Vec::new(), continue_if: None, tags: None,
+            adapter: None, errors: None, tries: None, tries_backoff: None, interval: None, repeat: None, error_rate_max: None, timeout: None, stop_when: Vec::new(), continue_if: None, tags: None,
             ops: vec![], for_each: None,
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![], metrics: Default::default(),

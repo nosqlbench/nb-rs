@@ -634,6 +634,11 @@ mod inner {
                     -- `refine --scope=changed` can compare
                     -- prior vs current program shape.
                     phase_hash    TEXT,
+                    -- SRD-83 (C3) — reason class for short-ended
+                    -- phases (timeout / stop_condition / error /
+                    -- panic / operator). NULL for succeeded phases
+                    -- and legacy rows.
+                    reason_class  TEXT,
                     PRIMARY KEY (session, exec_id, phase_name, phase_labels)
                 );
                 -- SRD-76: per-error detail rows, 0..N per phase
@@ -746,13 +751,13 @@ mod inner {
                     "INSERT OR REPLACE INTO phase_outcomes \
                      (session, exec_id, phase_name, phase_labels, status, \
                       duration_secs, started_at_nanos, ended_at_nanos, \
-                      phase_hash) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      phase_hash, reason_class) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     params![
                         row.session, row.exec_id as i64,
                         row.phase_name, row.phase_labels, row.status,
                         row.duration_secs, row.started_at_nanos, row.ended_at_nanos,
-                        row.phase_hash,
+                        row.phase_hash, row.reason_class,
                     ],
                 )?;
                 tx.execute(
@@ -952,32 +957,60 @@ mod inner {
         /// `ExecutionQualifier` (nbrs-runtime) into this
         /// primitive. Ordered by chronological phase-end time.
         /// Each outcome carries its full error list.
+        /// SRD-83 (C3) legacy-read guard: `reason_class` was added
+        /// 2026-08; dbs written earlier lack the column. Detected via
+        /// PRAGMA (works on read-only opens); an absent column reads
+        /// as NULL — the SRD-82 legacy-read discipline, no migration
+        /// write required.
+        fn phase_outcomes_has_reason_class(&self) -> bool {
+            let Ok(mut stmt) = self.conn.prepare(
+                "PRAGMA table_info(phase_outcomes)") else { return false };
+            let Ok(mut rows) = stmt.query([]) else { return false };
+            while let Ok(Some(r)) = rows.next() {
+                if r.get::<_, String>(1)
+                    .map(|n| n == "reason_class").unwrap_or(false)
+                {
+                    return true;
+                }
+            }
+            false
+        }
+
         pub fn read_phase_outcomes(&self, exec_id_filter: Option<u64>)
             -> Vec<PhaseOutcomeRow>
         {
             let mut outcomes: Vec<PhaseOutcomeRow> = Vec::new();
-            let (sql, params): (&str, Vec<i64>) = match exec_id_filter {
+            let rc_col = if self.phase_outcomes_has_reason_class() {
+                "reason_class"
+            } else {
+                "NULL"
+            };
+            let (sql, params): (String, Vec<i64>) = match exec_id_filter {
                 Some(id) => (
+                    format!(
                     "SELECT session, exec_id, phase_name, phase_labels, \
                             status, duration_secs, \
-                            started_at_nanos, ended_at_nanos, phase_hash \
+                            started_at_nanos, ended_at_nanos, phase_hash, \
+                            {rc_col} \
                      FROM phase_outcomes WHERE exec_id = ?1 \
                      ORDER BY ended_at_nanos, session, exec_id, \
-                              phase_name, phase_labels",
+                              phase_name, phase_labels"),
                     vec![id as i64],
                 ),
                 None => (
+                    format!(
                     "SELECT session, exec_id, phase_name, phase_labels, \
                             status, duration_secs, \
-                            started_at_nanos, ended_at_nanos, phase_hash \
+                            started_at_nanos, ended_at_nanos, phase_hash, \
+                            {rc_col} \
                      FROM phase_outcomes \
                      ORDER BY ended_at_nanos, session, exec_id, \
-                              phase_name, phase_labels",
+                              phase_name, phase_labels"),
                     Vec::new(),
                 ),
             };
             {
-                let mut out_stmt = match self.conn.prepare(sql) {
+                let mut out_stmt = match self.conn.prepare(&sql) {
                     Ok(s) => s,
                     Err(_) => return Vec::new(),
                 };
@@ -994,6 +1027,7 @@ mod inner {
                         started_at_nanos:  row.get(6)?,
                         ended_at_nanos:    row.get(7)?,
                         phase_hash:        row.get::<_, Option<String>>(8)?,
+                        reason_class:      row.get::<_, Option<String>>(9)?,
                         errors:            Vec::new(),
                     })
                 });
@@ -1020,12 +1054,18 @@ mod inner {
             phase_name: &str,
             phase_labels: &str,
         ) -> Option<PhaseOutcomeRow> {
+            let rc_col = if self.phase_outcomes_has_reason_class() {
+                "reason_class"
+            } else {
+                "NULL"
+            };
             let mut row = self.conn.query_row(
+                &format!(
                 "SELECT status, duration_secs, started_at_nanos, ended_at_nanos, \
-                        phase_hash \
+                        phase_hash, {rc_col} \
                  FROM phase_outcomes \
                  WHERE session = ?1 AND exec_id = ?2 \
-                   AND phase_name = ?3 AND phase_labels = ?4",
+                   AND phase_name = ?3 AND phase_labels = ?4"),
                 params![session, exec_id as i64, phase_name, phase_labels],
                 |r| Ok(PhaseOutcomeRow {
                     session:           session.to_string(),
@@ -1037,6 +1077,7 @@ mod inner {
                     started_at_nanos:  r.get(2)?,
                     ended_at_nanos:    r.get(3)?,
                     phase_hash:        r.get::<_, Option<String>>(4)?,
+                    reason_class:      r.get::<_, Option<String>>(5)?,
                     errors:            Vec::new(),
                 }),
             ).ok()?;
@@ -1789,6 +1830,13 @@ mod inner {
         /// `None` for legacy rows recorded before the column
         /// was added.
         pub phase_hash: Option<String>,
+        /// SRD-83 (C3) — machine-readable class of why the phase
+        /// ended short of natural completion (`timeout`,
+        /// `stop_condition`, `error`, `panic`, `operator`).
+        /// Denormalized from the first error's class so report
+        /// queries can `GROUP BY` it; `None` for succeeded phases
+        /// and for legacy rows written before the column existed.
+        pub reason_class: Option<String>,
         pub errors: Vec<PhaseErrorRow>,
     }
 
@@ -3120,7 +3168,7 @@ mod inner {
                 duration_secs: 1.234,
                 started_at_nanos: 1_000_000,
                 ended_at_nanos:   1_001_234_000,
-                phase_hash: None,
+                phase_hash: None, reason_class: None,
                 errors: Vec::new(),
             };
             r.write_phase_outcome(&row);
@@ -3146,7 +3194,7 @@ mod inner {
                 duration_secs: 14400.0,
                 started_at_nanos: 0,
                 ended_at_nanos:   14400 * 1_000_000_000,
-                phase_hash: None,
+                phase_hash: None, reason_class: None,
                 errors: vec![
                     super::PhaseErrorRow {
                         class: "poll_timeout".into(),
@@ -3194,7 +3242,7 @@ mod inner {
                 duration_secs: 1.0,
                 started_at_nanos: 0,
                 ended_at_nanos: 1,
-                phase_hash: None,
+                phase_hash: None, reason_class: None,
                 errors: vec![super::PhaseErrorRow {
                     class: "A".into(),
                     message: "m".into(),
@@ -3230,7 +3278,7 @@ mod inner {
                     duration_secs: 1.0,
                     started_at_nanos: exec_id as i64 * 1_000,
                     ended_at_nanos:   exec_id as i64 * 1_000 + 1,
-                    phase_hash: None,
+                    phase_hash: None, reason_class: None,
                     errors: Vec::new(),
                 });
             }
@@ -4073,7 +4121,7 @@ mod inner {
                     duration_secs: 1.0,
                     started_at_nanos: 0,
                     ended_at_nanos: exec_id as i64,
-                    phase_hash: None,
+                    phase_hash: None, reason_class: None,
                     errors: Vec::new(),
                 });
             }
@@ -4097,7 +4145,7 @@ mod inner {
                     duration_secs: 1.0,
                     started_at_nanos: 0,
                     ended_at_nanos: exec_id as i64,
-                    phase_hash: None,
+                    phase_hash: None, reason_class: None,
                     errors: Vec::new(),
                 });
             }

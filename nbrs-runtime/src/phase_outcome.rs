@@ -352,6 +352,57 @@ pub struct ResumeCursor {
 /// installed on the scene tree, optionally persisted to
 /// sqlite (Push 3), and rendered via the SRD-76 readouts
 /// (Push 4).
+/// SRD-83 (C3) — the closed vocabulary of failure-reason classes on a
+/// phase outcome. Derived from the first `PhaseErrorDetail.class` (see
+/// [`PhaseOutcome::reason_class`]); the stable strings below are the
+/// sqlite `reason_class` column values and the report-layer grouping
+/// keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasonClass {
+    /// A governance `timeout:` (or an SRD-75 poll timeout) expired —
+    /// the protocol OUT-OF-RANGE disposition.
+    Timeout,
+    /// A declared `stop_when` condition with a failing effect tripped
+    /// (includes the synthesized `error_rate_exceeded` guard).
+    StopCondition,
+    /// Op/dispatch errors stopped the phase.
+    Error,
+    /// A panic was caught and routed as an error.
+    Panic,
+    /// An operator action (Ctrl-C / stop request) cut the phase.
+    Operator,
+}
+
+impl ReasonClass {
+    /// The stable serialized token (sqlite column value, report key).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReasonClass::Timeout => "timeout",
+            ReasonClass::StopCondition => "stop_condition",
+            ReasonClass::Error => "error",
+            ReasonClass::Panic => "panic",
+            ReasonClass::Operator => "operator",
+        }
+    }
+
+    /// Classify an error-class string from the trip/error paths. The
+    /// class strings are the established vocabulary: `timeout` (the
+    /// synthesized governance guard), `poll_timeout` (SRD-75),
+    /// `panic` (wrapper-caught), `stop_condition: <when>` /
+    /// `error_rate_exceeded` (SRD-83 trips), `operator` (session
+    /// stop). Anything else is a plain error.
+    pub fn from_error_class(class: &str) -> Self {
+        match class {
+            "timeout" | "poll_timeout" => ReasonClass::Timeout,
+            "panic" => ReasonClass::Panic,
+            "operator" => ReasonClass::Operator,
+            "error_rate_exceeded" => ReasonClass::StopCondition,
+            c if c.starts_with("stop_condition") => ReasonClass::StopCondition,
+            _ => ReasonClass::Error,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "PhaseOutcomeWire")]
 pub struct PhaseOutcome {
@@ -452,6 +503,38 @@ impl From<PhaseOutcomeWire> for PhaseOutcome {
 impl PhaseOutcome {
     /// Build a Completed outcome. Convenience for the
     /// happy path; errors must be empty.
+    /// SRD-83 (C3) — machine-readable class of WHY this phase ended
+    /// short of a usable result. DERIVED from the first error's class
+    /// (single source of truth — the trip/error paths already stamp
+    /// it), never stored: legacy outcomes classify identically.
+    /// `None` for any Succeeded validity — a graceful stop or natural
+    /// completion has no failure reason to classify.
+    pub fn reason_class(&self) -> Option<ReasonClass> {
+        match self.validity {
+            Validity::Succeeded => None,
+            Validity::Failed => Some(ReasonClass::from_error_class(
+                self.errors.first().map(|e| e.class.as_str()).unwrap_or("error"),
+            )),
+        }
+    }
+
+    /// SRD-83 (C3) — the testing-protocol three-way disposition
+    /// (17_/P0.5): COMPLETED (usable result, natural or graceful),
+    /// OUT-OF-RANGE (a governance timeout expired — disqualified at
+    /// this tier), FAILED (anything else), plus SKIPPED for
+    /// resume-skipped phases. Model-level, replacing report-side
+    /// string-matching conventions.
+    pub fn protocol_class(&self) -> &'static str {
+        if matches!(self.disposition, Disposition::Skipped) {
+            return "SKIPPED";
+        }
+        match self.reason_class() {
+            None => "COMPLETED",
+            Some(ReasonClass::Timeout) => "OUT-OF-RANGE",
+            Some(_) => "FAILED",
+        }
+    }
+
     pub fn completed(phase_id: PhaseIdentity, duration_secs: f64) -> Self {
         Self {
             phase_id,
@@ -587,6 +670,10 @@ impl PhaseOutcome {
             duration_secs:    self.duration_secs,
             started_at_nanos,
             ended_at_nanos,
+            // SRD-83 (C3) — denormalized for report GROUP BY; the
+            // derived accessor is the single source of truth.
+            reason_class:     self.reason_class()
+                .map(|c| c.as_str().to_string()),
             phase_hash:       self.phase_hash.clone(),
             errors:           self.errors.iter().map(|e| {
                 nbrs_metrics::reporters::sqlite::PhaseErrorRow {

@@ -169,6 +169,29 @@ fn warn_family_required(node: &str, pattern: &str) {
 /// `None` — surfaced as `0.0` by the reader nodes — when the family
 /// is absent from the snapshot or the stat doesn't apply to its
 /// type.
+/// SRD-75 (C5) — does a `metric()`-style selector currently resolve to
+/// at least one REGISTERED instrument? True when the pattern names a
+/// family and the session-lifetime view contains ≥1 instance matching
+/// the full selection. The phase-poll `require:` strict gate polls
+/// this within its grace window; the `metric()` readers themselves
+/// stay lenient (0.0 + one-shot warn) because a stop predicate over a
+/// not-yet-registered family is a legitimate "not yet" state — only a
+/// coordination GATE treats absence as a bug.
+pub fn metric_selector_resolves(pattern: &str) -> bool {
+    let (sel, family) = selection_from_pattern(pattern);
+    let Some(fam) = family else { return false };
+    get_query()
+        .map(|q| q.session_lifetime(&sel))
+        .and_then(|snap| snap.family(&fam)
+            // Mirror `extract_family_stat` exactly: an instance with a
+            // readable POINT — presence without a point still reads
+            // 0.0 at the `metric()` reader, so it must not count as
+            // resolved.
+            .map(|f| f.metrics().next()
+                .and_then(|m| m.point()).is_some()))
+        .unwrap_or(false)
+}
+
 fn extract_family_stat(snapshot: &MetricSet, family: &str, stat: &str) -> Option<f64> {
     let f = snapshot.family(family)?;
     let m = f.metrics().next()?;

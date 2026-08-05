@@ -4930,6 +4930,37 @@ async fn run_phase_inner(
         return crate::phase_outcome::Outcome::skipped();
     }
 
+    // SRD-83 governance `timeout:` (GAP-12) — resolve `{param}` /
+    // iter-var references, parse via the ONE time-value parser, and
+    // synthesize the visible timeout guard (the `error_rate_max`
+    // desugar precedent). A malformed resolved value fails the phase
+    // up-front — a governance bound that can't be enforced must never
+    // silently become "no bound".
+    let timeout_guard = match phase.timeout.as_deref() {
+        None => None,
+        Some(raw) => {
+            let mut t = crate::runner::expand_workload_params(raw, &ctx.workload_params);
+            for (v, val) in &iter_var_values {
+                t = t.replace(&format!("{{{v}}}"), val);
+            }
+            match crate::timeval::parse_time_ms(&t) {
+                Ok(ms) => {
+                    let guard =
+                        crate::stop_conditions::StopConditionDecl::timeout_guard(ms);
+                    crate::diag!(crate::observer::LogLevel::Info,
+                        "phase '{phase_name}': timeout={t} → stop_when: {} \
+                         (synthesized)", guard.when);
+                    Some(guard)
+                }
+                Err(e) => {
+                    return crate::phase_outcome::Outcome::failed().with_reason(
+                        format!("phase '{phase_name}': `timeout: \"{raw}\"` \
+                                 (resolved: \"{t}\"): {e}"));
+                }
+            }
+        }
+    };
+
     let config = ActivityConfig {
         name: activity_name,
         cycles: phase_cycles,
@@ -4963,6 +4994,9 @@ async fn run_phase_inner(
                 guard
             })
             .into_iter()
+            // SRD-83 — the synthesized governance-timeout guard rides
+            // the same visible list (computed + logged above).
+            .chain(timeout_guard)
             .chain(phase.stop_when.iter()
             .filter(|c| c.each.iter().any(|l| matches!(l,
                 nbrs_workload::model::ScopeLevel::SelfScope
@@ -5501,6 +5535,18 @@ async fn run_phase_inner(
             metric_name: poll_spec.metric_name.clone(),
             max_error_retries: poll_spec.max_error_retries.unwrap_or(0),
             on_timeout: on_timeout_policy,
+            // SRD-75 (C5) — strict-gate selectors. The resolution
+            // probe reads the SAME framed session-lifetime view the
+            // `until:` predicate's `metric()` reader consumes, so
+            // "resolvable" means "visible to that reader" — which
+            // requires at least one closed cadence frame. Grace =
+            // one smallest-cadence frame plus one poll interval from
+            // loop start (covers frame close + late registration by
+            // a spinning-up producer).
+            require: poll_spec.require.clone(),
+            require_grace: started_at
+                + ctx.cadence_reporter.declared_cadences().smallest()
+                + interval,
         });
     }
 
@@ -5512,6 +5558,12 @@ async fn run_phase_inner(
     // the actual triggering error (instead of a bare "stopped by
     // error handler") in the phase-level error.
     let stop_reason = activity.stop_reason.clone();
+    // SRD-83 Part 5 — clone the stop-outcome latch alongside it: the
+    // first stop-condition trip records its DECLARED two-axis Outcome
+    // here (a `stop` effect = Interrupted+Succeeded), and the phase
+    // shell adopts it below instead of deriving failure from the bare
+    // stop flag.
+    let activity_stop_outcome = activity.stop_outcome.clone();
     // SRD-76 — clone the structured-errors handle BEFORE
     // consuming the activity, mirroring the stop_reason
     // pattern above. Drained at phase end into
@@ -5691,15 +5743,31 @@ async fn run_phase_inner(
         });
     }
 
+    // SRD-83 Part 5 — a graceful `stop`-effect trip is a CLEAN early
+    // halt (Interrupted + Succeeded): the phase keeps its partial
+    // result. The latch is written only by the stop-condition trip
+    // site, and only when that trip also won the `stop_reason` slot —
+    // so the first stopper owns both the reason and the outcome. Every
+    // other stop source (error router, walk stop, poll timeout,
+    // Ctrl-C) leaves it None and keeps failure semantics.
+    let graceful_stop = stopped
+        && activity_stop_outcome
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .is_some_and(|o| !o.is_failure());
+
     // Phase-level `metrics:` emission. Pull each `__metric_<name>`
     // from the phase scope kernel (with the executor-injected
     // `phase_start` set to this phase's chronological start) and
     // record it on the phase component as the declared instrument.
     // Done BEFORE the final cadence flush below so the recorded
-    // values land in this phase's terminal window. Only on
-    // successful completion — a stopped/failed phase's duration
-    // metric would be misleading.
-    if !stopped && !phase.metrics.is_empty() {
+    // values land in this phase's terminal window. Emitted when the
+    // outcome's VALIDITY is Succeeded — natural completion or a
+    // graceful `stop`-effect halt (SRD-83: the partial result is a
+    // valid measurement); a failed/error-stopped phase's metrics
+    // would be misleading and are suppressed.
+    if (!stopped || graceful_stop) && !phase.metrics.is_empty() {
         let phase_start_epoch_ms = (phase_start_nanos / 1_000_000) as u64;
         if let Err(e) = emit_phase_metrics(
             &ctx.scope_tree, phase_name, &phase,
@@ -5817,7 +5885,7 @@ async fn run_phase_inner(
     // `errors_total`, which counts retries).
     let phase_op_count = progress_metrics.cycles_completed();
     let phase_error_count = progress_metrics.result_failure.count();
-    if stopped && !settle_succeeded && !servo_completed {
+    if stopped && !settle_succeeded && !servo_completed && !graceful_stop {
         // Pull the first triggering error captured by the
         // activity's stop_flag setter (activity.rs per-cycle
         // dispatch). Fall back to a bare reason when the stop
@@ -5981,7 +6049,16 @@ async fn run_phase_inner(
         phase_id: crate::phase_outcome::PhaseIdentity::new(
             phase_name, phase_labels.as_str(),
         ),
-        disposition: crate::phase_outcome::Disposition::Completed,
+        // SRD-83 Part 5 — a graceful `stop`-effect trip records the
+        // condition's declared axes: Interrupted (the extent was cut
+        // short on purpose) + Succeeded (the partial result stands).
+        // Natural completion — and the settle/servo early-finish paths,
+        // which reached their own goal — stay Completed.
+        disposition: if graceful_stop {
+            crate::phase_outcome::Disposition::Interrupted
+        } else {
+            crate::phase_outcome::Disposition::Completed
+        },
         validity: crate::phase_outcome::Validity::Succeeded,
         duration_secs: phase_duration,
         errors: success_errors,
@@ -6045,6 +6122,17 @@ async fn run_phase_inner(
         crate::diag!(crate::observer::LogLevel::Warn,
             "workload stop condition tripped ({reason}) — actual: {actual} \
              — after phase '{phase_name}' — halting remaining walk");
+    }
+    if graceful_stop {
+        // SRD-83 Part 5 — surface the trip's declared graceful outcome
+        // (Interrupted + Succeeded) to the walk, carrying the trip
+        // reason so the scenario fold and readouts can say why the
+        // extent was cut short.
+        let mut oc = crate::phase_outcome::Outcome::interrupted();
+        if let Some(r) = stop_reason.lock().ok().and_then(|g| g.clone()) {
+            oc = oc.with_reason(r);
+        }
+        return oc;
     }
     crate::phase_outcome::Outcome::completed()
 }
@@ -6120,8 +6208,13 @@ fn emit_phase_metrics(
     // keeps emission deterministic.
     let mut entries: Vec<_> = phase.metrics.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
-    let mut recorded: Vec<(String, nbrs_workload::model::MetricSpec, f64)> = Vec::new();
-    for (name, spec) in entries {
+    let mut recorded: Vec<(
+        String,
+        nbrs_workload::model::MetricSpec,
+        f64,
+        Option<nbrs_metrics::labels::Labels>,
+    )> = Vec::new();
+    'metrics: for (name, spec) in entries {
         let binding = crate::scope::synthesize_metric_binding_name(name);
         let value = k.pull(&binding).clone();
         let Some(raw) = to_f64(&value) else {
@@ -6144,18 +6237,55 @@ fn emit_phase_metrics(
             },
             None => raw,
         };
-        recorded.push((name.clone(), spec.clone(), sanitised));
+        // C9 — dimensional placement. Pull each synthesised
+        // `__cell_<name>__<dim>` coordinate from the same subscope
+        // (the phase synthesiser emits them alongside the value
+        // binding), mirroring the op-level wrapper's semantics: a
+        // dimension's value is a label value and therefore a STRING —
+        // anything else is refused rather than stringified behind the
+        // author's back.
+        let coord = if spec.cell.is_empty() {
+            None
+        } else {
+            let mut c = nbrs_metrics::labels::Labels::default();
+            for dim in spec.cell.keys() {
+                let wire = crate::scope::synthesize_cell_binding_name(name, dim);
+                let v = k.pull(&wire).clone();
+                let Value::Str(text) = &v else {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "phase '{phase_name}' metric '{name}' cell '{dim}': \
+                         coordinate resolved to a non-string {disc:?}; skipping \
+                         the metric (dimension values are label values — convert \
+                         the expression explicitly)",
+                        disc = std::mem::discriminant(&v));
+                    continue 'metrics;
+                };
+                c = c.with(dim.clone(), text.to_string());
+            }
+            Some(c)
+        };
+        recorded.push((name.clone(), spec.clone(), sanitised, coord));
     }
 
-    // Register + record on the phase component.
-    let mut pc = phase_component.write().unwrap_or_else(|e| e.into_inner());
-    let component_labels = pc.effective_labels().clone();
-    for (name, spec, value) in recorded {
+    // Register + record. An un-celled metric lands on the phase
+    // component; a cell-placed metric lands on the coordinate's cell
+    // component under it (C9 — one placement rule across the op and
+    // phase tiers). Locks are taken per registration, never across
+    // cell resolution.
+    for (name, spec, value, coord) in recorded {
         use nbrs_metrics::component::InstrumentRef;
         use nbrs_workload::model::MetricKind;
         let family = spec.family.clone().unwrap_or_else(|| name.clone());
         let kind = spec.kind.unwrap_or_default();
-        let instr_labels = component_labels.with("family", family.clone());
+        let target = match &coord {
+            None => phase_component.clone(),
+            Some(c) => nbrs_metrics::cells::resolve_under(phase_component, c),
+        };
+        let target_labels = {
+            let g = target.read().unwrap_or_else(|e| e.into_inner());
+            g.effective_labels().clone()
+        };
+        let instr_labels = target_labels.with("family", family.clone());
         let instrument: InstrumentRef = match kind {
             MetricKind::Gauge => {
                 let g = std::sync::Arc::new(
@@ -6178,7 +6308,8 @@ fn emit_phase_metrics(
                 InstrumentRef::Counter(c)
             }
         };
-        if let Err(e) = pc.register_instrument_with_unit(
+        let mut g = target.write().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = g.register_instrument_with_unit(
             family.clone(), spec.unit.clone(), instrument,
         ) {
             crate::diag!(crate::observer::LogLevel::Warn,

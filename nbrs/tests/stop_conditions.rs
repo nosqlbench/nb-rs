@@ -17,10 +17,12 @@
 //!   phase, so `children_done >= 2` halts the remaining walk after two
 //!   phases, skipping the third.
 //!
-//! A phase-level trip fails the phase (non-zero exit + reason on
-//! stderr); the workload-level trip halts the walk gracefully (zero
-//! exit, later phase never dispatched). The two-axis `Outcome` effect
-//! mapping is a later SRD-83 step.
+//! A phase-level trip with the default `fail` effect fails the phase
+//! (non-zero exit + reason on stderr); an explicit `effect: stop` is a
+//! clean early halt (SRD-83 Part 5): the phase ends
+//! Interrupted+Succeeded, keeps its phase `metrics:`, and the session
+//! exits zero. The workload-level trip halts the walk gracefully (zero
+//! exit, later phase never dispatched).
 //!
 //! The harness runs every scenario with cwd set to a throwaway sandbox
 //! AND an explicit `--session-path` under it, so a test never writes
@@ -93,6 +95,136 @@ fn run_scenario(scenario: &str) -> (String, String, bool) {
 
 fn count_lines(stdout: &str, needle: &str) -> usize {
     stdout.lines().filter(|l| l.trim() == needle).count()
+}
+
+// ─── Phase shell — governance `timeout:` (SRD-83 C3 / GAP-12) ─────
+
+/// `timeout: "150ms"` on a ~2.4 s phase: the synthesized guard trips
+/// early, the phase ends Interrupted+Failed (`status = failed`) with
+/// `reason_class = timeout` on its persisted row — the protocol
+/// OUT-OF-RANGE disposition, structurally distinct from every other
+/// failure — and the session exits non-zero.
+#[test]
+fn phase_timeout_is_out_of_range_not_generic_failure() {
+    let sandbox = Sandbox::new("timeout");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let workload = workspace_root.join(WORKLOAD);
+    let session = sandbox.dir.join("session");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
+    cmd.current_dir(&sandbox.dir)
+        .arg("run")
+        .arg(format!("workload={}", workload.display()))
+        .arg("scenario=phase_timeout")
+        .arg("tui=off")
+        .arg("--session-path")
+        .arg(&session);
+    let out = cmd.output().expect("run nbrs");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let session_log = std::fs::read_to_string(session.join("session.log"))
+        .unwrap_or_default();
+    let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
+    evidence.push('\n');
+    evidence.push_str(&session_log);
+
+    assert!(!out.status.success(),
+        "a governance timeout is a failed run (non-zero exit); evidence:\n{evidence}");
+    let ticks = count_lines(&stdout, "TIMEOUT_TICK");
+    assert!(ticks > 0 && ticks < 400,
+        "expected an early time-based cut, got {ticks} ops\nevidence:\n{evidence}");
+    assert!(evidence.contains("timeout=150ms") && evidence.contains("synthesized"),
+        "the desugared guard must be announced; evidence:\n{evidence}");
+
+    let conn = rusqlite::Connection::open(session.join("metrics.db"))
+        .expect("open session metrics.db");
+    let (status, reason_class): (String, Option<String>) = conn
+        .query_row(
+            "SELECT status, reason_class FROM phase_outcomes \
+             WHERE phase_name = 'phase_timeout_trip'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("phase_timeout_trip outcome row");
+    assert_eq!(status, "failed",
+        "a governance timeout fails the phase (Interrupted+Failed)");
+    assert_eq!(reason_class.as_deref(), Some("timeout"),
+        "the OUT-OF-RANGE disposition must be class-distinguishable");
+}
+
+// ─── Phase shell — graceful `effect: stop` (SRD-83 Part 5) ────────
+
+/// The same `cycles_total > 25` trip as `phase_cycles_total`, declared
+/// with `effect: stop`: the condition is a budget, not a breach. The
+/// phase must end Interrupted+Succeeded (`status = interrupted` on its
+/// persisted outcome row), the checkpoint must record it COMPLETED
+/// (never failed), its phase-level `metrics:` must be emitted (a
+/// gracefully stopped phase is a valid measurement), and the session
+/// must exit zero.
+#[test]
+fn phase_graceful_stop_exits_zero_and_keeps_metrics() {
+    let sandbox = Sandbox::new("graceful");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let workload = workspace_root.join(WORKLOAD);
+    let session = sandbox.dir.join("session");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
+    cmd.current_dir(&sandbox.dir)
+        .arg("run")
+        .arg(format!("workload={}", workload.display()))
+        .arg("scenario=phase_graceful_stop")
+        .arg("tui=off")
+        .arg("--session-path")
+        .arg(&session);
+    let out = cmd.output().expect("run nbrs");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let session_log = std::fs::read_to_string(session.join("session.log"))
+        .unwrap_or_default();
+    let mut evidence = String::from_utf8_lossy(&out.stderr).to_string();
+    evidence.push('\n');
+    evidence.push_str(&session_log);
+
+    assert!(out.status.success(),
+        "a graceful `effect: stop` trip must exit zero; evidence:\n{evidence}");
+    let ticks = count_lines(&stdout, "GRACEFUL_TICK");
+    assert!(ticks > 25,
+        "expected the phase to pass cycles_total=25 before stopping, got {ticks}");
+    assert!(ticks < 300,
+        "expected an early stop, not ~600 ops; got {ticks}\nevidence:\n{evidence}");
+    assert!(evidence.contains("stopping phase"),
+        "the graceful trip must log its 'stopping phase' line; evidence:\n{evidence}");
+    assert!(!evidence.contains("failing phase"),
+        "a graceful trip must not take the failure path; evidence:\n{evidence}");
+
+    // Checkpoint: recorded as completed, never as failed.
+    let checkpoint = std::fs::read_to_string(session.join("checkpoint.jsonl"))
+        .expect("session checkpoint.jsonl");
+    assert!(checkpoint.contains("phase_completed"),
+        "checkpoint must record phase_completed; got:\n{checkpoint}");
+    assert!(!checkpoint.contains("phase_failed"),
+        "checkpoint must not record phase_failed; got:\n{checkpoint}");
+
+    // Persisted outcome row: the SRD-83 Part 5 axes — Interrupted +
+    // Succeeded — serialize as the stable label `interrupted`.
+    let conn = rusqlite::Connection::open(session.join("metrics.db"))
+        .expect("open session metrics.db");
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM phase_outcomes WHERE phase_name = 'phase_graceful_trip'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("phase_graceful_trip outcome row");
+    assert_eq!(status, "interrupted",
+        "a graceful stop must record Interrupted+Succeeded (label `interrupted`)");
+
+    // Phase `metrics:` emission survived the graceful stop.
+    let families: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM metric_family WHERE name LIKE 'graceful_phase_ms%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    assert!(families > 0,
+        "the phase metric `graceful_phase_ms` must be emitted on a graceful stop");
 }
 
 // ─── Phase shell ──────────────────────────────────────────────────

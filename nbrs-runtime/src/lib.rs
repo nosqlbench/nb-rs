@@ -134,6 +134,7 @@ pub mod wrapper_resolver;
 pub(crate) mod relevancy;
 pub mod fixture;
 pub mod validation;
+pub mod workload_lint;
 pub(crate) mod fiber_pool;
 pub(crate) mod daemon_pool;
 pub mod log_sink;

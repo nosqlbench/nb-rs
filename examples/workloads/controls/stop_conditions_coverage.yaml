@@ -18,11 +18,14 @@
 #   phase_elapsed_ms  — PHASE shell, `elapsed_ms`   (wall clock, ms)
 #   workload_children — WORKLOAD shell, `children_done` (1 per phase)
 #
-# Behaviour today (the two-axis Outcome effect mapping is a later
-# SRD-83 step): a PHASE-level trip fails the phase, so the session
-# exits non-zero with the reason on stderr; the WORKLOAD-level trip
-# halts the remaining walk gracefully, so the session exits zero but
-# the later phase is never dispatched.
+# Effect mapping (SRD-83 Part 5): a PHASE-level trip with the default
+# `fail` effect fails the phase (non-zero exit, reason on stderr); an
+# explicit `effect: stop` is a CLEAN early halt — the phase ends
+# Interrupted+Succeeded, keeps its partial result, emits its phase
+# `metrics:`, and the session exits zero (scenario
+# `phase_graceful_stop` below). The WORKLOAD-level trip halts the
+# remaining walk gracefully, so the session exits zero but the later
+# phase is never dispatched.
 #
 # Self-contained: runs on the default adapter with no extra params
 # (phases pace themselves via `rate:`). Run any scenario individually —
@@ -56,6 +59,20 @@ scenarios:
   phase_elapsed_ms:
     - phase_time_trip
 
+  # ── PHASE shell — graceful `effect: stop` (SRD-83 Part 5) ─────
+  # Same trip point as phase_cycles_total, but the declared effect is a
+  # clean halt: Interrupted+Succeeded, exit zero, phase metrics kept.
+  phase_graceful_stop:
+    - phase_graceful_trip
+
+  # ── PHASE shell — governance `timeout:` (SRD-83 C3 / GAP-12) ──
+  # The declarative timeout desugars to a synthesized, logged
+  # `elapsed_ms >` stop condition; expiry ends the phase
+  # Interrupted+Failed with reason class `timeout` (the protocol
+  # OUT-OF-RANGE disposition) and the session exits non-zero.
+  phase_timeout:
+    - phase_timeout_trip
+
   # ── WORKLOAD shell — children_done wire ──────────────────────
   # step_a + step_b complete (children_done → 2) → the workload
   # condition trips → step_c is never dispatched.
@@ -82,6 +99,44 @@ phases:
     ops:
       tick:
         stmt: "OP_TICK"
+
+  # SRD-83 Part 5 — the same `cycles_total > 25` trip as phase_op_trip,
+  # with `effect: stop` declared: the condition is a BUDGET, not a
+  # breach. The phase ends Interrupted+Succeeded with its partial
+  # result standing, the phase-level metric below is emitted (a
+  # gracefully stopped phase is a valid measurement), and the session
+  # exits zero. The `[stop_condition: …] … stopping phase` line lands
+  # in the session log at Warn.
+  phase_graceful_trip:
+    cycles: 600
+    concurrency: 1
+    rate: 250
+    stop_when:
+      - when: "cycles_total > 25"
+        effect: stop
+    bindings: |
+      volatile now_ms := current_epoch_millis()
+    metrics:
+      graceful_phase_ms:
+        kind: gauge
+        value: "now_ms - phase_start"
+    ops:
+      tick:
+        stmt: "GRACEFUL_TICK"
+
+  # SRD-83 C3 — `timeout: "150ms"` is GOVERNANCE, not a budget: the
+  # bound expiring means the phase is disqualified (Interrupted+
+  # Failed, reason class `timeout`), unlike phase_graceful_trip's
+  # clean `effect: stop`. The 600-cycle extent at 250 ops/s would
+  # run ~2.4 s; the 150 ms timeout cuts it at ~37 ops.
+  phase_timeout_trip:
+    cycles: 600
+    concurrency: 1
+    rate: 250
+    timeout: "150ms"
+    ops:
+      tick:
+        stmt: "TIMEOUT_TICK"
 
   # `elapsed_ms > 150` — the phase wall clock, not an op count. At
   # 250 ops/sec this trips around op ~37, but the trigger is TIME: a

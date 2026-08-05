@@ -786,6 +786,30 @@ pub struct StopConditionSpec {
     pub at: Option<ScopeLevel>,
 }
 
+impl StopConditionSpec {
+    /// SRD-83 Part 5 — the closed `action:`/`effect:` verb vocabulary.
+    /// `stop` = Interrupted+Succeeded (a clean early halt that keeps the
+    /// partial result); `fail` = Interrupted+Failed; `abort` = `fail`
+    /// plus cancelling in-flight ops.
+    pub const EFFECT_VOCABULARY: [&'static str; 3] = ["stop", "fail", "abort"];
+
+    /// Validate the semantic surface serde cannot: the effect verb.
+    /// The runtime's verb→Outcome map resolves any unrecognized string
+    /// to the shell default, so before this check a typo'd
+    /// `effect: sotp` silently became `fail` — an authoring trap.
+    /// Rejected at workload load instead ("never ignore silently").
+    pub fn validate(&self) -> Result<(), String> {
+        match self.effect.as_deref() {
+            Some(e) if !Self::EFFECT_VOCABULARY.contains(&e) => Err(format!(
+                "unknown stop-condition effect '{e}' on `when: {}` — \
+                 expected one of stop|fail|abort",
+                self.when
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
 fn default_continue_if_each() -> Vec<ScopeLevel> {
     // SRD-101 — a `continue_if` gate defaults to halting the enclosing
     // SCENARIO sweep (the comprehension loop it rides), NOT the declaring
@@ -910,6 +934,17 @@ pub struct WorkloadPhase {
     /// conditions; this field exists as an explicit shorthand only.
     #[serde(default)]
     pub error_rate_max: Option<f64>,
+    /// SRD-83 governance timeout (GAP-12). A duration (`"2.5h"`, `"150ms"`,
+    /// bare fractional seconds) or a `{param}` reference; on expiry the
+    /// phase ends Interrupted+Failed with reason class `timeout` — the
+    /// protocol OUT-OF-RANGE disposition: the system is disqualified at
+    /// this tier, the partial result is not usable. Desugars at the
+    /// phase gather into a synthesized, logged `elapsed_ms >` stop
+    /// condition (the `error_rate_max` precedent). Distinct from a
+    /// BUDGET: a clean time-boxed measurement is a bounded cursor or a
+    /// `stop_when … effect: stop` (Interrupted+Succeeded), not this.
+    #[serde(default)]
+    pub timeout: Option<String>,
     /// SRD-83 — stop conditions for this phase shell. Each is a polydat
     /// predicate over runtime-state wires, plus a firing trigger and an
     /// effect. Evaluated at triggers; a true predicate stops the phase
@@ -1274,6 +1309,20 @@ pub struct PhasePollSpec {
     ///   and produces meaningless results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_timeout: Option<String>,
+    /// SRD-75 (C5) — strict-gate selectors. Each entry is a
+    /// `metric()`-style selector (`"family, key=value, …"`) that MUST
+    /// resolve to a registered instrument within the gate's grace
+    /// window (the first poll interval); an unresolved selector is a
+    /// hard `poll_require` error failing the phase. This is the
+    /// runtime guard for coordination gates whose `until` reads
+    /// another phase's live metrics — an unregistered family reads
+    /// 0.0 silently, so a typo'd selector otherwise passes the gate
+    /// instantly or hangs it to timeout. Deliberately poll-only:
+    /// `stop_when`'s lenient reads stay as SRD-83 sanctions them
+    /// ("family not yet present" is a legitimate not-yet state for a
+    /// stop predicate; for a gate it is a bug).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub require: Vec<String>,
 }
 
 /// Per-phase checkpoint declaration. Three legal forms in YAML:

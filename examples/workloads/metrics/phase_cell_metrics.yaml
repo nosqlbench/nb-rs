@@ -1,0 +1,36 @@
+#!/usr/bin/env nbrs
+# phase_cell_metrics.yaml — C9 coverage: phase-level `metrics:` honor
+# `cell:`/`dimensions:` placement, the same rule op-level metrics
+# follow. The phase declares a `tier` dimension; its completion metric
+# is placed at the cell `tier="gold"`, so the recorded instrument's
+# labels carry the coordinate instead of landing bare on the phase
+# component.
+#
+# Self-contained: default adapter, no params. Run under a sandbox
+# --session-path; never from the project root.
+
+scenarios:
+  default:
+    - stamp
+
+phases:
+  stamp:
+    cycles: 3
+    concurrency: 1
+    dimensions:
+      tier: str
+    bindings: |
+      const tier_name := "gold"
+      volatile now_ms := current_epoch_millis()
+    metrics:
+      stamped_ms:
+        kind: gauge
+        value: "now_ms - phase_start"
+        cell: { tier: tier_name }
+    ops:
+      tick:
+        stmt: "CELL_TICK"
+
+# ─── example-walker test directives ───
+#@ run scenario=default
+#@ expect completed, 0 failed

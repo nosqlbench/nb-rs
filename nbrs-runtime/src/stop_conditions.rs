@@ -369,6 +369,25 @@ impl StopConditionDecl {
         }
     }
 
+    /// SRD-83 governance `timeout:` (GAP-12) — the visible synthesized
+    /// guard a phase `timeout:` becomes. ONE canonical construction,
+    /// mirroring [`Self::error_rate_guard`]: the expression string
+    /// exists here and nowhere else, and the caller logs it at
+    /// synthesis. Expiry is the protocol OUT-OF-RANGE disposition —
+    /// Interrupted+Failed with reason class `timeout` — distinguishing
+    /// "disqualified at this tier" from every other failure class. A
+    /// clean time-boxed BUDGET is not this: that's a bounded cursor or
+    /// a `stop_when … effect: stop`.
+    pub fn timeout_guard(timeout_ms: u64) -> Self {
+        Self {
+            when: format!("elapsed_ms > {timeout_ms}"),
+            effect: Outcome::failed(),
+            reason: Some("timeout".to_string()),
+            target: StopScope::Phase,
+            cancel_ops: false,
+        }
+    }
+
     /// Map an SRD-83 `action:`/`effect:` string to its [`Outcome`]. `"stop"`
     /// is a clean halt (`Interrupted + Succeeded`, keep the partial result);
     /// `"fail"` and `"abort"` are failure halts (`Interrupted + Failed`).

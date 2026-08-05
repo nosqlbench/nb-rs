@@ -927,6 +927,17 @@ pub struct Activity {
     /// error so the user doesn't have to grep the per-cycle
     /// log to learn what actually stopped the run.
     pub stop_reason: Arc<std::sync::Mutex<Option<String>>>,
+    /// SRD-83 Part 5 — the two-axis Outcome of the FIRST stop-condition
+    /// trip that stopped this phase, latched together with `stop_reason`
+    /// (same first-stopper-wins discipline, written inside the same slot
+    /// win). A `stop` effect latches Interrupted+Succeeded — a clean
+    /// early halt whose partial result the phase keeps; `fail`/`abort`
+    /// latch Interrupted+Failed. The executor reads this at phase end so
+    /// the shell adopts the condition's DECLARED outcome instead of
+    /// deriving failure from the bare stop flag. `None` whenever the
+    /// stop came from any other source (error router `stop` verb, walk
+    /// stop, poll timeout, Ctrl-C) — those keep failure semantics.
+    pub stop_outcome: Arc<std::sync::Mutex<Option<crate::phase_outcome::Outcome>>>,
     /// SRD-76 — chronologically ordered per-cycle error
     /// records. Populated by the per-cycle dispatch path
     /// (alongside the existing `stop_reason` formatted
@@ -1049,6 +1060,18 @@ pub struct PhasePollContext {
     ///   meaningful; a stuck synchronizer invalidates
     ///   the rest of the run.
     pub on_timeout: PhasePollTimeoutPolicy,
+    /// SRD-75 (C5) — strict-gate selectors: each must resolve to a
+    /// registered instrument before the gate's predicate is trusted.
+    /// While any selector is unresolved the gate HOLDS (the predicate
+    /// is not consulted — an unregistered family reads 0.0, which
+    /// could satisfy a `>=`-shaped predicate spuriously); past
+    /// [`Self::require_grace`] an unresolved selector is a hard
+    /// `poll_require` failure.
+    pub require: Vec<String>,
+    /// Grace deadline for [`Self::require`] resolution: the first
+    /// poll interval after loop start (late registration is normal —
+    /// a producing daemon registers its instruments as it spins up).
+    pub require_grace: std::time::Instant,
 }
 
 /// SRD-75 `on_timeout` policy — see [`PhasePollContext::on_timeout`].
@@ -1179,6 +1202,7 @@ impl Activity {
             walk_stop: None,
             daemon_stop: None,
             stop_reason: Arc::new(std::sync::Mutex::new(None)),
+            stop_outcome: Arc::new(std::sync::Mutex::new(None)),
             phase_errors: Arc::new(std::sync::Mutex::new(Vec::new())),
             validation_frame: Arc::new(std::sync::Mutex::new(None)),
             component: None,
@@ -2737,6 +2761,13 @@ impl Activity {
                             && slot.is_none()
                         {
                             *slot = Some(format!("[{reason}] {msg}"));
+                            // SRD-83 Part 5 — the first stopper owns the
+                            // outcome as well as the reason: latch the
+                            // condition's declared effect for the phase
+                            // shell to adopt.
+                            if let Ok(mut oc) = activity.stop_outcome.lock() {
+                                *oc = Some(outcome.clone());
+                            }
                         }
                         if let Ok(mut errs) = activity.phase_errors.lock() {
                             errs.push(crate::phase_outcome::PhaseErrorDetail {
@@ -2760,6 +2791,14 @@ impl Activity {
                             && slot.is_none()
                         {
                             *slot = Some(format!("[{reason}] {msg}"));
+                            // SRD-83 Part 5 — a graceful `stop` effect:
+                            // latch Interrupted+Succeeded so the phase
+                            // shell ends this phase cleanly with its
+                            // partial result instead of deriving failure
+                            // from the bare stop flag.
+                            if let Ok(mut oc) = activity.stop_outcome.lock() {
+                                *oc = Some(outcome.clone());
+                            }
                         }
                     }
                     // SRD-83 follow-up — route the action to its target scope.
@@ -3688,6 +3727,60 @@ async fn executor_task(
                     // is wired to the SAME SharedCells the
                     // captures wrote to (so its pull returns
                     // the live value).
+                    // SRD-75 (C5) — strict-gate `require:` selectors.
+                    // While any selector is unresolved the gate HOLDS:
+                    // the predicate is not trusted, because an
+                    // unregistered family reads 0.0 silently and a
+                    // `>=`-shaped predicate could pass spuriously (or
+                    // a `<`-shaped one hang to timeout). Past the
+                    // grace window (one poll interval) an unresolved
+                    // selector is a hard `poll_require` failure —
+                    // loud and immediate, never a mystery hang.
+                    let unresolved: Vec<&String> = pp.require.iter()
+                        .filter(|s| !nbrs_metrics::polydat_nodes
+                            ::metric_selector_resolves(s))
+                        .collect();
+                    if !unresolved.is_empty()
+                        && std::time::Instant::now() >= pp.require_grace
+                    {
+                        let names = unresolved.iter()
+                            .map(|s| format!("'{s}'"))
+                            .collect::<Vec<_>>().join(", ");
+                        let formatted_reason = format!(
+                            "[poll_require] poll `require:` selector(s) {names} \
+                             resolved to no registered instrument within the \
+                             grace window — the gate's `until:` would read 0.0 \
+                             for them. Check the family name and labels (e.g. \
+                             phase=<name>), and that the producing phase is \
+                             running. SRD-75 (C5).");
+                        crate::diag!(crate::observer::LogLevel::Error,
+                            "activity '{}': {formatted_reason}",
+                            activity.config.name);
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(formatted_reason.clone());
+                        }
+                        if let Ok(mut errs) = activity.phase_errors.lock() {
+                            errs.push(crate::phase_outcome::PhaseErrorDetail {
+                                class: "poll_require".into(),
+                                message: formatted_reason,
+                                op_name: None,
+                                cycle: None,
+                                op_template: None,
+                                op_resolved: None,
+                                at_nanos: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_nanos() as u64)
+                                    .unwrap_or(0),
+                                retryable: false,
+                            });
+                        }
+                        activity.stop_flag.store(true,
+                            std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
+                    let requires_ok = unresolved.is_empty();
                     // SAME call the op-level poll makes. An execution node is
                     // an execution node: the predicate is resolved through one
                     // interface (`CycleWires`, which PULLS and so re-evaluates
@@ -3696,8 +3789,10 @@ async fn executor_task(
                     // This was a third, divergent implementation — an inline
                     // match whose `_ => false` arm made a non-empty string
                     // falsy here and truthy under `if:` / `while:` / op-poll,
-                    // for the same expression.
-                    let satisfied = {
+                    // for the same expression. (The `require:` gate above
+                    // additionally withholds trust in the predicate until
+                    // every declared metric selector resolves.)
+                    let satisfied = requires_ok && {
                         let wires = crate::wires::CycleWires::new(fiber.main_kernel_mut());
                         match crate::wrappers::condition::holds(
                             &wires, crate::wrappers::condition::UNTIL_BINDING)

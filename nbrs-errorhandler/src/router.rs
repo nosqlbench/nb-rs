@@ -136,6 +136,18 @@ impl ErrorRouter {
         self.retry_budget
     }
 
+    /// True when some rule carries the literal match-all pattern `.*`
+    /// (written explicitly, or implied by a pattern-less rule). An error
+    /// class matching NO rule falls through to `stop` with only an
+    /// eprintln — a router without a catch-all therefore has a silent
+    /// fall-through mode, which workload-load linting warns about. This
+    /// checks the pattern SOURCE, not regex universality: `.*` is the
+    /// one canonical way to write the catch-all.
+    pub fn has_catch_all(&self) -> bool {
+        self.mappings.iter().any(|m|
+            m.patterns.iter().any(|p| p.as_str() == ".*"))
+    }
+
     /// Create a simple router with a default handler for all errors.
     pub fn default_stop() -> Self {
         Self::parse(".*:stop").unwrap()
