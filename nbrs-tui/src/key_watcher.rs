@@ -188,14 +188,26 @@ fn run_loop(tx: mpsc::Sender<WatcherSignal>, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::Acquire) {
         // 100 ms poll cadence: fast enough that a Ctrl-T feels
         // immediate, slow enough that idle CPU is negligible.
+        //
+        // On error, sleep the same cadence before retrying: a
+        // dead terminal (PTY master closed under a test harness,
+        // hangup on a real tty) makes poll/read fail INSTANTLY,
+        // and a bare `continue` turns this loop into a 100%-CPU
+        // spin for as long as the process lingers.
         let ready = match event::poll(Duration::from_millis(100)) {
             Ok(b) => b,
-            Err(_) => continue,
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
         };
         if !ready { continue; }
         let evt = match event::read() {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
         };
         match evt {
             Event::Key(k) if k.kind == KeyEventKind::Press => {
