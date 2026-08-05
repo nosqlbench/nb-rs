@@ -31,6 +31,7 @@
 //!   (feature-gated on `jit`).
 
 pub mod assembly;
+pub mod roundtrip_lint;
 pub mod fusion;
 pub mod select;
 pub mod closures;

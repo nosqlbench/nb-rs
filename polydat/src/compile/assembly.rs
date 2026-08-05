@@ -1473,6 +1473,26 @@ impl PolydatAssembler {
             }
         }
 
+        // C6b — structural type-round-trip lint (see
+        // `compile::roundtrip_lint`): a value modulated `T → Y → … → T`
+        // through pure conversion/formatting machinery violates the
+        // native-types-stay-native principle. Warning by default; a
+        // hard error under strict-values mode, matching the SRD 15
+        // strict-wire constraint discipline.
+        for f in crate::compile::roundtrip_lint::lint_type_round_trips(
+            &final_nodes, &final_wiring, &self.input_defs,
+        ) {
+            if strict_values {
+                return Err(AssemblyError::Other(f.message()));
+            }
+            eprintln!("warning: {}", f.message());
+            if let Some(ref mut log) = log {
+                log.push(crate::dsl::events::CompileEvent::Warning {
+                    message: f.message(),
+                });
+            }
+        }
+
         Ok(ResolvedDag {
             nodes: final_nodes,
             wiring: final_wiring,
