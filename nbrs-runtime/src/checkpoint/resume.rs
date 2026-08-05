@@ -93,6 +93,7 @@ impl ResumePlan {
     pub fn from_checkpoint(
         saved: &Checkpoint,
         candidates: &[(PhaseIdentity, bool)],
+        current_params: &HashMap<String, String>,
     ) -> Self {
         let saved_index: HashMap<String, &super::storage::PhaseEntry> =
             saved.phases.iter()
@@ -108,6 +109,7 @@ impl ResumePlan {
                     cand,
                     saved_entry,
                     *declared_idempotent,
+                    current_params,
                 ),
             };
             actions.insert(key, action);
@@ -152,6 +154,7 @@ fn classify(
     candidate: &PhaseIdentity,
     saved: &super::storage::PhaseEntry,
     declared_idempotent: bool,
+    current_params: &HashMap<String, String>,
 ) -> ResumeAction {
     // The saved entry might have been written before the
     // operator changed `checkpoint:` for this phase. Honour the
@@ -164,13 +167,28 @@ fn classify(
     match saved.status {
         PhaseStatus::Completed => {
             // Structural match has been established by the
-            // identity_key lookup; check sufficiency (hash) only
-            // when both sides carry one.
+            // identity_key lookup; check sufficiency (base hash)
+            // only when both sides carry one.
             if !candidate.matches_full(&saved.identity) {
                 return ResumeAction::IdentityMismatch {
                     reason: format!(
-                        "phase '{}': program hash differs from saved checkpoint — \
-                         workload definition changed since this phase last ran",
+                        "phase '{}': scope or phase config changed since \
+                         this phase last ran (base hash differs)",
+                        phase_label(&candidate.yaml_path),
+                    ),
+                };
+            }
+            // SRD-107 — the per-param leg: every param the saved
+            // run consumed must digest to the same value NOW. The
+            // blocker names the param. A base-matching entry
+            // without the stored map is incomparable (mid-upgrade
+            // oddity) → conservative re-run.
+            if let Err(mismatch) = saved_params_still_valid(
+                saved.params_consumed.as_deref(), current_params,
+            ) {
+                return ResumeAction::IdentityMismatch {
+                    reason: format!(
+                        "phase '{}': {mismatch} since this phase last ran",
                         phase_label(&candidate.yaml_path),
                     ),
                 };
@@ -200,6 +218,31 @@ fn classify(
         //   or surface a different outcome).
         PhaseStatus::Pending | PhaseStatus::Failed => ResumeAction::ReRun,
     }
+}
+
+/// SRD-107 — evaluate a saved consumed-params map against the
+/// CURRENT param values. `Ok(())` when every stored name digests
+/// identically now; `Err(description)` naming the first changed
+/// or missing param, or the comparability gap.
+fn saved_params_still_valid(
+    stored_json: Option<&str>,
+    current_params: &HashMap<String, String>,
+) -> Result<(), String> {
+    let Some(json) = stored_json else {
+        return Err("saved entry carries no consumed-params record".into());
+    };
+    let Ok(stored) = serde_json::from_str::<
+        std::collections::BTreeMap<String, String>>(json) else {
+        return Err("saved consumed-params record is unreadable".into());
+    };
+    for (name, stored_digest) in stored {
+        let current = current_params.get(&name)
+            .map(|v| crate::checkpoint::params_scope::value_digest(v));
+        if current.as_deref() != Some(stored_digest.as_str()) {
+            return Err(format!("param '{name}' changed"));
+        }
+    }
+    Ok(())
 }
 
 /// Reuse the writer's identity-key shape so both sides agree on
@@ -249,7 +292,9 @@ mod tests {
         PhaseEntry {
             identity,
             skip_eligible,
-            params_consumed: None,
+            // Comparable empty consumed-set: these fixtures pin the
+            // status/hash legs; the params leg has its own tests.
+            params_consumed: Some("{}".into()),
             status,
             duration_secs: Some(1.0),
             op_counts: Some(OpCounts::default()),
@@ -279,6 +324,58 @@ mod tests {
         assert!(!plan.is_resume);
     }
 
+    /// SRD-107 — the per-param leg: same base hash, but a param
+    /// the saved run consumed now digests differently → the
+    /// mismatch names the param.
+    #[test]
+    fn consumed_param_change_invalidates_and_names_the_param() {
+        let h = [0xab; 32];
+        let id = ident_with_hash("load", "", Some(h));
+        let mut e = entry(id.clone(), PhaseStatus::Completed, true);
+        e.params_consumed = Some(format!(
+            r#"{{"dataset":"{}"}}"#,
+            crate::checkpoint::params_scope::value_digest("sift1m"),
+        ));
+        let saved = checkpoint_with(vec![e]);
+
+        let mut params = HashMap::new();
+        params.insert("dataset".to_string(), "sift10m".to_string());
+        let plan = ResumePlan::from_checkpoint(
+            &saved, &[(id.clone(), true)], &params,
+        );
+        match plan.action_for(&id) {
+            ResumeAction::IdentityMismatch { reason } => {
+                assert!(reason.contains("param 'dataset' changed"),
+                    "reason must name the param: {reason}");
+            }
+            other => panic!("expected IdentityMismatch, got {other:?}"),
+        }
+    }
+
+    /// SRD-107 — unrelated params may change freely: only the
+    /// STORED names are checked, so a phase that consumed nothing
+    /// (or different params) still skips.
+    #[test]
+    fn unrelated_param_change_still_skips() {
+        let h = [0xab; 32];
+        let id = ident_with_hash("load", "", Some(h));
+        let mut e = entry(id.clone(), PhaseStatus::Completed, true);
+        e.params_consumed = Some(format!(
+            r#"{{"dataset":"{}"}}"#,
+            crate::checkpoint::params_scope::value_digest("sift1m"),
+        ));
+        let saved = checkpoint_with(vec![e]);
+
+        let mut params = HashMap::new();
+        params.insert("dataset".to_string(), "sift1m".to_string());
+        params.insert("suite_k".to_string(), "100".to_string());
+        let plan = ResumePlan::from_checkpoint(
+            &saved, &[(id.clone(), true)], &params,
+        );
+        assert!(matches!(plan.action_for(&id), ResumeAction::Skip),
+            "an unconsumed param's change must not invalidate");
+    }
+
     #[test]
     fn completed_idempotent_with_matching_hash_skips() {
         let h = [0xab; 32];
@@ -288,6 +385,7 @@ mod tests {
         ]);
         let plan = ResumePlan::from_checkpoint(
             &saved, &[(id.clone(), true)],
+            &HashMap::new(),
         );
         assert!(matches!(plan.action_for(&id), ResumeAction::Skip));
         assert_eq!(plan.skip_count(), 1);
@@ -304,6 +402,7 @@ mod tests {
         ]);
         let plan = ResumePlan::from_checkpoint(
             &saved, &[(id_now.clone(), true)],
+            &HashMap::new(),
         );
         match plan.action_for(&id_now) {
             ResumeAction::IdentityMismatch { reason } => {
@@ -322,6 +421,7 @@ mod tests {
         ]);
         let plan = ResumePlan::from_checkpoint(
             &saved, &[(id.clone(), false)],
+            &HashMap::new(),
         );
         assert!(matches!(plan.action_for(&id), ResumeAction::ReRun));
     }
@@ -334,6 +434,7 @@ mod tests {
         let saved = checkpoint_with(vec![e]);
         let plan = ResumePlan::from_checkpoint(
             &saved, &[(id.clone(), true)],
+            &HashMap::new(),
         );
         match plan.action_for(&id) {
             ResumeAction::CursorResume { cursor_state } => {
@@ -352,6 +453,7 @@ mod tests {
         ]);
         let plan = ResumePlan::from_checkpoint(
             &saved, &[(id.clone(), true)],
+            &HashMap::new(),
         );
         assert!(matches!(plan.action_for(&id), ResumeAction::ReRun));
     }
@@ -360,7 +462,7 @@ mod tests {
     fn unknown_candidate_reruns() {
         let saved = checkpoint_with(vec![]);
         let id = ident_with_hash("brand_new", "", None);
-        let plan = ResumePlan::from_checkpoint(&saved, &[(id.clone(), true)]);
+        let plan = ResumePlan::from_checkpoint(&saved, &[(id.clone(), true)], &HashMap::new());
         assert!(matches!(plan.action_for(&id), ResumeAction::ReRun));
     }
 
@@ -370,7 +472,7 @@ mod tests {
         let mut e = entry(id.clone(), PhaseStatus::Failed, true);
         e.error = Some("boom".into());
         let saved = checkpoint_with(vec![e]);
-        let plan = ResumePlan::from_checkpoint(&saved, &[(id.clone(), true)]);
+        let plan = ResumePlan::from_checkpoint(&saved, &[(id.clone(), true)], &HashMap::new());
         assert!(matches!(plan.action_for(&id), ResumeAction::ReRun));
     }
 }

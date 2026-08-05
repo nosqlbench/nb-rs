@@ -3370,7 +3370,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             let candidates = crate::checkpoint::scene_tree_resume_candidates(
                 tree, &scope_tree, &phases);
             std::sync::Arc::new(crate::checkpoint::ResumePlan::from_checkpoint(
-                saved, &candidates,
+                saved, &candidates, &workload_params,
             ))
         } else {
             std::sync::Arc::new(crate::checkpoint::ResumePlan::fresh())

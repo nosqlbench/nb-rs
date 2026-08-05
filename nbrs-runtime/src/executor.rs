@@ -5028,21 +5028,37 @@ async fn run_phase_inner(
         && (plan.scope == crate::refine_plan::RefineScope::Changed
             || (plan.scope == crate::refine_plan::RefineScope::Missing
                 && is_prereq_class))
-        && plan.is_unchanged(phase_name, &phase_labels, &phase_hash_hex)
     {
-        crate::diag!(crate::observer::LogLevel::Info,
-            "refine: skipping phase '{phase_name}' [{phase_labels}] \
-             (prior completed outcome, hash unchanged)");
-        crate::scene_tree::with_global_mut(|t| {
-            t.set_phase_running_at(scene_node_id, 0);
-            t.set_phase_completed_at(scene_node_id, 0.0);
-        });
-        ctx.observer.phase_starting(scene_node_id, phase_name, &phase_labels, 0, 0, 0);
-        ctx.observer.phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
-        crate::phase_end_triggers::fire_phase_completed(
-            phase_name, &phase_labels, 0.0,
-        );
-        return crate::phase_outcome::Outcome::skipped();
+        match plan.unchanged_verdict(
+            phase_name, &phase_labels, &phase_hash_hex,
+            &ctx.workload_params,
+        ) {
+            Ok(()) => {
+                crate::diag!(crate::observer::LogLevel::Info,
+                    "refine: skipping phase '{phase_name}' [{phase_labels}] \
+                     (prior completed outcome, hash unchanged)");
+                crate::scene_tree::with_global_mut(|t| {
+                    t.set_phase_running_at(scene_node_id, 0);
+                    t.set_phase_completed_at(scene_node_id, 0.0);
+                });
+                ctx.observer.phase_starting(scene_node_id, phase_name, &phase_labels, 0, 0, 0);
+                ctx.observer.phase_completed(scene_node_id, phase_name, &phase_labels, 0.0);
+                crate::phase_end_triggers::fire_phase_completed(
+                    phase_name, &phase_labels, 0.0,
+                );
+                return crate::phase_outcome::Outcome::skipped();
+            }
+            // SRD-107 Push 3 — the blocker names WHY the phase
+            // re-runs, so an operator reads "param 'dataset'
+            // changed" instead of a bare hash mismatch. NoPrior
+            // is the ordinary new-phase case — quiet.
+            Err(crate::refine_plan::SkipBlocker::NoPrior) => {}
+            Err(blocker) => {
+                crate::diag!(crate::observer::LogLevel::Info,
+                    "refine: re-running phase '{phase_name}' \
+                     [{phase_labels}] — {blocker}");
+            }
+        }
     }
 
     // SRD-83 governance `timeout:` (GAP-12) — resolve `{param}` /

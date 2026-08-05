@@ -42,17 +42,15 @@ pub struct RefinePlan {
     /// freshly pre-mapped workload — those are candidates
     /// for the error / keep / drop decision.
     pub seen_identities: HashSet<(String, String)>,
-    /// Prior `(name, labels) → phase_hash` for completed
-    /// phases. Populated from `phase_outcomes.phase_hash`
-    /// (SRD-77). Used by `--scope=changed`: at phase
-    /// activation, the executor computes the current
-    /// instance_hash and compares it against this map's
-    /// value; equal → phase is unchanged (skip), differ →
-    /// re-run. `None`-valued entries (legacy rows from
-    /// before the `phase_hash` column was added) always
-    /// flag as "changed" so the conservative behavior runs
-    /// the phase rather than wrongly skipping it.
-    pub completed_hashes: std::collections::HashMap<(String, String), Option<String>>,
+    /// Prior `(name, labels) → provenance` for completed
+    /// phases: the BASE hash (`phase_outcomes.phase_hash`) plus
+    /// the SRD-107 consumed-params JSON. Used by the hash gates:
+    /// at phase activation the executor computes the current
+    /// base hash and param digests and compares via
+    /// [`Self::unchanged_verdict`]. Legacy rows (either field
+    /// NULL) always flag as changed, so the conservative
+    /// behavior runs the phase rather than wrongly skipping it.
+    pub completed_hashes: std::collections::HashMap<(String, String), PriorCompletion>,
     /// The execution id this refine invocation will record
     /// new outcomes under. One greater than the maximum
     /// `exec_id` observed in the prior `phase_outcomes` rows;
@@ -70,6 +68,44 @@ pub struct RefinePlan {
     /// executor's phase walk consults it to decide which gate
     /// to apply.
     pub scope: RefineScope,
+}
+
+/// The chronologically-latest completed outcome's provenance
+/// for one phase identity (SRD-77 base hash + SRD-107
+/// consumed-params JSON).
+#[derive(Debug, Clone, Default)]
+pub struct PriorCompletion {
+    pub phase_hash: Option<String>,
+    pub params_consumed: Option<String>,
+}
+
+/// Why a phase may NOT skip under the refine hash gate
+/// (SRD-107 Push 3) — surfaced in diagnostics so an operator
+/// sees "re-running load_train: param 'dataset' changed"
+/// instead of a bare hash mismatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipBlocker {
+    /// No prior completed outcome carries comparable provenance
+    /// (new phase, legacy row, or unreadable stored map).
+    NoPrior,
+    /// The base hash differs: an enclosing scope program or the
+    /// phase's own declared config changed.
+    BaseChanged,
+    /// A consumed param's value changed (or the param is no
+    /// longer present). Carries the param name.
+    ParamChanged(String),
+}
+
+impl std::fmt::Display for SkipBlocker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoPrior => write!(f, "no comparable prior outcome"),
+            Self::BaseChanged =>
+                write!(f, "scope or phase config changed"),
+            Self::ParamChanged(name) =>
+                write!(f, "param '{name}' changed"),
+        }
+    }
 }
 
 /// SRD-77 `--scope=` modes.
@@ -314,12 +350,52 @@ impl RefinePlan {
         phase_name: &str,
         phase_labels: &str,
         current_hex: &str,
+        current_params: &std::collections::HashMap<String, String>,
     ) -> bool {
+        self.unchanged_verdict(
+            phase_name, phase_labels, current_hex, current_params,
+        ).is_ok()
+    }
+
+    /// SRD-107 Push 3 — the three-way skip-validity check with a
+    /// NAMED blocker on failure: base hash equal AND every stored
+    /// consumed param's current value digests to its stored
+    /// digest. Conservative on any gap (legacy rows, unreadable
+    /// stored map): re-run rather than wrongly skip.
+    pub fn unchanged_verdict(
+        &self,
+        phase_name: &str,
+        phase_labels: &str,
+        current_hex: &str,
+        current_params: &std::collections::HashMap<String, String>,
+    ) -> Result<(), SkipBlocker> {
         let key = (phase_name.to_string(), phase_labels.to_string());
-        match self.completed_hashes.get(&key) {
-            Some(Some(prior_hex)) => prior_hex == current_hex,
-            _ => false,
+        let Some(prior) = self.completed_hashes.get(&key) else {
+            return Err(SkipBlocker::NoPrior);
+        };
+        match prior.phase_hash.as_deref() {
+            None => return Err(SkipBlocker::NoPrior),
+            Some(prior_hex) if prior_hex != current_hex =>
+                return Err(SkipBlocker::BaseChanged),
+            Some(_) => {}
         }
+        let Some(json) = prior.params_consumed.as_deref() else {
+            // A base-matching row without the SRD-107 map should
+            // not exist post-upgrade; treat as incomparable.
+            return Err(SkipBlocker::NoPrior);
+        };
+        let Ok(stored) = serde_json::from_str::<
+            std::collections::BTreeMap<String, String>>(json) else {
+            return Err(SkipBlocker::NoPrior);
+        };
+        for (name, stored_digest) in stored {
+            let current = current_params.get(&name)
+                .map(|v| crate::checkpoint::params_scope::value_digest(v));
+            if current.as_deref() != Some(stored_digest.as_str()) {
+                return Err(SkipBlocker::ParamChanged(name));
+            }
+        }
+        Ok(())
     }
 
     /// Should this phase be skipped per the plan's scope?
@@ -332,11 +408,13 @@ impl RefinePlan {
         phase_name: &str,
         phase_labels: &str,
         current_hex: &str,
+        current_params: &std::collections::HashMap<String, String>,
     ) -> bool {
         match self.scope {
             RefineScope::All => false,
             RefineScope::Missing => self.is_completed(phase_name, phase_labels),
-            RefineScope::Changed => self.is_unchanged(phase_name, phase_labels, current_hex),
+            RefineScope::Changed => self.is_unchanged(
+                phase_name, phase_labels, current_hex, current_params),
         }
     }
 
@@ -384,12 +462,34 @@ impl RefinePlan {
         if !exists {
             return None;
         }
-        let mut stmt = match conn.prepare(
+        // SRD-107 legacy-read guard: the params_consumed column
+        // may be absent on dbs never re-opened by a current
+        // writer (this connection is read-only, so no migration
+        // here); an absent column reads as NULL.
+        let has_params_col: bool = conn.prepare(
+            "PRAGMA table_info(phase_outcomes)")
+            .ok()
+            .and_then(|mut s| {
+                let mut found = false;
+                let mut rows = s.query([]).ok()?;
+                while let Ok(Some(r)) = rows.next() {
+                    if r.get::<_, String>(1)
+                        .map(|n| n == "params_consumed")
+                        .unwrap_or(false)
+                    {
+                        found = true;
+                    }
+                }
+                Some(found)
+            })
+            .unwrap_or(false);
+        let pc_col = if has_params_col { "params_consumed" } else { "NULL" };
+        let mut stmt = match conn.prepare(&format!(
             "SELECT exec_id, phase_name, phase_labels, status, phase_hash, \
-                    ended_at_nanos \
+                    {pc_col}, ended_at_nanos \
              FROM phase_outcomes \
              ORDER BY ended_at_nanos"
-        ) {
+        )) {
             Ok(s) => s,
             Err(e) => {
                 crate::diag!(crate::observer::LogLevel::Warn,
@@ -404,6 +504,7 @@ impl RefinePlan {
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         }) {
             Ok(r) => r,
@@ -415,7 +516,7 @@ impl RefinePlan {
         };
         let mut completed = HashSet::new();
         let mut seen_identities: HashSet<(String, String)> = HashSet::new();
-        let mut completed_hashes: std::collections::HashMap<(String, String), Option<String>>
+        let mut completed_hashes: std::collections::HashMap<(String, String), PriorCompletion>
             = std::collections::HashMap::new();
         let mut max_exec_id: u64 = 0;
         let mut count: usize = 0;
@@ -425,7 +526,7 @@ impl RefinePlan {
         // `scope=changed`: "did the LAST completed run match
         // what we'd compute now?"
         for row in rows.flatten() {
-            let (exec_id, name, labels, status, phase_hash) = row;
+            let (exec_id, name, labels, status, phase_hash, params_consumed) = row;
             let exec_id = exec_id.max(0) as u64;
             if exec_id > max_exec_id {
                 max_exec_id = exec_id;
@@ -434,7 +535,10 @@ impl RefinePlan {
             seen_identities.insert((name.clone(), labels.clone()));
             if status == "completed" {
                 completed.insert((name.clone(), labels.clone()));
-                completed_hashes.insert((name, labels), phase_hash);
+                completed_hashes.insert(
+                    (name, labels),
+                    PriorCompletion { phase_hash, params_consumed },
+                );
             }
         }
         // SRD-77 — `next_exec_id` must consult the `executions`
