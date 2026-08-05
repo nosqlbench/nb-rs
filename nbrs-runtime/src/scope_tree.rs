@@ -813,6 +813,37 @@ impl ScopeTree {
         out
     }
 
+    /// [`Self::ancestor_kernels`] split at the session boundary
+    /// (SRD-107): `(below, session)` where `below` is every
+    /// installed ancestor kernel from the immediate parent up
+    /// through the workload root, and `session` is the
+    /// session-node kernel (the workload-params module) when one
+    /// is installed. The provenance base hash covers `below`
+    /// only; param values are covered per-phase by the
+    /// consumed-params digest instead.
+    pub fn ancestor_kernels_split(
+        &self,
+        idx: ScopeNodeIdx,
+    ) -> (
+        Vec<std::sync::Arc<polydat::kernel::PolydatKernel>>,
+        Option<std::sync::Arc<polydat::kernel::PolydatKernel>>,
+    ) {
+        let mut below = Vec::new();
+        let mut session = None;
+        let mut cursor = self.nodes.get(idx).and_then(|n| n.parent);
+        while let Some(p) = cursor {
+            if let Some(k) = self.nodes[p].cached_kernel.get() {
+                if matches!(self.nodes[p].kind, ScopeKind::Session) {
+                    session = Some(k.clone());
+                } else {
+                    below.push(k.clone());
+                }
+            }
+            cursor = self.nodes[p].parent;
+        }
+        (below, session)
+    }
+
     /// Find a `Comprehension` scope by structural-equality match
     /// against its [`Comprehension`] AST. Returns the **first**
     /// DFS-pre-order match.

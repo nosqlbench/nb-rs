@@ -752,6 +752,18 @@ impl PolydatProgram {
         self.input_defs.iter().map(|d| d.name.clone()).collect()
     }
 
+    /// Names of the non-coordinate inputs — the slots an
+    /// enclosing scope satisfies (iteration externs and
+    /// external-write ports), excluding runtime dimensions like
+    /// `cycle`. The seed set for [`Self::extern_closure`] walks
+    /// (SRD-107).
+    pub fn outer_input_names(&self) -> Vec<String> {
+        self.input_defs.iter()
+            .filter(|d| d.kind != super::InputKind::Coordinate)
+            .map(|d| d.name.clone())
+            .collect()
+    }
+
     /// Return the number of coordinate inputs.
     pub fn coord_count(&self) -> usize {
         self.coord_count
@@ -1031,6 +1043,52 @@ impl PolydatProgram {
         let mut out = [0u8; 32];
         out.copy_from_slice(&h.finalize());
         out
+    }
+
+    /// Names of the non-coordinate inputs (iteration externs and
+    /// external-write ports) that transitively feed the given
+    /// outputs — the backward dataflow slice a scope needs from
+    /// its enclosing scopes to produce exactly those outputs.
+    ///
+    /// The walk starts at each requested output's producing node
+    /// and follows `NodeOutput` wires backwards; `Input` wires
+    /// contribute their input's NAME when its kind is not
+    /// [`super::InputKind::Coordinate`] (coordinates are runtime
+    /// dimensions like `cycle`, not outer-scope matter). Requested
+    /// names this program does not declare as outputs are ignored
+    /// — the caller keeps them unresolved and continues up its
+    /// chain. Sorted, deduplicated.
+    ///
+    /// SRD-107 uses this per-ancestor to derive a phase's
+    /// consumed-params closure: which workload params actually
+    /// reach a given phase through the scope chain.
+    pub fn extern_closure(&self, outputs: &[&str]) -> Vec<String> {
+        use std::collections::BTreeSet;
+        let mut pending: Vec<usize> = self.output_list.iter()
+            .filter(|(name, _, _)| outputs.contains(&name.as_str()))
+            .map(|(_, ni, _)| *ni)
+            .collect();
+        let mut visited: BTreeSet<usize> = BTreeSet::new();
+        let mut found: BTreeSet<String> = BTreeSet::new();
+        while let Some(ni) = pending.pop() {
+            if !visited.insert(ni) {
+                continue;
+            }
+            let Some(wires) = self.wiring.get(ni) else { continue };
+            for src in wires {
+                match src {
+                    WireSource::Input(idx) => {
+                        if let Some(def) = self.input_defs.get(*idx)
+                            && def.kind != super::InputKind::Coordinate
+                        {
+                            found.insert(def.name.clone());
+                        }
+                    }
+                    WireSource::NodeOutput(mi, _) => pending.push(*mi),
+                }
+            }
+        }
+        found.into_iter().collect()
     }
 
     pub fn canonical_hash(&self) -> [u8; 32] {

@@ -23,6 +23,7 @@ pub mod storage;
 pub mod events;
 pub mod writer;
 pub mod resume;
+pub mod params_scope;
 
 pub use identity::{PathSegment, PhaseIdentity};
 pub use storage::{Checkpoint, OpCounts, PhaseEntry, PhaseStatus};
@@ -131,20 +132,34 @@ pub(crate) fn compose_phase_hash(
     h.finalize().into()
 }
 
-/// Canonical SHA-256 over a phase's full declared configuration
-/// — every `WorkloadPhase` field, ops and bindings included.
-/// Serialized through `serde_json::Value` with recursively
-/// sorted object keys so HashMap-backed fields hash stably
-/// across processes (the workspace enables serde_json's
-/// `preserve_order`, so insertion order alone is NOT stable).
-pub(crate) fn phase_config_hash(
+/// Canonical serialization of a phase's full declared
+/// configuration — every `WorkloadPhase` field, ops and bindings
+/// included — through `serde_json::Value` with recursively sorted
+/// object keys so HashMap-backed fields serialize stably across
+/// processes (the workspace enables serde_json's `preserve_order`,
+/// so insertion order alone is NOT stable). One surface, two
+/// consumers: the config digest below and SRD-107's textual
+/// `{name}` interpolation scan.
+pub(crate) fn phase_config_canonical_text(
     phase: &nbrs_workload::model::WorkloadPhase,
-) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
+) -> String {
     let mut value = serde_json::to_value(phase)
         .unwrap_or(serde_json::Value::Null);
     sort_json_keys(&mut value);
-    let text = serde_json::to_string(&value).unwrap_or_default();
+    serde_json::to_string(&value).unwrap_or_default()
+}
+
+/// Canonical SHA-256 over [`phase_config_canonical_text`].
+pub(crate) fn phase_config_hash(
+    phase: &nbrs_workload::model::WorkloadPhase,
+) -> [u8; 32] {
+    config_text_hash(&phase_config_canonical_text(phase))
+}
+
+/// Hash an already-canonicalized config text (callers that also
+/// feed the text to the SRD-107 scan avoid serializing twice).
+pub(crate) fn config_text_hash(text: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(b"nbrs-phase-config-v1\n");
     h.update(text.as_bytes());
