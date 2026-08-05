@@ -23,6 +23,8 @@ use std::time::Duration;
 use shadow_terminal::shadow_terminal::Config;
 use shadow_terminal::steppable_terminal::{Input, SteppableTerminal};
 
+mod pty_support;
+
 /// Path to the `nbrs` binary cargo built for this test.
 /// `CARGO_BIN_EXE_<name>` is populated during integration-test
 /// builds for binaries declared in the same crate.
@@ -131,32 +133,14 @@ fn build_config(workload: &Path, extra: &[&str]) -> Config {
 }
 
 /// Step the terminal until a substring shows up on screen, or
-/// the deadline fires. `wait_for_string` from upstream is
-/// async + has its own internal timeout; this helper just
-/// adds nicer error context for our specific assertions.
+/// kill the child and panic at the deadline (shared drive loop —
+/// see `pty_support`).
 async fn assert_screen_contains(
     stepper: &mut SteppableTerminal,
     needle: &str,
     timeout: Duration,
 ) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            let _ = stepper.render_all_output().await;
-            let dump = stepper.screen_as_string().unwrap_or_default();
-            panic!(
-                "timed out waiting for {:?} on screen — last screen was:\n{}",
-                needle, dump
-            );
-        }
-        let _ = stepper.render_all_output().await;
-        if let Ok(s) = stepper.screen_as_string()
-            && s.contains(needle)
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    pty_support::wait_for(stepper, needle, timeout).await;
 }
 
 /// `tui=terminal` in a real PTY produces line-mode output

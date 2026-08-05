@@ -31,6 +31,8 @@ use std::time::Duration;
 use shadow_terminal::shadow_terminal::Config;
 use shadow_terminal::steppable_terminal::SteppableTerminal;
 
+mod pty_support;
+
 fn nbrs_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_nbrs"))
 }
@@ -118,22 +120,7 @@ async fn assert_screen_contains(
     needle: &str,
     timeout: Duration,
 ) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            let _ = stepper.render_all_output().await;
-            let dump = stepper.screen_as_string().unwrap_or_default();
-            panic!(
-                "timed out waiting for {:?} on screen — last rendered output was:\n\
-                 {dump}",
-                needle
-            );
-        }
-        let _ = stepper.render_all_output().await;
-        let screen = stepper.screen_as_string().unwrap_or_default();
-        if screen.contains(needle) { return; }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    pty_support::wait_for(stepper, needle, timeout).await;
 }
 
 /// SRD-63 §5: a workload-declared `readouts:` block routes

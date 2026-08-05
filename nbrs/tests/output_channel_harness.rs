@@ -23,6 +23,9 @@ use std::time::Duration;
 use shadow_terminal::shadow_terminal::Config;
 use shadow_terminal::steppable_terminal::SteppableTerminal;
 
+mod pty_support;
+use pty_support::{settle, wait_for};
+
 fn nbrs_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_nbrs"))
 }
@@ -66,43 +69,6 @@ fn pty_config(args: &[&str], sessions: &Path, width: u16, height: u16) -> Config
         command,
         scrollback_size: 500,
         scrollback_step: 5,
-    }
-}
-
-/// Step the emulator until `needle` appears, or panic with the last screen.
-///
-/// Each drain pass is timeout-guarded: `render_all_output()` can park
-/// indefinitely when the child exits mid-drain (the reader task ends
-/// without closing the surface channel), which turned this poll loop
-/// into a permanent futex wait. A guarded pass simply falls through
-/// to the screen check — the deadline below stays the single failure
-/// authority, with the screen dump preserved.
-async fn wait_for(stepper: &mut SteppableTerminal, needle: &str, timeout: Duration) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let _ = tokio::time::timeout(
-            Duration::from_millis(400), stepper.render_all_output()).await;
-        if let Ok(s) = stepper.screen_as_string()
-            && s.contains(needle)
-        {
-            return;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            let dump = stepper.screen_as_string().unwrap_or_default();
-            panic!("timed out waiting for {needle:?}; last screen:\n{dump}");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Drain a few more render passes so the final screen is complete.
-/// Same per-pass guard as [`wait_for`] — a parked drain must not
-/// wedge the epilogue.
-async fn settle(stepper: &mut SteppableTerminal) {
-    for _ in 0..5 {
-        let _ = tokio::time::timeout(
-            Duration::from_millis(400), stepper.render_all_output()).await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
     }
 }
 

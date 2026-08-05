@@ -18,6 +18,8 @@ use std::time::Duration;
 use shadow_terminal::shadow_terminal::Config;
 use shadow_terminal::steppable_terminal::SteppableTerminal;
 
+mod pty_support;
+
 fn nbrs_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_nbrs"))
 }
@@ -94,25 +96,15 @@ async fn assert_screen_contains(stepper: &mut SteppableTerminal, needle: &str, t
     assert_screen(stepper, &format!("substring {needle:?}"), timeout, |s| s.contains(needle)).await;
 }
 
-/// Poll the rendered screen until `pred` holds, or panic with a dump.
+/// Poll the rendered screen until `pred` holds, or kill the child
+/// and panic with a dump (shared drive loop — see `pty_support`).
 async fn assert_screen(
     stepper: &mut SteppableTerminal,
     what: &str,
     timeout: Duration,
     pred: impl Fn(&str) -> bool,
 ) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let _ = stepper.render_all_output().await;
-        let screen = stepper.screen_as_string().unwrap_or_default();
-        if pred(&screen) {
-            return;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("timed out waiting for {what} on screen — last rendered output was:\n{screen}");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    pty_support::wait_until(stepper, pred, timeout, what).await;
 }
 
 /// Is there a line whose gutter is the agreed `[n/total] … │` shape — a

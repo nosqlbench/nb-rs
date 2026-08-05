@@ -26,6 +26,9 @@ use std::time::Duration;
 use shadow_terminal::shadow_terminal::Config;
 use shadow_terminal::steppable_terminal::SteppableTerminal;
 
+mod pty_support;
+use pty_support::wait_for;
+
 /// Path to the `tui_display_harness` example binary. Derived from
 /// the running test binary: `target/<profile>/deps/<test>` →
 /// `target/<profile>/examples/tui_display_harness`.
@@ -48,26 +51,6 @@ fn harness_config() -> Config {
         command,
         scrollback_size: 500,
         scrollback_step: 5,
-    }
-}
-
-/// Step the terminal until `needle` shows up, or the deadline
-/// fires (panics with the last screen for context).
-async fn wait_for(stepper: &mut SteppableTerminal, needle: &str, timeout: Duration) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let _ = stepper.render_all_output().await;
-        if let Ok(s) = stepper.screen_as_string()
-            && s.contains(needle)
-        {
-            return;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            let _ = stepper.render_all_output().await;
-            let dump = stepper.screen_as_string().unwrap_or_default();
-            panic!("timed out waiting for {needle:?}\n--- screen ---\n{dump}");
-        }
-        tokio::time::sleep(Duration::from_millis(40)).await;
     }
 }
 
@@ -109,12 +92,10 @@ async fn settled_screen(
         }
         prev = Some(s);
         if tokio::time::Instant::now() >= deadline {
-            let dump = prev.unwrap_or_default();
-            panic!(
-                "screen never settled into expected state: {what}
-                 --- last screen ---
-{dump}"
-            );
+            pty_support::kill_and_panic(
+                stepper,
+                &format!("screen never settled into expected state: {what}"),
+            ).await;
         }
         tokio::time::sleep(Duration::from_millis(40)).await;
     }

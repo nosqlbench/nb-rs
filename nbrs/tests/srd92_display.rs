@@ -17,9 +17,9 @@
 //! oversubscription (e.g. a spin-storm saturating every core,
 //! including the one the child's timing/cadence thread pins to)
 //! starves the render cadence and times these out — failing SAFE with
-//! a screen dump, never wedging (each drain pass is timeout-guarded).
-//! Normal conditions, including full-workspace sweeps (test targets
-//! run sequentially), complete in well under a second.
+//! a screen dump and a killed child (see `pty_support`), never
+//! wedging. Normal conditions, including full-workspace sweeps,
+//! complete in well under a second.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,8 @@ use std::time::Duration;
 
 use shadow_terminal::shadow_terminal::Config;
 use shadow_terminal::steppable_terminal::SteppableTerminal;
+
+mod pty_support;
 
 fn nbrs_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_nbrs"))
@@ -148,31 +150,15 @@ fn build_config(workload: &Path, session: &Path, extra: &[&str]) -> Config {
     }
 }
 
-/// Poll the rendered screen until `pred` holds, or panic with a dump.
-///
-/// Each drain pass is timeout-guarded: `render_all_output()` can park
-/// indefinitely when the child exits mid-drain (see
-/// output_channel_harness), so a guarded pass falls through to the
-/// screen check and the deadline stays the single failure authority.
+/// Poll the rendered screen until `pred` holds, or kill the child
+/// and panic with a dump (shared drive loop — see `pty_support`).
 async fn assert_screen(
     stepper: &mut SteppableTerminal,
     what: &str,
     timeout: Duration,
     pred: impl Fn(&str) -> bool,
 ) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let _ = tokio::time::timeout(
-            Duration::from_secs(2), stepper.render_all_output()).await;
-        let screen = stepper.screen_as_string().unwrap_or_default();
-        if pred(&screen) {
-            return;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("timed out waiting for {what} on screen — last rendered output was:\n{screen}");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    pty_support::wait_until(stepper, pred, timeout, what).await;
 }
 
 /// Wait until `measure`'s completed block satisfies `block_pred`,
@@ -192,8 +178,7 @@ async fn settled_measure_block(
     // Settle: further drain passes so any straggler detail rows land
     // before negative assertions read the slice.
     for _ in 0..10 {
-        let _ = tokio::time::timeout(
-            Duration::from_secs(2), stepper.render_all_output()).await;
+        pty_support::drain(stepper).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let screen = stepper.screen_as_string().unwrap_or_default();

@@ -33,6 +33,9 @@ use std::time::Duration;
 use shadow_terminal::shadow_terminal::Config;
 use shadow_terminal::steppable_terminal::SteppableTerminal;
 
+mod pty_support;
+use pty_support::{settle, wait_for};
+
 fn nbrs_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_nbrs"))
 }
@@ -131,23 +134,6 @@ fn plot_config(workload: &Path, sessions: &Path, width: u16, height: u16) -> Con
     }
 }
 
-/// Step until `needle` shows up, or panic with the last screen.
-async fn wait_for(stepper: &mut SteppableTerminal, needle: &str, timeout: Duration) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let _ = stepper.render_all_output().await;
-        if let Ok(s) = stepper.screen_as_string()
-            && s.contains(needle)
-        {
-            return;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            let dump = stepper.screen_as_string().unwrap_or_default();
-            panic!("timed out waiting for {needle:?}; last screen:\n{dump}");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
 
 fn is_braille(c: char) -> bool {
     ('\u{2800}'..='\u{28FF}').contains(&c)
@@ -228,14 +214,6 @@ async fn default_draw_renders_cleanly_on_a_tty() {
     assert!(reaches_left, "no plot row reaches the left edge — rows are staggered:\n{screen}");
 }
 
-/// Settle: drain a few more frames so the whole plot burst has landed in
-/// the grid before we read it.
-async fn settle(stepper: &mut SteppableTerminal) {
-    for _ in 0..4 {
-        let _ = stepper.render_all_output().await;
-        tokio::time::sleep(Duration::from_millis(60)).await;
-    }
-}
 
 /// Shared assertions: the title rendered intact and exactly once, braille
 /// content drew, no grid row exceeds the width, and — the real

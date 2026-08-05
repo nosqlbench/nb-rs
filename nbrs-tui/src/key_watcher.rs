@@ -175,10 +175,36 @@ impl KeyWatcher {
     /// normal line endings again. Idempotent — safe to call
     /// after the thread has already exited (the second call is
     /// a no-op).
+    ///
+    /// The join is BOUNDED. The watcher thread can be wedged in
+    /// a kernel `read()` on a tty that will never deliver
+    /// another byte — observed under PTY test harnesses, where
+    /// crossterm's poll reports readiness but the subsequent
+    /// blocking read never returns. A thread stuck in `read()`
+    /// cannot be interrupted portably; waiting on it wedged the
+    /// entire teardown chain (sink-supervisor → run teardown →
+    /// process exit) behind a keystroke that will never come.
+    /// After the grace window the thread is deliberately leaked
+    /// — process exit reaps it.
     pub fn shutdown(mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(join) = self.join.take() {
-            let _ = join.join();
+            let deadline = std::time::Instant::now()
+                + Duration::from_millis(500);
+            loop {
+                if join.is_finished() {
+                    let _ = join.join();
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    // No logging here on purpose: this runs during
+                    // display-plane teardown, when the log sinks may
+                    // already be gone. The leak is silent and benign
+                    // — process exit reaps the thread.
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
         let _ = crossterm::terminal::disable_raw_mode();
     }
