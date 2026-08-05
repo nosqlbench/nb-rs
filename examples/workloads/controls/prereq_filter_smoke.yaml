@@ -1,0 +1,66 @@
+#!/usr/bin/env nbrs
+# prereq_filter_smoke.yaml — SRD-106 coverage: the `phases=` filter's
+# prereq exemption and its scope-liveness boundary.
+#
+# `prep` (root level) and `side_prep` (inside a sibling scope) are
+# declared `checkpoint: idempotent` — the prereq class. The rules
+# under test:
+#
+#   1. A prereq in a LIVE scope stays in the walk even when the
+#      filter doesn't name it (provenance decides skip-or-run).
+#   2. Scope liveness comes from SELECTED phases only: a scope whose
+#      only selected-phase candidates don't match is elided whole,
+#      prereqs included — an unselected section never drags its own
+#      prereq chain into execution.
+#
+# So: `phases=measure_a` runs prep + measure_a, elides the sibling
+# scope entirely (no side_prep, no measure_b); `phases=measure_b`
+# runs prep, side_prep, and measure_b, skipping measure_a.
+#
+# Self-contained: default adapter, no params. Run under a sandbox
+# --session-path; never from the project root.
+
+scenarios:
+  default:
+    - prep
+    - measure_a
+    - for: 'section in "b"'
+      phases:
+        - side_prep
+        - measure_b
+
+phases:
+
+  prep:
+    checkpoint: idempotent
+    cycles: 1
+    concurrency: 1
+    ops:
+      t:
+        stmt: "PREP_TICK"
+
+  measure_a:
+    cycles: 2
+    concurrency: 1
+    ops:
+      t:
+        stmt: "A_TICK"
+
+  side_prep:
+    checkpoint: idempotent
+    cycles: 1
+    concurrency: 1
+    ops:
+      t:
+        stmt: "SIDE_PREP_TICK"
+
+  measure_b:
+    cycles: 2
+    concurrency: 1
+    ops:
+      t:
+        stmt: "B_TICK"
+
+# ─── example-walker test directives ───
+#@ run scenario=default
+#@ expect completed, 0 failed

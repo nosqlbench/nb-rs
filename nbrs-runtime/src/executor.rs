@@ -1310,6 +1310,12 @@ fn effective_parent_kernel(
 /// rule). Walks the workload-model scenario tree directly —
 /// no scene-tree dependency, so it's safe to consult before
 /// `push_scope_scene_node` would fire.
+/// SRD-106 — deliberately NOT prereq-aware: scope liveness is decided
+/// by SELECTED phases only. If it also counted `checkpoint: idempotent`
+/// prereqs, an unselected sibling section would drag its own prereq
+/// chain into execution (e.g. every per-profile load in a grid the
+/// operator didn't ask for). The prereq exemption applies at the
+/// phase-leaf gate below, inside scopes this rule keeps alive.
 fn subtree_has_active_phase(
     node: &ScenarioNode,
     pattern: &crate::phase_filter::PhasePattern,
@@ -1560,9 +1566,34 @@ fn execute_node<'a>(
                     // doesn't match. The structural push above
                     // still ran so the tree / TUI / coords stay
                     // intact; only the per-cycle work is elided.
+                    //
+                    // SRD-106 — prereq exemption: a phase declared
+                    // `checkpoint: idempotent` is upstream state
+                    // production whose at-most-once execution is
+                    // governed by PROVENANCE (the resume / refine
+                    // gates below), not by selection. Within a live
+                    // scope it stays in the walk even when the
+                    // filter doesn't name it. Scope liveness itself
+                    // comes from selected phases only — see
+                    // `subtree_has_active_phase`.
+                    let prereq_exempt = ctx.phase_filter.is_some()
+                        && ctx.phases.get(name)
+                            .and_then(|p| p.checkpoint.as_ref())
+                            .map(|c| c.idempotent)
+                            .unwrap_or(false);
                     let pattern_active = ctx.phase_filter.as_ref()
-                        .map(|pat| pat.is_match(name))
+                        .map(|pat| pat.is_match(name) || prereq_exempt)
                         .unwrap_or(true);
+                    if prereq_exempt
+                        && !ctx.phase_filter.as_ref()
+                            .map(|pat| pat.is_match(name))
+                            .unwrap_or(true)
+                    {
+                        crate::diag!(crate::observer::LogLevel::Info,
+                            "phases=<filter>: phase '{name}' kept as an \
+                             idempotent prerequisite (checkpoint: idempotent) \
+                             — resume/refine provenance decides skip-or-run");
+                    }
                     // SRD-77 refine `--scope=missing` fast-path:
                     // for the default scope, we can skip without
                     // computing the phase hash. `Changed` mode
@@ -1576,6 +1607,26 @@ fn execute_node<'a>(
                     if !pattern_active {
                         crate::diag!(crate::observer::LogLevel::Debug,
                             "phases=<filter>: skipping phase '{name}' (does not match)");
+                        // Mark the deliberate skip on the same observer +
+                        // scene-tree surfaces every other skip path uses
+                        // (checkpoint resume, refine scope=missing): a
+                        // zero-duration completion. Without this the node
+                        // stays Pending and the post-run unreached-phase
+                        // guard reports a filtered leaf as stranded
+                        // (warning + exit 2). Suppressed under
+                        // `pre_map_only` for the same reason as the
+                        // dryrun=phase branch below.
+                        if !ctx.pre_map_only {
+                            crate::scene_tree::with_global_mut(|t| {
+                                t.set_phase_running_at(phase_node_id, 0);
+                                t.set_phase_completed_at(phase_node_id, 0.0);
+                            });
+                            ctx.observer.phase_starting(phase_node_id, name, &phase_labels, 0, 0, 0);
+                            ctx.observer.phase_completed(phase_node_id, name, &phase_labels, 0.0);
+                            crate::phase_end_triggers::fire_phase_completed(
+                                name, &phase_labels, 0.0,
+                            );
+                        }
                     } else if ctx.diag.depth < crate::runner::ExecDepth::Dispenser {
                         // `dryrun=phase`: structural walk only —
                         // no `run_phase` call, no dispensers built.
