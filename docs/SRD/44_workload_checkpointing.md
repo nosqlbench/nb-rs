@@ -172,7 +172,9 @@ That is the safe direction — over-invalidation re-runs work; a
 missed reference would let a stale skip corrupt a measurement.
 Measurement sweep knobs belong in `dimensions:` / sweep cells,
 which carry their own per-cell identity (`coords`) and so never
-touch other phases' provenance.
+touch other phases' provenance. SRD-107 (planned) refines this
+to per-phase consumed-param precision via a derived closure —
+read it before narrowing the coverage here.
 
 ### Why canonical serialization, not raw bytes
 

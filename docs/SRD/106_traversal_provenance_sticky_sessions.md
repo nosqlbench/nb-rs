@@ -100,7 +100,9 @@ resume planner's candidates:
 Both inputs are computable at pre-map time, so saved and fresh
 values compare directly — no deferred-compile asymmetry. A param
 change, a bindings edit, an op-template edit, or a cycle-count
-change each flip the hash and re-run the phase.
+change each flip the hash and re-run the phase. (Param coverage
+is whole-module; SRD-107 plans the per-phase consumed-param
+refinement.)
 
 **Runtime re-validation:** the index-wait phase (`await_index` in the
 suite) is deliberately NOT skip-eligible even though it is idempotent
