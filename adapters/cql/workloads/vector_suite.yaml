@@ -9,7 +9,28 @@
 # and governance timeouts are declared bounds whose expiry means
 # "disqualified at this tier", not a generic error.
 #
+# Sessions & provenance (SRD-106): `stick_session: true` makes bare
+# re-runs re-attach to `sessions/latest` and layer a new execution —
+# announced as the run's first notable event; pass `--session new`
+# for a fresh session. Schema/load phases are `checkpoint:
+# idempotent` (the prereq class): on re-attach they skip when — and
+# only when — their prior outcome is Completed+Succeeded and the
+# provenance hash is unchanged. NOTE: params are provenance-bearing —
+# changing ANY param value invalidates every phase's provenance and
+# re-runs the loads (the safe direction; see SRD-44).
+#
+# Table namespaces: the shared measured target lives in
+# vsuite_{profile}; the destructive sections get their own —
+# vsuite_cap_{profile} (capacity), vsuite_stream_{profile}
+# (streaming), vsuite_churn_{profile} (churn) — so they can never
+# invalidate the state the measurement sections depend on.
+#
 # Scenarios:
+#   traverse      — the single canonical traversal: every section
+#                   behind the shared prereq chain, destructive
+#                   sections last in their own namespaces. Select
+#                   subsections with phases=<pattern>; prereqs stay
+#                   in the walk and provenance decides skip-or-run.
 #   capacity      — insert until the target refuses; the first
 #                   refusal is the SUCCESSFUL terminator (the count
 #                   stands), and the governance timeout disqualifies
@@ -53,6 +74,10 @@ description: |
   cold/warm, and churn.
 
 extends: ./full_cql_vector.yaml
+
+# SRD-106: iterative re-attachment is this suite's intended usage
+# profile — see "Sessions & provenance" above.
+stick_session: true
 
 params:
   # ── Tier governance. One named set = one tier; override
@@ -100,9 +125,77 @@ params:
 
 scenarios:
 
+  # ── Traverse — the single canonical traversal (SRD-106 Part 2).
+  # Ordering: shared prereq chain → the measurement sections that
+  # share it → filtered grid → destructive sections LAST, each in
+  # its own namespace (streaming, churn, then capacity — unbounded
+  # in time). No teardown on the shared target: the prereq chain is
+  # idempotent and provenance-governed, so re-attached runs skip
+  # valid loads and re-run selected measurements.
+  #
+  # Subsection selection: phases=<pattern> (e.g. phases=sweep_probe)
+  # elides unselected sections whole while keeping each live
+  # section's prereqs in the walk. Destructive sections re-measure
+  # cleanly on a FRESH session (`--session new`); under re-attach
+  # their own prereqs skip like everyone else's, so their state
+  # carries the prior pass's mutations (the churn-recall trend
+  # caveat above).
+  traverse:
+    # Shared measured target + its non-destructive sections.
+    - for: "profile in {fknn_profile}, table in vsuite_{profile}"
+      phases:
+        - schema
+        - load_train
+        - await_index
+        - serial_probe
+        - for: "conc in {conc_levels}"
+          phases:
+            - sweep_probe
+        - cold_probe
+        - warm_probe
+    # Filtered grid: per-selectivity profiles, each with its own
+    # table + prefiltered GT facet.
+    - for: "profile in matching_profiles('{dataset}', '{oracles_prefix}')"
+      phases:
+        - for: "table in vsuite_{profile}"
+          phases:
+            - schema
+            - fknn_rampup_data
+            - await_index
+            - filtered_probe
+    # Streaming (own namespace; teardown resets it so the staged
+    # fractions mean what they say on a fresh pass).
+    - for: "profile in {fknn_profile}, table in vsuite_stream_{profile}"
+      phases:
+        - teardown
+        - schema
+        - stream_ingest
+        - for: "stage_frac in {stage_fracs}"
+          phases:
+            - stream_gate
+            - stream_probe
+        - stream_gate_full
+        - await_index
+        - serial_probe
+    # Churn (own namespace with its own idempotent load chain).
+    - for: "profile in {fknn_profile}, table in vsuite_churn_{profile}"
+      phases:
+        - schema
+        - load_train
+        - await_index
+        - churn_write
+        - churn_delete
+        - churn_probe
+    # Capacity last: destructive to its namespace and unbounded.
+    - for: "profile in {fknn_profile}, table in vsuite_cap_{profile}"
+      phases:
+        - teardown
+        - schema
+        - fill_until_refusal
+
   # ── Capacity ───────────────────────────────────────────────────
   capacity:
-    - for: "profile in {fknn_profile}, table in vsuite_{profile}"
+    - for: "profile in {fknn_profile}, table in vsuite_cap_{profile}"
       phases:
         - teardown
         - schema
@@ -151,7 +244,7 @@ scenarios:
   # require-guarded metric thresholds, probes at each stage, then rides
   # to full extent, builds, and probes the settled index. ────────
   streaming:
-    - for: "profile in {fknn_profile}, table in vsuite_{profile}"
+    - for: "profile in {fknn_profile}, table in vsuite_stream_{profile}"
       phases:
         - teardown
         - schema
@@ -173,13 +266,17 @@ scenarios:
         - cold_probe
         - warm_probe
 
-  # ── Churn. Against an existing loaded+built
-  # table: sustained upsert + delete daemons under a live recall
-  # probe — recall under sustained mutation pressure.
+  # ── Churn. Own namespace with its own idempotent load chain
+  # (skip-valid on repeat runs within a session): sustained
+  # upsert + delete daemons under a live recall probe — recall
+  # under sustained mutation pressure.
   # ─────────────────────────────────────────────────
   churn:
-    - for: "profile in {fknn_profile}, table in vsuite_{profile}"
+    - for: "profile in {fknn_profile}, table in vsuite_churn_{profile}"
       phases:
+        - schema
+        - load_train
+        - await_index
         - churn_write
         - churn_delete
         - churn_probe
@@ -221,6 +318,12 @@ phases:
   # write timeouts retry (gap-free data is a recall precondition);
   # the tier bound owns disqualification.
   load_train:
+    # SRD-106 prereq class: deterministic keyed inserts — idempotent
+    # upsert. Skip-valid on re-attach while the provenance hash
+    # holds; the always-run await_index that follows is the runtime
+    # validation that a skipped load actually left a queryable
+    # target.
+    checkpoint: idempotent
     concurrency: "{concurrency}"
     timeout: "{load_timeout}"
     errors: "count,retry"

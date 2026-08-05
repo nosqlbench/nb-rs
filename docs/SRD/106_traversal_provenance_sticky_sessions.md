@@ -1,7 +1,13 @@
 # SRD-106 — Suite Traversal Provenance & Sticky Sessions
 
-Status: DRAFT (branch `workload_scaffold`). Companion to the
-`cql/vector_suite` case pack; the mechanisms are general.
+Status: IMPLEMENTED (branch `workload_scaffold`) — deliverables 1–6
+landed: prereq-exempt `phases=` gate, composed provenance hash +
+skip-validity gates, `stick_session` + `--session new`,
+`session_notice` banner, the suite's `traverse` scenario +
+provenance classes + table namespaces, and e2e coverage
+(`prereq_filter`, `refine_prereq_validity`, `stick_session`).
+Companion to the `cql/vector_suite` case pack; the mechanisms are
+general.
 
 ## Problem
 
@@ -115,10 +121,13 @@ the measurement sections depend on.
 ## Part 2 — The traversal and subsection selection
 
 One scenario, `traverse`, orders every section behind its prereq
-chain (schema → load → build-wait → serial → sweep → filtered →
-cold/warm → streaming → churn → capacity last, since it is
-destructive to its own namespace and unbounded in time). The
-per-section scenarios remain for direct use.
+chain: the shared measured target's scope carries schema → load →
+build-wait → serial → sweep → cold/warm (they all share that
+target); then the filtered grid (its own per-selectivity tables);
+then the destructive sections, each in its own namespace —
+streaming, churn, and capacity last, since it is destructive and
+unbounded in time. The per-section scenarios remain for direct
+use.
 
 **Subsection selection rides `phases=` with one new rule:** a phase
 declared `checkpoint: idempotent` (the prereq class) is **exempt from

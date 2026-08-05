@@ -326,6 +326,10 @@ phases:
           after:  "re-created keyspace {keyspace}"
 
   schema:
+    # SRD-106 prereq class: IF NOT EXISTS DDL is idempotent by
+    # construction, so a re-attached session skips this when the
+    # prior outcome's provenance hash still matches.
+    checkpoint: idempotent
     concurrency: 1
     bindings: |
       dim := vector_dim("{dataset}:{profile}")
@@ -717,6 +721,10 @@ phases:
   # down, with `retry` added so failed inserts don't leave gaps
   # in the loaded data that would later corrupt recall numbers.
   fknn_rampup_data:
+    # SRD-106 prereq class: deterministic keyed inserts (same ids,
+    # same vectors) — idempotent upsert; skip-valid on re-attach
+    # while the provenance hash holds.
+    checkpoint: idempotent
     concurrency: "{concurrency}"
     errors: "count,retry"
     bindings: |
