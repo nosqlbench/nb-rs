@@ -14,6 +14,7 @@ pub mod scope_close;
 pub mod scope_header;
 pub mod scope_open;
 pub mod session_banner;
+pub mod session_notice;
 pub mod session_summary;
 pub mod trace;
 pub mod truncated_phases;

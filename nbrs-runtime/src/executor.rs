@@ -3222,6 +3222,7 @@ fn fire_scope_lifecycle(
         subject_labels: display_labels,
         depth_indent,
         use_color: crate::observer::use_color(),
+        stick_reattached: String::new(),
     };
     crate::readout_context::fire_lifecycle(
         event,
@@ -3438,6 +3439,7 @@ async fn run_one_iteration(
         subject_labels: display_labels.clone(),
         depth_indent: depth_indent.clone(),
         use_color: crate::observer::use_color(),
+        stick_reattached: String::new(),
     };
     crate::readout_context::fire_lifecycle(
         crate::lifecycle::EventType::EachStart,
@@ -3486,6 +3488,7 @@ async fn run_one_iteration(
         subject_labels: display_labels,
         depth_indent,
         use_color: crate::observer::use_color(),
+        stick_reattached: String::new(),
     };
     crate::readout_context::fire_lifecycle(
         crate::lifecycle::EventType::EachEnd,
@@ -4915,6 +4918,7 @@ async fn run_phase_inner(
             subject_labels: display_labels.clone(),
             depth_indent,
             use_color: crate::observer::use_color(),
+            stick_reattached: String::new(),
         };
         crate::readout_context::fire_lifecycle(
             crate::lifecycle::EventType::PhaseStart,

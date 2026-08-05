@@ -883,6 +883,11 @@ struct SessionHost {
     resume_target: Option<std::path::PathBuf>,
     refine_requested: bool,
     refine_scope: Option<String>,
+    /// SRD-106 — the session id the `stick_session` rung
+    /// re-attached to, when it engaged. Drives the D4
+    /// `session_notice` announcement (first notable event of
+    /// the run) and nothing else.
+    stick_reattached: Option<String>,
     profiler: Option<crate::profiler::ProfileGuard>,
     sqlite_guard: nbrs_metrics::reporters::sqlite::SqliteShutdownGuard,
     /// SRD-88 — the checkpoint writer is SESSION-tier: one per session
@@ -966,6 +971,62 @@ impl SessionHost {
         .or_else(|| args.iter()
             .find_map(|a| a.strip_prefix("report-openmetrics-to="))
             .map(|s| s.to_string()));
+    // SRD-106 Part 3 — the `stick_session` resolution rung: the
+    // LOWEST-precedence session rung. A workload may declare that
+    // iterative re-attachment is its intended usage; when the
+    // operator expressed no session intent of their own, a run
+    // re-attaches to `sessions/latest` and layers a new execution
+    // per SRD-77 — mechanically the refine path, so the D2
+    // provenance gates govern what re-runs. Defeated by ANY
+    // explicit session selection (`--session*` name/path/reuse),
+    // any re-attachment flag (`resume=` / `--resume-latest` /
+    // `--refine`), the `--session new` bare token, and dryruns
+    // (resume-inert per SRD-44). CLI `stick_session=true|false`
+    // overrides the workload's declaration.
+    let stick_reattach: Option<std::path::PathBuf> = {
+        let cli_stick: Option<bool> = params.get("stick_session")
+            .map(|v| v == "true" || v == "1");
+        let stick_on = cli_stick
+            .unwrap_or_else(|| peek_stick_session(&params, &args).unwrap_or(false));
+        let reattach_expressed = args.iter()
+            .any(|a| a == "--refine" || a == "--resume-latest")
+            || params.contains_key("resume")
+            || params.contains_key("resume_latest");
+        if !stick_on
+            || reattach_expressed
+            || crate::session::args_request_dryrun(&args)
+        {
+            None
+        } else {
+            let spec = crate::session::resolve_session_dir(&args);
+            let operator_selected = !spec.is_empty()
+                || spec.force_new
+                || spec.reuse != crate::session::SessionReuse::Error;
+            if operator_selected {
+                None
+            } else {
+                // `sessions/latest` must resolve to a prior session
+                // with a checkpoint — anything less means there is
+                // nothing valid to re-attach to, and the run falls
+                // through to today's fresh-session default silently
+                // (no announcement for a no-op).
+                let latest = crate::session::default_sessions_root().join("latest");
+                std::fs::read_link(&latest).ok()
+                    .map(|t| if t.is_absolute() { t }
+                         else { crate::session::default_sessions_root().join(t) })
+                    .filter(|d| d.join("checkpoint.jsonl").is_file())
+            }
+        }
+    };
+    let stick_reattached: Option<String> = stick_reattach.as_ref()
+        .and_then(|d| d.file_name())
+        .and_then(|s| s.to_str())
+        .map(String::from);
+    if let Some(id) = stick_reattached.as_deref() {
+        crate::diag!(crate::observer::LogLevel::Info,
+            "stick_session: re-attaching to {id} — pass `--session new` to start fresh");
+    }
+
     let resume_target: Option<std::path::PathBuf> = {
         let explicit = params.get("resume")
             .filter(|s| !s.is_empty())
@@ -978,7 +1039,8 @@ impl SessionHost {
         let resume_latest = params.get("resume_latest")
             .map(|s| s != "false" && s != "0")
             .unwrap_or(false)
-            || args.iter().any(|a| a == "--resume-latest");
+            || args.iter().any(|a| a == "--resume-latest")
+            || stick_reattach.is_some();
         if resume_latest {
             // Resolve the symlink to a concrete session dir
             // *now* — once `Session::new` runs the symlink will
@@ -1004,7 +1066,10 @@ impl SessionHost {
     // session dir resolution (the resolver at line 950+ already
     // produces the right `resume_target` when `--resume-latest`
     // was passed alongside `--refine` by `refine_command`).
-    let refine_requested = args.iter().any(|a| a == "--refine");
+    // SRD-106: an engaged `stick_session` re-attach IS a refine
+    // layering — new execution, prior outcomes as provenance.
+    let refine_requested = args.iter().any(|a| a == "--refine")
+        || stick_reattach.is_some();
 
     // Session: root context for this run. Creates logs/{scenario}_{timestamp}/
     // for fresh runs; reuses the prior session dir when resuming
@@ -1306,6 +1371,7 @@ impl SessionHost {
         resume_target,
         refine_requested,
         refine_scope: refine_scope.map(|s| s.to_string()),
+        stick_reattached,
         profiler: _profiler,
         sqlite_guard: _sqlite_shutdown_guard,
         checkpoint_writer,
@@ -1355,6 +1421,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     let refine_plan = host.refine_plan.clone();
     let refine_requested = host.refine_requested;
     let refine_scope = host.refine_scope.as_deref();
+    let stick_reattached = host.stick_reattached.clone();
     let mut diag = DiagnosticConfig::normal();
 
     // Detect scenario shorthand: `workload.yaml <scenario_name>` → `scenario=<name>`
@@ -2112,11 +2179,25 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             subject_labels: String::new(),
             depth_indent: String::new(),
             use_color: crate::observer::use_color(),
+            stick_reattached: stick_reattached.clone().unwrap_or_default(),
+        };
+        // SRD-106 D4 — when the stick_session rung engaged, seed
+        // the slot with the `session_notice` builtin so the
+        // announcement is the first notable event of the run,
+        // ahead of any phase event. Workload-bound
+        // on_session_start readouts still render after it; runs
+        // without stick keep the slot's quiet default.
+        let default_body = if stick_reattached.is_some() {
+            crate::readouts::parse::bake("session_notice")
+                .map(|(body, _)| body)
+                .ok()
+        } else {
+            None
         };
         crate::readout_context::fire_lifecycle(
             crate::lifecycle::EventType::SessionStart,
             &workload_readouts,
-            None,
+            default_body,
             &session_ctx,
             Some(&sqlite_reporter),
         );
@@ -3439,6 +3520,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             subject_labels: String::new(),
             depth_indent: String::new(),
             use_color: crate::observer::use_color(),
+            stick_reattached: String::new(),
         };
         crate::readout_context::fire_lifecycle(
             crate::lifecycle::EventType::SessionEnd,
@@ -5146,6 +5228,37 @@ fn format_phase_config_suffix(phase: &nbrs_workload::model::WorkloadPhase) -> St
     }
 }
 
+
+/// SRD-106 Part 3 — light pre-read of the workload's merged YAML
+/// for the top-level `stick_session:` flag. Runs BEFORE session
+/// construction (the full workload parse happens after the session
+/// exists, so it cannot inform session resolution). Resolution
+/// mirrors the execution path — local file first, then the bundled
+/// catalog — and `extends:` chains merge before the peek, so a
+/// suite base declaring `stick_session: true` reaches derived
+/// workloads. Any failure answers `None`; the full parse surfaces
+/// the real error with proper context.
+fn peek_stick_session(
+    params: &HashMap<String, String>,
+    args: &[String],
+) -> Option<bool> {
+    if params.contains_key("op") {
+        return None; // inline workloads carry no header
+    }
+    let workload_raw = params.get("workload").cloned()
+        .or_else(|| args.iter()
+            .find(|a| a.ends_with(".yaml") || a.ends_with(".yml"))
+            .cloned())?;
+    let merged = match resolve_workload(&workload_raw).ok()? {
+        ResolvedWorkload::Path(p) =>
+            nbrs_workload::extends::load_and_merge(
+                std::path::Path::new(&p)).ok()?,
+        ResolvedWorkload::Bundled(b) =>
+            nbrs_workload::extends::load_and_merge_bundled(b).ok()?,
+    };
+    let doc: serde_yaml::Value = serde_yaml::from_str(&merged).ok()?;
+    doc.get("stick_session")?.as_bool()
+}
 
 /// Resolve a workload file path from a bare name.
 /// Tries: as-is, with .yaml/.yml extension, then under workloads/.

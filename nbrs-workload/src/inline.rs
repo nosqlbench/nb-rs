@@ -139,6 +139,7 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         status_metrics: Vec::new(),
         readouts: crate::model::ReadoutsBindings::default(),
         wrappers: None,
+        stick_session: None,
     })
 }
 
@@ -194,6 +195,7 @@ fn try_polydat_block_workload(op_template: &str) -> Option<Workload> {
         status_metrics: Vec::new(),
         readouts: crate::model::ReadoutsBindings::default(),
         wrappers: None,
+        stick_session: None,
     })
 }
 

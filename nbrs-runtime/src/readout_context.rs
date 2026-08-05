@@ -137,6 +137,10 @@ pub struct LifecycleContext {
     pub subject_labels: String,
     pub depth_indent: String,
     pub use_color: bool,
+    /// SRD-106 — the session id the `stick_session` rung
+    /// re-attached to; empty everywhere except the SessionStart
+    /// fire of a stick-engaged run. Read by `session_notice`.
+    pub stick_reattached: String,
 }
 
 impl ReadoutContext for LifecycleContext {
@@ -155,6 +159,7 @@ impl ReadoutContext for LifecycleContext {
     fn depth_indent(&self) -> &str { &self.depth_indent }
     fn use_color(&self) -> bool { self.use_color }
     fn event(&self) -> crate::lifecycle::EventType { self.event }
+    fn stick_reattached_session(&self) -> &str { &self.stick_reattached }
     fn subject_state(&self) -> LifecycleState {
         // Lifecycle events fire at the boundary; the
         // subject is in transition. `Running` is the safe

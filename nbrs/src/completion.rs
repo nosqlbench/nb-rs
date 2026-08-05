@@ -159,6 +159,9 @@ pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
     crate::cli_spec::KvParam { key: "color=", provider: bool_values },
     crate::cli_spec::KvParam { key: "inspector=", provider: bool_values },
     crate::cli_spec::KvParam { key: "resume_latest=", provider: bool_values },
+    // SRD-106 — override the workload's `stick_session:` declaration
+    // from the CLI (`true` forces stick on, `false` disables it).
+    crate::cli_spec::KvParam { key: "stick_session=", provider: bool_values },
     crate::cli_spec::KvParam { key: "force_retry_failed=", provider: bool_values },
     crate::cli_spec::KvParam { key: "profiler_callgraph=", provider: bool_values },
     crate::cli_spec::KvParam { key: "schedule=", provider: static_schedule },

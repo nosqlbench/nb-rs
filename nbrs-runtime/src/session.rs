@@ -539,6 +539,12 @@ pub struct SessionDirSpec {
     /// `shelflife` — max age of a session directory before
     /// purge at startup. Default 4 weeks. `0` disables.
     pub session_shelflife: std::time::Duration,
+    /// SRD-106 — the umbrella bare token `new` (`--session new`):
+    /// force a fresh auto-named session. Its only consumer is the
+    /// `stick_session` resolution rung, which it defeats; with no
+    /// stick in play a fresh session is already the default, so
+    /// the token is a harmless no-op there.
+    pub force_new: bool,
 }
 
 impl SessionDirSpec {
@@ -618,6 +624,7 @@ impl SessionDirSpec {
 /// | `restart` | `reuse:restart`|
 /// | `resume`  | `reuse:resume` |
 /// | `error`   | `reuse:error`  |
+/// | `new`     | force a fresh auto-named session (defeats `stick_session`) |
 ///
 /// Whitespace around items + key/value separators is trimmed.
 /// Unknown keys produce a `Warn` log; the rest of the spec is
@@ -636,6 +643,11 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
             "restart" => { spec.reuse = SessionReuse::Restart; continue; }
             "resume"  => { spec.reuse = SessionReuse::Resume;  continue; }
             "error"   => { spec.reuse = SessionReuse::Error;   continue; }
+            // SRD-106 — `--session new`: force a fresh auto-named
+            // session, defeating a workload's `stick_session`.
+            // Intercepted here so the name heuristic below never
+            // reads it as `name:new`.
+            "new"     => { spec.force_new = true;              continue; }
             _ => {}
         }
         // key:value pair takes precedence over the

@@ -111,6 +111,17 @@ pub struct Workload {
     /// entirely (no cascading merge).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrappers: Option<WrappersConfig>,
+    /// SRD-106 Part 3 — `stick_session: true` declares this
+    /// workload's intended usage as iterative re-attachment:
+    /// when the operator passes no explicit session selection
+    /// and `sessions/latest` exists, the run re-attaches to it
+    /// and layers a new execution per SRD-77, announcing the
+    /// re-attachment as the run's first notable event. CLI
+    /// `stick_session=true|false` overrides; `--session new`
+    /// forces a fresh session. Absent → today's fresh-session
+    /// behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stick_session: Option<bool>,
 }
 
 impl Workload {

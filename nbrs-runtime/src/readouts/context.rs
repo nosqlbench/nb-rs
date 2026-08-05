@@ -390,6 +390,11 @@ pub trait ReadoutContext {
     /// `session_banner`. Default empty.
     fn session_workload_file(&self) -> &str { "" }
 
+    /// SRD-106 — the session id the `stick_session` rung
+    /// re-attached to; empty when stick did not engage. Used by
+    /// `session_notice` (which renders nothing when empty).
+    fn stick_reattached_session(&self) -> &str { "" }
+
     // ── Session-scope totals ──────────────────────────────
 
     /// Total phases that completed cleanly across the run.

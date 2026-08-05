@@ -261,6 +261,14 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
             .map_err(|e| format!("top-level `stop_when`: {e}"))?;
     }
 
+    // SRD-106 Part 3 — `stick_session:` top-level bool. A non-bool
+    // value is rejected rather than ignored (never-ignore-silently).
+    let stick_session: Option<bool> = match obj.get("stick_session") {
+        Some(v) => Some(v.as_bool().ok_or_else(|| format!(
+            "`stick_session:` must be a boolean, got {v}"))?),
+        None => None,
+    };
+
     Ok(Workload {
         description, scenarios, ops: all_ops, bindings: doc_bindings,
         params: resolved_params, phases, phase_order, declared_params,
@@ -269,6 +277,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         status_metrics: doc_status_metrics,
         readouts,
         wrappers: None,
+        stick_session,
     })
 }
 
