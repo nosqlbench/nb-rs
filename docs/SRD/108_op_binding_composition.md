@@ -65,7 +65,7 @@ phases:
       search:
         abstract:
           needs:              # wires the logical scope GUARANTEES
-            query_vector: vector<f32>
+            query_vector: vec_f32
             suite_k: u64
           yields:             # wires the implementation MUST deliver
             key: String       # relevancy scoring reads `key`
@@ -131,7 +131,7 @@ phases:
 | everything else (wire resolution, adapter fields) | synthesis, unchanged | normal GK compile; SRD-30 unknown-field rejection |
 
 The interface types use the polydat DSL type vocabulary (`u64`,
-`f64`, `String`, `vector<f32>`, …). Load-time checks are *named*
+`f64`, `String`, `vec_f32`, …). Load-time checks are *named*
 and *early*; the synthesis check is the *proof*, in the same
 place it has always been.
 

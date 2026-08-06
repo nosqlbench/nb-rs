@@ -1,0 +1,215 @@
+#!/usr/bin/env nbrs
+# vector_suite_logical.yaml — the PROTOCOL-AGNOSTIC core of the
+# vector benchmarking suite (SRD-108 Part B logical workload).
+#
+# This document owns everything measurement-shaped: extents,
+# concurrency, tier governance, provenance classes (SRD-106),
+# dataset access, relevancy scoring, and the typed interfaces the
+# protocol must satisfy. It knows NOTHING about any wire protocol
+# — every op is an `abstract:` slot. An implementation module
+# binds the bodies:
+#
+#   nbrs run workload=vector_suite_cql.yaml scenario=search_perf
+#   nbrs run workload=vector_suite_logical.yaml \
+#            impl=vector_suite_cql.yaml scenario=search_perf
+#
+# Scope note: this pair covers the search-performance core
+# (teardown → schema → load → build-wait → serial → sweep). The
+# full suite (streaming, churn, capacity, filtered grid) remains
+# in vector_suite.yaml; sections migrate here as further
+# implementations land. It lives beside its first implementation
+# for file-relative resolution; the document itself is neutral.
+#
+# Interface conventions:
+# - `needs` are wires THIS document guarantees — dataset-derived
+#   bindings (query vectors, ids, dims) and declared params.
+# - `yields` are wires the implementation must deliver via
+#   captures. The probes' relevancy scoring reads result COLUMNS
+#   (`actual: key`) rather than captured wires — that result-shape
+#   contract is documented per-slot and typed result-shape
+#   interfaces are an SRD-109 open item.
+
+stick_session: true
+
+description: |
+  Protocol-agnostic vector search-performance core: measured bulk
+  load under tier governance, index-readiness wait, serial
+  recall+ndcg on the quiesced target, then a concurrency sweep
+  with relevancy computed per op at every level.
+
+params:
+  # ── Dataset + profile selection (logical: dataset access is
+  # protocol-agnostic).
+  dataset: example
+  fknn_profile: default
+
+  # ── Tier governance (SRD-106 out-of-range semantics).
+  load_timeout: "2.5h"
+  build_timeout: "15m"
+
+  # ── Probe shape: k-recall@r — intersect over r, divide by k.
+  suite_k: "10"
+  suite_limit: "100"
+  min_query_ms: 10000
+
+  # ── Sweep levels + per-level budget.
+  conc_levels: "1, 5, 10, 20, 40, 80"
+  level_ms: "30000"
+
+  # ── Load concurrency.
+  concurrency: "100"
+
+scenarios:
+  search_perf:
+    - for: "profile in {fknn_profile}, table in vsuite_{profile}"
+      phases:
+        - teardown
+        - schema
+        - load_train
+        - await_index
+        - serial_probe
+        - for: "conc in {conc_levels}"
+          phases:
+            - sweep_probe
+
+phases:
+
+  # Destructive reset of this suite's own namespace. Never
+  # skip-eligible.
+  teardown:
+    concurrency: 1
+    ops:
+      drop_metadata_index:
+        abstract: {}
+      drop_vector_index:
+        abstract: {}
+      drop_table:
+        abstract: {}
+
+  # Idempotent DDL (SRD-106 prereq class). `dim` and the distance
+  # function come from the dataset — the implementation renders
+  # them into its own DDL dialect.
+  schema:
+    checkpoint: idempotent
+    concurrency: 1
+    bindings: |
+      dim := vector_dim("{dataset}:{profile}")
+      similarity_function := dataset_distance_function("{dataset}:{profile}")
+    ops:
+      create_keyspace:
+        abstract: {}
+      create_table:
+        abstract:
+          needs:
+            dim: u64
+      create_vector_index:
+        abstract:
+          needs:
+            similarity_function: String
+      create_metadata_index:
+        abstract: {}
+
+  # The measured bulk load: deterministic keyed rows from the
+  # dataset (idempotent upsert — SRD-106 prereq class; SRD-107
+  # scopes its skip validity to the params it consumes). The
+  # always-run await_index that follows validates that a skipped
+  # load actually left a queryable target.
+  load_train:
+    checkpoint: idempotent
+    concurrency: "{concurrency}"
+    timeout: "{load_timeout}"
+    errors: "count,retry"
+    bindings: |
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      cursor row = range(0, vector_count(prebuffered))
+      id := format_u64(row, 12)
+      train_vector := vector_at(prebuffered, row)
+      volatile now_ms := current_epoch_millis()
+    metrics:
+      insert_seconds:
+        kind: gauge
+        value: "(now_ms - phase_start) / 1000"
+    ops:
+      insert:
+        abstract:
+          needs:
+            id: String
+            train_vector: vec_f32
+
+  # Build/readiness wait. The poll predicate and its governance
+  # bound are logical; the implementation delivers the polled
+  # count as a typed yield (a capture) — the poll's metric IS the
+  # indexed-readiness delay. Deliberately NOT skip-eligible: this
+  # is the runtime validation that skipped loads left settled,
+  # queryable state (SRD-106).
+  await_index:
+    concurrency: 1
+    timeout: "{build_timeout}"
+    poll:
+      until: "active_build_tasks == 0"
+      interval_ms: 2000
+      timeout_ms: 86400000
+      metric_name: build_time_s
+      on_timeout: error
+    ops:
+      pending_build_work:
+        abstract:
+          yields:
+            active_build_tasks: u64
+
+  # Serial probe on the quiesced target: concurrency 1, recall +
+  # ndcg per op, time-bounded by natural extent. RESULT-SHAPE
+  # CONTRACT: the implementation's search result must expose the
+  # matched row key under the column/field name `key` — relevancy
+  # traverses the result body directly.
+  serial_probe:
+    concurrency: 1
+    status_metrics: [recall*, ndcg*]
+    bindings: |
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
+      cursor q = until_elapsed(query_counts, min_query_ms)
+      query_vector := query_vector_at(prebuffered, q % query_counts)
+      ground_truth := neighbor_indices_at(prebuffered, q % query_counts)
+    ops:
+      select_ann:
+        abstract:
+          needs:
+            query_vector: vec_f32
+        evaluations:
+          relevancy:
+            actual: key
+            expected: ground_truth
+            k: suite_k
+            r: suite_limit
+            functions:
+              - recall
+              - ndcg
+
+  # One sweep level at `concurrency: {conc}` for `level_ms` of
+  # whole passes; relevancy per op at this operating point, so the
+  # recall-vs-throughput curve is measured, not interpolated.
+  # Same result-shape contract as serial_probe.
+  sweep_probe:
+    concurrency: "{conc}"
+    status_metrics: [recall*, ndcg*]
+    bindings: |
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
+      cursor q = until_elapsed(query_counts, level_ms)
+      query_vector := query_vector_at(prebuffered, q % query_counts)
+      ground_truth := neighbor_indices_at(prebuffered, q % query_counts)
+    ops:
+      select_ann:
+        abstract:
+          needs:
+            query_vector: vec_f32
+        evaluations:
+          relevancy:
+            actual: key
+            expected: ground_truth
+            k: suite_k
+            r: suite_limit
+            functions:
+              - recall
+              - ndcg

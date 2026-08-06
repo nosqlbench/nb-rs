@@ -1,5 +1,13 @@
 # vector_suite.yaml — vector benchmarking case pack.
 #
+# NOTE (SRD-108): the search-performance core of this suite also
+# exists as a logical/implementation pair — vector_suite_logical.yaml
+# (protocol-agnostic scaffolding + typed abstract op slots) bound by
+# vector_suite_cql.yaml (`implements:`). New protocol backends
+# implement the logical document (SRD-109 drivers build on it);
+# sections migrate to the pair as implementations land. This
+# monolithic form remains the full-suite surface meanwhile.
+#
 # Extends full_cql_vector.yaml (SRD-72): schema / teardown / rampup /
 # fknn_rampup_data and the dataset+cluster params come from the
 # parent; this file adds the benchmark scenarios. Measurement

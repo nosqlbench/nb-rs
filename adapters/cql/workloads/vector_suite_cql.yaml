@@ -1,0 +1,128 @@
+#!/usr/bin/env nbrs
+# vector_suite_cql.yaml — the CQL implementation of
+# vector_suite_logical.yaml (SRD-108 Part B implementation
+# module).
+#
+# This document carries ONLY protocol matter: the literal CQL
+# statements, protocol-side extraction (the build-wait capture),
+# and CQL/index knobs as params. Scaffolding — extents,
+# concurrency, governance, dataset bindings, relevancy — is the
+# logical document's, and any attempt to redeclare it here is a
+# load error.
+#
+#   nbrs run workload=vector_suite_cql.yaml scenario=search_perf
+
+description: |
+  CQL implementation of the vector search-performance core: binds
+  literal CQL statements into vector_suite_logical.yaml's abstract
+  op slots (SRD-108).
+
+implements: ./vector_suite_logical.yaml
+
+params:
+  # ── CQL protocol + index-build knobs (protocol matter).
+  host: localhost
+  keyspace: baselines
+  replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
+  vector_idx_suffix: _vector_idx
+  meta_idx_suffix: _meta_idx
+  source_model: OTHER
+  maximum_node_connections: "16"
+  construction_beam_width: "100"
+  enable_hierarchy: "false"
+  neighborhood_overflow: "1.2"
+  alpha: "1.2"
+
+phases:
+
+  teardown:
+    ops:
+      drop_metadata_index:
+        bindings: |
+          const request_timeout_ms := 300000
+        raw: "DROP INDEX IF EXISTS {keyspace}.{table}{meta_idx_suffix}"
+      drop_vector_index:
+        bindings: |
+          const request_timeout_ms := 300000
+        raw: "DROP INDEX IF EXISTS {keyspace}.{table}{vector_idx_suffix}"
+      drop_table:
+        bindings: |
+          const request_timeout_ms := 300000
+        raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
+
+  schema:
+    ops:
+      create_keyspace:
+        raw: |
+          CREATE KEYSPACE IF NOT EXISTS {keyspace}
+          WITH replication = {replication} AND durable_writes = true
+      create_table:
+        # Compaction thresholds set arbitrarily high so the
+        # size-tier compactor never fires spontaneously during a
+        # measured run — compaction timing belongs to the suite.
+        raw: |
+          CREATE TABLE IF NOT EXISTS {keyspace}.{table}
+          (key text PRIMARY KEY, value vector<float, {dim}>, metadata int)
+          WITH
+           compaction = {
+           'class': 'SizeTieredCompactionStrategy',
+           'min_threshold': '100000',
+           'max_threshold': '100000' }
+          AND compression = {
+           'enabled': 'false'
+          }
+      create_vector_index:
+        raw: |
+          CREATE CUSTOM INDEX IF NOT EXISTS {table}{vector_idx_suffix}
+          ON {keyspace}.{table} (value)
+          USING 'StorageAttachedIndex'
+          WITH OPTIONS = {
+            'similarity_function': '{similarity_function}',
+            'source_model': '{source_model}',
+            'maximum_node_connections': '{maximum_node_connections}',
+            'construction_beam_width': '{construction_beam_width}',
+            'enable_hierarchy': '{enable_hierarchy}',
+            'neighborhood_overflow': '{neighborhood_overflow}',
+            'alpha': '{alpha}'
+          }
+      create_metadata_index:
+        raw: |
+          CREATE CUSTOM INDEX IF NOT EXISTS {table}{meta_idx_suffix}
+          ON {keyspace}.{table} (metadata) USING 'StorageAttachedIndex'
+
+  load_train:
+    ops:
+      insert:
+        max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
+        batchtype: unlogged
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+                 ( key,    value)
+          VALUES ( '{id}', {train_vector})
+
+  await_index:
+    ops:
+      pending_build_work:
+        # Pure-CQL readiness: sstable/index task drain, no JMX.
+        simple: |
+          SELECT count(*) AS active FROM system_views.sstable_tasks
+        capture:
+          active_build_tasks: /active
+
+  serial_probe:
+    ops:
+      select_ann:
+        # Result-shape contract: the matched row key surfaces as
+        # column `key` (relevancy traverses it directly).
+        prepared: |
+          SELECT key FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {suite_limit}
+
+  sweep_probe:
+    ops:
+      select_ann:
+        prepared: |
+          SELECT key FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {suite_limit}
