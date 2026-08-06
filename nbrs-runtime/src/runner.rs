@@ -4401,6 +4401,25 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             }
             scan_json_for_refs(v, refs);
         }
+        // Evaluation blocks reference WIRES by bare identifier
+        // (`relevancy: { k: suite_k, expected: ground_truth }`) —
+        // the same shapes `scope.rs` resolves at wrap-time
+        // through the op-template kernel. Harvest them as
+        // expression idents so a param consumed only as an
+        // evaluation bound doesn't trip the unused-param check.
+        // (Before this, such workloads only validated by ACCIDENT:
+        // any `{{…}}` inline expression elsewhere in the merged
+        // doc registered a composite template that wildcard-
+        // matched every declared param.)
+        if let Some(rel) = op.params.get("relevancy")
+            .and_then(|v| v.as_object())
+        {
+            for key in ["actual", "expected", "k", "r"] {
+                if let Some(s) = rel.get(key).and_then(|v| v.as_str()) {
+                    scan_expression_idents(s, &mut refs.expression_idents);
+                }
+            }
+        }
         match &op.bindings {
             nbrs_workload::model::BindingsDef::PolydatSource(s) => {
                 // Two reference shapes inside Polydat source:
@@ -4454,6 +4473,13 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
     // Scan phases
     for phase in workload.phases.values() {
         if let Some(s) = &phase.cycles { scan_param_refs(s, &mut refs); }
+        // SRD-83 (C3) governance `timeout:` and SRD-75 `interval:`
+        // resolve `{param}` at phase setup — documented reference
+        // sites the collector must count (before this, workloads
+        // using them only validated via the accidental composite-
+        // template wildcard).
+        if let Some(s) = &phase.timeout { scan_param_refs(s, &mut refs); }
+        if let Some(s) = &phase.interval { scan_param_refs(s, &mut refs); }
         if let Some(s) = &phase.concurrency { scan_param_refs(s, &mut refs); }
         if let Some(s) = &phase.for_each { scan_param_refs(s, &mut refs); }
         // SRD-13f Push D parallel: phase-level `bindings:` also
