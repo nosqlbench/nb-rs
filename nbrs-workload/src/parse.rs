@@ -100,6 +100,44 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         }
     }
 
+    // Stage 6.5 (SRD-108 Part A, completing SRD-20): a phase with
+    // no inline ops and a `tags:` selector resolves its ops HERE,
+    // from the merged document's top-level/block op pool. Parse
+    // time is deliberate: everything downstream — synthesis,
+    // validation, the SRD-107 config digest — sees a phase with
+    // ordinary resolved ops, exactly as if they were inline. This
+    // is the ad-hoc composition seam: an implementation workload
+    // `extends:` a logical scaffold and contributes tagged block
+    // ops that these selectors pick up.
+    for (phase_name, phase) in phases.iter_mut() {
+        let Some(selector) = phase.tags.clone() else { continue };
+        if !phase.ops.is_empty() {
+            return Err(format!(
+                "phase '{phase_name}' declares both inline ops and a \
+                 `tags:` selector — a phase has exactly one source of \
+                 ops. Drop the selector or move the ops into a tagged \
+                 block."));
+        }
+        let mut selected = crate::tags::TagFilter::filter_ops(&all_ops, &selector)
+            .map_err(|e| format!(
+                "phase '{phase_name}' `tags:` selector: {e}"))?;
+        if selected.is_empty() {
+            return Err(format!(
+                "phase '{phase_name}' `tags:` selector '{selector}' \
+                 matched no ops ({} in the workload's op pool). A \
+                 selector-only phase must bind at least one op — \
+                 check the tag vocabulary against the blocks this \
+                 workload (or its extends chain) declares.",
+                all_ops.len()));
+        }
+        // Mirror the inline-op auto-tagging: selected clones gain
+        // the `phase` tag their inline siblings get at parse.
+        for op in &mut selected {
+            op.tags.insert("phase".to_string(), phase_name.clone());
+        }
+        phase.ops = selected;
+    }
+
     // Stage 7: Resolve workload parameters
     // Priority: CLI params > workload defaults > env vars
     let yaml_params = extract_string_map(obj.get("params"));
@@ -261,6 +299,17 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
             .map_err(|e| format!("top-level `stop_when`: {e}"))?;
     }
 
+    // SRD-108 Part B — `implements:` names the logical workload
+    // this document provides op bodies for. A non-string value is
+    // rejected rather than ignored.
+    let implements: Option<String> = match obj.get("implements") {
+        Some(v) => Some(v.as_str()
+            .ok_or_else(|| format!(
+                "`implements:` must be a workload reference string, got {v}"))?
+            .to_string()),
+        None => None,
+    };
+
     // SRD-106 Part 3 — `stick_session:` top-level bool. A non-bool
     // value is rejected rather than ignored (never-ignore-silently).
     let stick_session: Option<bool> = match obj.get("stick_session") {
@@ -277,6 +326,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         status_metrics: doc_status_metrics,
         readouts,
         wrappers: None,
+        implements,
         stick_session,
     })
 }
@@ -1872,6 +1922,8 @@ fn normalize_op_entry(
                 result: None,
                 wrappers: None,
                 captures: Vec::new(),
+            abstract_interface: None,
+            interface_bound: false,
                 daemon: crate::model::DaemonSpec::Disabled,
                 daemon_cancel_grace_ms: None,
                 while_cond: None,
@@ -1957,7 +2009,7 @@ fn normalize_op_object(
     // returns `None` from `known_op_fields()` (open vocabulary)
     // which masked this for the existing workloads.
     let reserved = ["name", "description", "desc", "bindings", "params", "tags", "if", "delay",
-        "evaluations", "capture", "metrics", "result", "traverse", "measure",
+        "evaluations", "capture", "metrics", "result", "traverse", "measure", "abstract",
         // Daemon-op declaration + loop / rate primitives:
         // consumed by the runtime in normalize_op_object below;
         // mustn't fall through to the adapter's op-fields surface
@@ -2092,6 +2144,37 @@ fn normalize_op_object(
             op_params.insert(k.clone(), v.clone());
         }
     }
+
+    // SRD-108 Part B — `abstract:` declares this op as a typed
+    // slot: `{ needs: {name: type,…}, yields: {name: type,…} }`.
+    // Unknown keys are rejected; types are polydat DSL type
+    // names, verified against the compiled op-template program
+    // at pre-map synthesis.
+    let abstract_interface: Option<crate::model::OpInterface> =
+        match map.get("abstract") {
+            None => None,
+            Some(v) => {
+                let obj = v.as_object().ok_or_else(|| format!(
+                    "op '{name}': `abstract:` must be a mapping with                      `needs:` / `yields:` maps of wire-name -> type"))?;
+                let mut iface = crate::model::OpInterface::default();
+                for (k, section) in obj {
+                    let target = match k.as_str() {
+                        "needs" => &mut iface.needs,
+                        "yields" => &mut iface.yields,
+                        other => return Err(format!(
+                            "op '{name}': unknown key '{other}' under                              `abstract:` (allowed: needs, yields)")),
+                    };
+                    let entries = section.as_object().ok_or_else(|| format!(
+                        "op '{name}': `abstract.{k}:` must be a mapping                          of wire-name -> type"))?;
+                    for (wire, typ) in entries {
+                        let type_name = typ.as_str().ok_or_else(|| format!(
+                            "op '{name}': `abstract.{k}.{wire}:` type                              must be a string, got {typ}"))?;
+                        target.insert(wire.clone(), type_name.to_string());
+                    }
+                }
+                Some(iface)
+            }
+        };
 
     let condition = map.get("if")
         .and_then(|v| v.as_str())
@@ -2296,6 +2379,8 @@ fn normalize_op_object(
         result,
         wrappers: None,
         captures,
+        abstract_interface,
+        interface_bound: false,
         daemon,
         daemon_cancel_grace_ms,
         while_cond,
@@ -3855,12 +3940,59 @@ phases:
         let workload = parse_workload(yaml, &HashMap::new()).unwrap();
         assert_eq!(workload.phases.len(), 2);
 
+        // SRD-108 Part A: the selector resolves at parse time —
+        // the phase carries the selected block ops as if inline.
         let setup = &workload.phases["setup"];
         assert_eq!(setup.tags.as_deref(), Some("block:schema"));
-        assert!(setup.ops.is_empty()); // No inline ops, uses tag filter
+        assert_eq!(setup.ops.len(), 1);
+        assert_eq!(setup.ops[0].name, "create");
+        assert_eq!(setup.ops[0].tags.get("phase").map(String::as_str),
+            Some("setup"));
 
         let run = &workload.phases["run"];
         assert_eq!(run.tags.as_deref(), Some("block:main"));
+        assert_eq!(run.ops.len(), 1);
+        assert_eq!(run.ops[0].name, "read");
+    }
+
+    /// SRD-108 Part A — a selector matching nothing is a load
+    /// error naming the phase, never a dispatch-time panic.
+    #[test]
+    fn phase_tag_selector_matching_nothing_is_a_load_error() {
+        let yaml = r#"
+blocks:
+  schema:
+    ops:
+      create: "CREATE TABLE t (id int PRIMARY KEY);"
+phases:
+  setup:
+    tags: "block:nonexistent"
+    cycles: 1
+"#;
+        let err = parse_workload(yaml, &HashMap::new()).unwrap_err();
+        assert!(err.contains("setup") && err.contains("matched no ops"),
+            "error must name the phase and the failure: {err}");
+    }
+
+    /// SRD-108 Part A — inline ops and a selector together are
+    /// rejected: one source of ops per phase.
+    #[test]
+    fn phase_with_inline_ops_and_selector_is_rejected() {
+        let yaml = r#"
+blocks:
+  schema:
+    ops:
+      create: "CREATE TABLE t (id int PRIMARY KEY);"
+phases:
+  setup:
+    tags: "block:schema"
+    cycles: 1
+    ops:
+      also: "SELECT 1;"
+"#;
+        let err = parse_workload(yaml, &HashMap::new()).unwrap_err();
+        assert!(err.contains("both inline ops and a"),
+            "error must explain the conflict: {err}");
     }
 
     #[test]

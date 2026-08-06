@@ -3919,6 +3919,21 @@ async fn run_phase_inner(
         }
     }
 
+    // SRD-108 backstop: a phase must reach dispatch with at least
+    // one op. Load-time validation (parse Stage 6.5 selector
+    // resolution, the binder's slot-coverage checks) makes this
+    // unreachable for well-formed workloads; if some future load
+    // path regresses, fail the PHASE with a structured outcome
+    // instead of panicking a worker task inside `OpSequence`.
+    if phase.ops.is_empty() {
+        return crate::phase_outcome::Outcome::failed().with_reason(format!(
+            "phase '{phase_name}' reached dispatch with no ops — \
+             a load-time validation gap; every phase needs inline \
+             ops, a matching `tags:` selector, or a bound \
+             implementation",
+        ));
+    }
+
     // --- Compile inner kernel via BindingScope ---
     let (iter_op_builder, iter_ops, runtime_cursor_extents,
          runtime_cursor_min_ms, runtime_cursor_min_passes,
