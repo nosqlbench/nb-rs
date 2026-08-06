@@ -231,6 +231,40 @@ pub fn compile_stop_condition(
 ) -> Result<ScopedExpr, String> {
     let name = format!("__stop_cond_{idx}");
     let mut matter = extern_matter();
+    // A predicate may also read `shared` wires from the scope cascade —
+    // the windowed-backstop shape: a daemon computes trailing-window
+    // state into root shared cells and the loader's stop condition
+    // guards on them. Those names are NOT in the phase kernel's own
+    // matter (nothing there references them), so the subscope compile
+    // cannot resolve them from the parent snapshot — but the cascade's
+    // cell carrier IS transitive (`shared_cells_in_scope` includes
+    // ancestors' cells even when this scope never names them), and an
+    // extern declared here attaches to the in-scope cell by name at
+    // subscope build. Declare one typed extern per referenced in-scope
+    // cell, AT THE CELL'S OWN PORT TYPE (an f64 cell read through a
+    // u64 extern would corrupt the comparison). The predicate then
+    // reads the LIVE cell on every evaluation — `volatile` below keeps
+    // it out of const-fold — so a daemon's write between ticks is seen
+    // without rebinding. Names that are neither canonical runtime
+    // wires nor in-scope cells stay undeclared: a misspelling must
+    // remain a loud compile error, not a silently-0 extern.
+    // (Regression 2026-08-06: every adaptive run since the windowed
+    // backstop landed logged "unknown wire: 'recent_result_failures'"
+    // per tier and ran with NO stop conditions armed.)
+    const CANONICAL: [&str; 9] = [
+        wire::CYCLES_TOTAL, wire::RESULT_FAILURE, wire::ELAPSED_MS,
+        wire::ATTEMPT_TOTAL, wire::ATTEMPT_SUCCESS, wire::ATTEMPT_FAILURE,
+        wire::CHILDREN_TOTAL, wire::CHILDREN_FAILED, wire::CHILDREN_DONE,
+    ];
+    let cells = phase_kernel.shared_cells_in_scope();
+    for referenced in polydat::dsl::refs::referenced_names(when) {
+        if CANONICAL.contains(&referenced.as_str()) {
+            continue;
+        }
+        if let Some(cell) = cells.iter().find(|c| c.name == referenced) {
+            matter.extern_wire_typed(&cell.name, cell.port_type);
+        }
+    }
     matter.bind(
         ExprStub::parse(&name, when)
             .map_err(|e| format!("stop condition {idx} predicate `{when}`: {e}"))?
@@ -498,6 +532,66 @@ impl StopConditionSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression 2026-08-06 — the windowed-backstop shape: a stop
+    /// predicate reading root `shared` wires the phase matter never
+    /// mentions (a daemon computes trailing-window state into the
+    /// cells; the loader guards on them). The subscope compile used to
+    /// fail with "unknown wire" — logged as an ERROR at activity start
+    /// and swallowed, so every adaptive run since the backstop landed
+    /// ran with NO stop conditions armed. compile_stop_condition now
+    /// declares typed externs for referenced in-scope cells, which
+    /// attach to the cells at subscope build (the cascade's cell
+    /// carrier is transitive) and read them LIVE.
+    #[test]
+    fn stop_condition_reads_root_shared_wire() {
+        // Root scope: f64 cells, as compaction_demo_derived declares
+        // (`shared recent_result_failures: f64 := 0.0`) — the typed-
+        // extern path matters, a u64 guess would corrupt the compare.
+        let mut root = polydat::dsl::compile_polydat(
+            "shared recent_result_failures: f64 := 0.0
+             shared recent_result_total: f64 := 0.0
+             rx := 1")
+            .expect("root kernel");
+        // Phase kernel as a subscope whose matter does NOT reference
+        // the shared wires (like load_increment_adaptive's bindings).
+        let pm = polydat::kernel::subcontext::PolydatMatter::builder()
+            .label("phase_test").source("x := 5")
+            .build().expect("matter");
+        let phase = root.build_subscope(pm).expect("phase kernel");
+
+        // Canonical-only predicates keep compiling.
+        compile_stop_condition(&phase, 0, "result_failure >= 100")
+            .expect("canonical-only predicate must compile");
+
+        // The field predicate (5bd8b53's windowed backstop, verbatim
+        // shape): canonical wires AND root shared cells in one text.
+        let mut cond = compile_stop_condition(
+            &phase, 0,
+            "((result_failure >= 100) & (to_f64(result_failure) > (to_f64(cycles_total) * 0.025))) \
+             | ((recent_result_failures >= 100.0) & (recent_result_failures > (recent_result_total + 1.0) * 0.025))")
+            .expect("shared-wire predicate must compile");
+
+        // LIVE-READ proof: cells at 0 → no trip...
+        let state = RuntimeState { cycles_total: 1000, result_failure: 5, ..Default::default() };
+        assert!(!state.trips(&mut cond), "cells at 0 must not trip");
+        // ...a daemon-style write through the ROOT cell trips it
+        // WITHOUT rebinding. A detached extern (default 0) would stay
+        // false forever — the silent-disarm failure this test pins.
+        let idx = root.program().find_input("recent_result_failures")
+            .expect("root input slot for the shared wire");
+        root.state().set_input(idx, polydat::ast::Value::F64(150.0));
+        assert!(state.trips(&mut cond),
+            "predicate must read the LIVE shared cell (150 >= 100, ratio floor 0)");
+        // And back down: no latch.
+        root.state().set_input(idx, polydat::ast::Value::F64(0.0));
+        assert!(!state.trips(&mut cond), "cell reset must un-trip");
+
+        // A misspelled name is neither canonical nor a cell: still a
+        // loud compile error, never a silently-0 extern.
+        assert!(compile_stop_condition(&phase, 0, "recent_result_failurez >= 1")
+            .is_err(), "unknown names must stay compile errors");
+    }
 
     #[test]
     fn failure_fraction_is_safe_at_zero_cycles() {

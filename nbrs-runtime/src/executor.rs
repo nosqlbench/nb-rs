@@ -3938,7 +3938,7 @@ async fn run_phase_inner(
     let (iter_op_builder, iter_ops, runtime_cursor_extents,
          runtime_cursor_min_ms, runtime_cursor_min_passes,
          runtime_cursor_min_count, runtime_cursor_delta,
-         runtime_cursor_partition) = if is_iter || has_bindings {
+         runtime_cursor_partition, activation_scope) = if is_iter || has_bindings {
         let mut ops = phase.ops.clone();
 
         // SRD-16 single read path: every `{name}` placeholder
@@ -4505,6 +4505,15 @@ async fn run_phase_inner(
         // op-templates produce no entry — their dispensers fall
         // back to the activity-wide kernel via the standard
         // `nearest_materialised` path.
+        // SRD-83 — hold the activation scope's CELL VIEW past
+        // OpBuilder's consumption of the kernel: stop-condition
+        // predicates bind to this (their true native scope, with the
+        // cascade's transitive shared-cell carrier), not to the
+        // canonical cached kernel, which is compiled standalone and
+        // carries NO cells — a predicate reading a root `shared` wire
+        // failed to compile against it (the disarmed-backstop
+        // regression, 2026-08-06).
+        let activation_scope = Arc::new(kernel.cell_scope_snapshot());
         let op_builder = {
             let mut b = OpBuilder::new(kernel);
             if let Some(phase_idx) = ctx.scope_tree.phase_node_by_name(phase_name) {
@@ -4517,7 +4526,7 @@ async fn run_phase_inner(
         };
         (op_builder, ops, runtime_extents, runtime_min_ms,
          runtime_min_passes, runtime_min_count, runtime_delta,
-         runtime_partition)
+         runtime_partition, activation_scope)
     } else {
         // Workload-kernel fallback: no per-iteration values to
         // inject. Materialize a fresh subscope of the live
@@ -4529,6 +4538,8 @@ async fn run_phase_inner(
         let workload_subscope = parent.build_subscope(
             polydat::kernel::subcontext::PolydatMatter::builder().program(ctx.program.clone()).build().unwrap(),
         ).expect("program-form subscope is infallible");
+        // Same stop-condition scope hold as the per-iteration branch.
+        let activation_scope = Arc::new(workload_subscope.cell_scope_snapshot());
         let mut b = OpBuilder::new(workload_subscope);
         if let Some(phase_idx) = ctx.scope_tree.phase_node_by_name(phase_name) {
             let map = ctx.scope_tree.op_template_programs_for_phase(phase_idx);
@@ -4537,7 +4548,8 @@ async fn run_phase_inner(
             }
         }
         (Arc::new(b), phase.ops.clone(), HashMap::new(), HashMap::new(),
-         HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new())
+         HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(),
+         activation_scope)
     };
 
     let op_sequence = OpSequence::from_ops(iter_ops, ctx.seq_type);
@@ -5382,10 +5394,15 @@ async fn run_phase_inner(
             config.error_rate_max,
         ),
     ));
-    // SRD-83 — this phase node's own scope kernel; stop-condition
-    // predicates bind to it (their native scope), not a conjured root.
-    let phase_kernel = ctx.scope_tree.phase_node_by_name(phase_name)
-        .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned());
+    // SRD-83 — the phase's ACTIVATION scope view (cell cascade
+    // attached); stop-condition predicates bind to it — their true
+    // native scope. NOT the canonical `cached_kernel`: that one is
+    // compiled standalone with no cells, and a predicate reading a
+    // root `shared` wire (the windowed-backstop shape) failed to
+    // compile against it — logged, swallowed, and the phase ran with
+    // no stop conditions armed (the disarmed-backstop regression,
+    // 2026-08-06).
+    let phase_kernel = Some(activation_scope.clone());
     // SRD-91 — outcome-instrument detail (counter vs timer) comes from
     // the run's effective params (`metrics_detail`), which live on
     // `merged_params` (CLI-overlaid), not the workload-declared-only

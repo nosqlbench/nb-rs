@@ -856,6 +856,19 @@ impl PolydatKernel {
         snapshot
     }
 
+    /// Public form of [`Self::snapshot_with_cells`]: a fresh kernel
+    /// mirroring this one's program and full shared-cell view (own
+    /// input-slot cells + transit cells, Arc-shared — the snapshot
+    /// reads/writes the SAME cells as `self`). For holding a scope's
+    /// cell cascade past the point where the kernel itself is consumed
+    /// (e.g. an executor keeping a phase-activation scope view alive
+    /// for later `build_subscope` binds, after `OpBuilder` has taken
+    /// the activation kernel by value). Non-cell state is fresh — this
+    /// is a SCOPE view, not a value snapshot.
+    pub fn cell_scope_snapshot(&self) -> PolydatKernel {
+        self.snapshot_with_cells()
+    }
+
     /// SRD-13f §"The cross-scope wiring operation is matter-AST-
     /// driven at construction": materialize this kernel's input-
     /// slot wiring against `outer`'s exports. Reads `self.program`'s

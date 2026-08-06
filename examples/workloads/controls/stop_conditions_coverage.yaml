@@ -45,6 +45,14 @@ stop_when:
   - when: "children_done >= 2"
     each: workload
 
+# Root shared wire for the shared-wire-predicate scenario below: a
+# stop predicate may guard on `shared` cells from the scope cascade
+# (the windowed-backstop pattern — a daemon computes trailing-window
+# state into root cells, the loader's stop condition reads them), and
+# the phase's own matter never mentions the name.
+bindings: |
+  shared shared_trip_floor: f64 := 0.0
+
 scenarios:
 
   # ── PHASE shell — cycles_total wire ──────────────────────────────
@@ -80,6 +88,17 @@ scenarios:
     - step_a
     - step_b
     - step_c
+
+  # ── PHASE shell — root `shared` wire in the predicate ─────────
+  # Regression 2026-08-06: a predicate mixing runtime-state wires with
+  # a root `shared` cell the phase matter never references failed to
+  # compile ("unknown wire") — and a failed compile is logged-and-
+  # swallowed, so the phase ran with NO stop conditions armed. The
+  # trip below only fires if the shared-wire reference COMPILES; a
+  # regression runs all 600 cycles to a clean exit, which
+  # `expect-fail` catches as a missing failure.
+  phase_shared_wire:
+    - phase_shared_wire_trip
 
 phases:
 
@@ -138,6 +157,23 @@ phases:
       tick:
         stmt: "TIMEOUT_TICK"
 
+  # The windowed-backstop SHAPE, minimally: `shared_trip_floor` is the
+  # root shared cell (f64, 0.0 — so `<=` holds from the first cycle),
+  # `cycles_total` the injected runtime wire; the phase's own matter
+  # never names the cell. Trips at ~op 26 IF the shared reference
+  # compiled; the live-value semantics (a daemon's cell write seen
+  # between ticks) are pinned by the unit test
+  # `stop_condition_reads_root_shared_wire`.
+  phase_shared_wire_trip:
+    cycles: 600
+    concurrency: 1
+    rate: 250
+    stop_when:
+      - when: "(shared_trip_floor <= to_f64(cycles_total)) & (cycles_total > 25)"
+    ops:
+      tick:
+        stmt: "SHARED_TICK"
+
   # `elapsed_ms > 150` — the phase wall clock, not an op count. At
   # 250 ops/sec this trips around op ~37, but the trigger is TIME: a
   # slower-paced phase would trip at fewer ops.
@@ -176,3 +212,6 @@ phases:
 # ─── example-walker test directives (nbrs/tests/example_workloads_in_process.rs) ───
 #@ run scenario=phase_cycles_total
 #@ expect-fail stop condition tripped
+#@ case shared_wire
+#@   run scenario=phase_shared_wire
+#@   expect-fail stop condition tripped

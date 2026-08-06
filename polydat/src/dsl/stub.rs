@@ -105,14 +105,28 @@ impl GraphMatter {
     /// **constructed** from the `Wire` type — not string-parsed. The
     /// Rust generic *is* the polydat port type.
     pub fn extern_wire<T: Wire>(&mut self, name: impl Into<String>) -> &mut Self {
+        self.extern_wire_typed(name, T::PORT)
+    }
+
+    /// [`Self::extern_wire`] with the port type as a runtime value, for
+    /// callers whose type comes from inspection (e.g. a parent scope's
+    /// [`SharedCellEntry`](crate::kernel::engines::SharedCellEntry)
+    /// `port_type`) rather than a compile-time generic. The type must be
+    /// faithful: an extern that names an in-scope shared cell attaches to
+    /// it at subscope build, and the cell's own port type is the contract.
+    pub fn extern_wire_typed(
+        &mut self,
+        name: impl Into<String>,
+        port: PortType,
+    ) -> &mut Self {
         let span = Span { line: 0, col: 0 };
-        let default = match T::PORT {
+        let default = match port {
             PortType::F64 => Expr::FloatLit(0.0, span),
             _ => Expr::IntLit(0, span),
         };
         self.statements.push(Statement::ExternPort(ExternPort {
             name: name.into(),
-            typ: T::PORT.to_keyword().to_string(),
+            typ: port.to_keyword().to_string(),
             default: Some(default),
             span,
         }));
