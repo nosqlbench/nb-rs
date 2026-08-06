@@ -133,6 +133,14 @@ async fn verify_examples_in_process(
     let mut summary = VerifySummary::default();
 
     let mut pending: Vec<Pending> = Vec::new();
+    // SRD-106 cases that CANNOT run as one concurrent execution: a
+    // `#@ again` case is a SEQUENCE of invocations sharing session
+    // state, and a `#@ session cwd` case needs the harness to stand
+    // aside from session selection entirely (any `--session-path`
+    // defeats the `stick_session` re-attach rung it exists to test).
+    // These run serially after the concurrent groups, mirroring the
+    // subprocess harness's per-case sandbox + chdir.
+    let mut sequenced: Vec<Pending> = Vec::new();
     for f in collect_workload_files(examples) {
         let file_label =
             f.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
@@ -168,17 +176,22 @@ async fn verify_examples_in_process(
         for case in plan.cases {
             let label = format!("{file_label}::{}", case.name);
             let obs = Arc::new(RunStateFeedObserver::new(&label));
-            pending.push(Pending {
+            let p = Pending {
                 label,
                 abs: abs.clone(),
                 case,
                 cap: Arc::new(CaptureChannel::new()),
                 obs,
-            });
+            };
+            if p.case.session_cwd || !p.case.again.is_empty() {
+                sequenced.push(p);
+            } else {
+                pending.push(p);
+            }
         }
     }
 
-    if pending.is_empty() {
+    if pending.is_empty() && sequenced.is_empty() {
         return summary;
     }
 
@@ -256,6 +269,108 @@ async fn verify_examples_in_process(
                 Ok(()) => summary.passed += 1,
                 Err(e) => summary.failures.push(format!("{}: {e}", p.label)),
             }
+        }
+    }
+
+    // ── Sequenced cases (`#@ again` / `#@ session cwd`) ──────────
+    // One at a time, one invocation at a time — invocation N+1 needs
+    // invocation N's session state on disk, and a `session cwd` case
+    // needs the process cwd moved into a fresh per-case sandbox so
+    // the `stick_session` rung's `sessions/latest` discovery (cwd-
+    // relative) sees exactly this case's history and nothing else.
+    // chdir is process-global; this is safe because these run AFTER
+    // every concurrent group has completed and this binary holds a
+    // single test. Mirrors `nbrs_workload::verify::run_case`'s
+    // subprocess shape (per-case sandbox, `current_dir(sandbox)`).
+    struct CwdGuard(PathBuf);
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+    for (ci, p) in sequenced.iter().enumerate() {
+        let case_dir = sandbox.join(format!("seq-{ci}"));
+        let _ = std::fs::create_dir_all(&case_dir);
+        let session_args: Vec<String> = if p.case.session_cwd {
+            Vec::new()
+        } else {
+            vec!["--session-path".into(),
+                 case_dir.join("s").to_string_lossy().into_owned()]
+        };
+        let _cwd = if p.case.session_cwd {
+            let prev = std::env::current_dir().expect("read cwd");
+            std::env::set_current_dir(&case_dir).expect("enter case sandbox");
+            Some(CwdGuard(prev))
+        } else {
+            None
+        };
+
+        let mut invocations: Vec<Vec<String>> = vec![p.case.run_args.clone()];
+        invocations.extend(p.case.again.iter().cloned());
+        let total = invocations.len();
+        let mut last_ok = true;
+        let mut early_failure: Option<String> = None;
+        for (i, extra) in invocations.into_iter().enumerate() {
+            // The SINGLE-RUN entry (`run_with_observer`), not
+            // `run_executions`: the `stick_session` rung — the very
+            // thing a `session cwd` case exercises — lives in the
+            // single-run session resolution, exactly as `nbrs run`
+            // invokes it. `run_executions` sets its session up from
+            // host args before any execution and never consults the
+            // workload's stick declaration. Scoped through an
+            // ExecutionContext so `diag!` lines route task-locally to
+            // this case's observer/capture — the process-global
+            // observer is a OnceLock the concurrent groups already
+            // claimed, and an unscoped run's diagnostics would land
+            // there (or nowhere) instead of in the rule-match text.
+            let mut args = vec![format!("workload={}", p.abs)];
+            args.extend(session_args.iter().cloned());
+            args.extend(extra);
+            let ctx = nbrs_runtime::execution_context::ExecutionContext::
+                with_observer_and_channel(
+                    p.obs.clone() as Arc<dyn RunObserver>,
+                    p.cap.clone() as Arc<dyn OutputChannel>);
+            let result = nbrs_runtime::execution_context::scope(
+                ctx,
+                nbrs_runtime::runner::run_with_observer(
+                    &args, p.obs.clone() as Arc<dyn RunObserver>)).await;
+            last_ok = result.is_ok();
+            if let Err(e) = &result {
+                if i + 1 < total {
+                    // Same disposition as the subprocess harness: a
+                    // failed invocation with `again` steps outstanding
+                    // is its own diagnosis, not a rule mismatch.
+                    early_failure = Some(format!(
+                        "invocation {} of {total} failed before the `again` \
+                         steps completed: {e}", i + 1));
+                }
+                p.obs.logs.lock().unwrap_or_else(|e| e.into_inner())
+                    .push(e.clone());
+            }
+            if early_failure.is_some() {
+                break;
+            }
+        }
+
+        if let Some(e) = early_failure {
+            summary.failures.push(format!("{}: {e}", p.label));
+            continue;
+        }
+        // The rollup reflects the LAST invocation's phase tally (each
+        // invocation reinstalls its scene tree); the sequenced cases'
+        // rules match runtime lines, not cross-invocation rollups.
+        let (completed, failed, total_phases) = p.obs.tally();
+        let pending_phases = total_phases.saturating_sub(completed + failed);
+        let rollup =
+            labeled_phase_rollup(completed, failed, pending_phases, total_phases, false);
+        let mut parts: Vec<String> = p.cap.op_lines();
+        parts.extend(p.cap.log_lines().into_iter().map(|(_lvl, m)| m));
+        parts.extend(p.obs.logs.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned());
+        parts.push(rollup);
+        let combined = parts.join("\n");
+        match check_case_output(&p.case, &combined, last_ok, false) {
+            Ok(()) => summary.passed += 1,
+            Err(e) => summary.failures.push(format!("{}: {e}", p.label)),
         }
     }
 
