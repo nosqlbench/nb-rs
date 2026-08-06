@@ -976,9 +976,16 @@ phases:
         # SRD-90 in-memory horizon, so this never reads sqlite. The
         # `result:` write-through publishes to the root shared wires
         # the loader's windowed backstop reads.
+        # `volatile` on every metricsql read in this workload: it is the
+        # explicit nondeterminism acknowledgment (the value changes
+        # between evaluations without any input changing), which both
+        # excludes the read from const-fold identity and silences the
+        # per-kernel "non-deterministic node used without explicit
+        # acknowledgment" compile warning — one line of which used to
+        # print for every kernel instantiation at session start.
         result: |
-          recent_result_failures := metricsql_scalar("sum(increase(result_failure{part=\"{part}\"}[55s]))")
-          recent_result_total := metricsql_scalar("sum(increase(result_total{part=\"{part}\"}[55s]))")
+          volatile recent_result_failures := metricsql_scalar("sum(increase(result_failure{part=\"{part}\"}[55s]))")
+          volatile recent_result_total := metricsql_scalar("sum(increase(result_total{part=\"{part}\"}[55s]))")
         metrics:
           compaction_pool_active:  { kind: gauge, value: active_compactions_live }
           compaction_pool_pending: { kind: gauge, value: pending_compactions_live }
@@ -1406,7 +1413,7 @@ phases:
           # cycle). settle_pending_tasks is this op's own published
           # count; the part filter scopes the answer to this phase's
           # own samples.
-          compaction_observed := round_u64(metricsql_scalar(
+          volatile compaction_observed := round_u64(metricsql_scalar(
               "max_over_time(settle_pending_tasks{part=\"{part}\"}[6h])"))
           extern completion_ratio:   f64 = 0.0
           extern index_nodes_done:   u64 = 0
@@ -1416,9 +1423,9 @@ phases:
           # Drain speed, both task kinds (they do not overlap in time;
           # see finalize's per-kind capture note). Part-scoped so a
           # preceding tier's finalize-era series cannot contribute.
-          nodes_per_s := round_u64(metricsql_scalar(
+          volatile nodes_per_s := round_u64(metricsql_scalar(
               "sum(rate(compaction_index_nodes_done{part=\"{part}\"}[2m]))"))
-          mib_per_s := round_u64(metricsql_scalar(
+          volatile mib_per_s := round_u64(metricsql_scalar(
               "sum(rate(compaction_data_bytes_done{part=\"{part}\"}[2m]))") / 1048576)
         # NO kind filter — the drain must hold for the WHOLE
         # compaction, not only its index-build tail (the 2026-07-24
@@ -1709,7 +1716,7 @@ phases:
           # this op's own published task count, so max_over_time over it is
           # exactly "did any poll see a task", and the `part` filter scopes it
           # to THIS tier so a previous tier's drain cannot answer for this one.
-          compaction_observed := round_u64(metricsql_scalar(
+          volatile compaction_observed := round_u64(metricsql_scalar(
               "max_over_time(compaction_pending_tasks{part=\"{part}\"}[6h])"))
           extern completion_ratio:   f64 = 0.0
           extern index_nodes_done:   u64 = 0
@@ -1722,7 +1729,7 @@ phases:
           # handling absorbs the drain's task switches (each new task's
           # progress restarts at 0), and finished tiers' series go static
           # (rate 0), so the sum self-scopes to the active drain.
-          nodes_per_s := round_u64(metricsql_scalar("sum(rate(compaction_index_nodes_done[2m]))"))
+          volatile nodes_per_s := round_u64(metricsql_scalar("sum(rate(compaction_index_nodes_done[2m]))"))
           # The OTHER task kind. system_views.sstable_tasks carries two
           # logically distinct drains and they do not overlap in time: the
           # data compaction (kind='compaction', unit=bytes) and the vector
@@ -1732,7 +1739,7 @@ phases:
           # genuinely was not running, while 171 MB/s of data compaction
           # was in flight and invisible. Two rates, always both shown, in
           # the order the work happens.
-          mib_per_s := round_u64(metricsql_scalar("sum(rate(compaction_data_bytes_done[2m]))") / 1048576)
+          volatile mib_per_s := round_u64(metricsql_scalar("sum(rate(compaction_data_bytes_done[2m]))") / 1048576)
         # NO kind filter (2026-07-24): the drain must hold for the WHOLE
         # compaction, not only its index-build tail. During the merge's
         # row-ingest pass the only registered row is the byte-denominated
