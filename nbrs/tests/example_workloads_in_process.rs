@@ -122,6 +122,15 @@ struct Pending {
     obs: Arc<RunStateFeedObserver>,
 }
 
+/// THE walker's run-mechanics partition: a case whose directives change HOW
+/// it must be invoked (not merely what to match) cannot run as one concurrent
+/// execution and is routed to the serial sequenced path. Kept as a named
+/// predicate so `verify_directive_parity_with_walker` (default mix) can pin
+/// it against the directive grammar.
+fn is_sequenced(case: &VerifyCase) -> bool {
+    case.session_cwd || !case.again.is_empty()
+}
+
 /// Verify every `*.yaml`/`*.yml` under `examples` as concurrent
 /// in-process executions sharing one session, ≤`max_concurrent`.
 async fn verify_examples_in_process(
@@ -183,7 +192,7 @@ async fn verify_examples_in_process(
                 cap: Arc::new(CaptureChannel::new()),
                 obs,
             };
-            if p.case.session_cwd || !p.case.again.is_empty() {
+            if is_sequenced(&p.case) {
                 sequenced.push(p);
             } else {
                 pending.push(p);
@@ -279,9 +288,11 @@ async fn verify_examples_in_process(
     // the `stick_session` rung's `sessions/latest` discovery (cwd-
     // relative) sees exactly this case's history and nothing else.
     // chdir is process-global; this is safe because these run AFTER
-    // every concurrent group has completed and this binary holds a
-    // single test. Mirrors `nbrs_workload::verify::run_case`'s
-    // subprocess shape (per-case sandbox, `current_dir(sandbox)`).
+    // every concurrent group has completed and the only other test
+    // in this binary (`verify_directive_parity_with_walker`) is pure
+    // parsing with no cwd dependence. Mirrors
+    // `nbrs_workload::verify::run_case`'s subprocess shape
+    // (per-case sandbox, `current_dir(sandbox)`).
     struct CwdGuard(PathBuf);
     impl Drop for CwdGuard {
         fn drop(&mut self) {
@@ -446,4 +457,84 @@ fn all_example_workloads_match_their_rules_in_process() {
 
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+/// DEFAULT-MIX parity pin: the `#@` directive grammar and this walker must
+/// agree on which directives exist and which change run MECHANICS. The full
+/// in-process sweep above is `#[ignore]`d, so a grammar extension the walker
+/// doesn't implement fails nothing in CI until someone runs the sweep by hand
+/// — exactly how `#@ again` / `#@ session cwd` shipped with the sweep's two
+/// provenance cases silently failing (2026-08-06). This test runs in the
+/// default mix and breaks the moment the two drift.
+///
+/// Two mechanisms, deliberately layered:
+///  1. an EXHAUSTIVE destructure of [`VerifyCase`] (no `..` rest pattern) —
+///     adding a field to the grammar refuses to COMPILE this test until the
+///     walker author decides how the sweep honors it (concurrent, sequenced,
+///     or match-only) and updates both the walker and this pin;
+///  2. runtime assertions that each run-mechanics directive routes through
+///     [`is_sequenced`] the way the sweep actually consumes it.
+#[test]
+fn verify_directive_parity_with_walker() {
+    let src = "\
+ops: { t: { stmt: \"X\" } }\n\
+#@ run scenario=a k=1\n\
+#@ expect ALPHA\n\
+#@ timeout 33\n\
+#@ case seq_again\n\
+#@   run scenario=b\n\
+#@   again phases=probe tag=zzz\n\
+#@   expect BETA\n\
+#@ case seq_cwd\n\
+#@   session cwd\n\
+#@   run\n\
+#@   expect-fail GAMMA\n\
+";
+    let plan = VerifyPlan::parse(src).expect("directive snippet parses");
+    assert!(plan.requires.is_none());
+    assert_eq!(plan.cases.len(), 3, "default + two named cases");
+
+    // 1 — exhaustiveness: every grammar field, named. A new VerifyCase
+    // field breaks this destructure at compile time; when it does, teach
+    // the SWEEP above how the field changes case execution (does it route
+    // to the sequenced path? alter invocation args? only affect output
+    // matching?) before extending the pattern here.
+    for case in &plan.cases {
+        let VerifyCase {
+            name: _,
+            run_args: _,
+            again: _,
+            session_cwd: _,
+            expects: _,
+            expect_fails: _,
+            timeout: _,
+        } = case;
+    }
+
+    // 2 — routing: run-mechanics directives classify exactly as the sweep
+    // consumes them.
+    let default_case = &plan.cases[0];
+    assert_eq!(default_case.run_args, vec!["scenario=a", "k=1"]);
+    assert_eq!(default_case.timeout, 33);
+    assert!(!is_sequenced(default_case),
+        "a case with only run/expect/timeout runs in the concurrent groups");
+
+    let again_case = &plan.cases[1];
+    assert_eq!(again_case.name, "seq_again");
+    assert_eq!(again_case.again, vec![vec!["phases=probe", "tag=zzz"]]);
+    assert!(is_sequenced(again_case),
+        "`#@ again` is a multi-invocation sequence — must route sequenced");
+
+    let cwd_case = &plan.cases[2];
+    assert_eq!(cwd_case.name, "seq_cwd");
+    assert!(cwd_case.session_cwd);
+    assert!(cwd_case.expect_fails.len() == 1 && cwd_case.expects.is_empty());
+    assert!(is_sequenced(cwd_case),
+        "`#@ session cwd` defeats harness session injection — must route sequenced");
+
+    // `#@ requires` is plan-level: the whole file is skipped, no case runs.
+    let skipped = VerifyPlan::parse("ops: { t: { stmt: \"X\" } }\n#@ requires backend\n")
+        .expect("requires parses");
+    assert!(skipped.requires.is_some(),
+        "`#@ requires` must surface as a plan-level skip");
 }
