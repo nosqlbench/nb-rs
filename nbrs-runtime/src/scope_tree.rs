@@ -647,7 +647,8 @@ impl ScopeTree {
                         .find(|l| !l.is_empty())
                         .and_then(|line| {
                             let after_kw = line
-                                .strip_prefix("final ")
+                                .strip_prefix("const ")
+                                .or_else(|| line.strip_prefix("final "))
                                 .or_else(|| line.strip_prefix("init "))
                                 .or_else(|| line.strip_prefix("shared "))
                                 .unwrap_or(line);
@@ -1922,6 +1923,7 @@ pub fn bindings_label(source: &str) -> String {
             continue;
         }
         let t = t.strip_prefix("shared ").or_else(|| t.strip_prefix("volatile "))
+            .or_else(|| t.strip_prefix("const "))
             .or_else(|| t.strip_prefix("final ")).unwrap_or(t);
         let t = t.strip_prefix("extern ").or_else(|| t.strip_prefix("input ")).unwrap_or(t);
         let ident_end = t.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(t.len());

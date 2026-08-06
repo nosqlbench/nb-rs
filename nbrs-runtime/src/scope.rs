@@ -729,6 +729,11 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
             if matches!(tag, ScopeModifier::None | ScopeModifier::Volatile) {
                 tag = ScopeModifier::Shared;
             }
+        } else if let Some(r) = rest.strip_prefix("const ") {
+            // `const` is the current spelling of the Final tier
+            // (init/final retired) — same tag as legacy `final`.
+            rest = r.trim();
+            tag = ScopeModifier::Final;
         } else if let Some(r) = rest.strip_prefix("final ") {
             rest = r.trim();
             tag = ScopeModifier::Final;
@@ -1252,7 +1257,7 @@ pub fn build_do_loop_scope_kernel(
 /// best-effort first pass for the cross-scope contract check.
 pub(crate) fn scan_idents_in_polydat_source(src: &str) -> HashSet<String> {
     const KEYWORDS: &[&str] = &[
-        "input", "extern", "final", "init", "shared", "volatile", "cursor", "pragma",
+        "input", "extern", "const", "final", "init", "shared", "volatile", "cursor", "pragma",
         "true", "false", "as", "in", "for",
         // Block-form conditional selection: `if <cond> { a } else { b }`. This is a
         // TEXTUAL scan, so it cannot tell a keyword from a wire name by position —
@@ -2956,7 +2961,7 @@ fn collect_phase_binding_lhs_names(ops: &[ParsedOp]) -> Vec<String> {
                 // appear here too.
                 loop {
                     let mut matched = false;
-                    for prefix in ["cursor ", "init ", "extern ", "final ", "shared ", "volatile ", "private "] {
+                    for prefix in ["cursor ", "init ", "extern ", "const ", "final ", "shared ", "volatile ", "private "] {
                         if let Some(stripped) = lhs.strip_prefix(prefix) {
                             lhs = stripped.trim();
                             matched = true;
