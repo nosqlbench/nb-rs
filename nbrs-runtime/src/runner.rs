@@ -1495,6 +1495,68 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         }
     };
 
+    // ── SRD-108 Part B — implementation binding (load time) ──
+    //
+    // Two invocation forms:
+    //   workload=<impl>                — the impl's `implements:`
+    //       pulls its logical target; the LOGICAL becomes the
+    //       effective workload with the impl's op bodies bound in.
+    //   workload=<logical> impl=<impl> — the logical is the entry
+    //       point; `impl=` names the implementation, whose own
+    //       `implements:` must resolve to the same logical doc.
+    // All rules are load errors; by the time synthesis runs the
+    // workload is ordinary and fully concrete.
+    let impl_param = params.get("impl").cloned();
+    if let Some(target) = workload.implements.clone() {
+        if impl_param.is_some() {
+            return Err(format!(
+                "workload '{}' is an implementation (declares \
+                 `implements:`), so `impl=` does not apply — invoke \
+                 either the implementation directly or the logical \
+                 workload with impl=",
+                workload_file.as_deref().unwrap_or("<inline>")));
+        }
+        let (mut logical, logical_id) =
+            load_secondary_workload(&target, &params)?;
+        crate::diag!(crate::observer::LogLevel::Info,
+            "implements: binding '{}' into logical workload '{logical_id}'",
+            workload_file.as_deref().unwrap_or("<inline>"));
+        nbrs_workload::implements::bind_implementation(&mut logical, workload)
+            .map_err(|e| format!("implements binding: {e}"))?;
+        workload = logical;
+    } else if let Some(impl_ref) = impl_param {
+        let (implementation, impl_id) =
+            load_secondary_workload(&impl_ref, &params)?;
+        let declared = implementation.implements.clone().ok_or_else(|| format!(
+            "impl='{impl_ref}' resolves to '{impl_id}', which declares no \
+             `implements:` — an implementation module must name its \
+             logical target"))?;
+        // The impl's declared target must be the SAME document the
+        // operator invoked as workload=.
+        let declared_id = workload_ref_identity(&declared)?;
+        let invoked_id = workload_file.clone().map(|f| canonical_identity(&f))
+            .unwrap_or_default();
+        if declared_id != invoked_id {
+            return Err(format!(
+                "impl='{impl_id}' declares implements='{declared}' \
+                 (resolves to '{declared_id}'), which is not the invoked \
+                 workload '{invoked_id}'"));
+        }
+        crate::diag!(crate::observer::LogLevel::Info,
+            "implements: binding '{impl_id}' into logical workload '{invoked_id}'");
+        nbrs_workload::implements::bind_implementation(&mut workload, implementation)
+            .map_err(|e| format!("implements binding: {e}"))?;
+    }
+    {
+        let unbound = nbrs_workload::implements::unbound_abstract_slots(&workload);
+        if !unbound.is_empty() {
+            return Err(format!(
+                "abstract op slot(s) [{}] unbound — pass impl=<workload> \
+                 or invoke an implementing workload (SRD-108)",
+                unbound.join(", ")));
+        }
+    }
+
     // Overlay CLI params on the workload's declared params (CLI wins) so
     // synthesis (next) can read the operator's `cycles=N` / `concurrency=N`
     // overrides and promote them onto the synthetic phase. Same precedence
@@ -5228,6 +5290,54 @@ fn format_phase_config_suffix(phase: &nbrs_workload::model::WorkloadPhase) -> St
     }
 }
 
+
+/// SRD-108 Part B — load a secondary workload document (an
+/// `implements:` target, or the `impl=` module) through the same
+/// resolution the primary `workload=` uses: local file first,
+/// then the bundled catalog. Returns the parsed workload plus its
+/// canonical identity string (canonicalized path, or catalog
+/// name) for target-matching.
+fn load_secondary_workload(
+    reference: &str,
+    params: &HashMap<String, String>,
+) -> Result<(nbrs_workload::model::Workload, String), String> {
+    match resolve_workload(reference)? {
+        ResolvedWorkload::Path(path) => {
+            let workload = nbrs_workload::parse::parse_workload_from_path(
+                std::path::Path::new(&path), params,
+            ).map_err(|e| format!("parse workload '{path}': {e}"))?;
+            Ok((workload, canonical_identity(&path)))
+        }
+        ResolvedWorkload::Bundled(bundled) => {
+            let merged = nbrs_workload::extends::load_and_merge_bundled(bundled)
+                .map_err(|e| format!(
+                    "bundled workload `{}`: {e}", bundled.name))?;
+            let workload = nbrs_workload::parse::parse_workload(&merged, params)
+                .map_err(|e| format!(
+                    "parse bundled workload `{}`: {e}", bundled.name))?;
+            Ok((workload, bundled.name.to_string()))
+        }
+    }
+}
+
+/// Resolve a workload reference to its canonical identity WITHOUT
+/// parsing it — used to compare an `implements:` target against
+/// the invoked `workload=`.
+fn workload_ref_identity(reference: &str) -> Result<String, String> {
+    match resolve_workload(reference)? {
+        ResolvedWorkload::Path(path) => Ok(canonical_identity(&path)),
+        ResolvedWorkload::Bundled(bundled) => Ok(bundled.name.to_string()),
+    }
+}
+
+/// Canonicalize a workload file path for identity comparison;
+/// bundled names pass through unchanged (they contain no path
+/// separators that resolve).
+fn canonical_identity(reference: &str) -> String {
+    std::fs::canonicalize(reference)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| reference.to_string())
+}
 
 /// SRD-106 Part 3 — light pre-read of the workload's merged YAML
 /// for the top-level `stick_session:` flag. Runs BEFORE session

@@ -137,6 +137,9 @@ pub fn build_tree() -> CommandTree {
 /// [`free_form`] so they still appear as option tokens.
 pub static RUN_KV_PARAMS: &[crate::cli_spec::KvParam] = &[
     crate::cli_spec::KvParam { key: "workload=", provider: workload_provider },
+    // SRD-108 — the implementation module bound into a logical
+    // workload's abstract op slots.
+    crate::cli_spec::KvParam { key: "impl=", provider: workload_provider },
     crate::cli_spec::KvParam { key: "scenario=", provider: scenario_provider },
     crate::cli_spec::KvParam { key: "adapter=", provider: adapter_provider },
     crate::cli_spec::KvParam { key: "driver=", provider: adapter_provider },

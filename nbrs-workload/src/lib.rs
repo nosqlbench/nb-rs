@@ -78,6 +78,7 @@ pub mod template;
 pub mod parse;
 pub mod verify;
 pub mod extends;
+pub mod implements;
 /// SRD-85 bundled-workload catalog (embedded workloads,
 /// tiers, exact-name lookup).
 pub mod catalog;

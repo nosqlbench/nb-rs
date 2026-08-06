@@ -1874,7 +1874,77 @@ pub fn build_op_template_scope_kernel(
         .build_subscope(matter)
         .map_err(|e| format!("{context}: op-template scope synthesis: {e}"))?;
     parent_kernel.propagate_inputs_into(&mut kernel);
+
+    // SRD-108 Part B — the interface's TYPE PROOF, at the same
+    // place every other wire is type-checked: pre-map synthesis,
+    // against the compiled op-template program. Load-time binder
+    // checks were the early named errors; this is enforcement.
+    if let Some(iface) = op.abstract_interface.as_ref() {
+        verify_op_interface(iface, kernel.program().as_ref(), context)?;
+    }
     Ok(kernel)
+}
+
+/// SRD-108 Part B — verify a bound slot's interface against its
+/// compiled op-template program:
+///
+/// - every `yields` name must exist on the program (a capture
+///   extern slot or a declared output) with the declared type;
+/// - every `needs` name the program declares as a slot must
+///   carry the declared type (a need consumed only through
+///   textual bind points declares no slot — the parent-chain
+///   resolution type-checks those as usual).
+///
+/// Runs during pre-map synthesis — an interface violation fails
+/// workload init, never a runtime critical section.
+fn verify_op_interface(
+    iface: &nbrs_workload::model::OpInterface,
+    program: &polydat::kernel::PolydatProgram,
+    context: &str,
+) -> Result<(), String> {
+    let type_of = |name: &str| -> Option<polydat::ast::PortType> {
+        program.input_port_type(name)
+            .or_else(|| program.output_port_type(name))
+    };
+    // Yields: PRESENCE is the binder's load-time check (a capture
+    // `as`-name); captures deliver through the wrapper stack's
+    // wire writes, so a capture-only yield may hold no slot on
+    // the op-template program itself. When a slot DOES
+    // materialize (declared cast, binding reference), its type
+    // must match the interface.
+    for (name, declared) in &iface.yields {
+        let Some(expected) = polydat::ast::PortType::from_keyword(declared)
+        else {
+            return Err(format!(
+                "{context}: interface yield '{name}' declares unknown \
+                 type '{declared}'"));
+        };
+        if let Some(actual) = type_of(name)
+            && actual != expected
+        {
+            return Err(format!(
+                "{context}: interface yield '{name}' declares type \
+                 {declared}, but the compiled op template carries \
+                 {actual:?}"));
+        }
+    }
+    for (name, declared) in &iface.needs {
+        let Some(expected) = polydat::ast::PortType::from_keyword(declared)
+        else {
+            return Err(format!(
+                "{context}: interface need '{name}' declares unknown \
+                 type '{declared}'"));
+        };
+        if let Some(actual) = type_of(name)
+            && actual != expected
+        {
+            return Err(format!(
+                "{context}: interface need '{name}' declares type \
+                 {declared}, but the compiled op template carries \
+                 {actual:?}"));
+        }
+    }
+    Ok(())
 }
 
 /// Internal binding name for a workload-declared metric's `value:`

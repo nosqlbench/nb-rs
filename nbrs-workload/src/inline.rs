@@ -139,6 +139,7 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         status_metrics: Vec::new(),
         readouts: crate::model::ReadoutsBindings::default(),
         wrappers: None,
+        implements: None,
         stick_session: None,
     })
 }
@@ -195,6 +196,7 @@ fn try_polydat_block_workload(op_template: &str) -> Option<Workload> {
         status_metrics: Vec::new(),
         readouts: crate::model::ReadoutsBindings::default(),
         wrappers: None,
+        implements: None,
         stick_session: None,
     })
 }
@@ -229,7 +231,7 @@ fn build_polydat_candidate(op_template: &str) -> String {
 /// identifier of each `name := …` line (last whitespace token, so
 /// `const x` → `x`), skipping the `input` line and internal
 /// `__`-prefixed wraps.
-fn binding_wire_names(source: &str) -> Vec<String> {
+pub(crate) fn binding_wire_names(source: &str) -> Vec<String> {
     source.lines()
         .filter_map(|line| {
             let line = line.trim();

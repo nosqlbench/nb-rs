@@ -111,6 +111,14 @@ pub struct Workload {
     /// entirely (no cascading merge).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrappers: Option<WrappersConfig>,
+    /// SRD-108 Part B — names the logical workload this document
+    /// IMPLEMENTS (resolved local-first, then bundled catalog,
+    /// like `extends:` targets). A document carrying this is an
+    /// implementation module: it provides op bodies for the
+    /// logical target's abstract slots and must carry no phase
+    /// scaffolding of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implements: Option<String>,
     /// SRD-106 Part 3 — `stick_session: true` declares this
     /// workload's intended usage as iterative re-attachment:
     /// when the operator passes no explicit session selection
@@ -1684,6 +1692,20 @@ impl BindingsDef {
     }
 }
 
+/// SRD-108 Part B — the typed interface an abstract op slot
+/// declares: wires the logical scope guarantees (`needs`) and
+/// wires the bound implementation must deliver (`yields`), each
+/// `name -> polydat type name` (`u64`, `f64`, `String`,
+/// `vector<f32>`, …). BTreeMaps so the SRD-107 config digest
+/// serializes stably.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct OpInterface {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub needs: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub yields: std::collections::BTreeMap<String, String>,
+}
+
 /// A normalized op template — the canonical form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedOp {
@@ -1763,6 +1785,19 @@ pub struct ParsedOp {
     /// list directly — no re-parsing of the op's text fields.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub captures: Vec<crate::bindpoints::CapturePoint>,
+    /// SRD-108 Part B — present when this op was declared as an
+    /// ABSTRACT slot (`abstract:` body): the interface a bound
+    /// implementation must satisfy. Retained on the bound op so
+    /// pre-map synthesis can verify `yields` against the compiled
+    /// op-template program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abstract_interface: Option<OpInterface>,
+    /// SRD-108 Part B — `true` once an implementation has been
+    /// bound into this slot. An op with an interface but
+    /// `interface_bound == false` at run initiation is a load
+    /// error ("abstract op unbound").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interface_bound: bool,
     /// Daemon-fiber declaration. When set to a non-`Disabled`
     /// value, dispatches of this op from the cycle-pool spawn
     /// onto a daemon fiber instead of running inline. Daemons
@@ -2570,6 +2605,8 @@ impl ParsedOp {
             result: None,
             wrappers: None,
             captures: Vec::new(),
+            abstract_interface: None,
+            interface_bound: false,
             daemon: DaemonSpec::Disabled,
             daemon_cancel_grace_ms: None,
             while_cond: None,

@@ -103,6 +103,8 @@ pub fn generate_ops(
             result: None,
             wrappers: None,
             captures: Vec::new(),
+            abstract_interface: None,
+            interface_bound: false,
             daemon: nbrs_workload::model::DaemonSpec::Disabled,
             daemon_cancel_grace_ms: None,
             while_cond: None,
