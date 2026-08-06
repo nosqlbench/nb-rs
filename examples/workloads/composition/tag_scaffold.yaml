@@ -1,0 +1,21 @@
+#!/usr/bin/env nbrs
+# tag_scaffold.yaml — SRD-108 Part A: a LOGICAL scaffold.
+#
+# The phase owns the measurement scaffolding (cycles, concurrency)
+# and selects its ops by TAG — it does not know the protocol. An
+# implementation workload `extends:` this file and contributes
+# tagged block ops (see tag_impl_stdout.yaml).
+#
+# Alone, this file deliberately fails at load: the selector
+# matches nothing until an implementation supplies tagged ops.
+
+params:
+  probe_conc: "2"
+
+phases:
+  measure:
+    cycles: 4
+    concurrency: "{probe_conc}"
+    tags: "role:search"
+
+#@ expect-fail matched no ops

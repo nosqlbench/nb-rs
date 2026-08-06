@@ -1,0 +1,33 @@
+#!/usr/bin/env nbrs
+# abstract_logical.yaml — SRD-108 Part B: a LOGICAL workload with
+# a typed ABSTRACT op slot.
+#
+# The slot declares its interface: the wires the logical scope
+# guarantees (`needs`). An implementation binds the body — see
+# abstract_impl_stdout.yaml. Interface types are proven at
+# pre-map synthesis against the compiled op template.
+#
+# Two round-trip cases: invoked bare, the unbound slot is a LOAD
+# error naming the slot and the `impl=` remedy; invoked with
+# `impl=`, the bound composition runs.
+
+params:
+  suite_k: "7"
+
+phases:
+  probe:
+    cycles: 3
+    concurrency: 1
+    ops:
+      search:
+        abstract:
+          needs:
+            suite_k: u64
+
+#@ case unbound_is_a_load_error
+#@   run
+#@   expect-fail probe.search.*impl=
+#@ case bound_via_impl_param
+#@   run impl=abstract_impl_stdout.yaml
+#@   expect SEARCH k=7
+#@   expect 1 completed, 0 failed

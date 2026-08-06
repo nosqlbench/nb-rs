@@ -1516,8 +1516,13 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                  workload with impl=",
                 workload_file.as_deref().unwrap_or("<inline>")));
         }
+        let base_dir = (!workload_is_bundled)
+            .then(|| workload_file.as_deref()
+                .map(std::path::Path::new)
+                .and_then(|p| p.parent().map(|d| d.to_path_buf())))
+            .flatten();
         let (mut logical, logical_id) =
-            load_secondary_workload(&target, &params)?;
+            load_secondary_workload(&target, &params, base_dir.as_deref())?;
         crate::diag!(crate::observer::LogLevel::Info,
             "implements: binding '{}' into logical workload '{logical_id}'",
             workload_file.as_deref().unwrap_or("<inline>"));
@@ -1525,15 +1530,24 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             .map_err(|e| format!("implements binding: {e}"))?;
         workload = logical;
     } else if let Some(impl_ref) = impl_param {
+        let base_dir = (!workload_is_bundled)
+            .then(|| workload_file.as_deref()
+                .map(std::path::Path::new)
+                .and_then(|p| p.parent().map(|d| d.to_path_buf())))
+            .flatten();
         let (implementation, impl_id) =
-            load_secondary_workload(&impl_ref, &params)?;
+            load_secondary_workload(&impl_ref, &params, base_dir.as_deref())?;
         let declared = implementation.implements.clone().ok_or_else(|| format!(
             "impl='{impl_ref}' resolves to '{impl_id}', which declares no \
              `implements:` — an implementation module must name its \
              logical target"))?;
         // The impl's declared target must be the SAME document the
         // operator invoked as workload=.
-        let declared_id = workload_ref_identity(&declared)?;
+        // The impl doc's `implements:` resolves relative to the
+        // IMPL doc's own directory (extends precedent).
+        let impl_dir = std::path::Path::new(&impl_id).parent()
+            .map(|d| d.to_path_buf());
+        let declared_id = workload_ref_identity(&declared, impl_dir.as_deref())?;
         let invoked_id = workload_file.clone().map(|f| canonical_identity(&f))
             .unwrap_or_default();
         if declared_id != invoked_id {
@@ -5300,8 +5314,9 @@ fn format_phase_config_suffix(phase: &nbrs_workload::model::WorkloadPhase) -> St
 fn load_secondary_workload(
     reference: &str,
     params: &HashMap<String, String>,
+    base_dir: Option<&std::path::Path>,
 ) -> Result<(nbrs_workload::model::Workload, String), String> {
-    match resolve_workload(reference)? {
+    match resolve_secondary_ref(reference, base_dir)? {
         ResolvedWorkload::Path(path) => {
             let workload = nbrs_workload::parse::parse_workload_from_path(
                 std::path::Path::new(&path), params,
@@ -5323,11 +5338,34 @@ fn load_secondary_workload(
 /// Resolve a workload reference to its canonical identity WITHOUT
 /// parsing it — used to compare an `implements:` target against
 /// the invoked `workload=`.
-fn workload_ref_identity(reference: &str) -> Result<String, String> {
-    match resolve_workload(reference)? {
+fn workload_ref_identity(
+    reference: &str,
+    base_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
+    match resolve_secondary_ref(reference, base_dir)? {
         ResolvedWorkload::Path(path) => Ok(canonical_identity(&path)),
         ResolvedWorkload::Bundled(bundled) => Ok(bundled.name.to_string()),
     }
+}
+
+/// Resolve a secondary workload reference the way `extends:`
+/// targets resolve: relative to the REFERRING DOCUMENT's
+/// directory first (when one exists on disk), then the standard
+/// cwd-local + bundled-catalog path. Without the base-dir leg, an
+/// `implements: ./logical.yaml` inside a file would only resolve
+/// when the invoking cwd happens to be the file's directory.
+fn resolve_secondary_ref(
+    reference: &str,
+    base_dir: Option<&std::path::Path>,
+) -> Result<ResolvedWorkload, String> {
+    if let Some(dir) = base_dir {
+        let candidate = dir.join(reference);
+        if candidate.is_file() {
+            return Ok(ResolvedWorkload::Path(
+                candidate.display().to_string()));
+        }
+    }
+    resolve_workload(reference)
 }
 
 /// Canonicalize a workload file path for identity comparison;

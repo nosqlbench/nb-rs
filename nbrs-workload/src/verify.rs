@@ -25,6 +25,8 @@
 //!    #@   run concurrency=32 rate=100000
 //!    #@   expect-fail error_rate_exceeded
 //!    #@ requires backend (needs a live service)
+//!    #@ session cwd            (sessions under the sandbox cwd — stick_session)
+//!    #@ again phases=probe     (a second invocation, session state preserved)
 //!    ```
 //! 2. **A `verify:` YAML block** — also inert (the runtime ignores unknown
 //!    top-level keys). Three equivalent shapes:
@@ -61,6 +63,21 @@ const DIRECTIVE_KEYS: &[&str] =
 pub struct VerifyCase {
     pub name: String,
     pub run_args: Vec<String>,
+    /// SRD-108 examples round-trip — extra invocations of the SAME
+    /// workload in the same sandbox after the first run, one arg
+    /// list per `#@ again` line, session state PRESERVED between
+    /// invocations. Every non-final invocation must succeed; the
+    /// final one feeds the expect / expect-fail rules, and the
+    /// `expect` regexes match the CONCATENATED output of all
+    /// invocations.
+    pub again: Vec<Vec<String>>,
+    /// `#@ session cwd` — omit the harness's `--session-path`
+    /// injection so sessions land under the (throwaway) sandbox
+    /// cwd's `sessions/` root. Required for behaviors keyed to
+    /// `sessions/latest` (SRD-106 `stick_session`); the sandbox
+    /// `sessions/` dir is wiped at case start so cases stay
+    /// independent.
+    pub session_cwd: bool,
     pub expects: Vec<Regex>,
     pub expect_fails: Vec<Regex>,
     pub timeout: u64,
@@ -71,6 +88,8 @@ impl VerifyCase {
         VerifyCase {
             name: name.into(),
             run_args: Vec::new(),
+            again: Vec::new(),
+            session_cwd: false,
             expects: Vec::new(),
             expect_fails: Vec::new(),
             timeout: DEFAULT_TIMEOUT_SECS,
@@ -132,6 +151,13 @@ fn parse_directives(src: &str) -> Result<VerifyPlan, String> {
                 cur = Some(VerifyCase::new(val));
             }
             "run" => case!().run_args = val.split_whitespace().map(String::from).collect(),
+            "again" => case!().again.push(
+                val.split_whitespace().map(String::from).collect()),
+            "session" => match val {
+                "cwd" => case!().session_cwd = true,
+                other => return Err(format!(
+                    "unknown `#@ session {other}` (only `cwd`)")),
+            },
             "expect" => case!().expects.push(compile(val)?),
             "expect-fail" | "expect_fail" => case!().expect_fails.push(compile(val)?),
             "timeout" => {
@@ -245,26 +271,51 @@ pub enum Outcome {
 /// `nbrs run` would.
 pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, case: &VerifyCase) -> Result<(), String> {
     let session = sandbox.join(format!("session-{}", label.replace(['/', ' ', ':'], "_")));
-    let _ = std::fs::remove_dir_all(&session);
-    let output = Command::new("timeout")
-        .arg(case.timeout.to_string())
-        .arg(binary)
-        .arg("run")
-        .arg(format!("workload={workload_ref}"))
-        .args(&case.run_args)
-        .arg("--session-path")
-        .arg(&session)
-        .current_dir(sandbox)
-        .output()
-        .map_err(|e| format!("spawn failed: {e}"))?;
+    if case.session_cwd {
+        // Case independence for cwd-session cases: wipe the
+        // sandbox sessions root (incl. `latest`) so a prior
+        // case's session can never be re-attached to.
+        let _ = std::fs::remove_dir_all(sandbox.join("sessions"));
+    } else {
+        let _ = std::fs::remove_dir_all(&session);
+    }
 
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let timed_out = output.status.code() == Some(124);
-    check_case_output(case, &combined, output.status.success(), timed_out)
+    let invoke = |args: &[String]| -> Result<(String, bool, bool), String> {
+        let mut cmd = Command::new("timeout");
+        cmd.arg(case.timeout.to_string())
+            .arg(binary)
+            .arg("run")
+            .arg(format!("workload={workload_ref}"))
+            .args(args);
+        if !case.session_cwd {
+            cmd.arg("--session-path").arg(&session);
+        }
+        let output = cmd.current_dir(sandbox)
+            .output()
+            .map_err(|e| format!("spawn failed: {e}"))?;
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let timed_out = output.status.code() == Some(124);
+        Ok((combined, output.status.success(), timed_out))
+    };
+
+    let (mut combined, mut succeeded, mut timed_out) = invoke(&case.run_args)?;
+    for (i, extra) in case.again.iter().enumerate() {
+        if !succeeded || timed_out {
+            return Err(format!(
+                "invocation {} of {} failed before the `again` steps                  completed:
+{combined}",
+                i + 1, case.again.len() + 1));
+        }
+        let (c, s, to) = invoke(extra)?;
+        combined.push_str(&c);
+        succeeded = s;
+        timed_out = to;
+    }
+    check_case_output(case, &combined, succeeded, timed_out)
 }
 
 /// Check one case's RUN RESULT against its expectations — the run-mechanism-

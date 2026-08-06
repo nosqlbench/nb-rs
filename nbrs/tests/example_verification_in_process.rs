@@ -88,6 +88,8 @@ async fn concurrent_executions_capture_their_own_output_and_pass_their_checks() 
         // the same `check_case_output` the subprocess walker uses, now fed an
         // in-process execution's captured stdout.
         let case = VerifyCase {
+            again: Vec::new(),
+            session_cwd: false,
             name: format!("ex{i}"),
             run_args: vec![],
             expects: vec![regex::Regex::new(&format!("ex{i}-1")).unwrap()],

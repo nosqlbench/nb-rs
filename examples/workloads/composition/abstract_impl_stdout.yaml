@@ -1,0 +1,21 @@
+#!/usr/bin/env nbrs
+# abstract_impl_stdout.yaml — SRD-108 Part B: an IMPLEMENTATION
+# of abstract_logical.yaml.
+#
+# `implements:` names the logical target (file-relative, like
+# `extends:`); invoking THIS file pulls the logical scaffold and
+# binds this op body into its `probe.search` slot. Scaffolding
+# (cycles, params) comes from the logical side; the request shape
+# comes from here.
+
+implements: ./abstract_logical.yaml
+
+phases:
+  probe:
+    ops:
+      search:
+        stmt: "SEARCH k={suite_k}"
+
+#@ run
+#@ expect SEARCH k=7
+#@ expect 1 completed, 0 failed

@@ -1,0 +1,54 @@
+#!/usr/bin/env nbrs
+# provenance_stick_roundtrip.yaml — SRD-106 + SRD-107 round trip.
+#
+# `stick_session: true` re-attaches bare re-runs to the same
+# logical session (announced as the run's first notable event);
+# `prep` is the idempotent-prereq class whose skip validity is
+# provenance-anchored — base hash plus the values of exactly the
+# params it CONSUMES ({run_tag} here). `probe` consumes probe_tag.
+#
+# The round trip below: a baseline run, then a second invocation
+# selecting only the probe with an UNCONSUMED param flipped —
+# the run re-attaches (sticky banner), keeps prep in the walk as
+# an idempotent prerequisite, and skips it through the hash gate
+# because nothing prep consumes changed. The second case flips
+# the CONSUMED param instead: prep re-runs, and the diagnostic
+# names the param.
+
+stick_session: true
+
+params:
+  run_tag: "a"
+  probe_tag: "x"
+
+phases:
+  prep:
+    checkpoint: idempotent
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      const tag := "{run_tag}"
+    ops:
+      t:
+        stmt: "PREP_TICK"
+  probe:
+    cycles: 2
+    concurrency: 1
+    bindings: |
+      const ptag := "{probe_tag}"
+    ops:
+      t:
+        stmt: "PROBE_TICK"
+
+#@ case unconsumed_param_flip_skips_the_prereq
+#@   session cwd
+#@   run
+#@   again phases=probe probe_tag=zzz
+#@   expect sticky session: re-attached
+#@   expect kept as an idempotent prerequisite
+#@   expect prior completed outcome, hash unchanged
+#@ case consumed_param_flip_reruns_and_names_it
+#@   session cwd
+#@   run
+#@   again phases=probe run_tag=bbb
+#@   expect param 'run_tag' changed

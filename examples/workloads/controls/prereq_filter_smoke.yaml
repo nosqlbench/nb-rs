@@ -81,5 +81,10 @@ phases:
         stmt: "B_TICK"
 
 # ─── example-walker test directives ───
-#@ run scenario=default
-#@ expect completed, 0 failed
+#@ case unfiltered
+#@   run scenario=default
+#@   expect completed, 0 failed
+#@ case prereq_exemption
+#@   run scenario=default phases=measure_a
+#@   expect kept as an idempotent prerequisite
+#@   expect completed, 0 failed

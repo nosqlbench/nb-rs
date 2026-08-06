@@ -1,0 +1,22 @@
+#!/usr/bin/env nbrs
+# tag_impl_stdout.yaml — SRD-108 Part A: an IMPLEMENTATION of
+# tag_scaffold.yaml via the ad-hoc tag contract.
+#
+# `extends:` merges the scaffold; the tagged block op below is
+# what the scaffold's `tags: "role:search"` selector binds. The
+# run carries the scaffold's extent (4 cycles) with this file's
+# op body.
+
+extends: ./tag_scaffold.yaml
+
+blocks:
+  stdout_impl:
+    ops:
+      probe:
+        tags:
+          role: search
+        stmt: "SEARCH_TICK"
+
+#@ run
+#@ expect SEARCH_TICK
+#@ expect 1 completed, 0 failed
