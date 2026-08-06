@@ -1,13 +1,13 @@
 #!/usr/bin/env nbrs
 # tag_impl_stdout.yaml — SRD-108 Part A: an IMPLEMENTATION of
-# tag_scaffold.yaml via the ad-hoc tag contract.
+# tag_blueprint.yaml via the ad-hoc tag contract.
 #
-# `extends:` merges the scaffold; the tagged block op below is
-# what the scaffold's `tags: "role:search"` selector binds. The
-# run carries the scaffold's extent (4 cycles) with this file's
+# `extends:` merges the blueprint; the tagged block op below is
+# what the blueprint's `tags: "role:search"` selector binds. The
+# run carries the blueprint's extent (4 cycles) with this file's
 # op body.
 
-extends: ./tag_scaffold.yaml
+extends: ./tag_blueprint.yaml
 
 blocks:
   stdout_impl:

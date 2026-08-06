@@ -6,7 +6,7 @@ skip-validity gates, `stick_session` + `--session new`,
 `session_notice` banner, the suite's `traverse` scenario +
 provenance classes + table namespaces, and e2e coverage
 (`prereq_filter`, `refine_prereq_validity`, `stick_session`).
-Companion to the `cql/vector_suite` case pack; the mechanisms are
+Companion to the `cql/vector_suite` suite; the mechanisms are
 general.
 
 ## Problem

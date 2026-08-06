@@ -1,8 +1,9 @@
 #!/usr/bin/env nbrs
-# vector_suite_logical.yaml — the PROTOCOL-AGNOSTIC core of the
-# vector benchmarking suite (SRD-108 Part B logical workload).
+# vector_suite_blueprint.yaml — the vector_suite BLUEPRINT
+# (SRD-108 Part B): the protocol-agnostic contract for the
+# suite's search-performance core.
 #
-# This document owns everything measurement-shaped: extents,
+# A blueprint owns everything measurement-shaped: extents,
 # concurrency, tier governance, provenance classes (SRD-106),
 # dataset access, relevancy scoring, and the typed interfaces the
 # protocol must satisfy. It knows NOTHING about any wire protocol
@@ -10,7 +11,7 @@
 # binds the bodies:
 #
 #   nbrs run workload=vector_suite_cql.yaml scenario=search_perf
-#   nbrs run workload=vector_suite_logical.yaml \
+#   nbrs run workload=vector_suite_blueprint.yaml \
 #            impl=vector_suite_cql.yaml scenario=search_perf
 #
 # Scope note: this pair covers the search-performance core
@@ -32,8 +33,8 @@
 stick_session: true
 
 description: |
-  Protocol-agnostic vector search-performance core: measured bulk
-  load under tier governance, index-readiness wait, serial
+  Vector search-performance blueprint (protocol-agnostic): measured
+  bulk load under tier governance, index-readiness wait, serial
   recall+ndcg on the quiesced target, then a concurrency sweep
   with relevancy computed per op at every level.
 

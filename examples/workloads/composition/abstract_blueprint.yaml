@@ -1,8 +1,8 @@
 #!/usr/bin/env nbrs
-# abstract_logical.yaml — SRD-108 Part B: a LOGICAL workload with
-# a typed ABSTRACT op slot.
+# abstract_blueprint.yaml — SRD-108 Part B: a BLUEPRINT with a
+# typed ABSTRACT op slot.
 #
-# The slot declares its interface: the wires the logical scope
+# The slot declares its interface: the wires the blueprint scope
 # guarantees (`needs`). An implementation binds the body — see
 # abstract_impl_stdout.yaml. Interface types are proven at
 # pre-map synthesis against the compiled op template.

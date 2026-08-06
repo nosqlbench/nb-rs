@@ -29,7 +29,7 @@ A vendor driver is a bundled implementation workload:
 
 ```yaml
 # drivers/vendorx/vector_impl.yaml
-implements: vector_suite_logical
+implements: vector_suite_blueprint
 
 params:
   base_url: "http://localhost:6333"
@@ -55,8 +55,8 @@ phases:
         captures: ...   # response keys via JSON-pointer capture paths
 ```
 
-Everything SRD-108 established applies unchanged: the logical
-suite owns scaffolding and relevancy; binding is load-time;
+Everything SRD-108 established applies unchanged: the blueprint
+owns scaffolding and relevancy; binding is load-time;
 interface types prove at pre-map synthesis; SRD-107 provenance
 covers the request shapes, so switching vendors re-runs
 idempotent prereqs correctly.
@@ -101,14 +101,14 @@ description: VendorX REST vector client (native HTTP op forms)
   because relevancy traverses result columns. For HTTP drivers
   the result body is vendor JSON, so the implementation MUST
   normalize: capture the neighbor keys via JSON-pointer capture
-  paths into the wires/columns the logical evaluations read. A
+  paths into the wires/columns the blueprint evaluations read. A
   typed result-shape interface (declaring the traversal path and
   row shape, checked at load) is the open design item this SRD
   must settle before implementation — Option A: extend
   `abstract:` with a `results:` section (name → JSON-pointer +
   type) that compiles to capture declarations; Option B: keep it
   conventional and document per-slot. Option A is favored: it
-  makes the last implicit leg of the logical/implementation
+  makes the last implicit leg of the blueprint/implementation
   contract explicit and load-checkable.
 
 ## Non-goals
@@ -126,7 +126,7 @@ description: VendorX REST vector client (native HTTP op forms)
 2. The `results:` interface extension (Option A above) compiling
    to capture paths, with load + synthesis checks per SRD-108's
    table.
-3. First vendor library implementing `vector_suite_logical`,
+3. First vendor library implementing `vector_suite_blueprint`,
    with an auth-flow prereq phase as the named test case.
-4. e2e: the logical suite bound to the vendor library against a
-   mock http endpoint (testkit-style), plus walker examples.
+4. e2e: the blueprint bound to the vendor library against a mock
+   http endpoint (testkit-style), plus walker examples.

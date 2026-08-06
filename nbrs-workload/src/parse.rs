@@ -107,8 +107,8 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // validation, the SRD-107 config digest — sees a phase with
     // ordinary resolved ops, exactly as if they were inline. This
     // is the ad-hoc composition seam: an implementation workload
-    // `extends:` a logical scaffold and contributes tagged block
-    // ops that these selectors pick up.
+    // `extends:` a blueprint and contributes tagged block ops
+    // that these selectors pick up.
     for (phase_name, phase) in phases.iter_mut() {
         let Some(selector) = phase.tags.clone() else { continue };
         if !phase.ops.is_empty() {
@@ -299,8 +299,8 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
             .map_err(|e| format!("top-level `stop_when`: {e}"))?;
     }
 
-    // SRD-108 Part B — `implements:` names the logical workload
-    // this document provides op bodies for. A non-string value is
+    // SRD-108 Part B — `implements:` names the blueprint this
+    // document provides op bodies for. A non-string value is
     // rejected rather than ignored.
     let implements: Option<String> = match obj.get("implements") {
         Some(v) => Some(v.as_str()

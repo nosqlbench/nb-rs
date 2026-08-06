@@ -1498,12 +1498,12 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
     // ── SRD-108 Part B — implementation binding (load time) ──
     //
     // Two invocation forms:
-    //   workload=<impl>                — the impl's `implements:`
-    //       pulls its logical target; the LOGICAL becomes the
+    //   workload=<impl>                  — the impl's `implements:`
+    //       pulls its blueprint; the BLUEPRINT becomes the
     //       effective workload with the impl's op bodies bound in.
-    //   workload=<logical> impl=<impl> — the logical is the entry
-    //       point; `impl=` names the implementation, whose own
-    //       `implements:` must resolve to the same logical doc.
+    //   workload=<blueprint> impl=<impl> — the blueprint is the
+    //       entry point; `impl=` names the implementation, whose
+    //       own `implements:` must resolve to the same blueprint.
     // All rules are load errors; by the time synthesis runs the
     // workload is ordinary and fully concrete.
     let impl_param = params.get("impl").cloned();
@@ -1512,8 +1512,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
             return Err(format!(
                 "workload '{}' is an implementation (declares \
                  `implements:`), so `impl=` does not apply — invoke \
-                 either the implementation directly or the logical \
-                 workload with impl=",
+                 either the implementation directly or the blueprint \
+                 with impl=",
                 workload_file.as_deref().unwrap_or("<inline>")));
         }
         let base_dir = (!workload_is_bundled)
@@ -1521,14 +1521,14 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 .map(std::path::Path::new)
                 .and_then(|p| p.parent().map(|d| d.to_path_buf())))
             .flatten();
-        let (mut logical, logical_id) =
+        let (mut blueprint, blueprint_id) =
             load_secondary_workload(&target, &params, base_dir.as_deref())?;
         crate::diag!(crate::observer::LogLevel::Info,
-            "implements: binding '{}' into logical workload '{logical_id}'",
+            "implements: binding '{}' into blueprint '{blueprint_id}'",
             workload_file.as_deref().unwrap_or("<inline>"));
-        nbrs_workload::implements::bind_implementation(&mut logical, workload)
+        nbrs_workload::implements::bind_implementation(&mut blueprint, workload)
             .map_err(|e| format!("implements binding: {e}"))?;
-        workload = logical;
+        workload = blueprint;
     } else if let Some(impl_ref) = impl_param {
         let base_dir = (!workload_is_bundled)
             .then(|| workload_file.as_deref()
@@ -1540,7 +1540,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         let declared = implementation.implements.clone().ok_or_else(|| format!(
             "impl='{impl_ref}' resolves to '{impl_id}', which declares no \
              `implements:` — an implementation module must name its \
-             logical target"))?;
+             blueprint"))?;
         // The impl's declared target must be the SAME document the
         // operator invoked as workload=.
         // The impl doc's `implements:` resolves relative to the
@@ -1557,7 +1557,7 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                  workload '{invoked_id}'"));
         }
         crate::diag!(crate::observer::LogLevel::Info,
-            "implements: binding '{impl_id}' into logical workload '{invoked_id}'");
+            "implements: binding '{impl_id}' into blueprint '{invoked_id}'");
         nbrs_workload::implements::bind_implementation(&mut workload, implementation)
             .map_err(|e| format!("implements binding: {e}"))?;
     }
@@ -5401,7 +5401,7 @@ fn workload_ref_identity(
 /// targets resolve: relative to the REFERRING DOCUMENT's
 /// directory first (when one exists on disk), then the standard
 /// cwd-local + bundled-catalog path. Without the base-dir leg, an
-/// `implements: ./logical.yaml` inside a file would only resolve
+/// `implements: ./blueprint.yaml` inside a file would only resolve
 /// when the invoking cwd happens to be the file's directory.
 fn resolve_secondary_ref(
     reference: &str,

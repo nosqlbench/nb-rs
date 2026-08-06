@@ -3,9 +3,9 @@
 
 //! SRD-108 Part B — the typed implementation binder.
 //!
-//! Binds an implementation workload's op bodies into a logical
-//! workload's ABSTRACT slots at load time, before any synthesis.
-//! The logical side owns every piece of scaffolding (extents,
+//! Binds an implementation workload's op bodies into a
+//! blueprint's ABSTRACT slots at load time, before any synthesis.
+//! The blueprint owns every piece of scaffolding (extents,
 //! concurrency, stop conditions, metrics, provenance classes);
 //! the implementation contributes exactly the protocol matter:
 //! op fields, adapter selection, captures, and op-level bindings.
@@ -20,25 +20,25 @@ use std::collections::BTreeSet;
 
 use crate::model::{BindingsDef, ParsedOp, Workload, WorkloadPhase};
 
-/// Bind `implementation` into `logical` in place.
+/// Bind `implementation` into `blueprint` in place.
 ///
 /// Coverage is total in both directions: every abstract slot in
-/// `logical` must be bound exactly once, and every op the
+/// `blueprint` must be bound exactly once, and every op the
 /// implementation provides must land in an abstract slot.
 pub fn bind_implementation(
-    logical: &mut Workload,
+    blueprint: &mut Workload,
     implementation: Workload,
 ) -> Result<(), String> {
-    // The set of wires the logical scaffold provides — the
+    // The set of wires the blueprint scaffold provides — the
     // `needs` availability check reads this. Params + workload
     // bindings + (per-phase) phase bindings.
-    let provided_global: BTreeSet<String> = logical.declared_params.iter()
+    let provided_global: BTreeSet<String> = blueprint.declared_params.iter()
         .cloned()
-        .chain(bindings_wire_names(&logical.bindings))
+        .chain(bindings_wire_names(&blueprint.bindings))
         .collect();
 
     let mut unbound: BTreeSet<String> = BTreeSet::new();
-    for (phase_name, phase) in &logical.phases {
+    for (phase_name, phase) in &blueprint.phases {
         for op in &phase.ops {
             if op.abstract_interface.is_some() {
                 unbound.insert(format!("{phase_name}.{}", op.name));
@@ -51,27 +51,27 @@ pub fn bind_implementation(
         if !offending.is_empty() {
             return Err(format!(
                 "implementation phase '{phase_name}' declares scaffolding \
-                 fields [{}] — scaffolding belongs to the logical \
-                 workload; an implementation phase carries only `ops:`",
+                 fields [{}] — scaffolding belongs to the blueprint; an \
+                 implementation phase carries only `ops:`",
                 offending.join(", ")));
         }
-        let Some(logical_phase) = logical.phases.get_mut(&phase_name) else {
+        let Some(blueprint_phase) = blueprint.phases.get_mut(&phase_name) else {
             return Err(format!(
                 "implementation provides phase '{phase_name}', but the \
-                 logical workload declares no such phase"));
+                 blueprint declares no such phase"));
         };
         for impl_op in impl_phase.ops {
             let slot_key = format!("{phase_name}.{}", impl_op.name);
-            let Some(slot) = logical_phase.ops.iter_mut()
+            let Some(slot) = blueprint_phase.ops.iter_mut()
                 .find(|op| op.name == impl_op.name) else {
                 return Err(format!(
                     "implementation op '{slot_key}' names no op in the \
-                     logical phase"));
+                     blueprint phase"));
             };
             if slot.abstract_interface.is_none() {
                 return Err(format!(
                     "implementation op '{slot_key}' targets a CONCRETE \
-                     logical op — only abstract slots accept bindings"));
+                     blueprint op — only abstract slots accept bindings"));
             }
             if !unbound.remove(&slot_key) {
                 return Err(format!(
@@ -80,19 +80,19 @@ pub fn bind_implementation(
             bind_slot(slot, impl_op, &slot_key)?;
 
             // `needs` availability: every guaranteed wire must be
-            // provided by the logical scaffold — params, workload
+            // provided by the blueprint scaffold — params, workload
             // bindings, or this phase's bindings. (The full type
             // proof is pre-map synthesis; this is the early named
             // error.)
             let mut provided = provided_global.clone();
-            provided.extend(bindings_wire_names(&logical_phase.bindings));
+            provided.extend(bindings_wire_names(&blueprint_phase.bindings));
             if let Some(iface) = slot.abstract_interface.as_ref() {
                 for need in iface.needs.keys() {
                     if !provided.contains(need) {
                         return Err(format!(
                             "slot '{slot_key}' declares need '{need}', but \
-                             the logical workload provides no param or \
-                             binding by that name"));
+                             the blueprint provides no param or binding \
+                             by that name"));
                     }
                 }
             }
@@ -107,37 +107,37 @@ pub fn bind_implementation(
     }
 
     // Implementation params may ADD keys (protocol knobs); a key
-    // the logical side already declares is a collision — the
-    // logical scaffold is authoritative. Only the YAML-DECLARED
+    // the blueprint already declares is a collision — the
+    // blueprint scaffold is authoritative. Only the YAML-DECLARED
     // subset participates: `Workload.params` also carries every
     // ad-hoc CLI arg (tui=, workload=, …) overlaid at parse, and
     // those are invocation matter, not document matter.
-    let logical_declared: BTreeSet<String> =
-        logical.declared_params.iter().cloned().collect();
+    let blueprint_declared: BTreeSet<String> =
+        blueprint.declared_params.iter().cloned().collect();
     let impl_declared: Vec<String> = implementation.declared_params;
     for k in impl_declared {
-        if logical_declared.contains(&k) {
+        if blueprint_declared.contains(&k) {
             return Err(format!(
-                "implementation param '{k}' collides with a logical \
-                 param — logical scaffolding is authoritative"));
+                "implementation param '{k}' collides with a blueprint \
+                 param — blueprint scaffolding is authoritative"));
         }
         if let Some(v) = implementation.params.get(&k) {
-            logical.params.insert(k.clone(), v.clone());
+            blueprint.params.insert(k.clone(), v.clone());
         }
-        logical.declared_params.push(k);
+        blueprint.declared_params.push(k);
     }
 
-    // Workload-level bindings concatenate logical-first.
-    concat_bindings(&mut logical.bindings, implementation.bindings)
+    // Workload-level bindings concatenate blueprint-first.
+    concat_bindings(&mut blueprint.bindings, implementation.bindings)
         .map_err(|e| format!("workload-level bindings: {e}"))?;
 
     Ok(())
 }
 
 /// Bind one implementation op into one abstract slot. The slot
-/// keeps everything the logical side declared; the
-/// implementation fills the protocol surfaces. Any overlap is a
-/// collision error — never a silent override.
+/// keeps everything the blueprint declared; the implementation
+/// fills the protocol surfaces. Any overlap is a collision error
+/// — never a silent override.
 fn bind_slot(
     slot: &mut ParsedOp,
     impl_op: ParsedOp,
@@ -154,7 +154,7 @@ fn bind_slot(
         return Err(format!(
             "implementation op '{slot_key}' sets op semantics \
              (if/delay/metrics/result/traverse/wrappers/while/rate/\
-             daemon) — those belong to the logical slot"));
+             daemon) — those belong to the blueprint slot"));
     }
     if impl_op.abstract_interface.is_some() {
         return Err(format!(
@@ -166,7 +166,7 @@ fn bind_slot(
         if slot.op.contains_key(&k) {
             return Err(format!(
                 "slot '{slot_key}': op field '{k}' declared by BOTH the \
-                 logical slot and the implementation — the logical side \
+                 blueprint slot and the implementation — the blueprint \
                  is authoritative; remove one"));
         }
         slot.op.insert(k, v);
@@ -264,7 +264,7 @@ fn bindings_wire_names(bindings: &BindingsDef) -> Vec<String> {
     }
 }
 
-/// Concatenate `extra` onto `base`, logical-first. Mixed
+/// Concatenate `extra` onto `base`, blueprint-first. Mixed
 /// map/source forms are rejected (no sensible concatenation) —
 /// never silently dropped.
 fn concat_bindings(
@@ -326,7 +326,7 @@ mod tests {
             .expect("parse test workload")
     }
 
-    const LOGICAL: &str = r#"
+    const BLUEPRINT: &str = r#"
 params:
   suite_k: "10"
 bindings: |
@@ -346,7 +346,7 @@ phases:
 "#;
 
     const IMPL_OK: &str = r#"
-implements: logical
+implements: blueprint
 phases:
   probe:
     ops:
@@ -357,58 +357,58 @@ phases:
 
     #[test]
     fn binds_and_marks_the_slot() {
-        let mut logical = parse(LOGICAL);
+        let mut blueprint = parse(BLUEPRINT);
         let implementation = parse(IMPL_OK);
-        bind_implementation(&mut logical, implementation).unwrap();
-        let op = &logical.phases["probe"].ops[0];
+        bind_implementation(&mut blueprint, implementation).unwrap();
+        let op = &blueprint.phases["probe"].ops[0];
         assert!(op.interface_bound);
         assert!(op.op.contains_key("stmt"));
         assert_eq!(op.captures.len(), 1);
-        assert!(unbound_abstract_slots(&logical).is_empty());
+        assert!(unbound_abstract_slots(&blueprint).is_empty());
     }
 
     #[test]
     fn missing_yield_capture_is_named() {
-        let mut logical = parse(LOGICAL);
+        let mut blueprint = parse(BLUEPRINT);
         let implementation = parse(r#"
-implements: logical
+implements: blueprint
 phases:
   probe:
     ops:
       search:
         stmt: "SEARCH"
 "#);
-        let err = bind_implementation(&mut logical, implementation)
+        let err = bind_implementation(&mut blueprint, implementation)
             .unwrap_err();
         assert!(err.contains("yield 'key'"), "err: {err}");
     }
 
     #[test]
     fn unknown_slot_and_uncovered_slot_are_errors() {
-        let mut logical = parse(LOGICAL);
+        let mut blueprint = parse(BLUEPRINT);
         let implementation = parse(r#"
-implements: logical
+implements: blueprint
 phases:
   probe:
     ops:
       wrong_name:
         stmt: "X"
 "#);
-        let err = bind_implementation(&mut logical, implementation)
+        let err = bind_implementation(&mut blueprint, implementation)
             .unwrap_err();
         assert!(err.contains("wrong_name"), "err: {err}");
 
-        let mut logical = parse(LOGICAL);
-        let err = bind_implementation(&mut logical, parse("implements: logical\n"))
+        let mut blueprint = parse(BLUEPRINT);
+        let err = bind_implementation(&mut blueprint, parse("implements: blueprint\n"))
             .unwrap_err();
         assert!(err.contains("remain unbound"), "err: {err}");
     }
 
     #[test]
     fn scaffolding_on_implementation_phase_is_rejected() {
-        let mut logical = parse(LOGICAL);
+        let mut blueprint = parse(BLUEPRINT);
         let implementation = parse(r#"
-implements: logical
+implements: blueprint
 phases:
   probe:
     cycles: 99
@@ -417,14 +417,14 @@ phases:
         stmt: "X"
         captures: "[key]"
 "#);
-        let err = bind_implementation(&mut logical, implementation)
+        let err = bind_implementation(&mut blueprint, implementation)
             .unwrap_err();
         assert!(err.contains("scaffolding"), "err: {err}");
     }
 
     #[test]
     fn undeclared_need_is_named() {
-        let mut logical = parse(r#"
+        let mut blueprint = parse(r#"
 phases:
   probe:
     cycles: 1
@@ -434,8 +434,8 @@ phases:
           needs:
             not_provided: u64
 "#);
-        let err = bind_implementation(&mut logical, parse(r#"
-implements: logical
+        let err = bind_implementation(&mut blueprint, parse(r#"
+implements: blueprint
 phases:
   probe:
     ops:
@@ -447,19 +447,19 @@ phases:
 
     #[test]
     fn op_field_collision_is_an_error() {
-        let mut logical = parse(r#"
+        let mut blueprint = parse(r#"
 phases:
   probe:
     cycles: 1
     ops:
       search:
-        stmt: "LOGICAL SIDE"
+        stmt: "BLUEPRINT SIDE"
         abstract:
           yields:
             key: String
 "#);
-        let err = bind_implementation(&mut logical, parse(r#"
-implements: logical
+        let err = bind_implementation(&mut blueprint, parse(r#"
+implements: blueprint
 phases:
   probe:
     ops:
@@ -473,7 +473,7 @@ phases:
 
     #[test]
     fn unbound_slots_are_reported() {
-        let logical = parse(LOGICAL);
-        assert_eq!(unbound_abstract_slots(&logical), vec!["probe.search"]);
+        let blueprint = parse(BLUEPRINT);
+        assert_eq!(unbound_abstract_slots(&blueprint), vec!["probe.search"]);
     }
 }

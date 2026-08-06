@@ -1,23 +1,23 @@
 #!/usr/bin/env nbrs
 # vector_suite_cql.yaml — the CQL implementation of
-# vector_suite_logical.yaml (SRD-108 Part B implementation
+# vector_suite_blueprint.yaml (SRD-108 Part B implementation
 # module).
 #
 # This document carries ONLY protocol matter: the literal CQL
 # statements, protocol-side extraction (the build-wait capture),
 # and CQL/index knobs as params. Scaffolding — extents,
 # concurrency, governance, dataset bindings, relevancy — is the
-# logical document's, and any attempt to redeclare it here is a
-# load error.
+# blueprint's, and any attempt to redeclare it here is a load
+# error.
 #
 #   nbrs run workload=vector_suite_cql.yaml scenario=search_perf
 
 description: |
-  CQL implementation of the vector search-performance core: binds
-  literal CQL statements into vector_suite_logical.yaml's abstract
-  op slots (SRD-108).
+  CQL implementation of the vector_suite blueprint: binds literal
+  CQL statements into vector_suite_blueprint.yaml's abstract op
+  slots (SRD-108).
 
-implements: ./vector_suite_logical.yaml
+implements: ./vector_suite_blueprint.yaml
 
 params:
   # ── CQL protocol + index-build knobs (protocol matter).

@@ -1,5 +1,6 @@
 #!/usr/bin/env nbrs
-# tag_scaffold.yaml — SRD-108 Part A: a LOGICAL scaffold.
+# tag_blueprint.yaml — SRD-108 Part A: a BLUEPRINT in the ad-hoc
+# tag-contract form.
 #
 # The phase owns the measurement scaffolding (cycles, concurrency)
 # and selects its ops by TAG — it does not know the protocol. An

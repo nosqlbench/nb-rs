@@ -111,11 +111,11 @@ pub struct Workload {
     /// entirely (no cascading merge).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrappers: Option<WrappersConfig>,
-    /// SRD-108 Part B — names the logical workload this document
+    /// SRD-108 Part B — names the blueprint this document
     /// IMPLEMENTS (resolved local-first, then bundled catalog,
     /// like `extends:` targets). A document carrying this is an
     /// implementation module: it provides op bodies for the
-    /// logical target's abstract slots and must carry no phase
+    /// blueprint's abstract slots and must carry no phase
     /// scaffolding of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub implements: Option<String>,
@@ -1693,10 +1693,10 @@ impl BindingsDef {
 }
 
 /// SRD-108 Part B — the typed interface an abstract op slot
-/// declares: wires the logical scope guarantees (`needs`) and
+/// declares: wires the blueprint scope guarantees (`needs`) and
 /// wires the bound implementation must deliver (`yields`), each
 /// `name -> polydat type name` (`u64`, `f64`, `String`,
-/// `vector<f32>`, …). BTreeMaps so the SRD-107 config digest
+/// `vec_f32`, …). BTreeMaps so the SRD-107 config digest
 /// serializes stably.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct OpInterface {

@@ -4,14 +4,13 @@
 //! SRD-108 Part B e2e — typed `abstract:`/`implements:` binding.
 //!
 //! Contracts:
-//! - `workload=<impl>` pulls the logical target via `implements:`
-//!   and runs the bound composition (scaffolding from the logical
-//!   side, op bodies from the implementation);
-//! - `workload=<logical> impl=<impl>` reaches the same bound
+//! - `workload=<impl>` pulls the blueprint via `implements:`
+//!   and runs the bound composition (scaffolding from the blueprint, op bodies from the implementation);
+//! - `workload=<blueprint> impl=<impl>` reaches the same bound
 //!   composition;
-//! - a logical workload invoked with NO implementation fails at
+//! - a blueprint invoked with NO implementation fails at
 //!   load, naming the unbound slot and the `impl=` remedy;
-//! - an `impl=` target that implements a DIFFERENT logical is
+//! - an `impl=` target that implements a DIFFERENT blueprint is
 //!   rejected with both identities named.
 //!
 //! Sandbox discipline per `feedback_tests_no_project_root`.
@@ -19,7 +18,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-const LOGICAL: &str = r#"
+const BLUEPRINT: &str = r#"
 params:
   suite_k: "7"
 phases:
@@ -34,7 +33,7 @@ phases:
 "#;
 
 const IMPL: &str = r#"
-implements: ./logical.yaml
+implements: ./blueprint.yaml
 phases:
   probe:
     ops:
@@ -55,7 +54,7 @@ impl Sandbox {
         let dir = std::env::temp_dir()
             .join(format!("nbrs-implements-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create sandbox");
-        std::fs::write(dir.join("logical.yaml"), LOGICAL).expect("write logical");
+        std::fs::write(dir.join("blueprint.yaml"), BLUEPRINT).expect("write blueprint");
         std::fs::write(dir.join("impl.yaml"), IMPL).expect("write impl");
         Self { dir }
     }
@@ -89,48 +88,48 @@ fn ticks(stdout: &str, needle: &str) -> usize {
     stdout.lines().filter(|l| l.trim() == needle).count()
 }
 
-/// `workload=<impl>` — the implementation pulls its logical
-/// target; the run carries the logical scaffolding (3 cycles)
+/// `workload=<impl>` — the implementation pulls its blueprint;
+/// the run carries the blueprint scaffolding (3 cycles)
 /// with the implementation's op body ({suite_k} resolves from
-/// the logical param).
+/// the blueprint param).
 #[test]
-fn invoking_the_implementation_pulls_and_binds_the_logical() {
+fn invoking_the_implementation_pulls_and_binds_the_blueprint() {
     let sandbox = Sandbox::new("pull");
     let (stdout, stderr, ok) = sandbox.run(&["workload=impl.yaml"]);
     assert!(ok, "bound run must complete; stderr:\n{stderr}");
     assert_eq!(ticks(&stdout, "SEARCH k=7"), 3,
-        "logical cycles × implementation body; stdout:\n{stdout}");
+        "blueprint cycles × implementation body; stdout:\n{stdout}");
 }
 
-/// `workload=<logical> impl=<impl>` — same bound composition
-/// from the logical entry point.
+/// `workload=<blueprint> impl=<impl>` — same bound composition
+/// from the blueprint entry point.
 #[test]
-fn invoking_the_logical_with_impl_binds() {
+fn invoking_the_blueprint_with_impl_binds() {
     let sandbox = Sandbox::new("implparam");
     let (stdout, stderr, ok) =
-        sandbox.run(&["workload=logical.yaml", "impl=impl.yaml"]);
+        sandbox.run(&["workload=blueprint.yaml", "impl=impl.yaml"]);
     assert!(ok, "bound run must complete; stderr:\n{stderr}");
     assert_eq!(ticks(&stdout, "SEARCH k=7"), 3, "stdout:\n{stdout}");
 }
 
-/// A logical workload with no implementation fails at LOAD,
+/// A blueprint with no implementation fails at LOAD,
 /// naming the slot and the remedy — never a dispatch panic.
 #[test]
 fn unbound_abstract_slot_is_a_load_error() {
     let sandbox = Sandbox::new("unbound");
-    let (_, stderr, ok) = sandbox.run(&["workload=logical.yaml"]);
-    assert!(!ok, "an unbound logical workload must not run");
+    let (_, stderr, ok) = sandbox.run(&["workload=blueprint.yaml"]);
+    assert!(!ok, "an unbound blueprint must not run");
     assert!(stderr.contains("probe.search") && stderr.contains("impl="),
         "the error names the slot and the remedy; stderr:\n{stderr}");
 }
 
-/// An `impl=` whose `implements:` names a DIFFERENT logical is
+/// An `impl=` whose `implements:` names a DIFFERENT blueprint is
 /// rejected with both identities in the message.
 #[test]
 fn mismatched_implements_target_is_rejected() {
     let sandbox = Sandbox::new("mismatch");
-    std::fs::write(sandbox.dir.join("other.yaml"), LOGICAL)
-        .expect("write other logical");
+    std::fs::write(sandbox.dir.join("other.yaml"), BLUEPRINT)
+        .expect("write other blueprint");
     let (_, stderr, ok) =
         sandbox.run(&["workload=other.yaml", "impl=impl.yaml"]);
     assert!(!ok, "a mismatched implements target must not run");

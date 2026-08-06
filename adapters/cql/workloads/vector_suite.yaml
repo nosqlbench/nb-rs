@@ -1,12 +1,13 @@
-# vector_suite.yaml — vector benchmarking case pack.
+# vector_suite.yaml — vector benchmarking suite.
 #
 # NOTE (SRD-108): the search-performance core of this suite also
-# exists as a logical/implementation pair — vector_suite_logical.yaml
-# (protocol-agnostic scaffolding + typed abstract op slots) bound by
-# vector_suite_cql.yaml (`implements:`). New protocol backends
-# implement the logical document (SRD-109 drivers build on it);
-# sections migrate to the pair as implementations land. This
-# monolithic form remains the full-suite surface meanwhile.
+# exists as a blueprint/implementation pair —
+# vector_suite_blueprint.yaml (protocol-agnostic scaffolding +
+# typed abstract op slots) bound by vector_suite_cql.yaml
+# (`implements:`). New protocol backends implement the blueprint
+# (SRD-109 drivers build on it); sections migrate to the pair as
+# implementations land. This monolithic form remains the
+# full-suite surface meanwhile.
 #
 # Extends full_cql_vector.yaml (SRD-72): schema / teardown / rampup /
 # fknn_rampup_data and the dataset+cluster params come from the
@@ -78,7 +79,7 @@
 # a trend signal under churn, not an absolute.
 
 description: |
-  Vector benchmarking case pack: capacity, load/build governance,
+  Vector benchmarking suite: capacity, load/build governance,
   search performance with recall-under-load, filtered selectivity
   grid, streaming insert-under-load with guarded stage gates,
   cold/warm, and churn.
