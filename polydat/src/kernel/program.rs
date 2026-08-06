@@ -96,6 +96,110 @@ fn first_dynamic_wire(
     format!("node '{owner}' is dynamic but the offending wire could not be isolated")
 }
 
+/// Exact multi-word input-provenance mask: bit `i` set means the
+/// carrier transitively depends on graph input `i`. Replaces the
+/// one-word `u64` whose ≥63 saturation aliased every high input
+/// (a real shape — a workload root's params + shared wires
+/// crossed 64 inputs on 2026-08-03). Self-sizing: `set` grows the
+/// word vector to the highest observed index, so callers never
+/// plumb an input-count and masks from different programs stay
+/// comparable (absent words read as zero).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProvMask {
+    words: Vec<u64>,
+}
+
+impl ProvMask {
+    pub fn empty() -> Self {
+        Self { words: Vec::new() }
+    }
+
+    /// All bits `[0, n)` set — the "every input dirty" seed the
+    /// engine cone guards start from.
+    pub fn all_below(n: usize) -> Self {
+        let mut m = Self::empty();
+        for i in 0..n {
+            m.set(i);
+        }
+        m
+    }
+
+    /// Zero every bit, keeping the allocated words — the
+    /// per-cycle reset for hot-path change masks (no
+    /// reallocation once sized).
+    pub fn clear(&mut self) {
+        for w in &mut self.words {
+            *w = 0;
+        }
+    }
+
+    /// Set bit `idx`; returns `true` when the bit was newly set
+    /// (the fixpoint walker's change signal).
+    pub fn set(&mut self, idx: usize) -> bool {
+        let word = idx / 64;
+        if word >= self.words.len() {
+            self.words.resize(word + 1, 0);
+        }
+        let bit = 1u64 << (idx % 64);
+        let newly = self.words[word] & bit == 0;
+        self.words[word] |= bit;
+        newly
+    }
+
+    pub fn contains(&self, idx: usize) -> bool {
+        self.words.get(idx / 64)
+            .is_some_and(|w| w & (1u64 << (idx % 64)) != 0)
+    }
+
+    /// OR `other` into `self`; returns `true` when any bit was
+    /// newly set (the fixpoint walker's change signal).
+    pub fn union_with(&mut self, other: &Self) -> bool {
+        if other.words.len() > self.words.len() {
+            self.words.resize(other.words.len(), 0);
+        }
+        let mut changed = false;
+        for (dst, src) in self.words.iter_mut().zip(other.words.iter()) {
+            let merged = *dst | *src;
+            changed |= merged != *dst;
+            *dst = merged;
+        }
+        changed
+    }
+
+    pub fn intersects(&self, other: &Self) -> bool {
+        self.words.iter().zip(other.words.iter())
+            .any(|(a, b)| a & b != 0)
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.words.iter().all(|w| *w == 0)
+    }
+
+    /// Ascending indices of the set bits.
+    pub fn iter_ones(&self) -> impl Iterator<Item = usize> + '_ {
+        self.words.iter().enumerate().flat_map(|(wi, w)| {
+            (0..64).filter_map(move |b| {
+                (w & (1u64 << b) != 0).then_some(wi * 64 + b)
+            })
+        })
+    }
+}
+
+/// The per-node reachability attributes computed by the ONE
+/// inventory walker ([`PolydatProgram::compute_node_inventory`]).
+/// Every reachability consumer is a projection of this — see the
+/// walker's doc before adding another traversal.
+pub(crate) struct NodeInventory {
+    /// Which inputs transitively feed each node (exact).
+    pub input_provenance: Vec<ProvMask>,
+    /// Nodes that are nondeterministic (nullary / declared) or
+    /// downstream of one — the per-cycle cache-invalidation set.
+    pub nondet_nodes: Vec<usize>,
+    /// Per-node flag: dependency cone contains a
+    /// `Purity::SideChannel` node.
+    pub side_channel_nodes: Vec<bool>,
+}
+
 /// The immutable compiled DAG. Shared across fibers via `Arc`.
 pub struct PolydatProgram {
     /// Node instances in topological order.
@@ -121,12 +225,21 @@ pub struct PolydatProgram {
     /// Outputs in declaration order: (name, node_index, port_index).
     /// Stable ordering for positional access.
     output_list: Vec<(String, usize, usize)>,
-    /// Per-node input provenance bitmask. Bit i is set if the node
-    /// transitively depends on graph input i.
-    pub(crate) input_provenance: Vec<u64>,
+    /// Per-node input provenance (exact multi-word mask). Bit i
+    /// is set if the node transitively depends on graph input i.
+    /// One projection of the node inventory — see
+    /// [`Self::compute_node_inventory`].
+    pub(crate) input_provenance: Vec<ProvMask>,
     /// Per-input dependent node lists. For each input, the list of
     /// node indices that transitively depend on it.
     input_dependents: Vec<Vec<usize>>,
+    /// Nodes that are nondeterministic (nullary / declared
+    /// `Purity::Nondeterministic`) or downstream of one — shared
+    /// by every state constructor's cache-invalidation seed.
+    nondet_nodes: Vec<usize>,
+    /// Per-node flag: dependency cone contains a
+    /// `Purity::SideChannel` node.
+    side_channel_nodes: Vec<bool>,
     /// Output binding modifiers: `shared` or `final`.
     /// Only populated for outputs that have a modifier; absent = default.
     output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
@@ -208,8 +321,9 @@ impl PolydatProgram {
                 kind: crate::kernel::InputKind::Coordinate,
             })
             .collect();
-        let input_provenance = Self::compute_provenance(&nodes, &wiring);
-        let input_dependents = Self::compute_dependents(&input_provenance, input_defs.len());
+        let inventory = Self::compute_node_inventory(&nodes, &wiring);
+        let input_dependents = Self::compute_dependents(
+            &inventory.input_provenance, input_defs.len());
         // No declaration order available — fall back to sorted by node index
         let fallback_order: Vec<String> = {
             let mut v: Vec<(String, usize, usize)> = output_map.iter()
@@ -220,7 +334,10 @@ impl PolydatProgram {
         let output_list = Self::build_output_list(&fallback_order, &output_map);
         Self {
             nodes, wiring, input_defs, coord_count, output_map, output_list,
-            input_provenance, input_dependents,
+            input_provenance: inventory.input_provenance,
+            input_dependents,
+            nondet_nodes: inventory.nondet_nodes,
+            side_channel_nodes: inventory.side_channel_nodes,
             source: Arc::new(source.to_string()),
             context: Arc::new(context.to_string()),
             output_modifiers: HashMap::new(),
@@ -247,12 +364,16 @@ impl PolydatProgram {
         source: &str,
         context: &str,
     ) -> Self {
-        let input_provenance = Self::compute_provenance(&nodes, &wiring);
-        let input_dependents = Self::compute_dependents(&input_provenance, input_defs.len());
+        let inventory = Self::compute_node_inventory(&nodes, &wiring);
+        let input_dependents = Self::compute_dependents(
+            &inventory.input_provenance, input_defs.len());
         let output_list = Self::build_output_list(&output_order, &output_map);
         Self {
             nodes, wiring, input_defs, coord_count, output_map, output_list,
-            input_provenance, input_dependents,
+            input_provenance: inventory.input_provenance,
+            input_dependents,
+            nondet_nodes: inventory.nondet_nodes,
+            side_channel_nodes: inventory.side_channel_nodes,
             source: Arc::new(source.to_string()),
             context: Arc::new(context.to_string()),
             output_modifiers: HashMap::new(),
@@ -510,15 +631,14 @@ impl PolydatProgram {
     }
 
     /// Invert provenance into per-input dependent node lists.
-    pub(crate) fn compute_dependents(provenance: &[u64], num_inputs: usize) -> Vec<Vec<usize>> {
+    pub(crate) fn compute_dependents(
+        provenance: &[ProvMask],
+        num_inputs: usize,
+    ) -> Vec<Vec<usize>> {
         let mut deps = vec![Vec::new(); num_inputs];
-        for (node_idx, &prov) in provenance.iter().enumerate() {
+        for (node_idx, prov) in provenance.iter().enumerate() {
             for (input_idx, dep) in deps.iter_mut().enumerate() {
-                // Inputs ≥ 63 alias the saturated top bit (see
-                // `compute_provenance`), so their dependent lists are
-                // the union over every high input — over-invalidation,
-                // never under.
-                if prov & (1u64 << input_idx.min(63)) != 0 {
+                if prov.contains(input_idx) {
                     dep.push(node_idx);
                 }
             }
@@ -526,37 +646,109 @@ impl PolydatProgram {
         deps
     }
 
-    /// Compute per-node input provenance bitmask from the DAG wiring.
+    /// THE node-inventory walker — the ONE forward pass over the
+    /// wire graph that computes every per-node reachability
+    /// attribute the program carries:
+    ///
+    /// - **input provenance** — which inputs transitively feed
+    ///   each node, as an exact multi-word [`ProvMask`] (the
+    ///   one-word ≥63 saturation this replaces aliased every
+    ///   high input into bit 63 — conservative for engine
+    ///   invalidation, but lossy for SRD-107's consumed-params
+    ///   projection on many-param workload roots);
+    /// - **nondeterminism contagion** — nullary or
+    ///   `Purity::Nondeterministic` nodes and everything
+    ///   downstream of them (per R1.v's intrinsic-volatility
+    ///   carve-out; consumers of a volatile producer must not
+    ///   retain stale cached values across cycles);
+    /// - **side-channel contagion** — nodes whose dependency
+    ///   cone contains a `Purity::SideChannel` node (`log_*`,
+    ///   diagnostics), so the per-cycle fire-side-effects pass
+    ///   knows which outputs to pull.
+    ///
+    /// Every other consumer — engine invalidation
+    /// (`compute_dependents` → `input_dependents`, and the JIT's
+    /// slot provenance derived from it), `extern_closure`,
+    /// `cone_has_side_channel`, the two state constructors — is
+    /// a PROJECTION of this inventory. Do not add another
+    /// traversal over `wiring` for a per-node attribute; add a
+    /// field here. (The engine cone guards — JIT and closure
+    /// kernels' slot provenance / changed masks — carry the same
+    /// multi-word [`ProvMask`] shape host-side; the generated
+    /// machine code never sees a mask.)
+    ///
+    /// Fixpoint iteration (not a single topo pass) so the
+    /// inventory is correct regardless of node ordering; the
+    /// graphs are DAGs, so it converges in at most graph-depth
+    /// rounds and in practice two.
+    /// Thin projection for callers that need only the provenance
+    /// masks (assembly/select/hybrid feed them straight into
+    /// [`Self::compute_dependents`]). Same ONE walker underneath.
     pub(crate) fn compute_provenance(
         nodes: &[Box<dyn PolydatNode>],
         wiring: &[Vec<WireSource>],
-    ) -> Vec<u64> {
+    ) -> Vec<ProvMask> {
+        Self::compute_node_inventory(nodes, wiring).input_provenance
+    }
+
+    pub(crate) fn compute_node_inventory(
+        nodes: &[Box<dyn PolydatNode>],
+        wiring: &[Vec<WireSource>],
+    ) -> NodeInventory {
         let n = nodes.len();
-        let mut prov = vec![0u64; n];
-        for i in 0..n {
-            for source in &wiring[i] {
-                match source {
-                    WireSource::Input(idx) => {
-                        // One provenance word: inputs ≥ 63 SATURATE
-                        // into bit 63 rather than overflowing the
-                        // shift (a >64-input scope kernel is real —
-                        // a workload root's params + shared wires
-                        // crossed it 2026-08-03). Aliased high inputs
-                        // conservatively share provenance: any of
-                        // them changing invalidates the union of
-                        // their dependents — more recompute, never
-                        // stale values. Same convention as the JIT's
-                        // step provenance (jit/kernels.rs) and the
-                        // SRD-105 64-input cone bound.
-                        prov[i] |= 1u64 << (*idx).min(63);
-                    }
-                    WireSource::NodeOutput(upstream, _) => {
-                        prov[i] |= prov[*upstream];
+        let mut prov: Vec<ProvMask> =
+            (0..n).map(|_| ProvMask::empty()).collect();
+        let mut nondet: Vec<bool> = (0..n).map(|i| {
+            let nullary = wiring[i].is_empty() && nodes[i].meta().ins.is_empty();
+            let declared = matches!(
+                nodes[i].purity(),
+                crate::ast::Purity::Nondeterministic { .. });
+            nullary || declared
+        }).collect();
+        let mut side: Vec<bool> = (0..n).map(|i| matches!(
+            nodes[i].purity(),
+            crate::ast::Purity::SideChannel { .. })).collect();
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for i in 0..n {
+                for source in &wiring[i] {
+                    match source {
+                        WireSource::Input(idx) => {
+                            changed |= prov[i].set(*idx);
+                        }
+                        WireSource::NodeOutput(up, _) => {
+                            let up = *up;
+                            if up == i {
+                                continue; // defensive: DAGs don't self-loop
+                            }
+                            let (a, b) = if up < i {
+                                let (l, r) = prov.split_at_mut(i);
+                                (&l[up], &mut r[0])
+                            } else {
+                                let (l, r) = prov.split_at_mut(up);
+                                (&r[0], &mut l[i])
+                            };
+                            changed |= b.union_with(a);
+                            if nondet[up] && !nondet[i] {
+                                nondet[i] = true;
+                                changed = true;
+                            }
+                            if side[up] && !side[i] {
+                                side[i] = true;
+                                changed = true;
+                            }
+                        }
                     }
                 }
             }
         }
-        prov
+        NodeInventory {
+            input_provenance: prov,
+            nondet_nodes: (0..n).filter(|&i| nondet[i]).collect(),
+            side_channel_nodes: side,
+        }
     }
 
     /// Build an EngineCore (shared by all state constructors).
@@ -611,56 +803,10 @@ impl PolydatProgram {
             .max()
             .unwrap_or(0);
 
-        // Per R1.v's intrinsic-volatility carve-out + transitive
-        // contagion claim.
-        //
-        // Seed set:
-        //   - Nullary nodes with no inputs at all — nothing to be
-        //     deterministic-with-respect-to.
-        //   - Nodes declaring `Purity::Nondeterministic` — the
-        //     intrinsic-volatility marker; their typed return is not
-        //     a function of declared inputs (system clock, entropy,
-        //     thread identity, eval-spanning state, etc.).
-        //
-        // Then transitively close forward through node-output
-        // wiring: any node consuming a nondeterministic producer's
-        // output is itself nondeterministic (contagion). Without
-        // this closure, downstream consumers of a volatile producer
-        // would retain stale cached values across cycles — the
-        // producer's clean flag is reset per cycle but the
-        // consumer's isn't, so a pull on the consumer would
-        // short-circuit to the cached value referencing the
-        // producer's stale output.
-        let seed: Vec<usize> = self.nodes.iter().enumerate()
-            .filter(|(i, node)| {
-                let nullary = self.wiring[*i].is_empty() && node.meta().ins.is_empty();
-                let declared = matches!(node.purity(), crate::ast::Purity::Nondeterministic { .. });
-                nullary || declared
-            })
-            .map(|(i, _)| i)
-            .collect();
-        // Forward transitive closure via the existing wire graph
-        // (NodeOutput edges only — Input edges go through the
-        // distinct input_dependents/input_provenance mechanism).
-        let mut volatile_mask: Vec<bool> = vec![false; node_count];
-        for &i in &seed { volatile_mask[i] = true; }
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for i in 0..node_count {
-                if volatile_mask[i] { continue; }
-                for source in &self.wiring[i] {
-                    if let WireSource::NodeOutput(upstream, _) = source
-                        && volatile_mask[*upstream] {
-                            volatile_mask[i] = true;
-                            changed = true;
-                            break;
-                        }
-                }
-            }
-        }
-        let nondeterministic_nodes: Vec<usize> =
-            (0..node_count).filter(|&i| volatile_mask[i]).collect();
+        // Nondeterminism contagion (R1.v's intrinsic-volatility
+        // carve-out): precomputed by the ONE inventory walker at
+        // construction — see `compute_node_inventory`.
+        let nondeterministic_nodes: Vec<usize> = self.nondet_nodes.clone();
 
         let input_count = inputs.len();
         let core = EngineCore {
@@ -693,57 +839,10 @@ impl PolydatProgram {
     /// Create the provenance-scan engine state (for benchmarking).
     pub fn create_provscan_state(&self) -> ProvScanState {
         let core = self.build_engine_core();
-        let node_count = self.nodes.len();
-        // Per R1.v's intrinsic-volatility carve-out + transitive
-        // contagion claim.
-        //
-        // Seed set:
-        //   - Nullary nodes with no inputs at all — nothing to be
-        //     deterministic-with-respect-to.
-        //   - Nodes declaring `Purity::Nondeterministic` — the
-        //     intrinsic-volatility marker; their typed return is not
-        //     a function of declared inputs (system clock, entropy,
-        //     thread identity, eval-spanning state, etc.).
-        //
-        // Then transitively close forward through node-output
-        // wiring: any node consuming a nondeterministic producer's
-        // output is itself nondeterministic (contagion). Without
-        // this closure, downstream consumers of a volatile producer
-        // would retain stale cached values across cycles — the
-        // producer's clean flag is reset per cycle but the
-        // consumer's isn't, so a pull on the consumer would
-        // short-circuit to the cached value referencing the
-        // producer's stale output.
-        let seed: Vec<usize> = self.nodes.iter().enumerate()
-            .filter(|(i, node)| {
-                let nullary = self.wiring[*i].is_empty() && node.meta().ins.is_empty();
-                let declared = matches!(node.purity(), crate::ast::Purity::Nondeterministic { .. });
-                nullary || declared
-            })
-            .map(|(i, _)| i)
-            .collect();
-        // Forward transitive closure via the existing wire graph
-        // (NodeOutput edges only — Input edges go through the
-        // distinct input_dependents/input_provenance mechanism).
-        let mut volatile_mask: Vec<bool> = vec![false; node_count];
-        for &i in &seed { volatile_mask[i] = true; }
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for i in 0..node_count {
-                if volatile_mask[i] { continue; }
-                for source in &self.wiring[i] {
-                    if let WireSource::NodeOutput(upstream, _) = source
-                        && volatile_mask[*upstream] {
-                            volatile_mask[i] = true;
-                            changed = true;
-                            break;
-                        }
-                }
-            }
-        }
-        let nondeterministic_nodes: Vec<usize> =
-            (0..node_count).filter(|&i| volatile_mask[i]).collect();
+        // Nondeterminism contagion (R1.v's intrinsic-volatility
+        // carve-out): precomputed by the ONE inventory walker at
+        // construction — see `compute_node_inventory`.
+        let nondeterministic_nodes: Vec<usize> = self.nondet_nodes.clone();
         ProvScanState::from_parts(core, self.input_provenance.clone(), nondeterministic_nodes)
     }
 
@@ -848,24 +947,10 @@ impl PolydatProgram {
     }
 
     /// True if `start`'s transitive input cone contains a node declaring
-    /// `Purity::SideChannel`.
+    /// `Purity::SideChannel`. A projection of the construction-time
+    /// node inventory — see [`Self::compute_node_inventory`].
     fn cone_has_side_channel(&self, start: usize) -> bool {
-        let mut stack = vec![start];
-        let mut seen = vec![false; self.nodes.len()];
-        while let Some(idx) = stack.pop() {
-            if std::mem::replace(&mut seen[idx], true) {
-                continue;
-            }
-            if matches!(self.nodes[idx].purity(), crate::ast::Purity::SideChannel { .. }) {
-                return true;
-            }
-            for src in &self.wiring[idx] {
-                if let WireSource::NodeOutput(up, _) = src {
-                    stack.push(*up);
-                }
-            }
-        }
-        false
+        self.side_channel_nodes.get(start).copied().unwrap_or(false)
     }
 
     /// Find the output index for a name (for building memoized getters).
@@ -890,9 +975,10 @@ impl PolydatProgram {
         meta.outs.get(port_idx).map(|out| out.typ)
     }
 
-    /// Get the provenance bitmask for a node by index.
-    pub fn input_provenance_for(&self, node_idx: usize) -> u64 {
-        self.input_provenance.get(node_idx).copied().unwrap_or(0)
+    /// Get the provenance mask for a node by index. `None` for an
+    /// out-of-range node index.
+    pub fn input_provenance_for(&self, node_idx: usize) -> Option<&ProvMask> {
+        self.input_provenance.get(node_idx)
     }
 
     /// SRD-13d §3.2: hash-compare two programs for AST /
@@ -1039,9 +1125,10 @@ impl PolydatProgram {
     /// outputs — the backward dataflow slice a scope needs from
     /// its enclosing scopes to produce exactly those outputs.
     ///
-    /// The walk starts at each requested output's producing node
-    /// and follows `NodeOutput` wires backwards; `Input` wires
-    /// contribute their input's NAME when its kind is not
+    /// A projection of the construction-time node inventory (see
+    /// [`Self::compute_node_inventory`] — no traversal here):
+    /// union the producing nodes' provenance masks, then map set
+    /// bits to input names whose kind is not
     /// [`super::InputKind::Coordinate`] (coordinates are runtime
     /// dimensions like `cycle`, not outer-scope matter). Requested
     /// names this program does not declare as outputs are ignored
@@ -1052,32 +1139,76 @@ impl PolydatProgram {
     /// consumed-params closure: which workload params actually
     /// reach a given phase through the scope chain.
     pub fn extern_closure(&self, outputs: &[&str]) -> Vec<String> {
-        use std::collections::BTreeSet;
-        let mut pending: Vec<usize> = self.output_list.iter()
-            .filter(|(name, _, _)| outputs.contains(&name.as_str()))
-            .map(|(_, ni, _)| *ni)
-            .collect();
-        let mut visited: BTreeSet<usize> = BTreeSet::new();
-        let mut found: BTreeSet<String> = BTreeSet::new();
-        while let Some(ni) = pending.pop() {
-            if !visited.insert(ni) {
-                continue;
-            }
-            let Some(wires) = self.wiring.get(ni) else { continue };
-            for src in wires {
-                match src {
-                    WireSource::Input(idx) => {
-                        if let Some(def) = self.input_defs.get(*idx)
-                            && def.kind != super::InputKind::Coordinate
-                        {
-                            found.insert(def.name.clone());
-                        }
-                    }
-                    WireSource::NodeOutput(mi, _) => pending.push(*mi),
-                }
+        let mut mask = ProvMask::empty();
+        for (name, ni, _) in &self.output_list {
+            if outputs.contains(&name.as_str())
+                && let Some(prov) = self.input_provenance.get(*ni)
+            {
+                mask.union_with(prov);
             }
         }
-        found.into_iter().collect()
+        let names: std::collections::BTreeSet<String> = mask.iter_ones()
+            .filter_map(|idx| self.input_defs.get(idx))
+            .filter(|def| def.kind != super::InputKind::Coordinate)
+            .map(|def| def.name.clone())
+            .collect();
+        names.into_iter().collect()
+    }
+
+    /// [`Self::extern_closure`] over this program's OWNED outputs
+    /// — inherited passthrough re-exports excluded. Ownership is
+    /// what distinguishes consumption from plumbing: the scope
+    /// cascade re-exports every inherited name so descendants can
+    /// materialize it, and those passthroughs must not read as
+    /// "this scope needs the name".
+    pub fn owned_extern_closure(&self) -> Vec<String> {
+        let owned: Vec<&str> = self.output_names()
+            .into_iter()
+            .filter(|n| !self.is_inherited(n))
+            .collect();
+        self.extern_closure(&owned)
+    }
+
+    /// Resolve a seed of unresolved extern names THROUGH a chain
+    /// of enclosing scope programs — innermost first, the same
+    /// chain shape [`Self::instance_hash`] takes. Each name an
+    /// ancestor outputs is replaced by that output's own extern
+    /// slice ([`Self::extern_closure`] — per-output dataflow, so
+    /// sibling outputs' externs are never dragged in); a
+    /// passthrough re-export removes and re-adds the name, which
+    /// is exactly "keep walking up"; a name no ancestor outputs
+    /// stays. The returned TERMINAL set is what the outermost
+    /// scope (e.g. a host's synthetic params module) must
+    /// satisfy — SRD-107's consumed-params derivation intersects
+    /// it with the declared param names. Sorted, deduplicated.
+    pub fn resolve_externs_through(
+        seed: impl IntoIterator<Item = String>,
+        ancestors: &[&PolydatProgram],
+    ) -> Vec<String> {
+        let mut unresolved: std::collections::BTreeSet<String> =
+            seed.into_iter().collect();
+        for prog in ancestors {
+            if unresolved.is_empty() {
+                break;
+            }
+            let outputs: std::collections::BTreeSet<&str> =
+                prog.output_names().into_iter().collect();
+            let produced: Vec<String> = unresolved.iter()
+                .filter(|n| outputs.contains(n.as_str()))
+                .cloned()
+                .collect();
+            if produced.is_empty() {
+                continue;
+            }
+            let produced_refs: Vec<&str> =
+                produced.iter().map(String::as_str).collect();
+            let closure = prog.extern_closure(&produced_refs);
+            for name in &produced {
+                unresolved.remove(name);
+            }
+            unresolved.extend(closure);
+        }
+        unresolved.into_iter().collect()
     }
 
     pub fn canonical_hash(&self) -> [u8; 32] {
@@ -2308,5 +2439,41 @@ mod r1v_contagion_tests {
         k.set_inputs(&[43]);
         let r4 = match k.pull("pure_outer") { Value::U64(v) => *v, _ => panic!() };
         assert_ne!(r3, r4);
+    }
+}
+
+#[cfg(test)]
+mod provmask_tests {
+    use super::ProvMask;
+
+    /// The exactness this type exists for: bits above 63 are
+    /// first-class, not aliased into a saturated top bit.
+    #[test]
+    fn bits_above_63_are_exact() {
+        let mut a = ProvMask::empty();
+        assert!(a.set(2));
+        assert!(a.set(63));
+        assert!(a.set(64));
+        assert!(a.set(130));
+        assert!(!a.set(130), "re-set reports no change");
+        assert!(a.contains(2) && a.contains(63));
+        assert!(a.contains(64) && a.contains(130));
+        assert!(!a.contains(65) && !a.contains(129));
+        assert_eq!(a.iter_ones().collect::<Vec<_>>(), vec![2, 63, 64, 130]);
+    }
+
+    #[test]
+    fn union_and_intersect_across_word_boundaries() {
+        let mut a = ProvMask::empty();
+        a.set(1);
+        let mut b = ProvMask::empty();
+        b.set(100);
+        assert!(!a.intersects(&b));
+        assert!(a.union_with(&b), "union reports growth");
+        assert!(!a.union_with(&b), "idempotent union reports none");
+        assert!(a.contains(1) && a.contains(100));
+        assert!(a.intersects(&b));
+        assert!(ProvMask::empty().is_zero());
+        assert!(!a.is_zero());
     }
 }

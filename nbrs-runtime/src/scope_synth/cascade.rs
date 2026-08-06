@@ -316,7 +316,8 @@ pub fn cascade_parent_into_source(inputs: CascadeInputs<'_>, outputs: CascadeOut
         let is_shared = parent_program.output_modifier(&owned)
             == polydat::dsl::ast::BindingModifier::SHARED;
         let upstream_is_statically_known = !is_shared
-            && parent_program.input_provenance_for(node_idx) == 0;
+            && parent_program.input_provenance_for(node_idx)
+                .is_none_or(|p| p.is_zero());
         if upstream_is_statically_known
             && let Some(value) = parent_kernel.lookup(&owned)
             && let Some(literal) = format_value_as_final_literal(&value)

@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use cranelift_jit::JITModule;
 
 use crate::ast::PolydatNode;
+use crate::kernel::ProvMask;
 
 /// Shared fields for all JIT kernel variants.
 pub(super) struct JitCore {
@@ -35,24 +36,26 @@ pub(super) fn compute_jit_slot_provenance(
     buffer_len: usize,
     step_output_slots: &[Vec<usize>],
     input_dependents: &[Vec<usize>],
-) -> Vec<u64> {
+) -> Vec<ProvMask> {
     let step_count = step_output_slots.len();
-    let mut step_prov = vec![0u64; step_count];
+    let mut step_prov: Vec<ProvMask> =
+        (0..step_count).map(|_| ProvMask::empty()).collect();
     for (input_slot, deps) in input_dependents.iter().enumerate() {
         for &step_idx in deps {
             if step_idx < step_count {
-                step_prov[step_idx] |= 1u64 << input_slot.min(63);
+                step_prov[step_idx].set(input_slot);
             }
         }
     }
-    let mut slot_prov = vec![0u64; buffer_len];
-    for (i, slot) in slot_prov.iter_mut().enumerate().take(coord_count.min(64)) {
-        *slot = 1u64 << i;
+    let mut slot_prov: Vec<ProvMask> =
+        (0..buffer_len).map(|_| ProvMask::empty()).collect();
+    for (i, slot) in slot_prov.iter_mut().enumerate().take(coord_count) {
+        slot.set(i);
     }
     for (i, outs) in step_output_slots.iter().enumerate() {
         for &slot in outs {
             if slot < slot_prov.len() {
-                slot_prov[slot] = step_prov[i];
+                slot_prov[slot] = step_prov[i].clone();
             }
         }
     }
@@ -181,18 +184,18 @@ impl JitKernelPush {
 pub struct JitKernelPull {
     pub(super) core: JitCore,
     pub(super) code_fn: unsafe fn(*const u64, *mut u64),
-    pub(super) slot_provenance: Vec<u64>,
-    pub(super) changed_mask: u64,
+    pub(super) slot_provenance: Vec<ProvMask>,
+    pub(super) changed_mask: ProvMask,
 }
 
 impl JitKernelPull {
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
-        self.changed_mask = 0;
+        self.changed_mask.clear();
         for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
             if self.core.buffer[i] != c {
                 self.core.buffer[i] = c;
-                self.changed_mask |= 1u64 << i;
+                self.changed_mask.set(i);
             }
         }
     }
@@ -215,7 +218,7 @@ impl JitKernelPull {
     pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
         self.set_inputs(coords);
         if slot < self.slot_provenance.len()
-            && self.slot_provenance[slot] & self.changed_mask == 0 {
+            && !self.slot_provenance[slot].intersects(&self.changed_mask) {
             return self.core.buffer[slot];
         }
         let code_fn = self.code_fn;
@@ -238,18 +241,18 @@ pub struct JitKernelPushPull {
     pub(super) code_fn_prov: unsafe fn(*const u64, *mut u64, *mut u8),
     pub(super) node_clean: Vec<u8>,
     pub(super) input_dependents: Vec<Vec<usize>>,
-    pub(super) slot_provenance: Vec<u64>,
-    pub(super) changed_mask: u64,
+    pub(super) slot_provenance: Vec<ProvMask>,
+    pub(super) changed_mask: ProvMask,
 }
 
 impl JitKernelPushPull {
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
-        self.changed_mask = 0;
+        self.changed_mask.clear();
         for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
             if self.core.buffer[i] != c {
                 self.core.buffer[i] = c;
-                self.changed_mask |= 1u64 << i;
+                self.changed_mask.set(i);
                 if i < self.input_dependents.len() {
                     for &step_idx in &self.input_dependents[i] {
                         self.node_clean[step_idx] = 0;
@@ -278,7 +281,7 @@ impl JitKernelPushPull {
     pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
         self.set_inputs(coords);
         if slot < self.slot_provenance.len()
-            && self.slot_provenance[slot] & self.changed_mask == 0 {
+            && !self.slot_provenance[slot].intersects(&self.changed_mask) {
             return self.core.buffer[slot];
         }
         let code_fn = self.code_fn_prov;

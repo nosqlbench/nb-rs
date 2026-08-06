@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use crate::compile::closures::{CompiledKernelRaw, CompiledKernelPull, CompiledKernelPushPull};
-use crate::kernel::{PolydatProgram, WireSource};
+use crate::kernel::WireSource;
 use crate::ast::PolydatNode;
 
 /// Which provenance optimization the compiler selected.
@@ -40,8 +40,6 @@ pub struct GraphAnalysis {
     pub max_cone_ratio: f64,
     /// Average cone_size / total_nodes
     pub avg_cone_ratio: f64,
-    /// Per-node provenance bitmask (which inputs the node depends on).
-    pub node_provenance: Vec<u64>,
 }
 
 /// Analyze a resolved DAG to compute structural metrics.
@@ -51,7 +49,6 @@ pub fn analyze_graph(
     output_map: &HashMap<String, (usize, usize)>,
 ) -> GraphAnalysis {
     let total_nodes = nodes.len();
-    let node_provenance = PolydatProgram::compute_provenance(nodes, wiring);
 
     // Compute per-output cone size: count nodes reachable from each output.
     // A node is in the cone if its provenance overlaps with the output's.
@@ -88,7 +85,6 @@ pub fn analyze_graph(
         output_cone_sizes,
         max_cone_ratio,
         avg_cone_ratio,
-        node_provenance,
     }
 }
 

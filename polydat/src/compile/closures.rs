@@ -171,31 +171,33 @@ fn build_core(
 
 /// Compute per-slot provenance bitmasks from input_dependents.
 ///
-/// Returns `slot_provenance[slot]` = bitmask of which inputs affect
+/// Returns `slot_provenance[slot]` = exact multi-word mask of which inputs affect
 /// that buffer slot. Used by pull-side cone guard.
 fn compute_slot_provenance(
     coord_count: usize,
     total_slots: usize,
     input_dependents: &[Vec<usize>],
     steps: &[CompiledStep],
-) -> Vec<u64> {
+) -> Vec<crate::kernel::ProvMask> {
     let step_count = steps.len();
-    let mut step_prov = vec![0u64; step_count];
+    let mut step_prov: Vec<crate::kernel::ProvMask> =
+        (0..step_count).map(|_| crate::kernel::ProvMask::empty()).collect();
     for (input_idx, deps) in input_dependents.iter().enumerate() {
         for &step_idx in deps {
             if step_idx < step_count {
-                step_prov[step_idx] |= 1u64 << input_idx;
+                step_prov[step_idx].set(input_idx);
             }
         }
     }
-    let mut slot_provenance = vec![0u64; total_slots];
-    for (i, slot) in slot_provenance.iter_mut().enumerate().take(coord_count.min(64)) {
-        *slot = 1u64 << i;
+    let mut slot_provenance: Vec<crate::kernel::ProvMask> =
+        (0..total_slots).map(|_| crate::kernel::ProvMask::empty()).collect();
+    for (i, slot) in slot_provenance.iter_mut().enumerate().take(coord_count) {
+        slot.set(i);
     }
     for (step_idx, step) in steps.iter().enumerate() {
         for &slot in &step.output_slots {
             if slot < slot_provenance.len() {
-                slot_provenance[slot] = step_prov[step_idx];
+                slot_provenance[slot] = step_prov[step_idx].clone();
             }
         }
     }
@@ -389,8 +391,8 @@ impl CompiledKernelPush {
 
 pub struct CompiledKernelPull {
     core: KernelCore,
-    slot_provenance: Vec<u64>,
-    changed_mask: u64,
+    slot_provenance: Vec<crate::kernel::ProvMask>,
+    changed_mask: crate::kernel::ProvMask,
 }
 
 impl CompiledKernelPull {
@@ -408,7 +410,7 @@ impl CompiledKernelPull {
         Self {
             core,
             slot_provenance,
-            changed_mask: u64::MAX, // all dirty initially
+            changed_mask: crate::kernel::ProvMask::all_below(coord_count), // all dirty initially
         }
     }
 
@@ -416,11 +418,11 @@ impl CompiledKernelPull {
     /// individual nodes dirty — there is no per-node clean state.
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
-        self.changed_mask = 0;
+        self.changed_mask.clear();
         for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
             if self.core.buffer[i] != c {
                 self.core.buffer[i] = c;
-                self.changed_mask |= 1u64 << i;
+                self.changed_mask.set(i);
             }
         }
     }
@@ -439,7 +441,7 @@ impl CompiledKernelPull {
         self.core.guard_ref_slot(slot);
         self.set_inputs(coords);
         if slot < self.slot_provenance.len()
-            && self.slot_provenance[slot] & self.changed_mask == 0 {
+            && !self.slot_provenance[slot].intersects(&self.changed_mask) {
                 return self.core.buffer[slot];
             }
         eval_all_steps(&mut self.core);
@@ -458,8 +460,8 @@ pub struct CompiledKernelPushPull {
     core: KernelCore,
     node_clean: Vec<bool>,
     input_dependents: Vec<Vec<usize>>,
-    slot_provenance: Vec<u64>,
-    changed_mask: u64,
+    slot_provenance: Vec<crate::kernel::ProvMask>,
+    changed_mask: crate::kernel::ProvMask,
 }
 
 impl CompiledKernelPushPull {
@@ -480,17 +482,17 @@ impl CompiledKernelPushPull {
             node_clean: vec![false; step_count],
             input_dependents,
             slot_provenance,
-            changed_mask: u64::MAX,
+            changed_mask: crate::kernel::ProvMask::all_below(coord_count),
         }
     }
 
     #[inline]
     fn set_inputs(&mut self, coords: &[u64]) {
-        self.changed_mask = 0;
+        self.changed_mask.clear();
         for (i, &c) in coords.iter().enumerate().take(self.core.coord_count) {
             if self.core.buffer[i] != c {
                 self.core.buffer[i] = c;
-                self.changed_mask |= 1u64 << i;
+                self.changed_mask.set(i);
                 if i < self.input_dependents.len() {
                     for &step_idx in &self.input_dependents[i] {
                         self.node_clean[step_idx] = false;
@@ -535,7 +537,7 @@ impl CompiledKernelPushPull {
         self.core.guard_ref_slot(slot);
         self.set_inputs(coords);
         if slot < self.slot_provenance.len()
-            && self.slot_provenance[slot] & self.changed_mask == 0 {
+            && !self.slot_provenance[slot].intersects(&self.changed_mask) {
                 return self.core.buffer[slot];
             }
         for (step_idx, step) in self.core.steps.iter().enumerate() {

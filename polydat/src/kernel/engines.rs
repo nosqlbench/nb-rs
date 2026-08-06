@@ -526,17 +526,14 @@ impl EngineCore {
     /// Returns an empty `CellCone { groups: [] }` for nodes
     /// with no cell-bound deps (the common case).
     fn build_cell_cone(&self, program: &PolydatProgram, node_idx: usize) -> CellCone {
+        let empty = crate::kernel::ProvMask::empty();
         let prov = program.input_provenance
             .get(node_idx)
-            .copied()
-            .unwrap_or(0);
+            .unwrap_or(&empty);
         let mut groups: Vec<CellConeGroup> = Vec::new();
         // Iterate set bits of `prov` directly: each bit is an
         // input slot that flows into this node transitively.
-        let mut bits = prov;
-        while bits != 0 {
-            let input_idx = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
+        for input_idx in prov.iter_ones() {
             let Some(Some(cell)) = self.shared_cells.get(input_idx) else { continue; };
             // Group by Arc-pointer identity of scope_intent_dirty.
             let group_idx = groups.iter()
@@ -631,19 +628,19 @@ impl EngineCore {
         // node whose transitive input provenance covers the dirty
         // slot.
         if !clean {
-            let mut dirty_mask: u64 = 0;
+            // Exact multi-word mask: slots >= 64 invalidate too
+            // (the one-word form silently SKIPPED them — a latent
+            // under-invalidation on >64-input scopes).
+            let mut dirty_mask = crate::kernel::ProvMask::empty();
             for (ptr, r, slot) in dirty {
                 self.last_seen.insert(ptr, r);
-                if slot < 64 {
-                    dirty_mask |= 1u64 << slot;
-                }
+                dirty_mask.set(slot);
             }
             for node_idx in 0..program.nodes.len() {
-                let prov = program.input_provenance
+                if program.input_provenance
                     .get(node_idx)
-                    .copied()
-                    .unwrap_or(0);
-                if prov & dirty_mask != 0 {
+                    .is_some_and(|prov| prov.intersects(&dirty_mask))
+                {
                     self.node_clean[node_idx] = false;
                 }
             }
@@ -1185,7 +1182,7 @@ impl RawState {
 pub struct ProvScanState {
     /// Shared evaluation core.
     pub core: EngineCore,
-    input_provenance: Vec<u64>,
+    input_provenance: Vec<crate::kernel::ProvMask>,
     /// Indices of non-deterministic nodes.
     nondeterministic_nodes: Vec<usize>,
 }
@@ -1194,7 +1191,7 @@ impl ProvScanState {
     /// Construct a ProvScanState from its component parts.
     pub(crate) fn from_parts(
         core: EngineCore,
-        input_provenance: Vec<u64>,
+        input_provenance: Vec<crate::kernel::ProvMask>,
         nondeterministic_nodes: Vec<usize>,
     ) -> Self {
         Self { core, input_provenance, nondeterministic_nodes }
@@ -1202,16 +1199,16 @@ impl ProvScanState {
 
     /// Set new input values and invalidate affected nodes.
     pub fn set_inputs(&mut self, coords: &[u64]) {
-        let mut mask = 0u64;
+        let mut mask = crate::kernel::ProvMask::empty();
         for (i, &c) in coords.iter().enumerate().take(self.core.inputs.len()) {
             self.core.inputs[i] = Value::U64(c);
             // Unconditional: writing the input IS the
             // invalidation signal regardless of value equality.
-            mask |= 1u64 << i;
+            mask.set(i);
         }
-        if mask != 0 {
+        if !mask.is_zero() {
             for (i, clean) in self.core.node_clean.iter_mut().enumerate() {
-                if *clean && (self.input_provenance[i] & mask) != 0 {
+                if *clean && self.input_provenance[i].intersects(&mask) {
                     *clean = false;
                 }
             }

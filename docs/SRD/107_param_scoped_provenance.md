@@ -19,6 +19,34 @@ the design in its own direction):
   neither declaration nor plumbing is consumption. Discovered
   empirically in Push 4 — the declared-extern seed reproduced
   whole-module coverage exactly.
+- **One walker (post-Push-4 consolidation):** the original Push 1
+  `extern_closure` was a second BFS over the wire graph that
+  polydat's `compute_provenance` already inventoried. The
+  consolidation replaced the one-word `u64` provenance (whose
+  ≥63 saturation aliased every high input — lossy on many-param
+  workload roots) with an exact multi-word `ProvMask`, and folded
+  ALL per-node reachability into ONE construction-time inventory
+  pass (`compute_node_inventory`): input provenance,
+  nondeterminism contagion (previously duplicated in both state
+  constructors), and side-channel-cone flags (previously an
+  on-demand walk). `extern_closure`, `cone_has_side_channel`,
+  engine invalidation, and the JIT's slot provenance are now all
+  projections of that inventory. The engine cone guards (JIT and
+  closure kernels' slot provenance + changed masks) carry the
+  same multi-word shape host-side — the generated machine code
+  never sees a mask, so no codegen changed; `ProvMask::clear`
+  keeps the per-cycle change mask allocation-free. Latent bugs
+  that fell out: the ≥63 dependent-list aliasing
+  (over-invalidation), a cross-fiber dirty-slot check that
+  silently SKIPPED slots ≥64 (under-invalidation — stale reads),
+  an unguarded `1u64 << input_idx` in the closure kernels
+  (overflow at >63 inputs), and `nbrs describe` dependency lists
+  that mis-rendered inputs >63. The cross-scope resolution also
+  moved INTO polydat (`owned_extern_closure` +
+  `resolve_externs_through`, mirroring `instance_hash`'s
+  chain-argument shape) — nbrs-runtime's derivation is now pure
+  composition: polydat projections ∪ textual scan → value
+  digests.
 
 ## Problem
 

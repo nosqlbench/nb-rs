@@ -2294,15 +2294,17 @@ pub fn build_scope(
                     // below so each activation re-pulls the value
                     // through the chain via
                     // `materialize_wiring_from_outer` Step 3.
-                    let prov = parent_kernel_ref.program()
+                    let statically_known = parent_kernel_ref.program()
                         .output_index(name)
                         .map(|out_idx| {
                             let (node_idx, _) = parent_kernel_ref.program()
                                 .resolve_output_by_index(out_idx);
-                            parent_kernel_ref.program().input_provenance_for(node_idx)
+                            parent_kernel_ref.program()
+                                .input_provenance_for(node_idx)
+                                .is_none_or(|p| p.is_zero())
                         })
-                        .unwrap_or(0);
-                    if prov == 0
+                        .unwrap_or(true);
+                    if statically_known
                         && let Some(value) = parent_kernel_ref.get_constant(name)
                         && let Some(natural) = value_to_param_string(value)
                     {

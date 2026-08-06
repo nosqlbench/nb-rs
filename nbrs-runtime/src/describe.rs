@@ -45,7 +45,7 @@ pub fn print_wiring_analysis(
 
         let mut deps: Vec<String> = Vec::new();
         for (j, inp_name) in input_names.iter().enumerate() {
-            if provenance & (1 << j) != 0 {
+            if provenance.is_some_and(|p| p.contains(j)) {
                 deps.push(inp_name.clone());
             }
         }

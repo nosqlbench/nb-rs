@@ -766,7 +766,7 @@ pub(crate) fn compile_jit_pull(
         core: JitCore { buffer: vec![0u64; total_slots], coord_count, output_map, _module: module, _nodes: nodes },
         code_fn: raw_fn,
         slot_provenance,
-        changed_mask: u64::MAX,
+        changed_mask: crate::kernel::ProvMask::all_below(coord_count),
     })
 }
 
@@ -790,7 +790,7 @@ pub(crate) fn compile_jit_push_pull(
         node_clean: vec![0u8; step_count],
         input_dependents,
         slot_provenance,
-        changed_mask: u64::MAX,
+        changed_mask: crate::kernel::ProvMask::all_below(coord_count),
     })
 }
 

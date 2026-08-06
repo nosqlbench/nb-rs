@@ -8,21 +8,15 @@
 //! would drift from the programs and reintroduce stale-skip bugs
 //! by hand):
 //!
-//! - **GK backward closure** — seed with the externs reachable
-//!   from the OUTPUTS of the phase's own program and its
-//!   op-template programs (NOT the declared extern set: the
-//!   params-injection cascade declares an extern slot for every
-//!   param on every scope, and a declared-but-unwired slot feeds
-//!   nothing). Then resolve upward through each ancestor scope
-//!   program: a name the ancestor outputs is replaced by that
-//!   output's own extern slice ([`polydat::kernel::PolydatProgram
-//!   ::extern_closure`] — per-output dataflow, so sibling outputs'
-//!   params are NOT dragged in); a name it doesn't output stays
-//!   unresolved and continues up. Names still unresolved past the
-//!   workload root that match declared params are consumed from
-//!   the params module. Aliasing through upstream rebindings
-//!   (`alias := run_tag` at the root, phase reads `alias`)
-//!   resolves correctly with no textual guessing.
+//! - **GK backward closure** — polydat owns every step of it
+//!   ([`polydat::kernel::PolydatProgram::owned_extern_closure`]
+//!   seeds from owned outputs; `resolve_externs_through` walks
+//!   the scope chain; both are projections of the ONE
+//!   construction-time node inventory). Names still unresolved
+//!   past the workload root that match declared params are
+//!   consumed from the params module. Aliasing through upstream
+//!   rebindings (`alias := run_tag` at the root, phase reads
+//!   `alias`) resolves correctly with no textual guessing.
 //! - **Textual union** — `{name}` interpolation sites in the
 //!   phase's canonical config (op statement text, governance
 //!   fields like `cycles:`/`timeout:`) never enter compiled
@@ -67,58 +61,31 @@ pub(crate) fn consumed_params(
     phase_config_text: &str,
     params: &HashMap<String, String>,
 ) -> BTreeMap<String, String> {
-    // Seed: the externs REACHABLE FROM EACH PROGRAM'S OWNED
-    // OUTPUTS — not its declared extern set, and not its
-    // inherited re-exports. The params-injection cascade
-    // declares an extern slot for every workload param on every
-    // scope AND re-exports it as a passthrough output for
-    // descendants; neither declaration nor plumbing is
-    // consumption. What consumes a param is a node graph that
-    // FEEDS an output this scope owns.
-    let mut unresolved: BTreeSet<String> = BTreeSet::new();
-    let own_outputs: Vec<&str> = own_program.output_names()
-        .into_iter()
-        .filter(|n| !own_program.is_inherited(n))
-        .collect();
-    unresolved.extend(own_program.extern_closure(&own_outputs));
+    // ALL graph reasoning lives in polydat (SRD-107's one-walker
+    // rule): the owned-output extern slices seed the walk, and
+    // `resolve_externs_through` resolves them up the scope chain
+    // to the terminal set the params module must satisfy. This
+    // function only composes those projections with the textual
+    // scan and the value digests.
+    let mut seed: Vec<String> = own_program.owned_extern_closure();
     for prog in op_template_programs {
-        let outs: Vec<&str> = prog.output_names()
+        seed.extend(prog.owned_extern_closure());
+    }
+    let ancestor_programs: Vec<std::sync::Arc<PolydatProgram>> =
+        ancestors_below_session.iter()
+            .map(|k| k.program().clone())
+            .collect();
+    let ancestor_refs: Vec<&PolydatProgram> =
+        ancestor_programs.iter().map(|p| p.as_ref()).collect();
+    let terminal: BTreeSet<String> =
+        PolydatProgram::resolve_externs_through(seed, &ancestor_refs)
             .into_iter()
-            .filter(|n| !prog.is_inherited(n))
             .collect();
-        unresolved.extend(prog.extern_closure(&outs));
-    }
-
-    // Resolve upward. Innermost ancestor wins a name (GK scope
-    // shadowing); a passthrough re-export (`x := x` wired from
-    // the input of the same name) removes and re-adds the name,
-    // which is exactly "keep walking up".
-    for kernel in ancestors_below_session {
-        if unresolved.is_empty() {
-            break;
-        }
-        let prog = kernel.program();
-        let outputs: BTreeSet<&str> = prog.output_names().into_iter().collect();
-        let produced: Vec<String> = unresolved.iter()
-            .filter(|n| outputs.contains(n.as_str()))
-            .cloned()
-            .collect();
-        if produced.is_empty() {
-            continue;
-        }
-        let produced_refs: Vec<&str> =
-            produced.iter().map(String::as_str).collect();
-        let closure = prog.extern_closure(&produced_refs);
-        for name in &produced {
-            unresolved.remove(name);
-        }
-        unresolved.extend(closure);
-    }
 
     // Terminal intersection + textual union.
     let mut out = BTreeMap::new();
     for (name, value) in params {
-        let gk = unresolved.contains(name);
+        let gk = terminal.contains(name);
         let textual = phase_config_text.contains(&format!("{{{name}}}"));
         if gk || textual {
             out.insert(name.clone(), value_digest(value));
