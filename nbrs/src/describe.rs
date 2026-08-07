@@ -100,6 +100,10 @@ pub fn describe_command(args: &[String]) {
         ("workloads", _) => {
             describe_workloads(&args[1..]);
         }
+        // SRD-109: driver manifests (bundled + local).
+        ("drivers", _) => {
+            describe_drivers();
+        }
         _ => {
             eprintln!("nbrs describe <topic>");
             eprintln!("  adapter[=<name>]   List adapters / show one adapter's params + drivers + controls");
@@ -107,12 +111,81 @@ pub fn describe_command(args: &[String]) {
             eprintln!("  optimizers [<n>]   List registered optimizers / show one in detail");
             eprintln!("  wiring             Wiring (graph-kernel) topics: functions, modules, dag, stdlib");
             eprintln!("  workloads          List bundled workloads / show one in detail");
+            eprintln!("  drivers            List driver manifests (SRD-109 web client drivers)");
             eprintln!("  wrappers           List the registered op-template wrappers");
             eprintln!("  op <wkl> <op>      Show the resolved wrapper stack for one op");
             eprintln!();
             eprintln!("For workload analysis, use: nbrs run workload=file.yaml dryrun=op,wiring");
         }
     }
+}
+
+// =========================================================================
+// SRD-109: `describe drivers` — driver-manifest discovery
+// =========================================================================
+
+/// List driver manifests: bundled (`drivers/<name>/driver` catalog
+/// entries) plus local `./drivers/*/driver.yaml` under the cwd —
+/// the same local-first pairing `driver=<name>` resolution uses.
+fn describe_drivers() {
+    struct Row {
+        name: String,
+        adapter: String,
+        origin: &'static str,
+        description: String,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+
+    for entry in nbrs_workload::catalog::iter() {
+        let Some(rest) = entry.name.strip_prefix("drivers/") else { continue };
+        let Some(driver_name) = rest.strip_suffix("/driver") else { continue };
+        match nbrs_workload::drivers::parse_driver_manifest(entry.source, entry.name) {
+            Ok(m) => rows.push(Row {
+                name: driver_name.to_string(),
+                adapter: m.adapter,
+                origin: "bundled",
+                description: m.description.unwrap_or_default(),
+            }),
+            Err(e) => eprintln!("warning: {e}"),
+        }
+    }
+    if let Ok(dir) = std::fs::read_dir("drivers") {
+        let mut local: Vec<_> = dir.flatten().collect();
+        local.sort_by_key(|e| e.file_name());
+        for entry in local {
+            let manifest_path = entry.path().join("driver.yaml");
+            if !manifest_path.is_file() { continue }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            match std::fs::read_to_string(&manifest_path)
+                .map_err(|e| format!("read {}: {e}", manifest_path.display()))
+                .and_then(|s| nbrs_workload::drivers::parse_driver_manifest(
+                    &s, &manifest_path.display().to_string()))
+            {
+                Ok(m) => rows.push(Row {
+                    name,
+                    adapter: m.adapter,
+                    origin: "local",
+                    description: m.description.unwrap_or_default(),
+                }),
+                Err(e) => eprintln!("warning: {e}"),
+            }
+        }
+    }
+
+    if rows.is_empty() {
+        println!("no driver manifests found (bundled drivers/ or local ./drivers/)");
+        return;
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
+    let adapter_w = rows.iter().map(|r| r.adapter.len()).max().unwrap_or(7).max(7);
+    println!("{:name_w$}  {:adapter_w$}  {:8}  {}", "name", "adapter", "origin", "description");
+    for r in &rows {
+        let desc = r.description.lines().next().unwrap_or("");
+        println!("{:name_w$}  {:adapter_w$}  {:8}  {desc}", r.name, r.adapter, r.origin);
+    }
+    println!();
+    println!("run: nbrs run driver=<name> [workload=<blueprint>] [param=value …]");
 }
 
 // =========================================================================

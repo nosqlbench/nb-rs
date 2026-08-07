@@ -1426,7 +1426,30 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
 
     // Detect scenario shorthand: `workload.yaml <scenario_name>` → `scenario=<name>`
     let args = normalize_args(args);
-    let params = parse_params(&args);
+    let mut params = parse_params(&args);
+
+    // ── SRD-109 Part 2 — driver-manifest resolution ──
+    //
+    // `driver=<name>` resolves a driver manifest (local
+    // `drivers/<name>/driver.yaml` under the cwd first, then the
+    // bundled catalog entry `drivers/<name>/driver`; both at once
+    // is a hard error, mirroring workload resolution). The
+    // manifest supplies the implementation library (as workload=
+    // when none was given, else as impl=), the backing adapter,
+    // and default params at lowest precedence. A `driver=` value
+    // matching no manifest keeps its legacy meaning: an alias for
+    // `adapter=`.
+    if let Some(driver_name) = params.get("driver").cloned()
+        && let Some((manifest, library_ref)) = resolve_driver_manifest(&driver_name)?
+    {
+        // A positional `<file>.yaml` argument counts as a given
+        // workload — the manifest's library must not displace it.
+        let workload_given = params.contains_key("workload")
+            || args.iter().any(|a| a.ends_with(".yaml") || a.ends_with(".yml"));
+        apply_driver_manifest(
+            &mut params, &driver_name, manifest, library_ref, workload_given)?;
+    }
+    let params = params;
 
     // Load workload — from inline op= or YAML file.
     let mut workload_file: Option<String> = None;
@@ -5395,6 +5418,119 @@ fn workload_ref_identity(
         ResolvedWorkload::Path(path) => Ok(canonical_identity(&path)),
         ResolvedWorkload::Bundled(bundled) => Ok(bundled.name.to_string()),
     }
+}
+
+/// SRD-109 Part 2 — resolve a driver manifest by name: local
+/// `drivers/<name>/driver.yaml` under the cwd first, then the
+/// bundled catalog entry `drivers/<name>/driver`; both at once is
+/// a hard error (mirroring workload resolution — never silent
+/// shadowing). Returns the manifest plus the resolved LIBRARY
+/// reference: a file path for a local manifest, a catalog name
+/// for a bundled one. `None` when neither exists — the caller
+/// falls back to the legacy driver-as-adapter-alias meaning.
+fn resolve_driver_manifest(
+    name: &str,
+) -> Result<Option<(nbrs_workload::drivers::DriverManifest, String)>, String> {
+    let local_path = std::path::Path::new("drivers").join(name).join("driver.yaml");
+    let catalog_name = format!("drivers/{name}/driver");
+    let bundled = nbrs_workload::catalog::lookup(&catalog_name);
+    match (local_path.is_file(), bundled) {
+        (true, Some(_)) => Err(format!(
+            "driver '{name}' is ambiguous — it names both the local manifest \
+             {} and a bundled driver. Remove or rename one.",
+            local_path.display())),
+        (true, None) => {
+            let source = std::fs::read_to_string(&local_path).map_err(|e| format!(
+                "read driver manifest {}: {e}", local_path.display()))?;
+            let manifest = nbrs_workload::drivers::parse_driver_manifest(
+                &source, &local_path.display().to_string())?;
+            verify_driver_identity(&manifest, name)?;
+            let dir = local_path.parent().expect("manifest path has a parent");
+            let library_ref = resolve_driver_library_local(dir, &manifest.library)?;
+            Ok(Some((manifest, library_ref)))
+        }
+        (false, Some(entry)) => {
+            let manifest = nbrs_workload::drivers::parse_driver_manifest(
+                entry.source, &catalog_name)?;
+            verify_driver_identity(&manifest, name)?;
+            let stem = manifest.library.strip_suffix(".yaml")
+                .or_else(|| manifest.library.strip_suffix(".yml"))
+                .unwrap_or(&manifest.library);
+            let library_ref = format!("drivers/{name}/{stem}");
+            Ok(Some((manifest, library_ref)))
+        }
+        (false, None) => Ok(None),
+    }
+}
+
+/// A manifest must be named for the directory it lives in — a
+/// mismatch is a packaging bug surfaced at load, not a silent
+/// re-route.
+fn verify_driver_identity(
+    manifest: &nbrs_workload::drivers::DriverManifest,
+    name: &str,
+) -> Result<(), String> {
+    if manifest.driver != name {
+        return Err(format!(
+            "driver manifest for '{name}' declares `driver: {}` — the \
+             manifest must be named for its directory",
+            manifest.driver));
+    }
+    Ok(())
+}
+
+/// Resolve a local manifest's `library:` reference beside the
+/// manifest: as written first, then with `.yaml` appended.
+fn resolve_driver_library_local(
+    dir: &std::path::Path,
+    library: &str,
+) -> Result<String, String> {
+    let as_written = dir.join(library);
+    if as_written.is_file() {
+        return Ok(as_written.display().to_string());
+    }
+    let with_ext = dir.join(format!("{library}.yaml"));
+    if with_ext.is_file() {
+        return Ok(with_ext.display().to_string());
+    }
+    Err(format!(
+        "driver manifest {}: library '{library}' not found beside the manifest",
+        dir.display()))
+}
+
+/// Apply a resolved driver manifest to the invocation params:
+/// the library lands as `workload=` (no workload given) or
+/// `impl=` (a blueprint was invoked); the backing adapter and the
+/// manifest's default params fill only ABSENT keys, so the CLI
+/// always wins and the defaults still overlay the library's own
+/// declared params (this map is the CLI overlay layer).
+fn apply_driver_manifest(
+    params: &mut HashMap<String, String>,
+    driver_name: &str,
+    manifest: nbrs_workload::drivers::DriverManifest,
+    library_ref: String,
+    workload_given: bool,
+) -> Result<(), String> {
+    if params.contains_key("impl") {
+        return Err(format!(
+            "driver={driver_name} supplies the implementation library \
+             ('{}') — impl= conflicts; pass one or the other",
+            manifest.library));
+    }
+    if workload_given {
+        params.insert("impl".into(), library_ref.clone());
+    } else {
+        params.insert("workload".into(), library_ref.clone());
+    }
+    params.entry("adapter".to_string())
+        .or_insert_with(|| manifest.adapter.clone());
+    for (k, v) in &manifest.default_params {
+        params.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    crate::diag!(crate::observer::LogLevel::Info,
+        "driver: {driver_name} → adapter={}, library={library_ref}",
+        manifest.adapter);
+    Ok(())
 }
 
 /// Resolve a secondary workload reference the way `extends:`

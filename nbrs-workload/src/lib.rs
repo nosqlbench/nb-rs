@@ -79,6 +79,9 @@ pub mod parse;
 pub mod verify;
 pub mod extends;
 pub mod implements;
+/// SRD-109 driver manifests (`driver=<name>` → adapter + library
+/// + defaults).
+pub mod drivers;
 /// SRD-85 bundled-workload catalog (embedded workloads,
 /// tiers, exact-name lookup).
 pub mod catalog;

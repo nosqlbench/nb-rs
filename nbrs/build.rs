@@ -52,6 +52,16 @@ fn main() {
             namespace: "examples",
             tier_expr: "nbrs_workload::catalog::Tier::Example",
         },
+        // SRD-109 — driver manifests + their implementation
+        // libraries (`drivers/<name>/driver` + siblings). The
+        // http adapter is always compiled, so drivers bundle
+        // unconditionally. Example tier: `describe drivers` is
+        // their discovery surface, not the workload listing.
+        BundleSpec {
+            dir: repo_root.join("drivers"),
+            namespace: "drivers",
+            tier_expr: "nbrs_workload::catalog::Tier::Example",
+        },
     ];
     if cql_enabled {
         specs.push(BundleSpec {
