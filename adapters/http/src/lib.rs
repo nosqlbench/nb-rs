@@ -180,6 +180,43 @@ fn is_transient_failure(e: &reqwest::Error) -> bool {
     false
 }
 
+/// Parsed `ok_status` spec: comma-separated status codes and
+/// inclusive ranges (`"200-299,404"`). The adapter's doc has
+/// always promised this field; SRD-30's unknown-field guard is
+/// what surfaced that it was never wired.
+#[derive(Debug, Clone)]
+struct OkStatusSpec(Vec<(u16, u16)>);
+
+impl OkStatusSpec {
+    fn parse(spec: &str) -> Result<Self, String> {
+        let mut ranges = Vec::new();
+        for piece in spec.split(',') {
+            let piece = piece.trim();
+            if piece.is_empty() { continue }
+            let (lo, hi) = match piece.split_once('-') {
+                Some((a, b)) => (a.trim(), b.trim()),
+                None => (piece, piece),
+            };
+            let lo: u16 = lo.parse().map_err(|_| format!(
+                "ok_status '{spec}': '{piece}' is not a status code or range"))?;
+            let hi: u16 = hi.parse().map_err(|_| format!(
+                "ok_status '{spec}': '{piece}' is not a status code or range"))?;
+            if lo > hi {
+                return Err(format!("ok_status '{spec}': range '{piece}' is inverted"));
+            }
+            ranges.push((lo, hi));
+        }
+        if ranges.is_empty() {
+            return Err(format!("ok_status '{spec}': no status codes"));
+        }
+        Ok(Self(ranges))
+    }
+
+    fn accepts(&self, status: u16) -> bool {
+        self.0.iter().any(|&(lo, hi)| (lo..=hi).contains(&status))
+    }
+}
+
 fn classify_reqwest_error(e: &reqwest::Error) -> String {
     if e.is_timeout() {
         "Timeout".into()
@@ -229,7 +266,7 @@ impl DriverAdapter for HttpAdapter {
         // poll layer is the actual waiter / observer).
         Some(&["method", "content_type", "uri", "url", "body", "headers",
                "request_timeout_ms", "on_timeout", "connect_timeout",
-               "expect_body"])
+               "expect_body", "ok_status"])
     }
 
     fn map_op<'a>(
@@ -322,6 +359,17 @@ impl DriverAdapter for HttpAdapter {
             None => self.client.clone(),
         };
 
+        // `ok_status` — which response statuses count as success
+        // for THIS op (`"200-299,404"`). Default: reqwest's
+        // is_success (2xx). The canonical use is idempotent
+        // teardown, where 404 on an absent resource is the no-op
+        // outcome, not an error.
+        let ok_status = match template.op.get("ok_status").and_then(|v| v.as_str()) {
+            Some(spec) => Some(OkStatusSpec::parse(spec)
+                .map_err(|e| format!("op '{}': {e}", template.name))?),
+            None => None,
+        };
+
         Ok(Box::new(HttpDispenser {
             client,
             base_url: self.base_url.clone(),
@@ -334,6 +382,7 @@ impl DriverAdapter for HttpAdapter {
             per_op_timeout_ms,
             on_timeout_accept,
             expect_body,
+            ok_status,
         }) as Box<dyn OpDispenser>)
         })
     }
@@ -371,6 +420,9 @@ struct HttpDispenser {
     on_timeout_accept: bool,
     /// False when the workload declared `expect_body: false`.
     expect_body: bool,
+    /// Op-declared success statuses (`ok_status:`); `None` means
+    /// the 2xx default.
+    ok_status: Option<OkStatusSpec>,
 }
 
 
@@ -547,7 +599,10 @@ impl OpDispenser for HttpDispenser {
             };
 
             let status = response.status().as_u16() as i32;
-            let success = response.status().is_success();
+            let success = match &self.ok_status {
+                Some(spec) => spec.accepts(response.status().as_u16()),
+                None => response.status().is_success(),
+            };
             // Capture content-type before consuming the response
             // body so we can pick the right `ResultBody` shape.
             // `application/json` (or any `…/json` subtype like
