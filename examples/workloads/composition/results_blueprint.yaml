@@ -1,0 +1,37 @@
+#!/usr/bin/env nbrs
+# results_blueprint.yaml — SRD-109 Part 3: the `results:`
+# interface leg. The blueprint declares the typed projection wire
+# its relevancy scoring reads (`actual: keys`); an implementation
+# delivers it via an ordinary `result:` binding with an SRD-70
+# `[*]` column projection (see results_impl_testkit.yaml).
+#
+# Two round-trip cases: invoked bare, the unbound slot is a LOAD
+# error naming the slot and the `impl=` remedy; bound, the
+# projection feeds recall end-to-end.
+
+phases:
+  probe:
+    cycles: 2
+    concurrency: 1
+    bindings: |
+      ground_truth := "7,3"
+    ops:
+      search:
+        abstract:
+          results:
+            keys: vec_i64
+        evaluations:
+          relevancy:
+            actual: keys
+            expected: ground_truth
+            k: 2
+            r: 2
+            functions:
+              - recall
+
+#@ case unbound_is_a_load_error
+#@   run
+#@   expect-fail probe.search.*impl=
+#@ case bound_via_impl_param
+#@   run impl=results_impl_testkit.yaml
+#@   expect 1 completed, 0 failed

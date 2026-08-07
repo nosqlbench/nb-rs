@@ -1,0 +1,22 @@
+#!/usr/bin/env nbrs
+# results_impl_testkit.yaml — SRD-109 Part 3: an IMPLEMENTATION
+# delivering the blueprint's `results:` wire. The testkit adapter
+# returns the canned vendor-shaped body; `result: keys:
+# result[*].id` projects the id column into the typed `keys` wire
+# (SRD-70 wildcard projection), which the blueprint's relevancy
+# scoring reads.
+
+implements: ./results_blueprint.yaml
+
+phases:
+  probe:
+    ops:
+      search:
+        adapter: testkit
+        stmt: "SEARCH"
+        result-body: {"result": [{"id": 7}, {"id": 3}]}
+        result:
+          keys: result[*].id
+
+#@ run
+#@ expect 1 completed, 0 failed

@@ -130,7 +130,8 @@ phases:
 | slot coverage (both directions), scaffolding-field rejection, key collisions, `implements:` target identity | load (parse) | the binder, structured errors naming slot coordinates |
 | `yields` names present | load (parse) | slot's bound op must declare each yield as a capture `as`-name (or a standard result wire) |
 | `needs` names available | load (parse) | each need must be a declared param, workload/phase binding output, or cursor of the blueprint |
-| `needs`/`yields` TYPES | pre-map **synthesis** | when the op-template kernel compiles, every interface name that materializes as a program slot is verified against its port type (capture-only yields deliver through the wrapper stack's wire writes and hold no slot; their presence was the load-time check) — the same pass that type-checks every other wire |
+| `results` names delivered (SRD-109 Part 3) | load (parse) | slot's bound op must declare each results name as a `result:` binding LHS; a blueprint-side `result:` entry for an interface name is a collision (paths are protocol matter) |
+| `needs`/`yields`/`results` TYPES | pre-map **synthesis** | when the op-template kernel compiles, every interface name that materializes as a program slot is verified against its port type (capture-only yields deliver through the wrapper stack's wire writes and hold no slot; their presence was the load-time check; `results` wires are *declared from* their interface type) — the same pass that type-checks every other wire |
 | everything else (wire resolution, adapter fields) | synthesis, unchanged | normal GK compile; SRD-30 unknown-field rejection |
 
 The interface types use the polydat DSL type vocabulary (`u64`,
