@@ -144,16 +144,18 @@ fn bind_slot(
     slot_key: &str,
 ) -> Result<(), String> {
     // Op-owned semantics the implementation may NOT set: these
-    // are measurement/scaffolding surfaces.
+    // are measurement/scaffolding surfaces. (`result:` is NOT in
+    // this list — it is the delivery surface for the `results:`
+    // interface leg, SRD-109 Part 3.)
     if impl_op.condition.is_some() || impl_op.delay.is_some()
-        || !impl_op.metrics.is_empty() || impl_op.result.is_some()
+        || !impl_op.metrics.is_empty()
         || impl_op.traverse.is_some() || impl_op.wrappers.is_some()
         || impl_op.while_cond.is_some() || impl_op.rate.is_some()
         || !matches!(impl_op.daemon, crate::model::DaemonSpec::Disabled)
     {
         return Err(format!(
             "implementation op '{slot_key}' sets op semantics \
-             (if/delay/metrics/result/traverse/wrappers/while/rate/\
+             (if/delay/metrics/traverse/wrappers/while/rate/\
              daemon) — those belong to the blueprint slot"));
     }
     if impl_op.abstract_interface.is_some() {
@@ -204,8 +206,43 @@ fn bind_slot(
     concat_bindings(&mut slot.bindings, impl_op.bindings)
         .map_err(|e| format!("slot '{slot_key}' bindings: {e}"))?;
 
-    // `yields` presence: every promised wire must be delivered by
-    // the bound op — a capture `as`-name. (Type equality is
+    // SRD-109 Part 3 — `result:` bindings deliver the `results:`
+    // interface leg. Blueprint-side entries for interface names
+    // are collisions (paths are protocol matter); impl entries
+    // colliding with blueprint entries are collisions like any
+    // other surface; the merged spec concatenates blueprint-first.
+    if let Some(iface) = slot.abstract_interface.as_ref() {
+        let blueprint_declared = result_binding_names(slot.result.as_ref());
+        for results_name in iface.results.keys() {
+            if blueprint_declared.contains(results_name.as_str()) {
+                return Err(format!(
+                    "slot '{slot_key}': `results:` wire '{results_name}' \
+                     also has a blueprint-side `result:` binding — the \
+                     projection path is protocol matter; the \
+                     implementation declares it"));
+            }
+        }
+    }
+    if let Some(impl_result) = impl_op.result {
+        let blueprint_declared = result_binding_names(slot.result.as_ref());
+        for name in result_binding_names(Some(&impl_result)) {
+            if blueprint_declared.contains(name.as_str()) {
+                return Err(format!(
+                    "slot '{slot_key}': result binding '{name}' declared \
+                     by BOTH the blueprint slot and the implementation — \
+                     remove one"));
+            }
+        }
+        slot.result = Some(match slot.result.take() {
+            None => impl_result,
+            Some(existing) => crate::model::ResultSpec::List(
+                vec![existing, impl_result]),
+        });
+    }
+
+    // `yields` / `results` presence: every promised wire must be
+    // delivered by the bound op — a capture `as`-name for yields,
+    // a `result:` binding LHS for results. (Type equality is
     // proven at pre-map synthesis against the compiled program.)
     if let Some(iface) = slot.abstract_interface.as_ref() {
         let delivered: BTreeSet<&str> = slot.captures.iter()
@@ -219,10 +256,43 @@ fn bind_slot(
                     delivered.into_iter().collect::<Vec<_>>().join(", ")));
             }
         }
+        let projected = result_binding_names(slot.result.as_ref());
+        for results_name in iface.results.keys() {
+            if !projected.contains(results_name.as_str()) {
+                return Err(format!(
+                    "slot '{slot_key}' promises results wire \
+                     '{results_name}', but the bound implementation \
+                     declares result bindings [{}] — add a `result:` \
+                     entry (`{results_name}: <path-expr>`, e.g. \
+                     `{results_name}: rows[*].column`)",
+                    projected.iter().cloned().collect::<Vec<_>>().join(", ")));
+            }
+        }
     }
 
     slot.interface_bound = true;
     Ok(())
+}
+
+/// Wire names a `result:` spec declares: map-shape keys plus the
+/// `:=` LHS of string-shape source lines.
+fn result_binding_names(spec: Option<&crate::model::ResultSpec>) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    if let Some(spec) = spec {
+        spec.walk_fragments(|frag| match frag {
+            crate::model::ResultFragment::Named { name, .. } => {
+                out.insert(name.to_string());
+            }
+            crate::model::ResultFragment::Source(source) => {
+                for line in source.lines() {
+                    if let Some((lhs, _)) = line.trim().split_once(":=") {
+                        out.insert(lhs.trim().to_string());
+                    }
+                }
+            }
+        });
+    }
+    out
 }
 
 /// Names of scaffolding fields an implementation phase illegally
@@ -475,5 +545,109 @@ phases:
     fn unbound_slots_are_reported() {
         let blueprint = parse(BLUEPRINT);
         assert_eq!(unbound_abstract_slots(&blueprint), vec!["probe.search"]);
+    }
+
+    // ── SRD-109 Part 3: the `results:` interface leg ──
+
+    const RESULTS_BLUEPRINT: &str = r#"
+phases:
+  probe:
+    cycles: 1
+    ops:
+      search:
+        abstract:
+          results:
+            keys: vec_i64
+"#;
+
+    #[test]
+    fn results_wire_delivered_by_impl_result_binding() {
+        let mut blueprint = parse(RESULTS_BLUEPRINT);
+        bind_implementation(&mut blueprint, parse(r#"
+implements: blueprint
+phases:
+  probe:
+    ops:
+      search:
+        stmt: "SEARCH"
+        result:
+          keys: "rows[*].key"
+"#)).unwrap();
+        let op = &blueprint.phases["probe"].ops[0];
+        assert!(op.interface_bound);
+        assert!(result_binding_names(op.result.as_ref()).contains("keys"));
+    }
+
+    #[test]
+    fn missing_results_binding_is_named_with_remedy() {
+        let mut blueprint = parse(RESULTS_BLUEPRINT);
+        let err = bind_implementation(&mut blueprint, parse(r#"
+implements: blueprint
+phases:
+  probe:
+    ops:
+      search:
+        stmt: "SEARCH"
+"#)).unwrap_err();
+        assert!(err.contains("results wire") && err.contains("keys")
+            && err.contains("path-expr"), "err: {err}");
+    }
+
+    #[test]
+    fn blueprint_side_path_for_results_wire_is_a_collision() {
+        let mut blueprint = parse(r#"
+phases:
+  probe:
+    cycles: 1
+    ops:
+      search:
+        result:
+          keys: "rows[*].key"
+        abstract:
+          results:
+            keys: vec_i64
+"#);
+        let err = bind_implementation(&mut blueprint, parse(r#"
+implements: blueprint
+phases:
+  probe:
+    ops:
+      search:
+        stmt: "SEARCH"
+        result:
+          keys: "other[*].id"
+"#)).unwrap_err();
+        assert!(err.contains("protocol matter"), "err: {err}");
+    }
+
+    #[test]
+    fn result_binding_name_collision_across_sides_is_an_error() {
+        // A NON-interface result wire declared by both sides is an
+        // ordinary collision.
+        let mut blueprint = parse(r#"
+phases:
+  probe:
+    cycles: 1
+    ops:
+      search:
+        result:
+          row_count: count
+        abstract:
+          results:
+            keys: vec_i64
+"#);
+        let err = bind_implementation(&mut blueprint, parse(r#"
+implements: blueprint
+phases:
+  probe:
+    ops:
+      search:
+        stmt: "SEARCH"
+        result:
+          row_count: count
+          keys: "rows[*].key"
+"#)).unwrap_err();
+        assert!(err.contains("row_count") && err.contains("BOTH"),
+            "err: {err}");
     }
 }

@@ -1693,17 +1693,21 @@ impl BindingsDef {
 }
 
 /// SRD-108 Part B — the typed interface an abstract op slot
-/// declares: wires the blueprint scope guarantees (`needs`) and
-/// wires the bound implementation must deliver (`yields`), each
-/// `name -> polydat type name` (`u64`, `f64`, `String`,
-/// `vec_f32`, …). BTreeMaps so the SRD-107 config digest
-/// serializes stably.
+/// declares: wires the blueprint scope guarantees (`needs`),
+/// wires the bound implementation must deliver via captures
+/// (`yields`), and wires it must deliver by projecting the
+/// result body via `result:` bindings (`results`, SRD-109 Part
+/// 3), each `name -> polydat type name` (`u64`, `f64`, `String`,
+/// `vec_f32`, `vec_i64`, …). BTreeMaps so the SRD-107 config
+/// digest serializes stably.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct OpInterface {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub needs: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub yields: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub results: std::collections::BTreeMap<String, String>,
 }
 
 /// A normalized op template — the canonical form.

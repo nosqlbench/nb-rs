@@ -2156,7 +2156,12 @@ impl Activity {
                                 // can reference them by name. No-op
                                 // when the op declares no `result:`
                                 // wires.
-                                current = crate::wrappers::ResultDispenser::wrap(current.clone(), template.result.as_ref());
+                                current = crate::wrappers::ResultDispenser::wrap(
+                                    current.clone(),
+                                    template.result.as_ref(),
+                                    template.abstract_interface.as_ref()
+                                        .map(|i| &i.results),
+                                );
                                 false
                             }
                             crate::wrappers::metrics::NAME => {

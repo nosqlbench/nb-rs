@@ -442,9 +442,24 @@ pub struct ValidatingDispenser {
     /// snapshot-free value — same canonical-scope contract the
     /// MetricsDispenser uses. None when no `relevancy:` block.
     expected_wire_name: Option<String>,
+    /// SRD-109 Part 3 — pre-parsed projection for `actual:` when
+    /// it names a result-binding path entry on this op (the
+    /// `results:` interface delivery). The validator evaluates it
+    /// directly from the op result: the `result` wrapper sits
+    /// OUTSIDE validation in the cascade, so its wire write lands
+    /// after this layer reads.
+    actual_projection: Option<ActualProjection>,
     metrics: Arc<ValidationMetrics>,
     /// If true, assertion failures become ExecutionError::Op.
     strict: bool,
+}
+
+/// Pre-parsed `actual:` projection: the result-binding path plus
+/// the interface-declared type (when the wire fills an
+/// `abstract: results:` contract).
+struct ActualProjection {
+    segs: Vec<crate::wrappers::result::PathSeg>,
+    target: Option<polydat::ast::PortType>,
 }
 
 /// Result of [`ValidatingDispenser::wrap`]: the (possibly-wrapped)
@@ -534,11 +549,50 @@ impl ValidatingDispenser {
             None => ValidationMetrics::assertions_only(),
         });
 
+        // SRD-109 Part 3 — when `actual:` names a result-binding
+        // path entry on this op, pre-parse the projection so the
+        // per-cycle read evaluates it directly from the result
+        // body (see the `actual_projection` field doc for why the
+        // wire write can't be read from this layer).
+        let actual_projection = match &relevancy {
+            Some(cfg) => {
+                let mut raw: Option<String> = None;
+                if let Some(spec) = template.result.as_ref() {
+                    spec.walk_fragments(|frag| {
+                        if let nbrs_workload::model::ResultFragment::Named { name, source } = frag
+                            && name == cfg.actual_field
+                        {
+                            let s = source.trim();
+                            if s != "count" && s != "ok" && !s.contains('(') {
+                                raw = Some(s.to_string());
+                            }
+                        }
+                    });
+                }
+                match raw {
+                    Some(path) => {
+                        let segs = crate::wrappers::result::parse_path_expr(&path)
+                            .map_err(|e| format!(
+                                "op '{op}' relevancy.actual '{field}': result \
+                                 binding path: {e}",
+                                op = template.name, field = cfg.actual_field))?;
+                        let target = template.abstract_interface.as_ref()
+                            .and_then(|i| i.results.get(&cfg.actual_field))
+                            .and_then(|kw| polydat::ast::PortType::from_keyword(kw));
+                        Some(ActualProjection { segs, target })
+                    }
+                    None => None,
+                }
+            }
+            None => None,
+        };
+
         let wrapper = Arc::new(Self {
             inner,
             assertions,
             relevancy,
             expected_wire_name,
+            actual_projection,
             metrics: metrics.clone(),
             strict,
         });
@@ -583,7 +637,28 @@ impl OpDispenser for ValidatingDispenser {
 
             // Phase 2: Relevancy metrics
             if let Some(config) = &self.relevancy {
-                let actual_ordered = extract_actual_indices(&result, &config.actual_field);
+                // SRD-109 Part 3 / SRD-70: `actual:` resolution
+                // order — (1) a result-binding projection declared
+                // on this op (evaluated directly from the result
+                // body; the `result` wrapper's wire write lands
+                // outside this layer), (2) a live wire (captures
+                // and per-cycle bindings are fresh here), (3) the
+                // legacy result-column walk for workloads that
+                // predate the interface.
+                let actual_ordered = if let Some(proj) = &self.actual_projection {
+                    let projected = result.body.as_ref()
+                        .and_then(|b| crate::wrappers::result::evaluate_path_value(
+                            &b.to_json(), &proj.segs, proj.target));
+                    projected.as_ref()
+                        .map(resolve_expected_from_value)
+                        .unwrap_or_default()
+                } else {
+                    match ctx.wires.get(&config.actual_field) {
+                        Some(v) if !matches!(v, polydat::ast::Value::None) =>
+                            resolve_expected_from_value(&v),
+                        _ => extract_actual_indices(&result, &config.actual_field),
+                    }
+                };
                 // Single read path: ground truth comes from
                 // `ctx.wires.get(name)` — a live, snapshot-free read
                 // through the per-fiber op-template kernel. The wire
@@ -1273,6 +1348,9 @@ fn resolve_expected_from_value(value: &polydat::ast::Value) -> Vec<i64> {
         polydat::ast::Value::VecI32(slice) => {
             slice.as_slice().iter().map(|&x| x as i64).collect()
         }
+        polydat::ast::Value::VecI64(slice) => {
+            slice.as_slice().to_vec()
+        }
         polydat::ast::Value::VecF32(slice) => {
             // Vector ground-truth indices are integer-valued
             // by domain. Truncating fractional parts is the
@@ -1280,6 +1358,18 @@ fn resolve_expected_from_value(value: &polydat::ast::Value) -> Vec<i64> {
             // dataset's index column is mis-typed at the source.
             slice.as_slice().iter().map(|&x| x as i64).collect()
         }
+        polydat::ast::Value::VecF64(slice) => {
+            slice.as_slice().iter().map(|&x| x as i64).collect()
+        }
+        // SRD-70 projection landed as structural JSON (mixed or
+        // string-typed columns): integer-valued leaves extract,
+        // numeric strings parse, anything else drops.
+        polydat::ast::Value::Json(j) => match &**j {
+            serde_json::Value::Array(elems) => elems.iter()
+                .filter_map(json_field_as_i64)
+                .collect(),
+            other => json_field_as_i64(other).into_iter().collect(),
+        },
         polydat::ast::Value::Str(s) => parse_int_array(s),
         polydat::ast::Value::U64(v) => vec![*v as i64],
         _ => {

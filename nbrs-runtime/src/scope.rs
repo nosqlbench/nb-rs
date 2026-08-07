@@ -1475,6 +1475,27 @@ pub fn build_op_template_scope_kernel(
             }
         }
     }
+    // SRD-109 Part 3 — `results:` interface wires are dispenser-
+    // delivered projections (`result:` path entries evaluated by
+    // the result wrapper); declare each as an explicit extern at
+    // its interface type so the per-cycle `ctx.wires.write` lands
+    // on a correctly-typed slot. Emitted before the cascade scan
+    // so a relevancy/metric reference to the same name doesn't
+    // try to pull it from the parent.
+    if let Some(iface) = op.abstract_interface.as_ref() {
+        for (rname, kw) in &iface.results {
+            if polydat::ast::PortType::from_keyword(kw).is_none() {
+                return Err(format!(
+                    "{context}: interface results wire '{rname}' declares \
+                     unknown type '{kw}'"));
+            }
+            if !emitted.contains(rname) {
+                source.push_str(&format!("extern {rname}: {kw}\n"));
+                emitted.insert(rname.clone());
+            }
+        }
+    }
+
     let body_idents = scan_idents_in_polydat_source(&body_text);
     let body_locally_declared = scan_locally_declared_idents(&body_text);
     let mut referenced: Vec<String> = Vec::new();
@@ -1949,6 +1970,28 @@ fn verify_op_interface(
                  {actual:?}"));
         }
     }
+    // Results (SRD-109 Part 3): the projection wire's slot is
+    // DECLARED from the interface type at op-template build (see
+    // the result-binding declaration pass), so the check here is
+    // keyword validity plus agreement when the slot materialized —
+    // a mismatch means something else (a binding, a cast) claimed
+    // the name at a different type.
+    for (name, declared) in &iface.results {
+        let Some(expected) = polydat::ast::PortType::from_keyword(declared)
+        else {
+            return Err(format!(
+                "{context}: interface results wire '{name}' declares \
+                 unknown type '{declared}'"));
+        };
+        if let Some(actual) = type_of(name)
+            && actual != expected
+        {
+            return Err(format!(
+                "{context}: interface results wire '{name}' declares \
+                 type {declared}, but the compiled op template carries \
+                 {actual:?}"));
+        }
+    }
     Ok(())
 }
 
@@ -2055,7 +2098,15 @@ fn collect_result_bindings_source(spec: &nbrs_workload::model::ResultSpec) -> St
             }
         }
         nbrs_workload::model::ResultFragment::Named { name, source } => {
-            out.push_str(&format!("{name} := {source}\n"));
+            // Path expressions (`rows[*].key`, `result[0].id`) are
+            // dispenser-evaluated (SRD-70) — they are not polydat
+            // source and would fail the result-bindings compile.
+            // Only `count` / `ok` (magic-extern references) and
+            // polydat-call entries compile into the kernel.
+            let s = source.trim();
+            if s == "count" || s == "ok" || s.contains('(') {
+                out.push_str(&format!("{name} := {source}\n"));
+            }
         }
     });
     out

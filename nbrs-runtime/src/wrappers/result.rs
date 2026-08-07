@@ -128,6 +128,11 @@ struct ResultSlot {
     /// Optional default rendered as a Polydat Value (string fallback)
     /// when the source resolves to nothing.
     default: Option<polydat::ast::Value>,
+    /// SRD-109 Part 3 — the declared interface type when this wire
+    /// fills an `abstract: results:` contract. Drives wildcard
+    /// projection coercion (the projection lands as exactly this
+    /// type, empty form included) instead of the inference ladder.
+    target: Option<polydat::ast::PortType>,
 }
 
 /// Decoded SRD-40b §5.1 source grammar.
@@ -147,15 +152,18 @@ enum ResultSource {
 
 /// One segment of a parsed path expression.
 #[derive(Debug, Clone)]
-enum PathSeg {
+pub(crate) enum PathSeg {
     Field(String),
     Index(usize),
+    /// SRD-70 `[*]` — column projection across every element of
+    /// the array at this position. At most one per path.
+    Wildcard,
 }
 
 /// Parse `rows[0].field` / `rows.0.field` / `field` into segments.
 /// Returns `Err` for empty paths only — anything else parses as a
 /// best-effort sequence of identifiers + indices.
-fn parse_path_expr(src: &str) -> Result<Vec<PathSeg>, String> {
+pub(crate) fn parse_path_expr(src: &str) -> Result<Vec<PathSeg>, String> {
     let trimmed = src.trim();
     if trimmed.is_empty() {
         return Err("empty path".into());
@@ -165,8 +173,11 @@ fn parse_path_expr(src: &str) -> Result<Vec<PathSeg>, String> {
     let mut iter = trimmed.chars().peekable();
     let push_field = |segs: &mut Vec<PathSeg>, cur: &mut String| {
         if !cur.is_empty() {
-            // Numeric bareword (after a dot) becomes an index.
-            if let Ok(n) = cur.parse::<usize>() {
+            // Numeric bareword (after a dot) becomes an index; a
+            // bare `*` bareword is the SRD-70 wildcard.
+            if cur == "*" {
+                segs.push(PathSeg::Wildcard);
+            } else if let Ok(n) = cur.parse::<usize>() {
                 segs.push(PathSeg::Index(n));
             } else {
                 segs.push(PathSeg::Field(std::mem::take(cur)));
@@ -188,10 +199,14 @@ fn parse_path_expr(src: &str) -> Result<Vec<PathSeg>, String> {
                     if c2 == ']' { break; }
                     idx.push(c2);
                 }
-                let n: usize = idx.trim().parse().map_err(|_| {
-                    format!("path '{src}': invalid index '[{idx}]'")
-                })?;
-                segs.push(PathSeg::Index(n));
+                if idx.trim() == "*" {
+                    segs.push(PathSeg::Wildcard);
+                } else {
+                    let n: usize = idx.trim().parse().map_err(|_| {
+                        format!("path '{src}': invalid index '[{idx}]'")
+                    })?;
+                    segs.push(PathSeg::Index(n));
+                }
             }
             _ => {
                 cur.push(c);
@@ -203,7 +218,115 @@ fn parse_path_expr(src: &str) -> Result<Vec<PathSeg>, String> {
     if segs.is_empty() {
         return Err(format!("path '{src}': no segments"));
     }
+    // SRD-70 first wave: one wildcard per path. Two-level nested
+    // projection is parked until a use case drives it.
+    let wildcards = segs.iter()
+        .filter(|s| matches!(s, PathSeg::Wildcard))
+        .count();
+    if wildcards > 1 {
+        return Err(format!(
+            "path '{src}': at most one [*] wildcard per path \
+             (nested projection is not supported)"));
+    }
     Ok(segs)
+}
+
+/// Split a parsed path at its wildcard, if any: `(prefix,
+/// suffix)` — segments before and after the `[*]`.
+fn wildcard_split(segs: &[PathSeg]) -> Option<(&[PathSeg], &[PathSeg])> {
+    let pos = segs.iter().position(|s| matches!(s, PathSeg::Wildcard))?;
+    Some((&segs[..pos], &segs[pos + 1..]))
+}
+
+/// SRD-70 column projection: walk `prefix` to the array, then
+/// apply `suffix` to each element, collecting every match.
+/// Elements whose suffix misses are dropped from the projection
+/// (SRD-70: "skip / drop the row"). Returns `None` when the
+/// prefix itself misses or lands on a non-array — the projection
+/// target does not exist in this body.
+fn resolve_path_projection<'a>(
+    json: &'a serde_json::Value,
+    prefix: &[PathSeg],
+    suffix: &[PathSeg],
+) -> Option<Vec<&'a serde_json::Value>> {
+    let at = resolve_path(json, prefix)?;
+    let arr = at.as_array()?;
+    Some(arr.iter().filter_map(|el| resolve_path(el, suffix)).collect())
+}
+
+/// Coerce one JSON leaf to i64: native integer, or numeric string.
+fn leaf_as_i64(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_str()?.trim().parse().ok())
+}
+
+/// Coerce one JSON leaf to f64: native number, or numeric string.
+fn leaf_as_f64(v: &serde_json::Value) -> Option<f64> {
+    v.as_f64().or_else(|| v.as_str()?.trim().parse().ok())
+}
+
+/// Evaluate a parsed path against a result-body JSON: wildcard
+/// paths run the SRD-70 column projection (always landing a
+/// value — an empty body / short array projects to the empty
+/// form of the wire's type, never a stale previous-cycle read);
+/// scalar paths walk to a single value (`None` on miss). Shared
+/// with the validation wrapper, which evaluates `actual:`
+/// projections directly from the op result — it sits INSIDE the
+/// `result` wrapper in the cascade, before the wire write lands.
+pub(crate) fn evaluate_path_value(
+    json: &serde_json::Value,
+    segs: &[PathSeg],
+    target: Option<polydat::ast::PortType>,
+) -> Option<polydat::ast::Value> {
+    if let Some((prefix, suffix)) = wildcard_split(segs) {
+        let collected = resolve_path_projection(json, prefix, suffix)
+            .unwrap_or_default();
+        return Some(coerce_projection(&collected, target));
+    }
+    resolve_path(json, segs).map(json_to_value)
+}
+
+/// Type a collected projection as a Polydat value. With a declared
+/// `target` (an SRD-109 `results:` interface type) the column
+/// coerces to exactly that type — empty projection included — and
+/// non-coercible elements are dropped per SRD-70. Without a
+/// target, the inference ladder applies: all-integer → `VecI64`,
+/// all-float → `VecF64`, anything else → the collected array as
+/// `Json`.
+fn coerce_projection(
+    collected: &[&serde_json::Value],
+    target: Option<polydat::ast::PortType>,
+) -> polydat::ast::Value {
+    use polydat::ast::{PortType, SliceArc, Value};
+    let json_array = || {
+        Value::Json(std::sync::Arc::new(serde_json::Value::Array(
+            collected.iter().map(|v| (*v).clone()).collect(),
+        )))
+    };
+    match target {
+        Some(PortType::VecI64) => Value::VecI64(SliceArc::from_vec(
+            collected.iter().filter_map(|v| leaf_as_i64(v)).collect())),
+        Some(PortType::VecI32) => Value::VecI32(SliceArc::from_vec(
+            collected.iter().filter_map(|v| leaf_as_i64(v).map(|n| n as i32)).collect())),
+        Some(PortType::VecF64) => Value::VecF64(SliceArc::from_vec(
+            collected.iter().filter_map(|v| leaf_as_f64(v)).collect())),
+        Some(PortType::VecF32) => Value::VecF32(SliceArc::from_vec(
+            collected.iter().filter_map(|v| leaf_as_f64(v).map(|n| n as f32)).collect())),
+        Some(PortType::Json) => json_array(),
+        // A declared scalar/other type on a wildcard projection is
+        // rejected at load by the binder; reaching here means an
+        // untyped (non-interface) wire — fall through to inference.
+        _ => {
+            let ints: Vec<i64> = collected.iter().filter_map(|v| leaf_as_i64(v)).collect();
+            if !collected.is_empty() && ints.len() == collected.len() {
+                return Value::VecI64(SliceArc::from_vec(ints));
+            }
+            let floats: Vec<f64> = collected.iter().filter_map(|v| leaf_as_f64(v)).collect();
+            if !collected.is_empty() && floats.len() == collected.len() {
+                return Value::VecF64(SliceArc::from_vec(floats));
+            }
+            json_array()
+        }
+    }
 }
 
 /// Walk a parsed path against a JSON value. Returns `None` when
@@ -240,6 +363,7 @@ fn resolve_path<'a>(
 fn decode_slot(
     name: &str,
     raw_source: &str,
+    target: Option<polydat::ast::PortType>,
 ) -> Option<ResultSlot> {
     let raw = raw_source.trim();
     let source = if raw == "count" {
@@ -275,7 +399,7 @@ fn decode_slot(
             }
         }
     };
-    Some(ResultSlot { wire: name.to_string(), source, default: None })
+    Some(ResultSlot { wire: name.to_string(), source, default: None, target })
 }
 
 impl ResultDispenser {
@@ -303,21 +427,30 @@ impl ResultDispenser {
     pub fn wrap(
         inner: Arc<dyn OpDispenser>,
         result_spec: Option<&nbrs_workload::model::ResultSpec>,
+        interface_results: Option<&std::collections::BTreeMap<String, String>>,
     ) -> Arc<dyn OpDispenser> {
         let mut specs: Vec<ResultSlot> = Vec::new();
+
+        // SRD-109 Part 3 — a wire filling an `abstract: results:`
+        // contract projects at exactly its declared type.
+        let target_for = |name: &str| -> Option<polydat::ast::PortType> {
+            interface_results?
+                .get(name)
+                .and_then(|kw| polydat::ast::PortType::from_keyword(kw))
+        };
 
         if let Some(spec) = result_spec {
             spec.walk_fragments(|frag| match frag {
                 nbrs_workload::model::ResultFragment::Named { name, source } => {
                     let raw = source.trim();
                     if raw == "count" || raw == "ok" {
-                        if let Some(slot) = decode_slot(name, source) {
+                        if let Some(slot) = decode_slot(name, source, target_for(name)) {
                             specs.push(slot);
                         }
                     } else if !raw.contains('(') {
                         // Path expression — keep the legacy
                         // JSON-path path for SRD-40b §5.1 back-compat.
-                        if let Some(slot) = decode_slot(name, source) {
+                        if let Some(slot) = decode_slot(name, source, target_for(name)) {
                             specs.push(slot);
                         }
                     }
@@ -367,7 +500,7 @@ impl ResultDispenser {
             ResultSource::Path(segs) => {
                 let body = result.body.as_ref()?;
                 let json = body.to_json();
-                resolve_path(&json, segs).map(json_to_value)
+                evaluate_path_value(&json, segs, slot.target)
                     .or_else(|| slot.default.clone())
             }
             ResultSource::PolydatCall(_) => slot.default.clone(),
@@ -562,7 +695,7 @@ mod tests {
             ("first_value", "rows[0].value"),
         ]);
 
-        let wrapped = ResultDispenser::wrap(inner, Some(&decl));
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl), None);
         let mut kernel = kernel_with_extern_inputs(&[
             ("row_count", "u64"),
             ("first_value", "u64"),
@@ -583,7 +716,7 @@ mod tests {
         });
         let decl = map_spec(&[("succeeded", "ok")]);
 
-        let wrapped = ResultDispenser::wrap(inner, Some(&decl));
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl), None);
         let mut kernel = kernel_with_extern_inputs(&[("succeeded", "bool")]);
         let _ = run_with_wires(wrapped, &mut kernel).unwrap();
 
@@ -603,7 +736,7 @@ mod tests {
         });
         let decl = map_spec(&[("succeeded", "ok")]);
 
-        let wrapped = ResultDispenser::wrap(inner, Some(&decl));
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl), None);
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -624,7 +757,7 @@ mod tests {
             ("missing", "rows[0].value"),
         ]);
 
-        let wrapped = ResultDispenser::wrap(inner, Some(&decl));
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl), None);
         let mut kernel = kernel_with_extern_inputs(&[("missing", "u64")]);
         let _ = run_with_wires(wrapped, &mut kernel).unwrap();
 
@@ -640,7 +773,7 @@ mod tests {
             error: None,
         });
         let inner_ptr = Arc::as_ptr(&inner);
-        let wrapped = ResultDispenser::wrap(inner.clone(), None);
+        let wrapped = ResultDispenser::wrap(inner.clone(), None, None);
         assert_ne!(Arc::as_ptr(&wrapped), inner_ptr,
             "ResultDispenser must always wrap so magic-extern population fires");
     }
@@ -658,7 +791,7 @@ mod tests {
             }
         }
         let decl = map_spec(&[("c", "count")]);
-        let wrapped = ResultDispenser::wrap(Arc::new(SkipInner), Some(&decl));
+        let wrapped = ResultDispenser::wrap(Arc::new(SkipInner), Some(&decl), None);
         let mut kernel = kernel_with_extern_inputs(&[("c", "u64")]);
         let result = run_with_wires(wrapped, &mut kernel).unwrap();
         assert!(result.skipped);
@@ -671,7 +804,110 @@ mod tests {
     /// the path-expr branch is exercised by the public tests.
     #[test]
     fn decode_slot_reachable() {
-        let slot = decode_slot("c", "count").expect("count slot decodes");
+        let slot = decode_slot("c", "count", None).expect("count slot decodes");
         assert!(matches!(slot.source, ResultSource::Count));
+    }
+
+    // ── SRD-70 wildcard projection ──
+
+    #[test]
+    fn parse_wildcard_forms_and_reject_nested() {
+        for src in ["rows[*].key", "rows.*.key", "[*].key", "[*]", "result[*].id"] {
+            let segs = parse_path_expr(src).unwrap_or_else(|e| {
+                panic!("'{src}' should parse: {e}")
+            });
+            assert_eq!(
+                segs.iter().filter(|s| matches!(s, PathSeg::Wildcard)).count(),
+                1, "'{src}' carries one wildcard");
+        }
+        let err = parse_path_expr("rows[*].items[*].id").unwrap_err();
+        assert!(err.contains("at most one"), "err: {err}");
+    }
+
+    #[test]
+    fn projection_collects_column_as_target_type() {
+        let inner = Arc::new(FakeInner {
+            body: Some(ResultDispBody {
+                // Zero-padded numeric strings — the vector-suite
+                // key shape.
+                value: serde_json::json!([
+                    {"key": "000000000007"}, {"key": "000000000003"}]),
+                count: 2,
+            }),
+            error: None,
+        });
+        let decl = map_spec(&[("keys", "[*].key")]);
+        let mut iface = std::collections::BTreeMap::new();
+        iface.insert("keys".to_string(), "vec_i64".to_string());
+
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl), Some(&iface));
+        let mut kernel = kernel_with_extern_inputs(&[("keys", "vec_i64")]);
+        let _ = run_with_wires(wrapped, &mut kernel).unwrap();
+
+        let cw = crate::wires::CycleWires::new(&mut kernel);
+        let w: &dyn crate::wires::WireSource = &cw;
+        match w.get("keys") {
+            Some(polydat::ast::Value::VecI64(slice)) =>
+                assert_eq!(slice.as_slice(), &[7, 3]),
+            other => panic!("expected VecI64([7,3]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn projection_nested_prefix_and_inference_ladder() {
+        let inner = Arc::new(FakeInner {
+            body: Some(ResultDispBody {
+                value: serde_json::json!({"result": [
+                    {"id": 12, "score": 0.9},
+                    {"id": 5,  "score": 0.7}]}),
+                count: 2,
+            }),
+            error: None,
+        });
+        // No interface types — the inference ladder applies.
+        let decl = map_spec(&[("ids", "result[*].id"), ("scores", "result[*].score")]);
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl), None);
+        let mut kernel = kernel_with_extern_inputs(&[
+            ("ids", "vec_i64"), ("scores", "vec_f64")]);
+        let _ = run_with_wires(wrapped, &mut kernel).unwrap();
+
+        let cw = crate::wires::CycleWires::new(&mut kernel);
+        let w: &dyn crate::wires::WireSource = &cw;
+        match w.get("ids") {
+            Some(polydat::ast::Value::VecI64(slice)) =>
+                assert_eq!(slice.as_slice(), &[12, 5]),
+            other => panic!("expected VecI64, got {other:?}"),
+        }
+        match w.get("scores") {
+            Some(polydat::ast::Value::VecF64(slice)) =>
+                assert_eq!(slice.as_slice(), &[0.9, 0.7]),
+            other => panic!("expected VecF64, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn projection_on_missing_prefix_lands_empty_not_stale() {
+        let inner = Arc::new(FakeInner {
+            body: Some(ResultDispBody {
+                value: serde_json::json!({"error": "no result key"}),
+                count: 0,
+            }),
+            error: None,
+        });
+        let decl = map_spec(&[("keys", "result[*].id")]);
+        let mut iface = std::collections::BTreeMap::new();
+        iface.insert("keys".to_string(), "vec_i64".to_string());
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl), Some(&iface));
+        let mut kernel = kernel_with_extern_inputs(&[("keys", "vec_i64")]);
+        let _ = run_with_wires(wrapped, &mut kernel).unwrap();
+
+        let cw = crate::wires::CycleWires::new(&mut kernel);
+        let w: &dyn crate::wires::WireSource = &cw;
+        match w.get("keys") {
+            Some(polydat::ast::Value::VecI64(slice)) =>
+                assert!(slice.as_slice().is_empty(),
+                    "missing projection target must land the EMPTY typed form"),
+            other => panic!("expected empty VecI64, got {other:?}"),
+        }
     }
 }

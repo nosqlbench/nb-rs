@@ -2145,24 +2145,26 @@ fn normalize_op_object(
         }
     }
 
-    // SRD-108 Part B — `abstract:` declares this op as a typed
-    // slot: `{ needs: {name: type,…}, yields: {name: type,…} }`.
-    // Unknown keys are rejected; types are polydat DSL type
-    // names, verified against the compiled op-template program
-    // at pre-map synthesis.
+    // SRD-108 Part B (+ SRD-109 Part 3) — `abstract:` declares
+    // this op as a typed slot: `{ needs: {name: type,…}, yields:
+    // {name: type,…}, results: {name: type,…} }`. Unknown keys
+    // are rejected; types are polydat DSL type names, verified
+    // against the compiled op-template program at pre-map
+    // synthesis.
     let abstract_interface: Option<crate::model::OpInterface> =
         match map.get("abstract") {
             None => None,
             Some(v) => {
                 let obj = v.as_object().ok_or_else(|| format!(
-                    "op '{name}': `abstract:` must be a mapping with                      `needs:` / `yields:` maps of wire-name -> type"))?;
+                    "op '{name}': `abstract:` must be a mapping with                      `needs:` / `yields:` / `results:` maps of wire-name -> type"))?;
                 let mut iface = crate::model::OpInterface::default();
                 for (k, section) in obj {
                     let target = match k.as_str() {
                         "needs" => &mut iface.needs,
                         "yields" => &mut iface.yields,
+                        "results" => &mut iface.results,
                         other => return Err(format!(
-                            "op '{name}': unknown key '{other}' under                              `abstract:` (allowed: needs, yields)")),
+                            "op '{name}': unknown key '{other}' under                              `abstract:` (allowed: needs, yields, results)")),
                     };
                     let entries = section.as_object().ok_or_else(|| format!(
                         "op '{name}': `abstract.{k}:` must be a mapping                          of wire-name -> type"))?;
