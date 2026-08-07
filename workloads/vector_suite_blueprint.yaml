@@ -10,25 +10,30 @@
 # — every op is an `abstract:` slot. An implementation module
 # binds the bodies:
 #
-#   nbrs run workload=vector_suite_cql.yaml scenario=search_perf
-#   nbrs run workload=vector_suite_blueprint.yaml \
-#            impl=vector_suite_cql.yaml scenario=search_perf
+#   nbrs run workload=cql/vector_suite_cql scenario=search_perf
+#   nbrs run workload=vector_suite_blueprint \
+#            impl=cql/vector_suite_cql scenario=search_perf
 #
-# Scope note: this pair covers the search-performance core
-# (teardown → schema → load → build-wait → serial → sweep). The
-# full suite (streaming, churn, capacity, filtered grid) remains
-# in vector_suite.yaml; sections migrate here as further
-# implementations land. It lives beside its first implementation
-# for file-relative resolution; the document itself is neutral.
+# This file lives in the NEUTRAL bundled catalog (top-level
+# `vector_suite_blueprint`), not under any adapter: SRD-109 web
+# drivers implement it from binaries that may not carry the CQL
+# feature at all. Implementations reference it by catalog name.
 #
-# Interface conventions:
+# Scope note: this blueprint covers the search-performance core
+# (connect → teardown → schema → load → build-wait → serial →
+# sweep). The full suite (streaming, churn, capacity, filtered
+# grid) remains in cql/vector_suite; sections migrate here as
+# further implementations land.
+#
+# Interface conventions (the three legs, SRD-108 + SRD-109):
 # - `needs` are wires THIS document guarantees — dataset-derived
 #   bindings (query vectors, ids, dims) and declared params.
 # - `yields` are wires the implementation must deliver via
-#   captures. The probes' relevancy scoring reads result COLUMNS
-#   (`actual: key`) rather than captured wires — that result-shape
-#   contract is documented per-slot and typed result-shape
-#   interfaces are an SRD-109 open item.
+#   captures.
+# - `results` are wires the implementation must deliver by
+#   projecting the response body via `result:` bindings (SRD-70
+#   `[*]` column projection) — the probes' relevancy scoring
+#   reads them as typed values.
 
 stick_session: true
 
@@ -64,6 +69,7 @@ scenarios:
   search_perf:
     - for: "profile in {fknn_profile}, table in vsuite_{profile}"
       phases:
+        - connect
         - teardown
         - schema
         - load_train
@@ -74,6 +80,18 @@ scenarios:
             - sweep_probe
 
 phases:
+
+  # Session establishment — the protocol's login/handshake leg
+  # (SRD-109 auth flows bind here: a web driver's login op
+  # captures its token into a shared wire its later ops read;
+  # CQL binds a lightweight liveness statement). Always runs:
+  # session credentials are in-memory state, never skippable.
+  connect:
+    concurrency: 1
+    cycles: 1
+    ops:
+      establish:
+        abstract: {}
 
   # Destructive reset of this suite's own namespace. Never
   # skip-eligible.
@@ -159,10 +177,10 @@ phases:
             active_build_tasks: u64
 
   # Serial probe on the quiesced target: concurrency 1, recall +
-  # ndcg per op, time-bounded by natural extent. RESULT-SHAPE
-  # CONTRACT: the implementation's search result must expose the
-  # matched row key under the column/field name `key` — relevancy
-  # traverses the result body directly.
+  # ndcg per op, time-bounded by natural extent. The result-shape
+  # contract is TYPED (SRD-109 Part 3): the implementation
+  # projects the matched row keys into the `keys` wire via a
+  # `result:` binding; relevancy reads the typed projection.
   serial_probe:
     concurrency: 1
     status_metrics: [recall*, ndcg*]
@@ -177,9 +195,11 @@ phases:
         abstract:
           needs:
             query_vector: vec_f32
+          results:
+            keys: vec_i64
         evaluations:
           relevancy:
-            actual: key
+            actual: keys
             expected: ground_truth
             k: suite_k
             r: suite_limit
@@ -190,7 +210,7 @@ phases:
   # One sweep level at `concurrency: {conc}` for `level_ms` of
   # whole passes; relevancy per op at this operating point, so the
   # recall-vs-throughput curve is measured, not interpolated.
-  # Same result-shape contract as serial_probe.
+  # Same typed result-shape contract as serial_probe.
   sweep_probe:
     concurrency: "{conc}"
     status_metrics: [recall*, ndcg*]
@@ -205,9 +225,11 @@ phases:
         abstract:
           needs:
             query_vector: vec_f32
+          results:
+            keys: vec_i64
         evaluations:
           relevancy:
-            actual: key
+            actual: keys
             expected: ground_truth
             k: suite_k
             r: suite_limit

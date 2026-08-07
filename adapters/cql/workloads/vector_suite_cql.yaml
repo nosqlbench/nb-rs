@@ -14,10 +14,13 @@
 
 description: |
   CQL implementation of the vector_suite blueprint: binds literal
-  CQL statements into vector_suite_blueprint.yaml's abstract op
-  slots (SRD-108).
+  CQL statements into vector_suite_blueprint's abstract op slots
+  (SRD-108).
 
-implements: ./vector_suite_blueprint.yaml
+# By CATALOG name — the blueprint lives in the neutral bundled
+# catalog (top-level), not beside this file (SRD-109: web drivers
+# implement it from binaries without the CQL feature).
+implements: vector_suite_blueprint
 
 params:
   # ── CQL protocol + index-build knobs (protocol matter).
@@ -34,6 +37,14 @@ params:
   alpha: "1.2"
 
 phases:
+
+  connect:
+    ops:
+      establish:
+        # Lightweight liveness statement — the CQL session's
+        # handshake happened at adapter init; this proves the
+        # target answers before the suite mutates anything.
+        simple: "SELECT release_version FROM system.local"
 
   teardown:
     ops:
@@ -112,12 +123,15 @@ phases:
   serial_probe:
     ops:
       select_ann:
-        # Result-shape contract: the matched row key surfaces as
-        # column `key` (relevancy traverses it directly).
+        # `results: keys` delivery — the CQL body is a top-level
+        # array of row objects; `[*].key` projects the key column
+        # (zero-padded numeric strings coerce to vec_i64).
         prepared: |
           SELECT key FROM {keyspace}.{table}
           ORDER BY value
           ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
 
   sweep_probe:
     ops:
@@ -126,3 +140,5 @@ phases:
           SELECT key FROM {keyspace}.{table}
           ORDER BY value
           ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
