@@ -4505,6 +4505,21 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
         if let Some(s) = &phase.interval { scan_param_refs(s, &mut refs); }
         if let Some(s) = &phase.concurrency { scan_param_refs(s, &mut refs); }
         if let Some(s) = &phase.for_each { scan_param_refs(s, &mut refs); }
+        // Phase `rate:` and the SRD-75 poll bounds carry `{param}`
+        // references resolved at the phase gather (the `timeout:`
+        // discipline) — documented reference sites the collector
+        // must count. The poll predicate additionally consumes
+        // bare identifiers (params/wires) like `continue_if`.
+        if let Some(s) = &phase.rate { scan_param_refs(s, &mut refs); }
+        if let Some(poll) = &phase.poll {
+            scan_expression_idents(&poll.until, &mut refs.expression_idents);
+            for s in [&poll.interval_ms, &poll.timeout_ms, &poll.max_error_retries]
+                .into_iter()
+                .flatten()
+            {
+                scan_param_refs(s, &mut refs);
+            }
+        }
         // SRD-13f Push D parallel: phase-level `bindings:` also
         // sit on their own scope post-Push-D; scan for param
         // refs so a phase-binding-only consumer doesn't falsely

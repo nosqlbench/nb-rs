@@ -76,6 +76,8 @@
 pub mod model;
 pub mod template;
 pub mod parse;
+pub mod vocab;
+pub mod construction;
 pub mod verify;
 pub mod extends;
 pub mod implements;

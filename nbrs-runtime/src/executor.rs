@@ -5119,11 +5119,34 @@ async fn run_phase_inner(
         }
     };
 
+    // Phase `rate:` — same resolution discipline as `timeout:`
+    // above: `{param}` / iter-var references resolve here, and a
+    // malformed resolved value fails the phase up front — a rate
+    // that cannot be enforced must never silently become
+    // "unrated".
+    let phase_rate: Option<f64> = match phase.rate.as_deref() {
+        None => None,
+        Some(raw) => {
+            let mut r = crate::runner::expand_workload_params(raw, &ctx.workload_params);
+            for (v, val) in &iter_var_values {
+                r = r.replace(&format!("{{{v}}}"), val);
+            }
+            match r.trim().parse::<f64>() {
+                Ok(f) => Some(f),
+                Err(_) => {
+                    return crate::phase_outcome::Outcome::failed().with_reason(format!(
+                        "phase '{phase_name}': `rate: \"{raw}\"` (resolved: \
+                         \"{r}\") is not a number of ops/sec"));
+                }
+            }
+        }
+    };
+
     let config = ActivityConfig {
         name: activity_name,
         cycles: phase_cycles,
         concurrency: phase_concurrency,
-        rate: phase.rate.or(ctx.rate),
+        rate: phase_rate.or(ctx.rate),
         sequencer: ctx.seq_type,
         error_spec: phase.errors.clone().unwrap_or_else(|| ctx.error_spec.clone()),
         error_rate_max: phase.error_rate_max.or(ctx.error_rate_max),
@@ -5662,12 +5685,34 @@ async fn run_phase_inner(
     // through the op-template kernel's `extern` import slots
     // (SRD-67 Rule 1 "shared import → share cell").
     if let Some(poll_spec) = phase.poll.as_ref() {
-        let interval = std::time::Duration::from_millis(
-            poll_spec.interval_ms.unwrap_or(1000),
-        );
-        let timeout = std::time::Duration::from_millis(
-            poll_spec.timeout_ms.unwrap_or(300_000),
-        );
+        // Numeric poll bounds carry `{param}` / iter-var
+        // references (the `timeout:` / `rate:` gather
+        // discipline); resolve them here and fail the phase up
+        // front on a malformed value — a bound that cannot be
+        // enforced must never silently become the default.
+        let resolve_u64 = |raw: Option<&str>, field: &str, default: u64| -> Result<u64, String> {
+            let Some(raw) = raw else { return Ok(default) };
+            let mut r = crate::runner::expand_workload_params(raw, &ctx.workload_params);
+            for (v, val) in &iter_var_values {
+                r = r.replace(&format!("{{{v}}}"), val);
+            }
+            r.trim().parse::<u64>().map_err(|_| format!(
+                "phase '{phase_name}': poll `{field}: \"{raw}\"` (resolved: \
+                 \"{r}\") is not a whole number of milliseconds"))
+        };
+        let resolved = (|| -> Result<(u64, u64, u64), String> {
+            Ok((
+                resolve_u64(poll_spec.interval_ms.as_deref(), "interval_ms", 1000)?,
+                resolve_u64(poll_spec.timeout_ms.as_deref(), "timeout_ms", 300_000)?,
+                resolve_u64(poll_spec.max_error_retries.as_deref(), "max_error_retries", 0)?,
+            ))
+        })();
+        let (interval_ms, timeout_ms, max_error_retries) = match resolved {
+            Ok(v) => v,
+            Err(e) => return crate::phase_outcome::Outcome::failed().with_reason(e),
+        };
+        let interval = std::time::Duration::from_millis(interval_ms);
+        let timeout = std::time::Duration::from_millis(timeout_ms);
         let phase_kernel = match ctx.scope_tree.phase_node_by_name(phase_name)
             .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned()) {
             Some(k) => k,
@@ -5696,7 +5741,7 @@ async fn run_phase_inner(
             deadline: started_at + timeout,
             started_at,
             metric_name: poll_spec.metric_name.clone(),
-            max_error_retries: poll_spec.max_error_retries.unwrap_or(0),
+            max_error_retries: max_error_retries.min(u32::MAX as u64) as u32,
             on_timeout: on_timeout_policy,
             // SRD-75 (C5) — strict-gate selectors. The resolution
             // probe reads the SAME framed session-lifetime view the

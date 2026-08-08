@@ -184,6 +184,31 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         );
     }
 
+    // ── Construction-model enforcement gate ──
+    // The document must validate against the enumerable
+    // construction grammar (docs/guide/construction_model.md):
+    // unknown elements on closed node kinds, value-form
+    // violations, and missing required elements are load errors,
+    // reported together with their document paths. Runs on the
+    // extends-merged document, after the targeted legacy-key
+    // rejections above (their migration messages are better than
+    // a generic unknown-element finding).
+    {
+        let doc = serde_json::Value::Object(obj.clone());
+        let violations = crate::construction::validate_workload(
+            &doc, crate::construction::Mode::Complete);
+        if !violations.is_empty() {
+            let mut lines: Vec<String> = violations.iter()
+                .map(|v| format!("  {}: {}", v.path, v.message))
+                .collect();
+            lines.sort();
+            return Err(format!(
+                "workload construction: {} violation(s) \
+                 (docs/guide/construction_model.md):\n{}",
+                violations.len(), lines.join("\n")));
+        }
+    }
+
     // Unified `report:` block (SRD-46) — plots, tables, defaults,
     // groups. Parser is in `crate::report::parse_report`. The
     // returned warnings are stashed on the Workload for
@@ -636,12 +661,7 @@ fn parse_scenario_nodes_with_errors(
 /// (no recognized key) from "legitimate node" before the
 /// silent-catchall in the legacy path can fire.
 fn has_recognised_scenario_key(obj: &serde_json::Map<String, JVal>) -> bool {
-    const RECOGNIZED: &[&str] = &[
-        "for_each", "for", "scenario", "scenarios",
-        "for_combinations", "do_while", "do_until",
-        "bindings", "set",
-    ];
-    RECOGNIZED.iter().any(|k| obj.contains_key(*k))
+    crate::vocab::scenario_node_keys().iter().any(|k| obj.contains_key(*k))
 }
 
 /// Emit the polydat RHS for a scenario `set:` value. A **bare identifier is a
@@ -1313,8 +1333,18 @@ fn parse_phases(
                 other => other.to_string(),
             });
 
-        let rate = phase_obj.get("rate")
-            .and_then(|v| v.as_f64());
+        // A number or a `{param}` / iter-var reference (resolved at
+        // the phase gather, the `timeout:` discipline). Anything
+        // else is a load error — a malformed rate must never
+        // silently become "unrated".
+        let rate = match phase_obj.get("rate") {
+            None => None,
+            Some(JVal::Number(n)) => Some(n.to_string()),
+            Some(JVal::String(s)) => Some(s.clone()),
+            Some(other) => return Err(format!(
+                "phase '{phase_name}': `rate` must be a number (ops/sec) \
+                 or a {{param}} reference; got: {other}")),
+        };
 
         // SRD-82 Part 6 — daemon phase (runs concurrently with foreground
         // siblings, stopped when they complete). Accept bool / 0|1 / on|off.
@@ -1511,16 +1541,24 @@ fn parse_phases(
                          `until: <polydat-boolean-expression>`. SRD-75."
                     ))?
                     .to_string();
-                let interval_ms = map.get("interval_ms")
-                    .and_then(|v| v.as_u64()
-                        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
-                let timeout_ms = map.get("timeout_ms")
-                    .and_then(|v| v.as_u64()
-                        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
-                let max_error_retries = map.get("max_error_retries")
-                    .and_then(|v| v.as_u64()
-                        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
-                    .map(|n| n.min(u32::MAX as u64) as u32);
+                // Numbers or `{param}` / iter-var references
+                // (resolved at the phase gather); anything else is
+                // a load error — a malformed bound must never
+                // silently fall back to the default.
+                let numeric_or_ref = |field: &str| -> Result<Option<String>, String> {
+                    match map.get(field) {
+                        None => Ok(None),
+                        Some(JVal::Number(n)) => Ok(Some(n.to_string())),
+                        Some(JVal::String(s)) => Ok(Some(s.clone())),
+                        Some(other) => Err(format!(
+                            "phase '{phase_name}' poll: `{field}` must be a \
+                             number or a {{param}} reference; got: {other}. \
+                             SRD-75.")),
+                    }
+                };
+                let interval_ms = numeric_or_ref("interval_ms")?;
+                let timeout_ms = numeric_or_ref("timeout_ms")?;
+                let max_error_retries = numeric_or_ref("max_error_retries")?;
                 let metric_name = map.get("metric_name")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
@@ -1570,9 +1608,7 @@ fn parse_phases(
                 // Reject keys outside the documented surface — a
                 // typo like `tinerval_ms:` should fail loudly, not
                 // silently default. SRD-30 unknown-field hygiene.
-                let allowed: [&str; 7] = ["until", "interval_ms",
-                    "timeout_ms", "max_error_retries", "metric_name",
-                    "on_timeout", "require"];
+                let allowed = crate::vocab::phase_poll_fields();
                 for k in map.keys() {
                     if !allowed.contains(&k.as_str()) {
                         return Err(format!(
@@ -1955,8 +1991,10 @@ fn eval_value_kind(v: &JVal) -> &'static str {
 /// per-adapter op fields. Anything else inside it is rejected at
 /// parse time so silent-ignore traps (a misspelled `relevency:`,
 /// a misplaced wrapper) cannot hide a misconfigured op. New
-/// evaluation kinds are added here.
-const EVALUATIONS_VOCAB: &[&str] = &["relevancy", "verify"];
+/// evaluation kinds are added to the construction registry.
+fn evaluations_vocab() -> Vec<&'static str> {
+    crate::vocab::evaluation_kinds()
+}
 
 /// Normalize a full op object (map of fields).
 fn normalize_op_object(
@@ -2008,14 +2046,8 @@ fn normalize_op_object(
     // testkit) don't reject them as unknown. The CQL adapter
     // returns `None` from `known_op_fields()` (open vocabulary)
     // which masked this for the existing workloads.
-    let reserved = ["name", "description", "desc", "bindings", "params", "tags", "if", "delay",
-        "evaluations", "capture", "metrics", "result", "traverse", "measure", "abstract",
-        // Daemon-op declaration + loop / rate primitives:
-        // consumed by the runtime in normalize_op_object below;
-        // mustn't fall through to the adapter's op-fields surface
-        // as if they were op-payload keys.
-        "daemon", "daemon_cancel_grace_ms", "while", "rate"];
-    let op_field_names = ["op", "ops", "operations", "stmt", "statement", "statements"];
+    let reserved = crate::vocab::op_model_fields();
+    let op_field_names = crate::vocab::op_stmt_fields();
     // Activity-level params excised from op fields before the
     // adapter sees them. `relevancy` / `verify` stay listed here
     // for the legacy top-level shorthand
@@ -2117,7 +2149,7 @@ fn normalize_op_object(
             kind = eval_value_kind(eval_val),
         ))?;
         for (k, v) in eval_obj.iter() {
-            if !EVALUATIONS_VOCAB.contains(&k.as_str()) {
+            if !evaluations_vocab().contains(&k.as_str()) {
                 return Err(format!(
                     "op '{name}' (block '{block_name}'): unknown key \
                      '{k}' under `evaluations:`. Allowed keys: [{}]. \
@@ -2125,7 +2157,7 @@ fn normalize_op_object(
                      post-execution evaluation kind — typos and \
                      misplaced wrappers are rejected here so silent \
                      skipped recall / verify can't happen.",
-                    EVALUATIONS_VOCAB.join(", "),
+                    evaluations_vocab().join(", "),
                 ));
             }
             // Top-level shorthand wins on collision so users
@@ -3910,7 +3942,7 @@ phases:
         let main = &workload.phases["main"];
         assert_eq!(main.cycles.as_deref(), Some("1000"));
         assert_eq!(main.concurrency.as_deref(), Some("10"));
-        assert_eq!(main.rate, Some(500.0));
+        assert_eq!(main.rate.as_deref(), Some("500.0"));
         assert_eq!(main.ops.len(), 2);
 
         // Scenario parsed as phase name list
@@ -4715,9 +4747,9 @@ phases:
         let phase = wl.phases.get("ensure").expect("ensure phase");
         let poll = phase.poll.as_ref().expect("phase.poll Some");
         assert_eq!(poll.until, "sstables == 1 && active_for_cf == 0");
-        assert_eq!(poll.interval_ms, Some(5000));
-        assert_eq!(poll.timeout_ms, Some(14_400_000));
-        assert_eq!(poll.max_error_retries, Some(3));
+        assert_eq!(poll.interval_ms.as_deref(), Some("5000"));
+        assert_eq!(poll.timeout_ms.as_deref(), Some("14400000"));
+        assert_eq!(poll.max_error_retries.as_deref(), Some("3"));
         assert_eq!(poll.metric_name.as_deref(), Some("ensure_wait_s"));
     }
 

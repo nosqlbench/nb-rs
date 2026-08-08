@@ -183,8 +183,7 @@ impl Workload {
         let cycles = self.params.get("cycles")
             .map(|c| format!("==ops:{c}"));
         let concurrency = self.params.get("concurrency").cloned();
-        let rate = self.params.get("rate")
-            .and_then(|s| s.parse::<f64>().ok());
+        let rate = self.params.get("rate").cloned();
         // Move GK-syntax workload-root bindings DOWN onto the
         // synthetic phase. The legacy single-activity branch
         // compiled workload-root bindings into the SAME kernel
@@ -896,9 +895,13 @@ pub struct WorkloadPhase {
     /// or workload param references like `"{concurrency}"`. Default 1.
     #[serde(default)]
     pub concurrency: Option<String>,
-    /// Rate limit (ops/sec). Default unlimited.
+    /// Rate limit (ops/sec). A number, or a `{param}` / iter-var
+    /// reference resolved at the phase gather (the SRD-83
+    /// `timeout:` discipline: a rate that cannot be resolved
+    /// fails the phase up front — it never silently becomes
+    /// "unrated"). Default unlimited.
     #[serde(default)]
-    pub rate: Option<f64>,
+    pub rate: Option<String>,
     /// SRD-82 Part 6 — daemon phase. When `true`, this phase runs
     /// CONCURRENTLY with its foreground sibling phases (off the
     /// scenario's foreground concurrency budget) and is stopped
@@ -1280,21 +1283,25 @@ pub struct PhasePollSpec {
     /// dynamic (re-evaluates per pull) per SRD-11's "two
     /// evaluation lifecycles" rule. Required.
     pub until: String,
-    /// Sleep between iterations, milliseconds. Default
+    /// Sleep between iterations, milliseconds. A number or a
+    /// `{param}` / iter-var reference resolved at the phase
+    /// gather (unresolvable ⇒ the phase fails up front). Default
     /// `1000` (one second).
     #[serde(default)]
-    pub interval_ms: Option<u64>,
-    /// Overall wall-clock cap. The loop returns a
-    /// `poll_timeout` error if exceeded. Default
+    pub interval_ms: Option<String>,
+    /// Overall wall-clock cap, milliseconds. Same
+    /// number-or-reference contract as `interval_ms`. The loop
+    /// returns a `poll_timeout` error if exceeded. Default
     /// `300000` (5 minutes).
     #[serde(default)]
-    pub timeout_ms: Option<u64>,
+    pub timeout_ms: Option<String>,
     /// Consecutive retryable inner-op errors tolerated
-    /// before propagation. `0` (default) = strict: any
+    /// before propagation. Same number-or-reference contract
+    /// as `interval_ms`. `0` (default) = strict: any
     /// retryable error fails the phase immediately.
     /// Mirrors per-op `PollingDispenser` semantics.
     #[serde(default)]
-    pub max_error_retries: Option<u32>,
+    pub max_error_retries: Option<String>,
     /// Named metric (gauge) written via `ctx.wires.write`
     /// when the loop terminates successfully. Value =
     /// elapsed wall-clock; unit decoded from the

@@ -52,14 +52,14 @@ phases:
     checkpoint: idempotent
     cycles: 1
     concurrency: 1
-    driver: stdout
+    adapter: stdout
     ops:
       decl:
         stmt: "CREATE TABLE t(id int PRIMARY KEY)"
   load:
     cycles: 3
     concurrency: 1
-    driver: stdout
+    adapter: stdout
     ops:
       ins:
         stmt: "INSERT INTO t (id) VALUES ({cycle})"
@@ -163,7 +163,7 @@ phases:
     checkpoint: idempotent
     cycles: 1
     concurrency: 1
-    driver: stdout
+    adapter: stdout
     ops:
       decl:
         stmt: "DECL shard={{shard}}"
