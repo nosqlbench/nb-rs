@@ -1,0 +1,268 @@
+#!/usr/bin/env nbrs
+# vector_suite_cql_impl.yaml — the CQL implementation of
+# vector_suite_blueprint.yaml (SRD-108 Part B implementation
+# module).
+#
+# This document carries ONLY protocol matter: the literal CQL
+# statements, protocol-side extraction (the build-wait capture,
+# the `result:` key projections), and CQL/index knobs as params.
+# Scaffolding — extents, concurrency, governance, dataset
+# bindings, relevancy — is the blueprint's, and any attempt to
+# redeclare it here is a load error.
+#
+#   nbrs run workload=cql/vector_suite_cql_impl scenario=search_perf
+#   nbrs run workload=vector_suite_blueprint \
+#            impl=cql/vector_suite_cql_impl scenario=search_perf
+
+description: |
+  CQL implementation of the vector_suite blueprint: binds literal
+  CQL statements into vector_suite_blueprint's abstract op slots
+  (SRD-108) — schema/teardown DDL, batched loads, pure-CQL
+  build-wait, and ANN probes with typed key projection.
+
+# By CATALOG name — the blueprint lives in the neutral bundled
+# catalog (top-level), not beside this file (SRD-109: web drivers
+# implement it from binaries without the CQL feature).
+implements: vector_suite_blueprint
+
+params:
+  # ── Adapter + endpoint (protocol matter).
+  adapter: cql
+  host: localhost
+  keyspace: baselines
+  replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
+  vector_idx_suffix: _vector_idx
+  meta_idx_suffix: _meta_idx
+
+  # ── SAI vector index build knobs, emitted into every
+  # `CREATE CUSTOM INDEX … WITH OPTIONS = {…}`. Documented stable
+  # defaults so the schema is reproducible across server releases
+  # rather than depending on the cluster's build-path defaults.
+  source_model: OTHER
+  maximum_node_connections: "16"
+  construction_beam_width: "100"
+  enable_hierarchy: "false"
+  neighborhood_overflow: "1.2"
+  alpha: "1.2"
+
+phases:
+
+  connect:
+    ops:
+      establish:
+        # Lightweight liveness statement — the CQL session's
+        # handshake happened at adapter init; this proves the
+        # target answers before the suite mutates anything.
+        simple: "SELECT release_version FROM system.local"
+
+  # Anti-DDL in reverse order (indexes → table). The 5-minute
+  # per-statement budget comes from the blueprint's teardown scope
+  # (`request_timeout_ms`); the CQL adapter reads it via the
+  # universal-field lookup.
+  teardown:
+    ops:
+      drop_metadata_index:
+        raw: "DROP INDEX IF EXISTS {keyspace}.{table}{meta_idx_suffix}"
+      drop_vector_index:
+        raw: "DROP INDEX IF EXISTS {keyspace}.{table}{vector_idx_suffix}"
+      drop_table:
+        raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
+
+  schema:
+    ops:
+      create_keyspace:
+        raw: |
+          CREATE KEYSPACE IF NOT EXISTS {keyspace}
+          WITH replication = {replication} AND durable_writes = true
+      create_table:
+        # Compaction thresholds set arbitrarily high so the
+        # size-tier compactor never fires spontaneously during a
+        # measured run — compaction timing belongs to the suite.
+        raw: |
+          CREATE TABLE IF NOT EXISTS {keyspace}.{table}
+          (key text PRIMARY KEY, value vector<float, {dim}>, metadata int)
+          WITH
+           compaction = {
+           'class': 'SizeTieredCompactionStrategy',
+           'min_threshold': '100000',
+           'max_threshold': '100000' }
+          AND compression = {
+           'enabled': 'false'
+          }
+      create_vector_index:
+        raw: |
+          CREATE CUSTOM INDEX IF NOT EXISTS {table}{vector_idx_suffix}
+          ON {keyspace}.{table} (value)
+          USING 'StorageAttachedIndex'
+          WITH OPTIONS = {
+            'similarity_function': '{similarity_function}',
+            'source_model': '{source_model}',
+            'maximum_node_connections': '{maximum_node_connections}',
+            'construction_beam_width': '{construction_beam_width}',
+            'enable_hierarchy': '{enable_hierarchy}',
+            'neighborhood_overflow': '{neighborhood_overflow}',
+            'alpha': '{alpha}'
+          }
+      create_metadata_index:
+        raw: |
+          CREATE CUSTOM INDEX IF NOT EXISTS {table}{meta_idx_suffix}
+          ON {keyspace}.{table} (metadata) USING 'StorageAttachedIndex'
+
+  load_train:
+    ops:
+      insert:
+        max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
+        batchtype: unlogged
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+                 ( key,    value)
+          VALUES ( '{id}', {train_vector})
+
+  fknn_rampup_data:
+    ops:
+      insert:
+        # `{meta:*}` — the fusion wildcard on the metadata bind
+        # (typed passthrough into the prepared statement).
+        max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
+        batchtype: unlogged
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+          (  key,    value,          metadata) VALUES
+          (  '{id}', {train_vector}, {meta:*})
+
+  await_index:
+    ops:
+      pending_build_work:
+        # Pure-CQL readiness: sstable/index task drain, no JMX.
+        # CQL result bodies are ARRAYS of row objects — the
+        # pointer is row-indexed (`/0/active`), never bare
+        # `/active`.
+        simple: |
+          SELECT count(*) AS active FROM system_views.sstable_tasks
+        capture:
+          active_build_tasks: /0/active
+
+  serial_probe:
+    ops:
+      select_ann:
+        # `results: keys` delivery — the CQL body is a top-level
+        # array of row objects; `[*].key` projects the key column
+        # (zero-padded numeric strings coerce to vec_i64).
+        prepared: |
+          SELECT key FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
+
+  sweep_probe:
+    ops:
+      select_ann:
+        prepared: |
+          SELECT key FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
+
+  filtered_probe:
+    ops:
+      select_ann_filtered:
+        # `{predicate:*}` — fusion wildcard on the predicate bind.
+        prepared: |
+          SELECT key FROM {keyspace}.{table}
+          WHERE metadata = {predicate:*}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
+
+  fill_until_refusal:
+    ops:
+      ins:
+        max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
+        batchtype: unlogged
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+                 ( key,    value)
+          VALUES ( '{id}', {train_vector})
+
+  stream_ingest:
+    ops:
+      insert:
+        max_batch_size: cql_server_batch_limit(cql_session(cql_session_key))
+        batchtype: unlogged
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+                 ( key,    value)
+          VALUES ( '{id}', {train_vector})
+
+  stream_gate:
+    ops:
+      tick:
+        # Cheap liveness read — the gate's hold logic reads the
+        # ingest daemon's metrics, not this op's result.
+        simple: "SELECT count(*) AS one FROM system.local"
+        capture:
+          ingested_probe: /one
+
+  stream_probe:
+    ops:
+      select_ann:
+        prepared: |
+          SELECT key FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
+
+  stream_gate_full:
+    ops:
+      tick:
+        simple: "SELECT count(*) AS one FROM system.local"
+        capture:
+          ingested_probe: /one
+
+  cold_probe:
+    ops:
+      select_ann:
+        prepared: |
+          SELECT key FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
+
+  warm_probe:
+    ops:
+      select_ann:
+        prepared: |
+          SELECT key FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
+
+  churn_write:
+    ops:
+      upsert:
+        prepared: |
+          INSERT INTO {keyspace}.{table}
+                 ( key,    value)
+          VALUES ( '{id}', {train_vector})
+
+  churn_delete:
+    ops:
+      delete:
+        prepared: |
+          DELETE FROM {keyspace}.{table} WHERE key = '{id}'
+
+  churn_probe:
+    ops:
+      select_ann:
+        prepared: |
+          SELECT key FROM {keyspace}.{table}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"

@@ -14,9 +14,10 @@
 
 description: |
   vendorx implementation of the vector_suite blueprint: literal
-  REST requests for schema/load/build-wait/search, with a login →
-  token auth flow in the connect phase and `result:` projection
-  of neighbor keys for relevancy scoring.
+  REST requests for the full suite — schema, loads, build-wait,
+  serial/sweep/filtered probes, capacity fill, streaming, churn —
+  with a login → token auth flow in the connect phase and
+  `result:` projection of neighbor keys for relevancy scoring.
 
 implements: vector_suite_blueprint
 
@@ -95,6 +96,16 @@ phases:
         headers: "api-key: {auth_token}"
         body: '{"points": [{"id": "{id}", "vector": {train_vector}}]}'
 
+  fknn_rampup_data:
+    ops:
+      insert:
+        # Same point-upsert leg plus the metadata field the
+        # filtered probes' predicates select on.
+        method: PUT
+        uri: "{base_url}/collections/{table}/points"
+        headers: "api-key: {auth_token}"
+        body: '{"points": [{"id": "{id}", "vector": {train_vector}, "metadata": {meta}}]}'
+
   await_index:
     ops:
       pending_build_work:
@@ -122,6 +133,111 @@ phases:
           keys: result[*].id
 
   sweep_probe:
+    ops:
+      select_ann:
+        method: POST
+        uri: "{base_url}/collections/{table}/search"
+        headers: "api-key: {auth_token}"
+        body: '{"vector": {query_vector}, "limit": {suite_limit}}'
+        result:
+          keys: result[*].id
+
+  filtered_probe:
+    ops:
+      select_ann_filtered:
+        # Predicate-filtered search: the metadata equality filter
+        # rides in the request body beside the vector.
+        method: POST
+        uri: "{base_url}/collections/{table}/search"
+        headers: "api-key: {auth_token}"
+        body: '{"vector": {query_vector}, "limit": {suite_limit}, "filter": {"metadata": {predicate}}}'
+        result:
+          keys: result[*].id
+
+  fill_until_refusal:
+    ops:
+      ins:
+        # Capacity fill: the same point-upsert leg; the first
+        # refusal (a failing status) is the blueprint's SUCCESSFUL
+        # terminator.
+        method: PUT
+        uri: "{base_url}/collections/{table}/points"
+        headers: "api-key: {auth_token}"
+        body: '{"points": [{"id": "{id}", "vector": {train_vector}}]}'
+
+  stream_ingest:
+    ops:
+      insert:
+        method: PUT
+        uri: "{base_url}/collections/{table}/points"
+        headers: "api-key: {auth_token}"
+        body: '{"points": [{"id": "{id}", "vector": {train_vector}}]}'
+
+  stream_gate:
+    ops:
+      tick:
+        # Cheap liveness read — the gate's hold logic reads the
+        # ingest daemon's metrics, not this op's result.
+        method: GET
+        uri: "{base_url}/health"
+        headers: "api-key: {auth_token}"
+
+  stream_probe:
+    ops:
+      select_ann:
+        method: POST
+        uri: "{base_url}/collections/{table}/search"
+        headers: "api-key: {auth_token}"
+        body: '{"vector": {query_vector}, "limit": {suite_limit}}'
+        result:
+          keys: result[*].id
+
+  stream_gate_full:
+    ops:
+      tick:
+        method: GET
+        uri: "{base_url}/health"
+        headers: "api-key: {auth_token}"
+
+  cold_probe:
+    ops:
+      select_ann:
+        method: POST
+        uri: "{base_url}/collections/{table}/search"
+        headers: "api-key: {auth_token}"
+        body: '{"vector": {query_vector}, "limit": {suite_limit}}'
+        result:
+          keys: result[*].id
+
+  warm_probe:
+    ops:
+      select_ann:
+        method: POST
+        uri: "{base_url}/collections/{table}/search"
+        headers: "api-key: {auth_token}"
+        body: '{"vector": {query_vector}, "limit": {suite_limit}}'
+        result:
+          keys: result[*].id
+
+  churn_write:
+    ops:
+      upsert:
+        method: PUT
+        uri: "{base_url}/collections/{table}/points"
+        headers: "api-key: {auth_token}"
+        body: '{"points": [{"id": "{id}", "vector": {train_vector}}]}'
+
+  churn_delete:
+    ops:
+      delete:
+        method: DELETE
+        uri: "{base_url}/collections/{table}/points/{id}"
+        headers: "api-key: {auth_token}"
+        # 404 for an id inside the rotating delete window that was
+        # already deleted is the idempotent no-op.
+        ok_status: "200-299,404"
+
+  churn_probe:
     ops:
       select_ann:
         method: POST

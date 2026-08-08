@@ -1,13 +1,15 @@
-# vector_suite.yaml — vector benchmarking suite.
+# vector_suite_cql_direct.yaml — vector benchmarking suite,
+# DIRECT-BOUND form.
 #
-# NOTE (SRD-108): the search-performance core of this suite also
-# exists as a blueprint/implementation pair —
-# vector_suite_blueprint.yaml (protocol-agnostic scaffolding +
-# typed abstract op slots) bound by vector_suite_cql.yaml
-# (`implements:`). New protocol backends implement the blueprint
-# (SRD-109 drivers build on it); sections migrate to the pair as
-# implementations land. This monolithic form remains the
-# full-suite surface meanwhile.
+# ROLE (SRD-108): this is the monolithic reference — every op
+# body inline, no composition machinery — kept for testing. The
+# canonical composed form of the same suite is the
+# blueprint/implementation pair: vector_suite_blueprint.yaml
+# (protocol-agnostic scaffolding + typed abstract op slots) bound
+# by vector_suite_cql_impl.yaml (`implements:`). The pair is
+# REQUIRED to stay result-equivalent to this document; the
+# equivalence test (nbrs/tests/vector_suite_equivalence.rs)
+# proves it model-for-model at load time.
 #
 # Extends full_cql_vector.yaml (SRD-72): schema / teardown / rampup /
 # fknn_rampup_data and the dataset+cluster params come from the
@@ -370,17 +372,20 @@ phases:
     concurrency: 1
     timeout: "{build_timeout}"
     poll:
-      until: "active_sstable_tasks == 0"
+      until: "active_build_tasks == 0"
       interval_ms: 2000
       timeout_ms: 86400000
       metric_name: build_time_s
       on_timeout: error
     ops:
-      tasks:
+      pending_build_work:
+        # CQL result bodies are ARRAYS of row objects — the
+        # pointer is row-indexed (`/0/active`, the
+        # compaction-demo convention), never bare `/active`.
         simple: |
           SELECT count(*) AS active FROM system_views.sstable_tasks
         capture:
-          active_sstable_tasks: /active
+          active_build_tasks: /0/active
 
   # Serial probe on a quiesced target: concurrency 1, full metric
   # row (ndcg beside recall), time-bounded by natural
@@ -400,9 +405,11 @@ phases:
           SELECT key FROM {keyspace}.{table}
           ORDER BY value
           ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
         evaluations:
           relevancy:
-            actual: key
+            actual: keys
             expected: ground_truth
             k: suite_k
             r: suite_limit
@@ -430,9 +437,11 @@ phases:
           SELECT key FROM {keyspace}.{table}
           ORDER BY value
           ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
         evaluations:
           relevancy:
-            actual: key
+            actual: keys
             expected: ground_truth
             k: suite_k
             r: suite_limit
@@ -461,9 +470,11 @@ phases:
           WHERE metadata = {predicate:*}
           ORDER BY value
           ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
         evaluations:
           relevancy:
-            actual: key
+            actual: keys
             expected: ground_truth
             k: suite_k
             r: suite_limit
@@ -535,9 +546,11 @@ phases:
           SELECT key FROM {keyspace}.{table}
           ORDER BY value
           ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
         evaluations:
           relevancy:
-            actual: key
+            actual: keys
             expected: ground_truth
             k: suite_k
             r: suite_limit
@@ -581,9 +594,11 @@ phases:
           SELECT key FROM {keyspace}.{table}
           ORDER BY value
           ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
         evaluations:
           relevancy:
-            actual: key
+            actual: keys
             expected: ground_truth
             k: suite_k
             r: suite_limit
@@ -606,9 +621,11 @@ phases:
           SELECT key FROM {keyspace}.{table}
           ORDER BY value
           ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
         evaluations:
           relevancy:
-            actual: key
+            actual: keys
             expected: ground_truth
             k: suite_k
             r: suite_limit
@@ -670,9 +687,11 @@ phases:
           SELECT key FROM {keyspace}.{table}
           ORDER BY value
           ANN OF {query_vector} LIMIT {suite_limit}
+        result:
+          keys: "[*].key"
         evaluations:
           relevancy:
-            actual: key
+            actual: keys
             expected: ground_truth
             k: suite_k
             r: suite_limit
@@ -695,3 +714,68 @@ report:
       legend: br
       y1: (cycles_total_rate, recall_mean){phase=~".*probe"} by (phase,conc)
       series: phase,conc
+
+  # Key benchmark metrics: the headline numbers vector-database
+  # benchmarking tools report — load duration, index-readiness wait,
+  # serial latency p99, recall/ndcg, max QPS — plus its
+  # per-concurrency qps/latency/recall lists and the filtered /
+  # streaming analogs where those sections ran. Latencies are
+  # normalized to milliseconds in-query (service time is stored
+  # in nanoseconds per the project standard).
+  key_metrics_section: |
+    file key_metrics.md as 'Vector Search Key Metrics'
+
+    text key_metrics_overview as "Overview":
+     Key vector-search benchmark metrics for this run. Mapping:
+     load_duration_s is the measured bulk-load wall clock;
+     build_wait_s is the index-readiness wait (the await_index
+     poll metric); serial_p99_ms / serial_recall / serial_ndcg
+     come from the quiesced serial probe; max_qps is the best
+     sustained throughput across the concurrency sweep. The
+     concurrency table carries the per-level qps / latency /
+     recall lists — recall is measured PER OP at every operating
+     point, never inferred from the serial pass. The filtered and
+     streaming tables populate when those scenarios run; staged
+     streaming recall is retrievable-neighbor recall
+     (upper-bounded by the inserted fraction).
+
+    table headline_metrics:
+      query: load_duration_s: max(insert_seconds{phase="load_train"})
+      query: build_wait_s: max(build_time_s)
+      query: serial_p99_ms: avg(cycles_servicetime_p99{phase="serial_probe"}) / 1000000
+      query: serial_mean_ms: avg(cycles_servicetime_mean{phase="serial_probe"}) / 1000000
+      query: serial_recall: avg(recall_mean{phase="serial_probe"})
+      query: serial_ndcg: avg(ndcg_mean{phase="serial_probe"})
+      query: max_qps: max(cycles_total_rate{phase="sweep_probe"})
+
+    table concurrency_sweep:
+      group_by: conc
+      query: qps: avg(cycles_total_rate{phase="sweep_probe"}) by (conc)
+      query: p50_ms: avg(cycles_servicetime_p50{phase="sweep_probe"}) by (conc) / 1000000
+      query: p99_ms: avg(cycles_servicetime_p99{phase="sweep_probe"}) by (conc) / 1000000
+      query: mean_ms: avg(cycles_servicetime_mean{phase="sweep_probe"}) by (conc) / 1000000
+      query: recall: avg(recall_mean{phase="sweep_probe"}) by (conc)
+      query: ndcg: avg(ndcg_mean{phase="sweep_probe"}) by (conc)
+
+    table filtered_search:
+      group_by: profile
+      query: recall: avg(recall_mean{phase="filtered_probe"}) by (profile)
+      query: ndcg: avg(ndcg_mean{phase="filtered_probe"}) by (profile)
+      query: qps: avg(cycles_total_rate{phase="filtered_probe"}) by (profile)
+      query: p99_ms: avg(cycles_servicetime_p99{phase="filtered_probe"}) by (profile) / 1000000
+
+    table streaming_stages:
+      group_by: stage_frac
+      query: recall: avg(recall_mean{phase="stream_probe"}) by (stage_frac)
+      query: qps: avg(cycles_total_rate{phase="stream_probe"}) by (stage_frac)
+      query: p99_ms: avg(cycles_servicetime_p99{phase="stream_probe"}) by (stage_frac) / 1000000
+
+    text capacity_note as "Capacity":
+     The capacity analog (max load before the first refusal) is
+     the fill_until_refusal batch count below; rows_inserted_total
+     is session-wide and reads as the loaded vector count only
+     for capacity-scenario sessions.
+
+    table capacity_fill:
+      query: fill_batches: sum(cycles_total{phase="fill_until_refusal"})
+      query: rows_inserted_total: max(rows_inserted_total)

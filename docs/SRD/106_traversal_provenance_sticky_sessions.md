@@ -6,7 +6,9 @@ skip-validity gates, `stick_session` + `--session new`,
 `session_notice` banner, the suite's `traverse` scenario +
 provenance classes + table namespaces, and e2e coverage
 (`prereq_filter`, `refine_prereq_validity`, `stick_session`).
-Companion to the `cql/vector_suite` suite; the mechanisms are
+Companion to the vector_suite workloads (`vector_suite_blueprint`
+plus its implementation modules, and the direct-bound
+`cql/vector_suite_cql_direct` reference); the mechanisms are
 general.
 
 ## Problem
@@ -138,7 +140,7 @@ skip-or-run. The filter continues to gate measurement and destructive
 phases exactly as today.
 
 ```
-nbrs refine workload=cql/vector_suite scenario=traverse \
+nbrs refine workload=cql/vector_suite_cql_impl scenario=traverse \
      phases='sweep_probe'          # runs sweep only; schema/load/
                                    # build stay in the walk and skip
                                    # when valid, run when not
