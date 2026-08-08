@@ -35,6 +35,7 @@ pub fn root() -> Command {
             crate::report_cmd::table_alias_spec(),
             crate::metrics_cmd::spec(),
             crate::describe::spec(),
+            crate::blueprint_cmd::spec(),
             crate::copy_cmd::spec(),
             crate::diag_cmd::spec(),
             crate::bench::spec(),

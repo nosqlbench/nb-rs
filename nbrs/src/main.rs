@@ -9,6 +9,7 @@
 //!   nbrs file.yaml scenario_name [param=value ...]
 
 mod bench;
+mod blueprint_cmd;
 mod bundled;
 mod check_cmd;
 mod copy_cmd;

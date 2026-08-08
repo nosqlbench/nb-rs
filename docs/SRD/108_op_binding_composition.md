@@ -139,6 +139,41 @@ The interface types use the polydat DSL type vocabulary (`u64`,
 and *early*; the synthesis check is the *proof*, in the same
 place it has always been.
 
+### Authoring support — `nbrs blueprint`
+
+The `blueprint` command umbrella turns the typed interfaces into
+scaffolding for implementation authors:
+
+- `nbrs blueprint list` — bundled workloads carrying unbound
+  `abstract:` slots, with slot counts (candidates are text-scanned
+  then actually parsed — no unverified claims).
+- `nbrs blueprint template <blueprint> [<out.yaml>]` — generate an
+  implementation skeleton from the blueprint: `implements:`
+  pre-set, the blueprint's declared params listed as reference
+  comments, one stub op per abstract slot with its `needs` /
+  `yields` / `results` contracts as guidance comments, and the
+  delivery surfaces pre-wired (`capture:` entries per yield,
+  `result:` path entries per results wire) with TODO markers.
+  The generated file BINDS against its blueprint as-is — total
+  slot coverage and every promised wire declared — so filling the
+  TODOs is protocol work, not plumbing work. Existing output
+  files are never overwritten.
+
+### Reference composition — the vector suite
+
+The FULL vector benchmarking suite ships as the reference
+blueprint/implementation pair: `vector_suite_blueprint` (neutral
+catalog; every scenario — traverse, capacity, load_build,
+search_perf, filtered_grid, streaming, cold_warm, churn — with 24
+typed abstract slots) bound by `cql/vector_suite_cql_impl`
+(literal CQL) or a web driver library (`drivers/vendorx`). The
+direct-bound monolith `cql/vector_suite_cql_direct` is kept as
+the testing reference, and
+`nbrs/tests/vector_suite_equivalence.rs` proves the pair
+model-equivalent to it — same scenario trees, phase scaffolding,
+op bodies, and effective params, modulo only the pair's `connect`
+phase (SRD-109 session establishment).
+
 ### Provenance interaction (SRD-106/107)
 
 Binding happens before the workload model reaches provenance, so
