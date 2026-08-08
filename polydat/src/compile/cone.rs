@@ -349,6 +349,17 @@ mod jit_impl {
         let mut roots: Vec<usize> = components.keys().copied().collect();
         roots.sort_unstable();
 
+        // Consumer adjacency over the ORIGINAL node graph — the
+        // convexity walk below routes through it.
+        let mut consumers: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, wiring) in dag.wiring.iter().enumerate() {
+            for src in wiring {
+                if let WireSource::NodeOutput(j, _) = src {
+                    consumers[*j].push(i);
+                }
+            }
+        }
+
         let mut nodes_opt: Vec<Option<Box<dyn PolydatNode>>> =
             std::mem::take(&mut dag.nodes).into_iter().map(Some).collect();
         let mut cones: Vec<(ConePlan, JitConeNode)> = Vec::new();
@@ -356,6 +367,27 @@ mod jit_impl {
         for root in roots {
             let members = &components[&root];
             if members.len() < min_members {
+                continue;
+            }
+            // Connected components are not necessarily CONVEX: an
+            // eligible→ineligible→eligible sandwich whose ends
+            // connect through some other eligible path lands both
+            // ends in one component while the middle stays kept.
+            // Fusing that component makes the kept middle both a
+            // consumer of the cone and one of its producers — a
+            // cycle in the spliced graph (the rebuild topo-sort
+            // assert). Detection: walk the consumer graph from the
+            // members' external consumers, only through
+            // non-members (other cones' members are ordinary route
+            // nodes here, which also covers cross-cone quotient
+            // cycles); reaching a member proves an external path
+            // re-enters this cone. Per the module's fallback rule,
+            // such a component stays on the interpreter.
+            if !component_is_convex(members, &consumers, n) {
+                audit_skip(
+                    members.len(),
+                    "non-convex component (an external path re-enters the cone)",
+                );
                 continue;
             }
             let Some(plan) = plan_cone(dag, members, &nodes_opt) else {
@@ -396,6 +428,44 @@ mod jit_impl {
             return;
         }
         rebuild(dag, nodes_opt, cones);
+    }
+
+    /// True when no external path leads from any member's output
+    /// back into the component: walk the consumer graph starting
+    /// at the members' non-member consumers, routing only through
+    /// non-members; reaching a member proves re-entry (a cycle in
+    /// the spliced quotient graph).
+    fn component_is_convex(
+        members: &[usize],
+        consumers: &[Vec<usize>],
+        n: usize,
+    ) -> bool {
+        let mut is_member = vec![false; n];
+        for &m in members {
+            is_member[m] = true;
+        }
+        let mut seen = vec![false; n];
+        let mut stack: Vec<usize> = Vec::new();
+        for &m in members {
+            for &c in &consumers[m] {
+                if !is_member[c] && !seen[c] {
+                    seen[c] = true;
+                    stack.push(c);
+                }
+            }
+        }
+        while let Some(x) = stack.pop() {
+            for &c in &consumers[x] {
+                if is_member[c] {
+                    return false;
+                }
+                if !seen[c] {
+                    seen[c] = true;
+                    stack.push(c);
+                }
+            }
+        }
+        true
     }
 
     /// Compute the cone's boundaries; `None` rejects the component

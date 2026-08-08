@@ -350,21 +350,36 @@ fn generate_module(rng: &mut Rng, sigs: &[FuncSig], n_bindings: usize) -> String
     out
 }
 
-#[test]
-fn random_dags_compile_or_fail_cleanly() {
-    let seed: u64 = std::env::var("FUZZ_SEED").ok()
-        .and_then(|s| s.parse().ok()).unwrap_or(0xDEAD_BEEFu64);
-    let iterations: usize = std::env::var("FUZZ_ITERATIONS").ok()
-        .and_then(|s| s.parse().ok()).unwrap_or(500);
+/// One fuzz pass: `iterations` random modules drawn from `seed`.
+/// Returns human-readable invariant violations (empty = clean),
+/// each carrying the seed and a reproduction line. Shared by the
+/// per-commit sample test and the manual superfuzz sweep.
+///
+/// NOTE the draw pool is the REGISTRY, so the same seed explores
+/// different programs per feature set — `cargo test --workspace`
+/// (feature unification, largest registry) is a strictly stronger
+/// surface than `cargo test -p polydat`.
+fn run_fuzz_pass(seed: u64, iterations: usize) -> Vec<String> {
+    // Per-seed failure cap: a systematic defect (e.g. one node
+    // panicking on every draw) floods the report without adding
+    // signal; eight distinct repros per seed is plenty.
+    const MAX_FAILURES_PER_SEED: usize = 8;
 
     let sigs = fuzzable_sigs();
     assert!(!sigs.is_empty(), "no fuzzable signatures found — registry wiring broken?");
 
     let mut rng = Rng::new(seed);
-    let mut cryptic_errors: Vec<(usize, String, String)> = Vec::new();
-    let mut rogue_adapters: Vec<(usize, String, String)> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    let repro = |i: usize| format!(
+        "reproduce: FUZZ_SEED={seed} FUZZ_ITERATIONS={} cargo test --workspace \
+         --test fuzz_type_adapters random_dags", i + 1);
 
     for i in 0..iterations {
+        if failures.len() >= MAX_FAILURES_PER_SEED {
+            failures.push(format!(
+                "[seed {seed:#x}] … stopping this seed after {MAX_FAILURES_PER_SEED} failures"));
+            break;
+        }
         let n = 3 + rng.range(8);
         let source = generate_module(&mut rng, &sigs, n);
 
@@ -379,12 +394,17 @@ fn random_dags_compile_or_fail_cleanly() {
         // a process-level abort.
         let result = match result {
             Ok(r) => r,
-            Err(panic) => panic!(
-                "compiler panicked on iteration {i}:\n  source:\n{source}\n  panic: {:?}",
-                panic.downcast_ref::<&str>().copied()
-                    .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
-                    .unwrap_or("<non-string panic>"),
-            ),
+            Err(panic) => {
+                failures.push(format!(
+                    "[seed {seed:#x}] compiler panicked on iteration {i}:\n  source:\n{source}\n  \
+                     panic: {:?}\n  {}",
+                    panic.downcast_ref::<&str>().copied()
+                        .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+                        .unwrap_or("<non-string panic>"),
+                    repro(i),
+                ));
+                continue;
+            }
         };
 
         match result {
@@ -406,7 +426,9 @@ fn random_dags_compile_or_fail_cleanly() {
                     || msg.to_lowercase().contains("index out of bounds")
                     || msg.to_lowercase().contains("unreachable")
                 {
-                    cryptic_errors.push((i, source.clone(), msg));
+                    failures.push(format!(
+                        "[seed {seed:#x}] iteration {i} produced a cryptic error message.\n  \
+                         error: {msg}\n  source:\n{source}\n  {}", repro(i)));
                 }
             }
             Ok(_) => {
@@ -417,27 +439,85 @@ fn random_dags_compile_or_fail_cleanly() {
                 for e in log.events() {
                     if let CompileEvent::TypeAdapterInserted { adapter, .. } = e
                         && !adapter_label_is_known(adapter) {
-                            rogue_adapters.push((i, source.clone(), adapter.clone()));
+                            failures.push(format!(
+                                "[seed {seed:#x}] iteration {i} inserted an unrecognised \
+                                 adapter '{adapter}'.\n\
+                                 Update `expected_adapt`/`adapter_label_is_known` and the \
+                                 compiler's\n`auto_adapter` table together.\n  \
+                                 source:\n{source}\n  {}", repro(i)));
                         }
                 }
             }
         }
     }
+    failures
+}
 
-    let mut failures: Vec<String> = Vec::new();
-    for (i, src, msg) in &cryptic_errors {
-        failures.push(format!(
-            "iteration {i} produced a cryptic error message.\n  error: {msg}\n  source:\n{src}"));
-    }
-    for (i, src, adapter) in &rogue_adapters {
-        failures.push(format!(
-            "iteration {i} inserted an unrecognised adapter '{adapter}'.\n\
-             Update `expected_adapt`/`adapter_label_is_known` and the compiler's\n\
-             `auto_adapter` table together.\n  source:\n{src}"));
-    }
+#[test]
+fn random_dags_compile_or_fail_cleanly() {
+    let seed: u64 = std::env::var("FUZZ_SEED").ok()
+        .and_then(|s| s.parse().ok()).unwrap_or(0xDEAD_BEEFu64);
+    let iterations: usize = std::env::var("FUZZ_ITERATIONS").ok()
+        .and_then(|s| s.parse().ok()).unwrap_or(500);
+    let failures = run_fuzz_pass(seed, iterations);
     assert!(failures.is_empty(),
         "fuzz invariants violated ({} failures):\n\n{}",
         failures.len(), failures.join("\n---\n"));
+}
+
+/// MANUAL SUPERFUZZ — the deep sweep the per-commit sample can't
+/// afford. `#[ignore]`d; run it deliberately:
+///
+/// ```text
+/// cargo test --workspace --test fuzz_type_adapters -- --ignored
+/// ```
+///
+/// Sweeps `SUPERFUZZ_SEEDS` seeds (default 64) × `FUZZ_ITERATIONS`
+/// modules each (default 2000), starting at `FUZZ_SEED` (default
+/// 0xDEADBEEF). Use `--workspace` — feature unification gives the
+/// largest registry and therefore the widest program space; a
+/// `-p polydat` run fuzzes a strict subset. Every violation
+/// carries its own single-seed reproduction line.
+#[test]
+#[ignore = "manual superfuzz — minutes of runtime; run with `-- --ignored`"]
+fn superfuzz_sampler() {
+    let base: u64 = std::env::var("FUZZ_SEED").ok()
+        .and_then(|s| s.parse().ok()).unwrap_or(0xDEAD_BEEFu64);
+    let seeds: u64 = std::env::var("SUPERFUZZ_SEEDS").ok()
+        .and_then(|s| s.parse().ok()).unwrap_or(64);
+    let iterations: usize = std::env::var("FUZZ_ITERATIONS").ok()
+        .and_then(|s| s.parse().ok()).unwrap_or(2000);
+
+    let mut all: Vec<String> = Vec::new();
+    for k in 0..seeds {
+        // Rng::new decorrelates adjacent integers via the golden-
+        // ratio multiply, so base+k gives independent trajectories.
+        let seed = base.wrapping_add(k);
+        let failures = run_fuzz_pass(seed, iterations);
+        if !failures.is_empty() {
+            eprintln!("superfuzz: seed {seed:#x}: {} violation(s)", failures.len());
+        }
+        if k % 8 == 7 {
+            eprintln!("superfuzz: {}/{seeds} seeds swept, {} violation(s) so far",
+                k + 1, all.len() + failures.len());
+        }
+        all.extend(failures);
+    }
+
+    // Bound the panic payload — repros are self-contained, so the
+    // first screenful carries everything needed.
+    let mut report = all.join("\n---\n");
+    const MAX_REPORT: usize = 30_000;
+    if report.len() > MAX_REPORT {
+        let mut cut = MAX_REPORT;
+        while !report.is_char_boundary(cut) { cut -= 1; }
+        report.truncate(cut);
+        report.push_str("\n… (report truncated)");
+    }
+    assert!(all.is_empty(),
+        "superfuzz invariants violated ({} failures across {seeds} seeds × \
+         {iterations} iterations):\n\n{report}",
+        all.len());
 }
 
 /// Recognise the `{SrcType:?}→{DstType:?}` labels the compiler writes
