@@ -1544,8 +1544,11 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 .map(std::path::Path::new)
                 .and_then(|p| p.parent().map(|d| d.to_path_buf())))
             .flatten();
+        let bundled_origin = workload_is_bundled
+            .then(|| workload_file.as_deref())
+            .flatten();
         let (mut blueprint, blueprint_id) =
-            load_secondary_workload(&target, &params, base_dir.as_deref())?;
+            load_secondary_workload(&target, &params, base_dir.as_deref(), bundled_origin)?;
         crate::diag!(crate::observer::LogLevel::Info,
             "implements: binding '{}' into blueprint '{blueprint_id}'",
             workload_file.as_deref().unwrap_or("<inline>"));
@@ -1558,8 +1561,11 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
                 .map(std::path::Path::new)
                 .and_then(|p| p.parent().map(|d| d.to_path_buf())))
             .flatten();
+        let bundled_origin = workload_is_bundled
+            .then(|| workload_file.as_deref())
+            .flatten();
         let (implementation, impl_id) =
-            load_secondary_workload(&impl_ref, &params, base_dir.as_deref())?;
+            load_secondary_workload(&impl_ref, &params, base_dir.as_deref(), bundled_origin)?;
         let declared = implementation.implements.clone().ok_or_else(|| format!(
             "impl='{impl_ref}' resolves to '{impl_id}', which declares no \
              `implements:` — an implementation module must name its \
@@ -1570,7 +1576,8 @@ async fn run_execution(host: &SessionHost, args: &[String], observer: Arc<dyn cr
         // IMPL doc's own directory (extends precedent).
         let impl_dir = std::path::Path::new(&impl_id).parent()
             .map(|d| d.to_path_buf());
-        let declared_id = workload_ref_identity(&declared, impl_dir.as_deref())?;
+        let declared_id = workload_ref_identity(
+            &declared, impl_dir.as_deref(), Some(impl_id.as_str()))?;
         let invoked_id = workload_file.clone().map(|f| canonical_identity(&f))
             .unwrap_or_default();
         if declared_id != invoked_id {
@@ -5402,8 +5409,9 @@ fn load_secondary_workload(
     reference: &str,
     params: &HashMap<String, String>,
     base_dir: Option<&std::path::Path>,
+    bundled_origin: Option<&str>,
 ) -> Result<(nbrs_workload::model::Workload, String), String> {
-    match resolve_secondary_ref(reference, base_dir)? {
+    match resolve_secondary_ref(reference, base_dir, bundled_origin)? {
         ResolvedWorkload::Path(path) => {
             let workload = nbrs_workload::parse::parse_workload_from_path(
                 std::path::Path::new(&path), params,
@@ -5428,8 +5436,9 @@ fn load_secondary_workload(
 fn workload_ref_identity(
     reference: &str,
     base_dir: Option<&std::path::Path>,
+    bundled_origin: Option<&str>,
 ) -> Result<String, String> {
-    match resolve_secondary_ref(reference, base_dir)? {
+    match resolve_secondary_ref(reference, base_dir, bundled_origin)? {
         ResolvedWorkload::Path(path) => Ok(canonical_identity(&path)),
         ResolvedWorkload::Bundled(bundled) => Ok(bundled.name.to_string()),
     }
@@ -5557,6 +5566,7 @@ fn apply_driver_manifest(
 fn resolve_secondary_ref(
     reference: &str,
     base_dir: Option<&std::path::Path>,
+    bundled_origin: Option<&str>,
 ) -> Result<ResolvedWorkload, String> {
     if let Some(dir) = base_dir {
         let candidate = dir.join(reference);
@@ -5565,7 +5575,32 @@ fn resolve_secondary_ref(
                 candidate.display().to_string()));
         }
     }
-    resolve_workload(reference)
+    match resolve_workload(reference) {
+        Ok(resolved) => Ok(resolved),
+        Err(primary_err) => {
+            // Catalog fallbacks, mirroring `extends:` (SRD-85):
+            // files reference siblings by filename, catalog names
+            // carry no extension — strip it and the `./` prefix,
+            // then try the name bare and inside the referring
+            // bundled document's namespace, so
+            // `implements: ./blueprint.yaml` works identically on
+            // disk and from the embedded catalog.
+            let stem = reference
+                .strip_suffix(".yaml")
+                .or_else(|| reference.strip_suffix(".yml"))
+                .unwrap_or(reference);
+            let stem = stem.strip_prefix("./").unwrap_or(stem);
+            if let Some(b) = nbrs_workload::catalog::lookup(stem) {
+                return Ok(ResolvedWorkload::Bundled(b));
+            }
+            if let Some(ns) = bundled_origin.and_then(|o| o.rsplit_once('/')).map(|(ns, _)| ns) {
+                if let Some(b) = nbrs_workload::catalog::lookup(&format!("{ns}/{stem}")) {
+                    return Ok(ResolvedWorkload::Bundled(b));
+                }
+            }
+            Err(primary_err)
+        }
+    }
 }
 
 /// Canonicalize a workload file path for identity comparison;

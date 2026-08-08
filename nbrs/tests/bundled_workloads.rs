@@ -60,6 +60,34 @@ fn nbrs_in(sandbox: &Sandbox, args: &[&str]) -> (String, String, bool) {
     )
 }
 
+#[test]
+fn bundled_impl_implements_resolves_sibling_blueprint() {
+    // `examples/composition/reported_impl_testkit` declares
+    // `implements: ./reported_blueprint.yaml`; invoked by CATALOG
+    // name there is no file directory, so the reference must
+    // resolve namespace-relative in the catalog — the same
+    // sibling-by-filename idiom `extends:` already honors
+    // (SRD-85). Both invocation forms bind and run.
+    let sb = Sandbox::new("ns-implements");
+    let (stdout, stderr, ok) = nbrs_in(&sb, &[
+        "run", "workload=examples/composition/reported_impl_testkit",
+        "tui=off",
+    ]);
+    assert!(ok, "catalog impl must pull its sibling blueprint:\n{stdout}\n{stderr}");
+    assert!(format!("{stdout}{stderr}").contains("2 completed, 0 failed"),
+        "both phases complete:\n{stdout}\n{stderr}");
+
+    let sb = Sandbox::new("ns-implements-2");
+    let (stdout, stderr, ok) = nbrs_in(&sb, &[
+        "run", "workload=examples/composition/reported_blueprint",
+        "impl=examples/composition/reported_impl_testkit",
+        "tui=off",
+    ]);
+    assert!(ok, "catalog blueprint + impl= must bind:\n{stdout}\n{stderr}");
+    assert!(format!("{stdout}{stderr}").contains("2 completed, 0 failed"),
+        "both phases complete:\n{stdout}\n{stderr}");
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Running bundled workloads by catalog name
 // ─────────────────────────────────────────────────────────────────
