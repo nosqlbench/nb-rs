@@ -116,6 +116,15 @@ pub struct ReportItem {
     /// the group order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_file: Option<String>,
+    /// Declaration ordinal across the whole `report:` block,
+    /// stamped by [`parse_report`] and persisted as an
+    /// `order <n>` directive line, so a db-sourced render
+    /// (`report.<name>` metadata rows, which iterate in key
+    /// order) can restore declaration order. `serde(skip)`:
+    /// positional metadata derived at parse, not document
+    /// content.
+    #[serde(skip)]
+    pub order: Option<usize>,
     /// Plot-only directive: when `true`, the renderer
     /// emits a companion table immediately after the plot
     /// in the same markdown file, sharing the plot's
@@ -267,6 +276,14 @@ impl ReportItem {
         out.push_str(self.kind.as_str());
         out.push(' ');
         out.push_str(&self.name);
+        // Text headers need the trailing colon: it is the parser's
+        // "named" signal (a bare `text <word>` line is the legacy
+        // anonymous single-line body form). Without it the
+        // round-trip anonymized the item and leaked the name into
+        // the rendered prose.
+        if matches!(self.kind, Kind::Text) {
+            out.push(':');
+        }
         out.push('\n');
 
         // `as <stem>` and `label "<text>"` come first when
@@ -285,6 +302,11 @@ impl ReportItem {
         if let Some(target) = &self.target_file {
             out.push_str("  target ");
             out.push_str(target);
+            out.push('\n');
+        }
+        if let Some(order) = self.order {
+            out.push_str("  order ");
+            out.push_str(&order.to_string());
             out.push('\n');
         }
         if self.with_table {
@@ -475,6 +497,18 @@ pub fn parse_report(value: &serde_json::Value) -> Result<ParsedReport, String> {
             ));
         }
         report.groups.push(group);
+    }
+
+    // Stamp the declaration ordinal across the whole block. The
+    // persisted form (`order <n>`) carries it through the db so
+    // `nbrs report` renders items in declaration order even when
+    // the metadata rows iterate alphabetically by key.
+    let mut ordinal: usize = 0;
+    for group in &mut report.groups {
+        for item in &mut group.items {
+            item.order = Some(ordinal);
+            ordinal += 1;
+        }
     }
 
     Ok(ParsedReport { report, warnings })
@@ -744,16 +778,21 @@ impl PartialItem {
             style: Style::default(),
             body: String::new(),
             target_file: None,
+            order: None,
             with_table: false,
             with_tables: Vec::new(),
         };
 
         // Text items: body is verbatim markdown. Pull out a
         // leading `label "..."` line if present (so the heading
-        // can carry a title), but every other line stays as
-        // prose. Style / series / `as` directives don't apply
-        // to text — preserved in body if the user wrote them
-        // (most likely they meant prose).
+        // can carry a title) plus the identity directives the
+        // persisted round-trip emits — `target <file>` (only when
+        // the remainder is a single token, so prose that happens
+        // to start with the word stays prose) and `order <n>`
+        // (only when the remainder is a number). Every other
+        // line stays as prose. Style / series / `as` directives
+        // don't apply to text — preserved in body if the user
+        // wrote them (most likely they meant prose).
         if matches!(self.kind, Kind::Text) {
             let mut body_lines: Vec<String> = Vec::new();
             for line in &self.directives {
@@ -764,9 +803,22 @@ impl PartialItem {
                 }
                 if let Some(rest) = strip_directive_keyword(trimmed, "label") {
                     item.label = Some(parse_quoted_or_bare(rest));
-                } else {
-                    body_lines.push(line.clone());
+                    continue;
                 }
+                if let Some(rest) = strip_directive_keyword(trimmed, "target") {
+                    let rest = rest.trim();
+                    if !rest.is_empty() && !rest.contains(char::is_whitespace) {
+                        item.target_file = Some(rest.to_string());
+                        continue;
+                    }
+                }
+                if let Some(rest) = strip_directive_keyword(trimmed, "order") {
+                    if let Ok(n) = rest.trim().parse::<usize>() {
+                        item.order = Some(n);
+                        continue;
+                    }
+                }
+                body_lines.push(line.clone());
             }
             item.body = body_lines.join("\n");
             return Ok(item);
@@ -794,6 +846,15 @@ impl PartialItem {
             if let Some(rest) = strip_directive_keyword(line, "target") {
                 item.target_file = Some(rest.trim().to_string());
                 continue;
+            }
+            // `order <n>` — declaration ordinal, emitted by the
+            // persisted form so db-sourced renders keep the
+            // workload's declaration order.
+            if let Some(rest) = strip_directive_keyword(line, "order") {
+                if let Ok(n) = rest.trim().parse::<usize>() {
+                    item.order = Some(n);
+                    continue;
+                }
             }
             // `with-tables: [label1, label2, …]` — plot-only
             // multi-table fan-out. Emits one companion
@@ -1282,6 +1343,59 @@ empty_block: ""
 "#);
         assert_eq!(p.report.groups.len(), 1);
         assert!(p.warnings.iter().any(|w| w.contains("empty_block")));
+    }
+
+    #[test]
+    fn persisted_text_item_round_trips_name_target_and_order() {
+        // The full text-identity round trip: named text with a
+        // heading label, a file target, and a declaration
+        // ordinal must come back from the persisted form with
+        // NOTHING leaked into the prose body. (Before this, the
+        // header lost its named signal — the name and `target`
+        // line rendered as prose and the section fell back to
+        // summary.md.)
+        let item = ReportItem {
+            kind: Kind::Text,
+            name: "key_metrics_overview".to_string(),
+            label: Some("Overview".to_string()),
+            target_file: Some("key_metrics.md".to_string()),
+            order: Some(3),
+            body: "First prose line.\ntarget audience is prose, not a directive.".to_string(),
+            ..Default::default()
+        };
+        let persisted = item.to_yaml_directive_string();
+        let back = parse_persisted_item(&persisted).expect("round-trip parse");
+        assert_eq!(back.kind, Kind::Text);
+        assert_eq!(back.name, "key_metrics_overview");
+        assert_eq!(back.label.as_deref(), Some("Overview"));
+        assert_eq!(back.target_file.as_deref(), Some("key_metrics.md"));
+        assert_eq!(back.order, Some(3));
+        // Prose survives verbatim — including a line that merely
+        // STARTS with the word `target` (multi-token ⇒ prose).
+        assert_eq!(back.body, item.body);
+    }
+
+    #[test]
+    fn parse_report_stamps_declaration_ordinals() {
+        let yaml: serde_json::Value = serde_yaml::from_str(r#"
+section_a: |
+  table alpha:
+    query: v: avg(x)
+  text zeta as "Z":
+   prose
+section_b: |
+  table beta:
+    query: v: avg(y)
+"#).expect("yaml");
+        let parsed = parse_report(&yaml).expect("parse report");
+        let orders: Vec<(String, Option<usize>)> = parsed.report.items()
+            .map(|i| (i.name.clone(), i.order))
+            .collect();
+        assert_eq!(orders, vec![
+            ("alpha".to_string(), Some(0)),
+            ("zeta".to_string(), Some(1)),
+            ("beta".to_string(), Some(2)),
+        ]);
     }
 
     #[test]

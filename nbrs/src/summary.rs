@@ -1115,7 +1115,7 @@ pub fn summary_command(args: &[String]) {
         }
         print!("{}", rendered.console);
     }
-    if !any_nonempty {
+    if !any_nonempty && !opts.empty_ok {
         std::process::exit(1);
     }
 }
@@ -1228,6 +1228,12 @@ struct SummaryOpts {
     /// SRD-46: display label injected by `nbrs report`. Falls
     /// back to a prettified name.
     label: Option<String>,
+    /// `--empty-ok` — an all-empty render returns instead of
+    /// `exit(1)`. Injected by the `nbrs report` pipeline (and the
+    /// post-run auto-render): a report table whose phases did not
+    /// run this session legitimately has no rows, and one empty
+    /// table must not abort the remaining items — or the process.
+    empty_ok: bool,
 }
 
 /// Whether a token is a `key=value` run/read param (`session=…`, `phases=…`,
@@ -1315,6 +1321,7 @@ fn parse_args(args: &[String]) -> SummaryOpts {
                 }
             }
             "--no-report" => opts.report_disabled = true,
+            "--empty-ok" => opts.empty_ok = true,
             // Global session flags — already consumed by
             // `read_session_dir` above. Swallow the value so
             // it doesn't drift into `opts.spec` as a stray

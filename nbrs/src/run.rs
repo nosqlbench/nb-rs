@@ -621,7 +621,7 @@ fn print_post_run_reports(
     // (`args_request_dryrun` / SRD-44), so `latest` still points at the previous
     // REAL session. Falling back to it here made every post-run artifact of a
     // dry-run land in that unrelated session — scenario_tree.txt written into it,
-    // its summary.md rewritten, and `auto_render_plots` / `auto_inject_details`
+    // its summary.md rewritten, and `render_session_reports` / `auto_inject_details`
     // reading ITS metrics.db. Verified by running a dry-run and watching a
     // finished session's files change. The CLI never learns the dry-run's own
     // directory (the runner does not report it back), so the honest answer is
@@ -634,15 +634,25 @@ fn print_post_run_reports(
         };
 
     // SRD-46 auto-render: when the workload completed without
-    // being aborted by the error handler, render every plot
-    // item the runner persisted into the session db. Tables
-    // were already rendered inline by the runner. Plots have
-    // to land here because plot_metrics lives in this crate
-    // (cross-crate from nbrs-runtime); same fault-gate as
-    // tables (run_result.is_ok() ⇒ render, else skip).
+    // being aborted by the error handler, render every report
+    // item the runner persisted into the session db — plots,
+    // tables, text sections, and `file` targets — through the
+    // same pipeline as `nbrs report all`. This has to land here
+    // because plot_metrics lives in this crate (cross-crate from
+    // nbrs-runtime). Non-exiting: one report's failure must not
+    // flip a successful run's exit code; no-data (the normal
+    // dryrun/short-run condition) is a warning.
     if run_result.is_ok() {
         if let Some(dir) = session_dir.as_deref() {
-            auto_render_plots(dir);
+            match crate::report_cmd::render_session_reports(&dir.join("metrics.db")) {
+                Ok(_) => {}
+                Err(failures) => {
+                    for f in failures {
+                        nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Error,
+                            "post-run report: {f}");
+                    }
+                }
+            }
             auto_inject_details(dir);
         }
     }
@@ -684,93 +694,6 @@ fn print_post_run_reports(
     // already there); the console stays the adapter's.
     if !silent_console {
         print_post_run_summary(run_state, run_result, session_dir.as_deref());
-    }
-}
-
-/// Render every persisted plot item from
-/// `<session_dir>/metrics.db` post-run (SRD-46). Each plot
-/// becomes a PNG in the session directory and a heading in
-/// `summary.md`. Failures are logged and don't abort other
-/// plots — auto-rendering is best-effort.
-fn auto_render_plots(session_dir: &std::path::Path) {
-    let db_path = session_dir.join("metrics.db");
-    if !db_path.exists() { return; }
-    let conn = match rusqlite::Connection::open(&db_path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    // Latest execution's report defs (per-execution metadata), with a
-    // legacy session_metadata fallback. `def_exec_id` is the execution
-    // that DECLARED these reports — a workload's report is workload-
-    // scoped, so each plot is narrowed to that execution's data below
-    // (the table path already passes `Some(exec_id)`). `None` ⇒ legacy
-    // pre-split db (one execution, no scoping needed).
-    let (def_exec_id, entries) =
-        nbrs_metrics::reporters::sqlite::latest_execution_with_metadata_like(&conn, "report.%");
-    let mut idx: usize = 0;
-    let mut total: usize = 0;
-    for (_key, value) in &entries {
-        idx += 1;
-        let mut lines = value.lines();
-        let head = match lines.next() { Some(h) => h, None => continue };
-        let (kind, name) = if let Some(rest) = head.strip_prefix("plot ") {
-            ("plot", rest.trim().to_string())
-        } else if head.starts_with("table ") {
-            // Tables already rendered inline by the runner.
-            continue;
-        } else {
-            continue;
-        };
-        let mut label: Option<String> = None;
-        let mut body_lines: Vec<&str> = Vec::new();
-        for line in lines {
-            if let Some(rest) = line.strip_prefix("label ") {
-                let s = rest.trim();
-                let s = s.strip_prefix('"').and_then(|x| x.strip_suffix('"'))
-                    .or_else(|| s.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
-                    .unwrap_or(s);
-                label = Some(s.to_string());
-            } else {
-                body_lines.push(line);
-            }
-        }
-        let _ = kind;
-        let mut body = body_lines.join("\n");
-        // A workload-declared report is workload-scoped: narrow the
-        // plot's data to the execution that declared it, unless the
-        // author already pinned an `executions:` selection themselves
-        // (an explicit cross-execution `all`/`latest`/`<id>` choice is
-        // honored — never overridden). Without this a workload's plot
-        // would span every execution sharing the session (a refine
-        // sequence, or SRD-88 concurrent executions).
-        let has_exec_sel = body_lines
-            .iter()
-            .any(|l| l.trim_start().starts_with("executions:"));
-        if let Some(eid) = def_exec_id
-            && !has_exec_sel {
-                if !body.is_empty() {
-                    body.push('\n');
-                }
-                body.push_str(&format!("executions: {eid}"));
-            }
-        // Forward to plot_metrics_command exactly the way
-        // `nbrs report plot <name>` would.
-        let mut args: Vec<String> = vec![
-            format!("--name={name}"),
-            "--figure-num".into(), idx.to_string(),
-        ];
-        if let Some(l) = label.as_deref() {
-            args.push("--label".into());
-            args.push(l.to_string());
-        }
-        args.push(body);
-        crate::plot_metrics::plot_metrics_command(&args);
-        total += 1;
-    }
-    if total > 0 {
-        nbrs_runtime::diag!(nbrs_runtime::observer::LogLevel::Info,
-            "auto-render: {total} plot{} rendered (SRD-46)",
-            if total == 1 { "" } else { "s" });
     }
 }
 

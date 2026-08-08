@@ -1117,7 +1117,7 @@ pub(crate) fn resolve_items(
         }
         let rows =
             nbrs_metrics::reporters::sqlite::latest_execution_metadata_like(&conn, "report.%");
-        let mut out: Vec<ResolvedItem> = Vec::new();
+        let mut out: Vec<(Option<usize>, ResolvedItem)> = Vec::new();
         let default_style = nbrs_workload::report::Style::default();
         for row in rows {
             // The db value is one item's persisted form (header
@@ -1128,12 +1128,17 @@ pub(crate) fn resolve_items(
             // YAML path.
             if row.0.strip_prefix("report.").is_none() { continue; }
             match nbrs_workload::report::parse_persisted_item(&row.1) {
-                Ok(item) => out.push(resolve_item(&item, &default_style, &params)),
+                Ok(item) => out.push((item.order, resolve_item(&item, &default_style, &params))),
                 Err(_) => continue,
             }
         }
         if !out.is_empty() {
-            return Ok(out);
+            // Restore declaration order from the persisted
+            // `order <n>` directive; legacy rows without it keep
+            // their key order, after every ordered item (stable
+            // sort).
+            out.sort_by_key(|(order, _)| order.unwrap_or(usize::MAX));
+            return Ok(out.into_iter().map(|(_, item)| item).collect());
         }
         // LIVE-SESSION fallback: no `report.*` rows yet. Those are persisted when
         // a run ENDS, so during a run the db has none — which used to force
@@ -1162,7 +1167,7 @@ pub(crate) fn resolve_items(
                 }
             }
         }
-        Ok(out)
+        Ok(out.into_iter().map(|(_, item)| item).collect())
     }
 }
 
@@ -1410,6 +1415,33 @@ fn rebuild_wipe_targets(items: &[ResolvedItem], output_root: &Path) {
 /// every error is a failure (legacy behaviour); otherwise
 /// no-data errors print as warnings and don't trigger a
 /// nonzero exit. Used by every render-batch entry point.
+/// Post-run entry (SRD-46 auto-render): render every report item
+/// the runner persisted into the session db — plots, tables, text
+/// sections, and `file` targets — through the SAME pipeline as
+/// `nbrs report all`, but non-exiting: the run's outcome is
+/// already decided, so no-data conditions downgrade to warnings
+/// (unless NBRS_STRICT) and real render failures come back to the
+/// caller instead of `process::exit`-ing.
+pub fn render_session_reports(db_path: &Path) -> Result<usize, Vec<String>> {
+    let items = resolve_items(None, Some(db_path)).map_err(|e| vec![e])?;
+    if items.is_empty() {
+        return Ok(0);
+    }
+    let output_root = db_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let strict = std::env::var("NBRS_STRICT").is_ok();
+    let failures = render_all(
+        &items, KindFilter::Any, &[], None, &output_root, Some(db_path), strict);
+    if failures.is_empty() {
+        Ok(items.len())
+    } else {
+        Err(failures)
+    }
+}
+
 fn classify_render_error(e: String, strict: bool, failures: &mut Vec<String>) {
     let is_no_data = crate::plot_metrics::is_no_data_error(&e);
     let display = crate::plot_metrics::strip_no_data_prefix(&e);
@@ -1784,6 +1816,10 @@ fn render_one(
             if !item.body.trim().is_empty() {
                 argv.push(item.body.clone());
             }
+            // Report tables render whatever the session recorded:
+            // a table whose phases didn't run has no rows, and
+            // that must not abort the remaining items.
+            argv.push("--empty-ok".into());
             crate::summary::summary_command(&argv);
             Ok(())
         }
@@ -1947,6 +1983,7 @@ fn render_companion_table(
     argv.push("--output".into());
     argv.push(out.to_string_lossy().into_owned());
     argv.push(spec);
+    argv.push("--empty-ok".into());
     crate::summary::summary_command(&argv);
     Ok(())
 }
