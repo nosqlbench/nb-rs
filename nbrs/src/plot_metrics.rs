@@ -2373,6 +2373,39 @@ pub fn strip_no_data_prefix(msg: &str) -> String {
     msg.replace(PLOT_NO_DATA_PREFIX, "")
 }
 
+/// First identifier in a metricsql expression that is NOT an
+/// aggregation function or grammar keyword — the metric family
+/// the query reads. Used for default axis titles and synthetic
+/// metric names so internal tokens (`avg`, `__x_value__`) never
+/// surface in a rendered chart.
+fn metric_name_from_query(q: &str) -> Option<String> {
+    const SKIP: &[&str] = &[
+        "avg", "mean", "sum", "min", "max", "count", "rate",
+        "p50", "p90", "p95", "p99", "by", "without", "topk",
+        "bottomk", "stddev", "quantile",
+    ];
+    let mut token = String::new();
+    let mut chars = q.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_alphanumeric() || c == '_' {
+            token.push(c);
+            let boundary = !matches!(chars.peek(),
+                Some(n) if n.is_alphanumeric() || *n == '_');
+            if boundary {
+                if !SKIP.contains(&token.as_str())
+                    && !token.chars().all(|c| c.is_ascii_digit())
+                {
+                    return Some(token);
+                }
+                token.clear();
+            }
+        } else {
+            token.clear();
+        }
+    }
+    None
+}
+
 /// Same as [`plot_metrics_command`] but returns errors instead
 /// of `process::exit`-ing. Used by `nbrs report all` so a
 /// per-item failure (e.g. a metric with no rows in the db)
@@ -2417,11 +2450,14 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     // out of it (or fall back to "result") so the rest of the
     // pipeline doesn't need to special-case the query path.
     let synthetic_metric = opts.query.as_ref().map(|q| {
-        // Extract a leading identifier-shape token from the
-        // expression — e.g. `avg(recall_at_10_mean)` → "avg".
-        // Best-effort; user can pin via `--metric` to override.
-        q.chars().take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect::<String>()
+        // Extract the METRIC identifier from the expression —
+        // `avg(recall_at_10_mean)` → "recall_at_10_mean", not the
+        // aggregation function. Best-effort; user can pin via
+        // `--metric` to override.
+        metric_name_from_query(q)
+            .unwrap_or_else(|| q.chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect::<String>())
     }).filter(|s| !s.is_empty());
     let metric_owned: String = opts.metric.clone()
         .or(synthetic_metric)
@@ -4499,7 +4535,18 @@ fn render_plot(
             format!("{metric} vs {x_label}{filter_summary}")
         });
 
-    let x_axis = opts.xlabel.clone().unwrap_or_else(|| x_label.to_string());
+    let x_axis = opts.xlabel.clone().unwrap_or_else(|| {
+        // Paired-coordinate mode threads a placeholder x_label;
+        // the honest default axis title is the X QUERY's metric
+        // name — the placeholder must never reach the render.
+        if x_label == "__x_value__" {
+            opts.x_query.as_deref()
+                .and_then(metric_name_from_query)
+                .unwrap_or_else(|| "x".to_string())
+        } else {
+            x_label.to_string()
+        }
+    });
     // Y-axis (left) title resolution order:
     //   1. Explicit `yl-label:` / `y-label:` / `--ylabel`
     //      → `opts.ylabel`. Operator-supplied verbatim.
@@ -8098,5 +8145,23 @@ mod tests {
         let mid = ax.map(&100.0, (0, 100));
         let hi = ax.map(&1000.0, (0, 100));
         assert!(lo < mid && mid < hi, "got {lo} {mid} {hi}");
+    }
+}
+
+#[cfg(test)]
+mod metric_name_tests {
+    use super::metric_name_from_query;
+
+    #[test]
+    fn extracts_the_metric_not_the_aggregation() {
+        assert_eq!(metric_name_from_query("avg(recall_mean{k=\"10\"}) by (conc)").as_deref(),
+            Some("recall_mean"));
+        assert_eq!(metric_name_from_query("avg(cycles_total_rate) by (phase)").as_deref(),
+            Some("cycles_total_rate"));
+        assert_eq!(metric_name_from_query("sum(min(work_ms))").as_deref(),
+            Some("work_ms"));
+        assert_eq!(metric_name_from_query("avg(p99(x)) / 1000000").as_deref(),
+            Some("x"));
+        assert_eq!(metric_name_from_query("avg(sum(count()))"), None);
     }
 }
