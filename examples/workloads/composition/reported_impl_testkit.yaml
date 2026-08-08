@@ -22,4 +22,4 @@ phases:
 
 # ─── verification (nbrs check / example-walker) ───
 #@ run
-#@ expect 2 completed, 0 failed
+#@ expect 4 completed, 0 failed

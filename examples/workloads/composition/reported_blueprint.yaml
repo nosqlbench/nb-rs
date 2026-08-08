@@ -20,6 +20,16 @@ params:
   work_cycles: "24"
   probe_cycles: "12"
 
+scenarios:
+  default:
+    - work
+    # Sweep the probe across pacing levels: each level is one
+    # measured operating point, so the report's chart draws a
+    # real latency-vs-throughput curve instead of a single dot.
+    - for: "pace in 40, 20, 10"
+      phases:
+        - probe
+
 phases:
 
   work:
@@ -39,7 +49,8 @@ phases:
   probe:
     cycles: "{probe_cycles}"
     concurrency: 1
-    rate: 12
+    # Iter-var pacing: resolved at the phase gather per sweep level.
+    rate: "{pace}"
     ops:
       sample:
         abstract: {}
@@ -58,9 +69,12 @@ report:
       query: mean_ms: avg(cycles_servicetime_mean) by (phase) / 1000000
 
     plot latency_vs_rate:
-      label: "Mean latency vs throughput by phase"
-      y1: (cycles_total_rate, cycles_servicetime_mean) by (phase)
+      label: "Mean latency vs throughput across probe pacing levels"
+      y1: (cycles_total_rate, cycles_servicetime_mean){phase="probe"} by (phase, pace)
       series: phase
+      point-label1: pace
+      x-legend: "throughput (ops/s)"
+      y-labels: ["mean service time (ns)"]
 
 # ─── verification (nbrs check / example-walker) ───
 # A blueprint alone cannot run — unbound slots are a LOAD error
@@ -71,4 +85,4 @@ report:
 #@   expect-fail probe.sample.*impl=
 #@ case bound_via_impl_param
 #@   run impl=reported_impl_testkit.yaml
-#@   expect 2 completed, 0 failed
+#@   expect 4 completed, 0 failed
