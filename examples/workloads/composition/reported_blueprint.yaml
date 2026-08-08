@@ -50,6 +50,8 @@ phases:
 
 report:
   results_section: |
+    file phase_report.md as 'Phase Results'
+
     table ops_by_phase:
       group_by: phase
       query: ops: sum(cycles_total) by (phase)
