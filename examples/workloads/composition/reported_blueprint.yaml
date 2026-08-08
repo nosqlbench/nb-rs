@@ -1,0 +1,72 @@
+#!/usr/bin/env nbrs
+# reported_blueprint.yaml — a BLUEPRINT (SRD-108) carrying its
+# own REPORT: the measurement matter (extents, pacing, metrics,
+# and the report's tables and charts) lives blueprint-side, so
+# every implementation inherits the same rendered results
+# surface. Bind an implementation to run it:
+#
+#   nbrs run workload=reported_blueprint.yaml impl=reported_impl_testkit.yaml
+#
+# The report block (SRD-46) renders at end of run: the table
+# inline plus, via the post-run pipeline, every item including
+# the chart (`ops_rate.png` in the session directory).
+
+description: |
+  Blueprint with an attached report: two paced phases feed a
+  metricsql table (ops and mean latency by phase) and a rate
+  chart; implementations contribute only the protocol bodies.
+
+params:
+  work_cycles: "24"
+  probe_cycles: "12"
+
+phases:
+
+  work:
+    cycles: "{work_cycles}"
+    concurrency: 2
+    rate: 20
+    bindings: |
+      volatile now_ms := current_epoch_millis()
+    metrics:
+      work_ms:
+        kind: gauge
+        value: "now_ms - phase_start"
+    ops:
+      step:
+        abstract: {}
+
+  probe:
+    cycles: "{probe_cycles}"
+    concurrency: 1
+    rate: 12
+    ops:
+      sample:
+        abstract: {}
+        metrics:
+          probe_marks:
+            kind: counter
+            value: "1"
+
+report:
+  results_section: |
+    table ops_by_phase:
+      group_by: phase
+      query: ops: sum(cycles_total) by (phase)
+      query: mean_ms: avg(cycles_servicetime_mean) by (phase) / 1000000
+
+    plot latency_vs_rate:
+      label: "Mean latency vs throughput by phase"
+      y1: (cycles_total_rate, cycles_servicetime_mean) by (phase)
+      series: phase
+
+# ─── verification (nbrs check / example-walker) ───
+# A blueprint alone cannot run — unbound slots are a LOAD error
+# naming the slot and the remedy; bound via impl=, both phases
+# complete and the report pipeline renders both items.
+#@ case unbound_is_a_load_error
+#@   run
+#@   expect-fail probe.sample.*impl=
+#@ case bound_via_impl_param
+#@   run impl=reported_impl_testkit.yaml
+#@   expect 2 completed, 0 failed

@@ -1,0 +1,25 @@
+#!/usr/bin/env nbrs
+# reported_impl_testkit.yaml — testkit implementation of
+# reported_blueprint.yaml. Protocol matter only: the blueprint
+# owns the pacing, the metrics, and the report (tables + chart),
+# so this file stays two literal op bodies.
+#
+#   nbrs run workload=reported_impl_testkit.yaml
+
+implements: ./reported_blueprint.yaml
+
+phases:
+  work:
+    ops:
+      step:
+        adapter: testkit
+        stmt: "WORK"
+  probe:
+    ops:
+      sample:
+        adapter: testkit
+        stmt: "PROBE"
+
+# ─── verification (nbrs check / example-walker) ───
+#@ run
+#@ expect 2 completed, 0 failed
