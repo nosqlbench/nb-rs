@@ -270,15 +270,25 @@ pub enum Outcome {
 /// or a bundled catalog name; the subprocess resolves it exactly as a normal
 /// `nbrs run` would.
 pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, case: &VerifyCase) -> Result<(), String> {
-    let session = sandbox.join(format!("session-{}", label.replace(['/', ' ', ':'], "_")));
-    if case.session_cwd {
-        // Case independence for cwd-session cases: wipe the
-        // sandbox sessions root (incl. `latest`) so a prior
-        // case's session can never be re-attached to.
-        let _ = std::fs::remove_dir_all(sandbox.join("sessions"));
+    let safe_label = label.replace(['/', ' ', ':'], "_");
+    let session = sandbox.join(format!("session-{safe_label}"));
+    // Case independence for cwd-session cases: each gets a
+    // PRIVATE working directory, so its `sessions/latest` can
+    // neither re-attach to a prior case's session nor race a
+    // concurrent case's — the check walker drives cases on
+    // worker threads, and a shared cwd made multi-invocation
+    // re-attach cases fail only in large sweeps.
+    let case_cwd;
+    let workdir: &Path = if case.session_cwd {
+        case_cwd = sandbox.join(format!("cwd-{safe_label}"));
+        let _ = std::fs::remove_dir_all(&case_cwd);
+        std::fs::create_dir_all(&case_cwd)
+            .map_err(|e| format!("create case cwd: {e}"))?;
+        &case_cwd
     } else {
         let _ = std::fs::remove_dir_all(&session);
-    }
+        sandbox
+    };
 
     let invoke = |args: &[String]| -> Result<(String, bool, bool), String> {
         let mut cmd = Command::new("timeout");
@@ -290,7 +300,7 @@ pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, 
         if !case.session_cwd {
             cmd.arg("--session-path").arg(&session);
         }
-        let output = cmd.current_dir(sandbox)
+        let output = cmd.current_dir(workdir)
             .output()
             .map_err(|e| format!("spawn failed: {e}"))?;
         let combined = format!(
