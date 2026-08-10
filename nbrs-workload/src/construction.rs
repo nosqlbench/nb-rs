@@ -134,6 +134,10 @@ pub struct ElementSpec {
     pub name: &'static str,
     pub forms: &'static [Form],
     pub required: bool,
+    /// Serde-alias spellings that satisfy this element (a
+    /// REQUIRED element is present when its name OR any alias
+    /// key is).
+    pub aliases: &'static [&'static str],
     pub doc: &'static str,
 }
 
@@ -142,7 +146,7 @@ const fn el(
     forms: &'static [Form],
     doc: &'static str,
 ) -> ElementSpec {
-    ElementSpec { name, forms, required: false, doc }
+    ElementSpec { name, forms, required: false, aliases: &[], doc }
 }
 
 /// Validation strictness: a PARTIAL model skips required-element
@@ -310,7 +314,7 @@ pub static OP_ACTIVITY_ELEMENTS: &[ElementSpec] = &[
     el("timeout_ms", &[Form::U64], "per-op timeout"),
     el("poll_metric_name", &[Form::Str], "legacy op-poll metric name"),
     el("emit", &[Form::Str], "emission override"),
-    el("batch", &[Form::U64, Form::ParamRef], "batch row cap (selects the batch executor)"),
+    el("batch", &[Form::U64, Form::ParamRef, Form::Str], "batch row cap: literal, {param}, or bare wire name"),
     el("max_batch_size", &[Form::U64, Form::GkExpr], "batch byte budget (literal or GK call)"),
     el("batchtype", &[Form::Vocab(&["logged", "unlogged", "counter"])], "CQL batch type"),
     el("memo", &[Form::Node(&MEMO), Form::Str], "operator-facing before/after notes"),
@@ -330,7 +334,7 @@ pub static OP_STMT_ELEMENTS: &[ElementSpec] = &[
 ];
 
 pub static POLL_ELEMENTS: &[ElementSpec] = &[
-    ElementSpec { name: "until", forms: &[Form::GkExpr], required: true,
+    ElementSpec { name: "until", forms: &[Form::GkExpr], required: true, aliases: &[],
         doc: "predicate over captures; re-evaluated per iteration" },
     el("interval_ms", &[Form::U64, Form::ParamRef], "sleep between iterations (default 1000)"),
     el("timeout_ms", &[Form::U64, Form::ParamRef], "wall-clock cap (default 300000)"),
@@ -355,7 +359,7 @@ pub static SCENARIO_NODE_ELEMENTS: &[ElementSpec] = &[
 ];
 
 pub static STOP_WHEN_ELEMENTS: &[ElementSpec] = &[
-    ElementSpec { name: "when", forms: &[Form::GkExpr, Form::ParamRef], required: true,
+    ElementSpec { name: "when", forms: &[Form::GkExpr, Form::ParamRef], required: true, aliases: &["condition"],
         doc: "predicate over runtime-state wires; {param} interpolates" },
     el("condition", &[Form::GkExpr, Form::ParamRef], "serde alias of when"),
     el("effect", &[Form::Vocab(STOP_EFFECTS)], "disposition on fire (alias: action; default fail)"),
@@ -368,7 +372,7 @@ pub static STOP_WHEN_ELEMENTS: &[ElementSpec] = &[
 ];
 
 pub static METRIC_ELEMENTS: &[ElementSpec] = &[
-    ElementSpec { name: "value", forms: &[Form::GkExpr], required: true,
+    ElementSpec { name: "value", forms: &[Form::GkExpr], required: true, aliases: &[],
         doc: "polydat expression over in-scope wires" },
     el("family", &[Form::Str], "family override (default: the metric's map key)"),
     el("kind", &[Form::Vocab(&["gauge", "counter", "histogram"])], "instrument kind"),
@@ -389,9 +393,9 @@ pub static EVALUATIONS_ELEMENTS: &[ElementSpec] = &[
 ];
 
 pub static RELEVANCY_ELEMENTS: &[ElementSpec] = &[
-    ElementSpec { name: "actual", forms: &[Form::Str], required: true,
+    ElementSpec { name: "actual", forms: &[Form::Str], required: true, aliases: &[],
         doc: "wire carrying retrieved values (bare wire name)" },
-    ElementSpec { name: "expected", forms: &[Form::Str], required: true,
+    ElementSpec { name: "expected", forms: &[Form::Str], required: true, aliases: &[],
         doc: "wire carrying ground truth (bare wire name)" },
     el("k", &[Form::U64, Form::Str], "evaluation depth (literal or bare wire name)"),
     el("r", &[Form::U64, Form::Str], "retrieved window (literal or bare wire name)"),
@@ -410,6 +414,8 @@ pub static OP_POLL_ELEMENTS: &[ElementSpec] = &[
     el("timeout_ms", &[Form::U64], "wall-clock cap"),
     el("max_error_retries", &[Form::U64], "tolerated consecutive retryable errors"),
     el("metric_name", &[Form::Str], "gauge on successful exit"),
+    el("memo", &[Form::Str, Form::ParamRef, Form::Node(&MEMO)], "per-iteration operator note ({wire} interpolation)"),
+    el("progress", &[Form::Str, Form::ParamRef], "derived-progress template overriding the cycle bar"),
 ];
 
 pub static TRIES_ELEMENTS: &[ElementSpec] = &[
@@ -429,7 +435,7 @@ pub static DELAY_ELEMENTS: &[ElementSpec] = &[
 ];
 
 pub static CONTINUE_IF_ELEMENTS: &[ElementSpec] = &[
-    ElementSpec { name: "when", forms: &[Form::GkExpr], required: true,
+    ElementSpec { name: "when", forms: &[Form::GkExpr], required: true, aliases: &["condition"],
         doc: "pre-entry predicate (bare wires via for_iteration scope)" },
     el("condition", &[Form::GkExpr], "serde alias of when"),
     el("each", &[Form::StrList, Form::Str], "evaluation scope selector(s)"),
@@ -444,7 +450,7 @@ pub static CHECKPOINT_ELEMENTS: &[ElementSpec] = &[
 
 pub static OPTIMIZE_ELEMENTS: &[ElementSpec] = &[
     el("method", &[Form::Str], "optimizer method (default sweep)"),
-    ElementSpec { name: "objective", forms: &[Form::GkExpr], required: true,
+    ElementSpec { name: "objective", forms: &[Form::GkExpr], required: true, aliases: &[],
         doc: "objective wire expression (string sugar = whole block)" },
     el("servo", &[Form::StrList], "servo axis wires"),
     el("max_evals", &[Form::U64], "evaluation budget"),
@@ -761,7 +767,9 @@ fn validate_node(
     }
     if mode == Mode::Complete {
         for spec in &elements {
-            if spec.required && !map.contains_key(spec.name) {
+            let satisfied = map.contains_key(spec.name)
+                || spec.aliases.iter().any(|a| map.contains_key(*a));
+            if spec.required && !satisfied {
                 out.push(Violation {
                     path: path.to_string(),
                     message: format!(
