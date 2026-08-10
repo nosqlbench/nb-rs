@@ -2378,7 +2378,7 @@ pub fn strip_no_data_prefix(msg: &str) -> String {
 /// the query reads. Used for default axis titles and synthetic
 /// metric names so internal tokens (`avg`, `__x_value__`) never
 /// surface in a rendered chart.
-fn metric_name_from_query(q: &str) -> Option<String> {
+pub(crate) fn metric_name_from_query(q: &str) -> Option<String> {
     const SKIP: &[&str] = &[
         "avg", "mean", "sum", "min", "max", "count", "rate",
         "p50", "p90", "p95", "p99", "by", "without", "topk",

@@ -1171,6 +1171,67 @@ pub(crate) fn resolve_items(
     }
 }
 
+/// One-line content hint for a figure whose author gave no
+/// label: tables show their grouping and column names, plots
+/// their axis metrics and series keys — the listing must say
+/// what each item REPORTS, not just what it is called.
+fn content_hint(item: &ResolvedItem) -> String {
+    use nbrs_workload::report::Kind;
+    match item.kind {
+        Kind::Table => {
+            let cfg = nbrs_workload::model::SummaryConfig::parse(&item.body);
+            let cols: Vec<&str> = if cfg.metricsql_columns.is_empty() {
+                cfg.columns.iter().map(String::as_str).collect()
+            } else {
+                cfg.metricsql_columns.iter().map(|(n, _)| n.as_str()).collect()
+            };
+            let cols = if cols.is_empty() { "(all gauges)".to_string() }
+                else { cols.join(", ") };
+            if cfg.group_by.is_empty() {
+                format!("columns: {cols}")
+            } else {
+                format!("by {}: {cols}", cfg.group_by.join(","))
+            }
+        }
+        Kind::Plot => {
+            let mut axes: Vec<String> = Vec::new();
+            let mut series = String::new();
+            for line in item.body.lines() {
+                let l = line.trim();
+                if let Some(rest) = l.strip_prefix("series") {
+                    series = rest.trim_start_matches([':', ' ']).to_string();
+                }
+                for prefix in ["y1:", "y2:", "y3:", "y4:", "y:", "x1:", "x:"] {
+                    if let Some(expr) = l.strip_prefix(prefix) {
+                        // Pull up to two metric identifiers (paired
+                        // mode carries x and y in one tuple).
+                        let mut rest = expr;
+                        for _ in 0..2 {
+                            match crate::plot_metrics::metric_name_from_query(rest) {
+                                Some(m) => {
+                                    let idx = rest.find(&m).map(|i| i + m.len())
+                                        .unwrap_or(rest.len());
+                                    axes.push(m);
+                                    rest = &rest[idx..];
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            }
+            axes.dedup();
+            let mut hint = axes.join(" vs ");
+            if hint.is_empty() { hint = "(no axis queries)".to_string(); }
+            if !series.is_empty() {
+                hint.push_str(&format!("; series {series}"));
+            }
+            hint
+        }
+        _ => String::new(),
+    }
+}
+
 fn print_listing(items: &[ResolvedItem], filter: KindFilter) {
     use nbrs_workload::report::Kind;
     let kind_label = match filter {
@@ -1210,8 +1271,12 @@ fn print_listing(items: &[ResolvedItem], filter: KindFilter) {
         match item.kind {
             Kind::Plot | Kind::Table => {
                 fig_num += 1;
-                let label = item.label.as_deref().unwrap_or("");
-                println!("  {fig_num:3} — {name:24} {kind:6} \"{label}\"",
+                let hint = content_hint(item);
+                let display = match item.label.as_deref() {
+                    Some(l) if !l.is_empty() => format!("\"{l}\" — {hint}"),
+                    _ => hint,
+                };
+                println!("  {fig_num:3} — {name:24} {kind:6} {display}",
                     name = item.name, kind = item.kind.as_str());
             }
             Kind::Text => {
@@ -1237,6 +1302,35 @@ fn print_listing(items: &[ResolvedItem], filter: KindFilter) {
                     name = item.name, kind = item.kind.as_str());
             }
         }
+    }
+
+    // Closing summary: what this report will actually produce —
+    // figure counts by kind, total table columns, and text
+    // sections — so the listing reads as a report inventory, not
+    // just a name index.
+    let shown: Vec<&ResolvedItem> = items.iter()
+        .filter(|i| filter.matches(i.kind)).collect();
+    let tables = shown.iter().filter(|i| matches!(i.kind, Kind::Table)).count();
+    let plots = shown.iter().filter(|i| matches!(i.kind, Kind::Plot)).count();
+    let texts = shown.iter().filter(|i| matches!(i.kind, Kind::Text)).count();
+    let files = shown.iter().filter(|i| matches!(i.kind, Kind::File)).count();
+    let columns: usize = shown.iter()
+        .filter(|i| matches!(i.kind, Kind::Table))
+        .map(|i| {
+            let cfg = nbrs_workload::model::SummaryConfig::parse(&i.body);
+            if cfg.metricsql_columns.is_empty() { cfg.columns.len() }
+            else { cfg.metricsql_columns.len() }
+        })
+        .sum();
+    let mut parts: Vec<String> = Vec::new();
+    if tables > 0 {
+        parts.push(format!("{tables} table(s) totalling {columns} column(s)"));
+    }
+    if plots > 0 { parts.push(format!("{plots} plot(s)")); }
+    if texts > 0 { parts.push(format!("{texts} text section(s)")); }
+    if files > 0 { parts.push(format!("{files} named report file(s)")); }
+    if !parts.is_empty() {
+        println!("\n{} figure(s): {}", tables + plots, parts.join(", "));
     }
 }
 
