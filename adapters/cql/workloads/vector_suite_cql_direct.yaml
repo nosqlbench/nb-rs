@@ -308,6 +308,7 @@ phases:
     cycles: "{capacity_cycle_cap}"
     timeout: "{capacity_timeout}"
     errors: ".*:counter"
+    status_metrics: [cycles*, result*, rows_inserted*, errors*, latency*]
     stop_when:
       - when: "to_f64(result_failure) > 0"
         effect: stop
@@ -340,6 +341,7 @@ phases:
     concurrency: "{concurrency}"
     timeout: "{load_timeout}"
     errors: "count,retry"
+    status_metrics: [rows_inserted*, cycles*, latency*, errors*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       cursor row = range(0, vector_count(prebuffered))
@@ -371,6 +373,7 @@ phases:
   await_index:
     concurrency: 1
     timeout: "{build_timeout}"
+    status_metrics: [build_time*, latency*]
     poll:
       until: "active_build_tasks == 0"
       interval_ms: 2000
@@ -392,7 +395,7 @@ phases:
   # extent so at least `min_query_ms` of whole passes complete.
   serial_probe:
     concurrency: 1
-    status_metrics: [recall*, ndcg*]
+    status_metrics: [recall*, ndcg*, latency*, cycles*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       const query_counts := query_count(prebuffered)
@@ -424,7 +427,7 @@ phases:
   # iteration variable labels every series for the report layer.
   sweep_probe:
     concurrency: "{conc}"
-    status_metrics: [recall*, ndcg*]
+    status_metrics: [recall*, ndcg*, latency*, cycles*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       const query_counts := query_count(prebuffered)
@@ -455,7 +458,7 @@ phases:
   # the live-cluster strict-binding confirmation that would drop it).
   filtered_probe:
     concurrency: 1
-    status_metrics: [recall*, ndcg*]
+    status_metrics: [recall*, ndcg*, latency*, cycles*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       const query_counts := query_count(prebuffered)
@@ -492,6 +495,7 @@ phases:
     rate: "{insert_rate}"
     concurrency: "{concurrency}"
     errors: "count,retry"
+    status_metrics: [cycles*, rows_inserted*, latency*, errors*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       cursor row = range(0, vector_count(prebuffered))
@@ -514,6 +518,7 @@ phases:
   # bindings, so the threshold is data, not predicate text.
   stream_gate:
     concurrency: 1
+    status_metrics: [latency*]
     poll:
       until: "metric('cycles_total, phase=stream_ingest', 'count') >= stage_rows"
       require: [ "cycles_total, phase=stream_ingest" ]
@@ -533,7 +538,7 @@ phases:
   # recall (see header note).
   stream_probe:
     concurrency: "{query_concurrency}"
-    status_metrics: [recall*]
+    status_metrics: [recall*, latency*, cycles*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       const query_counts := query_count(prebuffered)
@@ -561,6 +566,7 @@ phases:
   # corpus so the subsequent build/probe run against complete data.
   stream_gate_full:
     concurrency: 1
+    status_metrics: [latency*]
     poll:
       until: "metric('cycles_total, phase=stream_ingest', 'count') >= all_rows"
       require: [ "cycles_total, phase=stream_ingest" ]
@@ -581,7 +587,7 @@ phases:
   # service / respect the idle window before running).
   cold_probe:
     concurrency: 1
-    status_metrics: [recall*]
+    status_metrics: [recall*, latency*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       const query_counts := query_count(prebuffered)
@@ -608,7 +614,7 @@ phases:
   # The warm pass, immediately after cold.
   warm_probe:
     concurrency: 1
-    status_metrics: [recall*]
+    status_metrics: [recall*, latency*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       const query_counts := query_count(prebuffered)
@@ -640,6 +646,7 @@ phases:
     rate: "{churn_write_rate}"
     concurrency: 4
     errors: "count,retry"
+    status_metrics: [cycles*, rows_inserted*, latency*, errors*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       const corpus_rows := vector_count(prebuffered)
@@ -662,6 +669,7 @@ phases:
     rate: "{churn_delete_rate}"
     concurrency: 1
     errors: "count,retry"
+    status_metrics: [cycles*, latency*, errors*]
     bindings: |
       row := cycle % churn_window
       id := format_u64(row, 12)
@@ -674,7 +682,7 @@ phases:
   # `{churn_ms}` of whole passes while both daemons run.
   churn_probe:
     concurrency: "{query_concurrency}"
-    status_metrics: [recall*]
+    status_metrics: [recall*, latency*, cycles*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       const query_counts := query_count(prebuffered)

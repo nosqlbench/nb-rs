@@ -331,6 +331,7 @@ phases:
     # prior outcome's provenance hash still matches.
     checkpoint: idempotent
     concurrency: 1
+    status_metrics: [latency*]
     bindings: |
       dim := vector_dim("{dataset}:{profile}")
       similarity_function := dataset_distance_function("{dataset}:{profile}")
@@ -485,6 +486,7 @@ phases:
 
   teardown:
     concurrency: 1
+    status_metrics: [latency*]
     bindings: |
       const request_timeout_ms := 300000
     ops:
@@ -727,6 +729,7 @@ phases:
     checkpoint: idempotent
     concurrency: "{concurrency}"
     errors: "count,retry"
+    status_metrics: [rows_inserted*, cycles*, latency*, errors*]
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       cursor row = range(0, vector_count(prebuffered))
