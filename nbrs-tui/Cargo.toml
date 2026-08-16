@@ -40,5 +40,12 @@ parking_lot = "0.12"
 # to a file by default. `derive` is unused.
 rustyline = { version = "14", default-features = false, features = ["custom-bindings"] }
 
+# Windows supports AF_UNIX sockets (Windows 10 1803+) but std
+# doesn't expose them there; uds_windows fills in the
+# UnixListener/UnixStream surface the inspector uses. See
+# inspector_server.rs / inspector_repl.rs imports.
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1"
+
 [dev-dependencies]
 hdrhistogram = "7"

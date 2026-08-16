@@ -3319,13 +3319,26 @@ impl Drop for TerminalGuard {
 // expected status. SIGKILL and SIGSTOP can't be intercepted —
 // nothing to be done about those, but they're rare in practice.
 
+/// Non-Unix stub: there is no termios to save — crossterm's
+/// `disable_raw_mode` restores the Windows console mode, and the
+/// console host resets state when the process dies, so the
+/// signal-handler restore dance below has no Windows analogue.
+#[cfg(not(unix))]
+pub(crate) fn save_pretui_termios() {}
+
+/// Non-Unix stub for the same reason as [`save_pretui_termios`].
+#[cfg(not(unix))]
+pub(crate) fn install_signal_terminal_restore() {}
+
 /// Original pre-TUI termios, captured before `enable_raw_mode` and
 /// used by the signal handler to restore cooked-mode line
 /// discipline. Wrapped in `OnceLock` so the first TUI startup wins.
+#[cfg(unix)]
 static PRETUI_TERMIOS: std::sync::OnceLock<libc::termios>
     = std::sync::OnceLock::new();
 
 
+#[cfg(unix)]
 pub(crate) fn save_pretui_termios() {
     // tcgetattr on stderr (the TUI writes there). If this fails
     // (e.g. stderr isn't a tty), we skip — the signal handler will
@@ -3347,6 +3360,7 @@ pub(crate) fn save_pretui_termios() {
 /// → force-exit in `tui=terminal` mode (where only the watcher
 /// is up, no `TerminalGuard`) leaves the shell in raw mode with
 /// the user typing escape codes into their next prompt.
+#[cfg(unix)]
 pub(crate) fn install_signal_terminal_restore() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -3375,6 +3389,7 @@ pub(crate) fn install_signal_terminal_restore() {
 
 /// Async-signal-safe terminal-restore handler. The body uses only
 /// `write`, `tcsetattr`, `signal`, and `raise` — all async-signal-safe.
+#[cfg(unix)]
 extern "C" fn signal_terminal_restore(
     sig: libc::c_int,
     _info: *mut libc::siginfo_t,

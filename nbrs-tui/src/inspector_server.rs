@@ -46,7 +46,13 @@
 //!   metric instance(s) using a Prometheus-style selector.
 
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+// Windows has supported AF_UNIX sockets since Windows 10 1803,
+// but std doesn't expose them there — `uds_windows` mirrors the
+// std API surface we use (bind/incoming/connect/timeouts).
+#[cfg(windows)]
+use uds_windows::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock as StdRwLock;
@@ -69,7 +75,16 @@ use nbrs_metrics::snapshot::MetricValue;
 pub fn socket_path_for(pid: u32) -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                // No `/tmp` on Windows — use the real temp dir.
+                // Must stay in agreement with the REPL's
+                // `discover_sockets` scan dir.
+                std::env::temp_dir()
+            } else {
+                PathBuf::from("/tmp")
+            }
+        });
     dir.join(format!("nbrs-{pid}.sock"))
 }
 

@@ -27,7 +27,10 @@
 
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(windows)]
+use uds_windows::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -54,7 +57,14 @@ pub struct DiscoveredSocket {
 pub fn discover_sockets() -> Vec<DiscoveredSocket> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                // Same fallback as the server's `socket_path_for`.
+                std::env::temp_dir()
+            } else {
+                PathBuf::from("/tmp")
+            }
+        });
     let read_dir = match std::fs::read_dir(&dir) {
         Ok(rd) => rd,
         Err(_) => return Vec::new(),
@@ -96,6 +106,32 @@ fn pid_alive(_pid: u32) -> bool {
 /// state, so an interrupted client never leaves anything
 /// behind.
 pub fn query(path: &Path, command: &str) -> io::Result<String> {
+    // Windows AF_UNIX shows rare transient stalls where a sent
+    // request never reaches the server's serial accept loop —
+    // observed as the read timing out with no response ever
+    // arriving. A fresh connection reliably recovers: dropping
+    // the stalled one delivers EOF to the server's blocked
+    // per-connection read, unsticking the loop. Retry a couple
+    // of times before surfacing the error; on Unix this path is
+    // effectively never taken.
+    let mut last_err = None;
+    for _ in 0..3 {
+        match query_once(path, command) {
+            Ok(s) => return Ok(s),
+            Err(e) if matches!(
+                e.kind(),
+                io::ErrorKind::TimedOut
+                    | io::ErrorKind::WouldBlock
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::Interrupted
+            ) => last_err = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.expect("loop ran at least once"))
+}
+
+fn query_once(path: &Path, command: &str) -> io::Result<String> {
     let mut stream = UnixStream::connect(path)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;

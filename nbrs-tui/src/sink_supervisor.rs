@@ -267,12 +267,18 @@ fn run_supervision(
                             // sensibly, raise SIGTSTP, and re-
                             // enable raw mode after the OS
                             // resumes us via `fg`.
-                            let _ = crossterm::terminal::disable_raw_mode();
-                            unsafe { libc::raise(libc::SIGTSTP); }
-                            // Execution resumes here when `fg`
-                            // delivers SIGCONT. Re-arm the
-                            // terminal for keystroke detection.
-                            let _ = crossterm::terminal::enable_raw_mode();
+                            // Job control is a Unix concept —
+                            // on Windows Ctrl-Z is just a byte
+                            // (EOF in cooked mode); ignore it.
+                            #[cfg(unix)]
+                            {
+                                let _ = crossterm::terminal::disable_raw_mode();
+                                unsafe { libc::raise(libc::SIGTSTP); }
+                                // Execution resumes here when `fg`
+                                // delivers SIGCONT. Re-arm the
+                                // terminal for keystroke detection.
+                                let _ = crossterm::terminal::enable_raw_mode();
+                            }
                         }
                         WatcherSignal::Redraw => {
                             // Standard cooked-terminal Ctrl-L:

@@ -956,6 +956,7 @@ fn format_margin_from_body(body: &str, color: bool) -> String {
 /// [`nbrs_runtime::activity::terminal_cols`] but also captures
 /// the row count we need for absolute positioning of the
 /// bottom region.
+#[cfg(unix)]
 fn terminal_size_via_ioctl() -> Option<(u16, u16)> {
     #[repr(C)]
     struct WinSize { ws_row: u16, ws_col: u16, ws_xpixel: u16, ws_ypixel: u16 }
@@ -965,6 +966,16 @@ fn terminal_size_via_ioctl() -> Option<(u16, u16)> {
         return None;
     }
     Some((ws.ws_col, ws.ws_row))
+}
+
+/// Windows equivalent (no ioctl there): crossterm's
+/// `terminal::size`, which asks the console host for the visible
+/// window extent. Only used off-Unix, where stderr-vs-stdout fd
+/// distinction doesn't apply to the console query.
+#[cfg(not(unix))]
+fn terminal_size_via_ioctl() -> Option<(u16, u16)> {
+    crossterm::terminal::size().ok()
+        .filter(|&(c, r)| c != 0 && r != 0)
 }
 
 /// Prompt-rendering inputs handed to [`redraw_bottom_region`].
