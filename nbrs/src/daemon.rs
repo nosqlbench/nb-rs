@@ -204,6 +204,78 @@ pub fn read_anchor() -> Option<WebAnchor> {
     serde_json::from_str(&content).ok()
 }
 
+/// Minimal kernel32 surface for process liveness/termination —
+/// the Windows stand-ins for `kill(pid, 0)` and SIGTERM/SIGKILL.
+/// Hand-declared instead of pulling in `windows-sys` for three
+/// imports.
+#[cfg(windows)]
+mod winproc {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn GetExitCodeProcess(handle: *mut c_void, code: *mut u32) -> i32;
+        fn TerminateProcess(handle: *mut c_void, code: u32) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    const STILL_ACTIVE: u32 = 259;
+
+    pub fn pid_alive(pid: u32) -> bool {
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(h, &mut code);
+            CloseHandle(h);
+            ok != 0 && code == STILL_ACTIVE
+        }
+    }
+
+    pub fn terminate(pid: u32) -> bool {
+        unsafe {
+            let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if h.is_null() {
+                return false;
+            }
+            let ok = TerminateProcess(h, 1);
+            CloseHandle(h);
+            ok != 0
+        }
+    }
+}
+
+/// `kill(pid, 0)`-style liveness probe.
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        winproc::pid_alive(pid)
+    }
+}
+
+/// Ask a process to terminate. Unix sends SIGTERM (graceful —
+/// the daemon's handler gets to clean up); Windows has no
+/// SIGTERM analogue for out-of-process signalling, so it's a
+/// hard `TerminateProcess`. Returns false when the process
+/// couldn't be signalled (usually: already gone).
+fn signal_terminate(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) != -1 }
+    }
+    #[cfg(windows)]
+    {
+        winproc::terminate(pid)
+    }
+}
+
 /// Discover a running `nbrs web` instance from the anchor file.
 ///
 /// Returns `Some(url)` if the anchor exists and the PID is alive.
@@ -215,7 +287,7 @@ pub fn discover_web_instance() -> Option<String> {
     let anchor: WebAnchor = serde_json::from_str(&content).ok()?;
 
     // Verify the process is still alive.
-    let alive = unsafe { libc::kill(anchor.pid as i32, 0) } == 0;
+    let alive = pid_alive(anchor.pid);
     if !alive {
         let _ = fs::remove_file(&path);
         return None;
@@ -229,6 +301,19 @@ pub fn discover_web_instance() -> Option<String> {
 /// After this call returns `Ok(())`, the process is fully detached
 /// from the terminal and running as a background daemon. The PID
 /// file has been written.
+///
+/// Windows has no fork/setsid — background service semantics
+/// there mean a service wrapper (sc.exe, NSSM) or a detached
+/// relaunch, neither of which this in-process path can express.
+/// Fail loudly rather than pretend.
+#[cfg(not(unix))]
+pub fn daemonize() -> Result<(), String> {
+    Err("--daemon is not supported on this platform; \
+         run `nbrs web` in a separate terminal or under a \
+         service wrapper instead".into())
+}
+
+#[cfg(unix)]
 pub fn daemonize() -> Result<(), String> {
     // First fork — parent exits, child continues.
     match unsafe { libc::fork() } {
@@ -277,7 +362,7 @@ pub fn daemonize() -> Result<(), String> {
 /// doesn't confuse port-in-use diagnostics.
 pub fn cleanup_stale_anchor() {
     if let Some(anchor) = read_anchor() {
-        let alive = unsafe { libc::kill(anchor.pid as i32, 0) } == 0;
+        let alive = pid_alive(anchor.pid);
         if !alive {
             eprintln!("nbrs web: cleaning up stale anchor (pid {} no longer running)", anchor.pid);
             remove_anchor();
@@ -296,7 +381,7 @@ pub fn check_port_available(addr: &SocketAddr) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             let mut msg = format!("port {} is already in use on {}", addr.port(), addr.ip());
             if let Some(anchor) = read_anchor() {
-                let alive = unsafe { libc::kill(anchor.pid as i32, 0) } == 0;
+                let alive = pid_alive(anchor.pid);
                 if alive {
                     msg.push_str(&format!(
                         "\n  → an nbrs web instance is running (pid {})\n  → use 'nbrs web --stop' to stop it, or 'nbrs web --restart' to restart",
@@ -417,17 +502,18 @@ pub fn confirm_prompt(message: &str) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
-/// Send SIGTERM to a process by PID and wait briefly for it to exit.
+/// Terminate a process by PID and wait briefly for it to exit.
+/// Unix: SIGTERM first, escalating to SIGKILL if it lingers.
+/// Windows: hard TerminateProcess (see [`signal_terminate`]).
 pub fn kill_pid(pid: u32) -> Result<(), String> {
-    let result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-    if result == -1 {
+    if !signal_terminate(pid) {
         return Err(format!("failed to signal pid {pid}"));
     }
     // Wait briefly for the process to exit.
     std::thread::sleep(std::time::Duration::from_millis(500));
     // Verify it actually exited.
-    let still_alive = unsafe { libc::kill(pid as i32, 0) } == 0;
-    if still_alive {
+    #[cfg(unix)]
+    if pid_alive(pid) {
         eprintln!("nbrs web: pid {pid} still alive after SIGTERM, sending SIGKILL");
         unsafe { libc::kill(pid as i32, libc::SIGKILL); }
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -451,8 +537,7 @@ pub fn stop_daemon() -> Result<(), String> {
             return Err(format!("PID {pid} is not an nbrs process — stale PID file removed"));
         }
 
-    let result = unsafe { libc::kill(pid, libc::SIGTERM) };
-    if result == -1 {
+    if !signal_terminate(pid as u32) {
         let _ = fs::remove_file(&path);
         return Err(format!("failed to signal PID {pid} — stale PID file removed"));
     }

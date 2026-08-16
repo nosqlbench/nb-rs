@@ -726,7 +726,14 @@ fn split_line_local(line: &str, point: usize) -> (Vec<String>, String) {
 /// shell's PID so concurrent shells rotate independently.
 fn detect_tap(app: &str, input_key: &str, max_level: u32) -> u32 {
     use std::io::Write;
+    // Keyed by the invoking shell's PID. std only exposes
+    // parent_id() on Unix; on Windows fall back to a single
+    // shared key — concurrent shells then share one tap cadence
+    // file, a cosmetic degradation for a completion nicety.
+    #[cfg(unix)]
     let ppid = std::os::unix::process::parent_id();
+    #[cfg(not(unix))]
+    let ppid = 0u32;
     let tap_file = std::env::temp_dir().join(format!(".{app}_tap_{ppid}"));
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
