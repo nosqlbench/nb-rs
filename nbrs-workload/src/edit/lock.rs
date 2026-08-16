@@ -70,7 +70,52 @@ impl Drop for WorkloadLock {
 /// `libc::fcntl` directly. SRD-64 §6.5 mentions surfacing
 /// "where known" — for now we surface a generic message;
 /// adding pid-via-libc is a follow-up.
+/// The file the OS lock is actually taken on: the workload file
+/// itself on Unix, its `.lock` sidecar on Windows (see the
+/// mandatory-lock rationale in [`acquire`]).
+#[cfg(windows)]
+fn lock_target(path: &Path) -> std::path::PathBuf {
+    let mut os = path.as_os_str().to_os_string();
+    os.push(".lock");
+    std::path::PathBuf::from(os)
+}
+
 pub fn acquire(path: &Path) -> io::Result<WorkloadLock> {
+    // Unix: lock the workload file itself — advisory locks never
+    // block this process's own re-opens (the splicer re-reads and
+    // rewrites under separate handles).
+    //
+    // Windows: `LockFileEx` locks are MANDATORY — an exclusive
+    // lock on `wl.yaml` makes the splicer's own re-open of the
+    // same file fail (os error 33). Lock a sidecar
+    // `<file>.lock` instead: mutual exclusion between nbrs
+    // invocations still holds (every mutator locks the same
+    // sidecar) and the workload file itself stays freely
+    // readable. The sidecar is deliberately left in place on
+    // unlock — deleting it would make a third concurrent
+    // mutator's open race the delete-pending window.
+    #[cfg(windows)]
+    let file = {
+        if !path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("workload lock: cannot open '{}' for locking: not found",
+                    path.display()),
+            ));
+        }
+        let lock_path = lock_target(path);
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .map_err(|e| io::Error::new(
+                e.kind(),
+                format!("workload lock: cannot open '{}' for locking: {e}",
+                    lock_path.display()),
+            ))?
+    };
+    #[cfg(not(windows))]
     let file = OpenOptions::new()
         .read(true)
         .open(path)
@@ -174,8 +219,13 @@ mod tests {
         // implicitly any time `acquire` returns Ok after
         // a wait — see `second_acquire_blocks...`.)
         // Here we just confirm that the WouldBlock variant
-        // is constructed via a direct check.
-        let f = std::fs::File::open(&path).unwrap();
+        // is constructed via a direct check. Probe the same
+        // file `acquire` locks (the sidecar on Windows).
+        #[cfg(windows)]
+        let probe = super::lock_target(&path);
+        #[cfg(not(windows))]
+        let probe = path.clone();
+        let f = std::fs::File::open(&probe).unwrap();
         match FileExt::try_lock_exclusive(&f) {
             Ok(false) => {} // expected — first lock still held
             other => panic!("expected try_lock_exclusive=Ok(false), got {other:?}"),

@@ -264,8 +264,9 @@ pub enum Outcome {
     Fail(String),
 }
 
-/// Run one case via `<binary> run workload=… <args> --session-path …` (wrapped
-/// in `timeout`) from `sandbox`, capture combined output, and check the rules.
+/// Run one case via `<binary> run workload=… <args> --session-path …` (under
+/// an in-process deadline) from `sandbox`, capture combined output, and check
+/// the rules.
 /// `workload_ref` is whatever goes after `workload=` — an absolute file path
 /// or a bundled catalog name; the subprocess resolves it exactly as a normal
 /// `nbrs run` would.
@@ -290,26 +291,64 @@ pub fn run_case(binary: &Path, workload_ref: &str, sandbox: &Path, label: &str, 
         sandbox
     };
 
+    // The deadline is enforced here rather than by wrapping in the
+    // coreutils `timeout` program: that binary isn't a given on
+    // macOS, and on Windows `timeout.exe` is the cmd.exe delay
+    // command — it can't run a child at all.
     let invoke = |args: &[String]| -> Result<(String, bool, bool), String> {
-        let mut cmd = Command::new("timeout");
-        cmd.arg(case.timeout.to_string())
-            .arg(binary)
-            .arg("run")
+        use std::io::Read as _;
+        use std::process::Stdio;
+        let mut cmd = Command::new(binary);
+        cmd.arg("run")
             .arg(format!("workload={workload_ref}"))
             .args(args);
         if !case.session_cwd {
             cmd.arg("--session-path").arg(&session);
         }
-        let output = cmd.current_dir(workdir)
-            .output()
+        let mut child = cmd
+            .current_dir(workdir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|e| format!("spawn failed: {e}"))?;
+        // Drain both pipes on threads so a chatty child can't fill
+        // one while we watch the deadline, deadlocking both sides.
+        let mut out_pipe = child.stdout.take().expect("stdout piped");
+        let mut err_pipe = child.stderr.take().expect("stderr piped");
+        let out_h = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = out_pipe.read_to_end(&mut buf);
+            buf
+        });
+        let err_h = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = err_pipe.read_to_end(&mut buf);
+            buf
+        });
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(case.timeout);
+        let (status, timed_out) = loop {
+            if let Some(st) = child.try_wait()
+                .map_err(|e| format!("wait failed: {e}"))? {
+                break (st, false);
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let st = child.wait()
+                    .map_err(|e| format!("wait failed: {e}"))?;
+                break (st, true);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
+        let stdout = out_h.join().unwrap_or_default();
+        let stderr = err_h.join().unwrap_or_default();
         let combined = format!(
             "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
         );
-        let timed_out = output.status.code() == Some(124);
-        Ok((combined, output.status.success(), timed_out))
+        Ok((combined, status.success(), timed_out))
     };
 
     let (mut combined, mut succeeded, mut timed_out) = invoke(&case.run_args)?;
