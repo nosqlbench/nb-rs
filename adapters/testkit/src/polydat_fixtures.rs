@@ -296,7 +296,11 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let p = std::env::temp_dir().join(format!("nbrs-fixture-{tag}-{n:x}.txt"));
         let _ = std::fs::remove_file(&p);
-        p.to_string_lossy().into_owned()
+        // Forward slashes: the path gets embedded in a polydat
+        // string literal below, where a Windows `\` separator
+        // (`...\Temp\nbrs-…`) would read as an escape sequence.
+        // Windows filesystem APIs accept `/` just as well.
+        p.to_string_lossy().replace('\\', "/")
     }
 
     /// Compile a one-binding program and pull the u64 result. The

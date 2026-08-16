@@ -19,6 +19,16 @@
 //! the alternate screen and restores the primary byte-exact on
 //! close — never leaking its output onto the primary scrollback.
 
+// Unix-only: this suite lock-steps the harness over PTY stdin and
+// asserts byte-exact screen state. Under Windows ConPTY the input
+// path is cooked by the console host (line buffering, echo onto
+// the surface, CR-vs-LF Enter semantics), which breaks the
+// lock-step contract regardless of the harness's console-mode
+// settings — shadow-terminal itself gates its interactive test
+// off Windows for the same reason. The non-interactive PTY suite
+// (srd92_display) still runs everywhere.
+#![cfg(unix)]
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;

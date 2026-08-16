@@ -58,6 +58,7 @@ use nbrs_tui::state::{EntryKind, LogSeverity, RunState, SceneTree};
 /// driving test's command bytes are delivered immediately and are
 /// NOT echoed back onto the rendered surface. Returns the prior
 /// settings for restoration.
+#[cfg(unix)]
 fn set_raw_stdin() -> Option<libc::termios> {
     unsafe {
         let mut prev: libc::termios = std::mem::zeroed();
@@ -73,10 +74,60 @@ fn set_raw_stdin() -> Option<libc::termios> {
     }
 }
 
+#[cfg(unix)]
 fn restore_stdin(prev: Option<libc::termios>) {
     if let Some(prev) = prev {
         unsafe {
             libc::tcsetattr(0, libc::TCSANOW, &prev);
+        }
+    }
+}
+
+/// Windows analogue of the termios tweak: clear the console
+/// input handle's line-input + echo bits so command bytes are
+/// delivered immediately and never echo onto the rendered
+/// surface. Returns the prior mode for restoration.
+#[cfg(windows)]
+fn set_raw_stdin() -> Option<u32> {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(std_handle: u32) -> *mut c_void;
+        fn GetConsoleMode(handle: *mut c_void, mode: *mut u32) -> i32;
+        fn SetConsoleMode(handle: *mut c_void, mode: u32) -> i32;
+    }
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    const ENABLE_LINE_INPUT: u32 = 0x2;
+    const ENABLE_ECHO_INPUT: u32 = 0x4;
+    unsafe {
+        let h = GetStdHandle(STD_INPUT_HANDLE);
+        let mut prev = 0u32;
+        if h.is_null() || GetConsoleMode(h, &mut prev) == 0 {
+            return None;
+        }
+        let raw = prev & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+        if SetConsoleMode(h, raw) == 0 {
+            return None;
+        }
+        Some(prev)
+    }
+}
+
+#[cfg(windows)]
+fn restore_stdin(prev: Option<u32>) {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(std_handle: u32) -> *mut c_void;
+        fn SetConsoleMode(handle: *mut c_void, mode: u32) -> i32;
+    }
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    if let Some(mode) = prev {
+        unsafe {
+            let h = GetStdHandle(STD_INPUT_HANDLE);
+            if !h.is_null() {
+                SetConsoleMode(h, mode);
+            }
         }
     }
 }

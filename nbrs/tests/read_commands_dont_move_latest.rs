@@ -64,8 +64,12 @@ impl Sandbox {
     }
 
     fn latest(&self) -> PathBuf {
-        std::fs::read_link(self.path.join("sessions").join("latest"))
-            .expect("sessions/latest should be a symlink")
+        let t = std::fs::read_link(self.path.join("sessions").join("latest"))
+            .expect("sessions/latest should be a symlink");
+        // Unix symlinks carry the relative session id; the Windows
+        // junction fallback reads back an absolute target. Normalize
+        // to the session id (final component) for comparisons.
+        PathBuf::from(t.file_name().expect("latest target has a final component"))
     }
 
     /// Real session directories only. `sessions/` also holds the per-artifact

@@ -18,6 +18,10 @@
 //!    op — the Motivation-§5 shape, minus the wedged runtime the
 //!    in-process harness can't fake.
 
+// The contract under test IS Unix signal delivery — there is no
+// Windows equivalent of `kill -TERM` semantics to exercise.
+#![cfg(unix)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};

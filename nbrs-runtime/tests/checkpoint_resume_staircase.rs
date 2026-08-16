@@ -42,13 +42,17 @@ fn staircase_failures_resume_correctly() {
 
     // Read the canonical workload, retarget the state file path
     // to a per-test value so parallel test threads don't share
-    // state.
+    // state. Forward slashes: the path lands inside a polydat
+    // string literal in the workload, where Windows `\` separators
+    // would read as escape sequences.
+    let statefile_str = statefile.to_str().expect("non-utf8 tempdir")
+        .replace('\\', "/");
     let canonical = std::fs::read_to_string(
         workspace_path("examples/workloads/diagnostics/resume_test.yaml"),
     ).expect("read canonical workload");
     let body = canonical.replace(
         "/tmp/nbrs_resume_test.seq",
-        statefile.to_str().expect("non-utf8 tempdir"),
+        &statefile_str,
     );
     std::fs::write(&workload_path, body).expect("write workload");
 
@@ -59,8 +63,10 @@ fn staircase_failures_resume_correctly() {
         // semantics — each `nbrs run` is a fresh process). To
         // simulate the process boundary in-test we clear the
         // sequence cache before each run.
+        // The cache key must match the node's path argument
+        // verbatim — the forward-slash form spliced above.
         nbrs_adapter_testkit::polydat_fixtures::clear_sequence_cache_for(
-            statefile.to_str().expect("non-utf8 statefile"),
+            &statefile_str,
         );
         let mut args = vec![
             format!("workload={}", workload_path.display()),
