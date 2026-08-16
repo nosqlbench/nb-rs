@@ -406,6 +406,56 @@ pub fn args_request_dryrun(args: &[String]) -> bool {
     })
 }
 
+/// Create a symlink at `link` pointing at `target` (which may be
+/// relative to `link`'s parent dir). On Unix this is plain
+/// `symlink`; Windows separates file and directory symlinks, so
+/// resolve the target and pick the matching flavor. Windows
+/// symlink creation needs Developer Mode (or admin) — callers
+/// treat failure as best-effort, same as on Unix.
+pub(crate) fn symlink_any(
+    target: &Path,
+    link: &Path,
+) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        // Callers clear a previous link with `remove_file`, which
+        // on Windows cannot delete a DIRECTORY symlink or junction
+        // (those are directory entries) — clean up leftovers here
+        // so re-pointing works.
+        if let Ok(md) = std::fs::symlink_metadata(link)
+            && (md.file_type().is_symlink() || md.file_type().is_dir()) {
+                let _ = std::fs::remove_file(link);
+                let _ = std::fs::remove_dir(link);
+            }
+        let resolved = match link.parent() {
+            Some(p) => p.join(target),
+            None => target.to_path_buf(),
+        };
+        if resolved.is_dir() {
+            // Real symlinks need Developer Mode / admin; a
+            // directory junction needs no privilege and reads back
+            // through `fs::read_link` just the same (with an
+            // absolute target — consumers here already resolve
+            // both shapes). Junction targets must be absolute.
+            std::os::windows::fs::symlink_dir(target, link).or_else(|_| {
+                let abs = std::path::absolute(&resolved)?;
+                junction::create(&abs, link)
+            })
+        } else {
+            // File fallback: a same-volume hard link. Appends to
+            // the original show up through it (same file), and the
+            // artifact links are recreated at each session
+            // start / artifact production, which bounds staleness.
+            std::os::windows::fs::symlink_file(target, link)
+                .or_else(|_| std::fs::hard_link(&resolved, link))
+        }
+    }
+}
+
 /// Point `<sessions-root>/latest` at `session_dir`, but only when
 /// the dir lives under the sessions root — a path the user
 /// redirected elsewhere (`--session-path /tmp/x`) is left alone,
@@ -422,7 +472,7 @@ pub fn point_latest_at(session_dir: &Path) {
     let latest = root.join("latest");
     let relative_target = relative_symlink_target(&latest, session_dir);
     let _ = std::fs::remove_file(&latest);
-    let _ = std::os::unix::fs::symlink(&relative_target, &latest);
+    let _ = symlink_any(&relative_target, &latest);
 }
 
 /// Initialize a NEW, empty session: create its directory, the
@@ -650,21 +700,33 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
             "new"     => { spec.force_new = true;              continue; }
             _ => {}
         }
+        // A Windows drive-letter path (`C:\…` or `C:/…`) would
+        // split at its drive colon and read as unknown key "C" —
+        // recognize it as a bare path token before the key:value
+        // parse gets a look.
+        let drive_letter_path = item.len() >= 3
+            && item.as_bytes()[0].is_ascii_alphabetic()
+            && item.as_bytes()[1] == b':'
+            && matches!(item.as_bytes()[2], b'\\' | b'/');
         // key:value pair takes precedence over the
         // bare-token heuristics so `dir:/tmp/x` etc.
         // disambiguate cleanly.
-        let (key, value) = match item.split_once(':') {
+        let kv = if drive_letter_path { None } else { item.split_once(':') };
+        let (key, value) = match kv {
             Some((k, v)) => (k.trim(), v.trim()),
             None => {
                 // Bare token without `:`. Two heuristics:
-                //   - contains `/` OR resolves to an existing
-                //     directory → treat as `path:<value>`.
+                //   - contains a path separator OR resolves to an
+                //     existing directory → treat as `path:<value>`.
                 //     Lets operators write
                 //     `--session logs/fulltest_2026...` without
                 //     remembering the `path:` prefix.
                 //   - otherwise → session name (SRD-04
                 //     most-specific-name rule).
-                if item.contains('/') || std::path::Path::new(item).is_dir() {
+                if drive_letter_path
+                    || item.contains('/')
+                    || (cfg!(windows) && item.contains('\\'))
+                    || std::path::Path::new(item).is_dir() {
                     validate_session_path_or_exit(item, "umbrella `--session <bare-token>`");
                     spec.session_path = Some(item.to_string());
                 } else {
@@ -1342,8 +1404,8 @@ impl Session {
             let _ = std::fs::create_dir_all(&logs);
             let latest = logs.join("latest");
             let _ = std::fs::remove_file(&latest);
-            let _ = std::os::unix::fs::symlink(
-                latest_symlink_target(&output_dir, &logs, &id),
+            let _ = symlink_any(
+                &latest_symlink_target(&output_dir, &logs, &id),
                 &latest,
             );
             for stale in [
@@ -1362,7 +1424,7 @@ impl Session {
                 // symlink so swapping sessions updates every artifact
                 // link in a single `latest` update.
                 let target = PathBuf::from("latest").join(artifact);
-                let _ = std::os::unix::fs::symlink(&target, &link);
+                let _ = symlink_any(&target, &link);
             }
         }
 
@@ -1443,12 +1505,12 @@ impl Session {
         if target_is_under(&logs, &prior_session_dir) {
             let latest = logs.join("latest");
             let _ = std::fs::remove_file(&latest);
-            let _ = std::os::unix::fs::symlink(&id, &latest);
+            let _ = symlink_any(Path::new(&id), &latest);
             for artifact in ["session.log", "metrics.db"] {
                 let link = logs.join(artifact);
                 let _ = std::fs::remove_file(&link);
                 let target = PathBuf::from("latest").join(artifact);
-                let _ = std::os::unix::fs::symlink(&target, &link);
+                let _ = symlink_any(&target, &link);
             }
         }
 
@@ -1481,7 +1543,7 @@ impl Session {
         let link = logs.join(name);
         let _ = std::fs::remove_file(&link);
         let target = PathBuf::from("latest").join(name);
-        let _ = std::os::unix::fs::symlink(&target, &link);
+        let _ = symlink_any(&target, &link);
     }
 
     /// Install the shared [`MetricsQuery`] handle. Called once by the
@@ -2239,8 +2301,14 @@ mod tests {
         let active = parent.join("active_session");
         std::fs::create_dir(&active).unwrap();
         std::fs::write(active.join("metrics.db"), "x").unwrap();
-        // Create logs/latest symlink → active.
-        let _ = std::os::unix::fs::symlink(&active, parent.join("latest"));
+        // Create logs/latest symlink → active. Windows only allows
+        // symlink creation with Developer Mode / admin — skip the
+        // test rather than fail when the link can't exist at all.
+        if symlink_any(&active, &parent.join("latest")).is_err() {
+            eprintln!("skipping: cannot create symlinks here");
+            let _ = std::fs::remove_dir_all(&parent);
+            return;
+        }
 
         // Purge with aggressive caps — `active` must not be deleted
         // because it's the symlink target.

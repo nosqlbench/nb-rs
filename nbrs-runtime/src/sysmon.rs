@@ -418,6 +418,9 @@ pub fn parse_dev_mounts(text: &str) -> Vec<String> {
 
 /// Space utilization of one filesystem: `1 − available/total`, matching what
 /// `df` calls Use%. `None` on statvfs failure or a zero-block pseudo-fs.
+/// Unix-only, like its caller [`max_storage_util`] (which walks
+/// `/proc/mounts` and therefore never yields a mount elsewhere).
+#[cfg(unix)]
 fn statvfs_util(mount: &str) -> Option<f64> {
     let c_mount = std::ffi::CString::new(mount).ok()?;
     let mut vfs: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -432,13 +435,22 @@ fn statvfs_util(mount: &str) -> Option<f64> {
 
 /// The fullest `/dev/`-backed filesystem right now: (mount point, util).
 fn max_storage_util() -> Option<(String, f64)> {
-    let mounts = std::fs::read_to_string("/proc/mounts")
-        .map(|t| parse_dev_mounts(&t))
-        .unwrap_or_default();
-    mounts
-        .into_iter()
-        .filter_map(|m| statvfs_util(&m).map(|u| (m, u)))
-        .max_by(|a, b| a.1.total_cmp(&b.1))
+    #[cfg(unix)]
+    {
+        let mounts = std::fs::read_to_string("/proc/mounts")
+            .map(|t| parse_dev_mounts(&t))
+            .unwrap_or_default();
+        mounts
+            .into_iter()
+            .filter_map(|m| statvfs_util(&m).map(|u| (m, u)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+    }
+    // No `/proc/mounts` off Unix — storage-utilization sampling
+    // is simply unavailable there.
+    #[cfg(not(unix))]
+    {
+        None
+    }
 }
 
 /// Sum of resctrl MBM total-bytes counters across mon_data groups, when the

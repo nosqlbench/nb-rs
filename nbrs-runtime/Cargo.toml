@@ -50,6 +50,12 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # glob / full-regex inputs to a `Regex` matcher.
 regex = "1"
 
+# Directory-junction fallback for `logs/latest` when real
+# symlinks are unavailable (no Developer Mode / admin). See
+# `session::symlink_any`.
+[target.'cfg(windows)'.dependencies]
+junction = "1"
+
 [dev-dependencies]
 nbrs-adapter-stdout = { path = "../adapters/stdout", version = "0.1.1" }
 nbrs-adapter-testkit = { path = "../adapters/testkit", version = "0.1.1" }

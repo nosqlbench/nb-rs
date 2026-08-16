@@ -316,8 +316,17 @@ impl ProfileGuard {
                 // signalling an unrelated `perf record` the
                 // operator started.
                 if let Some(mut c) = child {
-                    let pid = c.id() as i32;
-                    let killed = unsafe { libc::kill(pid, libc::SIGINT) };
+                    // `perf` only exists on Linux, so this arm is
+                    // dead on Windows — but it must still compile
+                    // there; substitute a hard kill for the
+                    // graceful SIGINT.
+                    #[cfg(not(unix))]
+                    let killed = if c.kill().is_ok() { 0 } else { -1 };
+                    #[cfg(unix)]
+                    let killed = {
+                        let pid = c.id() as i32;
+                        unsafe { libc::kill(pid, libc::SIGINT) }
+                    };
                     if killed == 0 {
                         // Wait for perf to flush perf.data and
                         // exit. `wait` is blocking; in finish()

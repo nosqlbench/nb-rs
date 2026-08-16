@@ -4298,6 +4298,7 @@ async fn executor_task(
 /// previous-tick text on screen below the cursor — the in-place
 /// rewrite only erases from the cursor through end of the
 /// current visual line.
+#[cfg(unix)]
 pub fn terminal_cols() -> Option<usize> {
     use std::os::raw::c_int;
     #[repr(C)]
@@ -4319,6 +4320,60 @@ pub fn terminal_cols() -> Option<usize> {
         return None;
     }
     Some(ws.ws_col as usize)
+}
+
+/// Windows variant: `GetConsoleScreenBufferInfo` on the stderr
+/// handle. The console API is declared by hand rather than via a
+/// `windows-sys` dependency — two kernel32 imports don't justify
+/// one. Width is the visible window (srWindow), not the scrollback
+/// buffer width, matching what the status line can occupy.
+#[cfg(windows)]
+pub fn terminal_cols() -> Option<usize> {
+    use std::ffi::c_void;
+    #[repr(C)]
+    struct Coord {
+        x: i16,
+        y: i16,
+    }
+    #[repr(C)]
+    struct SmallRect {
+        left: i16,
+        top: i16,
+        right: i16,
+        bottom: i16,
+    }
+    #[repr(C)]
+    struct ConsoleScreenBufferInfo {
+        size: Coord,
+        cursor_position: Coord,
+        attributes: u16,
+        window: SmallRect,
+        maximum_window_size: Coord,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(std_handle: u32) -> *mut c_void;
+        fn GetConsoleScreenBufferInfo(
+            console: *mut c_void,
+            info: *mut ConsoleScreenBufferInfo,
+        ) -> i32;
+    }
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    const INVALID_HANDLE_VALUE: *mut c_void = -1isize as *mut c_void;
+    // SAFETY: both calls only write into the out-parameter we own;
+    // failure is signalled by null/INVALID handle or zero return.
+    unsafe {
+        let handle = GetStdHandle(STD_ERROR_HANDLE);
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut info = std::mem::zeroed::<ConsoleScreenBufferInfo>();
+        if GetConsoleScreenBufferInfo(handle, &mut info) == 0 {
+            return None;
+        }
+        let cols = i32::from(info.window.right) - i32::from(info.window.left) + 1;
+        if cols <= 0 { None } else { Some(cols as usize) }
+    }
 }
 
 /// Glob-style match: `*` matches zero or more characters, `?`

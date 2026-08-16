@@ -524,6 +524,7 @@ pub fn install_signal_handler() {
 /// (exit `128 + signo`); armed, signals drive the ladder.
 static LADDER_ARMED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(unix)]
 #[inline]
 fn ladder_armed() -> bool {
     LADDER_ARMED.load(Ordering::Relaxed)
@@ -560,6 +561,7 @@ const DISPATCHED_SIGNALS: [libc::c_int; 4] =
 /// What the dispatcher does with one received signal. Pure decision,
 /// separated from the thread loop so the routing is unit-testable
 /// without raising real signals.
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SignalAction {
     /// Exit `128 + signo` now (unarmed default semantics).

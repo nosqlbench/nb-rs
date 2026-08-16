@@ -3951,7 +3951,7 @@ fn refresh_latest_file_links(session: &crate::session::Session) {
         // that's fine.
         let _ = std::fs::remove_file(&link);
         let rel_target = std::path::Path::new("latest").join(file);
-        if let Err(e) = std::os::unix::fs::symlink(&rel_target, &link) {
+        if let Err(e) = crate::session::symlink_any(&rel_target, &link) {
             crate::diag!(crate::observer::LogLevel::Warn,
                 "warning: failed to link {} → {}: {e}",
                 link.display(), rel_target.display());

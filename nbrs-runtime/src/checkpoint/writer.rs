@@ -66,23 +66,19 @@ pub struct CheckpointWriter {
     /// and runtime predicates (`continue_if`, for-loop bounds)
     /// legitimately leave some of those entries Pending forever.
     run_reached_end: std::sync::atomic::AtomicBool,
-    /// File descriptor of the held flock lockfile
-    /// (`logs/<session>/checkpoint.lock`). The descriptor is
-    /// owned for the lifetime of the writer; closing it (Drop)
+    /// Open handle on the held lockfile
+    /// (`logs/<session>/checkpoint.lock`). The handle is owned
+    /// for the lifetime of the writer; closing it (Drop)
     /// releases the advisory lock automatically. `None` when
-    /// flock acquisition failed soft.
+    /// lock acquisition failed soft.
     _lock_fd: Option<LockHandle>,
 }
 
-/// Owning wrapper around a Unix fd that releases the flock when
-/// dropped. `flock(LOCK_UN)` is implicit on close.
-struct LockHandle(libc::c_int);
-
-impl Drop for LockHandle {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.0); }
-    }
-}
+/// Owning wrapper around the open lockfile that releases the
+/// advisory lock when dropped — unlock is implicit on close
+/// (`flock(LOCK_UN)` on Unix, `UnlockFile` on Windows; both are
+/// what `std`'s file locking maps to).
+struct LockHandle(#[allow(dead_code)] File);
 
 struct Inner {
     /// In-memory fold mirror. Always reflects the most recent
@@ -611,7 +607,6 @@ pub(crate) fn identity_key(identity: &PhaseIdentity) -> String {
 /// Take a non-blocking exclusive advisory lock on a sibling
 /// `checkpoint.lock` file alongside the checkpoint document.
 fn acquire_flock(checkpoint_path: &std::path::Path) -> Option<LockHandle> {
-    use std::os::unix::ffi::OsStrExt;
     let parent = checkpoint_path.parent()?;
     if let Err(e) = std::fs::create_dir_all(parent) {
         eprintln!(
@@ -621,27 +616,24 @@ fn acquire_flock(checkpoint_path: &std::path::Path) -> Option<LockHandle> {
         return None;
     }
     let lock_path = checkpoint_path.with_extension("lock");
-    let c_path = std::ffi::CString::new(lock_path.as_os_str().as_bytes()).ok()?;
-    let fd = unsafe {
-        libc::open(
-            c_path.as_ptr(),
-            libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC,
-            0o644,
-        )
+    let file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "warning: could not open lockfile {}: {e} (concurrent-resume protection skipped)",
+                lock_path.display(),
+            );
+            return None;
+        }
     };
-    if fd < 0 {
-        let errno = std::io::Error::last_os_error();
-        eprintln!(
-            "warning: could not open lockfile {}: {errno} (concurrent-resume protection skipped)",
-            lock_path.display(),
-        );
-        return None;
-    }
-    let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-    if rc != 0 {
-        let errno = std::io::Error::last_os_error();
-        unsafe { libc::close(fd); }
-        if errno.raw_os_error() == Some(libc::EWOULDBLOCK) {
+    match file.try_lock() {
+        Ok(()) => Some(LockHandle(file)),
+        Err(std::fs::TryLockError::WouldBlock) => {
             panic!(
                 "checkpoint: another process holds the resume lock at {} \
                  (concurrent `nbrs run --resume` against the same session?). \
@@ -649,15 +641,15 @@ fn acquire_flock(checkpoint_path: &std::path::Path) -> Option<LockHandle> {
                  lockfile and retry.",
                 lock_path.display(),
             );
-        } else {
+        }
+        Err(std::fs::TryLockError::Error(e)) => {
             eprintln!(
-                "warning: flock on {} failed: {errno} (concurrent-resume protection skipped)",
+                "warning: lock on {} failed: {e} (concurrent-resume protection skipped)",
                 lock_path.display(),
             );
-            return None;
+            None
         }
     }
-    Some(LockHandle(fd))
 }
 
 fn build_index(phases: &[PhaseEntry]) -> HashMap<String, usize> {
