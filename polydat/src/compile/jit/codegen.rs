@@ -136,8 +136,28 @@ extern "C" fn jit_pow(base_bits: u64, exp_bits: u64) -> u64 {
 #[repr(C, align(16))]
 struct JitJmpBuf([u8; 512]);
 
+#[cfg(not(windows))]
 unsafe extern "C" {
     fn _setjmp(env: *mut JitJmpBuf) -> i32;
+    fn _longjmp(env: *mut JitJmpBuf, val: i32) -> !;
+}
+
+// MSVC CRT spelling of the same pair: it exports `longjmp`
+// (no underscore — `_longjmp` doesn't exist there, LNK2019)
+// and an x64 `_setjmp` whose second register argument is
+// recorded as the jmp_buf's `Frame` field. The C compiler
+// normally fills that in via intrinsic; calling from Rust we
+// pass NULL explicitly, which is load-bearing twice over: it
+// keeps rdx from carrying garbage into the buffer, and a zero
+// `Frame` makes `longjmp` do a plain register restore instead
+// of an `RtlUnwindEx` unwind — mandatory here because the
+// frames being skipped are JIT code with no unwind tables
+// registered (the exact problem this setjmp path exists to
+// avoid; see the module comment above).
+#[cfg(windows)]
+unsafe extern "C" {
+    fn _setjmp(env: *mut JitJmpBuf, frame: *mut std::ffi::c_void) -> i32;
+    #[link_name = "longjmp"]
     fn _longjmp(env: *mut JitJmpBuf, val: i32) -> !;
 }
 
@@ -213,7 +233,11 @@ pub(crate) fn invoke_with_catch<F: FnOnce()>(f: F) {
     // through our frame).
     let prev: Option<*mut JitJmpBuf> = JIT_JMP_BUF.with(|b| b.replace(Some(buf_ptr)));
     let _guard = JmpBufGuard { prev };
+    #[cfg(not(windows))]
     let jmpval = unsafe { _setjmp(buf_ptr) };
+    // NULL frame → non-unwinding longjmp; see the extern block.
+    #[cfg(windows)]
+    let jmpval = unsafe { _setjmp(buf_ptr, std::ptr::null_mut()) };
     if jmpval == 0 {
         f();
     } else {
