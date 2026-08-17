@@ -829,7 +829,7 @@ mod tests {
             kernel.set_inputs(&[cycle]);
             let result = kernel.pull("out").as_u64();
             // Must match hash_range semantics: hash(cycle) % 100
-            let expected = xxhash_rust::xxh3::xxh3_64(&cycle.to_le_bytes()) % 100;
+            let expected = crate::library::hash::splitmix64_u64(cycle) % 100;
             assert_eq!(result, expected, "cycle {cycle}");
         }
     }
@@ -849,7 +849,7 @@ mod tests {
         // Both outputs should still work correctly.
         for cycle in 0..100u64 {
             kernel.set_inputs(&[cycle]);
-            let h = xxhash_rust::xxh3::xxh3_64(&cycle.to_le_bytes());
+            let h = crate::library::hash::splitmix64_u64(cycle);
             assert_eq!(kernel.pull("out1").as_u64(), h % 100, "out1 cycle {cycle}");
             assert_eq!(kernel.pull("out2").as_u64(), h % 50, "out2 cycle {cycle}");
         }
