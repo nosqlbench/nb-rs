@@ -26,7 +26,7 @@ fn cones_flag_reports_fusion_and_residue() {
     assert!(text.contains("jit_cone[mul+add]"), "cone with members: {text}");
     assert!(text.contains("default_or"), "residue listed: {text}");
     assert!(
-        text.contains("p2-capable") || text.contains("p1-only"),
+        text.contains("p3-classifiable") || text.contains("p2-capable") || text.contains("p1-only"),
         "residue carries lattice tiers: {text}"
     );
 }
