@@ -195,33 +195,9 @@ extern "C" fn jit_pcg_stream(input: u64, stream: u64, seed: u64) -> u64 {
     let inc = 2u64.wrapping_mul(stream).wrapping_add(1);
     crate::library::pcg::pcg_seek(seed, inc, input)
 }
-extern "C" fn jit_unfair_coin(input: u64, p_bits: u64) -> u64 {
-    let p = f64::from_bits(p_bits);
-    let h = xxhash_rust::xxh3::xxh3_64(&input.to_le_bytes());
-    let unit = (h as f64) / ((u64::MAX as f64) + 1.0);
-    if unit < p { 1 } else { 0 }
-}
-extern "C" fn jit_chance(input: u64, p_bits: u64) -> u64 {
-    let p = f64::from_bits(p_bits);
-    let h = xxhash_rust::xxh3::xxh3_64(&input.to_le_bytes());
-    let unit = (h as f64) / ((u64::MAX as f64) + 1.0);
-    let result: f64 = if unit < p { 1.0 } else { 0.0 };
-    result.to_bits()
-}
 extern "C" fn jit_n_of(input: u64, n: u64, m: u64) -> u64 {
     if m == 0 { return 0; }
-    let window = input / m;
-    let pos = input % m;
-    let my_hash = xxhash_rust::xxh3::xxh3_64(&[window.to_le_bytes(), pos.to_le_bytes()].concat());
-    let mut rank: u64 = 0;
-    for i in 0..m {
-        if i == pos { continue; }
-        let other_hash = xxhash_rust::xxh3::xxh3_64(&[window.to_le_bytes(), i.to_le_bytes()].concat());
-        if other_hash < my_hash || (other_hash == my_hash && i < pos) {
-            rank += 1;
-        }
-    }
-    if rank < n { 1 } else { 0 }
+    crate::library::probability::n_of_m_eval(input, n, m)
 }
 
 extern "C" fn jit_cycle_walk(pos: u64, range: u64, seed: u64, inc: u64) -> u64 {
@@ -1583,8 +1559,6 @@ fn compile_jit_impl(
     jit_builder.symbol("jit_weighted_pick", jit_weighted_pick as *const u8);
     jit_builder.symbol("jit_pcg", jit_pcg as *const u8);
     jit_builder.symbol("jit_pcg_stream", jit_pcg_stream as *const u8);
-    jit_builder.symbol("jit_unfair_coin", jit_unfair_coin as *const u8);
-    jit_builder.symbol("jit_chance", jit_chance as *const u8);
     jit_builder.symbol("jit_n_of", jit_n_of as *const u8);
     jit_builder.symbol("jit_cycle_walk", jit_cycle_walk as *const u8);
     jit_builder.symbol("jit_perlin_1d", jit_perlin_1d as *const u8);

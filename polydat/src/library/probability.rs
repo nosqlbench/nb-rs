@@ -204,7 +204,7 @@ fn n_of(input: u64, n: Const<u64>, m: Const<u64>) -> u64 {
 /// of the m positions hash lower than the current one — if fewer than
 /// n do, this position is selected.
 #[inline]
-fn n_of_m_eval(input: u64, n: u64, m: u64) -> u64 {
+pub(crate) fn n_of_m_eval(input: u64, n: u64, m: u64) -> u64 {
     let window = input / m;
     let pos = input % m;
     // Hash this position within the window using fast register mix
