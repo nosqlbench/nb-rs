@@ -1705,20 +1705,6 @@ fn compile_jit_impl(
         module.declare_function("jit_pcg_stream", Linkage::Import, &sig)
             .map_err(|e| format!("declare pcg_stream: {e}"))?
     };
-    let unfair_coin_func_id = {
-        let mut sig = module.make_signature();
-        for _ in 0..2 { sig.params.push(AbiParam::new(types::I64)); }
-        sig.returns.push(AbiParam::new(types::I64));
-        module.declare_function("jit_unfair_coin", Linkage::Import, &sig)
-            .map_err(|e| format!("declare unfair_coin: {e}"))?
-    };
-    let chance_func_id = {
-        let mut sig = module.make_signature();
-        for _ in 0..2 { sig.params.push(AbiParam::new(types::I64)); }
-        sig.returns.push(AbiParam::new(types::I64));
-        module.declare_function("jit_chance", Linkage::Import, &sig)
-            .map_err(|e| format!("declare chance: {e}"))?
-    };
     let n_of_func_id = {
         let mut sig = module.make_signature();
         for _ in 0..3 { sig.params.push(AbiParam::new(types::I64)); }
@@ -1916,8 +1902,6 @@ fn compile_jit_impl(
         let is_one_of_fail_ref = module.declare_func_in_func(is_one_of_fail_id, builder.func);
         let pcg_func_ref = module.declare_func_in_func(pcg_func_id, builder.func);
         let pcg_stream_func_ref = module.declare_func_in_func(pcg_stream_func_id, builder.func);
-        let unfair_coin_func_ref = module.declare_func_in_func(unfair_coin_func_id, builder.func);
-        let chance_func_ref = module.declare_func_in_func(chance_func_id, builder.func);
         let n_of_func_ref = module.declare_func_in_func(n_of_func_id, builder.func);
         let cycle_walk_func_ref = module.declare_func_in_func(cycle_walk_func_id, builder.func);
         let perlin_1d_func_ref = module.declare_func_in_func(perlin_1d_func_id, builder.func);

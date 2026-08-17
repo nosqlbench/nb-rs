@@ -5,7 +5,6 @@
 //! at Concurrency 1, 4, and 16.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 use polydat::ast::{PortType, SlotType, Value};
@@ -14,6 +13,7 @@ use polydat::compile::jit::{classify_node, compile_jit_raw, JitOp};
 use polydat::dsl::factory::{build_node, ConstArg};
 use polydat::dsl::registry::registry;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct BenchResult {
     name: String,
@@ -119,7 +119,7 @@ fn run_all_functions_concurrency_benchmarks() {
         let in_wire_types_probe = in_wire_types.clone();
         let wires_probe = wires.clone();
         let probe_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut test_node = build_node(sig.name, &wires_probe, &in_wire_types_probe, &consts_probe).unwrap();
+            let test_node = build_node(sig.name, &wires_probe, &in_wire_types_probe, &consts_probe).unwrap();
             test_node.eval(&in_vals_probe, &mut test_out);
         })).is_ok();
         if !probe_ok {
@@ -133,7 +133,7 @@ fn run_all_functions_concurrency_benchmarks() {
             let wires_probe = wires.clone();
             let p2_probe_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let test_node = build_node(sig.name, &wires_probe, &in_wire_types_probe, &consts_probe).unwrap();
-                let mut closure = test_node.compiled_u64().unwrap();
+                let closure = test_node.compiled_u64().unwrap();
                 let in_buf = [12345u64, 0, 0, 0, 0, 0, 0, 0];
                 let mut out_buf = [0u64; 8];
                 closure(&in_buf, &mut out_buf);
@@ -161,7 +161,7 @@ fn run_all_functions_concurrency_benchmarks() {
                     let wires_clone = wires.clone();
                     let wire_types_clone = in_wire_types.clone();
                     s.spawn(move || {
-                        let mut local_node = build_node(sig.name, &wires_clone, &wire_types_clone, &consts_clone).unwrap();
+                        let local_node = build_node(sig.name, &wires_clone, &wire_types_clone, &consts_clone).unwrap();
                         let mut out_vals = vec![Value::None; sig.outputs.max(1)];
                         for _cycle in 0..iters_per_thread {
                             local_node.eval(&in_vals_clone, &mut out_vals);
@@ -189,7 +189,7 @@ fn run_all_functions_concurrency_benchmarks() {
                         let wire_types_clone = in_wire_types.clone();
                         s.spawn(move || {
                             let local_node = build_node(sig.name, &wires_clone, &wire_types_clone, &consts_clone).unwrap();
-                            let mut closure = local_node.compiled_u64().unwrap();
+                            let closure = local_node.compiled_u64().unwrap();
                             let in_buf = [12345u64, 0, 0, 0, 0, 0, 0, 0];
                             let mut out_buf = [0u64; 8];
                             for _ in 0..iters_per_thread {
