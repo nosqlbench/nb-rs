@@ -805,6 +805,8 @@ enum JitType {
     I32,
     F32,
     F16,
+    Str,
+    Bytes,
     // Two-slot values (alignment §8.4 layer 1): 128-bit integers
     // and register words ride two consecutive u64 slots in
     // little-endian limb order, reconstructed through
@@ -858,6 +860,8 @@ impl JitType {
             JitType::I32  => quote!((inputs[#i] as i64) as i32),
             JitType::F32  => quote!(f32::from_bits(inputs[#i] as u32)),
             JitType::F16  => quote!(polydat::half::f16::from_bits(inputs[#i] as u16)),
+            JitType::Str   => quote!(polydat::kernel::resolve_thread_str(inputs[#i]).into()),
+            JitType::Bytes => quote!(polydat::kernel::resolve_thread_bytes(inputs[#i]).into()),
             JitType::U128 => quote!((#limbs).as_u128()),
             JitType::I128 => quote!((#limbs).as_i128()),
             JitType::RegRaw   => limbs,
@@ -894,6 +898,8 @@ impl JitType {
                 => quote!(outputs[#o] = ((#result) as i64) as u64;),
             JitType::F32  => quote!(outputs[#o] = (#result).to_bits() as u64;),
             JitType::F16  => quote!(outputs[#o] = (#result).to_bits() as u64;),
+            JitType::Str  => quote!(outputs[#o] = polydat::kernel::put_thread_str((#result).as_ref());),
+            JitType::Bytes => quote!(outputs[#o] = polydat::kernel::put_thread_bytes((#result).as_ref());),
             JitType::U128 => write_limbs(quote!(polydat::ast::Bits128::from_u128(#result))),
             JitType::I128 => write_limbs(quote!(polydat::ast::Bits128::from_i128(#result))),
             JitType::RegRaw   => write_limbs(quote!(#result)),
@@ -926,6 +932,8 @@ impl JitType {
                 => quote!(((#field_ref) as i64) as u64),
             JitType::F32 | JitType::F16
                 => quote!((#field_ref).to_bits() as u64),
+            JitType::Str | JitType::Bytes
+                => quote!(polydat::kernel::StaticInterner::intern((#field_ref).as_ref())),
             // ConstShape has no 128-bit / register forms, so these
             // never appear in const position.
             JitType::U128 | JitType::I128 | JitType::RegRaw
@@ -945,7 +953,7 @@ fn const_shape_to_jit_type(s: ConstShape) -> Option<JitType> {
         ConstShape::U64  => Some(JitType::U64),
         ConstShape::F64  => Some(JitType::F64),
         ConstShape::Bool => Some(JitType::Bool),
-        ConstShape::Str  => None,
+        ConstShape::Str  => Some(JitType::Str),
     }
 }
 
@@ -967,6 +975,8 @@ fn wire_type_to_jit_type(ty: &Type) -> Option<JitType> {
         "f32"  => Some(JitType::F32),
         "u128" => Some(JitType::U128),
         "i128" => Some(JitType::I128),
+        "String" | "& str" | "&str" => Some(JitType::Str),
+        "Vec < u8 >" | "Vec<u8>" | "& [ u8 ]" | "&[u8]" => Some(JitType::Bytes),
         // type_to_string joins every token with a space
         // (`half : : f16`, `[ f32 ; 4 ]`), so the path/array
         // forms compare whitespace-stripped. The two-slot types
@@ -974,6 +984,8 @@ fn wire_type_to_jit_type(ty: &Type) -> Option<JitType> {
         _ => {
             let flat: String = s.split_whitespace().collect();
             match flat.as_str() {
+                "Arc<str>" | "std::sync::Arc<str>" => Some(JitType::Str),
+                "Arc<[u8]>" | "std::sync::Arc<[u8]>" => Some(JitType::Bytes),
                 "half::f16" | "f16" => Some(JitType::F16),
                 "Bits128" | "crate::ast::Bits128" | "polydat::ast::Bits128"
                 | "ast::Bits128" => Some(JitType::RegRaw),
@@ -2702,7 +2714,8 @@ fn generate(
                 .collect::<Option<Vec<_>>>()
         });
 
-    let jit_eligible = arg_jit_types.is_some()
+    let jit_eligible = !is_fallible
+        && arg_jit_types.is_some()
         && (ret_jit_type.is_some() || tuple_ret_jit_types.is_some());
 
     // §8.4 layer 3 — slot eligibility: at least one typed-slice
@@ -2989,7 +3002,7 @@ fn generate(
                 ArgKind::Wire | ArgKind::Variadic(_) => None,
                 ArgKind::Const(_) => {
                     let n = &a.name;
-                    Some(quote!(let #n = self.#n;))
+                    Some(quote!(let #n = self.#n.clone();))
                 }
                 ArgKind::Setup(_) | ArgKind::PolyWire | ArgKind::ConstVec(_) => {
                     unreachable!("setup/polywire/constvec excludes JIT eligibility")
@@ -3007,10 +3020,12 @@ fn generate(
                         wire_buf_idx += jt.width();
                         quote!(let #n = #read;)
                     }
-                    ArgKind::Const(_) => {
-                        // `n` is already captured by Copy above;
-                        // wrap as the body's `Const<T>` form.
-                        quote!(let #n = polydat::derive_support::Const(#n);)
+                    ArgKind::Const(shape) => {
+                        if *shape == ConstShape::Str {
+                            quote!(let #n = polydat::derive_support::Const(#n.as_str());)
+                        } else {
+                            quote!(let #n = polydat::derive_support::Const(#n);)
+                        }
                     }
                     ArgKind::Variadic(_) => {
                         // SRD-80 PR B.9: u64 variadic — pass the

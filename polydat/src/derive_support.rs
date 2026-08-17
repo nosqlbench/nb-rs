@@ -252,7 +252,7 @@ impl Wire for bool {
 
 impl Wire for String {
     const PORT: PortType = PortType::Str;
-    const JIT: Option<JitType> = None;
+    const JIT: Option<JitType> = Some(JitType::Str);
     fn extract(v: &Value) -> Self {
         // SRD-80b: panic on shape mismatch — the type-checker is
         // responsible for routing well-typed values to each slot,
@@ -277,7 +277,7 @@ impl Wire for String {
 /// to avoid the per-cycle `to_string()` allocation.
 impl Wire for std::sync::Arc<str> {
     const PORT: PortType = PortType::Str;
-    const JIT: Option<JitType> = None;
+    const JIT: Option<JitType> = Some(JitType::Str);
     fn extract(v: &Value) -> Self {
         match v {
             Value::Str(s) => s.clone(),

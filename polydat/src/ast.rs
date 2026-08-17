@@ -1515,6 +1515,19 @@ pub enum JitType {
     I64,
     F64,
     Bool,
+    Str,
+    Bytes,
+    U8,
+    U16,
+    U32,
+    I8,
+    I16,
+    I32,
+    F32,
+    F16,
+    U128,
+    I128,
+    Reg128,
 }
 
 /// A concrete constant value stored in node metadata.

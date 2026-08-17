@@ -62,7 +62,9 @@ mod api_impl;
 mod opt;
 pub mod interp;
 pub mod subcontext;
+pub mod arena;
 
+pub use arena::{CycleArena, with_cycle_arena, encode_arena_handle, decode_arena_handle, StaticInterner, resolve_thread_str, resolve_thread_bytes, put_thread_str, put_thread_bytes};
 pub use program::*;
 pub use engines::*;
 pub use state::*;
