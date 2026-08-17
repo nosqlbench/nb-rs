@@ -18,15 +18,8 @@ members = [
     "adapters/plotter",
     "adapters/cql",
     "adapters/openapi",
-    # Vendored: cassandra-cpp 3.0.2 with the trace_id retrieval
-    # surface added that the upstream wrapper omits. See
-    # vendor/cassandra-cpp/CHANGES.local.md for the diff
-    # against upstream.
-    "vendor/cassandra-cpp",
 ]
-resolver = "3"
-
-# Exclude the vendored cassandra-cpp from the default test /
+# Exclude the vendored cassandra-cpp from the workspace test /
 # build set. Its lib-tests link `-lcassandra` against the
 # system, which we only have in the cassandra-cpp Docker
 # sysroot — running `cargo test --workspace` from a clean
@@ -35,6 +28,10 @@ resolver = "3"
 # (adapters/cql with the engine-cassandra-cpp feature) under
 # the build.sh sysroot, and its tests can be invoked
 # explicitly via `cargo test -p cassandra-cpp` when desired.
+exclude = [
+    "vendor/cassandra-cpp",
+]
+resolver = "3"
 default-members = [
     "nbrs",
     "polydat",
