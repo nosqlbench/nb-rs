@@ -35,6 +35,7 @@
 //! - `"p50"`, `"p99"`, `"mean"` — latency quantiles from cycles_servicetime (nanos)
 
 use std::sync::{Arc, LazyLock, Mutex};
+use polydat::derive_support::Const;
 
 // Node metadata + registration are emitted by `#[polydat::polydat_node]`
 // (fully-qualified `polydat::…` paths, including the `Const<…>` marker), so

@@ -21,6 +21,7 @@
 use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use polydat::Const;
 
 // All nodes here are authored via `#[polydat::polydat_node]` (fully-qualified
 // `polydat::…` paths), so no `polydat::ast` imports are needed in module
