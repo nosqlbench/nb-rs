@@ -2173,3 +2173,4 @@ fn every_registered_function_compiles() {
         );
     }
 }
+
